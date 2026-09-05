@@ -241,12 +241,11 @@ impl HarnessSnapshot {
     /// against an N-entry queue — comes out with N empty sets rather than a
     /// length mismatch.
     pub fn align_pending_side_arrays(&mut self) {
+        // `resize` both grows and shortens, so it is the whole of the job.
         self.pending_envelope_ids
             .resize(self.pending_queue.len(), None);
-        self.pending_envelope_ids.truncate(self.pending_queue.len());
         self.pending_message_ids
             .resize(self.pending_queue.len(), Vec::new());
-        self.pending_message_ids.truncate(self.pending_queue.len());
     }
 }
 

@@ -2355,29 +2355,18 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
 
 /// #1449 — is this runtime still the row the card is being driven from?
 ///
-/// Fail-OPEN on a missing row, deliberately and narrowly: the question this
-/// answers is "has someone else taken over my queue", and an absent row is not
-/// evidence that they have. Every production path keeps the row for the
-/// lifetime of the handle.
+/// A pool read of one row by id. NOT `write_in_tx_typed`, which opens with
+/// `BEGIN IMMEDIATE` and takes SQLite's single writer lock; this runs on every
+/// issuance attempt, and behind the writer lock it starved other writers
+/// (`token_usage_round_trips_through_the_persisted_runtime_snapshot` went red
+/// in a full-suite run while it was one). NOT `session_projection_by_id`
+/// either: that SELECT is card-backed, so a row the card has moved off answers
+/// `None`, which this function would read as "still mine".
 ///
-/// # Two ways to get this wrong, both of them measured
-///
-/// **Not `session_projection_by_id`.** Its SELECT is card-backed, so the moment
-/// the card points at the successor the predecessor's row answers `None` —
-/// which this function reads as "not retired". `a_failed_restart_gives_the_harvested_sentence_back`
-/// went red with `left: 2` on exactly that.
-///
-/// **Not a write transaction**
-///
-/// either. A pool read — NOT
-/// `write_in_tx_typed`, which opens with `BEGIN IMMEDIATE` and therefore takes
-/// SQLite's single writer lock. This runs on every issuance attempt, including
-/// the ones that go on to drain nothing, so putting it behind the writer lock
-/// starves every other writer in the process for no reason. It did:
-/// `token_usage_round_trips_through_the_persisted_runtime_snapshot` went red
-/// once in a full-suite run while this was a write transaction, and its
-/// notification-driven `persist_snapshot` is exactly the kind of writer that
-/// loses such a race and only logs a warning.
+/// A missing row is refused, and what makes that safe is that the row is
+/// removed only by card, track and area deletion, by a start's compensation,
+/// and by the dev replay reset — `worker_sessions_row_disappearance.rs` is the
+/// ratchet over that set.
 async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
     let state = inner
         .repo
@@ -2385,12 +2374,6 @@ async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
         .await?;
     Ok(match state {
         Some(state) => state.is_active_authority(),
-        // Fail CLOSED. A runtime whose row is gone cannot show that it still
-        // speaks for the card, and the row is deleted only by card, track and
-        // area deletion, by a start's compensation, and by the dev replay reset
-        // — every one of them a context in which this harness has no business
-        // issuing a turn. `worker_sessions_row_disappearance.rs` is the ratchet
-        // that keeps that enumeration from widening silently.
         None => false,
     })
 }

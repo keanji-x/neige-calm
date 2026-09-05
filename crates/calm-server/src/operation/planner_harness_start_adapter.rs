@@ -849,6 +849,15 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         });
         let mut snapshot = initial_snapshot_with_goal(payload.goal.clone());
         let mut inherited_queue_moved = false;
+        // #1449 — what the INHERIT took, for the same undo journal the harvest
+        // fills. The harvest's journal cannot cover it: the predecessor is
+        // still `active` when the harvest runs (it is retired later, inside
+        // `session_prepare_deferred_planner_tx`), so it is invisible to a
+        // predicate keyed on `superseded`. Without this entry a deferred mint
+        // that fails after committing empties the predecessor's queue, marks
+        // the successor `failed` — a state the harvest never reads — and
+        // `restore_old_runtime` brings the predecessor back with nothing on it.
+        let mut inherited_from: Vec<HarvestedFrom> = Vec::new();
         if let Some(inherited) = inherited_snapshot {
             snapshot.push_watermark = inherited.push_watermark;
             snapshot.pending_queue = inherited.pending_queue;
@@ -858,6 +867,29 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot.pending_message_ids = inherited.pending_message_ids;
             snapshot.align_pending_side_arrays();
             inherited_queue_moved = true;
+            if let Some(existing) = existing_active_runtime.as_ref() {
+                // Only the human sentences are journalled, because only they
+                // are returned: the rest of an inherited queue is machine
+                // context the successor re-derives.
+                let messages: Vec<HarvestedMessage> = snapshot
+                    .pending_queue
+                    .iter()
+                    .zip(snapshot.pending_message_ids.iter())
+                    .filter_map(|(observation, ids)| match observation {
+                        Observation::UserMessage { text } => Some(HarvestedMessage {
+                            text: text.clone(),
+                            ids: ids.clone(),
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                if !messages.is_empty() {
+                    inherited_from.push(HarvestedFrom {
+                        runtime_id: existing.id.clone(),
+                        messages,
+                    });
+                }
+            }
         }
         // One clock for the whole mint: the supersede below, the harvest stamp
         // (passed IN, so the helper does not read a second clock of its own)
@@ -1130,13 +1162,20 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // is silent, permanent loss, and the mint transaction's own
             // rollback does not cover it: compensation is a different
             // transaction.
-            "harvested_runtime_ids": harvested.stamped_runtime_ids,
-            // #1449 S3 — the undo journal: which sentences came off which row.
-            // Durable in `operations.tx_output_json`, read only when this
-            // operation compensates. Not a second live home for the message —
-            // the live home is the successor's row — but the record a failed
-            // mint needs to put each sentence back where it came from.
-            "harvested_from": harvested_from_journal(&harvested.taken_from),
+            // #1449 S3 — the undo journal: which sentences came off which row,
+            // from BOTH transfers this transaction can make. Durable in
+            // `operations.tx_output_json`, read only when this operation
+            // compensates. Not a second live home for the message — the live
+            // home is the successor's row — but the record a failed mint needs
+            // to put each sentence back where it came from.
+            "harvested_from": harvested_from_journal(
+                &harvested
+                    .taken_from
+                    .iter()
+                    .chain(inherited_from.iter())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
         });
         if let Some(old_runtime_id) = old_runtime_id {
             output.set_output_data("old_runtime_id", json!(old_runtime_id), "planner harness")?;
@@ -1384,12 +1423,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     let mut checkpoint_output = output_clone;
                     let mut old_runtime_id = None;
                     let mut old_runtime_status = None;
-                    // #1449 — the rows this transaction stamped, so the
-                    // compensation can undo the harvest. The harvested
-                    // SENTENCES need no such channel: since S1 the successor's
-                    // queue is read from its own row at spawn, so writing it
-                    // into the row is the whole of writing it down.
-                    let mut harvested_runtime_ids: Vec<String> = Vec::new();
+                    // #1449 — what this transaction took off which row, for
+                    // the undo journal. It has to leave the closure: the
+                    // journal lives in `output`, and `read_harvested_from_journal`
+                    // is the only thing compensation reads.
+                    let mut taken_from: Vec<HarvestedFrom> = Vec::new();
                     if let Some(hashed) = new_mcp_token_hash.as_ref() {
                         persist_card_mcp_token_hash(tx, &card_id, hashed).await?;
                     }
@@ -1405,7 +1443,30 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         };
                         // The successor's queue, plus — when a racer is being
                         // retired here — whatever the racer never delivered.
+                        // #1449 S1 — the queue comes from THIS RUNTIME'S ROW,
+                        // not from the snapshot `output` has been carrying
+                        // since `prepare_tx`.
+                        //
+                        // `output` is durable and frozen at mint time. An
+                        // operation re-driven from `tx_committed` or
+                        // `app_server_interact` — any crash after the mint
+                        // transaction — would otherwise write that frozen queue
+                        // back onto the row, undoing a transfer another mint
+                        // made in between and putting the sentence in two
+                        // places. Re-reading at `spawn_side_effect` does not
+                        // save it: this write happens first, so the re-read
+                        // reads back the resurrected queue.
+                        //
+                        // What `output` still carries is this operation's own
+                        // decisions — phase, thread id, watermarks — which no
+                        // other operation touches.
                         let mut runtime_snapshot = snapshot.clone();
+                        overwrite_queue_from_the_runtimes_own_row_tx(
+                            tx,
+                            &runtime_id,
+                            &mut runtime_snapshot,
+                        )
+                        .await?;
                         if let Some(existing) = raced_in.as_ref() {
                             old_runtime_id = Some(existing.id.clone());
                             old_runtime_status = Some(existing.status);
@@ -1435,7 +1496,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                                 stranded_user_messages,
                             )
                             .await?;
-                            harvested_runtime_ids = harvested.stamped_runtime_ids;
+                            taken_from = harvested.taken_from;
                             if !harvested.messages.is_empty() {
                                 for message in harvested.messages {
                                     runtime_snapshot
@@ -1489,10 +1550,18 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             },
                         )
                         .await?;
+                        // #1449 S1 — same rule on this arm.
+                        let mut bound_snapshot = snapshot.clone();
+                        overwrite_queue_from_the_runtimes_own_row_tx(
+                            tx,
+                            &runtime_id,
+                            &mut bound_snapshot,
+                        )
+                        .await?;
                         session_set_handle_state_tx(
                             tx,
                             &runtime_id,
-                            Some(serde_json::to_value(&snapshot)?),
+                            Some(serde_json::to_value(&bound_snapshot)?),
                         )
                         .await?;
                     }
@@ -1538,7 +1607,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             old_runtime_id,
                             old_runtime_status,
                             cleared_measure,
-                            harvested_runtime_ids,
+                            taken_from,
                         ),
                         Event::CardUpdated(card),
                     ))
@@ -1546,23 +1615,27 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             },
         )
         .await?;
-        let (
-            updated_card,
-            old_runtime_id,
-            old_runtime_status,
-            cleared_measure,
-            harvested_runtime_ids,
-        ) = tx_out;
+        let (updated_card, old_runtime_id, old_runtime_status, cleared_measure, taken_from) =
+            tx_out;
         drop(mint_lock_guard);
         card = updated_card;
-        if !harvested_runtime_ids.is_empty() {
-            let mut all = output
-                .data
-                .get("harvested_runtime_ids")
-                .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
-                .unwrap_or_default();
-            all.extend(harvested_runtime_ids);
-            output.set_output_data("harvested_runtime_ids", json!(all), "planner harness")?;
+        // #1449 — merge this transaction's undo journal into the one
+        // `prepare_tx` wrote. Both transfers this operation can make have to be
+        // in it, or a compensation puts back only half of what it took.
+        if !taken_from.is_empty() {
+            let mut merged = read_harvested_from_journal(output)
+                .into_iter()
+                .map(|entry| HarvestedFrom {
+                    runtime_id: entry.runtime_id,
+                    messages: entry.messages,
+                })
+                .collect::<Vec<_>>();
+            merged.extend(taken_from);
+            output.set_output_data(
+                "harvested_from",
+                harvested_from_journal(&merged),
+                "planner harness",
+            )?;
         }
         if let Some(old_runtime_id) = old_runtime_id {
             output.set_output_data("old_runtime_id", json!(old_runtime_id), "planner harness")?;
@@ -1916,58 +1989,45 @@ fn is_reusable_thread_missing_card_mcp_token_failure(reason: &str) -> bool {
     reason.contains(REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR)
 }
 
-/// #1449 — the human sentences a superseded runtime never delivered.
-///
-/// The filter is the product ruling, and it is narrow on purpose: **only**
-/// `Observation::UserMessage` travels. `SystemContext` (the #1343 opening
-/// briefing) and `TrackGoal` are functions of the successor's OWN workspace and
-/// payload — after a re-point that is a different directory — so the successor
-/// re-derives them and carrying the predecessor's copies forward would inject a
-/// briefing describing the workspace the track just left. Every other
-/// observation (report bodies, hook observations, diff blocks) describes the old
-/// workspace at an old head; carrying it is worse than dropping it.
-///
-/// Bad shapes warn and yield nothing rather than failing the mint — the same
-/// posture the dormant-restart inherit above takes — and the caller stamps the
-/// row either way, so a snapshot nothing can read is not re-examined forever.
-///
-/// # KNOWN GAP — a batch the daemon has and the row does not know about
-///
-/// `maybe_issue_turn` persists "the batch is still queued", drains in memory,
-/// calls `turn/start`, and persists the emptied queue afterwards. If a
-/// retirement commits between the `turn/start` call and its return, this
-/// harvest reads a queue the daemon already has and hands it to the successor,
-/// and the sentence is delivered twice.
-///
-/// The window is one in-flight RPC wide: the carrier check runs immediately
-/// before the drain, so the retirement has to land after that read and before
-/// `turn/start` returns. Nothing here closes it — the persisted queue and what
-/// the daemon accepted have no shared truth to compare, and giving them one
-/// needs an idempotency key on the daemon side, which is outside this slice.
-/// The direction matches #1314's existing ruling: re-deliver rather than record
-/// a delivery that may not have happened.
 /// #1449 S1 — replace a snapshot's pending queue with the one persisted on the
 /// runtime's own row, leaving every other field alone.
-async fn overwrite_queue_from_the_runtimes_own_row(
-    repo: &dyn Repo,
-    runtime_id: &str,
-    snapshot: &mut HarnessSnapshot,
-) -> Result<()> {
-    let Some(state) = repo
-        .session_projection_handle_state_by_id(runtime_id)
-        .await?
-    else {
-        return Ok(());
+fn adopt_queue_from_row(snapshot: &mut HarnessSnapshot, row_state: Option<Value>) {
+    let Some(state) = row_state else {
+        return;
     };
     if state.get("mode").and_then(Value::as_str) != Some(HARNESS_MODE)
         || !is_harness_snapshot_value(&state)
     {
-        return Ok(());
+        return;
     }
     let row = HarnessSnapshot::from_value_strict(state);
     snapshot.pending_queue = row.pending_queue;
     snapshot.pending_envelope_ids = row.pending_envelope_ids;
     snapshot.pending_message_ids = row.pending_message_ids;
+}
+
+async fn overwrite_queue_from_the_runtimes_own_row(
+    repo: &dyn Repo,
+    worker_session_id: &str,
+    snapshot: &mut HarnessSnapshot,
+) -> Result<()> {
+    let state = repo
+        .session_projection_handle_state_by_id(worker_session_id)
+        .await?;
+    adopt_queue_from_row(snapshot, state);
+    Ok(())
+}
+
+/// The same rule inside a transaction, for the writers that run there.
+async fn overwrite_queue_from_the_runtimes_own_row_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    worker_session_id: &str,
+    snapshot: &mut HarnessSnapshot,
+) -> Result<()> {
+    let state = session_handle_state_by_id_tx(tx, worker_session_id)
+        .await
+        .map_err(CalmError::from)?;
+    adopt_queue_from_row(snapshot, state);
     Ok(())
 }
 
@@ -2042,6 +2102,20 @@ async fn return_harvested_queues_and_fail_tx(
                 .map_err(CalmError::from)?;
         }
         if !returned_any_ids.is_empty() {
+            // #1449 — SUBTRACT the returned ids; do not delete the entry.
+            //
+            // `try_fold_pending_tail` unions two `UserMessage`s into one entry
+            // under backpressure, so an entry can carry a returned id next to a
+            // newly enqueued one that was never harvested and sits on no source
+            // row. Dropping the entry on an intersection would delete that
+            // sentence outright.
+            //
+            // The folded TEXT cannot be split — the fold concatenated it and
+            // nothing records where the seam was — so an entry that keeps at
+            // least one id keeps all of its text. The returned sentence's words
+            // then sit on the failed runtime as well as on the source row; the
+            // harvest never reads a `failed` row, so that is dead text rather
+            // than a second delivery.
             let mut kept_queue = Vec::new();
             let mut kept_ids = Vec::new();
             let mut kept_envelopes = Vec::new();
@@ -2051,11 +2125,15 @@ async fn return_harvested_queues_and_fail_tx(
                 .zip(successor.pending_message_ids.drain(..))
                 .zip(successor.pending_envelope_ids.drain(..))
             {
-                if ids.iter().any(|id| returned_any_ids.contains(id)) {
+                let remaining: Vec<String> = ids
+                    .into_iter()
+                    .filter(|id| !returned_any_ids.contains(id))
+                    .collect();
+                if remaining.is_empty() && matches!(observation, Observation::UserMessage { .. }) {
                     continue;
                 }
                 kept_queue.push(observation);
-                kept_ids.push(ids);
+                kept_ids.push(remaining);
                 kept_envelopes.push(envelope);
             }
             successor.pending_queue = kept_queue;
@@ -2134,6 +2212,42 @@ fn read_harvested_from_journal(output: &TxOutput) -> Vec<HarvestedFromJournalEnt
         .collect()
 }
 
+/// #1449 — the human sentences a superseded runtime never delivered.
+///
+/// The filter is the product ruling, and it is narrow on purpose: **only**
+/// `Observation::UserMessage` travels. `SystemContext` (the #1343 opening
+/// briefing) and `TrackGoal` are functions of the successor's OWN workspace and
+/// payload — after a re-point that is a different directory — so the successor
+/// re-derives them and carrying the predecessor's copies forward would inject a
+/// briefing describing the workspace the track just left. Every other
+/// observation (report bodies, hook observations, diff blocks) describes the old
+/// workspace at an old head; carrying it is worse than dropping it.
+///
+/// Bad shapes warn and yield nothing rather than failing the mint — the same
+/// posture the dormant-restart inherit above takes — and the caller stamps the
+/// row either way, so a snapshot nothing can read is not re-examined forever.
+///
+/// # KNOWN GAP — a batch the daemon has and the row does not know about
+///
+/// `maybe_issue_turn` persists "the batch is still queued", drains in memory,
+/// calls `turn/start`, and writes the emptied queue afterwards. That last write
+/// is `persist_issuance_outcome`, a SEPARATE `write_in_tx_typed` that has to
+/// take SQLite's single writer lock — contended by the very mint transactions
+/// that cause this hazard. The window is therefore
+/// `[the second carrier check, persist_issuance_outcome commits]`: one RPC plus
+/// one writer-lock acquisition, not one RPC.
+///
+/// The reachable path is a MINT — reset, `POST /conversations`, Today ensure —
+/// where the predecessor's handle is not torn down until `app_server_interact`,
+/// long after `prepare_tx` harvested. On the re-point fence it is narrower:
+/// `shutdown_fenced_harness` is awaited before the restart, and
+/// `shutdown_inner` queues behind `inner.issuance`, which the run loop holds
+/// across `persist_issuance_outcome`.
+///
+/// Nothing here closes it: the persisted queue and what the daemon accepted
+/// have no shared truth to compare, and giving them one needs an idempotency
+/// key on the daemon side. The direction matches #1314's ruling — re-deliver
+/// rather than record a delivery that may not have happened.
 fn stranded_user_messages(runtime_id: &str, handle_state_json: &str) -> HarvestOutcome {
     let Ok(state) = serde_json::from_str::<Value>(handle_state_json) else {
         tracing::warn!(

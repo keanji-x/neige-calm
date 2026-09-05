@@ -2986,9 +2986,10 @@ struct RepointFence {
 ///    observation. After this commit a push has nowhere to land. An
 ///    `interrupt` would not do: it is asynchronous and says nothing about the
 ///    *next* turn. The in-memory half — `HarnessRegistry::remove` +
-///    `shutdown()` — follows immediately, because `maybe_issue_turn` reads no
-///    database state and would otherwise turn an already-queued observation
-///    into a turn.
+///    `shutdown()` — follows immediately: since #1449 `maybe_issue_turn` does
+///    consult the database before issuing, but only twice per issuance, and a
+///    runtime that has already queued an observation can still be between those
+///    reads when this commits.
 /// 2. **The criteria are re-evaluated before anything irreversible.** Anything
 ///    the in-flight turn wrote between the fence and here makes this a 409
 ///    with nothing moved and no column changed.

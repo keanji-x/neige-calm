@@ -4126,3 +4126,69 @@ async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
     );
     b.shutdown_harnesses().await;
 }
+
+/// #1449 B1 — a deferred mint that fails must give the INHERITED queue back.
+///
+/// The inherit is a move: `prepare_tx` takes the predecessor's whole queue into
+/// the successor and empties the predecessor in the same transaction. The
+/// harvest's undo journal cannot cover that transfer — the predecessor is still
+/// `active` when the harvest runs, and the harvest reads `superseded` rows — so
+/// until the inherit filed its own journal entry, a `thread/start` failure left
+/// the sentence on a `failed` successor that the harvest never reads, while
+/// `restore_old_runtime` brought the predecessor back with an empty queue. The
+/// sentence was gone with no error and no trace, and on `origin/main` — where
+/// the inherit is a copy — the restored predecessor still had it.
+///
+/// The predecessor must stay ACTIVE for this to take the inherit arm; retiring
+/// it first is what makes the sibling test exercise the harvest arm instead.
+#[tokio::test]
+async fn a_failed_deferred_mint_gives_the_inherited_sentence_back() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-inherit"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    entered.notified().await;
+    let (predecessor, card_id) = b.only_runtime().await;
+    assert_eq!(
+        b.persisted_queue(&predecessor).await.len(),
+        1,
+        "premise: the sentence is durably queued and has not drained"
+    );
+
+    // The predecessor is LEFT ACTIVE, so the restart takes the inherit arm.
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (failed, failed_body) = b.reset_planner(&card_id).await;
+    assert!(
+        !failed.is_success(),
+        "premise: the injected thread/start failure must surface: status={failed} \
+         body={failed_body}"
+    );
+    release.notify_one();
+
+    let holders = b.wait_until_rows_holding(STRANDED, 1).await;
+    assert_eq!(
+        holders, 1,
+        "after a failed deferred mint exactly one row must still owe the sentence — the \
+         inherited queue has to come back, or it is stranded on a `failed` runtime the \
+         harvest never reads"
+    );
+
+    // And it is genuinely reachable again, not merely present somewhere.
+    let (retry, retry_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        retry,
+        StatusCode::OK,
+        "premise: the second restart must succeed: body={retry_body}"
+    );
+    assert_eq!(
+        b.delivered_copies(STRANDED, 2).await,
+        1,
+        "and the sentence must reach an agent exactly once"
+    );
+    b.shutdown_harnesses().await;
+}
