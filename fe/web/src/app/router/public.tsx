@@ -53,6 +53,7 @@ import {
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
+  kernelQueuesInput,
   mergeTranscript, reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
   trackConversationCardId,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
@@ -558,19 +559,33 @@ export function useConversationStore(
       serverHighWaterBefore: serverItemHighWater(items),
       /*
        * Read at the moment of the press, which is the only moment it is true of
-       * this message.
+       * this message, and read against the **kernel's** whitelist.
        *
        * `POST /planner/input` does not look at the phase — `send_planner_input`
        * accepts unconditionally and `observe_user_message_durable` folds the
-       * text into the harness pending queue — and `can_issue_turn()` only starts
-       * a turn from `Idle`/`TurnCompleted`. So a message posted while `working`
-       * is durably accepted *and* deliberately not being worked on yet, and the
-       * reader is owed that difference. Recomputing it from the live phase later
-       * would say the opposite twice over: a queued message would stop looking
-       * queued the instant the turn it is waiting behind finishes, and a message
-       * sent from idle would start looking queued as soon as its own turn began.
+       * text into the harness pending queue — so what decides whether the
+       * message waits is `can_issue_turn()`, and `kernelQueuesInput` is that
+       * predicate mirrored, `null` included (see its note in `core/domain`).
+       *
+       * **Not `working`.** That was the first version of this line and it was a
+       * regression of the very bug the slice fixes. `working` is `issuing_turn
+       * || turn_running`; `stopShown`, which decides whether the composer will
+       * send at all, is `working || stopping`, and `stopping` includes
+       * `issuing_interrupt`. So there was a phase in which the composer sent, the
+       * kernel queued, and the echo was minted `queued: false` — no marker, no
+       * caption, and counted by `hasUnreconciledSend` against a row that cannot
+       * arrive until the queue drains. The dead composer, reached through the
+       * door this slice had just opened. Three more phases sat in the same gap
+       * (`pending_thread_start`, `resumed`, `wedged`) for the same reason: a
+       * front-end notion of "busy" is not the kernel's notion of "can start a
+       * turn", and only the latter decides where the message goes.
+       *
+       * Recomputing it from the live phase later would say the opposite twice
+       * over: a queued message would stop looking queued the instant the turn it
+       * is waiting behind finishes, and a message sent from idle would start
+       * looking queued as soon as its own turn began.
        */
-      queued: working,
+      queued: kernelQueuesInput(phase),
     };
     const sentTo = cardId;
     activeSend.current = { cardId: sentTo, echoId: echo.id };

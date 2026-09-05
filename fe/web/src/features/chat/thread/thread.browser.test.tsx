@@ -107,6 +107,23 @@ function Card() {
   );
 }
 
+/** The same card with a turn in flight, which is the only state that renders
+ *  Stop and therefore the only one that renders the queue control beside it. */
+function RunningCard() {
+  return (
+    <div style={{ position: 'absolute', insetBlock: 20, insetInlineEnd: 24, inlineSize: 396 }}>
+      <div
+        style={{
+          ['--nc-card-inset' as string]: '8px',
+          ['--nc-card-radius' as string]: '16px',
+        }}
+      >
+        <ChatComposer onSend={vi.fn()} onStop={vi.fn()} onNewConversation={vi.fn()} />
+      </div>
+    </div>
+  );
+}
+
 /** Type `text` into the contenteditable with a real caret, the way
  *  `useTriggerMenu` reads it — it walks back from `window.getSelection()`, not
  *  from the value, so the caret has to exist. */
@@ -241,7 +258,105 @@ describe('the / command menu, as the engine lays it out', () => {
     expect(getComputedStyle(send).backgroundColor).toBe(getComputedStyle(probe).backgroundColor);
     probe.remove();
   });
+
+  /*
+   * ── #1505's queue control, on the same terms as Send above ───────────────
+   *
+   * `.queueSend` is a CSS-Module rule on a button that lives inside Astryx's
+   * `sendActions` slot, i.e. inside the vendor's compiled StyleX subtree. It
+   * makes two claims in prose that only an engine can settle, and both fail the
+   * way everything else in this file fails — silently, with the button still
+   * there and still sending:
+   *
+   *   1. it is filled with `--surface-chip`, the same material the Send rule
+   *      above gives Astryx's own button, so the two read as one thing; and
+   *   2. it is 32px tall, which is Astryx's `.footer { min-height: 32px }`, so
+   *      it sits on Stop's baseline instead of growing the row.
+   *
+   * Both are compared against the engine rather than against a literal: the
+   * fill against a probe carrying the token (so "connected" is distinguishable
+   * from "fell back"), and the height against **Stop's own measured box** (so
+   * this is the claim actually being made — same baseline — rather than the
+   * number 32 written down twice).
+   */
+  it('paints the queue control in Send\'s material and on Stop\'s baseline', async () => {
+    await page.viewport(1400, 900);
+    render(<RunningCard />);
+    await typeInto(field(), 'while it works');
+
+    const queue = document.querySelector<HTMLElement>('[data-nc-send-queued]')!;
+    const stop = document.querySelector<HTMLElement>('button[aria-label="Stop"]')!;
+    const painted = getComputedStyle(queue);
+
+    const probe = document.createElement('div');
+    probe.style.backgroundColor = 'var(--surface-chip)';
+    document.body.append(probe);
+    expect(painted.backgroundColor).toBe(getComputedStyle(probe).backgroundColor);
+    /* And the well's own fill is not that colour, so a rule that failed to
+       connect and inherited the composer's surface cannot pass the line above. */
+    probe.style.backgroundColor = getComputedStyle(composer()).getPropertyValue('--bg').trim();
+    expect(painted.backgroundColor).not.toBe(getComputedStyle(probe).backgroundColor);
+    probe.remove();
+
+    const queueBox = queue.getBoundingClientRect();
+    const stopBox = stop.getBoundingClientRect();
+    expect(queueBox.height).toBe(stopBox.height);
+    /* Same row, not merely the same height: a wrapped footer would satisfy the
+       line above and still be the layout this rule exists to prevent. */
+    expect(Math.abs(queueBox.top - stopBox.top)).toBeLessThan(1);
+    /* Left of Stop, which is what the `sendActions` slot means. */
+    expect(queueBox.right).toBeLessThanOrEqual(stopBox.left + 1);
+  });
+
+  /*
+   * The caption under a queued message: right-edged onto the turn it belongs
+   * to, and legible.
+   *
+   * The alignment is a layout claim jsdom cannot make — `margin-inline-start:
+   * auto` and `text-align: end` compute to nothing there — and it is the whole
+   * of how the sentence reads as attached to the message above it rather than
+   * as a centred seam like `.gap`.
+   *
+   * The colour is here because `check-contrast.mjs` does not read this
+   * stylesheet (its pair table is `--warn*` / `--error*` and the plugin chips),
+   * so the 4.5:1 this text needs has no gate of its own. The ratio is computed
+   * from what the engine actually painted, so it covers the rule failing to
+   * connect as well as the token being changed underneath it.
+   */
+  it('right-edges the queued caption onto its message and keeps it legible', async () => {
+    await page.viewport(1400, 900);
+    const queuedTurn: TranscriptEntry = {
+      id: 'echo-1', author: 'you', text: 'A message that is waiting its turn.',
+      atMs: 4_000, serverHighWaterBefore: 0, queued: true,
+    };
+    render(<RailPane turns={[...railTurns(1), queuedTurn]} />);
+
+    const note = document.querySelector<HTMLElement>('[data-nc-queued-note]')!;
+    const said = document.querySelector<HTMLElement>('[data-nc-queued]')!;
+    const painted = getComputedStyle(note);
+    expect(painted.textAlign).toBe('end');
+    /* Flush with the message's own trailing edge — the property `.gap`, the
+       other small line in this transcript, deliberately does not have. */
+    expect(Math.abs(note.getBoundingClientRect().right - said.getBoundingClientRect().right))
+      .toBeLessThan(1);
+
+    /* `contrast` is this file's own reader of *painted* values (it handles the
+       `oklch()` Chromium serialises these tokens as); the ratio is therefore
+       computed from what the engine drew, so a rule that failed to connect
+       fails here as surely as a token lowered underneath it. */
+    expect(contrast(painted.color, backgroundBehind(note))).toBeGreaterThanOrEqual(4.5);
+  });
 });
+
+/** The nearest ancestor that actually paints, since the caption itself has no
+ *  fill and a transparent ancestor is not what the text is read against. */
+function backgroundBehind(element: HTMLElement): string {
+  for (let node: HTMLElement | null = element; node !== null; node = node.parentElement) {
+    const fill = getComputedStyle(node).backgroundColor;
+    if (fill !== 'rgba(0, 0, 0, 0)' && fill !== 'transparent') return fill;
+  }
+  return getComputedStyle(document.body).backgroundColor;
+}
 
 /*
  * ── Where the focus goes when Send disables itself, on the app's own wiring ──
