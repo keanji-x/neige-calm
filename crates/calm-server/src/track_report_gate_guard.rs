@@ -11,6 +11,8 @@ use calm_types::track_report::ReportBlock;
 
 use crate::error::CalmError;
 
+mod shell;
+
 pub(crate) fn check_changed_task_gates(
     before: &[ReportBlock],
     after: &[ReportBlock],
@@ -56,16 +58,18 @@ pub(crate) fn check_changed_task_gates(
 /// Do not search arbitrary command text: `rg neige README.md` and quoted
 /// fixture data are valid verification inputs, not kernel capability requests.
 fn direct_kernel_cli(command: &str) -> bool {
-    let mut words = command.split_ascii_whitespace();
-    let Some(executable) = words.next() else {
+    let Some(words) = shell::first_literal_command(command) else {
         return false;
     };
-    let executable = executable.trim_matches(['\'', '"']);
+    let Some((executable, args)) = words.split_first() else {
+        return false;
+    };
     if executable.rsplit('/').next() != Some("neige") {
         return false;
     }
-    let args: Vec<_> = words
-        .take_while(|word| !matches!(*word, "|" | "||" | "&&" | ";" | "&"))
+    let args: Vec<_> = args
+        .iter()
+        .map(String::as_str)
         .filter(|word| *word != "--json")
         .collect();
     if args.iter().any(|word| matches!(*word, "--help" | "-h")) {
@@ -103,6 +107,12 @@ mod tests {
         for cmd in [
             "neige cat plan/build/output",
             "neige --json state",
+            "neige 'cat' plan/build/output",
+            "neige state>/dev/null",
+            "neige 2>/dev/null state",
+            "neige 2>&1 state",
+            "neige cat 'artifact with spaces'",
+            "neige c\\at plan/build/output",
             "/usr/local/bin/neige ls plan",
             "'neige' task-completed --idempotency-key build",
             "neige cat plan/build/output | jq .",
@@ -112,6 +122,13 @@ mod tests {
         for cmd in [
             "neige --help",
             "neige cat --help",
+            "neige cat '--help'",
+            "neige cat --help|cat",
+            "neige cat>/dev/null '--help'",
+            "neige cat \"--help\"",
+            "neige cat --he\\lp",
+            "neige $command",
+            "neige cat $(printf -- --help)",
             "neige --version",
             "neige help cat",
             "rg neige README.md",
@@ -138,7 +155,7 @@ mod tests {
         let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("", &body));
         let before = doc.blocks_snapshot().unwrap();
         let edited = body.replace("Original analysis.", "Updated analysis.");
-        let rev = doc.doc_rev();
+        let rev = doc.doc_rev().unwrap();
         apply_report_op(
             &mut doc,
             &ReportDocOp::WriteMarkdown {
@@ -157,7 +174,7 @@ mod tests {
                 .any(|b| b.id == old.id && b.payload == old.payload)
         );
 
-        let rev = doc.doc_rev();
+        let rev = doc.doc_rev().unwrap();
         let err = apply_report_op(
             &mut doc,
             &ReportDocOp::WriteMarkdown {

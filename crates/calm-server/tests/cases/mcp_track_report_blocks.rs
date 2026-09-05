@@ -1606,24 +1606,65 @@ async fn task_keys(boot: &Boot) -> Vec<String> {
 async fn task_gate_rejects_kernel_cli_before_persisting_or_scheduling() {
     let boot = boot().await;
     let before = current_payload(&boot).await;
-    let mut payload = planner_task_payload("analyze", "Analyze artifacts");
-    payload["gate"]["steps"][0]["cmd"] = json!("neige cat plan/analyze/output");
-    let err = call_tool(
-        &boot,
-        TOOL_REPORT_BLOCKS_UPSERT,
-        planner_identity(&boot),
-        json!({"kind": "task", "payload": payload, "if_doc_rev": before.doc_rev}),
-    )
-    .await
-    .expect_err("credential-dependent gate must be rejected before expensive work");
-    assert_eq!(err.code, -32602);
-    assert!(err.message.contains("gate.steps[0].cmd"), "{err:?}");
-    assert!(err.message.contains("NEIGE_MCP_SOCKET"), "{err:?}");
-    assert!(err.message.contains("worker checkout"), "{err:?}");
-    let after = current_payload(&boot).await;
-    assert_eq!(after.doc_rev, before.doc_rev);
-    assert_eq!(after.body, before.body);
-    assert!(task_keys(&boot).await.is_empty());
+    let mut events = boot.ctx.events.subscribe();
+    for cmd in [
+        "neige cat plan/analyze/output",
+        "neige 'cat' plan/analyze/output",
+        "neige state>/dev/null",
+        "neige 2>/dev/null state",
+    ] {
+        let mut payload = planner_task_payload("analyze", "Analyze artifacts");
+        payload["gate"]["steps"][0]["cmd"] = json!(cmd);
+        let err = call_tool(
+            &boot,
+            TOOL_REPORT_BLOCKS_UPSERT,
+            planner_identity(&boot),
+            json!({"kind": "task", "payload": payload, "if_doc_rev": before.doc_rev}),
+        )
+        .await
+        .expect_err("credential-dependent gate must be rejected before expensive work");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("gate.steps[0].cmd"), "{err:?}");
+        assert!(err.message.contains("NEIGE_MCP_SOCKET"), "{err:?}");
+        assert!(err.message.contains("worker checkout"), "{err:?}");
+        let after = current_payload(&boot).await;
+        assert_eq!(after.doc_rev, before.doc_rev);
+        assert_eq!(after.body, before.body);
+        assert!(task_keys(&boot).await.is_empty());
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn task_gate_accepts_local_help_and_artifact_checks() {
+    let boot = boot().await;
+    for (index, cmd) in [
+        "neige cat '--help'",
+        "neige cat --help|cat",
+        "neige cat>/dev/null --help",
+        "python3 -m unittest discover",
+        "test -s artifacts/result.json",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let key = format!("check-{index}");
+        let mut payload = planner_task_payload(&key, "Check local artifacts");
+        payload["gate"]["steps"][0]["cmd"] = json!(cmd);
+        call_tool(
+            &boot,
+            TOOL_REPORT_BLOCKS_UPSERT,
+            planner_identity(&boot),
+            json!({"kind": "task", "payload": payload,
+                "if_doc_rev": current_payload(&boot).await.doc_rev}),
+        )
+        .await
+        .expect("local help and artifact verification must remain authorable");
+        assert!(task_keys(&boot).await.contains(&key));
+    }
 }
 
 #[tokio::test]
