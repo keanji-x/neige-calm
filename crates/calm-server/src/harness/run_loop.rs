@@ -4,6 +4,12 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+#[cfg(feature = "fixtures")]
+use std::collections::HashMap;
+#[cfg(feature = "fixtures")]
+use std::sync::OnceLock;
+#[cfg(feature = "fixtures")]
+use tokio::sync::Notify;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use tokio::task::AbortHandle;
 
@@ -21,6 +27,92 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
+
+/// #1449 — park a runtime immediately before it can turn its pending queue into
+/// a turn, so a test can order "the workspace is repointed" strictly *before*
+/// "the first message drains".
+///
+/// The race this makes deterministic is real and silent: `PATCH
+/// /api/tracks/{id}` supersedes every live runtime of the track and mints a
+/// successor, and until #1449 the successor started with an empty queue. If the
+/// drain lost the race, the sentence the user typed sat forever on a superseded
+/// row that nothing reads. Under load the existing
+/// `a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint`
+/// catches it a few times out of six; this hook makes it every time.
+///
+/// # Why here and not at the drain itself
+///
+/// The queue is taken a few statements below, under `inner.issuance` — and
+/// `PlannerHarness::shutdown_inner` takes that same lock. A hook parked while
+/// holding it would deadlock the very `PATCH` the test is trying to order
+/// against: the fence's `shutdown_fenced_harness` would wait for the run loop
+/// that is waiting for the test that is waiting for the `PATCH`. Parking one
+/// statement earlier keeps the property the test needs — the queue has not been
+/// touched — while leaving the shutdown path free. The re-check of
+/// `shutting_down` immediately after the lock is what stops the parked loop
+/// from draining once it is released.
+///
+/// `fixtures`-only, same convention as `WorkspaceRepointRaceHook` in
+/// `routes/tracks.rs`: a release build compiles neither the call, nor the
+/// arguments, nor the map.
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct PlannerHarnessDrainRaceHook {
+    pub entered: Arc<Notify>,
+    pub release: Arc<Notify>,
+}
+
+#[cfg(feature = "fixtures")]
+fn planner_harness_drain_race_hooks()
+-> &'static StdMutex<HashMap<String, PlannerHarnessDrainRaceHook>> {
+    static HOOKS: OnceLock<StdMutex<HashMap<String, PlannerHarnessDrainRaceHook>>> =
+        OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+/// Arm the hook for whichever runtime reaches the drain next, rather than for a
+/// named one.
+///
+/// Needed because the id of the runtime under test cannot be known before it
+/// exists: `POST /api/tracks` mints the runtime, starts its run loop and lets it
+/// drain, all before the 201 is written. Arming after the response is a race
+/// that the drain usually wins — which is precisely the race #1449 is about. The
+/// entry is still one-shot, so a second runtime is unaffected unless the test
+/// arms it again.
+#[cfg(feature = "fixtures")]
+pub const ANY_RUNTIME: &str = "#1449-any-runtime";
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_planner_harness_drain_race_hook_for_test(
+    runtime_id: &str,
+    hook: PlannerHarnessDrainRaceHook,
+) {
+    planner_harness_drain_race_hooks()
+        .lock()
+        .expect("planner harness drain hook mutex")
+        .insert(runtime_id.to_string(), hook);
+}
+
+async fn wait_at_planner_harness_drain_race_hook(runtime_id: &str) {
+    #[cfg(feature = "fixtures")]
+    {
+        let hook = {
+            let mut hooks = planner_harness_drain_race_hooks()
+                .lock()
+                .expect("planner harness drain hook mutex");
+            hooks
+                .remove(runtime_id)
+                .or_else(|| hooks.remove(ANY_RUNTIME))
+        };
+        if let Some(hook) = hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = runtime_id;
+}
 
 const OBSERVATION_BUFFER: usize = 256;
 const MAX_PENDING_QUEUE_LEN: usize = 256;
@@ -1634,6 +1726,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     } else {
         diff_with_timeout(inner, refresh_head.as_ref()).await
     };
+    // Deterministic drain-vs-supersede window for #1449. No-op in production.
+    wait_at_planner_harness_drain_race_hook(&inner.runtime_id).await;
     let _issuance_guard = inner.issuance.lock().await;
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());

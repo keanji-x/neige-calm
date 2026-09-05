@@ -103,6 +103,10 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
+use calm_server::harness::Observation;
+use calm_server::harness::run_loop::{
+    ANY_RUNTIME, PlannerHarnessDrainRaceHook, install_planner_harness_drain_race_hook_for_test,
+};
 use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
@@ -634,6 +638,121 @@ impl Boot {
         .execute(self.repo.pool())
         .await
         .unwrap();
+    }
+
+    /// #1449 — park the next planner harness immediately before it can turn
+    /// its pending queue into a turn, and hand back the two halves of the
+    /// rendezvous.
+    ///
+    /// `ANY_RUNTIME`, not a named id, because the runtime under test does not
+    /// exist yet: `POST /api/tracks` mints it, starts its run loop and lets it
+    /// drain, all before the 201 is written.
+    fn hold_the_next_drain(&self) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        install_planner_harness_drain_race_hook_for_test(
+            ANY_RUNTIME,
+            PlannerHarnessDrainRaceHook {
+                entered: entered.clone(),
+                release: release.clone(),
+            },
+        );
+        (entered, release)
+    }
+
+    /// The one runtime row on this database, as `(id, card_id)`.
+    async fn only_runtime(&self) -> (String, String) {
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT id, card_id FROM worker_sessions")
+            .fetch_all(self.repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "expected exactly one runtime row: {rows:?}");
+        rows.into_iter().next().unwrap()
+    }
+
+    /// `queue_harvested_at_ms` for one runtime row.
+    async fn harvest_stamp(&self, runtime_id: &str) -> Option<i64> {
+        sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")
+            .bind(runtime_id)
+            .fetch_one(self.repo.pool())
+            .await
+            .unwrap()
+    }
+
+    /// How many **persisted** runtime snapshots still hold `needle` on their
+    /// `pending_queue`, i.e. still owe it to an agent.
+    ///
+    /// The queue specifically, not the whole snapshot: a runtime that has
+    /// already issued the turn keeps the same text in `issued_input_segments`
+    /// forever, and that is evidence of delivery, not a pending debt.
+    ///
+    /// The harvest and the inherit both leave the predecessor's snapshot
+    /// untouched (`session_restore_from_superseded_tx` exists, so editing it in
+    /// place would make a restore lossy), so a retired row holds its sentence
+    /// for good. A live successor holds it only until it drains and re-persists.
+    async fn rows_holding(&self, needle: &str) -> usize {
+        let rows: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions")
+                .fetch_all(self.repo.pool())
+                .await
+                .unwrap();
+        rows.into_iter()
+            .filter(|state| {
+                let Some(state) = state.as_deref() else {
+                    return false;
+                };
+                let Ok(state) = serde_json::from_str::<Value>(state) else {
+                    return false;
+                };
+                state
+                    .get("pending_queue")
+                    .map(|queue| queue.to_string().contains(needle))
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
+    /// Poll until exactly `want` persisted snapshots still carry `needle`, and
+    /// report what was actually seen so a failure names the real number.
+    ///
+    /// Not a settle sleep: it waits on a production write (the successor's
+    /// post-turn `persist_snapshot`) that the next restart's inherit reads. A
+    /// restart issued before it lands would inherit a queue the successor has
+    /// already delivered, which is a different defect from the one under test.
+    async fn wait_until_rows_holding(&self, needle: &str, want: usize) -> usize {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let seen = self.rows_holding(needle).await;
+            if seen == want || std::time::Instant::now() >= deadline {
+                return seen;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    /// `POST /api/cards/{id}/planner/reset` — the production dormant-restart
+    /// route. `force_new_thread: true`, i.e. the same `prepare_tx` arm the
+    /// re-point fence's restart takes.
+    async fn reset_planner(&self, card_id: &str) -> (StatusCode, Value) {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/cards/{card_id}/planner/reset"))
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     async fn shutdown_harnesses(&self) {
@@ -3326,6 +3445,208 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
         keyed[0]["create_request_sha256"].is_string(),
         "a keyed create must carry the digest so operation replay keeps the same payload identity: {:?}",
         keyed[0]
+    );
+    b.shutdown_harnesses().await;
+}
+
+// ---------------------------------------------------------------------------
+// #1449 — a sentence that has not drained yet must survive the runtime that was
+// holding it.
+//
+// The mechanism, restated so these three tests read as one argument:
+//
+// * the first message is seeded onto the mint's `pending_queue` inside the mint
+//   transaction, and only the run loop's drain turns it into a turn;
+// * `PATCH /api/tracks/{id}` fences the track — every live runtime goes
+//   `superseded` and its registry handle is torn down — and then restarts;
+// * before this slice the successor started with an EMPTY queue, so a drain
+//   that lost that race left the sentence on a row nothing ever reads again:
+//   no error, no card change, an agent that was never told anything.
+//
+// `PlannerHarnessDrainRaceHook` parks the drain one statement before it takes
+// the queue, which makes the losing order the only order. The existing
+// `a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint`
+// reaches the same window only under load, four times out of six.
+// ---------------------------------------------------------------------------
+
+/// The sentence used by the #1449 tests. Distinct from every other needle in
+/// this file so `copies_in_harness` cannot count someone else's message.
+const STRANDED: &str = "reconcile the ledger before Friday";
+
+/// THE repro. Deterministic, no load required.
+///
+/// Red before the fix with `left: 0, right: 1`: the sentence is on the
+/// superseded runtime's queue, the handle is gone from the registry, and
+/// nothing reads it.
+#[tokio::test]
+async fn a_first_message_not_yet_drained_when_the_workspace_is_repointed_still_reaches_the_agent() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b.create_track(Some("idem-1449"), Some(STRANDED)).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+
+    // The drain is now parked with the sentence still on the queue.
+    entered.notified().await;
+    let (stranded_runtime, _card_id) = b.only_runtime().await;
+
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    let (patched, patch_body) = b.repoint_to(&track_id, &target).await;
+    assert_eq!(
+        patched,
+        StatusCode::OK,
+        "premise: the re-point must succeed, or this test proves nothing: body={patch_body}"
+    );
+    release.notify_one();
+
+    assert_eq!(
+        b.copies_in_harness(STRANDED, 1).await,
+        1,
+        "the sentence the user typed must reach the successor the fence started — before this \
+         slice it stayed on the superseded runtime's undrained queue and no path ever read it \
+         again"
+    );
+    // "exactly once", the same way the headline test says it: ask for a second
+    // copy and let the deadline burn.
+    assert_eq!(
+        b.copies_in_harness(STRANDED, 2).await,
+        1,
+        "and it must arrive exactly once — the parked predecessor must not also deliver it"
+    );
+    assert!(
+        b.harvest_stamp(&stranded_runtime).await.is_some(),
+        "the mechanism, not just the outcome: the row the queue was taken from must be stamped, \
+         which is what stops the next restart from taking it again"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// Exactly-once across restarts: the stamp, not an ordering argument.
+///
+/// The first restart INHERITS the parked runtime's whole queue (that is what
+/// the dormant-restart arm has always done) and stamps it. The second restart
+/// then finds a `superseded` row that still carries the sentence in its
+/// persisted snapshot — snapshots are never edited in place — and must take
+/// nothing from it.
+///
+/// Red when either half of the exactly-once construction is removed: the
+/// `queue_harvested_at_ms IS NULL` conjunct in the harvest predicate, or the
+/// stamp on the inherit path.
+#[tokio::test]
+async fn a_harvested_sentence_is_not_delivered_again_by_a_second_restart() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-twice"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    entered.notified().await;
+    let (parked_runtime, card_id) = b.only_runtime().await;
+
+    let (reset, reset_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        reset,
+        StatusCode::OK,
+        "premise: the first restart must succeed: body={reset_body}"
+    );
+    release.notify_one();
+    assert_eq!(
+        b.copies_in_harness(STRANDED, 1).await,
+        1,
+        "premise: the first restart carries the sentence forward"
+    );
+    assert!(
+        b.harvest_stamp(&parked_runtime).await.is_some(),
+        "premise: the inherit must stamp the row it emptied"
+    );
+    // Wait for the successor's post-turn snapshot write, so the second restart
+    // inherits what the successor really has left rather than a queue it has
+    // already delivered. One row still holds the sentence: the parked
+    // predecessor's, frozen for good.
+    assert_eq!(
+        b.wait_until_rows_holding(STRANDED, 1).await,
+        1,
+        "premise: only the retired predecessor's snapshot may still carry the sentence"
+    );
+
+    let (reset_again, reset_again_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        reset_again,
+        StatusCode::OK,
+        "premise: the second restart must succeed: body={reset_again_body}"
+    );
+    assert_eq!(
+        b.copies_in_harness(STRANDED, 2).await,
+        1,
+        "a second restart must NOT re-deliver a sentence an earlier restart already carried — \
+         the stamp on the retired row is what makes this a construction rather than a race"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// Only the human's own words travel.
+///
+/// The #1343 opening briefing is an `Observation::SystemContext` describing the
+/// runtime's `cwd`, and a re-point is precisely the event that makes that
+/// directory the wrong one. The successor re-derives its own; carrying the
+/// predecessor's copy forward would brief a fresh workspace with a description
+/// of the one the track just left.
+///
+/// Red when the harvest filter stops excluding `SystemContext`.
+#[tokio::test]
+async fn a_repoint_does_not_carry_the_old_workspace_briefing_forward() {
+    const OLD_BRIEFING: &str = "briefing about the workspace this track is leaving";
+
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-briefing"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+    entered.notified().await;
+    let (stranded_runtime, _card_id) = b.only_runtime().await;
+
+    // Put a briefing on the parked runtime's queue and persist it, so the row
+    // the fence retires carries BOTH kinds of observation.
+    let handle = b
+        .state
+        .harness
+        .get(&stranded_runtime)
+        .expect("the parked runtime must still be in the registry");
+    handle
+        .observe_for_test(
+            Observation::SystemContext {
+                text: OLD_BRIEFING.into(),
+            },
+            None,
+        )
+        .await;
+    handle.persist_snapshot().await.unwrap();
+    drop(handle);
+
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    let (patched, patch_body) = b.repoint_to(&track_id, &target).await;
+    assert_eq!(
+        patched,
+        StatusCode::OK,
+        "premise: the re-point must succeed: body={patch_body}"
+    );
+    release.notify_one();
+
+    assert_eq!(
+        b.copies_in_harness(STRANDED, 1).await,
+        1,
+        "premise: the human's sentence still travels"
+    );
+    assert_eq!(
+        b.copies_in_harness(OLD_BRIEFING, 1).await,
+        0,
+        "but the old workspace's briefing must NOT — the successor lives in a different directory \
+         and writes its own"
     );
     b.shutdown_harnesses().await;
 }
