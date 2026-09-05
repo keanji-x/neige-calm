@@ -125,12 +125,12 @@ pub trait WorkerSessionProjectionRepo {
     /// #1449 — a runtime's own `state`, by id, independent of which runtime the
     /// card currently points at.
     ///
-    /// [`Self::session_projection_by_id`] cannot answer this question:
-    /// its SELECT is card-backed (`JOIN cards c ON c.session_id = ws.id`), so a
-    /// row the card has already moved off answers `None` — indistinguishable
-    /// from "there is no such row". The run loop asks precisely about a row it
-    /// expects to have been moved off, and treats `None` as "not retired", so
-    /// that conflation is a wrong answer in the unsafe direction.
+    /// [`Self::session_projection_by_id`] cannot answer this question: its
+    /// SELECT is card-backed (`JOIN cards c ON c.session_id = ws.id`), so a row
+    /// the card has already moved off answers `None` — indistinguishable from
+    /// "there is no such row". The run loop refuses on `None`, so that
+    /// conflation would refuse every runtime whose card has moved on, live or
+    /// not.
     async fn session_projection_state_by_id(&self, id: &str) -> Result<Option<WorkerSessionState>>;
 
     /// #1449 S1 — a runtime's persisted `handle_state_json`, by id.

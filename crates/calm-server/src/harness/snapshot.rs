@@ -244,7 +244,7 @@ impl HarnessSnapshot {
     /// against an N-entry queue — comes out with N empty sets rather than a
     /// length mismatch.
     pub fn align_pending_side_arrays(&mut self) {
-        // `resize` both grows and shortens, so it is the whole of the job.
+        // `resize` both grows and shortens.
         self.pending_envelope_ids
             .resize(self.pending_queue.len(), None);
         self.pending_message_ids
@@ -305,9 +305,9 @@ mod pending_side_array_tests {
     /// The counter-fixture: a deliberately mismatched snapshot must be
     /// CORRECTED by the aligner, not carried through.
     ///
-    /// Both directions, because resize alone fixes only the short one — a long
-    /// array pairs ids with entries that do not exist and would survive a naive
-    /// `resize`-only aligner.
+    /// Both directions: a short array leaves entries with no id, a long one
+    /// pairs ids with entries that do not exist, and either one is a
+    /// mis-attribution the give-back would act on.
     #[test]
     fn alignment_corrects_both_a_short_and_a_long_id_array() {
         let mut short = HarnessSnapshot::initial(0, queued(&["one", "two", "three"]));

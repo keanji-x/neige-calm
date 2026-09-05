@@ -2359,12 +2359,14 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
 /// (`token_usage_round_trips_through_the_persisted_runtime_snapshot` went red
 /// in a full-suite run while it was one). NOT `session_projection_by_id`
 /// either: that SELECT is card-backed, so a row the card has moved off answers
-/// `None`, which this function would read as "still mine".
+/// `None`, and a `None` here refuses — which would refuse every runtime whose
+/// card has moved on, live or not.
 ///
-/// A missing row is refused, and what makes that safe is that the row is
-/// removed only by card, track and area deletion, by a start's compensation,
-/// and by the dev replay reset — `worker_sessions_row_disappearance.rs` is the
-/// ratchet over that set.
+/// A missing row is refused. The rows are deleted by card, track and area
+/// deletion, by a start's compensation, and by the dev replay reset; that list
+/// comes from scanning every `DELETE FROM worker_sessions` in the tree and is
+/// not ratcheted — `worker_sessions_row_disappearance.rs` freezes the FK
+/// cascades and triggers, which is a different set.
 async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
     let state = inner
         .repo

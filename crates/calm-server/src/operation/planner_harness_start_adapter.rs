@@ -884,6 +884,13 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     })
                     .collect();
                 if !messages.is_empty() {
+                    tracing::info!(
+                        card_id = %card_id,
+                        from = %existing.id,
+                        moved = messages.len(),
+                        "planner harness: inherited undelivered user messages from the \
+                         predecessor"
+                    );
                     inherited_from.push(HarvestedFrom {
                         runtime_id: existing.id.clone(),
                         messages,
@@ -991,6 +998,18 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // goal (which are what the #1343 ordering rule above is about) and
         // before this mint's own `first_message`, oldest first: they were said
         // before the one that is arriving now.
+        if !harvested.messages.is_empty() {
+            // #1449 — a sentence moving between runtimes leaves a trace. The
+            // whole feature is "a human's sentence does not vanish"; a transfer
+            // that happens silently cannot be told from a loss afterwards.
+            tracing::info!(
+                card_id = %card_id,
+                worker_session_id = %runtime_id,
+                moved = harvested.messages.len(),
+                from_rows = harvested.stamped_runtime_ids.len(),
+                "planner harness: harvested undelivered user messages into a new runtime"
+            );
+        }
         for message in harvested.messages {
             snapshot
                 .pending_queue
@@ -2165,6 +2184,12 @@ async fn return_harvested_queues_and_fail_tx(
             // The row is harvestable again only because something was put back
             // on it. A row this operation stamped and returned nothing to keeps
             // its stamp: its queue is somewhere else, legitimately.
+            tracing::info!(
+                worker_session_id = %runtime_id,
+                returned_to = %entry.runtime_id,
+                returned = returning.len(),
+                "planner harness: a failed mint returned undelivered user messages"
+            );
             session_clear_queue_harvested_tx(tx, &entry.runtime_id)
                 .await
                 .map_err(CalmError::from)?;

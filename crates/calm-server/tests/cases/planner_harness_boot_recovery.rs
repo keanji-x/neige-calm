@@ -2566,7 +2566,6 @@ async fn the_give_back_returns_nothing_that_somebody_else_has_taken_onward() {
             "goal": null,
             "report_card_id": null,
             "snapshot": serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
-            "harvested_runtime_ids": [source_id.clone()],
             "harvested_from": [{
                 "runtime_id": source_id.clone(),
                 "messages": [{"text": MOVED_ONWARD, "ids": [MESSAGE_ID]}],

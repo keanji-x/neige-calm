@@ -3973,9 +3973,8 @@ async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue(
 /// means. It fails closed: a runtime that cannot show it still speaks for the
 /// card does not speak. Rows are deleted by card, track and area deletion, by a
 /// start's compensation, and by the dev replay reset — every one of them a
-/// context where issuing a turn is wrong, and
-/// `worker_sessions_row_disappearance.rs` is the ratchet that keeps that
-/// enumeration from widening without anyone noticing.
+/// context where issuing a turn is wrong. That list came from scanning the tree
+/// for `DELETE FROM worker_sessions`; nothing ratchets it.
 #[tokio::test]
 async fn a_runtime_whose_row_has_been_deleted_does_not_issue_its_queue() {
     let b = boot().await;
