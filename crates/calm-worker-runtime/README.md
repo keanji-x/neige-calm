@@ -95,3 +95,32 @@ real Codex. `test-support` only builds the test provider and integration target.
 The fixture additionally pins namespace init for cleanup when tests deliberately
 remove evidence. Restricted outer sandboxes may forbid private proc mounts; such
 a test failure is explicit, not a skipped success.
+
+## Required CI integration
+
+The ordinary workspace command with `--features calm-server/codex-e2e` does **not**
+enable this crate's `test-support`. It therefore does not execute the runtime
+integration target or establish the 22-test result recorded during development.
+Main must add a targeted required CI check before treating runtime integration as
+covered by CI; this standalone commit does not modify broad CI configuration.
+
+Use a Linux runner with bubblewrap and Python 3 installed, a kernel supporting
+user/PID/network namespaces and pidfd/close-range operations, and a runner policy
+permitting unprivileged bubblewrap namespaces and private proc mounts. Python is
+used only by the controlled stale-identity/ignored-flag test executables. For a
+Debian/Ubuntu runner, the package setup and targeted command can be:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y bubblewrap python3
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
+  cargo nextest run --locked -p calm-worker-runtime --features test-support \
+  --test-threads 8 --no-fail-fast
+```
+
+Reuse the repository's existing Rust/nextest installation steps. Make this job or
+step a required gate in the assembled change. A runner whose sandbox/AppArmor or
+container configuration denies the requested namespaces needs explicit runner
+setup or a suitable dedicated runner; do not convert the failing preflight into
+an ignored test, successful skip, or host-network fallback. Keep the fake provider
+behind `test-support`, rather than shipping it by default just to make CI run it.
