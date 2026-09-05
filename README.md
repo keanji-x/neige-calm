@@ -47,6 +47,10 @@ A Track can finish once, like fixing an issue, or remain useful across repeated 
 - **Extensible tools** — plugins can contribute tools, templates, connectors, overlays, and sandboxed UI resources.
 - **Recoverable execution** — persisted events, sessions, operations, and supervisor state are designed to survive retries and process replacement.
 
+Local executable plugins run as trusted code with the service's OS identity;
+browser UI sandboxing does not isolate native plugin code. See
+[Plugin host security](docs/plugin-security.md) before installing plugins.
+
 Track Recipes—user-defined, reusable ways of structuring work—are currently under active development.
 
 ## Quick start

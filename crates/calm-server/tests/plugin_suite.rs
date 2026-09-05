@@ -12,6 +12,8 @@ mod plugin_host_callbacks;
 mod plugin_host_smoke;
 #[path = "cases/plugin_lifecycle_lock.rs"]
 mod plugin_lifecycle_lock;
+#[path = "cases/plugin_management_auth.rs"]
+mod plugin_management_auth;
 #[path = "cases/plugin_routes.rs"]
 mod plugin_routes;
 #[path = "cases/plugin_routes_m5.rs"]

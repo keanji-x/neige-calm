@@ -9,9 +9,9 @@
 //!   * `POST /api/auth/logout` clears the cookie + invalidates the session
 //!   * `CALM_DEV_AUTOLOGIN=true` lets every request through without a cookie
 //!
-//! Each test boots a fresh `AuthState` + `AppState` and assembles the same
-//! router shape the production binary does (auth router merged at top,
-//! protected REST tree gated by `require_session`). We sidestep the WS
+//! Each test boots a fresh `AuthState` + `AppState` and calls the production
+//! router assembly (auth router merged at top, protected REST tree gated by
+//! `require_session`). We sidestep the WS
 //! ladder here — the WS upgrade route is covered by the existing
 //! `tests/ws_*.rs` suite plus a smoke test below that asserts the upgrade
 //! rejects an unauthenticated request with 401 (no upgrade response).
@@ -21,7 +21,6 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use calm_server::actor::{actor_middleware, require_loopback_connect_info};
 use calm_server::auth::{self, AuthConfig, AuthState, Principal, SESSION_COOKIE};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
@@ -78,28 +77,9 @@ fn dev_auth_state() -> AuthState {
     })
 }
 
-/// Mirror the assembly done in `main.rs`: protected REST behind the
-/// session middleware, internal worker hooks behind actor + loopback validation,
-/// and public REST + auth routes un-gated. Returns the router ready for
-/// `oneshot` calls.
+/// Exercise the production assembly rather than copying its security layers.
 fn app(state: AppState, auth_state: AuthState) -> axum::Router {
-    let protected_rest = routes::protected_router()
-        .layer(axum::middleware::from_fn(actor_middleware))
-        .layer(axum::middleware::from_fn_with_state(
-            auth_state.clone(),
-            auth::require_session,
-        ));
-    let internal_rest = routes::internal_router()
-        .layer(axum::middleware::from_fn(actor_middleware))
-        .layer(axum::middleware::from_fn(require_loopback_connect_info));
-    let public_rest = routes::public_router();
-    let auth_router = auth::router().with_state(auth_state.clone());
-    axum::Router::new()
-        .merge(protected_rest)
-        .merge(internal_rest)
-        .merge(public_rest)
-        .with_state(state)
-        .merge(auth_router)
+    routes::application_router(state, auth_state)
 }
 
 fn connect_info(addr: &str) -> axum::extract::ConnectInfo<SocketAddr> {

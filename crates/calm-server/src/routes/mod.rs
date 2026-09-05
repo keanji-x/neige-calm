@@ -6,6 +6,9 @@ use crate::state::AppState;
 use axum::{Json, Router, routing::get};
 use utoipa::OpenApi;
 
+mod application;
+pub use application::application_router;
+
 pub mod area_folders;
 pub mod areas;
 pub mod cards;
@@ -36,10 +39,9 @@ pub mod version;
 /// downstream consumers that don't care about auth can mount everything
 /// in one call (`Router::merge(routes::router())`).
 ///
-/// The production binary in `main.rs` no longer uses this aggregator —
-/// it merges `protected_router` (behind the session middleware) and
-/// `public_router` (un-gated) separately so the session middleware can
-/// be applied to exactly the right subset of paths. See `auth::router`
+/// The production binary uses [`application_router`] instead, which applies
+/// the session middleware to the protected surface and keeps public routes
+/// outside the gate. See `auth::router`
 /// for the auth endpoints themselves, which sit outside both trees.
 pub fn router() -> Router<AppState> {
     Router::new()
