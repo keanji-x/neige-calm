@@ -708,11 +708,18 @@ export function selectedEntries(
       .some((path) => changed.has(path)));
 }
 
-/** Full-suite mutations are expensive, so keep the historical four entries per shard. */
-export const entriesPerShard = 4;
+/**
+ * Eight full-suite entries keep the current 71-entry manifest in one nine-runner batch. An
+ * eight-shard trial put its slowest nine-entry job at 24:05 against a 25-minute timeout; the ninth
+ * shard removes one entry from every busy shard while still halving repeated browser/system setup.
+ */
+export const entriesPerShard = 8;
 /** Witness runs execute named files only; larger shards cut matrix fan-out without becoming critical-path jobs. */
 export const witnessEntriesPerShard = 12;
-export const maxShards = 32;
+/** Match the full sweep's nine-way hosted-runner limit: a second batch only repeats browser setup. */
+export const fullMaxShards = 9;
+/** Witness jobs skip unrelated test projects, so preserve their larger growth ceiling. */
+export const witnessMaxShards = 32;
 
 /**
  * `clamped` is true when the cap forces more than `entriesPerShard` entries onto a shard — past that
@@ -723,9 +730,10 @@ export function shardPlan(
   selectedCount: number, scope: MutationTestScope = 'full',
 ): { total: number; shards: number[]; clamped: boolean } {
   const perShard = scope === 'witness' ? witnessEntriesPerShard : entriesPerShard;
+  const shardCap = scope === 'witness' ? witnessMaxShards : fullMaxShards;
   const wanted = Math.max(1, Math.ceil(selectedCount / perShard));
-  const total = Math.min(maxShards, wanted);
-  return { total, shards: Array.from({ length: total }, (_value, index) => index + 1), clamped: wanted > maxShards };
+  const total = Math.min(shardCap, wanted);
+  return { total, shards: Array.from({ length: total }, (_value, index) => index + 1), clamped: wanted > shardCap };
 }
 
 export interface MutationShardMatrixEntry {

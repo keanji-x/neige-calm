@@ -1002,11 +1002,12 @@ jobs:
   fe-mutation-shard:
     name: fe-mutation shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }}
     runs-on: ubuntu-latest
-    # Full scheduled/manual evidence keeps four entries per shard and the historical timeout.
+    # Full scheduled/manual evidence keeps eight entries per shard: the current manifest then fits
+    # in one nine-job batch, so browser/system setup happens at most nine times instead of 18.
     # PR/main witness evidence runs declared test files only, so it uses twelve entries per shard.
-    # Eight-way max-parallel lets the off-hours full sweep make progress without taking every
-    # repository runner slot; witness mode currently produces at most six shards for 66 entries.
-    timeout-minutes: 25
+    # Nine-way max-parallel matches the full-plan cap without taking every repository runner slot;
+    # witness mode currently produces at most six shards for 66 entries.
+    timeout-minutes: 30
     needs: fe-mutation-plan
     # `changes` is intentionally skipped for scheduled and manually dispatched
     # runs. The plan overrides that skipped ancestor with `always()`; this job
@@ -1015,7 +1016,7 @@ jobs:
     if: ${{ always() && needs.fe-mutation-plan.result == 'success' && needs.fe-mutation-plan.outputs.selected != '0' }}
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 9
       matrix:
         include: ${{ fromJSON(needs.fe-mutation-plan.outputs.matrix) }}
     env:
@@ -1036,6 +1037,13 @@ jobs:
 
       - name: npm ci
         run: npm ci
+
+      - name: cache playwright browsers
+        if: matrix.browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('fe/package-lock.json') }}
 
       - name: Install Chromium with system dependencies
         if: matrix.browser
