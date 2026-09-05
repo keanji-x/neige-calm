@@ -173,7 +173,14 @@ describe('Track mobile presentation', () => {
     const mobileHeader = document.querySelector<HTMLElement>('[data-nc-mobile-header]')!;
     expect(getComputedStyle(mobileHeader).backdropFilter).toBe('none');
     expect(getComputedStyle(mobileHeader).borderBlockEndWidth).toBe('0px');
-    expect(page.getByRole('status', { name: 'Track lifecycle: Working' })).toBeTruthy();
+    const lifecycle = page.getByRole('status', { name: 'Track lifecycle: Working' });
+    await expect.element(lifecycle).toBeVisible();
+    const lifecycleBox = (await lifecycle.findElement()).getBoundingClientRect();
+    const titleBox = mobileHeader.querySelector('h1')!.getBoundingClientRect();
+    const actionBox = openerElement.getBoundingClientRect();
+    expect(lifecycleBox.height).toBe(24);
+    expect(lifecycleBox.left - titleBox.right).toBeGreaterThanOrEqual(4);
+    expect(lifecycleBox.right).toBeLessThanOrEqual(actionBox.left);
     expect(page.getByRole('button', { name: 'New conversation' })).toBeTruthy();
 
     // ── Back to Pages opens the shell's own sheet, through the route ───────
