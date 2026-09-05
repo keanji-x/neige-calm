@@ -86,7 +86,7 @@ Initial authority is deliberately bounded:
 | Requester/declaration | Recovery authority |
 | --- | --- |
 | User through the recovery action | One recovery of the exact failed attempt per explicit request |
-| Planner, its own `spec` declaration under `auto-declare` | At most one recovery (generation 2) in the initial implementation |
+| Planner, its own declaration under `auto-declare` | At most one recovery (generation 2) in the initial implementation |
 | Planner, user-owned declaration or `declare-and-wait` | Not granted by the old start/release; requires a user recovery action |
 | Worker | No recovery authority |
 
@@ -94,9 +94,13 @@ This initial bound is a support policy, not a new configurable author contract.
 Later policy configuration must specify budgets and authority explicitly. A user
 can issue a new recovery for a later failed attempt; repeating the same request
 still returns its old receipt. Withdrawn readiness/release stops an admitted but
-unstarted recovery, and checks run again before launch. In-flight withdrawal uses
-the existing cancellation/reconciliation protocol; it is not a promise that an
-arbitrary external side effect can be undone.
+unstarted recovery, and checks run again before launch. Existing declaration
+withdrawal only marks execution context stale; it does not guarantee that an
+already-running Worker stops or that every completion path rejects its result.
+The integrated S2/S3 slice must request an owned stop, reconcile process/session
+termination, and make withdrawn results ineligible for downstream consumption.
+Keep a stopping/unknown blocker until that reconciliation succeeds. Neither the
+stop request nor withdrawal can undo an arbitrary external side effect.
 
 The recovery transaction records the new attempt and its provenance; the existing
 Operation saga prepares and starts it. A crash between these actions must be
@@ -184,7 +188,7 @@ receipt: { key, previous_attempt_id, attempt_id, generation }
 Logical Track/key are supplied by the route or caller scope. Current/history reads
 expose exact attempt identities so clients never reconstruct them from a key.
 History redacts private gate bodies and retains original execution evidence.
-The initial operation supports only failed `in-wave` attempts; sub-Track recovery
+The initial operation supports only failed same-Track attempts; child-Track recovery
 needs its own parent/child ownership protocol. Full repair/revision and automatic
 retry policies are later slices.
 
@@ -304,9 +308,9 @@ verified; merging a design or backend foundation does not complete that outcome.
 | --- | --- | --- |
 | S0: protocol decisions | Reviewed identity, authorities, transitions, migration/caller map | In progress |
 | S1: continuing task execution | Explicit recovery retains old attempts, preserves keys and sibling results; late messages fenced | Pending |
-| S2: reliable inputs | Sealed eligible inputs bound and prepared before start, with crash recovery and retention | Pending |
+| S2: reliable inputs | Sealed inputs, failure retention, exact recovery manifests and authorized repair-purpose binding; withdrawn output excluded | Pending |
 | S3: actionable task experience | Shared current/history view, recovery entry point and clear blockers; browser + product experiment | Pending |
-| S4: repair obligations and bounded supervision | Review/repair purpose and findings, explicitly bounded intervention policies | Pending |
+| S4: extended obligations and bounded supervision | General finding propagation/disposition and explicitly bounded intervention policies | Pending |
 
 Tests must exercise production authoring, claim, reporting and recovery entry
 points. Critical invariants require production mutations with predicted complete
