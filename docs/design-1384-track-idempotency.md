@@ -819,20 +819,42 @@ test went red, not how many.
     already pins (`select_arm`, `routes/tracks/create.rs:175-182`). Recorded as
     a gap with that reason rather than built. The `Stuck` half of gap 2 does
     **not** need any of this — see gap 2.
-13. **The ownership claim is crash-atomic but not concurrency-atomic**, and
-    #1430 measured the window rather than inferring it. Two claimers on one
-    `<path>` share the staging name `<parent>/.neige-claim-<track_id>`. If one
-    is between its fsyncs and its publishing `rename` when the other enters,
-    the other's `remove_dir_all(<staging>)` deletes the assembled claim and its
-    `create_dir_all` puts a **bare, unmarked** `.git` back under the same name;
-    the first then renames *that* onto `<path>` and returns **`Ok`**, leaving
+13. ~~**The ownership claim is crash-atomic but not concurrency-atomic.**~~
+    **CLOSED by #1458.** The gap as written was real and #1430 measured it
+    rather than inferring it: two claimers on one `<path>` shared the staging
+    name `<parent>/.neige-claim-<track_id>`, so if one was between its fsyncs
+    and its publishing `rename` when the other entered, the other's
+    `remove_dir_all(<staging>)` deleted the assembled claim and its
+    `create_dir_all` put a **bare, unmarked** `.git` back under the same name;
+    the first then renamed *that* onto `<path>` and returned **`Ok`**, leaving
     `<path>` non-empty and unmarked — the exact brick state #1427 abolished for
-    process death, reached instead through a peer. Pinned by
-    `a_concurrent_claim_can_make_its_peer_publish_an_unmarked_workspace`
-    (`workspace_materialize/tests.rs`), which characterizes today's behaviour
-    and **must be inverted, not deleted, by the fix.** The benign interleaving
-    the source comment described is pinned beside it. Follow-up: *"the ownership
-    claim's staging name must not be shared by two claimers"*.
+    process death, reached instead through a peer.
+
+    **The closing mechanism: the staging name is now unique per *attempt***
+    (`<prefix><track>-<pid>-<nanos>-<seq>`), so no claimer can address, remove
+    or recreate another's staging directory — the delete-**and-recreate** pair
+    on one shared name was the whole construction. Both claimers assemble their
+    own claim and the `rename` decides: the winner publishes over the empty
+    `<path>`, the loser's rename finds it non-empty, fails `ENOTEMPTY` — the
+    fail-closed direction the `rename` was chosen for — and returns `Internal`
+    having written nothing to `<path>`. The fence was **not** relaxed, the
+    marker's location and format are unchanged, and #1427's fsync ordering
+    stands. The characterization test was **inverted, not deleted**:
+    `a_concurrent_claim_cannot_make_its_peer_publish_an_unmarked_workspace`
+    drives the identical interleaving and now asserts the marked publish and the
+    fence's acceptance. The benign interleaving is pinned beside it as before
+    (`a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker`),
+    with the loser failing one step later — at the rename, not at a vanished
+    staging marker.
+
+    Reclaim, since the name no longer reclaims by being reused: a claim removes
+    its **own** staging on every error path, and each claim sweeps this track's
+    staging directories older than one hour (`reclaim_stale_claim_staging`).
+    Residue is therefore what it was before — one directory per claim killed
+    mid-flight by process death, cosmetic to the one reader that sees it — and
+    it is not unbounded: it is bounded by that track's crashes within the sweep
+    window, and, exactly as before, a track never materialized again keeps its
+    debris.
 
 ---
 

@@ -1325,29 +1325,66 @@ fn spawn_parked_claim(
     (release_tx, arrived_rx, handle)
 }
 
-fn staging_path(path: &Path) -> std::path::PathBuf {
-    path.parent()
-        .expect("the workspace path has a parent")
-        .join(format!("{}{TRACK}", super::CLAIM_STAGING_PREFIX))
+/// Every staging directory currently sitting beside `path`, newest name last.
+///
+/// Since #1458 the staging name carries a per-attempt suffix, so a test cannot
+/// compute it; it reads the area directory instead. The prefix and the `-`
+/// separator are the production ones (`super::CLAIM_STAGING_PREFIX`), not a
+/// restatement of the naming scheme.
+fn staging_dirs(path: &Path) -> Vec<std::path::PathBuf> {
+    let parent = path.parent().expect("the workspace path has a parent");
+    let mut found: Vec<_> = std::fs::read_dir(parent)
+        .expect("read the area directory")
+        .map(|entry| entry.expect("read an area entry").path())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(super::CLAIM_STAGING_PREFIX))
+        })
+        .collect();
+    found.sort();
+    found
 }
 
-/// **#1430 — the benign half of the two-claimer race, as measured.**
+/// The one staging directory expected to exist right now.
+fn only_staging_dir(path: &Path) -> std::path::PathBuf {
+    let mut found = staging_dirs(path);
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one staging directory beside {}, found {found:?}",
+        path.display()
+    );
+    found.pop().unwrap()
+}
+
+/// **#1430 — the benign half of the two-claimer race, as measured; kept true by
+/// #1458 through a different mechanism.**
 ///
-/// A second claimer entering `claim_owner_marker` while the first sits between
-/// `create_dir_all(<staging>/.git)` and the marker write wipes that staging out
-/// from under it and publishes its own. The first then fails **closed** — it
-/// gets a returned `Internal` naming the vanished staging file — and what it
-/// leaves behind is the *winner's* correctly marked workspace, so the next
-/// materialization takes the "ours, for this track" branch and succeeds.
+/// Two claimers assemble a claim for one `<path>` at the same time. One of them
+/// loses, and losing must be **fail-closed**: it returns `Internal`, it writes
+/// nothing to `<path>`, and what `<path>` holds afterwards is the *winner's*
+/// correctly marked workspace, so the next materialization takes the "ours, for
+/// this track" branch and succeeds. That is the property this test is about and
+/// it is unchanged.
 ///
-/// Measured, not assumed: the loser's error is
-/// `create ownership marker <staging>/.git/neige-workspace: No such file or
-/// directory`.
+/// What changed is *where* the loser fails. Before #1458 both claimers shared
+/// one staging name, so the winner's `remove_dir_all` deleted the loser's
+/// staging and the loser died writing its marker into a directory that was no
+/// longer there (`create ownership marker …: No such file or directory`). Since
+/// #1458 each attempt stages under its own name, nobody touches the loser's
+/// directory, and it dies one step later — on the publishing `rename`, which
+/// finds `<path>` non-empty and answers `ENOTEMPTY` (`publish ownership claim …
+/// onto …: Directory not empty`). That is the fail-closed direction
+/// `claim_owner_marker` documents for the `rename`: it never clobbers bytes.
+///
+/// Both errors are measured, not assumed.
 ///
 /// Mutation that must redden it: drop the `write_marker_file` call from
-/// `claim_owner_marker` (publish the staging directory without a marker). The
-/// winner then publishes an unmarked `<path>` and the marker assertion here
-/// fires.
+/// `assemble_and_publish_claim` (publish the staging directory without a
+/// marker). The winner then publishes an unmarked `<path>` and the marker
+/// assertion here fires.
 #[test]
 fn a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker() {
     let _env = GitEnv::c_locale();
@@ -1361,9 +1398,10 @@ fn a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker() {
     arrived
         .recv_timeout(PARK_BOUND)
         .expect("the loser must reach its first crash point");
+    let losers_staging = only_staging_dir(&path);
 
-    // The winner runs the whole claim on this thread, wiping the loser's
-    // staging on its way in and publishing its own with one rename.
+    // The winner runs the whole claim on this thread. It stages under its own
+    // name and publishes with one rename.
     super::claim_owner_marker(&path, TRACK).expect("the winner publishes its claim");
     assert_eq!(
         std::fs::read_to_string(super::owner_marker_path(&path))
@@ -1372,25 +1410,42 @@ fn a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker() {
         TRACK,
         "premise: the winner published a correctly marked workspace"
     );
+    assert!(
+        losers_staging.exists(),
+        "premise: the winner left the loser's staging alone — the staging name is \
+         per attempt since #1458"
+    );
 
     let _ = release.send(());
     let error = loser
         .join()
         .expect("the loser thread must not panic")
         .expect_err(
-            "the loser's staging was removed under it, so the claim must fail rather than \
-             publish something half-built",
+            "`<path>` is no longer empty when the loser gets there, so its publishing \
+             rename must fail rather than clobber the winner's workspace",
         );
     assert!(
-        error.to_string().contains("create ownership marker"),
-        "the refusal must come from the vanished staging marker, not from something \
-         incidental: {error}"
+        error.to_string().contains("publish ownership claim"),
+        "the refusal must come from the fail-closed publishing rename, not from \
+         something incidental: {error}"
+    );
+    assert!(
+        error.to_string().contains("Directory not empty"),
+        "and specifically from `ENOTEMPTY`, which is what makes the rename \
+         non-clobbering: {error}"
+    );
+    assert!(
+        staging_dirs(&path).is_empty(),
+        "the loser removes its own staging on the error path, so nothing is left \
+         behind: {:?}",
+        staging_dirs(&path)
     );
 
     // The post-state is the whole point: the loser damaged nothing.
     workspace_dir_is_empty_or_ours(&path).expect(
         "the fence must still accept the workspace after the losing claim returned — \
-         `remove_dir_all` is called on the staging directory and never on `<path>`",
+         `remove_dir_all` is called on the caller's own staging directory and never on \
+         `<path>`",
     );
     materialize(&root, &path).expect(
         "and the next materialization must succeed: it reads the winner's marker and takes \
@@ -1402,41 +1457,43 @@ fn a_claim_that_loses_the_staging_race_fails_closed_onto_the_winners_marker() {
     );
 }
 
-/// **#1430 — the half the source comment did not measure, and it is a defect.**
+/// **#1458 — the interleaving #1430 characterized as a defect, inverted.**
 ///
-/// `claim_owner_marker`'s `# Two processes, one track` paragraph says the loser
-/// of the staging race "gets a returned `Internal` error with `<path>` still
-/// empty, so the next call succeeds". That describes the interleaving pinned
-/// above. It is not the only one.
-///
-/// Park a claimer at the point where its staging is **fully assembled** —
-/// marker written, both directories fsynced — and let a second claimer in. The
-/// second one's `remove_dir_all(<staging>)` deletes that assembled claim and
-/// `create_dir_all` puts a **bare, unmarked** `.git` back under the same name.
-/// The first claimer then resumes and renames *that* onto `<path>`: it returns
-/// **`Ok`**, and `<path>` is left non-empty and unmarked — precisely the brick
-/// state #1427 exists to abolish, and the one that poisons the create's
+/// This test was `a_concurrent_claim_can_make_its_peer_publish_an_unmarked_workspace`
+/// and asserted the *wrong* behaviour on purpose (KNOWN GAP 13): park a claimer
+/// with its staging **fully assembled** — marker written, both directories
+/// fsynced, only the publishing `rename` left — and let a second claimer in.
+/// The second one's `remove_dir_all(<staging>)` deleted that assembled claim
+/// because the staging name was fixed per track and therefore *shared*, and its
+/// `create_dir_all` put a bare, unmarked `.git` back under the same name. The
+/// first claimer then renamed **that** onto `<path>` and returned `Ok`, leaving
+/// `<path>` non-empty and unmarked — the brick state #1427 abolished for process
+/// death, reached through a peer, and one that poisons the create's
 /// `Idempotency-Key` forever (`materialize_managed_workspace_inner`'s
 /// `None if dir_has_entries` arm).
 ///
-/// So the claim is crash-atomic against process **death**, which is what #1427
-/// pinned, but not against a concurrent second claimer on the same staging
-/// name. This test characterizes today's behaviour so the window cannot close
-/// silently or reopen unnoticed; **when it is fixed, this test must be
-/// inverted, not deleted** — see `docs/design-1384-track-idempotency.md` §9
-/// KNOWN GAP 12.
+/// #1458 made the staging name unique per attempt, so the peer has nothing to
+/// delete and nothing to recreate. The same interleaving now ends the right way
+/// round, and this test asserts that instead:
 ///
-/// Mutation that must redden it: remove the `NotFound`-tolerant
-/// `remove_dir_all(&staging)` from `claim_owner_marker`. The second claimer
-/// then leaves the first one's assembled staging alone, the rename publishes a
-/// *marked* workspace, and the assertions below fire.
+/// * the peer's entry does **not** disturb the parked claimer's staged marker;
+/// * the parked claimer publishes its **own** assembled claim, so `<path>` is
+///   marked for this track — `workspace_dir_is_empty_or_ours` holds, where it
+///   used to be the assertion that the invariant was violated;
+/// * the peer then fails **closed** on `ENOTEMPTY` and leaves no staging behind;
+/// * and the fence *accepts* the published workspace, where it used to refuse it
+///   forever.
+///
+/// Mutation that must redden it: go back to a fixed name — drop the
+/// `-{claim_attempt_id()}` from the staging name in `claim_owner_marker`. The
+/// peer's `remove_dir_all` then takes the assembled claim again and every
+/// assertion from the premise onward reproduces #1458.
 #[test]
-fn a_concurrent_claim_can_make_its_peer_publish_an_unmarked_workspace() {
+fn a_concurrent_claim_cannot_make_its_peer_publish_an_unmarked_workspace() {
     let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, path) = sandbox(&tmp);
     std::fs::create_dir_all(&path).unwrap();
-    let staging = staging_path(&path);
 
     // Claimer 1: parked after the fsyncs, with a complete claim staged and the
     // publishing rename still ahead of it.
@@ -1444,58 +1501,75 @@ fn a_concurrent_claim_can_make_its_peer_publish_an_unmarked_workspace() {
     arrived_one
         .recv_timeout(PARK_BOUND)
         .expect("claimer 1 must reach the crash point before the rename");
+    let staging_one = only_staging_dir(&path);
+    let staged_marker = staging_one.join(".git").join(super::OWNER_MARKER);
     assert_eq!(
-        std::fs::read_to_string(staging.join(".git").join(super::OWNER_MARKER))
+        std::fs::read_to_string(&staged_marker)
             .expect("claimer 1's staged marker")
             .trim(),
         TRACK,
         "premise: claimer 1 staged a complete, marked claim"
     );
 
-    // Claimer 2: enters, wipes that staging, recreates a bare one, parks.
-    let (release_two, arrived_two, wiper) = spawn_parked_claim(path.clone(), 1);
+    // Claimer 2: enters and stages under its own name, parked at its first
+    // crash point — exactly where the old peer had just wiped and recreated
+    // claimer 1's staging.
+    let (release_two, arrived_two, peer) = spawn_parked_claim(path.clone(), 1);
     arrived_two
         .recv_timeout(PARK_BOUND)
         .expect("claimer 2 must reach its first crash point");
-    assert!(
-        !staging.join(".git").join(super::OWNER_MARKER).exists(),
-        "premise: claimer 2's `remove_dir_all` took claimer 1's staged marker with it"
+    let staging_dirs_now = staging_dirs(&path);
+    assert_eq!(
+        staging_dirs_now.len(),
+        2,
+        "the two claimers must be assembling under two different names: {staging_dirs_now:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&staged_marker)
+            .expect("claimer 1's staged marker must have survived claimer 2's entry")
+            .trim(),
+        TRACK,
+        "claimer 2 must not be able to remove or recreate claimer 1's staging"
     );
 
-    // Claimer 1 publishes what is now claimer 2's bare staging directory.
+    // Claimer 1 publishes its own, fully assembled, marked claim.
     let _ = release_one.send(());
     publisher
         .join()
         .expect("claimer 1 must not panic")
-        .expect("measured: the publishing rename succeeds and the claim reports success");
+        .expect("the publishing rename succeeds and the claim reports success");
 
-    let violation = workspace_dir_is_empty_or_ours(&path).expect_err(
-        "measured: `<path>` is left non-empty and unmarked. If this now holds, the race was \
-         fixed — invert this test rather than deleting it",
-    );
-    assert!(
-        violation.contains("no readable marker"),
-        "the violation must be the unmarked-non-empty one: {violation}"
+    workspace_dir_is_empty_or_ours(&path).expect(
+        "inverted by #1458: `<path>` now carries this track's marker. Before the fix \
+         this call returned the `no readable marker` violation",
     );
 
     let _ = release_two.send(());
-    let error = wiper
+    let error = peer
         .join()
         .expect("claimer 2 must not panic")
-        .expect_err("claimer 2's staging was renamed away, so its marker write must fail");
+        .expect_err("`<path>` is no longer empty, so claimer 2's publishing rename must fail");
     assert!(
-        error.to_string().contains("create ownership marker"),
-        "unexpected error: {error}"
+        error.to_string().contains("publish ownership claim")
+            && error.to_string().contains("Directory not empty"),
+        "claimer 2 must fail closed on `ENOTEMPTY` rather than clobber the published \
+         workspace: {error}"
+    );
+    assert!(
+        staging_dirs(&path).is_empty(),
+        "and it must clean its own staging up: {:?}",
+        staging_dirs(&path)
     );
 
-    // The product-level consequence, which is what makes this worth pinning:
-    // the fence refuses this workspace from here on, for every key.
-    let refusal = materialize(&root, &path)
-        .expect_err("the fence must refuse the unmarked directory the race published");
+    // The product-level consequence, inverted: the fence accepts this workspace
+    // and the key is not poisoned.
+    materialize(&root, &path).expect(
+        "inverted by #1458: the fence accepts the workspace the race published. Before \
+         the fix this refused with `is not empty and carries no neige ownership marker` \
+         for every key, forever",
+    );
     assert!(
-        refusal
-            .to_string()
-            .contains("is not empty and carries no neige ownership marker"),
-        "unexpected refusal: {refusal}"
+        head_resolves(&path),
+        "and the published workspace materializes into a real repository"
     );
 }
