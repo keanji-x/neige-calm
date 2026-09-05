@@ -106,6 +106,7 @@ async fn task_recovery_retained_operation_evidence_blocks_unbound_predecessor() 
             boot.track_id.as_str(),
             "b",
             calm_server::ids::ActorId::User,
+            calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         )
         .await
         .unwrap();

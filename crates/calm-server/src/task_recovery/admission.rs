@@ -166,7 +166,15 @@ async fn check_constraint_tx(
         return Err(conflict("recovery contract route or author changed"));
     }
     for frozen in refs {
-        let target = crate::track_lifecycle::track_get_tx(tx, &frozen.track_id).await?;
+        let target = crate::track_lifecycle::track_get_tx(tx, &frozen.track_id)
+            .await
+            .map_err(|error| match error {
+                CalmError::NotFound(_) => conflict(format!(
+                    "recovery frozen context track is missing: {}",
+                    frozen.track_id
+                )),
+                other => other,
+            })?;
         if target.area_id != track.area_id {
             let kind: String = sqlx::query_scalar("SELECT kind FROM areas WHERE id=?1")
                 .bind(target.area_id.as_str())
@@ -177,6 +185,18 @@ async fn check_constraint_tx(
                     "recovery context moved outside its authorized area",
                 ));
             }
+        }
+        let report_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM cards WHERE track_id=?1 AND kind='track-report')",
+        )
+        .bind(frozen.track_id.as_str())
+        .fetch_one(&mut **tx)
+        .await?;
+        if !report_exists {
+            return Err(conflict(format!(
+                "recovery frozen context report is missing: {}",
+                frozen.track_id
+            )));
         }
         let (_, blocks) =
             crate::track_report::report_blocks_snapshot_tx(tx, frozen.track_id.as_str()).await?;
@@ -299,25 +319,26 @@ pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) ->
     let previous = task_get_tx(tx, &previous_attempt_id)
         .await?
         .ok_or_else(|| conflict("recovery predecessor is missing"))?;
-    recovery_policy(
-        tx,
-        &track,
-        &previous,
-        allocation.generation - 1,
-        &actor,
-        false,
-    )
-    .await?;
-    let scope = EventScope::Track {
-        track: track.id.clone(),
-        area: track.area_id.clone(),
-    };
-    let event = Event::PlanUpdated {
-        track_id: track.id.clone(),
-        changed_keys: vec![allocation.key.clone()],
-        agent_message: None,
-    };
-    authorize_tx(tx, &actor, &scope, &event).await?;
+    // Allocation + its scoped decision event is the accepted delegation.
+    // The admitting actor remains immutable provenance; retiring its session or
+    // card does not withdraw work already accepted by the kernel. New commands
+    // still pass authorize_tx with their live identity at the service boundary.
+    if !matches!(
+        actor,
+        ActorId::User | ActorId::AiPlanner(_) | ActorId::AiPlannerSession(_)
+    ) {
+        return Err(conflict(
+            "accepted recovery has unsupported authority provenance",
+        ));
+    }
+    if !crate::scheduler::lifecycle_allows_scheduling(track.lifecycle) {
+        return Err(conflict(
+            "track is paused or terminal; resume its work before this recovery can start",
+        ));
+    }
+    // Current author/ready/release/policy and frozen contract are the withdrawal
+    // fences. declare-and-wait may be satisfied by an explicit current release;
+    // the initial Planner retry limit was consumed at allocation admission.
     check_constraint_tx(tx, &track, &allocation.key, &constraint).await?;
     require_recoverable_predecessor_tx(tx, &previous).await
 }

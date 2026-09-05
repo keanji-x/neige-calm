@@ -786,19 +786,44 @@ async fn plan_list(
     require_role(&identity, CardRole::Planner)?;
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let actor = identity.to_actor_id();
+    let task_budget_default = ctx.task_budget_default;
     crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            let tasks = crate::db::sqlite::tasks_by_track_tx(tx, track.id.as_str()).await?;
-            let mut tasks_json = Vec::with_capacity(tasks.len());
-            for task in tasks {
-                let view =
-                    crate::task_recovery::task_recovery_view_tx(tx, &track.id, &task.key, &actor)
-                        .await?;
-                let mut entry = task_list_entry(&task);
-                entry["attempt_id"] = json!(view.current.attempt_id);
-                entry["generation"] = json!(view.current.generation);
-                entry["recovery"] = serde_json::to_value(view.recovery)?;
-                tasks_json.push(entry);
+            let mut tasks_json = Vec::new();
+            let mut after_key = None;
+            loop {
+                let allocations = crate::db::sqlite::task_attempt_current_by_track_tx(
+                    tx,
+                    track.id.as_str(),
+                    after_key.as_deref(),
+                    128,
+                )
+                .await?;
+                let full_page = allocations.len() == 128;
+                for allocation in allocations {
+                    let task = crate::db::sqlite::task_get_tx(tx, &allocation.attempt_id).await?;
+                    let view = crate::task_recovery::task_recovery_view_tx(
+                        tx,
+                        &track.id,
+                        &allocation.key,
+                        &actor,
+                        task_budget_default,
+                    )
+                    .await?;
+                    let mut entry = task.as_ref().map(task_list_entry).unwrap_or_else(
+                        || json!({"id":allocation.attempt_id,"key":allocation.key}),
+                    );
+                    entry["attempt_id"] = json!(view.current.attempt_id);
+                    entry["generation"] = json!(view.current.generation);
+                    entry["status"] = json!(view.current.status);
+                    entry["blocking_reason"] = json!(view.current.blocking_reason);
+                    entry["recovery"] = serde_json::to_value(view.recovery)?;
+                    tasks_json.push(entry);
+                    after_key = Some(allocation.key);
+                }
+                if !full_page {
+                    break;
+                }
             }
             Ok(json!({ "tasks": tasks_json }))
         })

@@ -480,6 +480,7 @@ async fn task_recovery_pending_rebuild_keeps_identity_and_changed_contract_canno
         boot.track_id.as_str(),
         "b",
         calm_server::ids::ActorId::User,
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .unwrap();
@@ -522,9 +523,9 @@ async fn task_recovery_pending_rebuild_keeps_identity_and_changed_contract_canno
 }
 
 #[tokio::test]
-async fn task_recovery_spawn_rechecks_planner_authority_after_claim() {
+async fn task_recovery_spawn_rechecks_current_declaration_permission_after_claim() {
     let boot = boot().await;
-    declare(&boot, declaration("b", &[])).await;
+    let (block_id, revision) = declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
     finish(&boot, &b, false).await;
     recover(&boot, &b, "request").await;
@@ -547,11 +548,18 @@ async fn task_recovery_spawn_rechecks_planner_authority_after_claim() {
             .await
             .is_ok()
     );
-    sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?1")
-        .bind(planner_identity(&boot).session_id)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    tx.commit().await.unwrap();
+    let mut withdrawn = declaration("b", &[]);
+    withdrawn["ready"] = json!(false);
+    call_tool(
+        &boot,
+        "calm.report.blocks.upsert",
+        planner_identity(&boot),
+        json!({"id":block_id,"kind":"task","payload":withdrawn,"if_rev":revision}),
+    )
+    .await
+    .unwrap();
+    let mut tx = begin_immediate_tx(&pool).await.unwrap();
     assert!(
         calm_server::operation::refuse_if_context_stale(&mut tx, Some(&recovered.id))
             .await
@@ -618,6 +626,7 @@ async fn task_recovery_blocked_track_resumes_in_same_transaction() {
         boot.track_id.as_str(),
         "b",
         planner_identity(&boot).to_actor_id(),
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
     )
     .await
     .unwrap();
@@ -758,6 +767,7 @@ async fn task_recovery_terminal_leader_exit_never_proves_descendant_write_stop()
             boot.track_id.as_str(),
             &b.key,
             calm_server::ids::ActorId::User,
+            calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         )
         .await
         .unwrap();

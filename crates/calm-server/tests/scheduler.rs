@@ -10471,3 +10471,109 @@ printf stopped > "$1/stopped"
     assert_eq!(error.code, -32409);
     assert!(error.message.contains("descendant write fence"));
 }
+
+#[tokio::test]
+async fn task_recovery_continues_same_attempt_after_planner_session_replacement() {
+    use calm_server::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind,
+    };
+    for remove_retired_mapping in [false, true] {
+        let boot = boot().await;
+        set_lifecycle(&boot, TrackLifecycle::Working).await;
+        let task = plan_task(&boot.track_id, "planner-handoff", TaskKind::Terminal, &[]);
+        let previous_id = task.id.clone();
+        seed_projected_task(&boot, task).await;
+        let monitor =
+            TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+        let closure = monitor
+            .resolve_task_closure(boot.track_id.as_str(), "planner-handoff")
+            .await
+            .unwrap();
+        let pool = boot.repo.sqlite_pool().unwrap();
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .unwrap();
+        calm_server::db::sqlite::task_claim_pending_tx(
+            &mut tx,
+            &previous_id,
+            now_ms(),
+            &closure.refs,
+            false,
+        )
+        .await
+        .unwrap();
+        calm_server::db::sqlite::task_fail_from_worker_tx(
+            &mut tx,
+            &previous_id,
+            boot.track_id.as_str(),
+            calm_server::db::sqlite::TaskReporter::Kernel,
+            "spawn-failed: before preparation",
+            now_ms(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let args = json!({"key":"planner-handoff", "expected_attempt_id":previous_id, "idempotency_key":"handoff", "reason":"Recover task"});
+        let receipt = call_tool(
+            &boot,
+            "calm.plan.recover",
+            planner_identity(&boot),
+            args.clone(),
+        )
+        .await
+        .unwrap();
+        let prior_identity = planner_identity(&boot);
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .unwrap();
+        calm_server::db::sqlite::session_supersede_and_start_tx(
+            &mut tx,
+            &prior_identity.session_id,
+            WorkerSessionInit {
+                id: "replacement-planner".into(),
+                card_id: boot.planner_card_id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: calm_types::worker::WorkerSessionState::Running,
+                terminal_run_id: None,
+                thread_id: Some("replacement-thread".into()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        if remove_retired_mapping {
+            calm_server::db::sqlite::session_delete_tx(&mut tx, &prior_identity.session_id)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+        let old_write = call_tool(&boot, "calm.plan.recover", prior_identity, args)
+            .await
+            .expect_err("retired caller must not regain command authority");
+        assert_eq!(old_write.code, -32403);
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let (_runtime, scheduler) = build_scheduler(
+            &boot,
+            vec![context_checked_terminal_adapter(&boot, spawned.clone())],
+        );
+        scheduler.schedule_track(boot.track_id.clone()).await;
+        let current = boot
+            .repo
+            .task_current_get(boot.track_id.as_str(), "planner-handoff")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.id, receipt["attempt_id"]);
+        assert_eq!(
+            current.status,
+            TaskStatus::Running,
+            "accepted delegation must survive session replacement/removal"
+        );
+        assert_eq!(spawned.load(Ordering::SeqCst), 1);
+    }
+}

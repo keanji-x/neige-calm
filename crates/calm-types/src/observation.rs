@@ -80,7 +80,7 @@ pub enum Observation {
     /// REPLACES the suppressed worker self-report as the planner's wake-up
     /// (the planner hears the gate, not the claim). `idempotency_key` is
     /// the task id (`"{track_id}:{key}"`); `key` is the plan key used in
-    /// the turn-text paths (`plan/<key>/gate.log`, `runs/<task.id>.md`).
+    /// the turn-text paths for exact execution/gate evidence and worker output.
     TaskGateResult {
         idempotency_key: String,
         key: String,
@@ -298,7 +298,7 @@ impl Observation {
                     }
                 };
                 format!(
-                    "Task {key} gate {verdict} (attempt {attempt}). Log tail:\n{log_tail}\nRead the full log at plan/{key}/gate.log; read the worker output at runs/{idempotency_key}.md."
+                    "Task {key} gate {verdict} (attempt {attempt}). Log tail:\n{log_tail}\nRead the full log at runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md."
                 )
             }
             Observation::WorkspaceLeased { path, .. } => {
@@ -587,5 +587,25 @@ mod tests {
         };
         assert!(resolved.is_hard_fire());
         assert!(resolved.to_turn_text().contains("decision=grant"));
+    }
+    #[test]
+    fn task_recovery_gate_text_pins_execution_and_gate_number() {
+        let observation = Observation::TaskGateResult {
+            idempotency_key: "opaque-attempt".into(),
+            key: "b".into(),
+            passed: false,
+            failing_step: Some("check".into()),
+            exit_code: Some(1),
+            log_tail: "first evidence".into(),
+            attempt: 2,
+        };
+        let serialized = serde_json::to_value(&observation).unwrap();
+        let restored: Observation = serde_json::from_value(serialized).unwrap();
+        assert!(
+            restored
+                .to_turn_text()
+                .contains("runs/opaque-attempt/gates/2.log")
+        );
+        assert!(!restored.to_turn_text().contains("plan/b/gate.log"));
     }
 }

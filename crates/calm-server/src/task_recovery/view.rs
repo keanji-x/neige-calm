@@ -31,6 +31,7 @@ fn task_attempt_view(
         worker_card_id: task.and_then(|task| task.worker_card_id.clone()),
         created_at_ms: allocation.created_at_ms,
         finished_at_ms: task.and_then(|task| task.finished_at_ms),
+        blocking_reason: None,
     })
 }
 
@@ -39,11 +40,14 @@ pub async fn task_recovery_view(
     track_id: &str,
     key: &str,
     actor: ActorId,
+    task_budget_default: i64,
 ) -> Result<TaskRecoveryView> {
     let track_id = TrackId::from(track_id);
     let key = key.to_string();
     write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move { task_recovery_view_tx(tx, &track_id, &key, &actor).await })
+        Box::pin(async move {
+            task_recovery_view_tx(tx, &track_id, &key, &actor, task_budget_default).await
+        })
     })
     .await
 }
@@ -53,6 +57,7 @@ pub(crate) async fn task_recovery_view_tx(
     track_id: &TrackId,
     key: &str,
     actor: &ActorId,
+    task_budget_default: i64,
 ) -> Result<TaskRecoveryView> {
     let track = crate::track_lifecycle::track_get_tx(tx, track_id).await?;
     let event = Event::PlanUpdated {
@@ -135,7 +140,16 @@ pub(crate) async fn task_recovery_view_tx(
             reason: "Only a failed current execution can be recovered.".into(),
         },
     };
-    let current = task_attempt_view(current, current_task.as_ref())?;
+    let blocking_reason = current_blocking_reason_tx(
+        tx,
+        &track,
+        current,
+        current_task.as_ref(),
+        task_budget_default,
+    )
+    .await?;
+    let mut current = task_attempt_view(current, current_task.as_ref())?;
+    current.blocking_reason = blocking_reason;
     let mut attempts = Vec::with_capacity(allocations.len());
     for allocation in allocations {
         let task = task_get_tx(tx, &allocation.attempt_id).await?;
@@ -144,7 +158,11 @@ pub(crate) async fn task_recovery_view_tx(
                 "historical execution row is missing".into(),
             ));
         }
-        attempts.push(task_attempt_view(&allocation, task.as_ref())?);
+        let mut entry = task_attempt_view(&allocation, task.as_ref())?;
+        if entry.attempt_id == current.attempt_id {
+            entry.blocking_reason.clone_from(&current.blocking_reason);
+        }
+        attempts.push(entry);
     }
     Ok(TaskRecoveryView {
         key: key.to_string(),
@@ -152,6 +170,97 @@ pub(crate) async fn task_recovery_view_tx(
         attempts,
         recovery,
     })
+}
+
+async fn current_blocking_reason_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track: &crate::model::Track,
+    allocation: &TaskAttemptAllocation,
+    task: Option<&Task>,
+    task_budget_default: i64,
+) -> Result<Option<String>> {
+    if task.is_some_and(|task| task.status != TaskStatus::Pending) {
+        return Ok(None);
+    }
+    if !crate::scheduler::lifecycle_allows_scheduling(track.lifecycle) {
+        return Ok(Some(format!(
+            "Track is {:?}; resume its work before this task can start",
+            track.lifecycle
+        )));
+    }
+    let Some((declarations, diagnostics)) =
+        crate::track_report::task_projection_source_tx(tx, track.id.as_str()).await?
+    else {
+        return Ok(Some(
+            "Task report is missing; restore its declaration before execution".into(),
+        ));
+    };
+    let matching: Vec<_> = declarations
+        .iter()
+        .filter(|declaration| declaration.key == allocation.key)
+        .collect();
+    if matching.is_empty() {
+        return Ok(Some(
+            "Task declaration is missing; restore it before execution".into(),
+        ));
+    }
+    if matching.iter().all(|declaration| declaration.tombstone) {
+        return Ok(Some("Task declaration was withdrawn".into()));
+    }
+    if matching
+        .iter()
+        .all(|declaration| !declaration.ready || declaration.tombstone)
+    {
+        return Ok(Some(
+            "Task declaration is not ready; authorize it before execution".into(),
+        ));
+    }
+    let configured_default: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key=?1")
+            .bind(crate::routes::settings::TASK_BUDGET_DEFAULT_KEY)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let task_budget_default = crate::routes::settings::effective_task_budget_default(
+        configured_default.as_deref(),
+        task_budget_default,
+    );
+    let verdicts = crate::db::sqlite::evaluate_schedulability_with_task_budget_default(
+        &mut **tx,
+        track.id.as_str(),
+        &declarations,
+        &diagnostics,
+        task_budget_default,
+    )
+    .await?;
+    let verdicts: Vec<_> = verdicts
+        .iter()
+        .filter(|verdict| verdict.key == allocation.key)
+        .collect();
+    for verdict in &verdicts {
+        if let Some(reason) = &verdict.pending_reason {
+            let message = match reason {
+                crate::db::sqlite::TaskPendingReason::DependencyBlocked { message, .. }
+                | crate::db::sqlite::TaskPendingReason::BudgetQueued { message, .. }
+                | crate::db::sqlite::TaskPendingReason::NotAdmitted { message, .. } => message,
+            };
+            return Ok(Some(message.clone()));
+        }
+        if let Some(diagnostic) = verdict.diagnostics.first() {
+            return Ok(Some(diagnostic.message.clone()));
+        }
+    }
+    if matches!(allocation.origin, TaskAttemptOrigin::Recovery { .. }) {
+        match admission::check_recovery_attempt_tx(tx, &allocation.attempt_id).await {
+            Ok(()) => {}
+            Err(CalmError::Conflict(reason) | CalmError::Forbidden(reason)) => {
+                return Ok(Some(reason));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(task
+        .is_none()
+        .then(|| "Task declaration is eligible; waiting for scheduler projection".into()))
 }
 
 fn capability_code(reason: &str) -> &'static str {

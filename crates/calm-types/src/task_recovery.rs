@@ -74,6 +74,7 @@ pub struct TaskRecoveryReceipt {
 }
 
 /// Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.
+/// Blocking reason applies only to the selected current attempt; historical attempts carry null.
 #[derive(Debug, Clone, Serialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TaskAttemptView {
@@ -87,6 +88,8 @@ pub struct TaskAttemptView {
     pub created_at_ms: i64,
     #[schema(required = true)]
     pub finished_at_ms: Option<i64>,
+    #[schema(required = true)]
+    pub blocking_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema, TS)]

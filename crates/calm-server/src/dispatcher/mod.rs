@@ -1397,7 +1397,24 @@ pub(crate) async fn resolve_harness_observation<R: calm_truth::db::RepoRead + ?S
     track_id: &TrackId,
     event: &Event,
 ) -> crate::error::Result<Option<HarnessObservation>> {
-    let task_key = if let Event::TaskGateResult { task_id, .. } = event {
+    let task_key = if let Event::TaskGateResult {
+        task_id,
+        idempotency_key,
+        attempt,
+        ..
+    } = event
+    {
+        if task_id != idempotency_key {
+            return Err(crate::error::CalmError::Conflict(
+                "gate observation execution identity mismatch".into(),
+            ));
+        }
+        // The persisted observation already carries this exact execution ID and
+        // gate number. Validate their canonical reader address before either
+        // live push or boot replay renders it; never use the current-key alias.
+        calm_truth::track_fs_view::task_gate_log_path(task_id, *attempt).map_err(|error| {
+            crate::error::CalmError::Conflict(format!("gate observation: {error:?}"))
+        })?;
         let task = calm_truth::db::RepoRead::task_get(repo, task_id)
             .await?
             .ok_or_else(|| {
@@ -1627,3 +1644,6 @@ fn sha256_hex(text: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod recovery_tests;

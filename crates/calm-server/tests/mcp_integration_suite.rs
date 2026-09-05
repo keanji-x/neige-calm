@@ -27,3 +27,6 @@ mod task_recovery;
 
 #[path = "cases/task_recovery_preparation.rs"]
 mod task_recovery_preparation;
+
+#[path = "cases/task_recovery_reads.rs"]
+mod task_recovery_reads;

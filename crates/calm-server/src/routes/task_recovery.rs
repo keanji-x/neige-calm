@@ -31,7 +31,14 @@ pub async fn get_attempts(
 ) -> Result<Json<TaskRecoveryView>> {
     super::track_report_blocks::require_rest_user_actor(&actor)?;
     Ok(Json(
-        task_recovery_view(state.repo.as_ref(), &track_id, &key, ActorId::User).await?,
+        task_recovery_view(
+            state.repo.as_ref(),
+            &track_id,
+            &key,
+            ActorId::User,
+            state.task_budget_default,
+        )
+        .await?,
     ))
 }
 

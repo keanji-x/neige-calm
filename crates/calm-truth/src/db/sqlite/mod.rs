@@ -146,8 +146,9 @@ pub use task_attempt::{
 };
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskPendingReason, TaskProjectionOutcome,
-    WithdrawalEdge, evaluate_schedulability, mark_context_material_tx, project_tasks_tx,
-    project_tasks_with_tree_term_tx, task_delete_pending_tx,
+    WithdrawalEdge, evaluate_schedulability, evaluate_schedulability_with_task_budget_default,
+    mark_context_material_tx, project_tasks_tx, project_tasks_with_tree_term_tx,
+    task_delete_pending_tx,
 };
 // The request-fingerprint enum is exported with its binding: route code must
 // construct V1 on write and handle LegacyUnknown explicitly on read.
