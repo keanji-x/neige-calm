@@ -4264,11 +4264,9 @@ async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
             Err(_) => refused += 1,
         }
     }
-    assert_eq!(
-        accepted + refused,
-        20,
-        "premise: every attempt must have reached the handle"
-    );
+    // No `accepted + refused == 20` here: every iteration increments one of
+    // them, so that would be a tautology dressed as a premise. The premise that
+    // does work is the next one.
     assert!(
         refused > 0,
         "premise: this test is worthless unless the sends actually reached a retired runtime; \

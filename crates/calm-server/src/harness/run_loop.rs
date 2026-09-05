@@ -56,8 +56,9 @@ use crate::track_vcs;
 /// same limit to it: the hook struct, the registry and the wait are
 /// `fixtures`-only, so a release build compiles no map and no rendezvous. The
 /// call site and `wait_at_planner_harness_drain_race_hook` itself are NOT
-/// `cfg`-gated — the function body collapses to `let _ = runtime_id;` and the
-/// call is an argument-free no-op, which is what the release build keeps.
+/// `cfg`-gated — in a release build the body collapses to
+/// `let _ = worker_session_id;` and the call remains, taking that one
+/// argument.
 ///
 /// # Arming
 ///
@@ -2395,11 +2396,12 @@ async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
 /// snapshot — "the batch is still queued" — no matter what happened to the
 /// batch. That was invisible while nothing read an abandoned snapshot; it is
 /// the whole basis of the harvest now. `session_set_handle_state_of_retired_runtime_tx`
-/// is the narrow exception: `handle_state_json` only, retired rows only.
+/// is the narrow exception: `handle_state_json` and `updated_at_ms`, retired
+/// rows only.
 ///
-/// It runs after the ordinary write, not instead of it: for a live runtime the
-/// ordinary write is the one that lands (status, phase event and all) and this
-/// one matches zero rows.
+/// It runs after the ordinary write, not instead of it — and only when that
+/// write cannot have landed, so a live runtime does not open a second
+/// transaction per turn to discover it matched nothing.
 async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
     persist_snapshot(inner).await?;
     // Only the runtimes that can actually need it open the second transaction.
@@ -2415,7 +2417,7 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
     let runtime_id = inner.worker_session_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;
     let now = crate::model::now_ms();
-    write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+    let written = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
             crate::db::sqlite::session_set_handle_state_of_retired_runtime_tx(
                 tx,
@@ -2427,7 +2429,23 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
             .map_err(CalmError::from)
         })
     })
-    .await
+    .await?;
+    if !written {
+        // Neither writer matched: the row flipped back into the active set
+        // between the ordinary write and this one (`restore_old_runtime`), so
+        // it still carries its PRE-drain queue. Once a restore clears its
+        // marker that queue is harvestable again — the same sentence twice.
+        // Logged rather than returned: this runs after the daemon already has
+        // the batch, so failing here would undo nothing.
+        tracing::warn!(
+            target: "calm_server::planner_harness_issue",
+            worker_session_id = %inner.worker_session_id,
+            card_id = %inner.card_id,
+            "planner harness: neither handle-state writer matched after an issuance; the row \
+             may still carry the pre-drain queue"
+        );
+    }
+    Ok(())
 }
 
 async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
@@ -2438,16 +2456,24 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
 /// written.
 ///
 /// `session_set_handle_state_tx` carries
-/// `AND state IN ('starting','running','idle','turn_pending')`, so once this
-/// runtime's row is retired the write matches nothing and used to report
-/// success. That is how a sentence got a 201, an `harness.user_message.enqueued`
-/// row, and no durable home: it lived in the memory of a runtime the carrier
-/// check had already decided must not speak, on a row a later harvest will not
-/// read because it is stamped.
+/// `AND state IN ('starting','running','idle','turn_pending')`, so the write
+/// matches nothing once the row leaves that set — and it used to report success
+/// anyway. That is how a sentence got a 201, an `harness.user_message.enqueued`
+/// row, and no durable home.
 ///
-/// Refusing sends the caller to the successor, which owns this card's queue
-/// now. Writing through the retired-row writer instead would not help: that row
-/// is stamped, so what landed on it would never be read again.
+/// The write can miss for four reasons, and only one of them has a successor:
+/// the row is `superseded` (a mint took over), `failed`/`exited`/`completed`,
+/// the row was deleted, or `shutting_down` short-circuited the write. The
+/// message therefore says "retry" without promising where it lands.
+///
+/// The `shutting_down` case is not reachable from HERE, and the argument is
+/// specific: its only setter, `shutdown_inner`, takes `inner.durable_observation`
+/// first, and `observe_durable_observations` holds that same lock across both
+/// the send and its confirmation.
+///
+/// Writing through the retired-row writer instead would not help for the
+/// `superseded` case: that row is stamped, so what landed on it would not be
+/// read again.
 async fn persist_snapshot_for_durable_send(inner: &Arc<Inner>) -> Result<()> {
     if persist_snapshot_inner(inner, None).await? {
         return Ok(());

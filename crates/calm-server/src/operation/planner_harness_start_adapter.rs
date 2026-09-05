@@ -1041,11 +1041,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot.pending_message_ids.push(vec![new_id()]);
             seeded = true;
         }
-        // One alignment for whatever the two pushes above added, and none at
+        // One alignment for whatever the pushes above added — briefing,
+        // harvested sentences, this mint's own `first_message` — and none at
         // all when they added nothing: envelope ids are assigned by position,
-        // so aligning between the two pushes would be the same work done twice,
-        // and aligning after zero pushes would touch a snapshot this branch
-        // never changed.
+        // so aligning between them would be the same work repeated, and
+        // aligning after zero pushes would touch a snapshot this branch never
+        // changed.
         if seeded {
             snapshot.align_pending_side_arrays();
         }
@@ -1870,11 +1871,19 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // where nobody is watching — the failure mode the paragraph above
             // it argues against. If the journal is not empty the assumption is
             // wrong and the give-back has to run rather than be skipped.
+            // `finish` appends `delete_card` after whatever is pushed here, and
+            // `delete_card` cascades `DELETE FROM worker_sessions WHERE card_id`
+            // — which would take the source rows with it before a later replay
+            // could read them. It only appends that step when this operation
+            // minted the card, and an operation that minted its own card has no
+            // predecessor on it to harvest from, so the two cannot co-occur.
+            // Untested; written down because it is the ordering that would
+            // matter if either half changed.
             if !read_harvested_from_journal(output).is_empty() {
                 tracing::error!(
                     card_id = %card_id,
-                    "planner harness: a compensation arm that plans no `fail_runtime` found a \
-                     non-empty harvest journal; planning the give-back anyway"
+                    "planner harness: a compensation arm that assumed an empty harvest journal \
+                     found one; adding `fail_runtime` so the give-back runs"
                 );
                 steps.push(CompensationStep::new(
                     "fail_runtime",
@@ -2455,6 +2464,17 @@ fn output_snapshot(output: &TxOutput) -> Result<HarnessSnapshot> {
     // unaligned, the raced-in harvest appends to the queue and only then
     // aligns, so the harvested ids land on the FIRST entries of the queue and
     // the harvested sentences end up with none.
+    //
+    // Guarded, because `from_value_strict` panics on an unknown
+    // `schema_version` and this value comes off disk: a pending operation
+    // minted by an older binary and re-driven by a newer one would take the
+    // whole operation runner down. Unreachable while the version is 1, which is
+    // exactly how long such a guard looks unnecessary.
+    if !is_harness_snapshot_value(&value) {
+        return Err(CalmError::Internal(
+            "planner harness output snapshot has an unreadable shape".into(),
+        ));
+    }
     Ok(HarnessSnapshot::from_value_strict(value))
 }
 
@@ -2556,17 +2576,6 @@ fn step_arg_run_status(step: &CompensationStep, key: &str) -> Result<WorkerSessi
 #[cfg(test)]
 mod tests {
 
-    /// The persisted wire shape of [`PlannerHarnessStartOperationPayload`],
-    /// pinned as a golden.
-    ///
-    /// Not a style check. This payload is stored in `operations.payload_json`
-    /// with a SHA-256 of its serialization in `operations.payload_hash`, and
-    /// the runtime turns "same idempotency key, different payload hash" into a
-    /// permanent 409 that nothing cleans up. #1316 S2 renamed one of these
-    /// fields without noticing, which is how this test came to exist; S3 froze
-    /// them and added this so the next rename fails here instead of in
-    /// production on the first `ensure` after a deploy.
-    ///
     /// #1449 — the decoder the harvest runs over every retired row it reads.
     ///
     /// Four inputs reach it in production and only one of them is a snapshot:
@@ -2630,11 +2639,22 @@ mod tests {
                 .map(|m| m.text.as_str())
                 .collect::<Vec<_>>(),
             vec!["first thing said", "second thing said"],
-            "only `UserMessage`, in queue order: `TrackGoal` and `SystemContext` are functions \\
+            "only `UserMessage`, in queue order: `TrackGoal` and `SystemContext` are functions \
              of the SUCCESSOR's payload and cwd, which after a re-point is a different directory"
         );
     }
 
+    /// The persisted wire shape of [`PlannerHarnessStartOperationPayload`],
+    /// pinned as a golden.
+    ///
+    /// Not a style check. This payload is stored in `operations.payload_json`
+    /// with a SHA-256 of its serialization in `operations.payload_hash`, and
+    /// the runtime turns "same idempotency key, different payload hash" into a
+    /// permanent 409 that nothing cleans up. #1316 S2 renamed one of these
+    /// fields without noticing, which is how this test came to exist; S3 froze
+    /// them and added this so the next rename fails here instead of in
+    /// production on the first `ensure` after a deploy.
+    ///
     /// If this test fails, the fix is NOT to update the expectation.
     #[test]
     fn the_persisted_payload_field_names_are_frozen() {

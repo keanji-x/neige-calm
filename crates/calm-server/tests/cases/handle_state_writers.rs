@@ -121,6 +121,10 @@ fn writers_in_files(files: Vec<PathBuf>) -> BTreeSet<String> {
                 .or_else(|| trimmed.strip_prefix("async fn "))
                 .or_else(|| trimmed.strip_prefix("pub(super) async fn "))
                 .or_else(|| trimmed.strip_prefix("pub(crate) async fn "))
+                .or_else(|| trimmed.strip_prefix("pub(super) fn "))
+                .or_else(|| trimmed.strip_prefix("pub(crate) fn "))
+                .or_else(|| trimmed.strip_prefix("pub const fn "))
+                .or_else(|| trimmed.strip_prefix("const fn "))
                 .or_else(|| trimmed.strip_prefix("pub fn "))
                 .or_else(|| trimmed.strip_prefix("fn "))
             {
@@ -246,6 +250,11 @@ pub(super) async fn a_writer_hiding_behind_a_visibility_prefix(tx: &mut Tx) -> R
     Ok(())
 }
 
+pub(crate) fn a_synchronous_writer_behind_another_prefix(tx: &mut Tx) -> Result<()> {
+    sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2").execute(tx)?;
+    Ok(())
+}
+
 pub async fn a_writer_hiding_in_a_multi_column_set(tx: &mut Tx) -> Result<()> {
     sqlx::query(
         r"UPDATE worker_sessions
@@ -274,5 +283,11 @@ pub async fn a_writer_hiding_in_a_multi_column_set(tx: &mut Tx) -> Result<()> {
     assert!(
         names.contains("a_writer_hiding_in_a_multi_column_set"),
         "and one that assigns the column inside a multi-column SET: {names:#?}"
+    );
+    assert!(
+        names.contains("a_synchronous_writer_behind_another_prefix"),
+        "and a non-async one behind a different visibility prefix — a prefix missing from the \
+         scanner's list does not hide the writer, it files it under the PREVIOUS function's \
+         name, which then matches the frozen inventory and keeps the gate green: {names:#?}"
     );
 }

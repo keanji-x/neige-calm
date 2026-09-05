@@ -561,14 +561,21 @@ pub async fn session_clear_queue_harvested_tx(
 /// revived under the same id (a refreshed deferred placeholder) belongs to a
 /// different harness, and a dead run loop must not write its stale queue over
 /// a live one.
+/// Returns whether the row was written.
+///
+/// #1449 — the two handle-state writers have complementary predicates, so a row
+/// that flips from retired back to active between them (`restore_old_runtime`)
+/// matches NEITHER. The retired row then keeps its PRE-drain queue, and once
+/// the restore clears its marker that queue is harvestable again: the same
+/// sentence delivered twice. The caller has to know the write did not land.
 pub async fn session_set_handle_state_of_retired_runtime_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &str,
     state: Option<serde_json::Value>,
     now: i64,
-) -> WorkerSessionProjectionResult<()> {
+) -> WorkerSessionProjectionResult<bool> {
     let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
-    sqlx::query(
+    let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET handle_state_json = ?1,
                   updated_at_ms = ?2
@@ -580,7 +587,7 @@ pub async fn session_set_handle_state_of_retired_runtime_tx(
     .bind(id)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    Ok(res.rows_affected() > 0)
 }
 
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the

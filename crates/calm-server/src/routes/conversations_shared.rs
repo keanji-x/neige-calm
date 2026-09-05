@@ -180,17 +180,17 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
 /// database synchronously with the send, which is what makes a read-then-send
 /// under a per-card lock actually exclusive.
 ///
-/// **The residual, stated rather than papered over.** A runtime replacement that
-/// *inherits* the old runtime's still-undelivered queue (`/planner/reset`, a
-/// manual harness start against a live session) moves the message forward while
-/// leaving its row pointing at the superseded runtime, so this answers `false`
-/// and the caller re-sends a message that was still reachable. The cost is a
-/// duplicated standing instruction on a path a human explicitly asked for — one
-/// per such replacement, and nothing here caps how many times that can be
-/// repeated before the inherited queue drains; the
-/// alternative — the dormant restart *not* inheriting, which is the common case
-/// — silently loses the message instead. A "still queued" conjunct would not fix
-/// it either: see the synchronous-visibility paragraph above.
+/// **The residual, stated rather than papered over.** A runtime replacement
+/// moves the old runtime's still-undelivered queue forward while leaving the
+/// evidence row pointing at the superseded runtime, so this answers `false` and
+/// the caller re-sends a message that was still reachable. Since #1449 that is
+/// EVERY replacement, not the two paths this paragraph used to name: every
+/// `prepare_tx` harvests, which covers the re-point fence, `POST
+/// /conversations`, `/planner/reset` and the Today launchpad alike. The cost is
+/// a duplicated standing instruction, one per replacement, and nothing here
+/// caps how many times that repeats before the moved queue drains. A "still
+/// queued" conjunct would not fix it: see the synchronous-visibility paragraph
+/// above.
 ///
 /// A caller that needs "did a delivery *reach* the agent?" must not use this:
 /// see `routes/track_conversations.rs`, which deliberately reads nothing back,
