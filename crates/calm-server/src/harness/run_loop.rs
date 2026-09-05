@@ -1686,7 +1686,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     if !runtime_is_still_the_live_carrier(inner).await? {
         tracing::info!(
             target: "calm_server::planner_harness_issue",
-            runtime_id = %inner.runtime_id,
+            runtime_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             track_id = %inner.track_id,
             "runtime is no longer the card's live carrier; leaving the queue for its successor \
@@ -1816,7 +1816,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         diff_with_timeout(inner, refresh_head.as_ref()).await
     };
     // Deterministic drain-vs-supersede window for #1449. No-op in production.
-    wait_at_planner_harness_drain_race_hook(&inner.runtime_id).await;
+    wait_at_planner_harness_drain_race_hook(&inner.worker_session_id).await;
     let _issuance_guard = inner.issuance.lock().await;
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
@@ -1833,7 +1833,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     if !runtime_is_still_the_live_carrier(inner).await? {
         tracing::info!(
             target: "calm_server::planner_harness_issue",
-            runtime_id = %inner.runtime_id,
+            runtime_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             track_id = %inner.track_id,
             "runtime was retired while this turn was being prepared; leaving the queue"
@@ -2379,7 +2379,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
 async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
     let state = inner
         .repo
-        .session_projection_state_by_id(inner.runtime_id.as_str())
+        .session_projection_state_by_id(inner.worker_session_id.as_str())
         .await?;
     Ok(match state {
         Some(state) => state.is_active_authority(),
@@ -2435,7 +2435,7 @@ fn stop_retired_carrier(inner: &Arc<Inner>) {
 async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
     persist_snapshot(inner).await?;
     let snapshot = snapshot_for(inner).await;
-    let runtime_id = inner.runtime_id.clone();
+    let runtime_id = inner.worker_session_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;
     let now = crate::model::now_ms();
     write_in_tx_typed(inner.repo.as_ref(), move |tx| {
