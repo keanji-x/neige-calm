@@ -152,6 +152,22 @@
     min-width: 0;
   }
 
+  /* Terminal recovery status must fit alongside the title or wrap to its own
+     row. Scoped to terminal chrome; other card heads retain their layout. */
+  .term .card-head { flex-wrap: wrap; }
+  .term .card-head-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .term .card-head-status {
+    flex: 1 0 auto;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
   .card-head-icon {
     display: inline-flex;
     flex: 0 0 auto;

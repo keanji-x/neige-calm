@@ -562,6 +562,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       exitInfoRef.current = null;
       term.options.disableStdin = true;
       let connectionReady = false;
+      let awaitingOwner = false;
       const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${
         location.host
       }/api/terminals/${encodeURIComponent(terminalId)}`;
@@ -697,6 +698,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           const sh = msg.ServerHello;
           onRoleChangeRef.current?.(sh.client_role);
           setStatus('connected');
+          awaitingOwner = false;
           connectionReady = true;
           term.options.disableStdin = false;
           // A full replay replaces the retained view; do not append it twice.
@@ -811,6 +813,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           exitInfoRef.current = { code: t.code };
           setExitInfo({ code: t.code });
           setStatus('exited');
+          awaitingOwner = false;
           connectionReady = false;
           term.options.disableStdin = true;
           // #306 — fire `onExitChange` so the parent renders the header
@@ -834,6 +837,10 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           return;
         }
         if ('ProtocolError' in msg) {
+          // NotOwner rejects an operation without closing the established
+          // connection. Only an owner acknowledgement may restore its input.
+          awaitingOwner = msg.ProtocolError.code === 'NotOwner'
+            && (connectionReady || awaitingOwner) && ws.readyState === WebSocket.OPEN;
           setProtocolError({
             code: msg.ProtocolError.code,
             message: msg.ProtocolError.message,
@@ -844,6 +851,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           return;
         }
         if ('OwnerChanged' in msg) {
+          // Late ownership events cannot recover fatal errors, exits or a
+          // closed transport, even when they name this client.
+          if ((!connectionReady && !awaitingOwner) || ws.readyState !== WebSocket.OPEN) return;
           const { owner_client_id: newOwnerId } = msg.OwnerChanged;
           dlog('XtermView', 'OwnerChanged', msg.OwnerChanged);
           if (newOwnerId === null) {
@@ -854,7 +864,13 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           }
           if (newOwnerId === clientId) {
             onRoleChangeRef.current?.('Owner');
-            setProtocolError(null);
+            if (awaitingOwner) {
+              awaitingOwner = false;
+              connectionReady = true;
+              term.options.disableStdin = false;
+              setStatus('connected');
+              setProtocolError(null);
+            }
             // A ResizeCommit sent while we were Observer may have been
             // rejected, leaving the PTY at the previous owner's geometry.
             // Our local terminal is already fitted, so resend its current
@@ -894,6 +910,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       };
 
       ws.onclose = (e) => {
+        const wasAwaitingOwner = awaitingOwner;
+        awaitingOwner = false;
         connectionReady = false;
         term.options.disableStdin = true;
         // Keep the buffer visible, lift connection truth to the header, and
@@ -918,7 +936,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         // generic close code. A `child-exited` close promotes us to
         // `exited` even if the JSON exit frame never arrived.
         setStatus((prev) => {
-          if (prev === 'exited' || prev === 'protocol-error') return prev;
+          if (prev === 'exited' || (prev === 'protocol-error' && !wasAwaitingOwner)) return prev;
           if (isChildExitClose) return 'exited';
           return 'closed';
         });
@@ -943,11 +961,13 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         onRoleChangeRef.current?.(null);
       };
       ws.onerror = (e) => {
+        const wasAwaitingOwner = awaitingOwner;
+        awaitingOwner = false;
         connectionReady = false;
         term.options.disableStdin = true;
         dlog('XtermView', 'WS error', e);
         setStatus((prev) =>
-          prev === 'exited' || prev === 'protocol-error' ? prev : 'closed',
+          prev === 'exited' || (prev === 'protocol-error' && !wasAwaitingOwner) ? prev : 'closed',
         );
         onRoleChangeRef.current?.(null);
       };
