@@ -491,7 +491,9 @@ fn attach_task_pending_reasons(
                             format!("Blocked by `{dependency}` (failed); inspect recovery options")
                         }
                         [(dependency, status)] => {
-                            format!("Blocked by `{dependency}` ({status}); review this prerequisite")
+                            format!(
+                                "Blocked by `{dependency}` ({status}); review this prerequisite"
+                            )
                         }
                         many => format!(
                             "Blocked by {} failed or canceled prerequisites; inspect their outcomes",
