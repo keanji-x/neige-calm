@@ -1834,27 +1834,27 @@ mod tests {
     use serde_json::json;
 
     fn declaration(index: usize, key: &str) -> TaskDeclaration {
-        TaskDeclaration {
-            block_index: Some(index),
-            block_id: format!("b_{index:04x}"),
-            key: key.into(),
-            kind: "codex".into(),
-            goal: format!("goal {key}"),
-            acceptance: None,
-            gate: None,
-            no_gate_reason: Some("not needed".into()),
-            depends_on: Vec::new(),
-            context: json!({}),
-            cwd: None,
-            priority: 0,
-            refs: Vec::new(),
-            declared_by: "spec".into(),
-            released_by_user: false,
-            spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
-            tombstoned_by: None,
-            ready: true,
-            tombstone: false,
-        }
+        use calm_types::report_blocks::tasks::{
+            PLANNER_DECLARATION_AUTHOR, project_task_declarations,
+        };
+        use calm_types::report_blocks::{KIND_PROSE, KIND_TASK};
+        use calm_types::track_report::ReportBlock;
+        let mut blocks: Vec<ReportBlock> = (0..index)
+            .map(|position| ReportBlock {
+                id: format!("b_{position:04x}"),
+                kind: KIND_PROSE.into(),
+                rev: 0,
+                payload: json!({"markdown":"preceding prose"}),
+            })
+            .collect();
+        blocks.push(ReportBlock {
+            id: format!("b_{index:04x}"), kind: KIND_TASK.into(), rev: 0,
+            payload: json!({"key":key,"kind":"codex","goal":format!("goal {key}"),
+                "no_gate_reason":"not needed","declared_by":PLANNER_DECLARATION_AUTHOR,"ready":true}),
+        });
+        let (mut declarations, diagnostics) = project_task_declarations(&blocks);
+        assert!(diagnostics.iter().all(Vec::is_empty));
+        declarations.remove(0)
     }
 
     /// The shape `report_blocks::tasks` produces for a deleted task block:

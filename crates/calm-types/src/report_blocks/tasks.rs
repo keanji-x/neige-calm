@@ -115,8 +115,18 @@ pub struct GateStepInput {
     pub cmd: String,
 }
 
+/// Required declaration provenance. Only the report extractor creates report
+/// evidence from the same raw snapshot as the executable fields. Pure validation
+/// inputs have no report root and must never be accepted by DB projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskDeclarationSource {
+    Report { root_hash_preimage: String },
+    ValidationOnly,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskDeclaration {
+    pub source: TaskDeclarationSource,
     /// Present only for declarations projected from report blocks. Plan-upsert
     /// validation has no block whose diagnostics could be indexed.
     pub block_index: Option<usize>,
@@ -722,6 +732,9 @@ pub fn project_task_declarations(
             .get("tombstone")
             .is_some_and(|value| !value.is_null());
         let declaration = TaskDeclaration {
+            source: TaskDeclarationSource::Report {
+                root_hash_preimage: crate::task_recovery::task_root_hash_preimage(&block.payload),
+            },
             block_index: Some(index),
             block_id: block.id.clone(),
             key: payload["key"].as_str().expect("validated key").to_string(),
@@ -918,6 +931,7 @@ mod tests {
 
     fn declaration(key: &str, dependencies: &[&str]) -> TaskDeclaration {
         TaskDeclaration {
+            source: TaskDeclarationSource::ValidationOnly,
             block_index: None,
             block_id: key.into(),
             key: key.into(),
