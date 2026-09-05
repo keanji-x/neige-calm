@@ -130,6 +130,25 @@ start systemd automatically.
 passed. M1 also rejects systemd `ExecStart` paths containing whitespace or
 control characters instead of trying to quote them.
 
+## Enabling the new frontend on an existing source installation
+
+Old config files keep their saved `build_args = ["make", "build"]` and omit
+`child.fe_dist`. They remain explicitly legacy-only: source packaging does not
+require or pick up a stray `fe/web/dist` tree. To opt into both frontends, update
+**both** settings before a source build:
+
+```toml
+[child]
+fe_dist = "~/.local/share/neige-app/releases/current-web/web/dist/next"
+[source]
+build_args = ["make", "build", "fe-build"]
+```
+
+Custom build commands must also rebuild `fe/web/dist` when `fe_dist` is enabled;
+a directory left from a prior build is not evidence of a current frontend. For
+release artifacts use the Alpha build script, which unconditionally performs
+both production builds and records their source revision.
+
 ## Staged Upgrade
 
 `system upgrade` can run without `--package`. In that mode it reads `[source]`,

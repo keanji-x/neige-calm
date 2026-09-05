@@ -39,12 +39,15 @@ if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]]
   exit 1
 fi
 source_sha="$(git -C "$repo_root" rev-parse HEAD)"
+target_host="$(rustc -vV | sed -n 's/^host: //p')"
+[[ "$target_host" == *-linux-* ]] || { echo "Unsupported host target: $target_host" >&2; exit 1; }
 output_dir="$(realpath -m "$output_dir")"
 target_dir="$(realpath -m "$target_dir")"
 case "$output_dir/" in
   "$repo_root/"*) echo 'Output directory must be outside the source checkout.' >&2; exit 1 ;;
 esac
 name="neige-calm-$version-linux-$(uname -m)"
+bin_dir="$target_dir/$target_host/release"
 mkdir -p "$output_dir"
 for suffix in tar.gz tar.gz.sha256 BUILD.json; do
   [[ ! -e "$output_dir/$name.$suffix" ]] || { echo "Output already exists: $name.$suffix" >&2; exit 1; }
@@ -60,27 +63,27 @@ mkdir -p "$bundle"
 cd "$repo_root"
 env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   CARGO_TARGET_DIR="$target_dir" NEIGE_BUILD_SHA="$source_sha" \
-  cargo build --locked --release \
+  cargo build --locked --release --target "$target_host" \
   -p calm-server -p calm-codex-bridge -p neige-app -p neige-mcp-stdio-shim \
   -p calm-proc-supervisor -p neige-cli \
   --bin calm-server --bin neige-codex-bridge --bin neige-app \
   --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin neige
 (cd web && npm ci --legacy-peer-deps && npm run build)
 (cd fe && npm ci && npm run build)
-"$target_dir/release/neige-app" system package \
+"$bin_dir/neige-app" system package \
   --release-dir "$bundle/release" --release-id "$version" \
-  --app-bin "$target_dir/release/neige-app" \
+  --app-bin "$bin_dir/neige-app" \
   --web-dist "$repo_root/web/dist" --fe-dist "$repo_root/fe/web/dist" \
-  --bin "calm-server=$target_dir/release/calm-server" \
-  --bin "calm-proc-supervisor=$target_dir/release/calm-proc-supervisor" \
-  --bin "neige-codex-bridge=$target_dir/release/neige-codex-bridge" \
-  --bin "neige-mcp-stdio-shim=$target_dir/release/neige-mcp-stdio-shim" \
-  --bin "neige=$target_dir/release/neige"
-python3 - "$bundle/BUILD.json" "$version" "$source_sha" <<'PY'
+  --bin "calm-server=$bin_dir/calm-server" \
+  --bin "calm-proc-supervisor=$bin_dir/calm-proc-supervisor" \
+  --bin "neige-codex-bridge=$bin_dir/neige-codex-bridge" \
+  --bin "neige-mcp-stdio-shim=$bin_dir/neige-mcp-stdio-shim" \
+  --bin "neige=$bin_dir/neige"
+python3 - "$bundle/BUILD.json" "$version" "$source_sha" "$target_host" <<'PY'
 import datetime, json, pathlib, platform, subprocess, sys
-path, version, sha = sys.argv[1:]
+path, version, sha, target = sys.argv[1:]
 info = {
-    'releaseId': version, 'sourceCommit': sha,
+    'releaseId': version, 'sourceCommit': sha, 'target': target,
     'builtAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
     'platform': platform.platform(), 'architecture': platform.machine(),
     'libc': list(platform.libc_ver()),

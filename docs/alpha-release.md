@@ -22,7 +22,8 @@ scripts/release/build-alpha.sh \
 ```
 
 The script refuses a dirty checkout and existing output names. It builds release
-binaries with `--locked`, caps Cargo at six jobs, embeds the exact Git SHA, runs
+binaries with `--locked`, caps Cargo at six jobs, explicitly selects the rustc host target and reads only
+that target output (even when CARGO_BUILD_TARGET is set), embeds the exact Git SHA, runs
 `npm ci` and production builds for **both** frontends, and calls the real
 `neige-app system package` command. `--target-dir /abs/path` selects a Cargo cache.
 Keep output outside the source checkout so the final clean-tree check stays useful.
@@ -121,6 +122,15 @@ Install the user unit and create the admin token, without starting anything yet:
 
 ```bash
 ~/.local/bin/neige-app system install --config ~/.config/neige-app/config.toml
+```
+
+Run this preparation for **both** launch modes: it creates the required admin
+token and writes a unit file, but does not require systemd to be running. Then
+choose one of the following; do not run both on the same ports/data directory.
+
+With a systemd user manager:
+
+```bash
 systemctl --user daemon-reload
 systemctl --user enable --now neige-app.service
 systemctl --user status neige-app.service
@@ -131,7 +141,7 @@ journalctl --user -u neige-app.service -n 50 --no-pager
 `--force` on a first install. Missing `claude` warnings are harmless if only using
 Codex; missing `codex` or `git` must be addressed for their workflows.
 
-Without systemd, after configuring the same package:
+Without systemd, after the same `system install` preparation above:
 
 ```bash
 ~/.local/bin/neige-app system serve --config ~/.config/neige-app/config.toml
