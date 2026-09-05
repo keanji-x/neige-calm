@@ -169,6 +169,7 @@ pub(crate) async fn acquire_workspace_lease_tx(
     .await
 }
 
+#[cfg(any(test, feature = "fixtures"))]
 pub(crate) async fn acquire_plain_workspace_lease_tx(
     tx: &mut Tx<'_>,
     card_id: &str,
@@ -190,6 +191,7 @@ pub(crate) async fn acquire_plain_workspace_lease_tx(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkspaceLeaseDirectoryMode {
     ParentOnly,
+    #[cfg(any(test, feature = "fixtures"))]
     Leaf,
 }
 
@@ -287,6 +289,7 @@ fn create_workspace_lease_directory(path: &Path, mode: WorkspaceLeaseDirectoryMo
                 ))
             })
         }
+        #[cfg(any(test, feature = "fixtures"))]
         WorkspaceLeaseDirectoryMode::Leaf => std::fs::create_dir_all(path).map_err(|e| {
             CalmError::Internal(format!(
                 "create workspace lease directory {}: {e}",
@@ -1386,6 +1389,7 @@ pub(crate) fn workspace_lease_path_for(
         .join(card_id))
 }
 
+#[cfg(test)]
 pub(crate) fn plain_workspace_lease_path_for(track_id: &str, card_id: &str) -> Result<PathBuf> {
     validate_path_segment("track_id", track_id)?;
     validate_path_segment("card_id", card_id)?;

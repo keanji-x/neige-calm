@@ -68,7 +68,7 @@ function renderBoard() {
   const registry = createCardRegistry();
   registry.register(entry);
   const host = createCardHost(registry);
-  const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1' };
+  const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1', cwd: null, gateCwd: null };
   return render(
     <BoardHost
       host={host}
@@ -206,7 +206,7 @@ describe('BoardHost lifecycle', () => {
     registry.register(entry);
     const hostA = createCardHost(registry);
     const hostB = createCardHost(registry);
-    const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1' };
+    const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1', cwd: null, gateCwd: null };
     const items = [Object.freeze({ card, title: 'Build log', originalIndex: 0 })];
     const board = render(
       <BoardHost host={hostA} items={items} activeCardId="card-a" visible />,
@@ -236,7 +236,7 @@ describe('BoardHost lifecycle', () => {
     registry.register(entry);
     const hostA = createCardHost(registry);
     const hostB = createCardHost(registry);
-    const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1' };
+    const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1', cwd: null, gateCwd: null };
     const items = [Object.freeze({ card, title: 'Build log', originalIndex: 0 })];
     const board = render(
       <BoardHost host={hostA} items={items} activeCardId="card-a" visible={false} />,
@@ -294,7 +294,7 @@ describe('BoardHost card removal', () => {
     const registry = createCardRegistry();
     registry.register(removable);
     const host = createCardHost(registry);
-    const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1' };
+    const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1', cwd: null, gateCwd: null };
     return render(
       <BoardHost
         host={host}
@@ -343,7 +343,7 @@ describe('BoardHost card removal', () => {
     const onRemoveCard = vi.fn();
     const registry = createCardRegistry();
     const host = createCardHost(registry);
-    const card = { type: 'board-host-term' as const, id: 'card-z', title: null, terminalId: null };
+    const card = { type: 'board-host-term' as const, id: 'card-z', title: null, terminalId: null, cwd: null, gateCwd: null };
     render(
       <BoardHost
         host={host}

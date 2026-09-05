@@ -16,6 +16,8 @@ export type TerminalCard = Readonly<{
   title: string | null;
   terminalId: string | null;
   sessionState: WorkerSessionState | null;
+  cwd: string | null;
+  gateCwd: string | null;
 }>;
 
 /** Runtime identity wins even when it has no PTY; payload is legacy-only. */
@@ -40,6 +42,12 @@ export function terminalIdFromPayload(payload: unknown): string | null {
   return typeof value === 'string' && value !== '' ? value : null;
 }
 
+export function cwdFromPayload(payload: unknown, key: 'cwd' | 'gate_cwd' = 'cwd'): string | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const value = (payload as { cwd?: unknown; gate_cwd?: unknown })[key];
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
 export const TERMINAL_CARD_ENTRY = Object.freeze({
   type: 'terminal',
   component: (props: CardComponentProps<TerminalCard>) => TerminalCardView(props),
@@ -58,7 +66,7 @@ export const TERMINAL_CARD_ENTRY = Object.freeze({
   addPanel: Object.freeze({ label: 'terminal' }),
   fromKernel: (card: KernelCardInput): TerminalCard | null => (
     card.kind === 'terminal'
-      ? Object.freeze({ type: 'terminal', id: card.id, title: null, ...terminalSessionFromCard(card) } as const)
+      ? Object.freeze({ type: 'terminal', id: card.id, title: null, ...terminalSessionFromCard(card), cwd: cwdFromPayload(card.payload), gateCwd: cwdFromPayload(card.payload, 'gate_cwd') } as const)
       : null
   ),
 }) satisfies CardEntry<TerminalCard>;

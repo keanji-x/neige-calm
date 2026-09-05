@@ -112,6 +112,7 @@
 - { path: fe/web/src/ui/mobile-header, type: directory, owner: ui/mobile-header, readonly: false, basis: "shared compact/mobile page header with source-aware back navigation" }
 - { path: fe/web/src/ui/mobile-list, type: directory, owner: ui/mobile-list, readonly: false, basis: "shared compact/mobile list and list-detail navigation surface" }
 - { path: fe/web/src/ui/typed-confirm, type: directory, owner: ui/typed-confirm, readonly: false, basis: "design §6.13" }
+- { path: fe/web/src/ui/path-label, type: directory, owner: ui/path-label, readonly: false, basis: "User-requested long-task reliability: shared read-only wrapping label for worker and gate directories" }
 - { path: fe/web/src/ui/panel-card, type: directory, owner: ui/panel-card, readonly: false, basis: "design §6.5；每条路由面板列唯一的圆角卡片与它的模块 (#997)" }
 - { path: fe/web/src/ui/drawer, type: directory, owner: ui/drawer, readonly: false, basis: "design §7.6 对话抽屉 (#997)" }
 - { path: fe/web/src/ui/viewport, type: directory, owner: ui/viewport, readonly: false, basis: "#1191 §3.2 唯一的 compact viewport 判据；architecture/single-viewport-source 的豁免目录" }

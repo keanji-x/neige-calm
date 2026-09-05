@@ -8,7 +8,7 @@
 //!
 //! * `prepare_tx` — guarded `gate_attempt` bump (`N-1 → N`, only while
 //!   the row is `verifying`) + freezes the gate definition, resolved
-//!   cwd (`gate.cwd → task.cwd → tracks.cwd`, design §6.4) and attempt
+//!   cwd (`gate.cwd → worker checkout → task.cwd → Track workspace`) and attempt
 //!   into `tx_output.data`. The gate that runs is the one recorded.
 //! * `spawn_side_effect` — kill-prior (own-row artifacts per the #653
 //!   §3.2 MUST, the previous attempt's op artifacts, and the tasks-row
@@ -33,6 +33,9 @@
 //!
 //! Gate red / timeout / infra all land `failed` — "gate didn't prove
 //! green" is the invariant (§6.3); the planner re-plans.
+
+#[path = "task_verify_display.rs"]
+mod display;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -193,13 +196,25 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
     verdict: &GateVerdict,
     guard_attempt: i64,
 ) -> Result<Vec<BroadcastEnvelope>> {
+    let mut recorded_verdict = serde_json::to_value(verdict)?;
+    let frozen_cwd: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT json_extract(tx_output_json, '$.data.cwd') FROM operations \
+         WHERE kind = 'task-verify' AND idempotency_key = ?1",
+    )
+    .bind(gate_attempt_key(&rctx.task_id, verdict.attempt))
+    .fetch_optional(&mut **tx)
+    .await?
+    .flatten();
+    if let Some(cwd) = frozen_cwd {
+        recorded_verdict["cwd"] = json!(cwd);
+    }
     let rows = task_apply_gate_result_tx(
         tx,
         &rctx.task_id,
         guard_attempt,
         verdict.passed,
         verdict.status_detail.as_deref(),
-        &serde_json::to_string(verdict)?,
+        &serde_json::to_string(&recorded_verdict)?,
         now_ms(),
     )
     .await?;
@@ -657,10 +672,8 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let gate: GateSpec = serde_json::from_str(gate_json)
             .map_err(|e| CalmError::Internal(format!("task {} gate_json: {e}", task.id)))?;
 
-        // §6.4 cwd chain: gate.cwd → task.cwd → the track's workspace path.
-        // #1147 S1 — reads `workspace_path`; `tracks.cwd` was dropped by
-        // migration 0077 (this is a raw SELECT, so it would have failed at
-        // RUNTIME, not compile time, had it been missed).
+        // Freeze the execution directory, including released leases: successful
+        // workers release their lease before the gate starts, retaining files.
         let track: Option<(String, String)> =
             sqlx::query_as("SELECT workspace_path, area_id FROM tracks WHERE id = ?1")
                 .bind(&task.track_id)
@@ -668,15 +681,53 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 .await?;
         let (track_cwd, area_id) =
             track.ok_or_else(|| CalmError::Conflict(format!("track {} is gone", task.track_id)))?;
-        let cwd = gate
-            .cwd
-            .clone()
-            .filter(|c| !c.trim().is_empty())
-            .or_else(|| task.cwd.clone().filter(|c| !c.trim().is_empty()))
-            .unwrap_or(track_cwd);
+        let cwd = if let Some(cwd) = gate.cwd.as_ref().filter(|c| !c.trim().is_empty()) {
+            cwd.clone()
+        } else if let Some(card_id) = task.worker_card_id.as_deref() {
+            // Agent workers always have a durable lease. A missing lease is
+            // an infrastructure defect, never a reason to inspect the Track.
+            let worker_cwd: Option<String> = sqlx::query_scalar(
+                "SELECT path FROM workspace_leases WHERE card_id = ?1 AND track_id = ?2 \
+                 ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1",
+            )
+            .bind(card_id)
+            .bind(&task.track_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+            if let Some(cwd) = worker_cwd {
+                cwd
+            } else if task.kind == crate::model::TaskKind::Terminal {
+                // Terminal tasks do not acquire a worktree lease; use the
+                // immutable spawn operation, not the mutable card payload.
+                sqlx::query_scalar::<_, Option<String>>(
+                    "SELECT json_extract(tx_output_json, '$.data.cwd') FROM operations \
+                     WHERE kind = 'terminal-worker' AND idempotency_key = ?1 \
+                     AND target_type = 'card' AND target_id = ?2",
+                )
+                .bind(&task.id)
+                .bind(card_id)
+                .fetch_optional(&mut **tx)
+                .await?
+                .flatten()
+                .ok_or_else(|| {
+                    CalmError::Conflict(format!("task {}: bound terminal cwd missing", task.id))
+                })?
+            } else {
+                return Err(CalmError::Conflict(format!(
+                    "task {}: bound worker {card_id} workspace lease missing",
+                    task.id
+                )));
+            }
+        } else {
+            // Legacy/unbound tasks retain their declaration defaults.
+            task.cwd
+                .clone()
+                .filter(|c| !c.trim().is_empty())
+                .unwrap_or(track_cwd)
+        };
         if cwd.trim().is_empty() {
             return Err(CalmError::BadRequest(format!(
-                "task {}: no gate cwd resolvable (gate.cwd, task.cwd, tracks.cwd all empty)",
+                "task {}: gate cwd is empty",
                 task.id
             )));
         }
@@ -701,6 +752,18 @@ impl ProviderAdapter for TaskVerifyAdapter {
         };
         let mut output = TxOutput::new("task", Some(task.id.clone()), json!({}));
         output.data = serde_json::to_value(&frozen)?;
+        if let Some(card_id) = task.worker_card_id.as_deref() {
+            output.post_commit_events.extend(
+                display::record_gate_cwd_tx(
+                    tx,
+                    card_id,
+                    &frozen.track_id,
+                    &frozen.area_id,
+                    &frozen.cwd,
+                )
+                .await?,
+            );
+        }
         Ok(output)
     }
 

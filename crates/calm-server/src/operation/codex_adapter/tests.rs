@@ -528,3 +528,16 @@ fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[tokio::test]
+async fn codex_worker_prompt_includes_completion_task_id() {
+    let harness = worker_lease_harness().await;
+    let (output, _) = prepare_worker(&harness, "identity").await;
+    assert!(
+        output
+            .output_string("prompt", "test")
+            .unwrap()
+            .contains(&format!("{}:identity", harness.track_id)),
+        "Codex must receive the exact task id it is required to report"
+    );
+}

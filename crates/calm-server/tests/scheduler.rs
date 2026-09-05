@@ -1925,33 +1925,29 @@ async fn duplicate_report_is_idempotent() {
     let first = task_row(&boot, "dup").await;
     assert_eq!(first.status, TaskStatus::Done);
 
-    // A retried report appends another event but the guarded flip
-    // no-ops — the row keeps its original terminal state + timestamps.
-    // This is round-2 F3 case (iii): the row is already TERMINAL, so
-    // the 0-row flip must NOT be treated as an ownership rejection —
-    // the duplicate report still succeeds and still persists its event
-    // (consumers tolerate duplicate task events per key, design §1.3).
+    // Repeating the same success is a no-op, including the event log.
     call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": task_id, "result": {} }),
+    )
+    .await
+    .expect("repeat success");
+    let conflict = call_tool(
         &boot,
         TOOL_TASK_FAIL,
         worker_identity(&boot),
         json!({ "idempotency_key": task_id, "reason": "retry confusion" }),
     )
-    .await
-    .expect("second report");
+    .await;
+    assert_eq!(conflict.unwrap_err().code, -32409);
     let second = task_row(&boot, "dup").await;
-    assert_eq!(
-        second.status,
-        TaskStatus::Done,
-        "terminal rows never flip again"
-    );
+    assert_eq!(second.status, TaskStatus::Done);
     assert_eq!(second.finished_at_ms, first.finished_at_ms);
     assert_eq!(second.updated_at_ms, first.updated_at_ms);
-    assert_eq!(
-        event_rows(&boot, "task.failed").await.len(),
-        1,
-        "F3 case (iii): the duplicate report's event still persists"
-    );
+    assert_eq!(event_rows(&boot, "task.completed").await.len(), 1);
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
 }
 
 #[tokio::test]
@@ -2006,7 +2002,7 @@ async fn gated_success_report_flips_to_verifying_and_suppresses_promotion() {
 
     // A worker `task.fail` against the now-`verifying` row is moot —
     // the verify pipeline owns it (verifying → failed only via gate
-    // verdict). The legacy event persists; the row is untouched.
+    // verdict). Refuse the contradictory event atomically.
     call_tool(
         &boot,
         TOOL_TASK_FAIL,
@@ -2014,7 +2010,7 @@ async fn gated_success_report_flips_to_verifying_and_suppresses_promotion() {
         json!({ "idempotency_key": task_id, "reason": "boom" }),
     )
     .await
-    .expect("task fail persists as a non-flip report");
+    .expect_err("task fail must not contradict an admitted success");
     assert_eq!(
         task_row(&boot, "gated").await.status,
         TaskStatus::Verifying,
@@ -2799,6 +2795,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
         None,
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
+        child_track_workspace_root(),
     ));
     let terminal: Arc<dyn ProviderAdapter> = Arc::new(TerminalWorkerAdapter::new(
         route_repo,
@@ -7415,15 +7412,11 @@ async fn legacy_report_without_task_row_still_emits() {
 }
 
 // ---------------------------------------------------------------------------
-// Review round 6 — a legacy `calm.task.dispatch` key colliding with a
-// still-`pending` plan row: the guarded flip could never have matched
-// (`status IN ('dispatched','running')`), so the 0-row outcome carries
-// no ownership signal — the legacy report must keep emitting and the
-// pending row must stay untouched (no Forbidden, no stamp)
+// A legacy worker must not publish an outcome under an unowned plan key.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn legacy_report_with_pending_task_row_still_emits() {
+async fn legacy_report_with_pending_task_row_is_rejected() {
     let boot = boot().await;
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     // Pending plan row under the key; legacy-style worker — no
@@ -7439,11 +7432,11 @@ async fn legacy_report_with_pending_task_row_still_emits() {
         json!({ "idempotency_key": task_id, "result": { "ok": true } }),
     )
     .await
-    .expect("legacy complete report against a pending row must keep succeeding");
+    .expect_err("a legacy key collision is not ownership");
     assert_eq!(
         event_rows(&boot, "task.completed").await.len(),
-        1,
-        "task.completed persisted exactly as before"
+        0,
+        "no contradictory completed event"
     );
 
     call_tool(
@@ -7453,11 +7446,11 @@ async fn legacy_report_with_pending_task_row_still_emits() {
         json!({ "idempotency_key": task_id, "reason": "legacy retry" }),
     )
     .await
-    .expect("legacy fail report against a pending row must keep succeeding");
+    .expect_err("a legacy key collision is not ownership");
     assert_eq!(
         event_rows(&boot, "task.failed").await.len(),
-        1,
-        "task.failed persisted exactly as before"
+        0,
+        "no contradictory failed event"
     );
 
     let row = task_row(&boot, "pending-collide").await;
@@ -7619,6 +7612,9 @@ async fn backstop_sweep_noops_until_boot_sweep_completes() {
 // ---------------------------------------------------------------------------
 
 static GATE_SPAWN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[path = "cases/long_task_reliability.rs"]
+mod long_task_reliability;
 
 fn unique_gate_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(

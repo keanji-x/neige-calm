@@ -33,7 +33,7 @@ describe('claude card component', () => {
     const Component = CLAUDE_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'claude', id: 'c1', title: null, terminalId: 't1', sessionState: 'running' }}
+        card={{ type: 'claude', id: 'c1', title: null, terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
         host={fakeHost()}
       />,
     );
@@ -52,7 +52,7 @@ describe('claude card component', () => {
     const Component = CLAUDE_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'claude', id: 'c1', title: 'tencent-valuation', terminalId: 't1', sessionState: 'running' }}
+        card={{ type: 'claude', id: 'c1', title: 'tencent-valuation', terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
         host={fakeHost()}
       />,
     );
@@ -66,7 +66,7 @@ describe('claude card component', () => {
     const Component = CLAUDE_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'claude', id: 'c1', title: null, terminalId: null, sessionState: 'starting' }}
+        card={{ type: 'claude', id: 'c1', title: null, terminalId: null, sessionState: 'starting', cwd: null, gateCwd: null }}
         host={fakeHost()}
       />,
     );
@@ -82,7 +82,7 @@ describe('claude card component', () => {
     const Component = TERMINAL_CARD_ENTRY.component;
     render(
       <Component
-        card={{ type: 'terminal', id: 't-card', title: null, terminalId: null, sessionState: 'starting' }}
+        card={{ type: 'terminal', id: 't-card', title: null, terminalId: null, sessionState: 'starting', cwd: null, gateCwd: null }}
         host={fakeHost()}
       />,
     );

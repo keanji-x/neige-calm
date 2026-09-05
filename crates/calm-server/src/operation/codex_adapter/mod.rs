@@ -785,7 +785,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
         .await?;
         let cwd = lease_target.path_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
-        let rendered_prompt = render_worker_prompt(
+        let rendered_prompt = render_task_worker_prompt(
+            &payload.idempotency_key,
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
@@ -1459,6 +1460,18 @@ async fn card_payload_get_tx(
         .0;
     serde_json::from_str(&payload_text)
         .map_err(|e| CalmError::Internal(format!("card {card_id} payload is not valid JSON: {e}")))
+}
+
+pub(crate) fn render_task_worker_prompt(
+    task_id: &str,
+    goal: &str,
+    context: &Value,
+    acceptance: Option<&str>,
+) -> String {
+    let prompt = render_worker_prompt(goal, context, acceptance);
+    format!(
+        "{prompt}\n\nTask completion idempotency_key: {task_id}\nEcho this exact task ID when reporting completion or failure."
+    )
 }
 
 pub(crate) fn render_worker_prompt(

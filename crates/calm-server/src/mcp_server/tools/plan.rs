@@ -816,6 +816,7 @@ fn task_list_entry(t: &Task) -> Value {
         .unwrap_or(Value::Null);
 
     let mut entry = json!({
+        "id": t.id,
         "key": t.key,
         "kind": t.kind,
         "status": t.status,

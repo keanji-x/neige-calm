@@ -8,10 +8,10 @@ describe('TERMINAL_CARD_ENTRY', () => {
   it('resolves kernel terminal cards, including an empty payload before terminal_id lands', () => {
     expect(TERMINAL_CARD_ENTRY.fromKernel?.({
       id: 'c1', kind: 'terminal', payload: { terminal_id: 't1' },
-    })).toEqual({ type: 'terminal', id: 'c1', title: null, terminalId: 't1', sessionState: null });
+    })).toEqual({ type: 'terminal', id: 'c1', title: null, terminalId: 't1', sessionState: null, cwd: null, gateCwd: null });
     expect(TERMINAL_CARD_ENTRY.fromKernel?.({
       id: 'c2', kind: 'terminal', payload: {},
-    })).toEqual({ type: 'terminal', id: 'c2', title: null, terminalId: null, sessionState: null });
+    })).toEqual({ type: 'terminal', id: 'c2', title: null, terminalId: null, sessionState: null, cwd: null, gateCwd: null });
     expect(TERMINAL_CARD_ENTRY.fromKernel?.({
       id: 'c3', kind: 'codex', payload: { terminal_id: 't1' },
     })).toBeNull();

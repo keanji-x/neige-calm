@@ -6,6 +6,8 @@
 //! below. The principal-based
 //! `DecisionSink::commit` entry remains inert until PR7 flips authority.
 
+mod worker_report;
+
 use crate::db::{RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
@@ -94,7 +96,7 @@ impl CardDecisionSink {
         );
         let worker_card_id_for_tx = card_id_str.clone();
 
-        write_with_actor_events_typed::<(), _>(
+        let write_result = write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
             None,
             &self.events,
@@ -107,18 +109,10 @@ impl CardDecisionSink {
                 let track_id = track_id.clone();
                 let worker_card_id = worker_card_id_for_tx.clone();
                 Box::pin(async move {
-                    // Issue #644 PR-B — flip the matching plan-task row INSIDE
-                    // the same tx that persists the worker's report event
-                    // (design §3): one tx, no event-persisted-but-row-stale
-                    // crash window. The flips are guarded
-                    // (`status IN ('dispatched','running')`, track-pinned, and
-                    // the done-flip skips gated rows), so a legacy
-                    // `calm.task.dispatch` key with no tasks row, an already
-                    // terminal row, or a foreign-track id all no-op. This hook
-                    // lives ONLY in the worker-role-gated
-                    // `calm.task.complete` / `calm.task.fail` handlers — planner
-                    // verdict emissions (`calm.task.verdict`, track_state.rs)
-                    // never run it, so verdicts can never flip rows.
+                    // Admission, task CAS, report event, and lifecycle promotion
+                    // share one transaction. Same-outcome repeats roll back as
+                    // idempotent success; foreign or conflicting reports fail.
+                    // Planner verdicts retain their separate authority path.
                     let now = crate::model::now_ms();
                     // #1147 ① — the failure branch keeps the worker's own
                     // `reason` (it used to be dropped by `..`) so the row
@@ -163,6 +157,17 @@ impl CardDecisionSink {
                             )
                             .await?,
                         };
+                        if worker_report::admit_worker_report_tx(
+                            tx,
+                            &task_id,
+                            track_id.as_str(),
+                            reporter,
+                            success,
+                        )
+                        .await?
+                        {
+                            return Err(CalmError::Conflict(worker_report::REPEATED.into()));
+                        }
                         let rows = if success {
                             match crate::db::sqlite::task_report_success_from_worker_tx(
                                 tx,
@@ -196,63 +201,14 @@ impl CardDecisionSink {
                             )
                             .await?
                         };
-                        // Round-2 review F3 — disambiguate a 0-row flip before
-                        // emitting terminal side effects:
-                        //   (i)   no tasks row for the key (legacy
-                        //         `calm.task.dispatch` worker) → emit exactly
-                        //         as before;
-                        //   (iii) row already TERMINAL → duplicate/retried
-                        //         report; keep emitting (consumers tolerate
-                        //         duplicate task events per key, design §1.3 —
-                        //         verdict emissions and report-retry
-                        //         idempotency depend on it);
-                        //   (iv)  row ACTIVE (`dispatched`/`running` — the
-                        //         only states the guarded flip targets) and
-                        //         the ownership guard rejected the reporter
-                        //         → refuse the whole write: no event, no
-                        //         Working → Reviewing transition; the
-                        //         caller is told it does not own the task.
-                        // Any other 0-row cause keeps today's emit behavior:
-                        // (round-6 review) statuses the guarded UPDATE could
-                        // never have matched — a legacy `calm.task.dispatch`
-                        // key colliding with a still-`pending` plan row (or
-                        // a `verifying` row whose gate is in flight) carries
-                        // no ownership signal, so the legacy event must keep
-                        // persisting with the row left untouched.
                         if rows == 0
-                            && let Some(row) = crate::db::sqlite::task_get_tx(tx, &task_id).await?
+                            && crate::db::sqlite::task_get_tx(tx, &task_id)
+                                .await?
+                                .is_some()
                         {
-                            // Issue #644 PR-C (§3): a duplicate / retried
-                            // success report for a GATED row (already
-                            // `verifying`, or already terminal via a gate
-                            // verdict) must not promote — exactly one
-                            // promotion per gated task, in the gate-result
-                            // tx.
-                            if success && row.gate_json.is_some() {
-                                suppress_promotion = true;
-                            }
-                            if matches!(
-                                row.status,
-                                crate::model::TaskStatus::Dispatched
-                                    | crate::model::TaskStatus::Running
-                            ) {
-                                let owns = match &row.worker_card_id {
-                                    Some(owner) => *owner == worker_card_id,
-                                    None => matches!(
-                                        reporter,
-                                        crate::db::sqlite::TaskReporter::Card {
-                                            owns_key: true,
-                                            ..
-                                        }
-                                    ),
-                                };
-                                if !owns {
-                                    return Err(CalmError::Forbidden(format!(
-                                        "task {task_id} is not owned by reporting card \
-                                         {worker_card_id}; report rejected"
-                                    )));
-                                }
-                            }
+                            return Err(CalmError::Conflict(format!(
+                                "task {task_id}: admitted report did not advance the task"
+                            )));
                         }
                     }
 
@@ -278,7 +234,12 @@ impl CardDecisionSink {
                 })
             },
         )
-        .await?;
+        .await;
+        match write_result {
+            Ok(_) => {}
+            Err(CalmError::Conflict(reason)) if reason == worker_report::REPEATED => {}
+            Err(error) => return Err(error),
+        }
 
         if release_workspace {
             // Normal worker reports release only the lease row; downstream PR

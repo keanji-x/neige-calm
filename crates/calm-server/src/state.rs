@@ -552,6 +552,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.mcp_server.clone(),
         input.card_role_cache.clone(),
         input.track_area_cache.clone(),
+        input.workspace_root.clone(),
     ));
     let claude_restart_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeRestartAdapter::new(
         input.route_repo.clone(),
