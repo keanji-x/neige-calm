@@ -30,6 +30,21 @@ also not OS-sandboxed by the host. Remote HTTP connectors do not receive app
 process tokens or run as local children; review their configured destinations
 and secrets separately.
 
+## Installation sources and removal
+
+Settings supports both server-local directories and remote MCP server forms;
+see [the plugin setup guide](using-neige-calm.md#add-and-configure-plugins).
+A form-created remote connector is a kernel-owned tree containing its manifest
+and, when a key was supplied, `secrets.json` (mode `0600` on Unix). Uninstall
+attempts to remove that tree and its stored key after deleting the plugin row.
+Filesystem cleanup is best-effort: a failure is logged under `plugin_host` but
+does not fail the uninstall response. A successful UI removal therefore does
+not prove credential erasure; check the log and the managed installation path,
+and remove any residual connector files if cleanup failed.
+Uninstalling a local-path plugin leaves the operator-owned source
+tree in place; removing the plugin does not erase credentials in that source.
+Neither source is enabled automatically after installation.
+
 ## Protect the complete execution tree
 
 On Unix, local-path installation links `plugins_dir/<id>` to the source directory.

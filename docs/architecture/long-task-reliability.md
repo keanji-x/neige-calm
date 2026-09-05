@@ -1,15 +1,19 @@
 # Long task execution reliability
 
-Status: implementation design, 2026-09-05.
+Status: directory and report-admission fixes merged in
+[PR #1490](https://github.com/keanji-x/neige-calm/pull/1490), 2026-09-05.
+The delivery scope below separates shipped behavior from checkpoint/recovery
+follow-ups. For UI instructions, see [Using Neige Calm](../using-neige-calm.md).
 
 Outcome: a long task's evidence, verification directory, and terminal outcome
 remain attributable to the execution that produced them, including failure.
 
-Confirmed source-level causes:
+Source-level findings before the fix (historical diagnosis):
 
-- The scheduler's default track budget is one. This is a policy limit, not a
-  failure to discover independent tasks. Changing it also affects shared
-  terminal commands and requires a separate capacity decision.
+- The deployment fallback for the per-Track task budget is one. This is a policy
+  limit, not a failure to discover independent tasks. Settings → General already
+  supports a live default override (#1470); Track-specific and server limits
+  still apply. This repair did not change the concurrency default.
 - Gate preparation ignores the worker's durable workspace lease and falls back
   to the declaration or Track workspace.
 - Worker reports tolerate a losing terminal CAS and append contradictory events.

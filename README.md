@@ -40,18 +40,20 @@ A Track can finish once, like fixing an issue, or remain useful across repeated 
 
 - **Areas and Tracks** — separate long-lived context from individual streams of work.
 - **Planning and execution** — a root agent plans tasks, dispatches workers, reacts to results, and drives a typed lifecycle from draft through review.
-- **Durable Reports** — block documents with stable IDs and revisions, supporting prose, tasks, tables, candlestick charts, and sandboxed app views.
+- **Durable Reports** — block documents with stable IDs and revisions, supporting prose, tasks, tables, candlestick charts, sandboxed app views, and links that open workspace files in the Track.
 - **Isolated workspaces** — attach an existing directory or let the kernel provision a managed workspace for a Track.
 - **Governed execution** — kernel-enforced role, scope, lifecycle, review, and gate boundaries around agent writes and side effects.
-- **Today** — a cross-Track view with waiting/running state and an AI-written daily progress document.
-- **Extensible tools** — plugins can contribute tools, templates, connectors, overlays, and sandboxed UI resources.
+- **Desktop supervision** — task counts and status details, a Notification Center that opens the conversation or worker needing attention, and separate worker and verification directories on cards. Settings lets you change the default task concurrency per Track.
+- **Today** — a cross-Track view with waiting/running state and a daily progress report maintained through its own conversation.
+- **Extensible tools** — add remote MCP servers or server-local plugin directories from Settings, then enable, configure, restart, or remove them. Plugins can contribute tools, templates, connectors, overlays, and sandboxed UI resources.
+- **Track Recipes** — create, edit, and delete reusable Markdown plans, then select one when creating a Track. Built-in templates remain read-only.
 - **Recoverable execution** — persisted events, sessions, operations, and supervisor state are designed to survive retries and process replacement.
 
 Local executable plugins run as trusted code with the service's OS identity;
 browser UI sandboxing does not isolate native plugin code. See
 [Plugin host security](docs/plugin-security.md) before installing plugins.
 
-Track Recipes—user-defined, reusable ways of structuring work—are currently under active development.
+See [Using Neige Calm](docs/using-neige-calm.md) for the current UI paths and their limits, and the [recipe body format](docs/recipe-body-format.md) for authoring task blocks.
 
 ## Quick start
 
@@ -209,7 +211,14 @@ Neige Calm is converging on four user-facing ideas:
 3. **Report** — the current, inspectable outcome rather than a summary buried in chat.
 4. **Recipe** — a reusable way to perform and deliver a kind of work.
 
-Near-term work is focused on completing the new frontend cutover, making plugin configuration usable end to end, and turning Track Recipes into a user-facing workflow.
+The new frontend is the default entry point; the legacy frontend remains available during the cutover. Plugin installation and Recipe editing are available today. Structured checkpoints and resuming a failed attempt with preserved recovery evidence remain [follow-up work](docs/architecture/long-task-reliability.md#delivery-scope).
+
+## Documentation
+
+- [Using Neige Calm](docs/using-neige-calm.md) — Recipes, task supervision, Report files, and plugin setup.
+- [Linux Alpha runbook](docs/alpha-release.md) — build and install a release archive.
+- [Deploy & Upgrade Guide](docs/deploy-and-upgrade.md) — supervised deployment, backups, and upgrades.
+- [Documentation index](docs/README.md) — configuration, retention, architecture, and design records.
 
 ## Contributing
 

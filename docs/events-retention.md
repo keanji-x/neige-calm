@@ -97,6 +97,22 @@ safe defaults; only `NEIGE_EVENTS_PRUNE_INTERVAL_SECS=0` disables it. Cross-chec
 allowlisted kinds should hold a bounded row count once steady state is
 reached.
 
+## Retry records are not event history
+
+The event pruner does not reclaim Track-create bindings or keyed operations.
+`track_create_idempotency` rows remain after a Track is deleted: removing a
+binding would allow an old request key to create another Track. Operations with
+a non-NULL `idempotency_key` are also permanent; migration 0093 enforces this with
+a `BEFORE DELETE` trigger because deleting them can redeliver a first message.
+Do not drop that trigger or delete retry records to reduce database size.
+
+A retry whose bound Track was deleted returns **409 `idempotency_key_exhausted`**.
+Use a new key to create a new Track; the new frontend replaces the exhausted
+draft key for the next submission. Transport failures and ordinary 5xx errors
+still require preserving the original key because the create may have committed.
+See the [idempotency retention decision](design-1428-idempotency-retention.md)
+for the permanent-record policy and its storage tradeoff.
+
 ## Reclaiming disk space
 
 The pruner never VACUUMs. Freed pages are reused by new appends, so the file
