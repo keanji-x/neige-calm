@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -16,20 +16,21 @@ export function useIndependentTaskLaunch({ trackId, cards, lifecycle, transport,
   unauthorized: UnauthorizedChannel; onCreated: (blockId: string) => void;
 }) {
   const client = useQueryClient();
-  const key = ['independent-task-intent', trackId];
+  const key = useMemo(() => ['independent-task-intent', trackId], [trackId]);
   const state = useQuery<Intent>({ queryKey: key, queryFn: () => ({ phase: 'editing', goal: '' }),
     initialData: { phase: 'editing', goal: '' }, enabled: false, staleTime: Infinity, gcTime: Infinity });
   const intent = state.data;
   const [open, setOpen] = useState(false);
-  const revealed = useRef<string | null>(null);
   const revision = independentTaskRevision(cards);
   useEffect(() => {
-    if (intent.phase !== 'accepted' || revealed.current === intent.receipt.taskKey
-      || findIndependentTask(cards, intent.request) === null) return;
-    revealed.current = intent.receipt.taskKey;
+    // Consume synchronously in the same session cache as the receipt, before navigating.
+    const active = client.getQueryData<Intent>(key);
+    if (active?.phase !== 'accepted' || active.revealed
+      || findIndependentTask(cards, active.request) === null) return;
+    client.setQueryData<Intent>(key, () => ({ ...active, revealed: true }));
     setOpen(false);
-    onCreated(intent.receipt.blockId);
-  }, [cards, intent, onCreated, setOpen]);
+    onCreated(active.receipt.blockId);
+  }, [cards, client, intent, key, onCreated, setOpen]);
   const refresh = () => Promise.all([
     client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) }),
     client.invalidateQueries({ queryKey: queryKeys.trackReport(trackId) }),
@@ -39,7 +40,7 @@ export function useIndependentTaskLaunch({ trackId, cards, lifecycle, transport,
     const receipt = findIndependentTask(detail.cards, request);
     if (receipt === null) return false;
     client.setQueryData(queryKeys.trackDetail(trackId), detail);
-    client.setQueryData<Intent>(key, () => ({ phase: 'accepted', request, receipt }));
+    client.setQueryData<Intent>(key, () => ({ phase: 'accepted', request, receipt, revealed: false }));
     await refresh();
     return true;
   };
@@ -60,7 +61,7 @@ export function useIndependentTaskLaunch({ trackId, cards, lifecycle, transport,
         return;
       }
       const receipt = await runOperation(transport, startIndependentTaskOperation(trackId, request), unauthorized);
-      client.setQueryData<Intent>(key, () => ({ phase: 'accepted', request, receipt }));
+      client.setQueryData<Intent>(key, () => ({ phase: 'accepted', request, receipt, revealed: false }));
       await refresh();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'The server response is unavailable.';

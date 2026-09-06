@@ -21,7 +21,7 @@ export type IndependentTaskIntent =
   | Readonly<{ phase: 'editing'; goal: string }>
   | Readonly<{ phase: 'sending' | 'uncertain'; request: IndependentTaskRequest; message: string | null }>
   | Readonly<{ phase: 'rejected'; request: IndependentTaskRequest; message: string }>
-  | Readonly<{ phase: 'accepted'; request: IndependentTaskRequest; receipt: IndependentTaskReceipt }>;
+  | Readonly<{ phase: 'accepted'; request: IndependentTaskRequest; receipt: IndependentTaskReceipt; revealed: boolean }>;
 
 export function startIndependentTaskOperation(trackId: string, request: IndependentTaskRequest): ApiOperation<IndependentTaskReceipt> {
   return { method: 'POST', path: `/api/tracks/${encodeURIComponent(trackId)}/isolated-tasks`, body: request,

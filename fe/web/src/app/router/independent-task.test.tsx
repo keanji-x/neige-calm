@@ -57,6 +57,9 @@ function setup(mode: 'success' | 'lost' | 'lost-committed' | 'lost-hidden' | 'co
       if (mode === 'lost-committed' || mode === 'lost-hidden') throw new Error('Response lost after commit');
       return ok({ taskKey: body.key, blockId: 'created-task', docRev: 13 });
     }
+    if (request.path === '/api/tracks/w2') return ok({ track: { ...track, id: 'w2', title: 'Other Track' },
+      can_resume: false, cards: [{ ...reportCard, id: 'report2', track_id: 'w2', payload: { ...reportCard.payload, blocks: [] } }], overlays: [] });
+    if (request.path === '/api/tracks/w2/report') return ok({ taskDiagnostics: [] });
     if (request.path === '/api/areas') return ok([area]);
     if (request.path === '/api/areas/c1/tracks') return ok([track]);
     if (request.path === '/api/tracks/w1') {
@@ -86,7 +89,7 @@ function setup(mode: 'success' | 'lost' | 'lost-committed' | 'lost-hidden' | 'co
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
   const mount = () => render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);
   const view = mount();
-  return { requests, client, reportCard, view, mount,
+  return { router, requests, client, reportCard, view, mount,
     hold: () => { hold = true; }, release: () => release?.(),
     report: (value: unknown, nextStatus = 'done') => { acceptedReport = value; status = nextStatus; },
     denyReport: () => { rejectReport = true; } };
@@ -212,4 +215,20 @@ it('reconciles an exact-repeat 409 after a lost committed response without repla
   expect(writes).toHaveLength(2);
   expect(writes[1].body).toEqual(writes[0].body);
   expect(fixture.reportCard.payload.blocks).toHaveLength(2);
+});
+
+it('consumes the launch reveal across Track remounts without replacing the selected anchor', async () => {
+  const fixture = setup();
+  await enterGoal();
+  fireEvent.submit(screen.getByRole('textbox', { name: 'Goal' }).closest('form')!);
+  await screen.findByText('Current attempt 1 · Running');
+  await waitFor(() => expect(fixture.router.state.location.hash).toBe('created-task'));
+  for (let visit = 0; visit < 2; visit += 1) {
+    await act(() => fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'w2' } }));
+    await waitFor(() => expect(document.querySelector('h1')?.textContent).toContain('Other Track'));
+    await act(() => fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'w1' }, hash: 'original' }));
+    await waitFor(() => expect(document.querySelector('h1')?.textContent).toContain('Independent work'));
+    expect(fixture.router.state.location.hash).toBe('original');
+  }
+  expect(fixture.requests.filter((request) => request.method === 'POST')).toHaveLength(1);
 });
