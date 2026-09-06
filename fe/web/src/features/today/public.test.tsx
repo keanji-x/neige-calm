@@ -44,7 +44,7 @@ function track(overrides: Partial<Track> = {}): Track {
 
 describe('Today clock', () => {
   it('counts running and waiting tracks with the shared predicates', () => {
-    render(<TodayPage renderTrackRow={renderTrackRow} nowMs={NOW} areas={[area()]} tracks={[
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} nowMs={NOW} areas={[area()]} tracks={[
       track({ id: 'a', lifecycle: 'working' }),
       track({ id: 'b', lifecycle: 'planning' }),
       track({ id: 'c', lifecycle: 'blocked' }),
@@ -58,7 +58,7 @@ describe('Today clock', () => {
   });
 
   it('renders the pinned time instead of the wall clock when nowMs is given', () => {
-    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW} />);
     // The page title is the full date — weekday, month, day — in one element.
     expect(screen.getByRole('heading', { name: 'Monday, August 10' })).toBeTruthy();
     // One string, not three elements: the clock is ambient and its whole
@@ -69,7 +69,7 @@ describe('Today clock', () => {
   it('moves the page date across midnight on the clock tick', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 7, 10, 23, 59, 50));
-    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[]} areas={[]} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[]} areas={[]} />);
     expect(screen.getByRole('heading', { name: 'Monday, August 10' })).toBeTruthy();
 
     await act(() => vi.advanceTimersByTime(15_000));
@@ -87,14 +87,14 @@ describe('Today clock', () => {
 describe('Today calendar label', () => {
   it('names the single month when the week does not cross one', () => {
     // NOW is Monday 10 August 2026, whose week is 10–16 August.
-    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW} />);
     expect(screen.getByText('August 2026')).toBeTruthy();
   });
 
   it('names both months on a week that crosses one, agreeing with the page header', () => {
     // Thursday 3 September 2026 — the day owner saw. Its week is 31 Aug – 6 Sep.
     const nowMs = new Date(2026, 8, 3, 15, 0, 0).getTime();
-    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={nowMs} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={nowMs} />);
     expect(screen.getByText('Aug – Sep 2026')).toBeTruthy();
     /* The pair, not just the label: the defect was the contradiction between
        these two elements, so both are read in one test. */
@@ -105,7 +105,7 @@ describe('Today calendar label', () => {
   it('prints both years on a week that crosses one', () => {
     // Thursday 31 December 2026 — week 28 Dec 2026 – 3 Jan 2027.
     const nowMs = new Date(2026, 11, 31, 15, 0, 0).getTime();
-    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={nowMs} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={nowMs} />);
     /* `Dec – Jan 2027` would file December under 2027. */
     expect(screen.getByText('Dec 2026 – Jan 2027')).toBeTruthy();
   });
@@ -114,6 +114,7 @@ describe('Today calendar label', () => {
 describe('Today agenda', () => {
   it('excludes archived tracks from counts, sections, calendar dots, and agenda', () => {
     render(<TodayPage
+      activityAvailable
       renderTrackRow={renderTrackRow}
       tracks={[track({ title: 'Archived attention', lifecycle: 'blocked', archivedAt: NOW - DAY })]}
       areas={[area()]}
@@ -130,6 +131,7 @@ describe('Today agenda', () => {
   it('hands each agenda track to the injected renderer in the panel variant', () => {
     const seen: { id: string; variant: string }[] = [];
     render(<TodayPage
+      activityAvailable
       renderTrackRow={(candidate, options) => {
         seen.push({ id: candidate.id, variant: options.variant });
         return <span>{candidate.title}</span>;
@@ -147,6 +149,7 @@ describe('Today agenda', () => {
   it('resolves each agenda track area name for the renderer', () => {
     const seen: (string | undefined)[] = [];
     render(<TodayPage
+      activityAvailable
       renderTrackRow={(candidate, options) => { seen.push(options.areaName); return <span>{candidate.title}</span>; }}
       tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
     />);
@@ -156,6 +159,7 @@ describe('Today agenda', () => {
   it('falls back to "Unknown area" when the track points at an area we cannot see', () => {
     const seen: (string | undefined)[] = [];
     render(<TodayPage
+      activityAvailable
       renderTrackRow={(candidate, options) => { seen.push(options.areaName); return <span>{candidate.title}</span>; }}
       tracks={[track({ areaId: 'gone' })]} areas={[area()]} nowMs={NOW}
     />);
@@ -175,7 +179,7 @@ describe('Today agenda', () => {
        `variant: 'panel'`, which the stand-in at the top of this file marks. */
     const agenda = () => [...document.querySelectorAll('[data-nc-role="row"][data-nc-state="selected"]')]
       .map((row) => row.textContent ?? '').join('');
-    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[track(), tomorrowOnly]} areas={[area()]} nowMs={NOW} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track(), tomorrowOnly]} areas={[area()]} nowMs={NOW} />);
     expect(agenda()).not.toContain('Tomorrow only');
 
     // The day cell's accessible name carries its count — that is the only route
@@ -188,7 +192,7 @@ describe('Today agenda', () => {
   });
 
   it('moves the week window with the previous/next controls', async () => {
-    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[]} areas={[area()]} nowMs={NOW} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[]} areas={[area()]} nowMs={NOW} />);
     await userEvent.click(screen.getByRole('button', { name: 'Previous week' }));
     expect(screen.getByRole('button', { name: 'Monday, Aug 3' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Next week' }));

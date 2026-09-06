@@ -55,6 +55,24 @@ function renderRoute(path: string, reply: (request: ApiRequest) => ApiTransportR
 afterEach(() => { cleanup(); onlineManager.setOnline(true); vi.restoreAllMocks(); });
 
 describe('degraded workspace reads stay usable', () => {
+  it.each(['areas', 'tracks', 'activity'] as const)('does not claim empty activity while the %s read is unavailable', async (resource) => {
+    let broken = true;
+    renderRoute('/', (request) => {
+      if (request.path === '/api/areas') return broken && resource === 'areas' ? fail('Areas temporarily unavailable') : ok(areas.slice(0, 1));
+      if (request.path === '/api/areas/c1/tracks') return broken && resource === 'tracks' ? fail('Tracks temporarily unavailable') : ok([track]);
+      if (request.path.startsWith('/api/overlays?')) return broken && resource === 'activity' ? fail('Activity temporarily unavailable') : ok([]);
+      return ok([]);
+    });
+    const main = await screen.findByRole('main');
+    await within(main).findByRole('alert');
+    expect(within(main).getByRole('banner').textContent).not.toMatch(/\d(?:waiting|running)/);
+    expect(within(main).queryByText('Nothing scheduled.')).toBeNull();
+    if (resource === 'activity') expect(within(main).getAllByText('Reliable').length).toBeGreaterThan(0);
+    broken = false;
+    await userEvent.click(within(main).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(within(main).getByRole('banner').textContent).toContain('1running'));
+  });
+
   it('mounts navigation while an offline startup Areas query is paused', async () => {
     onlineManager.setOnline(false);
     renderRoute('/', () => ok([]));

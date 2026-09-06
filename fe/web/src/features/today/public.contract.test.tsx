@@ -40,7 +40,7 @@ function track(overrides: Partial<Track> = {}): Track {
 
 describe('INV-TODAY-002 the scheduled-event seam', () => {
   it('renders live track activity while the scheduled list is empty', () => {
-    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW} />);
     expect(screen.getByRole('complementary').textContent).toContain('Open track');
     expect(screen.queryByText('Nothing scheduled.')).toBeNull();
   });
@@ -52,7 +52,7 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
     // it as "dead code" is exactly the regression this locks.
     const scheduled = track({ id: 'w2', title: 'Scheduled track', createdAt: NOW - 10 * 86_400_000, terminalAt: NOW - 9 * 86_400_000 });
     const events: ScheduledEvent[] = [{ track: scheduled, date: new Date(NOW), hour: 15 }];
-    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
 
     const agenda = screen.getByRole('complementary').textContent ?? '';
     expect(agenda).toContain('Scheduled track');
@@ -60,7 +60,7 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
   });
 
   it('shows the empty state only when both sources are empty', () => {
-    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[]} areas={[area()]} nowMs={NOW} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[]} areas={[area()]} nowMs={NOW} />);
     expect(screen.getByText('Nothing scheduled.')).toBeTruthy();
   });
 
@@ -69,7 +69,7 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
     // failure this locks: one track present in both sources must read as 1.
     const shared = track({ id: 'w1' });
     const events: ScheduledEvent[] = [{ track: shared, date: new Date(NOW), hour: 9 }];
-    render(<TodayPage renderTrackRow={renderTrackRow} tracks={[shared]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
+    render(<TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[shared]} areas={[area()]} scheduledEvents={events} nowMs={NOW} />);
     // Both the drawn glyph and the accessible name say one, not two.
     const today = screen.getByRole('button', { name: 'Monday, Aug 10, 1 track' });
     expect(today.querySelector('[data-nc-day-count]')?.textContent).toBe('1');
@@ -91,7 +91,7 @@ describe('INV-A11Y-061 navigation shape', () => {
    */
   it('emits no native link anywhere on the surface', () => {
     const { container } = render(
-      <TodayPage renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW} />,
+      <TodayPage activityAvailable renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW} />,
     );
     expect(container.querySelectorAll('a').length).toBe(0);
   });
@@ -113,6 +113,7 @@ const GUIDE_LABEL = 'Getting started';
 describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () => {
   it('renders the empty state for a report nobody has written', () => {
     render(<TodayPage
+      activityAvailable
       renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
       launchpadDocument={DOCUMENT}
@@ -127,6 +128,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
 
   it('renders the document once the server says the report has content', () => {
     render(<TodayPage
+      activityAvailable
       renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
@@ -137,6 +139,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
 
   it('treats a 404 as the empty state rather than an error', () => {
     render(<TodayPage
+      activityAvailable
       renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
       launchpad={null} launchpadDocument={DOCUMENT}
     />);
@@ -148,6 +151,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
     // flashing the second one while the first is true is how a page teaches
     // people to distrust it.
     render(<TodayPage
+      activityAvailable
       renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
       launchpadDocument={DOCUMENT}
     />);
@@ -164,6 +168,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
      * assertion covers the whole reading column rather than one known wrapper.
      */
     render(<TodayPage
+      activityAvailable
       renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
       launchpad={null}
     />);
@@ -184,6 +189,7 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
 describe('INV-TODAYDOC-002 a failed resolve never degrades into the empty state', () => {
   it('shows the failure and suppresses the empty state', () => {
     render(<TodayPage
+      activityAvailable
       renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
       launchpad={undefined}
       launchpadDocument={DOCUMENT}
@@ -198,6 +204,7 @@ describe('INV-TODAYDOC-002 a failed resolve never degrades into the empty state'
 describe('the main column belongs to the document', () => {
   it('omits the Waiting on you list while retaining its header count', () => {
     render(<TodayPage
+      activityAvailable
       renderTrackRow={renderTrackRow} tracks={[track({ lifecycle: 'blocked' })]} areas={[area()]} nowMs={NOW}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
@@ -218,6 +225,7 @@ describe('#1253 the first-run page keeps the full Today layout', () => {
    */
   it('keeps the calendar and one specific empty state before a launchpad exists', () => {
     render(<TodayPage
+      activityAvailable
       renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW}
       launchpad={null}
       conversationList={<p>No conversations yet.</p>}
@@ -229,6 +237,7 @@ describe('#1253 the first-run page keeps the full Today layout', () => {
 
   it('renders the report on a workspace with no user areas', () => {
     render(<TodayPage
+      activityAvailable
       renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       launchpadDocument={DOCUMENT}
@@ -244,6 +253,7 @@ describe('#1253 the first-run page keeps the full Today layout', () => {
 
   it('surfaces a failed resolve on a workspace with no user areas', () => {
     render(<TodayPage
+      activityAvailable
       renderTrackRow={renderTrackRow} tracks={[]} areas={[]} nowMs={NOW}
       launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
     />);
@@ -273,6 +283,7 @@ describe('#1343 the document’s action slot', () => {
    */
   it('shows getting-started guidance without document controls when the report is empty', () => {
     render(<TodayPage
+      activityAvailable
       {...props}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
       documentAction={ACTION}
@@ -295,6 +306,7 @@ describe('#1343 the document’s action slot', () => {
      import. */
   it('renders the composition’s action beside a written report', () => {
     render(<TodayPage
+      activityAvailable
       {...props}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
       documentAction={ACTION}
@@ -309,6 +321,7 @@ describe('#1343 the document’s action slot', () => {
      composition has no action", which is what `features/**` alone can have. */
   it('renders nothing when no action was supplied', () => {
     render(<TodayPage
+      activityAvailable
       {...props}
       launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
     />);
@@ -320,6 +333,7 @@ describe('#1343 the document’s action slot', () => {
      An action on a document the page could not even read has no referent. */
   it('is absent when the resolve itself failed', () => {
     render(<TodayPage
+      activityAvailable
       {...props}
       launchpad={undefined}
       launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}

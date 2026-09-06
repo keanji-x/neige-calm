@@ -12,7 +12,7 @@
 // This drives the real router, the real QueryClient and the real form — the
 // wiring *is* the thing under test, and a fixture that re-implemented the
 // branch would prove only that the fixture agrees with itself.
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -27,7 +27,7 @@ import { ThemeProvider } from '../theme/public.tsx';
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
-afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
+afterEach(() => { cleanup(); onlineManager.setOnline(true); delete document.documentElement.dataset.theme; });
 
 function memoryStorage() {
   const values = new Map<string, string>();
@@ -126,13 +126,14 @@ function harness(options: {
 } = {}) {
   const sent: ApiRequest[] = [];
   let trackCreateIndex = 0;
+  let firstCreateAckLost = false;
   const transport: ApiTransportPort = {
     send(request: ApiRequest): Promise<ApiTransportResponse> {
       sent.push(request);
       const posted = request.body as { area_id?: string } | undefined;
-      if (request.method === 'POST' && request.path === '/api/tracks' && options.loseFirstCreateAck) {
-        trackCreateIndex += 1;
-        if (trackCreateIndex === 1) return Promise.reject(new Error('Connection closed after server commit'));
+      if (request.method === 'POST' && request.path === '/api/tracks' && options.loseFirstCreateAck && !firstCreateAckLost) {
+        firstCreateAckLost = true;
+        return Promise.reject(new Error('Connection closed after server commit'));
       }
       if (request.method === 'POST' && request.path === '/api/tracks' && options.trackCreate) {
         return Promise.resolve(options.trackCreate);
@@ -233,6 +234,39 @@ function harness(options: {
 }
 
 describe('Track creation drafts survive navigation', () => {
+  it.each(['offline', 'rate-limit', 'folder-conflict'] as const)('keeps an earlier unconfirmed request after a later %s rejection', async (rejection) => {
+    const { sent } = harness({ templates: [], loseFirstCreateAck: true,
+      otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
+      trackCreateSequence: rejection === 'offline' ? undefined : [
+        rejection === 'rate-limit'
+          ? { status: 429, statusText: 'Too Many Requests', body: { error: 'rate limited' } }
+          : { status: 409, statusText: 'Conflict', body: CONFLICT },
+      ],
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Keep original intent');
+    document.documentElement.dataset.theme = 'light';
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await screen.findByText('Transport request failed');
+    const original = createdTrackRequests(sent)[0];
+    if (rejection === 'offline') act(() => onlineManager.setOnline(false));
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).not.toContain('Transport request failed'));
+    expect(screen.getByLabelText(TASK_LABEL).getAttribute('contenteditable')).toBe('false');
+    expect(screen.queryByRole('button', { name: 'Create in Work' })).toBeNull();
+    act(() => onlineManager.setOnline(true));
+    await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    document.documentElement.dataset.theme = 'dark';
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(rejection === 'offline' ? 2 : 3));
+    const retry = createdTrackRequests(sent).at(-1);
+    expect(retry?.headers).toEqual(original?.headers);
+    expect(retry?.body).toEqual(original?.body);
+  });
+
   it('restores unsent text and options independently for each Area', async () => {
     harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));

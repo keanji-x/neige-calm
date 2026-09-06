@@ -221,7 +221,7 @@ function TodayCompact({ nowMs }: TodayCompactProps) {
 function TodayDesktop({
   tracks, areas, renderTrackRow, scheduledEvents = [], conversationList, conversationAction,
   launchpad, launchpadDocument, launchpadError, nowMs,
-  documentAction,
+  documentAction, activityAvailable,
 }: TodayPageProps) {
   const { now, today } = useNow(nowMs);
 
@@ -233,6 +233,7 @@ function TodayDesktop({
       <PanelCard>
         <PanelModule title="Calendar">
           <Calendar
+            activityAvailable={activityAvailable}
             today={today}
             tracks={shownTracks}
             areas={areas}
@@ -249,6 +250,7 @@ function TodayDesktop({
   return (
     <div className={styles.page}>
       <TodayHeader
+        activityAvailable={activityAvailable}
         today={today} waiting={waiting.length} running={running.length}
         now={now}
       />
@@ -376,11 +378,12 @@ function PanelRows({ title, tracks, render }: {
   );
 }
 
-function TodayHeader({ today, waiting, running, now }: {
+function TodayHeader({ today, waiting, running, now, activityAvailable }: {
   today: Date;
   waiting: number;
   running: number;
   now: Date;
+  activityAvailable: boolean;
 }) {
   return (
     <PageHeader
@@ -391,7 +394,7 @@ function TodayHeader({ today, waiting, running, now }: {
           {today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
         </PageTitle>
       }
-      meta={
+      meta={activityAvailable ? (
         <span className={styles.counts}>
           {/* The two numbers summarise the two attention sections, so they take
               the weight; the words stay quiet. */}
@@ -401,7 +404,7 @@ function TodayHeader({ today, waiting, running, now }: {
           <span className={styles.countValue}>{running}</span>
           <span className={styles.countWord}>running</span>
         </span>
-      }
+      ) : undefined}
       actions={<Clock now={now} />}
     />
   );
@@ -418,13 +421,14 @@ function Clock({ now }: { now: Date }) {
   );
 }
 
-function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs }: {
+function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs, activityAvailable }: {
   today: Date;
   tracks: readonly Track[];
   areas: readonly Area[];
   scheduledEvents: readonly ScheduledEvent[];
   renderTrackRow: TrackRowRenderer;
   nowMs?: number;
+  activityAvailable: boolean;
 }) {
   const [selected, setSelected] = useState<Date>(today);
   const previousToday = useRef(today);
@@ -505,7 +509,7 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
                    assistive tech, so this is the only route to "how much is on
                    Thursday?" for anyone not reading it by eye. */
                 aria-label={day.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
-                  + (seen.size === 0 ? '' : `, ${seen.size} track${seen.size === 1 ? '' : 's'}`)}
+                  + (!activityAvailable || seen.size === 0 ? '' : `, ${seen.size} track${seen.size === 1 ? '' : 's'}`)}
                 onClick={() => setSelected(day)}
               >
                 <span className={styles.dayNumber}>{day.getDate()}</span>
@@ -523,7 +527,7 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
                   two numerals read as two calendar facts competing, and a cell
                   showing "11" over "3" is asking you which one is the date.
                 */}
-                {seen.size > 0 && (
+                {activityAvailable && seen.size > 0 && (
                   <span className={styles.dayCount} data-nc-day-count={seen.size} aria-hidden="true">
                     {seen.size}
                   </span>
@@ -567,7 +571,7 @@ function Calendar({ today, tracks, areas, scheduledEvents, renderTrackRow, nowMs
             The condition is *both* sources empty. The string is the one the
             live contract pins; it satisfies §5.3 as well as any rewrite. */}
         {scheduledAgenda.length === 0 && trackAgenda.length === 0
-          ? <PanelEmpty>Nothing scheduled.</PanelEmpty>
+          ? activityAvailable ? <PanelEmpty>Nothing scheduled.</PanelEmpty> : null
           : (
         <div className={styles.rows}>
           {scheduledAgenda.map((event) => (

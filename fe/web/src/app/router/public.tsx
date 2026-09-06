@@ -2115,6 +2115,9 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       <button type="button" data-nc-action="tertiary" onClick={resetConfirm.feedback.clear}>Dismiss</button>
     </div>}
     <TodayPage
+      activityAvailable={workspaceError === null && workspace.overlaysError === null
+        && !workspace.areasLoading && !workspace.overlaysLoading
+        && ![...workspace.tracksLoadingByArea.values()].some(Boolean)}
       tracks={workspace.tracks}
       areas={workspace.areas}
       // The row belongs to features/track and Today may not import a sibling

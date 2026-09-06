@@ -54,6 +54,8 @@ export type TrackRowRenderer = (
 export type TodayPageProps = Readonly<{
   tracks: readonly Track[];
   areas: readonly Area[];
+  /** Partial or failed workspace reads cannot establish aggregate activity. */
+  activityAvailable: boolean;
   /**
    * The launchpad resolve (`GET /api/today/launchpad`), §5.1.
    *
@@ -190,6 +192,10 @@ export type Disposition =
  * positive/negative fixture under `tools/architecture/fixtures/`).
  */
 export const TODAY_VIEWPORT_LEDGER = Object.freeze({
+  activityAvailable: Object.freeze({
+    render: false,
+    why: 'The compact calendar displays dates only; activity summaries and agenda rows belong to desktop.',
+  } as const),
   tracks: Object.freeze({
     render: false,
     why: 'The phone shows the calendar only; no track list, waiting bar or panel is drawn.',

@@ -103,6 +103,7 @@ describe('the document’s action answers a control, not the document', () => {
     await page.viewport(1280, 800);
     const { container } = render(
       <Main><TodayPage
+      activityAvailable
         renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
         launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
         launchpadDocument={<p>the day&apos;s report</p>}
@@ -155,6 +156,7 @@ describe('the document region owns the column the report will stand in', () => {
   function renderVacant() {
     return render(
       <Main><TodayPage
+      activityAvailable
         renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
         launchpad={{ track_id: 'lp', report_has_noninitial_content: false }}
       /></Main>,
@@ -165,6 +167,7 @@ describe('the document region owns the column the report will stand in', () => {
     await page.viewport(1280, 800);
     const { container } = render(
       <Main><TodayPage
+      activityAvailable
         renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
         launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
         launchpadDocument={<p>today’s report</p>}
@@ -220,6 +223,7 @@ describe('the document region owns the column the report will stand in', () => {
     await page.viewport(1024, 800);
     const { container } = render(
       <Main inlineSize="824px"><TodayPage
+      activityAvailable
         renderTrackRow={renderTrackRow} tracks={[track()]} areas={[area()]} nowMs={NOW}
         launchpad={{ track_id: 'lp', report_has_noninitial_content: true }}
         launchpadDocument={<div data-document-measure="" style={{
@@ -247,6 +251,7 @@ describe('the agenda empty line sits on the panel inset', () => {
     // empty and the module renders its empty line.
     const { container } = render(
       <TodayPage
+      activityAvailable
         renderTrackRow={renderTrackRow} areas={[area()]} nowMs={NOW}
         tracks={[track({
           lifecycle: 'done',

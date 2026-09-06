@@ -1,6 +1,27 @@
 import { expect, test } from '@playwright/test';
 
-test('retains the original Track request after a lost acknowledgement and navigation', async ({ page, request }) => {
+test('keeps Today usable without claiming zero activity when Areas is unavailable', async ({ page }) => {
+  let unavailable = true;
+  await page.route('**/api/areas', async (route) => {
+    if (unavailable && route.request().method() === 'GET') {
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Areas temporarily unavailable' }) });
+    } else await route.continue();
+  });
+  await page.goto('/next/');
+  const main = page.getByRole('main');
+  const failure = main.getByRole('alert').filter({ hasText: 'Areas temporarily unavailable' });
+  await expect(failure).toBeVisible();
+  await expect(main.locator('header[data-nc-header-rows]').first()).not.toContainText(/\d\s*(waiting|running)/);
+  await expect(main.getByText('Nothing scheduled.')).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'Workspace' })).toBeVisible();
+  await page.screenshot({ path: 'test-results/today-unavailable-desktop.png' });
+  unavailable = false;
+  await failure.getByRole('button', { name: 'Retry' }).click();
+  await expect(failure).toHaveCount(0);
+  await expect(main.locator('header[data-nc-header-rows]').first()).toContainText(/\d\s*running/);
+});
+
+test('retains the original Track request after a lost acknowledgement and navigation', async ({ page, request, context }) => {
   const response = await request.post('/api/areas', { data: { name: `Track recovery ${Date.now()}`, color: '#123456' } });
   expect(response.ok()).toBe(true);
   const area = await response.json() as { id: string; name: string };
@@ -21,6 +42,12 @@ test('retains the original Track request after a lost acknowledgement and naviga
     await composer.fill('Keep exactly one Track for this intention.');
     await page.getByRole('button', { name: 'Create track', exact: true }).click();
     await expect(page.getByRole('alert').filter({ hasText: 'Transport request failed' })).toBeVisible();
+    await context.setOffline(true);
+    await page.getByRole('button', { name: 'Create track', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'original creation is still unconfirmed' })).toBeVisible();
+    await expect(composer).toHaveAttribute('contenteditable', 'false');
+    expect(attempts).toHaveLength(1);
+    await context.setOffline(false);
     await page.getByRole('button', { name: 'Go to Today' }).click();
     await page.getByRole('button', { name: `New track in ${area.name}` }).click();
     await expect(composer).toHaveText('Keep exactly one Track for this intention.');
@@ -31,6 +58,7 @@ test('retains the original Track request after a lost acknowledgement and naviga
     const tracks = await (await request.get(`/api/areas/${area.id}/tracks`)).json() as { id: string }[];
     expect(tracks.map((track) => track.id)).toEqual([createdId]);
   } finally {
+    await context.setOffline(false);
     await request.delete(`/api/areas/${area.id}`);
   }
 });

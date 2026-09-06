@@ -61,6 +61,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     // must not enable a second request before the first settles.
     const current = store.get(areaId);
     if (current === null || current.creating || !available || current.createdTrackId !== null) return;
+    const hadUnconfirmedRequest = replacementKey === undefined && current.request !== null;
     const attemptKey = replacementKey ?? current.key;
     const body = {
       area_id: targetAreaId,
@@ -90,9 +91,9 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
       if (conflict !== null) {
         const owner = workspace.areas.find((area) => area.id === conflict.area_id);
         store.update(areaId, {
-          request: null,
+          request: hadUnconfirmedRequest ? request : null,
           error: folderConflictMessage(conflict, owner?.name ?? null),
-          folderConflict: owner !== undefined && owner.id !== targetAreaId
+          folderConflict: !hadUnconfirmedRequest && owner !== undefined && owner.id !== targetAreaId
             && conflict.conflict_kind !== 'ancestor' && draft.cwd !== undefined
             ? { areaId: owner.id, areaName: owner.name, cwd: draft.cwd } : null,
         });
@@ -104,9 +105,12 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
         && failure.failure.status >= 400 && failure.failure.status < 500
         && failure.failure.status !== 408 && failure.failure.status !== 409;
       store.update(areaId, {
-        error: failure instanceof ApiError ? failure.message : 'Could not create the track.',
+        error: hadUnconfirmedRequest && rejectedBeforeDispatch
+          ? 'You’re offline. The original creation is still unconfirmed; reconnect to retry it.'
+          : failure instanceof ApiError ? failure.message : 'Could not create the track.',
         ...(keyAction === 'replace' ? { key: mintIdempotencyKey(), request: null } : {}),
-        ...(rejectedBeforeDispatch || rejectedInput ? { request: null } : {}),
+        // A refused retry says nothing about the earlier attempt's outcome.
+        ...(!hadUnconfirmedRequest && (rejectedBeforeDispatch || rejectedInput) ? { request: null } : {}),
         canRetryAsNewTrack: keyAction === 'offer-explicit-replace',
       });
     }).finally(() => { store.update(areaId, { creating: false }); });
