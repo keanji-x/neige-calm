@@ -637,6 +637,67 @@ describe('planner conversation regressions', () => {
   });
 
   /*
+   * #1505 PR4 review — an EDITED queued message survives the drain exactly once.
+   *
+   * The echo is retired by TEXT (`userTextMatchesEcho`). Rewriting the queue
+   * entry without rewriting the echo therefore breaks its only retirement
+   * route: the row that eventually lands says the new text, the echo still
+   * says the old one, they never match, and once the entry leaves `pending`
+   * the visibility filter stops hiding it. The reader is then looking at the
+   * edited message AND at a permanent pre-edit ghost.
+   *
+   * This test drains after the edit, which is what the original PR4 tests
+   * never did — they stopped at the 200.
+   */
+  it('does not leave a pre-edit ghost after an edited message drains', async () => {
+    const entry = { entry_id: 'entry-9', text: 'look at report', rev: 0, queued_at_ms: 5 };
+    let listed = false;
+    let edited = false;
+    setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({
+          ...PLANNER_RUN_IDLE, phase: 'turn_running',
+          // The drain: after the edit the entry leaves the queue.
+          pending: listed && !edited ? [entry] : [], pending_overflow: 0,
+        });
+      }
+      if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
+        listed = true;
+        return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: entry.entry_id });
+      }
+      if (request.method === 'PATCH' && request.path.includes('/planner/input/')) {
+        edited = true;
+        return ok({ card_id: CARD.id, entry_id: entry.entry_id, rev: 1, text: 'look at the diff' });
+      }
+      return undefined;
+    });
+    await openConversation();
+    await screen.findByRole('button', { name: 'Stop' });
+    const field = messageField();
+    await typeInto(field, 'look at report');
+    await sendWithEnter(field);
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Edit queued message' }), {
+      target: { value: 'look at the diff' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    // Drained: the queue region lets go, and the echo comes back carrying the
+    // text that was actually saved.
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText('look at the diff')).toHaveLength(1);
+    });
+    expect(screen.queryAllByText('look at report')).toHaveLength(0);
+  });
+
+  /*
    * #1505 PR4 rule 4 — a deleted queued message is gone, not hidden.
    *
    * Deleting removes the entry from `pending`, which un-hides the transcript

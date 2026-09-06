@@ -840,12 +840,12 @@ export function useConversationStore(
    * going to come back — which is exactly why the two paths differ.
    */
   const rewriteQueuedEcho = (entryId: string, text: string): void => {
-    const rewritten = (turn: TranscriptEntry) =>
-      isOptimisticConversationTurn(turn) && turn.entryId === entryId ? { ...turn, text } : turn;
-    setEchoes((current) => current.map(rewritten) as readonly OptimisticConversationTurn[]);
+    const claims = (turn: TranscriptEntry) =>
+      isOptimisticConversationTurn(turn) && turn.entryId === entryId;
+    setEchoes((current) => current.map((turn) => claims(turn) ? { ...turn, text } : turn));
     registry.updateExisting(cardId, ({ conversation: known, turns: knownTurns }) => ({
       conversation: known,
-      turns: knownTurns.map(rewritten),
+      turns: knownTurns.map((turn) => claims(turn) ? { ...turn, text } : turn),
     }));
   };
   const editQueuedEntry = (entry: PendingQueueEntry, text: string) =>
