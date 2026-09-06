@@ -1005,7 +1005,7 @@
       "oracle:INV-APP-116"
     ],
     "target": "web/src/app/providers/queries.ts",
-    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -867,7 +867,7 @@\n     // before the caller exposes retry UI, so that UI first observes the latest\n     // Area list. This narrows the uncertainty window; POST itself is not an\n     // idempotent API and this client-side reconciliation does not pretend it is.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const update = useMutation({\n     ...INTERACTIVE_WRITE_OPTIONS,\n",
+    "patch": "diff --git a/web/src/app/providers/queries.ts b/web/src/app/providers/queries.ts\n--- a/web/src/app/providers/queries.ts\n+++ b/web/src/app/providers/queries.ts\n@@ -898,6 +898,6 @@\n     // A lost response can follow a committed creation. Reconcile the sidebar;\n     // the retained creation key independently makes the next POST safe.\n-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),\n+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },\n   });\n   const update = useMutation({\n     ...INTERACTIVE_WRITE_OPTIONS,\n",
     "expected_red": [
       "delete mutation wiring invalidates Areas after a failed POST that may already have committed"
     ],
