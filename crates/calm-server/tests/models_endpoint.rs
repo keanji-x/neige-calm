@@ -60,6 +60,50 @@ impl Boot {
             .map(str::to_string)
             .collect()
     }
+
+    /// Blocks the CALLING THREAD until the fake daemon has appended at least
+    /// `count` lines equal to `method` to `<sock>.methods`, then returns the
+    /// whole file.
+    ///
+    /// `<sock>.methods` is written by the fake daemon, which is a separate
+    /// PROCESS: `request_until` in `codex_appserver.rs` writes its frame under
+    /// the sink lock and only then awaits the response, so a frame our request
+    /// issued is in the socket's kernel buffer by the time the request
+    /// returns — but the daemon still has to be scheduled, read it and append
+    /// the line. Sampling the file once right after the request therefore
+    /// races that append; on a loaded runner it lost (CI job 101403060498 saw
+    /// `["initialize"]`). This waits for the append instead.
+    ///
+    /// Two properties of the wait matter:
+    ///
+    ///   * It uses `std::time::Instant` / `std::thread::sleep`, not tokio
+    ///     timers, so it elapses in real time whatever a caller has done to
+    ///     tokio's clock. A `tokio::time::sleep` poll loop under
+    ///     `tokio::time::pause()` would burn its whole budget in zero
+    ///     wall-clock time and reintroduce the race it exists to close.
+    ///   * It never `.await`s, so the runtime does not park while it runs.
+    ///     Blocking the runtime is safe here precisely because the thing it
+    ///     waits for runs in another process.
+    ///
+    /// The deadline is a failure ceiling, not a measurement: it exists so a
+    /// daemon that never records the frame fails the test with the recorded
+    /// contents instead of hanging.
+    fn wait_for_recorded(&self, method: &str, count: usize, why: &str) -> Vec<String> {
+        let ceiling = Duration::from_secs(30);
+        let started = std::time::Instant::now();
+        loop {
+            let seen = self.methods_seen();
+            if seen.iter().filter(|m| m.as_str() == method).count() >= count {
+                return seen;
+            }
+            assert!(
+                started.elapsed() < ceiling,
+                "{why}: waited {ceiling:?} of real time for the fake daemon to \
+                 record {count}x `{method}`, got {seen:?}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 fn cfg(root: &TempDir) -> Config {
@@ -712,15 +756,36 @@ async fn endless_pagination_degrades_instead_of_truncating() {
 /// request**, not one per codex read. It is also the only coverage of the
 /// `config/read` bound at all.
 ///
-/// The evidence is deliberately NOT a stopwatch. Under `tokio::time::pause()`
-/// the clock auto-advances whenever the runtime parks, and this harness parks
-/// on a real socket and on the daemon supervisor's own timers — an earlier
-/// version of this test measured 12.9s and then 14.0s of virtual time for an
-/// 8s budget, none of it spent waiting on our deadlines. Virtual elapsed is
-/// not a valid measurement here, so the assertion is on the wire instead:
-/// with one shared budget the catalog read spends it and `config/read` is
-/// never issued at all. Two independent budgets would put that frame on the
-/// socket.
+/// The evidence is the frames on the wire, and the clock this test runs on is
+/// the REAL one. Two earlier shapes failed, both of them clock shapes:
+///
+///   * Measuring virtual elapsed under `tokio::time::pause()`. The paused
+///     clock auto-advances whenever the runtime parks, and this harness parks
+///     on a real socket and on the daemon supervisor's own timers — the
+///     measurement read 12.9s and then 14.0s of virtual time for an 8s
+///     budget, and stayed green when `CODEX_READ_TIMEOUT` was shortened to
+///     3s. It was insensitive to the constant it claimed to pin.
+///   * Keeping `pause()` for speed after every assertion had moved to the
+///     wire. Pausing virtualizes EVERY tokio timer in the request path, not
+///     just the deadlines this test cares about — including the 30s
+///     pool-acquire timeout in `SqlxRepo::open`, which a paused clock can
+///     elapse the moment the runtime parks on the sqlite worker thread — no
+///     wall-clock wait required. Two CI reruns of the
+///     same commit failed at opposite ends of that: once on the recorded
+///     frame, once with `500 db_error: pool timed out while waiting for an
+///     open connection` from the `card_id` lookup.
+///
+/// So this test pays a real `CODEX_READ_TIMEOUT` (~8s of wall clock): that is
+/// the price of driving the one shared budget with a daemon that never
+/// answers, and it buys a request path whose timers are all real. The claim
+/// needs no timer of its own — with one shared budget the catalog read spends
+/// it and `config/read` is never issued at all, and two independent budgets
+/// would put that frame on the socket.
+///
+/// Reading the wire still needs a barrier, because the fake daemon records
+/// frames from another PROCESS: see [`Boot::wait_for_recorded`] for the race a
+/// single sample lost on CI, and the barrier read below for how "nothing more
+/// is coming" is established without a settle delay.
 #[tokio::test]
 async fn config_read_shares_the_one_request_budget() {
     let boot = boot(true, |sock| {
@@ -731,13 +796,9 @@ async fn config_read_shares_the_one_request_budget() {
     let app = boot.app.clone();
     let query = format!("?card_id={}", boot.card_id);
 
-    // No timing assertion at all, deliberately. A virtual-clock race against
-    // this request was measured to be insensitive to the budget constant
-    // (shortening `CODEX_READ_TIMEOUT` to 3s left it green), because the
-    // paused clock advances on parked socket IO rather than on our deadlines.
-    // An assertion that cannot fail is worse than no assertion: the evidence
-    // below is on the wire.
-    tokio::time::pause();
+    // No timing assertion, and no `tokio::time::pause()` — see the doc comment
+    // for why each was tried and dropped. An assertion that cannot fail is
+    // worse than no assertion: the evidence below is on the wire.
     let (status, body) = get_models(&app, &query).await;
 
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -747,13 +808,42 @@ async fn config_read_shares_the_one_request_budget() {
         "a default we could not read is `unknown`, never a guess"
     );
 
-    let methods = boot.methods_seen();
+    // BARRIER, not a settle. `get_models` has returned, so every frame the
+    // request issued was written to the socket under the sink lock before it
+    // returned (`request_until` writes, THEN awaits). The fake daemon reads
+    // and records one connection's frames in order (`serve_conn`), so one more
+    // `model/list` issued now — on that same connection, behind everything the
+    // request wrote — is recorded after all of them. Once the daemon has
+    // recorded that second `model/list`, it has recorded everything the
+    // request issued, and a `config/read` still absent from the lines ahead of
+    // it was never issued. No duration is being waited out: this is an
+    // ordering fact about one FIFO connection.
+    boot.state
+        .shared_codex_appserver
+        .model_list(tokio::time::Instant::now() + Duration::from_millis(200))
+        .await
+        .expect_err("`model-list-no-answer` is still set; only the barrier frame matters");
+
+    let methods = boot.wait_for_recorded(
+        "model/list",
+        2,
+        "positive control: the catalog read must have reached the daemon",
+    );
+    let second = methods
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.as_str() == "model/list")
+        .map(|(i, _)| i)
+        .nth(1)
+        .expect("`wait_for_recorded` returned only after two `model/list` lines");
+    // Everything the request itself put on the wire, and nothing after it.
+    let issued = &methods[..second];
     assert!(
-        methods.iter().any(|m| m == "model/list"),
+        issued.iter().any(|m| m == "model/list"),
         "positive control: the catalog read must have reached the daemon, got {methods:?}"
     );
     assert!(
-        !methods.iter().any(|m| m == "config/read"),
+        !issued.iter().any(|m| m == "config/read"),
         "the catalog read spent the whole request budget, so `config/read` must \
          never have been issued — seeing it means the second read was handed a \
          fresh timer and the endpoint's real bound is 16s, not 8s. Saw {methods:?}"
