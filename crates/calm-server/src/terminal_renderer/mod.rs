@@ -22,6 +22,8 @@ mod attach_reader;
 mod child_ready;
 mod client_pump;
 mod control_writer;
+#[cfg(test)]
+pub(crate) mod establishment_test_hook;
 mod output_capture;
 mod snapshot;
 
@@ -351,20 +353,35 @@ impl TerminalRendererRegistry {
 
         let EstablishedRenderer { entry, handoff } =
             ensure_entry(cfg, self.repo.clone(), self.task_hook(), launch).await?;
+        #[cfg(test)]
+        if let Some((launch, _)) = handoff.as_ref() {
+            establishment_test_hook::pause(launch.task_id(), &entry.terminal_id).await;
+        }
         let entry = Arc::new(entry);
-        {
+        let entry = {
             let mut entries = self
                 .entries
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal renderer registry mutex poisoned"))?;
             if let Some(existing) = entries.get(&entry.terminal_id) {
                 entry.abort_tasks();
-                // A concurrent read-only attachment is not this fresh handoff.
-                return Ok(existing.clone());
+                if handoff.is_some()
+                    && (existing.terminal_id != entry.terminal_id
+                        || existing.proc_id != entry.proc_id
+                        || existing.supervisor_sock != entry.supervisor_sock)
+                {
+                    return Err(anyhow::anyhow!("concurrent renderer identity changed; retain owned launch for reconciliation").into());
+                }
+                // A read-only caller has no handoff proof. A fresh caller still
+                // owns its observed PID and must finish the same durable handoff
+                // even when the UI installed this exact renderer first.
+                existing.clone()
+            } else {
+                tracing::info!(terminal_id=%entry.terminal_id, "terminal renderer registry inserted entry");
+                entries.insert(entry.terminal_id.clone(), entry.clone());
+                entry
             }
-            tracing::info!(terminal_id=%entry.terminal_id, "terminal renderer registry inserted entry");
-            entries.insert(entry.terminal_id.clone(), entry.clone());
-        }
+        };
         if let Some((launch, pid)) = handoff {
             let repo = self
                 .repo
@@ -560,6 +577,10 @@ async fn ensure_entry(
     launch: Option<crate::operation::task_launch::TaskLaunch>,
 ) -> anyhow::Result<EstablishedRenderer> {
     use crate::operation::terminal_launch::{self, TerminalStart};
+    // Match the absolute endpoint persisted in the one-use launch record.
+    if !cfg.supervisor_sock.is_absolute() {
+        cfg.supervisor_sock = std::env::current_dir()?.join(&cfg.supervisor_sock);
+    }
     let start = match repo.as_deref() {
         Some(repo) => {
             terminal_launch::resolve(repo, &cfg.terminal_id, &cfg.supervisor_sock, launch).await?

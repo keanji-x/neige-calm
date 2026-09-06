@@ -49,14 +49,27 @@ enum History {
     OldUnknown,
     OldCompensating,
     Healthy,
+    ConcurrentUi,
+    ConcurrentForeignPid,
     OldSuccessful,
     OldPrestart,
     PidWriteFailure,
 }
 impl History {
     fn successful(self) -> bool {
-        matches!(self, Self::Healthy | Self::OldSuccessful)
+        matches!(
+            self,
+            Self::Healthy | Self::OldSuccessful | Self::ConcurrentUi
+        )
     }
+}
+#[tokio::test]
+async fn concurrent_ui_attachment_cannot_handoff_a_different_persisted_pid() {
+    exercise(History::ConcurrentForeignPid, Disposal::Card).await;
+}
+#[tokio::test]
+async fn concurrent_ui_attachment_preserves_fresh_handoff_and_normal_delete() {
+    exercise(History::ConcurrentUi, Disposal::Card).await;
 }
 #[tokio::test]
 async fn old_prestart_launch_delete_card_uses_normal_cleanup() {
@@ -122,6 +135,13 @@ async fn exercise(history: History, disposal: Disposal) {
         .await
         .unwrap();
     let proxy = PendingProxy::start(supervisor.sock()).await;
+    let counting = crate::operation::launch_cleanup_test_support::AckProxy::start(
+        supervisor.sock(),
+        execution.join("started"),
+        false,
+    )
+    .await;
+
     let repo = Arc::new(
         crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
             .await
@@ -144,7 +164,17 @@ async fn exercise(history: History, disposal: Disposal) {
     ));
     let mut daemon = DaemonClient::new_stub();
     daemon.proc_supervisor_sock = Some(
-        if history.successful() || matches!(history, History::PidWriteFailure) {
+        if matches!(
+            history,
+            History::ConcurrentUi | History::ConcurrentForeignPid
+        ) {
+            counting.sock.clone()
+        } else if history.successful()
+            || matches!(
+                history,
+                History::PidWriteFailure | History::ConcurrentForeignPid
+            )
+        {
             supervisor.sock().to_path_buf()
         } else {
             proxy.sock.clone()
@@ -244,6 +274,12 @@ async fn exercise(history: History, disposal: Disposal) {
     );
     tx.commit().await.unwrap();
     let (kind, payload) = crate::scheduler::build_worker_payload(&task).unwrap();
+    let mut establishment = matches!(
+        history,
+        History::ConcurrentUi | History::ConcurrentForeignPid
+    )
+    .then(|| crate::terminal_renderer::establishment_test_hook::install(&task.id));
+
     let key = OperationKey {
         operation_key: new_id(),
         idempotency_key: Some(task.id),
@@ -282,7 +318,39 @@ async fn exercise(history: History, disposal: Disposal) {
             }
         }
         let _abort = Abort(run.abort_handle());
-        if history.successful() || matches!(history, History::PidWriteFailure) {
+        if let Some((_guard, entered, release)) = establishment.take() {
+            let id = tokio::time::timeout(Duration::from_secs(10), entered)
+                .await
+                .unwrap()
+                .unwrap();
+            let term = repo.terminal_get(&id).await.unwrap().unwrap();
+            assert!(term.pid.is_some());
+            assert!(state.terminal_renderer.get(&id).is_none());
+            let live = tokio::time::timeout(
+                Duration::from_secs(5),
+                crate::ws::terminal::resolve_live_renderer_for_test(&state, &id),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(
+                matches!(live, crate::ws::terminal::TestLiveRenderer::Alive(_)),
+                "actual UI lazy attachment must win insertion"
+            );
+            assert!(state.terminal_renderer.get(&id).is_some());
+            if matches!(history, History::ConcurrentForeignPid) {
+                repo.terminal_set_pid(&id, Some(u32::try_from(term.pid.unwrap() + 1).unwrap()))
+                    .await
+                    .unwrap();
+            }
+            release.notify_one();
+        }
+        if history.successful()
+            || matches!(
+                history,
+                History::PidWriteFailure | History::ConcurrentForeignPid
+            )
+        {
             tokio::time::timeout(Duration::from_secs(15), run)
                 .await
                 .unwrap()
@@ -306,9 +374,21 @@ async fn exercise(history: History, disposal: Disposal) {
     let term_id = output.output_string("terminal_id", "test").unwrap();
     let terminal = repo.terminal_get(&term_id).await.unwrap().unwrap();
     if history.successful() {
+        if matches!(
+            history,
+            History::ConcurrentUi | History::ConcurrentForeignPid
+        ) {
+            assert_eq!(
+                counting.ensures.load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+        }
         assert!(terminal.pid.is_some());
         assert!(state.terminal_renderer.get(&term_id).is_some());
         assert_eq!(output.data["terminal_launch"]["state"], "handed_off");
+    } else if matches!(history, History::ConcurrentForeignPid) {
+        assert!(terminal.pid.is_some());
+        assert_eq!(output.data["terminal_launch"]["state"], "requested");
     } else {
         assert!(terminal.pid.is_none());
     }
@@ -402,7 +482,10 @@ async fn exercise(history: History, disposal: Disposal) {
         return;
     }
     // The original request can still launch after a truthful Probe(false).
-    if matches!(history, History::PidWriteFailure) {
+    if matches!(
+        history,
+        History::PidWriteFailure | History::ConcurrentForeignPid
+    ) {
         assert_eq!(output.data["terminal_launch"]["state"], "requested");
         assert!(
             state.terminal_renderer.get(&term_id).is_some(),
