@@ -75,8 +75,8 @@ use calm_session::control::ProcSignal;
 /// A PTY exit ends an ephemeral session. For a resumable session it is only
 /// viewer/liveness evidence: the existing provider death arbiter and explicit
 /// business/session completion retain authority over the durable session.
-/// Keep this check atomic with the current terminal/session lookup; a late exit
-/// must not complete a replacement. Explicit truth completion APIs are unchanged.
+/// Decide the mode and complete the same session in one write transaction.
+/// Explicit truth completion APIs are unchanged.
 pub(crate) async fn complete_ephemeral_session_from_terminal_exit(
     repo: &dyn crate::db::RouteRepo,
     terminal_id: &str,
