@@ -963,3 +963,180 @@ async fn a_symlink_planted_under_a_valid_id_is_not_served() {
         "the link's target must never be served"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1515 review round 2.
+// ---------------------------------------------------------------------------
+
+const SECRET: &[u8] = b"-----BEGIN OPENSSH PRIVATE KEY-----\nnot yours\n";
+
+/// #1515 review round 2, BLOCKER. `resolve` lstats a NAME; the read-back then
+/// opened the same name a moment later, and `open(2)` follows. Anything with
+/// write access to the workspace — an agent, by design — can `rename` a symlink
+/// onto that name in between, and on that interleaving the endpoint served the
+/// link's target as `image/png`.
+///
+/// The two round-1 symlink tests plant the link statically, so `resolve`
+/// answers 400 and the open is never reached: they structurally cannot see
+/// this. This one holds the race open instead — a thread flips the name between
+/// a real PNG and a symlink to a secret with `rename` (atomic, so the name is
+/// always one or the other) while the endpoint is hammered. The assertion is
+/// not "the last read was fine"; it is that across every read the secret's
+/// bytes were never served, whatever the interleaving.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_symlink_swapped_in_after_the_check_is_never_served() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+    let secret = b.workspace.join("id_rsa");
+    std::fs::write(&secret, SECRET).unwrap();
+
+    let real = png(b"the real attachment");
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", real.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["attachmentId"].as_str().unwrap().to_string();
+
+    let target = b.staging().join(&id);
+    let staging = b.staging();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flipper_stop = stop.clone();
+    let flipper_secret = secret.clone();
+    let flipper_real = real.clone();
+    let swaps = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let flipper_swaps = swaps.clone();
+    let flipper = std::thread::spawn(move || {
+        let link_tmp = staging.join("swap-link.tmp");
+        let file_tmp = staging.join("swap-file.tmp");
+        while !flipper_stop.load(Ordering::Relaxed) {
+            let _ = std::fs::remove_file(&link_tmp);
+            if std::os::unix::fs::symlink(&flipper_secret, &link_tmp).is_err() {
+                continue;
+            }
+            let _ = std::fs::rename(&link_tmp, &target);
+            let _ = std::fs::write(&file_tmp, &flipper_real);
+            let _ = std::fs::rename(&file_tmp, &target);
+            flipper_swaps.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut served_real = 0u32;
+    let mut refused = 0u32;
+    let mut leaks = 0u32;
+    let mut reads = 0u32;
+    while std::time::Instant::now() < deadline {
+        let (status, _, bytes) = read_back(&b.app, &card, &id).await;
+        reads += 1;
+        if status == StatusCode::OK {
+            if bytes.starts_with(b"-----BEGIN") {
+                leaks += 1;
+            } else {
+                served_real += 1;
+            }
+        } else {
+            refused += 1;
+        }
+        if leaks > 0 {
+            break;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    flipper.join().unwrap();
+
+    assert_eq!(
+        leaks, 0,
+        "the link's target was served {leaks} times out of {reads} reads — the check must be on \
+         the handle, not on the name"
+    );
+    // Neither half of the loop may be vacuous: the endpoint really answered,
+    // and the flipper really swapped the name under it.
+    assert!(
+        served_real > 0,
+        "no read ever saw the real attachment ({reads} reads, {refused} refusals) — the loop \
+         proves nothing"
+    );
+    assert!(
+        refused > 0,
+        "no read ever landed on the symlink ({reads} reads, {} swaps) — the race was never open",
+        swaps.load(Ordering::Relaxed)
+    );
+}
+
+/// #1515 review round 2. `finish` — flush, `sync_all`, `rename` — runs after
+/// the body is complete, and each of its steps can fail on a full or dying
+/// disk. Round 1 took the part out of `open` *before* calling it, so those
+/// failures returned through a `?` with no cleanup and left a `.part` spending
+/// the card's budget until a sweep reclaimed it a day later.
+///
+/// The failure is forced by putting a directory where the rename's destination
+/// goes: `rename(file -> dir)` is `EISDIR`, and the staging directory stays
+/// writable so the cleanup that must happen still can.
+#[tokio::test]
+async fn a_failure_publishing_the_final_name_still_removes_the_part() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+
+    let a = StreamingUpload::start(&b.app, &card);
+    a.send(png(&[0u8; 4]));
+    let part = wait_for_part(&b.staging()).await;
+    let final_name = part.trim_end_matches(".part").to_string();
+    std::fs::create_dir(b.staging().join(&final_name)).unwrap();
+
+    let (status, body) = a.finish().await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a rename onto a directory must fail: {body}"
+    );
+    assert_eq!(
+        file_names(&b.staging()),
+        vec![final_name],
+        "only the planted directory may remain — the `.part` must have been removed"
+    );
+}
+
+/// #1515 review round 2. Round 1 took the host path out of exactly one message,
+/// the rename's. Every refusal this endpoint produces is rendered into an HTTP
+/// body, so the whole class has to be swept — and a test that asserts only the
+/// status cannot see a leak.
+#[tokio::test]
+async fn no_refusal_body_carries_the_host_workspace_path() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+    let workspace = b.workspace.display().to_string();
+
+    let check = |what: &str, body: &Value| {
+        let rendered = body.to_string();
+        assert!(
+            !rendered.contains(&workspace),
+            "{what}: the error body names the host workspace path: {rendered}"
+        );
+        assert!(
+            !rendered.contains(".neige"),
+            "{what}: the error body names the server's subtree layout: {rendered}"
+        );
+    };
+
+    // (a) the budget cannot be measured: `bound/` is a regular file, so
+    //     `read_dir` is ENOTDIR.
+    std::fs::create_dir_all(b.bound().parent().unwrap()).unwrap();
+    std::fs::write(b.bound(), b"not a directory").unwrap();
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"x")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    check("unmeasurable budget", &body);
+
+    // (b) the read-back cannot open what the id names.
+    std::fs::remove_file(b.bound()).unwrap();
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"x")).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["attachmentId"].as_str().unwrap().to_string();
+    std::os::unix::fs::symlink(b.workspace.join("gone"), b.staging().join("shadow.png")).unwrap();
+    std::fs::remove_file(b.staging().join(&id)).unwrap();
+    std::os::unix::fs::symlink(b.workspace.join("id_rsa"), b.staging().join(&id)).unwrap();
+    let (status, _, bytes) = read_back(&b.app, &card, &id).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    check("unresolvable attachment", &body);
+}

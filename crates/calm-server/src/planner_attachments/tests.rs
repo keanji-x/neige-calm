@@ -363,3 +363,158 @@ fn the_read_back_url_is_built_by_the_server() {
         format!("/api/cards/card-a/planner/attachments/{attachment}")
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1515 review round 2.
+// ---------------------------------------------------------------------------
+
+/// The fail-closed arm `used_bytes` KEPT — an entry the filesystem refuses to
+/// describe — had no test at all: replacing it with `continue` left the whole
+/// suite green. This is the same construction `gc.rs`'s sweep already had
+/// (`staging/` readable but not searchable, so `lstat` on its children is
+/// `EACCES`), which is exactly the one that was missing here.
+#[test]
+fn a_budget_entry_that_cannot_be_stat_d_refuses() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let card = CardId::from("card-a");
+    let staging = staging_dir(root.path(), &card);
+    std::fs::create_dir_all(staging.path()).unwrap();
+    let entry = staging.path().join("real.png");
+    std::fs::write(&entry, vec![0u8; 10]).unwrap();
+
+    std::fs::set_permissions(staging.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+    let refused = std::fs::symlink_metadata(&entry).is_err();
+    // Root ignores the mode bits, so the construction would be vacuous there.
+    // Say so loudly rather than reporting a green that proved nothing.
+    assert!(
+        refused,
+        "precondition: the entry stat must actually be refused — these tests must not run as root"
+    );
+
+    let measured = used_bytes(root.path(), &card);
+    std::fs::set_permissions(staging.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let error = measured.expect_err("an entry that cannot be stat'd must refuse the write");
+    assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
+}
+
+/// No refusal this module builds may carry a host path: every one of them is
+/// rendered into an HTTP error body.
+#[test]
+fn no_budget_refusal_names_a_host_path() {
+    let root = tempfile::tempdir().unwrap();
+    let card = CardId::from("card-a");
+    let staging = staging_dir(root.path(), &card);
+    std::fs::create_dir_all(staging.path().parent().unwrap()).unwrap();
+    std::fs::write(staging.path(), b"not a directory").unwrap();
+
+    let error = used_bytes(root.path(), &card).expect_err("ENOTDIR must refuse");
+    let message = format!("{error}");
+    assert!(
+        !message.contains(&root.path().display().to_string()),
+        "the refusal must not carry the host path: {message}"
+    );
+    assert!(
+        !message.contains("staging"),
+        "nor the subtree's layout: {message}"
+    );
+}
+
+fn staged_names(dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+/// A managed workspace with a real git repository, the one precondition
+/// `store_upload` checks before it writes anything.
+fn git_workspace(tmp: &std::path::Path) -> std::path::PathBuf {
+    let repo = tmp.join("workspace");
+    std::fs::create_dir_all(&repo).unwrap();
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["init", "-q"])
+        .status()
+        .expect("git must be on PATH for this test");
+    assert!(status.success(), "git init failed in {repo:?}");
+    repo
+}
+
+fn png_prefix() -> axum::body::Bytes {
+    let mut bytes = vec![0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    bytes.extend_from_slice(&[0u8; 4]);
+    axum::body::Bytes::from(bytes)
+}
+
+/// #1515 review round 2. The per-card turn that makes the budget honest is a
+/// lane, and a lane one client can sit in forever is a denial of service this
+/// server had no other defence against — nothing in calm-server bounds a
+/// request body's duration. The upload therefore carries its own deadline, and
+/// the two things that must be true when it fires are that the lane is free
+/// again and that no `.part` is left behind.
+#[tokio::test]
+async fn an_upload_that_stops_sending_gives_up_the_cards_turn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git_workspace(tmp.path());
+    let root = repo.join(".neige").join("attachments");
+    let card = CardId::from("card-a");
+    let locks = crate::per_card_lock::new_per_card_locks();
+
+    // A body that sends a sniffable prefix and then simply stops. The sender
+    // stays alive for the whole test, so the stream never ends on its own.
+    let (frames, body) = futures::channel::mpsc::unbounded::<std::io::Result<axum::body::Bytes>>();
+    frames.unbounded_send(Ok(png_prefix())).unwrap();
+
+    let stalled = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store::store_upload(
+            &root,
+            &repo,
+            &card,
+            &locks,
+            std::time::Duration::from_millis(150),
+            axum::body::Body::from_stream(body),
+        ),
+    )
+    .await
+    .expect("the upload must give up on its own, not hang until the test times out");
+
+    let error = stalled.expect_err("a body that stops arriving must be refused");
+    assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
+    assert!(
+        format!("{error}").contains("stopped arriving"),
+        "the refusal must say what happened: {error}"
+    );
+    assert_eq!(
+        staged_names(staging_dir(&root, &card).path()),
+        Vec::<String>::new(),
+        "the abandoned `.part` must not survive the deadline"
+    );
+
+    // The lane is free: a second upload on the SAME card runs immediately,
+    // while the stalled sender is still open.
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store::store_upload(
+            &root,
+            &repo,
+            &card,
+            &locks,
+            std::time::Duration::from_secs(5),
+            axum::body::Body::from(png_prefix().to_vec()),
+        ),
+    )
+    .await
+    .expect("the card's turn must have been released")
+    .expect("a well-behaved upload after a timed-out one must succeed");
+    assert_eq!(second.size, 12);
+    drop(frames);
+}

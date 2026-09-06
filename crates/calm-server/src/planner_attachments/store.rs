@@ -10,7 +10,10 @@
 //! 1. `.neige/` is in `.git/info/exclude` — **before** any byte is written, so
 //!    a worker running `git add -A` in the same workspace can never see the
 //!    file at all;
-//! 2. the card's byte budget is measured, and re-measured as the body streams;
+//! 2. the card's byte budget is measured once, and every frame is checked
+//!    against that number plus the bytes read so far — the card's turn, taken
+//!    just before the measurement, is what keeps the number true for the whole
+//!    stream;
 //! 3. the bytes go to `<id>.part`;
 //! 4. `sync_all`;
 //! 5. `rename(<id>.part -> <id>)`;
@@ -34,10 +37,14 @@
 //!   [`super::gc::ORPHAN_TTL`], a second upload's sweep would unlink it, and
 //!   the first upload's `rename` would then fail on a file it still holds open.
 //!
-//! The cost is that one card's uploads are serial: a client that opens a POST
-//! and stalls holds the lock for as long as its body stays open, and further
-//! uploads *on that card* wait. Every other card is unaffected — the map is
-//! keyed by card id.
+//! The cost is that one card's uploads are serial, and the lane has to have an
+//! end: a client that opens a POST and stalls would otherwise hold it for as
+//! long as its socket lives, and nothing else in this server bounds a request
+//! body's duration. So the stream-and-publish runs under
+//! [`super::UPLOAD_DEADLINE`], after which the body is refused, the `.part` is
+//! removed and the turn is released. That is the bound — 120 seconds, not
+//! "until the client gives up". Every other card is unaffected either way; the
+//! map is keyed by card id.
 //!
 //! # Blocking work runs on `spawn_blocking`
 //!
@@ -84,6 +91,7 @@ pub async fn store_upload(
     repo_root: &Path,
     card_id: &CardId,
     locks: &PerCardLocks,
+    deadline: std::time::Duration,
     body: Body,
 ) -> Result<StoredAttachment> {
     // (1) Fail-closed, and first: a failure here means the file would be
@@ -113,21 +121,21 @@ pub async fn store_upload(
     }
 
     let staging = staging_dir(root, card_id);
-    tokio::fs::create_dir_all(staging.path())
-        .await
-        .map_err(|error| {
-            CalmError::Internal(format!(
-                "planner attachment upload: create {}: {error}",
-                staging.path().display()
-            ))
-        })?;
+    let staging = staging_dir_or_refuse(staging).await?;
 
-    let stored = write_body(&staging, already_used, body).await;
+    let stored = write_body(&staging, already_used, deadline, body).await;
     if stored.is_ok() {
         // The sweep is here rather than on a timer: this is the only moment the
-        // directory is known to have changed, its cardinality is tiny, and the
-        // card's turn — still held — is what keeps it away from another
-        // upload's open `.part`.
+        // directory is known to have changed, and its cardinality is tiny.
+        //
+        // It is dispatched while this upload still holds the card's turn. That
+        // is not a guarantee about when the blocking task RUNS: dropping a
+        // `spawn_blocking` handle does not cancel the closure, so if the client
+        // disconnects here the handler future — and with it `_turn` — is
+        // dropped while the sweep may still be queued or running. What keeps
+        // that harmless is not the lock but the sweep's own rule: it only
+        // removes entries older than `ORPHAN_TTL`, and a `.part` another
+        // upload opened moments ago is not one of them.
         let swept = staging.clone();
         blocking(move || {
             super::gc::sweep_staging(&swept);
@@ -165,35 +173,99 @@ fn budget_exhausted() -> CalmError {
     ))
 }
 
+/// `mkdir -p staging/`, refusing without naming the host path.
+async fn staging_dir_or_refuse(staging: StagingDir) -> Result<StagingDir> {
+    match tokio::fs::create_dir_all(staging.path()).await {
+        Ok(()) => Ok(staging),
+        Err(error) => {
+            tracing::warn!(
+                target: "planner_attachments::store",
+                dir = %staging.path().display(),
+                %error,
+                "could not create a card's attachment staging directory"
+            );
+            Err(CalmError::Internal(format!(
+                "planner attachment upload: the staging directory could not be created: {error}"
+            )))
+        }
+    }
+}
+
 /// Stream the body into `staging/`, sniffing the format from the leading bytes.
 ///
 /// The temporary file is only created once the format is known, so a body that
-/// is not one of the four formats never produces a file at all. Every failure
-/// after that point removes the `.part` it created: `stream_into` publishes the
-/// `OpenPart` into `open` the instant it exists and before it is written to, so
-/// the single `Err` arm below is the only cleanup site and no error path can
-/// reach a `?` while holding an unregistered part.
+/// is not one of the four formats never produces a file at all.
+///
+/// # The cleanup arm below is the only one, and it sees every failure
+///
+/// [`stream_and_publish`] holds the `.part` in `open` from the moment
+/// `OpenPart::create` returns until after `finish` has renamed it — including
+/// across `finish`'s own flush, `sync_all` and `rename`, each of which can fail
+/// on a full or dying disk. So every `?` inside it is taken with the part still
+/// registered, and this arm removes it. (Round 1 got this wrong in exactly one
+/// place: it took the part out of `open` *before* calling `finish`, so an
+/// `ENOSPC` on the fsync left a `.part` on disk spending the card's budget
+/// until a sweep reclaimed it a day later.)
+///
+/// # The deadline
+///
+/// The whole stream-and-publish runs under `deadline`. See
+/// [`super::UPLOAD_DEADLINE`]: this upload holds its card's turn, and the turn
+/// has to end. On expiry the inner future is dropped mid-body — which is why
+/// `open` lives out here, in the caller, rather than inside it: the part
+/// survives the cancellation and is removed by the same arm.
 async fn write_body(
+    staging: &StagingDir,
+    already_used: u64,
+    deadline: std::time::Duration,
+    body: Body,
+) -> Result<StoredAttachment> {
+    let mut open: Option<OpenPart> = None;
+    let outcome = match tokio::time::timeout(
+        deadline,
+        stream_and_publish(&mut open, staging, already_used, body),
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(_elapsed) => Err(upload_timed_out(deadline)),
+    };
+    if outcome.is_err()
+        && let Some(part) = open.take()
+    {
+        part.abandon(staging).await;
+    }
+    outcome
+}
+
+/// Everything that must happen with the `.part` still registered in `open`.
+async fn stream_and_publish(
+    open: &mut Option<OpenPart>,
     staging: &StagingDir,
     already_used: u64,
     body: Body,
 ) -> Result<StoredAttachment> {
-    let mut open: Option<OpenPart> = None;
-    match stream_into(&mut open, staging, already_used, body).await {
-        Ok(written) => {
-            let part = open
-                .take()
-                .expect("a successful stream leaves an open part");
-            let id = part.finish(staging).await?;
-            Ok(StoredAttachment { id, size: written })
-        }
-        Err(error) => {
-            if let Some(part) = open.take() {
-                part.abandon(staging).await;
-            }
-            Err(error)
-        }
-    }
+    let written = stream_into(open, staging, already_used, body).await?;
+    let id = open
+        .as_mut()
+        .expect("a successful stream leaves an open part")
+        .finish(staging)
+        .await?;
+    // The bytes now live under their final name and the `.part` is gone, so the
+    // part must leave `open` before the caller's cleanup arm can see it. No
+    // fallible step stands between the rename and this line.
+    open.take();
+    Ok(StoredAttachment { id, size: written })
+}
+
+fn upload_timed_out(deadline: std::time::Duration) -> CalmError {
+    // 400 rather than 408: this crate has no 408 variant, and the cause — a
+    // body that stopped arriving — is the client's, which is what 4xx says.
+    CalmError::BadRequest(format!(
+        "the attachment body stopped arriving; an upload has {} seconds to \
+         finish because it holds this card's upload turn while it runs",
+        deadline.as_secs()
+    ))
 }
 
 /// Consume the body, returning the number of bytes written. On `Ok`, `open`
@@ -301,9 +373,14 @@ fn map_body_error(error: &(dyn std::error::Error + 'static)) -> CalmError {
 }
 
 /// The `<id>.part` file, before it earns its final name.
+///
+/// `file` is an `Option` only so `finish` can close the descriptor before the
+/// rename while still taking `&mut self` — the part has to stay borrowed rather
+/// than consumed, so that a failing `finish` leaves it registered for the
+/// cleanup arm in [`write_body`].
 struct OpenPart {
     id: AttachmentId,
-    file: tokio::fs::File,
+    file: Option<tokio::fs::File>,
 }
 
 impl OpenPart {
@@ -330,24 +407,40 @@ impl OpenPart {
                     "planner attachment upload: cannot create the staged file for `{id}`: {error}"
                 ))
             })?;
-        Ok(OpenPart { id, file })
-    }
-
-    async fn write(&mut self, bytes: &[u8]) -> Result<()> {
-        self.file.write_all(bytes).await.map_err(|error| {
-            CalmError::Internal(format!("planner attachment upload: write: {error}"))
+        Ok(OpenPart {
+            id,
+            file: Some(file),
         })
     }
 
+    async fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        self.file
+            .as_mut()
+            .expect("an open part still holds its descriptor")
+            .write_all(bytes)
+            .await
+            .map_err(|error| {
+                CalmError::Internal(format!("planner attachment upload: write: {error}"))
+            })
+    }
+
     /// `sync_all` then `rename` — steps 4 and 5.
-    async fn finish(mut self, staging: &StagingDir) -> Result<AttachmentId> {
-        self.file.flush().await.map_err(|error| {
+    ///
+    /// Takes `&mut self` so that a failure here leaves the part registered in
+    /// [`write_body`]'s `open`, and therefore cleaned up. Every arm below is a
+    /// real failure on a full or failing disk.
+    async fn finish(&mut self, staging: &StagingDir) -> Result<AttachmentId> {
+        let mut file = self
+            .file
+            .take()
+            .expect("an open part still holds its descriptor");
+        file.flush().await.map_err(|error| {
             CalmError::Internal(format!("planner attachment upload: flush: {error}"))
         })?;
-        self.file.sync_all().await.map_err(|error| {
+        file.sync_all().await.map_err(|error| {
             CalmError::Internal(format!("planner attachment upload: fsync: {error}"))
         })?;
-        drop(self.file);
+        drop(file);
         let from = staging.path().join(part_name(&self.id));
         let to = staging.path().join(self.id.as_str());
         let id = self.id.clone();
@@ -360,14 +453,14 @@ impl OpenPart {
                  {error}"
             ))
         })?;
-        Ok(self.id)
+        Ok(self.id.clone())
     }
 
     /// Refusal path: the bytes are dropped, so the `.part` goes too. Best
     /// effort — a leftover `.part` is swept later and is never referenceable.
-    async fn abandon(self, staging: &StagingDir) {
+    async fn abandon(mut self, staging: &StagingDir) {
         let name = part_name(&self.id);
-        drop(self.file);
+        drop(self.file.take());
         if let Err(error) = super::gc::remove_staged_file(staging, &name) {
             tracing::warn!(
                 target: "planner_attachments::store",

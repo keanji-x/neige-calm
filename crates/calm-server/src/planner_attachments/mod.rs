@@ -62,8 +62,12 @@ pub const NEIGE_DIR: &str = ".neige";
 /// The line `ensure_git_exclude_entry` keeps in `.git/info/exclude`.
 pub const NEIGE_GIT_EXCLUDE_ENTRY: &str = ".neige/";
 
-/// Total bytes one card's attachments may occupy, across `staging/` and
-/// `bound/` together.
+/// Total bytes one card's uploads may add to `staging/` and `bound/` together.
+///
+/// Not a bound on the subtree's size: [`used_bytes`] counts the regular files
+/// directly in those two directories, so bytes parked in a subdirectory, or
+/// behind a symlink, by anything else with write access to the workspace are
+/// invisible to it and keep being invisible however many there are.
 ///
 /// Bound bytes are never reclaimed, so uploads have to be refused rather than
 /// evicted: exceeding the budget is an error the user can see, not a silent
@@ -78,6 +82,21 @@ pub const PER_CARD_ATTACHMENT_BUDGET: u64 = 64 * 1024 * 1024;
 /// Largest single upload. One gate, enforced by
 /// `http_body_util::Limited` while the body streams.
 pub const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// How long one upload may hold its card's turn, measured from the first byte
+/// read to the rename.
+///
+/// #1515 review round 2. The per-card lock that makes the budget honest is also
+/// a lane one client can sit in: the guard is held across the body read, and
+/// nothing else in this server bounds a request body's duration (there is no
+/// `TimeoutLayer`). Without this, a connection that sends a 12-byte PNG header
+/// and then stops holds the lane until the socket dies, and every later upload
+/// on that card waits behind it.
+///
+/// Generous on purpose — 8 MiB over a bad mobile link is minutes, and a refusal
+/// the user did not earn is worse than a lane held a while — but finite, which
+/// is the property the lock needs.
+pub const UPLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// `<workspace>/.neige/attachments` for a managed workspace.
 ///
@@ -208,32 +227,20 @@ fn directory_bytes(dir: &Path) -> Result<u64> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => {
-            return Err(CalmError::BadRequest(format!(
-                "cannot measure the attachment budget for {}: {error}",
-                dir.display()
-            )));
-        }
+        Err(error) => return Err(unmeasurable(dir, &error)),
     };
     let mut total = 0u64;
     for entry in entries {
-        let entry = entry.map_err(|error| {
-            CalmError::BadRequest(format!(
-                "cannot measure the attachment budget for {}: {error}",
-                dir.display()
-            ))
-        })?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => return Err(unmeasurable(dir, &error)),
+        };
         let meta = match std::fs::symlink_metadata(entry.path()) {
             Ok(meta) => meta,
             // Gone between `read_dir` and the stat — a concurrent sweep, or a
             // hand deleting a file. Absent bytes are zero bytes.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(CalmError::BadRequest(format!(
-                    "cannot measure the attachment budget for {}: {error}",
-                    dir.display()
-                )));
-            }
+            Err(error) => return Err(unmeasurable(dir, &error)),
         };
         // `file_type()` from `symlink_metadata` is `is_file()` only for a
         // regular file: a symlink is a symlink here, whatever it points at.
@@ -242,6 +249,25 @@ fn directory_bytes(dir: &Path) -> Result<u64> {
         }
     }
     Ok(total)
+}
+
+/// The one refusal this measurement produces.
+///
+/// #1515 review round 2. The host path goes to the log, never into the returned
+/// message: every `CalmError` built in this module is rendered into an HTTP
+/// error body, and the workspace's layout on the server's disk is not something
+/// a client asked for or can act on. The same rule holds for
+/// [`store::store_upload`]'s failures and for the read-back's.
+fn unmeasurable(dir: &Path, error: &std::io::Error) -> CalmError {
+    tracing::warn!(
+        target: "planner_attachments",
+        dir = %dir.display(),
+        %error,
+        "could not measure a card's attachment budget"
+    );
+    CalmError::BadRequest(format!(
+        "cannot measure this card's attachment budget: {error}"
+    ))
 }
 
 /// REST path the browser reads an attachment back from. Built here so no client
