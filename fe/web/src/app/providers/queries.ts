@@ -52,7 +52,8 @@ import {
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptPlannerOperation, sendPlannerInputOperation,
   plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
-  type Conversation,
+  deletePlannerInputOperation, editPlannerInputOperation, plannerQueueWriteFailure,
+  type Conversation, type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
@@ -252,6 +253,13 @@ export function plannerRunQueryOptions(transport: ApiTransportPort, cardId: stri
   };
 }
 
+/** The sentence a queue write shows when the server did not explain itself. */
+function queueWriteMessage(error: unknown, fallback: string): string {
+  return error instanceof ApiError && error.failure.kind === 'http' && error.failure.message !== ''
+    ? error.failure.message
+    : fallback;
+}
+
 export function usePlannerMutations(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   const client = useQueryClient();
   const refreshAfter = <T,>(result: T): T => {
@@ -269,6 +277,34 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   return {
     send: (text: string) => runOperation(transport, sendPlannerInputOperation(cardId, text), unauthorized).then(refreshAfter),
     interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
+    /*
+     * #1505 PR4 — the two queue writes.
+     *
+     * They resolve rather than reject on a refusal, and that is the point: a
+     * lost compare-and-swap and a drained entry are answers the reader has to
+     * be shown, not errors to be swallowed by a generic mutation error
+     * channel. Only the classification happens here; `core/domain` owns which
+     * failure means what.
+     *
+     * The refresh runs on every path including the refusals — a 409 proves the
+     * cached page is behind, and a 404 proves the entry is not there at all.
+     */
+    editQueued: (entryId: string, text: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
+      runOperation(transport, editPlannerInputOperation(cardId, entryId, text, ifEntryRev), unauthorized)
+        .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
+        .catch((error: unknown) => plannerQueueWriteFailure(
+          error instanceof ApiError ? error.failure : null,
+          queueWriteMessage(error, 'Could not change the queued message.'),
+        ))
+        .then(refreshAfter),
+    deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
+      runOperation(transport, deletePlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
+        .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
+        .catch((error: unknown) => plannerQueueWriteFailure(
+          error instanceof ApiError ? error.failure : null,
+          queueWriteMessage(error, 'Could not remove the queued message.'),
+        ))
+        .then(refreshAfter),
     /* No `reset` — see the note where `resetPlannerOperation` used to be in
        `core/domain/conversation.ts`. The endpoint is still served; nothing in
        the browser calls it. */

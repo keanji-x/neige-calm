@@ -12,7 +12,7 @@ import {
   createTrackConversationOperation,
   harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages, isLiveConversation,
   isOptimisticConversationTurn, isQueuedConversationTurn, kernelQueuesInput,
-  mergeTranscript, readableCommand,
+  mergeTranscript, plannerQueueWriteFailure, readableCommand,
   reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
   toTrackConversation, trackConversationCardId,
   trackConversationsOperation,
@@ -64,6 +64,14 @@ describe('optimistic conversation provenance', () => {
     id: string, before: number, queued: boolean,
   ): OptimisticConversationTurn => ({
     id, author: 'you', text: 'same', atMs: 2, serverHighWaterBefore: before, queued,
+    /* `entryId` IS defaulted, unlike `queued`, and the difference is which
+       side a wrong value falls on. `queued` back-filled reads as "the kernel
+       issued this", which is the dead-composer bug; `entryId: null` reads as
+       "no queue entry claims this echo", which is what every case in this file
+       is about — none of them has a pending queue at all. A test that needs a
+       claimed echo spreads its own id over the result, and is then visibly
+       doing so. */
+    entryId: null,
   });
 
   it('takes the highest persisted item id as the pre-send boundary', () => {
@@ -867,5 +875,46 @@ describe('mergeTranscript', () => {
 
   it('keeps a completed tail thought until an echo exists', () => {
     expect(mergeTranscript([thought], [])).toEqual([thought]);
+  });
+});
+
+/*
+ * #1505 PR4 — the classifier behind every message the queue region shows after
+ * a refused write. The two refusals call for opposite next moves, so collapsing
+ * them into one "it did not work" is the failure this exists to prevent: a
+ * stale entry can be rewritten against the revision that beat you, a gone one
+ * cannot be rewritten at all.
+ */
+describe('plannerQueueWriteFailure', () => {
+  const stale = (body: unknown) => plannerQueueWriteFailure(
+    { kind: 'http' as const, status: 409, code: 'planner_input_stale', message: 'stale', body },
+    'fallback',
+  );
+
+  it('reads the winning text and revision out of a 409', () => {
+    expect(stale({
+      error: 'stale', code: 'planner_input_stale', entry_id: 'e1', text: 'what won', rev: 6,
+    })).toEqual({ kind: 'stale', text: 'what won', rev: 6 });
+  });
+
+  /* A 409 whose body cannot be read is NOT reported as stale: there is no text
+     and no revision to show, and inventing either is worse than saying the
+     write failed. */
+  it('falls back to a plain failure when a 409 body is unreadable', () => {
+    expect(stale({ code: 'planner_input_stale' })).toEqual({ kind: 'failed', message: 'fallback' });
+    expect(stale('not an object')).toEqual({ kind: 'failed', message: 'fallback' });
+  });
+
+  it('reads a 404 as the entry having left the queue', () => {
+    expect(plannerQueueWriteFailure(
+      { kind: 'http', status: 404, code: 'not_found', message: 'gone', body: null }, 'fallback',
+    )).toEqual({ kind: 'gone' });
+  });
+
+  it('reports anything else as an unexplained failure', () => {
+    expect(plannerQueueWriteFailure(
+      { kind: 'http', status: 500, code: 'internal', message: 'boom', body: null }, 'fallback',
+    )).toEqual({ kind: 'failed', message: 'fallback' });
+    expect(plannerQueueWriteFailure(null, 'fallback')).toEqual({ kind: 'failed', message: 'fallback' });
   });
 });

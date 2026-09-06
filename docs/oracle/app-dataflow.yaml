@@ -2172,7 +2172,7 @@
     响应可能在服务端提交后丢失。等待 refetch 可让错误/重试界面先观察最新 Area 列表，并让更新后的
     template/cwd 回到 cache。创建重试另由已协商的服务器幂等能力与稳定操作键保护；
     refetch 不通过同名查找推断某次创建是否提交。
-  source: fe/web/src/app/providers/queries.ts:873-925
+  source: fe/web/src/app/providers/queries.ts:909-961
   authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:259-305
   owner_slice: app/providers
   runtime_layer: app

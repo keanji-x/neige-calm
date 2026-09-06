@@ -60,7 +60,7 @@ import {
   trackConversationCardId,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
   type ConversationTurn, type OptimisticConversationTurn, type SendOutcome,
-  type TranscriptEntry,
+  type PendingQueueEntry, type PlannerQueueWriteOutcome, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister, createTrackWorkspaceFilesPort } from '../providers/directory.ts';
@@ -102,6 +102,7 @@ import {
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
+import { PendingQueue } from '../../features/planner/public.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 
 export const APP_BASEPATH = '/next';
@@ -116,6 +117,12 @@ type ConversationStore = Readonly<{
   stopping: boolean;
   sending: boolean;
   sendBlocked: boolean;
+  /** #1505 PR4 — the addressable page of the harness pending queue. */
+  pendingQueue: readonly PendingQueueEntry[];
+  /** Queued messages that exist but carry no id to address them by. */
+  pendingQueueOverflow: number;
+  editQueuedEntry: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueWriteOutcome>;
+  deleteQueuedEntry: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
   historyReady: boolean;
   historyLoading: boolean;
   hasEarlier: boolean;
@@ -143,6 +150,10 @@ export function pendingConversationIds(
 ): ReadonlySet<string> {
   return (working || sending) && conversation !== null ? new Set([conversation.id]) : new Set();
 }
+
+/* A stable identity for "no queue page", so the memo below is not recomputed on
+   every render by a fresh array literal. */
+const EMPTY_PENDING_QUEUE: readonly PendingQueueEntry[] = Object.freeze([]);
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message !== '' ? error.message : fallback;
@@ -253,6 +264,16 @@ export function useConversationStore(
   const run = useQuery({ ...plannerRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
   const phase = run.data?.phase ?? null;
   const stalled = phase === 'wedged';
+  /* #1505 PR4 — the addressable queue page, and the count of what it cannot
+     address. `pendingQueueIds` is the visibility judgement for the echoes
+     below: an entry the queue region is drawing must not also be drawn in the
+     transcript. It is recomputed on every read, never latched — an entry that
+     drains leaves this set and its echo becomes visible again. */
+  const pendingQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
+  const pendingQueueOverflow = run.data?.pending_overflow ?? 0;
+  const pendingQueueIds = useMemo(
+    () => new Set(pendingQueue.map((entry) => entry.entry_id)), [pendingQueue],
+  );
   const mutations = usePlannerMutations(transport, cardId, unauthorized);
   const [echoes, setEchoes] = useState<readonly OptimisticConversationTurn[]>([]);
   /**
@@ -418,14 +439,22 @@ export function useConversationStore(
     () => {
       // A phase snapshot predicts queueing; only this POST's acknowledgement
       // licenses the queued caption. A wedged queue cannot promise delivery.
-      const displayedEchoes = echoes.map((turn) => stalled || turn.id === unconfirmedEchoId
-        ? { ...turn, queued: false } : turn);
+      const displayedEchoes = echoes
+        /* #1505 PR4 rule 3 — one renderer per message. An echo that has
+           claimed an entry id the queue region is currently listing is drawn
+           there, with its own edit and delete controls, so drawing it here as
+           well would be the same sentence twice. Reversible on purpose: the
+           moment the entry drains out of `pending` this echo is visible again,
+           carrying the text the reader last saw. */
+        .filter((turn) => turn.entryId === null || !pendingQueueIds.has(turn.entryId))
+        .map((turn) => stalled || turn.id === unconfirmedEchoId
+          ? { ...turn, queued: false } : turn);
       const merged = mergeTranscript(serverEntries, displayedEchoes);
       if (createEcho === null || createEchoShown) return merged;
       /* Borrowing the time of the entry it precedes — see `createEchoLine`. */
       return [createEchoLine(createEcho, merged[0]?.atMs ?? 0), ...merged];
     },
-    [createEcho, createEchoShown, echoes, serverEntries, stalled, unconfirmedEchoId],
+    [createEcho, createEchoShown, echoes, pendingQueueIds, serverEntries, stalled, unconfirmedEchoId],
   );
   const confirmedTranscript = useMemo(
     () => mergeTranscript(serverEntries, confirmedEchoes), [confirmedEchoes, serverEntries],
@@ -622,6 +651,9 @@ export function useConversationStore(
        * looking queued as soon as its own turn began.
        */
       queued: kernelQueuesInput(phase),
+      /* Not knowable yet — the POST below is what answers it. Claimed in the
+         `then`, and left `null` forever if the server has none to give. */
+      entryId: null,
     };
     const sentTo = cardId;
     activeSend.current = { cardId: sentTo, echoId: echo.id };
@@ -642,8 +674,17 @@ export function useConversationStore(
     let answeredHere = false;
     setEchoes((current) => [...current, echo]);
     setUnconfirmedEchoId(echo.id);
-    return mutations.send(text).then(() => {
+    return mutations.send(text).then((sent) => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
+      /* #1505 PR4 — the claim. It decides only who draws this message from
+         here on, so it is written wherever the echo still lives: this store
+         when it is still the active one, and the registry unconditionally,
+         since that copy outlives the mount. */
+      const claimedEntryId = sent.entry_id;
+      if (claimedEntryId !== null && stillActive()) {
+        setEchoes((current) => current.map((turn) =>
+          turn.id === echo.id ? { ...turn, entryId: claimedEntryId } : turn));
+      }
       /*
        * The answer can outlive the drawer, and the effects above cannot.
        *
@@ -681,18 +722,24 @@ export function useConversationStore(
          * older store instance. Provenance, rather than this store's local id
          * set, is what survives a route remount.
          */
-        const remembered = knownTurns.filter(isOptimisticConversationTurn);
+        const claimed = { ...echo, entryId: claimedEntryId };
+        const remembered = knownTurns
+          .filter(isOptimisticConversationTurn)
+          .map((turn) => turn.id === echo.id ? claimed : turn);
         const optimistic = remembered.some((turn) => turn.id === echo.id)
           ? remembered
-          : [...remembered, echo].toSorted((left, right) => left.atMs - right.atMs);
+          : [...remembered, claimed].toSorted((left, right) => left.atMs - right.atMs);
         const serverMessages = knownTurns.filter((turn): turn is ConversationMessage =>
           turn.author !== 'activity' && !isOptimisticConversationTurn(turn));
         const unresolved = reconcileOptimisticConversationTurns(serverMessages, optimistic);
         const unresolvedIds = new Set(unresolved.map((turn) => turn.id));
         const recorded = !unresolvedIds.has(echo.id);
-        const nextTurns = knownTurns.filter((turn) =>
-          !isOptimisticConversationTurn(turn) || unresolvedIds.has(turn.id));
-        if (!recorded && !nextTurns.some((turn) => turn.id === echo.id)) nextTurns.push(echo);
+        const nextTurns = knownTurns
+          .filter((turn) => !isOptimisticConversationTurn(turn) || unresolvedIds.has(turn.id))
+          /* The remembered copy may predate the claim; the claim is the only
+             difference and it is this write's whole point. */
+          .map((turn) => turn.id === echo.id ? claimed : turn);
+        if (!recorded && !nextTurns.some((turn) => turn.id === echo.id)) nextTurns.push(claimed);
         return {
           conversation: {
             ...known,
@@ -753,6 +800,38 @@ export function useConversationStore(
   };
 
   const sendingAcrossMounts = cardId !== '' && registry.pendingSendIds.has(cardId);
+  /**
+   * Take one message out of the transcript for good (#1505 PR4 rule 4).
+   *
+   * A deleted queue entry never becomes a transcript row — the model never
+   * sees it — so the reconciliation that retires every other echo can never
+   * fire for this one. Without this call the reader deletes their message,
+   * watches it leave the queue region, and then watches it reappear in the
+   * transcript as a permanent ghost.
+   *
+   * Both copies, for the same reason the claim writes both: the registry's
+   * outlives this mount, and the effect above merges it straight back in.
+   */
+  const retireQueuedEcho = (entryId: string): void => {
+    const isRetired = (turn: TranscriptEntry) =>
+      isOptimisticConversationTurn(turn) && turn.entryId === entryId;
+    setEchoes((current) => current.filter((turn) => !isRetired(turn)));
+    registry.updateExisting(cardId, ({ conversation: known, turns: knownTurns }) => ({
+      conversation: known,
+      turns: knownTurns.filter((turn) => !isRetired(turn)),
+    }));
+  };
+  const editQueuedEntry = (entry: PendingQueueEntry, text: string) =>
+    mutations.editQueued(entry.entry_id, text, entry.rev);
+  const deleteQueuedEntry = (entry: PendingQueueEntry) =>
+    mutations.deleteQueued(entry.entry_id, entry.rev).then((outcome) => {
+      /* `gone` is not a retirement: the entry left the queue because it
+         drained, and the transcript row for it is on its way. Only a delete
+         that actually happened means nothing more is coming. */
+      if (outcome.kind === 'done') retireQueuedEcho(entry.entry_id);
+      return outcome;
+    });
+
   /*
    * ── An echo the server *can* still hand back, as against one it cannot ───
    *
@@ -797,6 +876,10 @@ export function useConversationStore(
     stopping,
     sending: sending || sendingAcrossMounts,
     sendBlocked,
+    pendingQueue,
+    pendingQueueOverflow,
+    editQueuedEntry,
+    deleteQueuedEntry,
     historyReady: history.data !== undefined,
     historyLoading: history.isFetching,
     hasEarlier: history.hasNextPage,
@@ -1836,8 +1919,18 @@ function useConversationPanel(
                 pending={store.pending.has(open.id)}
               />
             )}
+            {/* #1505 PR4 — the queue region, directly under the transcript and
+              * above the composer, because that is where the messages it holds
+              * were typed and where they will appear once they send. */}
+            <PendingQueue
+              entries={store.pendingQueue}
+              overflow={store.pendingQueueOverflow}
+              busy={store.sending}
+              onEdit={store.editQueuedEntry}
+              onDelete={store.deleteQueuedEntry}
+            />
             {/*
-              * Nothing follows the transcript.
+              * Nothing else follows the transcript.
               *
               * `Reset conversation` used to be here, one line under the last
               * reply. It is gone from the product (#1139), not moved: an area's

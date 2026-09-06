@@ -205,6 +205,23 @@ export type OptimisticConversationTurn = ConversationTurn & Readonly<{
    * message back, which is exactly when it stops being queued.
    */
   queued: boolean;
+  /**
+   * The pending-queue entry this send landed in, once the server has said so
+   * (#1505 PR4), and `null` until then or when there is none to name.
+   *
+   * The echo is minted at the keypress and this value cannot be known until
+   * the `POST /planner/input` is answered, so it is a *claim made later*, not
+   * a condition of minting. Nothing about when the echo appears depends on it;
+   * what depends on it is who draws the message afterwards — an echo that has
+   * claimed an id whose entry is in `pending` is being drawn by the queue
+   * region, and drawing it here as well is the same sentence twice.
+   *
+   * `null` therefore has to fall on the side of "this side keeps drawing it":
+   * a send that folded onto a pre-#1505 entry, a server too old to answer with
+   * an id, or an answer that has not arrived yet all mean the queue region
+   * cannot show this message, and the reader must not be left with nothing.
+   */
+  entryId: string | null;
 }>;
 
 /** A kernel observation delivered through Codex's user-message transport.
@@ -285,10 +302,48 @@ export function kernelQueuesInput(phase: HarnessPhaseTag | null): boolean {
   return !(phase === 'idle' || phase === 'turn_completed');
 }
 
+/**
+ * One addressable message waiting in the harness pending queue (#1505).
+ *
+ * `entry_id` is minted by the kernel and persisted with the entry, so it is the
+ * same value a `POST /planner/input` handed back and the same value a restart
+ * reads out of the snapshot. `rev` is the compare-and-swap token: it goes up
+ * every time the text changes, including when the kernel folds a later send
+ * into this entry under backpressure, and an edit or a delete that names a
+ * stale one is refused rather than applied to text the reader has not seen.
+ *
+ * Entries written before #1505 PR1 have no id at all and so cannot appear
+ * here; `pending_overflow` counts them (and everything past the page) instead.
+ */
+export type PendingQueueEntry = Readonly<{
+  entry_id: string;
+  text: string;
+  rev: number;
+  queued_at_ms: number;
+}>;
+
+const pendingQueueEntrySchema: z.ZodType<PendingQueueEntry> = z.object({
+  entry_id: z.string(),
+  text: z.string(),
+  rev: z.number(),
+  queued_at_ms: z.number(),
+});
+
 export type PlannerRun = Readonly<{
   card_id: string;
   worker_session_id?: string | null;
   phase?: z.infer<typeof harnessPhaseSchema> | null;
+  /** The addressable page of the pending queue, in queue order. */
+  pending: readonly PendingQueueEntry[];
+  /**
+   * How many queued user messages this page does not show — entries past the
+   * page limit, and entries too old to be addressable.
+   *
+   * It is a count and not a list on purpose: the kernel has no id to name
+   * them by, so there is nothing an edit or a delete could be pointed at. The
+   * UI's job is to say they exist, not to pretend they can be touched.
+   */
+  pending_overflow: number;
 }>;
 
 export const HARNESS_ITEMS_PAGE_LIMIT = 300;
@@ -307,6 +362,11 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
     method: 'GET', path: `/api/cards/${encodeURIComponent(cardId)}/planner/run`,
     responseSchema: z.object({
       card_id: z.string(), worker_session_id: z.string().nullable().optional(), phase: harnessPhaseSchema.nullable().optional(),
+      /* Defaulted rather than required: a dormant card and every server built
+         before #1505 PR1 answer without them, and the honest reading of an
+         absent queue page is an empty one. */
+      pending: z.array(pendingQueueEntrySchema).optional().default([]),
+      pending_overflow: z.number().optional().default(0),
     }),
   };
 }
@@ -354,11 +414,147 @@ export function isSendRefusalCode(code: string | null): boolean {
   return code === 'planner_harness_runtime_superseded' || code === 'planner_harness_dormant';
 }
 
-export function sendPlannerInputOperation(cardId: string, text: string): ApiOperation<unknown> {
+/** What a `POST /planner/input` answers, including where the text landed. */
+export type SentPlannerInput = Readonly<{
+  card_id: string;
+  worker_session_id: string;
+  /**
+   * The queue entry the text is now sitting in, or `null` when there is none
+   * to name.
+   *
+   * `null` is not an error and not a missing feature. It is what the kernel
+   * says when the text folded into a queue entry written before #1505 PR1 —
+   * an entry that has never had an id and never gains one. A caller that
+   * cannot name the entry cannot address it, which is exactly true.
+   */
+  entry_id: string | null;
+}>;
+
+export function sendPlannerInputOperation(cardId: string, text: string): ApiOperation<SentPlannerInput> {
   return {
     method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input`, body: { text },
-    responseSchema: z.object({ card_id: z.string(), worker_session_id: z.string() }),
+    responseSchema: z.object({
+      card_id: z.string(),
+      worker_session_id: z.string(),
+      entry_id: z.string().nullable().optional().transform((value) => value ?? null),
+    }),
   };
+}
+
+/** What `PATCH`/`DELETE /planner/input/{entry_id}` answer on success. */
+export type PlannerInputMutation = Readonly<{
+  card_id: string;
+  entry_id: string;
+  /** The entry's revision after the write. */
+  rev: number;
+  /** The stored text after the write, or `null` when the entry was deleted. */
+  text: string | null;
+}>;
+
+const plannerInputMutationSchema: z.ZodType<PlannerInputMutation> = z.object({
+  card_id: z.string(),
+  entry_id: z.string(),
+  rev: z.number(),
+  text: z.string().nullable(),
+});
+
+function plannerInputPath(cardId: string, entryId: string): string {
+  return `/api/cards/${encodeURIComponent(cardId)}/planner/input/${encodeURIComponent(entryId)}`;
+}
+
+/**
+ * Rewrite one queued message, refusing if somebody moved it first.
+ *
+ * `ifEntryRev` is the revision the reader was shown. The kernel compares it
+ * under the same lock that applies the write, so a 409 means the text on the
+ * server is not the text this edit was composed against — see
+ * {@link plannerInputStaleFrom}.
+ */
+export function editPlannerInputOperation(
+  cardId: string, entryId: string, text: string, ifEntryRev: number,
+): ApiOperation<PlannerInputMutation> {
+  return {
+    method: 'PATCH', path: plannerInputPath(cardId, entryId),
+    body: { text, if_entry_rev: ifEntryRev },
+    responseSchema: plannerInputMutationSchema,
+  };
+}
+
+/** Remove one queued message, refusing if somebody moved it first. */
+export function deletePlannerInputOperation(
+  cardId: string, entryId: string, ifEntryRev: number,
+): ApiOperation<PlannerInputMutation> {
+  return {
+    method: 'DELETE', path: plannerInputPath(cardId, entryId),
+    body: { if_entry_rev: ifEntryRev },
+    responseSchema: plannerInputMutationSchema,
+  };
+}
+
+/**
+ * The server's side of a lost compare-and-swap, or `null` if this failure was
+ * not one.
+ *
+ * A 409 from these two endpoints carries the text and revision the entry
+ * actually holds. Reading them is what lets the UI say "somebody changed this
+ * while you were typing, here is what it says now" instead of letting the edit
+ * disappear — which is the confusion the whole slice exists to remove.
+ */
+export type PlannerInputStale = Readonly<{ entry_id: string; text: string; rev: number }>;
+
+const plannerInputStaleSchema = z.object({
+  code: z.literal('planner_input_stale'),
+  entry_id: z.string(),
+  text: z.string(),
+  rev: z.number(),
+});
+
+export function plannerInputStaleFrom(failure: ApiFailure | null): PlannerInputStale | null {
+  if (failure === null || failure.kind !== 'http' || failure.status !== 409) return null;
+  const parsed = plannerInputStaleSchema.safeParse(failure.body);
+  return parsed.success
+    ? { entry_id: parsed.data.entry_id, text: parsed.data.text, rev: parsed.data.rev }
+    : null;
+}
+
+/**
+ * Whether a failure means the entry is no longer in the queue.
+ *
+ * A 404 here is not "wrong URL": the queue drained, or somebody else deleted
+ * it. Either way the message is beyond editing, and the reader needs to be
+ * told that rather than shown a retry that can never succeed.
+ */
+export function isPlannerInputGoneFailure(failure: ApiFailure | null): boolean {
+  return failure !== null && failure.kind === 'http' && failure.status === 404;
+}
+
+/**
+ * What one write to the pending queue turned into.
+ *
+ * Four cases, and they are not degrees of failure — they differ in what the
+ * reader is now holding. `done`: the server has their text. `stale`: it does
+ * not, and the entry says something else, quoted here so they can decide.
+ * `gone`: the entry left the queue (drained into a turn, or somebody else
+ * deleted it), so there is nothing left to write to. `failed`: unknown.
+ *
+ * Collapsing `stale` and `gone` into one "did not work" is the shape this
+ * slice exists to avoid: they call for opposite next moves — retry against the
+ * quoted revision, versus stop, the message is on its way.
+ */
+export type PlannerQueueWriteOutcome =
+  | Readonly<{ kind: 'done' }>
+  | Readonly<{ kind: 'stale'; text: string; rev: number }>
+  | Readonly<{ kind: 'gone' }>
+  | Readonly<{ kind: 'failed'; message: string }>;
+
+/** Classifies a rejected queue write. Never called for a success. */
+export function plannerQueueWriteFailure(
+  failure: ApiFailure | null, message: string,
+): PlannerQueueWriteOutcome {
+  const stale = plannerInputStaleFrom(failure);
+  if (stale !== null) return { kind: 'stale', text: stale.text, rev: stale.rev };
+  if (isPlannerInputGoneFailure(failure)) return { kind: 'gone' };
+  return { kind: 'failed', message };
 }
 
 export function interruptPlannerOperation(cardId: string): ApiOperation<{ stopped: boolean }> {
