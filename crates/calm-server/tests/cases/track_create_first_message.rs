@@ -102,11 +102,19 @@ use calm_server::auth::Principal;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{session_delete_tx, session_mark_superseded_runtime_tx};
+use calm_server::db::write_in_tx_typed;
 use calm_server::event::EventBus;
+use calm_server::harness::Observation;
+use calm_server::harness::run_loop::{
+    ANY_RUNTIME, PlannerHarnessDrainRaceHook, install_planner_harness_drain_race_hook_for_test,
+};
 use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_server::shared_codex_appserver::TurnStartReturnHook;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
@@ -543,6 +551,45 @@ impl Boot {
         }
     }
 
+    /// How many copies of `needle` the DAEMON was actually handed.
+    ///
+    /// `copies_in_harness` deliberately sums turns AND live pending queues,
+    /// because a message that has not drained yet is still a message the system
+    /// owes. That makes it the wrong instrument for the #1449 lifetime cases:
+    /// a runtime whose row was retired under it keeps its queue in memory —
+    /// it simply may never issue it — so the queued copy and a successor's
+    /// delivery would read as a double delivery when only one turn ever
+    /// happened. This counts turns only.
+    ///
+    /// Polls, and returns what it saw, for the same reasons `copies_in_harness`
+    /// does: asking for `want + 1` burns the deadline and turns "no second copy
+    /// had arrived at the instant I looked" into an assertion.
+    async fn delivered_copies(&self, needle: &str, want: usize) -> usize {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let seen = self
+                .state
+                .shared_codex_appserver
+                .started_turns_for_test()
+                .iter()
+                .map(|(_, items)| {
+                    items
+                        .iter()
+                        .map(|item| {
+                            serde_json::to_string(item)
+                                .map(|s| s.matches(needle).count())
+                                .unwrap_or(0)
+                        })
+                        .sum::<usize>()
+                })
+                .sum::<usize>();
+            if seen >= want || std::time::Instant::now() >= deadline {
+                return seen;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
     /// Everything the fake app-server was ever asked to run a turn on, as one
     /// JSON blob. This is the *rendered* text — `Observation::to_turn_text` —
     /// which is where `TrackGoal` and `UserMessage` visibly differ.
@@ -634,6 +681,240 @@ impl Boot {
         .execute(self.repo.pool())
         .await
         .unwrap();
+    }
+
+    /// #1449 — park the next planner harness immediately before it can turn
+    /// its pending queue into a turn, and hand back the two halves of the
+    /// rendezvous.
+    ///
+    /// `ANY_RUNTIME`, not a named id, because the runtime under test does not
+    /// exist yet: `POST /api/tracks` mints it, starts its run loop and lets it
+    /// drain, all before the 201 is written.
+    fn hold_the_next_drain(&self) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        install_planner_harness_drain_race_hook_for_test(
+            ANY_RUNTIME,
+            PlannerHarnessDrainRaceHook {
+                entered: entered.clone(),
+                release: release.clone(),
+            },
+        );
+        (entered, release)
+    }
+
+    /// The one runtime row on this database, as `(id, card_id)`.
+    async fn only_runtime(&self) -> (String, String) {
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT id, card_id FROM worker_sessions")
+            .fetch_all(self.repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "expected exactly one runtime row: {rows:?}");
+        rows.into_iter().next().unwrap()
+    }
+
+    /// `queue_harvested_at_ms` for one runtime row.
+    async fn harvest_stamp(&self, worker_session_id: &str) -> Option<i64> {
+        sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")
+            .bind(worker_session_id)
+            .fetch_one(self.repo.pool())
+            .await
+            .unwrap()
+    }
+
+    /// How many **persisted** runtime snapshots still hold `needle` on their
+    /// `pending_queue`, i.e. still owe it to an agent.
+    ///
+    /// The queue specifically, not the whole snapshot: a runtime that has
+    /// already issued the turn keeps the same text in `issued_input_segments`
+    /// until its NEXT issuance clears it, and that copy is evidence of a
+    /// delivery, not a pending debt. A substring match over the whole snapshot
+    /// would count it.
+    ///
+    /// Since S2 the transfer is a move, so this counts owners rather than
+    /// copies: a retired row stops holding what was taken off it, and a live
+    /// successor holds it until it drains and re-persists.
+    async fn rows_holding(&self, needle: &str) -> usize {
+        let rows: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions")
+                .fetch_all(self.repo.pool())
+                .await
+                .unwrap();
+        rows.into_iter()
+            .filter(|state| {
+                let Some(state) = state.as_deref() else {
+                    return false;
+                };
+                let Ok(state) = serde_json::from_str::<Value>(state) else {
+                    return false;
+                };
+                state
+                    .get("pending_queue")
+                    .map(|queue| queue.to_string().contains(needle))
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
+    /// Poll until exactly `want` persisted snapshots still carry `needle`, and
+    /// report what was actually seen so a failure names the real number.
+    ///
+    /// Not a settle sleep: it waits on a production write (the successor's
+    /// post-turn `persist_snapshot`) that the next restart's inherit reads. A
+    /// restart issued before it lands would inherit a queue the successor has
+    /// already delivered, which is a different defect from the one under test.
+    async fn wait_until_rows_holding(&self, needle: &str, want: usize) -> usize {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let seen = self.rows_holding(needle).await;
+            if seen == want || std::time::Instant::now() >= deadline {
+                return seen;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    /// #1449 — park the harness INSIDE `turn/start`, after the fake daemon has
+    /// already recorded the batch.
+    ///
+    /// The window this opens is the one the harvest has to reason about: the
+    /// daemon has the sentence, and `maybe_issue_turn` has not yet written the
+    /// emptied queue back to the row.
+    fn hold_the_next_turn_start(&self) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        self.state
+            .shared_codex_appserver
+            .install_turn_start_return_hook_for_test(TurnStartReturnHook {
+                entered: entered.clone(),
+                release: release.clone(),
+            });
+        (entered, release)
+    }
+
+    /// Retire a runtime in the database and NOTHING else — the durable half of
+    /// the re-point fence (`routes/tracks.rs` calls this very helper), without
+    /// the process half that tears the handle down.
+    ///
+    /// That split is the point: a live, healthy run loop whose row has been
+    /// retired under it is reachable in production (`prepare_tx` supersedes the
+    /// card's live predecessor and nothing stops its handle until a later step
+    /// of the same operation), and it is what these tests need to order.
+    async fn retire_runtime_in_the_database(&self, worker_session_id: &str) {
+        let worker_session_id = worker_session_id.to_string();
+        write_in_tx_typed(self.repo.as_ref() as &dyn Repo, move |tx| {
+            Box::pin(async move {
+                session_mark_superseded_runtime_tx(tx, &worker_session_id)
+                    .await
+                    .map_err(calm_server::error::CalmError::from)
+            })
+        })
+        .await
+        .expect("retire runtime");
+    }
+
+    /// The `pending_queue` a runtime's PERSISTED snapshot still holds.
+    async fn persisted_queue(&self, worker_session_id: &str) -> Vec<Value> {
+        let state: Option<String> =
+            sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+                .bind(worker_session_id)
+                .fetch_one(self.repo.pool())
+                .await
+                .unwrap();
+        state
+            .and_then(|state| serde_json::from_str::<Value>(&state).ok())
+            .and_then(|state| state.get("pending_queue").cloned())
+            .and_then(|queue| queue.as_array().cloned())
+            .unwrap_or_default()
+    }
+
+    /// Poll until a runtime's persisted queue reaches `want` entries; report
+    /// what was actually seen so a failure names the real number.
+    async fn wait_for_persisted_queue_len(&self, worker_session_id: &str, want: usize) -> usize {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let seen = self.persisted_queue(worker_session_id).await.len();
+            if seen == want || std::time::Instant::now() >= deadline {
+                return seen;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    /// The card's currently ACTIVE runtime id. Unlike `only_runtime`, safe on a
+    /// track that also has a terminal card with a runtime of its own.
+    async fn active_runtime_of_card(&self, card_id: &str) -> String {
+        sqlx::query_scalar(
+            "SELECT id FROM worker_sessions WHERE card_id = ?1 \
+             AND state IN ('starting','running','idle','turn_pending')",
+        )
+        .bind(card_id)
+        .fetch_one(self.repo.pool())
+        .await
+        .unwrap()
+    }
+
+    /// `POST /api/today/launchpad/ensure` — the production caller of
+    /// `prepare_tx`'s NON-deferred arm on its second and later calls.
+    async fn ensure_launchpad(&self) -> (StatusCode, Value) {
+        self.post_json("/api/today/launchpad/ensure", "{}").await
+    }
+
+    /// `POST /api/cards/{id}/planner/input` — the production send path, whose
+    /// enqueue is persisted before the response (`observe_user_message_durable`).
+    async fn send_planner_input(&self, card_id: &str, text: &str) -> (StatusCode, Value) {
+        self.post_json(
+            &format!("/api/cards/{card_id}/planner/input"),
+            &json!({ "text": text }).to_string(),
+        )
+        .await
+    }
+
+    async fn post_json(&self, uri: &str, body: &str) -> (StatusCode, Value) {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// `POST /api/cards/{id}/planner/reset` — the production dormant-restart
+    /// route. `force_new_thread: true`, i.e. the same `prepare_tx` arm the
+    /// re-point fence's restart takes.
+    async fn reset_planner(&self, card_id: &str) -> (StatusCode, Value) {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/cards/{card_id}/planner/reset"))
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     async fn shutdown_harnesses(&self) {
@@ -3326,6 +3607,875 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
         keyed[0]["create_request_sha256"].is_string(),
         "a keyed create must carry the digest so operation replay keeps the same payload identity: {:?}",
         keyed[0]
+    );
+    b.shutdown_harnesses().await;
+}
+
+// ---------------------------------------------------------------------------
+// #1449 — a sentence that has not drained yet must survive the runtime that was
+// holding it.
+//
+// The mechanism, restated so these three tests read as one argument:
+//
+// * the first message is seeded onto the mint's `pending_queue` inside the mint
+//   transaction, and only the run loop's drain turns it into a turn;
+// * `PATCH /api/tracks/{id}` fences the track — every live runtime goes
+//   `superseded` and its registry handle is torn down — and then restarts;
+// * before this slice the successor started with an EMPTY queue, so a drain
+//   that lost that race left the sentence on a row nothing ever reads again:
+//   no error, no card change, an agent that was never told anything.
+//
+// `PlannerHarnessDrainRaceHook` parks the drain one statement before it takes
+// the queue, which makes the losing order the only order. The existing
+// `a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint`
+// reaches the same window only under load, four times out of six.
+// ---------------------------------------------------------------------------
+
+/// The sentence used by the #1449 tests. Distinct from every other needle in
+/// this file so `copies_in_harness` cannot count someone else's message.
+const STRANDED: &str = "reconcile the ledger before Friday";
+
+/// THE repro. Deterministic, no load required.
+///
+/// Red before the fix with `left: 0, right: 1`: the sentence is on the
+/// superseded runtime's queue, the handle is gone from the registry, and
+/// nothing reads it.
+#[tokio::test]
+async fn a_first_message_not_yet_drained_when_the_workspace_is_repointed_still_reaches_the_agent() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b.create_track(Some("idem-1449"), Some(STRANDED)).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+
+    // The drain is now parked with the sentence still on the queue.
+    entered.notified().await;
+    let (stranded_runtime, _card_id) = b.only_runtime().await;
+
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    let (patched, patch_body) = b.repoint_to(&track_id, &target).await;
+    assert_eq!(
+        patched,
+        StatusCode::OK,
+        "premise: the re-point must succeed, or this test proves nothing: body={patch_body}"
+    );
+    release.notify_one();
+
+    assert_eq!(
+        b.copies_in_harness(STRANDED, 1).await,
+        1,
+        "the sentence the user typed must reach the successor the fence started — before this \
+         slice it stayed on the superseded runtime's undrained queue and no path ever read it \
+         again"
+    );
+    // "exactly once", the same way the headline test says it: ask for a second
+    // copy and let the deadline burn.
+    assert_eq!(
+        b.copies_in_harness(STRANDED, 2).await,
+        1,
+        "and it must arrive exactly once — the parked predecessor must not also deliver it"
+    );
+    assert!(
+        b.harvest_stamp(&stranded_runtime).await.is_some(),
+        "the mechanism, not just the outcome: the row the queue was taken from must be stamped, \
+         which is what stops the next restart from taking it again"
+    );
+    // #1449 S2 — and the transfer is a MOVE: the row it came off does not keep
+    // a copy. Asserted here rather than only in `runtime_repo`, because that
+    // test drives the harvest helper with a fixture decoder of its own and so
+    // says nothing about the decoder production actually runs.
+    assert_eq!(
+        b.persisted_queue(&stranded_runtime).await.len(),
+        0,
+        "the predecessor's persisted queue must be empty after the harvest took it"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// Exactly-once across restarts: the stamp, not an ordering argument.
+///
+/// The first restart INHERITS the parked runtime's whole queue (that is what
+/// the dormant-restart arm has always done) and stamps it. The second restart
+/// then finds a `superseded` row that still carries the sentence in its
+/// persisted snapshot — snapshots are never edited in place — and must take
+/// nothing from it.
+///
+/// Red when either half of the exactly-once construction is removed: the
+/// `queue_harvested_at_ms IS NULL` conjunct in the harvest predicate, or the
+/// stamp on the inherit path.
+#[tokio::test]
+async fn a_harvested_sentence_is_not_delivered_again_by_a_second_restart() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-twice"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    entered.notified().await;
+    let (parked_runtime, card_id) = b.only_runtime().await;
+
+    let (reset, reset_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        reset,
+        StatusCode::OK,
+        "premise: the first restart must succeed: body={reset_body}"
+    );
+    release.notify_one();
+    assert_eq!(
+        b.copies_in_harness(STRANDED, 1).await,
+        1,
+        "premise: the first restart carries the sentence forward"
+    );
+    assert!(
+        b.harvest_stamp(&parked_runtime).await.is_some(),
+        "premise: the inherit must stamp the row it emptied"
+    );
+    // Wait for the successor's post-turn snapshot write, so the second restart
+    // inherits what the successor really has left rather than a queue it has
+    // already delivered. One row still holds the sentence: the parked
+    // predecessor's, frozen for good.
+    // #1449 S2 — the transfer is a MOVE, so at any moment at most one row owes
+    // the sentence: the predecessor stopped owing it when the successor took
+    // it, and the successor stops owing it when it delivers it. Waiting for
+    // zero is waiting for that delivery to be written down.
+    assert_eq!(
+        b.wait_until_rows_holding(STRANDED, 0).await,
+        0,
+        "premise: no row still owes the sentence once the successor has delivered it"
+    );
+
+    let (reset_again, reset_again_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        reset_again,
+        StatusCode::OK,
+        "premise: the second restart must succeed: body={reset_again_body}"
+    );
+    assert_eq!(
+        b.copies_in_harness(STRANDED, 2).await,
+        1,
+        "a second restart must NOT re-deliver a sentence an earlier restart already carried — \
+         the stamp on the retired row is what makes this a construction rather than a race"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// Only the human's own words travel.
+///
+/// The #1343 opening briefing is an `Observation::SystemContext` describing the
+/// runtime's `cwd`, and a re-point is precisely the event that makes that
+/// directory the wrong one.
+///
+/// What this test asserts is exactly one direction: the OLD briefing does not
+/// travel. It does **not** assert that the successor writes a new one, and the
+/// successor does not: the re-point's restart payload carries
+/// `opening_briefing: None` (`routes/tracks.rs`), so no briefing is rendered on
+/// this path at all. Re-briefing a re-pointed workspace is a product question
+/// this slice does not answer.
+///
+/// Red when the harvest filter stops excluding `SystemContext`.
+#[tokio::test]
+async fn a_repoint_does_not_carry_the_old_workspace_briefing_forward() {
+    const OLD_BRIEFING: &str = "briefing about the workspace this track is leaving";
+
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-briefing"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+    entered.notified().await;
+    let (stranded_runtime, _card_id) = b.only_runtime().await;
+
+    // Put a briefing on the parked runtime's queue and persist it, so the row
+    // the fence retires carries BOTH kinds of observation.
+    let handle = b
+        .state
+        .harness
+        .get(&stranded_runtime)
+        .expect("the parked runtime must still be in the registry");
+    handle
+        .observe_for_test(
+            Observation::SystemContext {
+                text: OLD_BRIEFING.into(),
+            },
+            None,
+        )
+        .await;
+    handle.persist_snapshot().await.unwrap();
+    drop(handle);
+
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    let (patched, patch_body) = b.repoint_to(&track_id, &target).await;
+    assert_eq!(
+        patched,
+        StatusCode::OK,
+        "premise: the re-point must succeed: body={patch_body}"
+    );
+    release.notify_one();
+
+    assert_eq!(
+        b.copies_in_harness(STRANDED, 1).await,
+        1,
+        "premise: the human's sentence still travels"
+    );
+    assert_eq!(
+        b.copies_in_harness(OLD_BRIEFING, 1).await,
+        0,
+        "but the old workspace's briefing must NOT — the successor lives in a different directory \
+         and writes its own"
+    );
+    b.shutdown_harnesses().await;
+}
+
+// ---------------------------------------------------------------------------
+// #1449 review round 2 — the three lifetime holes the harvest opened, and the
+// one it inherited.
+//
+// The common shape: a runtime's row can be retired while its run loop is alive,
+// healthy and unaware. `PATCH /api/tracks/{id}` commits that retirement in one
+// transaction and tears the handle down afterwards; `prepare_tx` commits it and
+// leaves the handle to a later step of the same operation. Everything below
+// orders events inside that gap, with `retire_runtime_in_the_database` standing
+// in for the durable half exactly as the fence performs it.
+// ---------------------------------------------------------------------------
+
+/// A batch the daemon already has must not be handed to the successor as well.
+///
+/// The window: `maybe_issue_turn` persists "the batch is still queued", drains
+/// in memory, calls `turn/start`, and only THEN persists the emptied queue. That
+/// last write used to be lost twice over — `persist_snapshot_inner` returns
+/// early once `shutting_down` is set, and `session_set_handle_state_tx` carries
+/// `AND state IN ('starting','running','idle','turn_pending')` so a retired row
+/// matches nothing. Either way the last word on a fenced runtime was "still
+/// queued", and the harvest believed it.
+///
+/// Red before `persist_issuance_outcome`: the row keeps a one-entry queue for
+/// good and the restart delivers the sentence a second time.
+#[tokio::test]
+async fn a_batch_the_daemon_already_has_is_not_harvested_after_the_row_is_retired() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_turn_start();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-issued"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    // Parked inside `turn/start`: the fake daemon has already recorded the
+    // batch, and the run loop has not yet written the emptied queue back.
+    entered.notified().await;
+    let (runtime, card_id) = b.only_runtime().await;
+    assert_eq!(
+        b.persisted_queue(&runtime).await.len(),
+        1,
+        "premise: the row still says the batch is queued — that is the pre-drain write"
+    );
+
+    // The fence's durable half, and only that half.
+    b.retire_runtime_in_the_database(&runtime).await;
+    release.notify_one();
+
+    assert_eq!(
+        b.wait_for_persisted_queue_len(&runtime, 0).await,
+        0,
+        "a retired runtime must still be able to write down that it delivered the batch — \
+         otherwise the last word on the row is a debt it has already paid"
+    );
+
+    let (reset, reset_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        reset,
+        StatusCode::OK,
+        "premise: the restart must succeed: body={reset_body}"
+    );
+    assert_eq!(
+        b.delivered_copies(STRANDED, 2).await,
+        1,
+        "and the successor must not re-deliver a sentence the daemon already has"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// A runtime that is no longer its card's carrier must not issue its queue.
+///
+/// The mirror image of the case above, and the one that makes the harvest safe
+/// in the other direction: the mint transaction takes the queue and commits,
+/// and the predecessor's run loop — which knows nothing about it, because
+/// `shutting_down` is process memory and nobody set it — would otherwise drain
+/// the same batch and deliver it too.
+///
+/// **This window is older than the harvest.** The dormant-restart INHERIT
+/// (`prepare_tx`'s deferred arm) has copied a live predecessor's whole queue
+/// the same way since long before #1449; the harvest only widened the copy from
+/// memory to disk. The check added here closes it for both, which is why this
+/// test is red on `ce4445f6` — the repro commit, whose production code is
+/// `main`'s — as well as on `b44f45c7`.
+#[tokio::test]
+async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-carrier"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    entered.notified().await;
+    let (runtime, _card_id) = b.only_runtime().await;
+
+    // Somebody else now owns this queue.
+    b.retire_runtime_in_the_database(&runtime).await;
+    release.notify_one();
+
+    assert_eq!(
+        b.delivered_copies(STRANDED, 1).await,
+        0,
+        "a retired runtime must leave its queue for whoever the mint handed it to; issuing it \
+         anyway is how the same sentence reaches the agent twice"
+    );
+    // #1449 — two separate things, and the earlier version of this test had
+    // one of them backwards.
+    //
+    // The handle stays REGISTERED and alive. A handle that wound itself down
+    // would still be in the registry, and `ensure_live_planner_harness` does
+    // not health-check a registered handle, so a predecessor a failed mint
+    // later restores would answer `Conflict` forever with no way back but
+    // `/planner/reset`.
+    //
+    // But a durable send through it is REFUSED, because it cannot be made
+    // durable: `session_set_handle_state_tx` matches no row once this runtime
+    // is retired, and reporting success there is how a sentence got a 201 and
+    // no home. Refusing sends the caller to the successor.
+    let handle = b
+        .state
+        .harness
+        .get(&runtime)
+        .expect("the retired handle must stay registered");
+    let refused = handle
+        .observe_user_message_durable("cannot be made durable here".into())
+        .await;
+    assert!(
+        refused.is_err(),
+        "a send that cannot reach the row must be refused, not acknowledged: {refused:?}"
+    );
+    assert_eq!(
+        b.persisted_queue(&runtime).await.len(),
+        1,
+        "and the refusal must leave the row exactly as it was"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// #1449 S4 — a runtime whose row is GONE does not issue either.
+///
+/// The carrier check reads one row by id and has to decide what a missing row
+/// means. It fails closed: a runtime that cannot show it still speaks for the
+/// card does not speak. Rows are deleted by card, track and area deletion, by a
+/// start's compensation, and by the dev replay reset — every one of them a
+/// context where issuing a turn is wrong. That list came from scanning the tree
+/// for `DELETE FROM worker_sessions`; nothing ratchets it.
+#[tokio::test]
+async fn a_runtime_whose_row_has_been_deleted_does_not_issue_its_queue() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-deleted-row"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    entered.notified().await;
+    let (runtime, _card_id) = b.only_runtime().await;
+
+    // Through the production deleter, not a raw `DELETE`: `session_delete_tx`
+    // clears `tracks.root_session_id` first, and a fixture that skipped that
+    // would trip the foreign key rather than reproduce the state a card, track
+    // or area deletion actually leaves behind.
+    {
+        let worker_session_id = runtime.clone();
+        write_in_tx_typed(b.repo.as_ref() as &dyn Repo, move |tx| {
+            Box::pin(async move {
+                session_delete_tx(tx, &worker_session_id)
+                    .await
+                    .map_err(calm_server::error::CalmError::from)
+            })
+        })
+        .await
+        .expect("delete the runtime row");
+    }
+    release.notify_one();
+
+    assert_eq!(
+        b.delivered_copies(STRANDED, 1).await,
+        0,
+        "a runtime with no row cannot show that it is still the card's carrier, and a missing \
+         row is reachable only in contexts where issuing a turn is wrong"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// A restart that fails after the harvest committed must give the queue back.
+///
+/// `plan_compensation` marks the half-started successor `failed`, and `failed`
+/// is a state the harvest predicate deliberately never reads. The rows the
+/// sentences came from are already stamped. Without an undo the sentence is
+/// unreachable for good — no error, no card change, nothing to notice — and the
+/// mint transaction's own rollback does not cover it, because compensation is a
+/// different transaction.
+///
+/// The reasoning that justifies excluding `failed` in the first place does not
+/// reach here either: a failed *create* is retried by its caller with the same
+/// text under a `#N` key, but a restart's payload carries `first_message: None`.
+#[tokio::test]
+async fn a_failed_restart_gives_the_harvested_sentence_back() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-compensate"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    entered.notified().await;
+    let (stranded_runtime, card_id) = b.only_runtime().await;
+    b.retire_runtime_in_the_database(&stranded_runtime).await;
+    release.notify_one();
+
+    // The restart harvests, then its `thread/start` fails and compensation runs.
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (failed, failed_body) = b.reset_planner(&card_id).await;
+    assert!(
+        !failed.is_success(),
+        "premise: the injected thread/start failure must surface: status={failed} \
+         body={failed_body}"
+    );
+    assert!(
+        b.harvest_stamp(&stranded_runtime).await.is_none(),
+        "the compensation must give the queue back: a mint that did not survive has not \
+         delivered anything, so the row it took from must be harvestable again"
+    );
+
+    // And the proof that "harvestable again" means what it says.
+    let (retry, retry_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        retry,
+        StatusCode::OK,
+        "premise: the second restart must succeed: body={retry_body}"
+    );
+    assert_eq!(
+        b.delivered_copies(STRANDED, 2).await,
+        1,
+        "the sentence must still reach an agent after a failed restart in between — exactly \
+         once, so a compensation that gave the queue back cannot also have delivered it"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// The NON-deferred arm of `prepare_tx`, which every other test in this file
+/// misses: they all create tracks, and `force_new_thread: true` is what a create
+/// with a message and a re-point both send.
+///
+/// `POST /api/today/launchpad/ensure` is the reachable caller of the other arm:
+/// the first call creates and forces a new thread, the second finds the track
+/// already there and starts with `force_new_thread: false`
+/// (`routes/today.rs`). That arm supersedes the card's live predecessor without
+/// inheriting anything from it, so before #1449 whatever the predecessor still
+/// owed was dropped on the floor — the same silent loss as the re-point, on a
+/// path nobody was looking at.
+#[tokio::test]
+async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
+    const LAUNCHPAD_SENTENCE: &str = "check the overnight builds";
+
+    let b = boot().await;
+    let (first, first_body) = b.ensure_launchpad().await;
+    assert_eq!(
+        first,
+        StatusCode::CREATED,
+        "premise: the launchpad must be minted: body={first_body}"
+    );
+    let planner_card_id = first_body["planner_card_id"].as_str().unwrap().to_string();
+    let runtime = b.active_runtime_of_card(&planner_card_id).await;
+
+    // Park the drain, THEN send: the sentence has to be durably queued and
+    // still undrained when the second ensure runs.
+    let (entered, release) = b.hold_the_next_drain();
+    let (sent, sent_body) = b
+        .send_planner_input(&planner_card_id, LAUNCHPAD_SENTENCE)
+        .await;
+    assert_eq!(
+        sent,
+        StatusCode::OK,
+        "premise: the send must be accepted: body={sent_body}"
+    );
+    entered.notified().await;
+    assert_eq!(
+        b.persisted_queue(&runtime).await.len(),
+        1,
+        "premise: the sentence is durably queued on the predecessor and has not drained"
+    );
+
+    // The second ensure takes the other arm.
+    let (second, second_body) = b.ensure_launchpad().await;
+    assert_eq!(
+        second,
+        StatusCode::OK,
+        "premise: the second ensure must resolve the existing launchpad — a 201 here would mean \
+         it minted a new one and never reached the arm under test: body={second_body}"
+    );
+    release.notify_one();
+
+    assert_eq!(
+        b.delivered_copies(LAUNCHPAD_SENTENCE, 2).await,
+        1,
+        "the non-deferred arm must hand the predecessor's undelivered sentence to the successor \
+         — exactly once"
+    );
+    assert!(
+        b.harvest_stamp(&runtime).await.is_some(),
+        "and the row it was taken from must be stamped, or the next start takes it again"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// #1449 B1 — a deferred mint that fails must give the INHERITED queue back.
+///
+/// The inherit is a move: `prepare_tx` takes the predecessor's whole queue into
+/// the successor and empties the predecessor in the same transaction. The
+/// harvest's undo journal cannot cover that transfer — the predecessor is still
+/// `active` when the harvest runs, and the harvest reads `superseded` rows — so
+/// until the inherit filed its own journal entry, a `thread/start` failure left
+/// the sentence on a `failed` successor that the harvest never reads, while
+/// `restore_old_runtime` brought the predecessor back with an empty queue. The
+/// sentence was gone with no error and no trace, and on `origin/main` — where
+/// the inherit is a copy — the restored predecessor still had it.
+///
+/// The predecessor must stay ACTIVE for this to take the inherit arm; retiring
+/// it first is what makes the sibling test exercise the harvest arm instead.
+#[tokio::test]
+async fn a_failed_deferred_mint_gives_the_inherited_sentence_back() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-1449-inherit"), Some(STRANDED))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    entered.notified().await;
+    let (predecessor, card_id) = b.only_runtime().await;
+    assert_eq!(
+        b.persisted_queue(&predecessor).await.len(),
+        1,
+        "premise: the sentence is durably queued and has not drained"
+    );
+
+    // The predecessor is LEFT ACTIVE, so the restart takes the inherit arm.
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (failed, failed_body) = b.reset_planner(&card_id).await;
+    assert!(
+        !failed.is_success(),
+        "premise: the injected thread/start failure must surface: status={failed} \
+         body={failed_body}"
+    );
+    release.notify_one();
+
+    let holders = b.wait_until_rows_holding(STRANDED, 1).await;
+    assert_eq!(
+        holders, 1,
+        "after a failed deferred mint exactly one row must still owe the sentence — the \
+         inherited queue has to come back, or it is stranded on a `failed` runtime the \
+         harvest never reads"
+    );
+
+    // And it is genuinely reachable again, not merely present somewhere.
+    let (retry, retry_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        retry,
+        StatusCode::OK,
+        "premise: the second restart must succeed: body={retry_body}"
+    );
+    assert_eq!(
+        b.delivered_copies(STRANDED, 2).await,
+        1,
+        "and the sentence must reach an agent exactly once"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// #1449 — a durable send is either ON THE ROW or REFUSED. Never accepted and
+/// only in memory.
+///
+/// This is the invariant, and the previous version of this test did not test
+/// it. It sent through `POST /api/cards/{id}/planner/input`, which resolves the
+/// runtime through `ACTIVE_CARD_RUNTIME_SELECT` and therefore answers 409 for a
+/// retired row before reaching the harness at all — so every iteration hit the
+/// `continue` and the assertion never ran. It was green for the same reason an
+/// empty loop is green, while standing as the only evidence that the race was
+/// closed.
+///
+/// So this one goes through the HANDLE, which is what the route holds once it
+/// has resolved a runtime, and which is the object the reachable window hands
+/// to a send that started before the mint committed. The counter in the loop is
+/// asserted, so an interleaving that stops reaching the send fails here instead
+/// of passing quietly.
+#[tokio::test]
+async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
+    let b = boot().await;
+    let (status, body) = b.create_track(Some("idem-1449-durable"), None).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let (runtime, _card_id) = b.only_runtime().await;
+    let handle = b
+        .state
+        .harness
+        .get(&runtime)
+        .expect("the live handle the route would have resolved");
+
+    // A send while the runtime is still the carrier: accepted, and on the row.
+    handle
+        .observe_user_message_durable("before the retirement".into())
+        .await
+        .expect("premise: a live carrier accepts a durable send");
+    assert_eq!(
+        b.persisted_queue(&runtime).await.len(),
+        1,
+        "premise: and it lands on the row"
+    );
+
+    // Now the mint commits underneath the handle the caller is holding.
+    b.retire_runtime_in_the_database(&runtime).await;
+
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    for attempt in 0..20 {
+        let text = format!("after the retirement #{attempt}");
+        match handle.observe_user_message_durable(text.clone()).await {
+            Ok(()) => {
+                accepted += 1;
+                let persisted = b.persisted_queue(&runtime).await;
+                assert!(
+                    persisted.iter().any(|e| e.to_string().contains(&text)),
+                    "send #{attempt} was ACCEPTED but is not on the row — it exists only in the \
+                     memory of a runtime that must not speak for this card, on a row the harvest \
+                     will not read because it is stamped. Persisted queue: {persisted:?}"
+                );
+            }
+            Err(_) => refused += 1,
+        }
+    }
+    // No `accepted + refused == 20` here: every iteration increments one of
+    // them, so that would be a tautology dressed as a premise. The premise that
+    // does work is the next one.
+    assert!(
+        refused > 0,
+        "premise: this test is worthless unless the sends actually reached a retired runtime; \
+         {accepted} were accepted and none refused, so the retirement did not take"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// #1449 — a sentence that crossed the upgrade with no id is still given back
+/// when the mint that moved it fails.
+///
+/// `pending_message_ids` is `#[serde(default)]`, so every entry a pre-#1449
+/// binary enqueued decodes to an empty set, and nothing back-fills ids for
+/// entries already on a queue. Migration 0095 leaves live rows unstamped on
+/// purpose — so their queues stay harvestable — which puts exactly those
+/// entries in the class that moves.
+///
+/// The give-back returns only ids the failing runtime still holds, and `any`
+/// over an empty set is false. So before ids were minted at the transfer
+/// boundary, such a sentence was moved off its row by the mint, never returned,
+/// and left on a `failed` successor: a row the harvest does not read and
+/// `restore_old_runtime` does not revive.
+#[tokio::test]
+async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
+    const LEGACY: &str = "typed before the upgrade";
+
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+    let (status, body) = b.create_track(Some("idem-1449-legacy"), None).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let (predecessor, card_id) = b.only_runtime().await;
+
+    let (sent, sent_body) = b.send_planner_input(&card_id, LEGACY).await;
+    assert_eq!(
+        sent,
+        StatusCode::OK,
+        "premise: the send lands: body={sent_body}"
+    );
+    entered.notified().await;
+
+    // Rewrite the row the way a pre-#1449 binary left it: the queue is there,
+    // the id array is not. Straight to the column, because the point is a row
+    // this binary never wrote.
+    let state: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&predecessor)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    let mut state: Value = serde_json::from_str(&state).unwrap();
+    state.as_object_mut().unwrap().remove("pending_message_ids");
+    sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
+        .bind(serde_json::to_string(&state).unwrap())
+        .bind(&predecessor)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+
+    // The predecessor stays ACTIVE, so the restart takes the inherit arm, and
+    // the restart fails after its transaction committed.
+    b.state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let (failed, failed_body) = b.reset_planner(&card_id).await;
+    assert!(
+        !failed.is_success(),
+        "premise: the injected failure must surface: status={failed} body={failed_body}"
+    );
+    release.notify_one();
+
+    assert_eq!(
+        b.wait_until_rows_holding(LEGACY, 1).await,
+        1,
+        "a sentence with no id was moved off its row by the mint; when that mint fails it has to \
+         come back, or it is left on a `failed` runtime that nothing reads and nothing revives"
+    );
+
+    let (retry, retry_body) = b.reset_planner(&card_id).await;
+    assert_eq!(
+        retry,
+        StatusCode::OK,
+        "premise: the second restart must succeed: body={retry_body}"
+    );
+    assert_eq!(
+        b.delivered_copies(LEGACY, 2).await,
+        1,
+        "and it reaches an agent exactly once"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// #1449 — the input to the accepted duplicate, pinned as intended rather than
+/// left for the next reader to rediscover as a bug.
+///
+/// `user_message_enqueued_on_active_runtime` asks whether the CURRENT runtime
+/// has been spoken to. A move carries the sentence to the successor but leaves
+/// the evidence row naming the runtime that was replaced, so the predicate
+/// answers `false` and `POST /api/today/summary` sends its bootstrap again —
+/// and the harvested copy is still on the queue. Two copies, and they do not
+/// fold: folding needs a full 256-entry queue.
+///
+/// This is #1314's residual with a larger membership, not a new defect. Writing
+/// an evidence row for the successor is not the fix: `harness.user_message.enqueued`
+/// records an act somebody performed, and a harvest is kernel-internal movement
+/// nobody performed. The duplicate is priced — the text says "stand by and
+/// touch nothing", so obeying it twice is obeying it once.
+///
+/// Asserted here, in #1449's own suite, rather than in `today_summary.rs`:
+/// carrying one issue's evidence in another issue's file is what makes a
+/// recorded property quietly stop being true.
+#[tokio::test]
+async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (first, first_body) = b.ensure_launchpad().await;
+    assert_eq!(
+        first,
+        StatusCode::CREATED,
+        "premise: the launchpad must be minted: body={first_body}"
+    );
+    let planner_card_id = first_body["planner_card_id"].as_str().unwrap().to_string();
+    let runtime = b.active_runtime_of_card(&planner_card_id).await;
+
+    // A standing instruction that has not drained yet.
+    let (sent, sent_body) = b
+        .send_planner_input(&planner_card_id, TODAY_SUMMARY_BOOTSTRAP_TEXT)
+        .await;
+    assert_eq!(
+        sent,
+        StatusCode::OK,
+        "premise: the bootstrap must be queued: body={sent_body}"
+    );
+    entered.notified().await;
+    assert_eq!(
+        b.persisted_queue(&runtime).await.len(),
+        1,
+        "premise: it is on the row and has not drained"
+    );
+
+    // The replacement moves it forward; the evidence row keeps naming the
+    // runtime that was replaced.
+    b.retire_runtime_in_the_database(&runtime).await;
+    // The successor's own drain, parked before it exists.
+    //
+    // "The sentence is on the successor's queue" is a state the successor is
+    // in the business of ending: its run loop takes the queue as soon as it
+    // has one. Reading the row and hoping to win that race is a test whose
+    // premise holds or not depending on machine load, and it did not hold on
+    // CI. So the hook is installed BEFORE the mint that creates the successor,
+    // which is what makes "not drained yet" a held state rather than a window:
+    // there is no instant at which the successor could have run past it.
+    //
+    // Installed while the predecessor is still parked past its own hook, so
+    // this one cannot be the hook that predecessor takes. Its queue is empty
+    // by now anyway — the harvest moved it — and a retired runtime turns back
+    // at the carrier check above the hook.
+    let (successor_entered, successor_release) = b.hold_the_next_drain();
+    let (second, second_body) = b.ensure_launchpad().await;
+    assert_eq!(
+        second,
+        StatusCode::OK,
+        "premise: the second ensure must resolve the existing launchpad: body={second_body}"
+    );
+
+    let successor = b.active_runtime_of_card(&planner_card_id).await;
+    assert_ne!(successor, runtime, "premise: a replacement really happened");
+    successor_entered.notified().await;
+    let carried = b
+        .persisted_queue(&successor)
+        .await
+        .iter()
+        .filter(|entry| entry.to_string().contains("Stand by and do nothing yet"))
+        .count();
+    assert_eq!(
+        carried, 1,
+        "premise: the harvest carried the undrained standing instruction to the successor"
+    );
+    release.notify_one();
+    successor_release.notify_one();
+
+    // The mechanism behind the accepted duplicate, asserted directly: the
+    // message is on the successor, and the only evidence row names the runtime
+    // that was replaced. That divergence is exactly what
+    // `user_message_enqueued_on_active_runtime` reads, so the next summary
+    // trigger sends its bootstrap again and the queue carries two copies.
+    //
+    // The trigger itself is NOT driven here: it refuses a day with no activity,
+    // and building one is `today_summary.rs`'s fixture, not this file's. What
+    // this pins is the input to the predicate; the pricing of the extra copy is
+    // #1314's and is documented at the predicate.
+    let evidence_runtimes: Vec<String> = sqlx::query_scalar(
+        "SELECT json_extract(payload, '$.worker_session_id') FROM events \
+         WHERE kind = 'harness.user_message.enqueued'",
+    )
+    .fetch_all(b.repo.pool())
+    .await
+    .unwrap();
+    assert!(
+        !evidence_runtimes.is_empty(),
+        "premise: the send wrote its evidence row"
+    );
+    assert!(
+        evidence_runtimes.iter().all(|id| *id == runtime),
+        "every evidence row still names the REPLACED runtime — that is why the predicate answers \
+         `false` for the successor and the bootstrap is sent again. Writing one for the successor \
+         is not the fix: the event records an act, and a harvest is movement nobody performed. \
+         Rows: {evidence_runtimes:?}, replaced: {runtime}, successor: {successor}"
     );
     b.shutdown_harnesses().await;
 }

@@ -69,6 +69,18 @@ export class ApiError extends Error {
 }
 
 /**
+ * The `ErrorBody.code` a rejected request carried, or `null`.
+ *
+ * `'code' in failure` is the narrowing: transport and decode failures never
+ * carry one, so their absence of a code is reported as `null` rather than
+ * guessed at from the message.
+ */
+export function apiFailureCodeOf(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  return 'code' in error.failure ? error.failure.code : null;
+}
+
+/**
  * The structured folder clash inside a rejected mutation, or `null`.
  *
  * Lives beside `ApiError` because unwrapping it is the only step that needs to

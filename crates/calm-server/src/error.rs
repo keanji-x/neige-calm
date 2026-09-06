@@ -20,17 +20,23 @@ use utoipa::ToSchema;
 pub struct ErrorBody {
     /// Human-readable error message.
     pub error: String,
-    /// Stable machine-readable code — one of `not_found`, `conflict`,
-    /// `idempotency_collision`, `idempotency_key_exhausted`,
-    /// `bad_request`, `unauthorized`,
-    /// `forbidden`, `plugin_install`, `plugin_permission`,
-    /// `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
+    /// Stable machine-readable code.
+    ///
+    /// Every variant of `CalmError` maps to one, in `CalmError::code`:
+    /// `not_found`, `conflict`, `idempotency_collision`,
+    /// `idempotency_key_exhausted`, `today_summary_no_activity`,
+    /// `bad_request`, `unauthorized`, `forbidden`, `plugin_install`,
+    /// `plugin_permission`, `plugin_conflict`, `plugin_busy`,
     /// `plugin_manifest_unloaded`, `plugin_config_corrupt`,
-    /// `plugin_config_too_large`,
-    /// `planner_harness_dormant`, `today_summary_no_activity`,
-    /// `db_error`, `io_error`, `serde_error`,
-    /// `codex_app_server`, `service_unavailable`, `internal`,
-    /// `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
+    /// `plugin_config_too_large`, `plugin_kernel_too_old`,
+    /// `planner_reset_unsupported_in_shared_mode`, `planner_harness_dormant`,
+    /// `planner_harness_runtime_superseded`, `db_error`, `io_error`,
+    /// `serde_error`, `codex_app_server`, `service_unavailable`, `internal`.
+    ///
+    /// Three more are written by routes that build the body directly rather
+    /// than through a `CalmError`: `forbidden_tool` (`routes/plugins.rs`),
+    /// `not_a_card_tool` and `tool_call_failed` (`routes/cards.rs`). A client
+    /// reading this list as closed has to include those.
     pub code: String,
 }
 
@@ -204,6 +210,20 @@ pub enum CalmError {
     #[error("planner harness dormant: {0}")]
     PlannerHarnessDormant(String),
 
+    /// 409 — #1449: the send reached a runtime that is no longer this card's,
+    /// so it could not be written down, and it is refused rather than
+    /// acknowledged.
+    ///
+    /// Its own code rather than the generic [`CalmError::Conflict`] because the
+    /// correct client behaviour is the opposite of the two conflicts it would
+    /// otherwise be indistinguishable from. "Runtime shutting down" and
+    /// "harness dormant" tell a client to stop or to reset; this one says the
+    /// text is intact and re-sending it will reach the successor. A client that
+    /// cannot tell them apart either discards a sentence the user typed or
+    /// retries into a wall.
+    #[error("planner harness runtime superseded: {0}")]
+    PlannerHarnessRuntimeSuperseded(String),
+
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
 
@@ -260,6 +280,7 @@ impl CalmError {
                 "planner_reset_unsupported_in_shared_mode"
             }
             CalmError::PlannerHarnessDormant(_) => "planner_harness_dormant",
+            CalmError::PlannerHarnessRuntimeSuperseded(_) => "planner_harness_runtime_superseded",
             CalmError::Db(_) => "db_error",
             CalmError::Io(_) => "io_error",
             CalmError::Serde(_) => "serde_error",
@@ -280,6 +301,7 @@ impl CalmError {
             | CalmError::PluginManifestUnloaded(_)
             | CalmError::PluginConfigCorrupt(_)
             | CalmError::PlannerHarnessDormant(_)
+            | CalmError::PlannerHarnessRuntimeSuperseded(_)
             | CalmError::TodaySummaryNoActivity(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_)
             | CalmError::PluginInstall(_)
@@ -400,6 +422,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PluginKernelTooOld(m)
             | CalmError::PlannerResetUnsupportedInSharedMode(m)
             | CalmError::PlannerHarnessDormant(m)
+            | CalmError::PlannerHarnessRuntimeSuperseded(m)
             | CalmError::TodaySummaryNoActivity(m)
             | CalmError::CodexAppServer(m)
             | CalmError::Internal(m) => calm_truth::TruthError::Internal(m),

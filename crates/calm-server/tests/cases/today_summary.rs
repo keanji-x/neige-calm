@@ -732,7 +732,7 @@ impl Boot {
     /// `pending_envelope_ids` is cleared and never read back. That is
     /// deliberate rather than an oversight: restoring a snapshot resizes the
     /// ids to `pending_queue`'s length
-    /// (`HarnessSnapshot::align_pending_envelope_ids`), so an id with no
+    /// (`HarnessSnapshot::align_pending_side_arrays`), so an id with no
     /// observation behind it is dropped and can deliver nothing.
     ///
     /// The clear itself is the same kind of surgical staging as the case's own

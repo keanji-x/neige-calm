@@ -263,15 +263,16 @@ pub async fn session_clear_terminal_run_id_tx(
     Ok(())
 }
 
+/// Returns whether the row was written; see
+/// [`session_set_handle_state_mirror_tx`] for why a caller has to care.
 pub async fn session_set_handle_state_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &String,
     state: Option<serde_json::Value>,
-) -> WorkerSessionProjectionResult<()> {
+) -> WorkerSessionProjectionResult<bool> {
     let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
     let now = now_ms();
-    session_set_handle_state_mirror_tx(tx, id, &state_text, now).await?;
-    Ok(())
+    session_set_handle_state_mirror_tx(tx, id, &state_text, now).await
 }
 
 pub async fn session_set_active_turn_tx(
@@ -307,6 +308,304 @@ pub async fn session_fail_if_active_runtime_tx(
     let now = now_ms();
     session_fail_if_active_tx(tx, id, now).await?;
     Ok(())
+}
+
+/// #1449 — record that this runtime's still-pending human sentences have left
+/// the undelivered set, either because a successor inherited its whole queue or
+/// because [`harvest_pending_user_messages_tx`] took them.
+///
+/// The `IS NULL` conjunct means the first stamp wins and a second one is a
+/// no-op, so the timestamp answers *when the queue stopped being deliverable*.
+///
+/// This function writes the marker only. `harvest_pending_user_messages_tx`
+/// edits the predecessor's snapshot in the same transaction, and
+/// `session_restore_from_superseded_tx` clears the marker so a restored row can
+/// be harvested again.
+pub async fn session_mark_queue_harvested_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+    now: i64,
+) -> WorkerSessionProjectionResult<()> {
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET queue_harvested_at_ms = ?1
+            WHERE id = ?2
+              AND queue_harvested_at_ms IS NULL"#,
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// #1449 — the human sentences that never reached an agent, taken off this
+/// card's superseded runtimes and handed to the successor being minted in THIS
+/// transaction.
+///
+/// The predicate is `state = 'superseded'` ONLY, which is narrower than the
+/// path table in the design's §3 reads: a dormant or `exited` predecessor is
+/// not harvested, so the residual documented at
+/// `user_message_enqueued_on_active_runtime` has a smaller membership than
+/// "every replacement".
+///
+/// The exclusion of `'failed'` is deliberate. It covers the message a failed
+/// mint carried: that caller got a non-2xx and re-sends the same text under a
+/// `#N` retry key, so harvesting the row would deliver it twice.
+///
+/// KNOWN GAP (#1449): the argument above is about the mint's own first
+/// message, and a `failed` row can hold sentences it does not cover. A
+/// `POST /planner/input` that answered 200 is persisted on the row, and its
+/// caller has been told the send succeeded; if that runtime later goes
+/// `failed`, this predicate skips the row and nothing re-sends the sentence.
+/// `routes/today_summary.rs` records a bootstrap case of the same shape, where
+/// a predicate re-derives the missing work; a human sentence has no such
+/// re-derivation.
+///
+/// Every row the read touched is stamped, including the ones that yielded
+/// nothing — the stamp records "this queue has left the undelivered set", not
+/// "this queue had something in it". Read, harvest and stamp share the caller's
+/// transaction with the successor's insert, so they commit or roll back
+/// together and a second restart can only ever see the stamp.
+///
+/// # Why the decoder is a parameter
+///
+/// `handle_state_json` holds a `HarnessSnapshot`, which is a `calm-server`
+/// type; this crate cannot name it. Passing the decoder in keeps the read and
+/// the stamp atomic *here* rather than handing the caller a row list it could
+/// forget to stamp. `extract` receives the runtime id (for its own warn line)
+/// and the raw snapshot text, and answers with the sentences to carry forward.
+///
+/// # Why the successor excludes itself
+///
+/// A deferred mint's placeholder row can be superseded by a runtime that raced
+/// in during the deferred window, and the insert that follows this call revives
+/// it under the SAME id. At this instant it is therefore `superseded` and
+/// unstamped while the successor already holds its queue in memory — harvesting
+/// it would hand the successor a second copy of its own sentences.
+pub async fn harvest_pending_user_messages_tx<F>(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    card_id: &str,
+    successor_id: &str,
+    now: i64,
+    extract: F,
+) -> WorkerSessionProjectionResult<HarvestedQueues>
+where
+    F: Fn(&str, &str) -> HarvestOutcome,
+{
+    let rows = sqlx::query(
+        r#"SELECT id, handle_state_json
+             FROM worker_sessions
+            WHERE card_id = ?1
+              AND state = 'superseded'
+              AND queue_harvested_at_ms IS NULL
+              AND id != ?2
+            ORDER BY created_at_ms ASC, id ASC"#,
+    )
+    .bind(card_id)
+    .bind(successor_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let mut harvested = HarvestedQueues::default();
+    for row in &rows {
+        let id: String = row.try_get("id")?;
+        let state: Option<String> = row.try_get("handle_state_json")?;
+        if let Some(state) = state.as_deref() {
+            // #1449 — the decoder mints ids for entries that have none, so it
+            // must see each row once. `worker_sessions.id` is the table's
+            // `TEXT PRIMARY KEY` and this is a single `SELECT` over it, so the
+            // ids this loop walks are distinct.
+            let outcome = extract(id.as_str(), state);
+            // #1449 S2 — a MOVE, not a copy. The source row keeps whatever the
+            // caller did not take and loses what it did, in this transaction.
+            // Leaving the taken sentences behind is what let a second harvest,
+            // or a re-driven operation carrying an older snapshot, deliver them
+            // again.
+            if let Some(remaining) = outcome.remaining_snapshot {
+                session_set_handle_state_of_any_runtime_tx(tx, &id, Some(remaining), now).await?;
+            }
+            if !outcome.taken.is_empty() {
+                harvested.taken_from.push(HarvestedFrom {
+                    worker_session_id: id.clone(),
+                    messages: outcome.taken.clone(),
+                });
+            }
+            harvested.messages.extend(outcome.taken);
+        }
+        session_mark_queue_harvested_tx(tx, &id, now).await?;
+        harvested.stamped_worker_session_ids.push(id);
+    }
+    Ok(harvested)
+}
+
+/// What the caller's decoder made of one retired row.
+#[derive(Debug, Default, Clone)]
+pub struct HarvestOutcome {
+    /// The human sentences taken off this row.
+    pub taken: Vec<HarvestedMessage>,
+    /// The row's snapshot with those sentences removed, to be written back.
+    /// `None` means the decoder took nothing and the row is left byte-for-byte
+    /// as it was; `taken` is empty whenever this is.
+    pub remaining_snapshot: Option<serde_json::Value>,
+}
+
+/// One source row and what this harvest took off it, so a failed mint can put
+/// it back where it came from rather than somewhere plausible.
+#[derive(Debug, Default, Clone)]
+pub struct HarvestedFrom {
+    pub worker_session_id: String,
+    pub messages: Vec<HarvestedMessage>,
+}
+
+/// #1449 S3 — a runtime's persisted snapshot, inside a transaction, by id.
+pub async fn session_handle_state_by_id_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+) -> WorkerSessionProjectionResult<Option<serde_json::Value>> {
+    let row: Option<Option<String>> =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(row
+        .flatten()
+        .map(|text| serde_json::from_str(&text))
+        .transpose()?)
+}
+
+/// #1449 S2 — write a runtime's `handle_state_json` whatever state its row is
+/// in.
+///
+/// The ordinary writer refuses non-active rows and the retired-runtime writer
+/// refuses active ones; the harvest needs neither restriction, because it is
+/// the transaction that is taking the queue and it holds the row for the
+/// duration. Kept separate from both so that neither of their predicates has to
+/// be widened for this one caller.
+pub async fn session_set_handle_state_of_any_runtime_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+    state: Option<serde_json::Value>,
+    now: i64,
+) -> WorkerSessionProjectionResult<()> {
+    let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET handle_state_json = ?1,
+                  updated_at_ms = ?2
+            WHERE id = ?3"#,
+    )
+    .bind(&state_text)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// What one [`harvest_pending_user_messages_tx`] call took, and from where.
+///
+/// The ids are not diagnostics: the caller's saga has to be able to give them
+/// back. A mint that harvests and then fails leaves the harvested sentences on
+/// a `failed` successor — a state the harvest predicate deliberately never
+/// reads — while the rows they came from are stamped, so without an undo the
+/// sentences are unreachable for good and nothing reports it. See
+/// [`session_clear_queue_harvested_tx`].
+#[derive(Debug, Default, Clone)]
+pub struct HarvestedQueues {
+    pub messages: Vec<HarvestedMessage>,
+    pub stamped_worker_session_ids: Vec<String>,
+    /// Per source row, what was taken off it. The undo journal: a mint that
+    /// fails after this transaction commits has to put each sentence back on
+    /// the row it came from.
+    pub taken_from: Vec<HarvestedFrom>,
+}
+
+/// One queue entry taken off a retired row, with the identity of the instances
+/// it carries.
+///
+/// `ids` is never empty: the decoder mints one for an entry that was enqueued
+/// before the field existed, in the transaction that moves it, so everything
+/// this carries can be identified and therefore given back.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HarvestedMessage {
+    pub text: String,
+    pub ids: Vec<String>,
+}
+
+/// #1449 — give a harvested queue back, because the mint that took it did not
+/// survive.
+///
+/// The compensating half of [`harvest_pending_user_messages_tx`]. The mint
+/// transaction's own rollback covers only a failure *inside* that transaction;
+/// a `thread/start` that fails afterwards is compensated in a DIFFERENT
+/// transaction, and that compensation marks the successor `failed`. The
+/// sentences would then be sitting on a row the harvest never reads, taken from
+/// rows that are stamped: silent, permanent loss.
+pub async fn session_clear_queue_harvested_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+) -> WorkerSessionProjectionResult<()> {
+    sqlx::query(
+        r#"UPDATE worker_sessions
+              SET queue_harvested_at_ms = NULL
+            WHERE id = ?1"#,
+    )
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// #1449 — record what a runtime still owes, on a row the ordinary snapshot
+/// writer refuses to touch.
+///
+/// [`session_set_handle_state_tx`] carries
+/// `AND state IN ('starting','running','idle','turn_pending')`, so the moment a
+/// fence flips a row to `superseded` that runtime's snapshot writes silently
+/// affect zero rows — and `persist_snapshot_inner` additionally returns early
+/// once `shutting_down` is set. Both gates land BEFORE the run loop finishes
+/// the turn it is issuing, so the last thing written about a retired runtime is
+/// "the batch is still queued", whether or not the daemon has it.
+///
+/// That was harmless while nothing read an abandoned snapshot. It is not
+/// harmless now that the successor harvests it. This writer is the exception,
+/// and it is deliberately the narrowest one that closes the hole: it writes
+/// `handle_state_json` and nothing else — no `state`, no `active_turn_id`, no
+/// phase event — so it cannot revive a row the fence retired, which is what the
+/// predicate on the ordinary writer exists to prevent.
+///
+/// It refuses ACTIVE rows for the mirror-image reason: a row that has been
+/// revived under the same id (a refreshed deferred placeholder) belongs to a
+/// different harness, and a dead run loop must not write its stale queue over
+/// a live one.
+/// Returns whether the row was written.
+///
+/// #1449 — the two handle-state writers have complementary predicates, so a row
+/// that flips from retired back to active between them (`restore_old_runtime`)
+/// matches NEITHER. The retired row then keeps its PRE-drain queue, and once
+/// the restore clears its marker that queue is harvestable again: the same
+/// sentence delivered twice. The caller has to know the write did not land.
+pub async fn session_set_handle_state_of_retired_runtime_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+    state: Option<serde_json::Value>,
+    now: i64,
+) -> WorkerSessionProjectionResult<bool> {
+    let state_text = state.as_ref().map(serde_json::to_string).transpose()?;
+    let res = sqlx::query(
+        r#"UPDATE worker_sessions
+              SET handle_state_json = ?1,
+                  updated_at_ms = ?2
+            WHERE id = ?3
+              AND state NOT IN ('starting', 'running', 'idle', 'turn_pending')"#,
+    )
+    .bind(&state_text)
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(res.rows_affected() > 0)
 }
 
 /// Tolerant harness phase-mirror / compensation write; deliberately skips the
@@ -450,6 +749,33 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         kind: WorkerSessionKind,
     ) -> WorkerSessionProjectionResult<Vec<WorkerSessionProjection>> {
         runtimes_active_for_kind_from_pool(&self.pool, kind).await
+    }
+
+    async fn session_projection_state_by_id(
+        &self,
+        id: &str,
+    ) -> WorkerSessionProjectionResult<Option<WorkerSessionState>> {
+        let row: Option<String> =
+            sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(self.pool())
+                .await?;
+        row.as_deref().map(run_status_from_db).transpose()
+    }
+
+    async fn session_projection_handle_state_by_id(
+        &self,
+        id: &str,
+    ) -> WorkerSessionProjectionResult<Option<serde_json::Value>> {
+        let row: Option<Option<String>> =
+            sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(self.pool())
+                .await?;
+        Ok(row
+            .flatten()
+            .map(|text| serde_json::from_str(&text))
+            .transpose()?)
     }
 
     async fn session_projection_by_id(

@@ -1,5 +1,6 @@
 use sqlx::Row;
 
+use super::session_projection::session_mark_queue_harvested_tx;
 use super::session_row::{
     runtime_message, runtime_status_transition_allowed, session_state_transition_at_tx,
 };
@@ -134,7 +135,14 @@ async fn session_refresh_deferred_placeholder_tx(
                   spawn_op_id = ?11,
                   created_at_ms = ?12,
                   updated_at_ms = ?13,
-                  completed_at_ms = ?14
+                  completed_at_ms = ?14,
+                  -- #1449 — this row is being re-armed as a NEW carrier: new
+                  -- state, new `handle_state_json`, new `created_at_ms`. The
+                  -- harvest marker is a statement about the queue a row is
+                  -- carrying, not about its id, so it must not survive the
+                  -- swap; keeping it would make the incoming queue permanently
+                  -- unharvestable.
+                  queue_harvested_at_ms = NULL
             WHERE id = ?15
               AND contract = ?16
               AND card_id = ?17
@@ -312,6 +320,16 @@ pub async fn session_prepare_deferred_planner_tx(
     .await?;
     if let Some(existing_id) = existing_active_id {
         session_supersede_active_tx(tx, &existing_id, init.now_ms).await?;
+        // #1449 — the caller of this function inherits the retired row's WHOLE
+        // pending queue into `init.handle_state_json` (that is what a dormant
+        // restart is), so the row leaves the undelivered set here and is
+        // stamped here. Stamping it in the caller instead would mean stamping
+        // whatever a *second*, differently-shaped active-runtime query returned
+        // — `ws.card_id` there against `cards.session_id` here — and the two
+        // are only guaranteed to agree while a card has exactly one active row.
+        // The row that is retired and the row that is stamped are now the same
+        // row by construction.
+        session_mark_queue_harvested_tx(tx, &existing_id, init.now_ms).await?;
     }
     let track_id = worker_session_track_id_for_card_tx(tx, &init.card_id).await?;
     let session = worker_session_from_runtime_init(init, track_id);
@@ -457,13 +475,20 @@ pub(super) async fn session_clear_terminal_run_id_mirror_tx(
     Ok(())
 }
 
+/// Returns whether the row was actually written.
+///
+/// #1449 — the predicate means this affects zero rows once the runtime has been
+/// retired, and it reported success anyway. A durable user send persisted
+/// through here, matched nothing, was acknowledged, and the route answered 201
+/// for a sentence that existed only in process memory. A caller that promises
+/// durability has to look at this.
 pub(super) async fn session_set_handle_state_mirror_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &String,
     state_text: &Option<String>,
     now: i64,
-) -> WorkerSessionProjectionResult<()> {
-    sqlx::query(
+) -> WorkerSessionProjectionResult<bool> {
+    let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET handle_state_json = ?1,
                   updated_at_ms = ?2
@@ -475,7 +500,7 @@ pub(super) async fn session_set_handle_state_mirror_tx(
     .bind(id)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    Ok(res.rows_affected() > 0)
 }
 
 pub(super) async fn session_set_active_turn_mirror_tx(
@@ -589,7 +614,13 @@ pub(super) async fn session_restore_from_superseded_tx(
         r#"UPDATE worker_sessions
               SET state = ?1,
                   updated_at_ms = ?2,
-                  completed_at_ms = NULL
+                  completed_at_ms = NULL,
+                  -- #1449 — a restored row is an active carrier again, so the
+                  -- marker goes. Whether it has a queue to owe depends on
+                  -- whether the mint that retired it gave one back: since the
+                  -- transfers became moves, a restore alone does not put
+                  -- anything on the row.
+                  queue_harvested_at_ms = NULL
             WHERE id = ?3
               AND state = 'superseded'"#,
     )

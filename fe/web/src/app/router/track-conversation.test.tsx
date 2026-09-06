@@ -451,6 +451,159 @@ describe('track conversations', () => {
   });
 
   /*
+   * #1449 — a refused send leaves the reader holding their sentence.
+   *
+   * The kernel now answers `planner_harness_runtime_superseded` when the send
+   * reached a runtime its card has moved off: nothing was stored, and sending
+   * the same text again reaches the successor. The composer used to clear the
+   * field on submit, so a refusal left an error, no echo, and nothing to
+   * retry — strictly worse than before the refusal existed, because the
+   * sentence at least used to be on screen.
+   *
+   * Restoring the draft is the same shape as the echo it sits beside: added on
+   * submit, removed by the failure path. The retry is what proves the text is
+   * usable, not merely present.
+   */
+  it('keeps the message in the composer when the runtime was superseded, and re-sends it', async () => {
+    let refuse = true;
+    const { requests } = setup((request) => {
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      if (refuse) {
+        refuse = false;
+        return {
+          status: 409,
+          statusText: 'Conflict',
+          body: {
+            error: 'this runtime is no longer the card\'s; your message was not stored — send it again',
+            code: 'planner_harness_runtime_superseded',
+          },
+        };
+      }
+      return ok({ card_id: pathCardId(request.path), worker_session_id: 'r' });
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('reconcile the ledger');
+
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeNull());
+    await waitFor(() => expect(messageField().textContent).toBe('reconcile the ledger'));
+
+    const before = requests.filter((request) => request.path.endsWith('/planner/input')).length;
+    await act(async () => {
+      fireEvent.keyDown(messageField(), { key: 'Enter' });
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(requests.filter((request) => request.path.endsWith('/planner/input')).length)
+        .toBe(before + 1));
+    await waitFor(() => expect(messageField().textContent).toBe(''));
+  });
+
+  /*
+   * #1449 — a dormant harness is the everyday shape of this, not the rare one.
+   *
+   * `ensure_live_planner_harness` answers `planner_harness_dormant` before it
+   * has anything to write to, so the sentence is unspent. The store drops the
+   * optimistic echo on any failure, so without the restore the sentence is off
+   * the transcript AND out of the field at once, leaving one line of error text
+   * where the reader's words were.
+   */
+  it('keeps the message in the composer when the harness is dormant', async () => {
+    setup((request) => request.path.endsWith('/planner/input')
+      ? {
+        status: 409,
+        statusText: 'Conflict',
+        body: {
+          error: 'no recoverable planner harness session for this card; reset to start a session',
+          code: 'planner_harness_dormant',
+        },
+      }
+      : undefined);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('the sentence a dormant harness must not eat');
+
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeNull());
+    await waitFor(() =>
+      expect(messageField().textContent).toBe('the sentence a dormant harness must not eat'));
+  });
+
+  /*
+   * #1449 review round 7 — an unresolved send is not a refusal.
+   *
+   * `POST /planner/input` carries no `Idempotency-Key`, so a 503 leaves the
+   * browser unable to say whether the text was stored. Putting it back in the
+   * field is then one Enter away from a second `UserMessage`, which starts a
+   * second turn. Only a refusal the server names licenses the restore.
+   */
+  it('leaves the field empty when the send failed without saying the text was refused', async () => {
+    setup((request) => request.path.endsWith('/planner/input')
+      ? { status: 503, statusText: 'Service Unavailable', body: { code: 'unavailable', error: 'busy' } }
+      : undefined);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('the ledger again');
+
+    /* The premise: the failure really was reported, so an empty field is not
+       an unanswered request being read as a decision. */
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeNull());
+    expect(messageField().textContent).toBe('');
+  });
+
+  /*
+   * #1449 review round 7 — a refusal answers for the conversation that sent it.
+   *
+   * The store already keeps every *other* effect of a failure inside the
+   * conversation that failed: the error line and the echo removal are both
+   * behind `stillActive()`. The outcome the composer reads has to obey the same
+   * rule, and when it was a bare `false` it did not: the reader walked to
+   * another conversation while the POST was out, the 409 came back, and the
+   * first conversation's sentence was put into the second conversation's
+   * composer — with no error line, because that half was suppressed correctly.
+   * One Enter would then have delivered it to the wrong card, which is worse
+   * than the loss the restore exists to prevent.
+   */
+  it('does not put a refused sentence into the conversation the reader walked to', async () => {
+    const held = new Map<string, () => void>();
+    setup(async (request) => {
+      if (!request.path.endsWith('/planner/input')) return undefined;
+      const cardId = pathCardId(request.path);
+      await new Promise<void>((resolve) => { held.set(cardId, resolve); });
+      return {
+        status: 409,
+        statusText: 'Conflict',
+        body: {
+          error: 'this runtime is no longer the card\'s; your message was not stored — send it again',
+          code: 'planner_harness_runtime_superseded',
+        },
+      };
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByRole('complementary', { name: 'Assistant' });
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await write('sentence meant for assistant');
+    await waitFor(() => expect(held.has(ASSISTANT_CARD.id)).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation Planner chat' }));
+    await screen.findByRole('complementary', { name: 'Planner chat' });
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+
+    await act(async () => { held.get(ASSISTANT_CARD.id)?.(); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    /* The premise: the refusal really was delivered to this store, which is
+       what the error line being absent must not be allowed to stand for. */
+    expect(held.has(ASSISTANT_CARD.id)).toBe(true);
+    expect(messageField().textContent).toBe('');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  /*
    * ── G4 ─────────────────────────────────────────────────────────────────────
    *
    * A track with no planner card is exactly the track that most needs to start a
@@ -1065,7 +1218,7 @@ describe('registry write-through', () => {
         rows, rememberOn: 'w1',
       });
       const send = store.send;
-      useEffect(() => { latestSend = (text) => { send(ASSISTANT_CARD.id, text); }; });
+      useEffect(() => { latestSend = (text) => { void send(ASSISTANT_CARD.id, text); }; });
       return null;
     }
 
@@ -1340,7 +1493,7 @@ describe('registry write-through', () => {
       const send = store.send;
       const turns = store.turnsOf(ASSISTANT_CARD.id);
       useEffect(() => {
-        latestSend = (text) => { send(ASSISTANT_CARD.id, text); };
+        latestSend = (text) => { void send(ASSISTANT_CARD.id, text); };
         visibleTurns = turns;
       });
       return null;

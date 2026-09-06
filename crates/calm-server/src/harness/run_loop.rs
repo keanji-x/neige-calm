@@ -4,6 +4,12 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+#[cfg(feature = "fixtures")]
+use std::collections::HashMap;
+#[cfg(feature = "fixtures")]
+use std::sync::OnceLock;
+#[cfg(feature = "fixtures")]
+use tokio::sync::Notify;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use tokio::task::AbortHandle;
 
@@ -21,6 +27,105 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
+
+/// #1449 — park a runtime immediately before it can turn its pending queue into
+/// a turn, so a test can order "the workspace is repointed" strictly *before*
+/// "the first message drains".
+///
+/// The race this makes deterministic is real and silent: `PATCH
+/// /api/tracks/{id}` supersedes every live runtime of the track and mints a
+/// successor, and until #1449 the successor started with an empty queue. If the
+/// drain lost the race, the sentence the user typed sat forever on a superseded
+/// row that nothing reads. Under load the existing
+/// `a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint`
+/// catches it a few times out of six; this hook makes it every time.
+///
+/// # Why here and not at the drain itself
+///
+/// The queue is taken a few statements below, under `inner.issuance` — and
+/// `PlannerHarness::shutdown_inner` takes that same lock. A hook parked while
+/// holding it would deadlock the very `PATCH` the test is trying to order
+/// against: the fence's `shutdown_fenced_harness` would wait for the run loop
+/// that is waiting for the test that is waiting for the `PATCH`. Parking one
+/// statement earlier keeps the property the test needs — the queue has not been
+/// touched — while leaving the shutdown path free. The re-check of
+/// `shutting_down` immediately after the lock is what stops the parked loop
+/// from draining once it is released.
+///
+/// Same convention as `WorkspaceRepointRaceHook` in `routes/tracks.rs`, and the
+/// same limit to it: the hook struct, the registry and the wait are
+/// `fixtures`-only, so a release build compiles no map and no rendezvous. The
+/// call site and `wait_at_planner_harness_drain_race_hook` itself are NOT
+/// `cfg`-gated — in a release build the body collapses to
+/// `let _ = worker_session_id;` and the call remains, taking that one
+/// argument.
+///
+/// # Arming
+///
+/// [`ANY_RUNTIME`] parks whichever runtime reaches the drain FIRST, not a
+/// runtime chosen by name — the two are the same thing only while the process
+/// has exactly one harness that can drain. `nextest` gives every test its own
+/// process, so no other test in this suite can steal the entry; a card that
+/// starts a second harness within one test can. Arm by runtime id whenever the
+/// id is knowable.
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct PlannerHarnessDrainRaceHook {
+    pub entered: Arc<Notify>,
+    pub release: Arc<Notify>,
+}
+
+#[cfg(feature = "fixtures")]
+fn planner_harness_drain_race_hooks()
+-> &'static StdMutex<HashMap<String, PlannerHarnessDrainRaceHook>> {
+    static HOOKS: OnceLock<StdMutex<HashMap<String, PlannerHarnessDrainRaceHook>>> =
+        OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+/// Arm the hook for whichever runtime reaches the drain next, rather than for a
+/// named one.
+///
+/// Needed because the id of the runtime under test cannot be known before it
+/// exists: `POST /api/tracks` mints the runtime, starts its run loop and lets it
+/// drain, all before the 201 is written. Arming after the response is a race
+/// that the drain usually wins — which is precisely the race #1449 is about. The
+/// entry is still one-shot, so a second runtime is unaffected unless the test
+/// arms it again.
+#[cfg(feature = "fixtures")]
+pub const ANY_RUNTIME: &str = "#1449-any-runtime";
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_planner_harness_drain_race_hook_for_test(
+    worker_session_id: &str,
+    hook: PlannerHarnessDrainRaceHook,
+) {
+    planner_harness_drain_race_hooks()
+        .lock()
+        .expect("planner harness drain hook mutex")
+        .insert(worker_session_id.to_string(), hook);
+}
+
+async fn wait_at_planner_harness_drain_race_hook(worker_session_id: &str) {
+    #[cfg(feature = "fixtures")]
+    {
+        let hook = {
+            let mut hooks = planner_harness_drain_race_hooks()
+                .lock()
+                .expect("planner harness drain hook mutex");
+            hooks
+                .remove(worker_session_id)
+                .or_else(|| hooks.remove(ANY_RUNTIME))
+        };
+        if let Some(hook) = hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = worker_session_id;
+}
 
 const OBSERVATION_BUFFER: usize = 256;
 const MAX_PENDING_QUEUE_LEN: usize = 256;
@@ -70,6 +175,9 @@ pub(super) struct Inner {
     last_phase: Mutex<HarnessPhaseTag>,
     pending_queue: Mutex<VecDeque<Observation>>,
     pending_envelope_ids: Mutex<VecDeque<Option<i64>>>,
+    /// #1449 — message ids, one set per `pending_queue` entry. Identity only;
+    /// see `HarnessSnapshot::pending_message_ids`.
+    pending_message_ids: Mutex<VecDeque<Vec<String>>>,
     recent_hook_keys: Mutex<VecDeque<String>>,
     recent_hook_key_set: Mutex<HashSet<String>>,
     push_watermark: Mutex<i64>,
@@ -155,6 +263,7 @@ struct DebounceState {
 struct DurableUserMessageCheckpoint {
     pending_queue: VecDeque<Observation>,
     pending_envelope_ids: VecDeque<Option<i64>>,
+    pending_message_ids: VecDeque<Vec<String>>,
     debounce: DebounceState,
 }
 
@@ -162,6 +271,7 @@ async fn checkpoint_durable_user_message(inner: &Inner) -> DurableUserMessageChe
     DurableUserMessageCheckpoint {
         pending_queue: inner.pending_queue.lock().await.clone(),
         pending_envelope_ids: inner.pending_envelope_ids.lock().await.clone(),
+        pending_message_ids: inner.pending_message_ids.lock().await.clone(),
         debounce: *inner.debounce.lock().await,
     }
 }
@@ -169,6 +279,7 @@ async fn checkpoint_durable_user_message(inner: &Inner) -> DurableUserMessageChe
 async fn restore_durable_user_message(inner: &Inner, checkpoint: DurableUserMessageCheckpoint) {
     *inner.pending_queue.lock().await = checkpoint.pending_queue;
     *inner.pending_envelope_ids.lock().await = checkpoint.pending_envelope_ids;
+    *inner.pending_message_ids.lock().await = checkpoint.pending_message_ids;
     *inner.debounce.lock().await = checkpoint.debounce;
 }
 
@@ -297,7 +408,7 @@ impl PlannerHarness {
                         ));
                     }
                 }
-                if let Err(error) = persist_snapshot(&self.inner).await {
+                if let Err(error) = persist_snapshot_for_durable_send(&self.inner).await {
                     restore_durable_user_message(&self.inner, checkpoint).await;
                     return Err(error);
                 }
@@ -580,7 +691,7 @@ fn inner_from_params(
     shutdown: broadcast::Sender<()>,
 ) -> Arc<Inner> {
     let mut snapshot = params.snapshot;
-    snapshot.align_pending_envelope_ids();
+    snapshot.align_pending_side_arrays();
     truncate_snapshot_pending_queue(&mut snapshot);
     let debounce = debounce_from_initial_queue(&snapshot.pending_queue);
     let state = state_from_snapshot(&snapshot);
@@ -602,6 +713,7 @@ fn inner_from_params(
         state: Mutex::new(state),
         last_phase: Mutex::new(last_phase),
         pending_envelope_ids: Mutex::new(snapshot.pending_envelope_ids.into_iter().collect()),
+        pending_message_ids: Mutex::new(snapshot.pending_message_ids.into_iter().collect()),
         pending_queue: Mutex::new(pending_queue),
         recent_hook_keys: Mutex::new(recent_hook_keys),
         recent_hook_key_set: Mutex::new(recent_hook_key_set),
@@ -728,7 +840,7 @@ async fn run_loop(
                             }
                         }
                         let result = if accepted {
-                            match persist_snapshot(&inner).await {
+                            match persist_snapshot_for_durable_send(&inner).await {
                                 Ok(()) => Ok(()),
                                 Err(error) => {
                                     restore_durable_user_message(&inner, checkpoint).await;
@@ -798,14 +910,28 @@ async fn on_observation(inner: &Arc<Inner>, obs: Observation, envelope_id: Optio
     true
 }
 
+/// KNOWN GAP (#1449): the harvest appends to the successor's queue without
+/// consulting `MAX_PENDING_QUEUE_LEN` — the constant is private to this module
+/// — and the cap is applied here afterwards, from the OLD end. The harvested
+/// human sentences are the oldest entries, so they are the ones dropped, and
+/// the source row is stamped and emptied by then: the only trace is the warn
+/// below. It needs a predecessor holding more than `MAX_PENDING_QUEUE_LEN`
+/// undelivered entries, and it became reachable when the transfer became a
+/// move.
 fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) {
     let len = snapshot.pending_queue.len();
     if len <= MAX_PENDING_QUEUE_LEN {
         return;
     }
     let drop_count = len - MAX_PENDING_QUEUE_LEN;
+    // #1449 — align first, so this function does not depend on its caller
+    // having done it. The two side arrays are drained by the same range as the
+    // queue; against a shorter array that range is out of bounds and `drain`
+    // panics, and a hand-built or pre-#1449 snapshot has exactly that shape.
+    snapshot.align_pending_side_arrays();
     snapshot.pending_queue.drain(..drop_count);
     snapshot.pending_envelope_ids.drain(..drop_count);
+    snapshot.pending_message_ids.drain(..drop_count);
     tracing::warn!(
         target: "planner.harness.backpressure",
         original_len = len,
@@ -821,14 +947,28 @@ async fn enqueue_pending_observation(
 ) -> bool {
     let mut queue = inner.pending_queue.lock().await;
     let mut envelope_ids = inner.pending_envelope_ids.lock().await;
+    let mut message_ids = inner.pending_message_ids.lock().await;
+    // #1449 — a `UserMessage` entering this queue gets an id here.
+    let minted: Vec<String> = match &obs {
+        Observation::UserMessage { .. } => vec![crate::model::new_id()],
+        _ => Vec::new(),
+    };
     if queue.len() >= MAX_PENDING_QUEUE_LEN {
-        if try_fold_pending_tail(&mut queue, &mut envelope_ids, &obs, envelope_id) {
+        if try_fold_pending_tail(
+            &mut queue,
+            &mut envelope_ids,
+            &mut message_ids,
+            &obs,
+            envelope_id,
+            &minted,
+        ) {
             return true;
         }
         let hard = obs.is_hard_fire();
         if let Some(drop_idx) = queue.iter().position(|queued| !queued.is_hard_fire()) {
             queue.remove(drop_idx);
             envelope_ids.remove(drop_idx);
+            message_ids.remove(drop_idx);
         } else {
             tracing::warn!(
                 target: "planner.harness.backpressure",
@@ -842,14 +982,17 @@ async fn enqueue_pending_observation(
     }
     queue.push_back(obs);
     envelope_ids.push_back(envelope_id);
+    message_ids.push_back(minted);
     true
 }
 
 fn try_fold_pending_tail(
     queue: &mut VecDeque<Observation>,
     envelope_ids: &mut VecDeque<Option<i64>>,
+    message_ids: &mut VecDeque<Vec<String>>,
     obs: &Observation,
     envelope_id: Option<i64>,
+    minted_message_ids: &[String],
 ) -> bool {
     let Some(last) = queue.back_mut() else {
         return false;
@@ -906,6 +1049,14 @@ fn try_fold_pending_tail(
     };
     if folded && let Some(last_envelope_id) = envelope_ids.back_mut() {
         *last_envelope_id = envelope_id;
+    }
+    // #1449 — a fold turns two entries into one, so the surviving entry carries
+    // BOTH sets of ids. Overwriting instead of unioning would discard an
+    // instance the caller may later have to move back, which is exactly the
+    // loss of identity the ids exist to prevent; the ids are a set per entry
+    // rather than one id per entry for this reason alone.
+    if folded && let Some(last_message_ids) = message_ids.back_mut() {
+        last_message_ids.extend_from_slice(minted_message_ids);
     }
     folded
 }
@@ -1514,6 +1665,40 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             return Ok(());
         }
     }
+    // #1449 — the DURABLE half of "may I still speak for this card", and it is
+    // not redundant with the `shutting_down` flag consulted further down.
+    //
+    // `shutting_down` is process memory, set by `PlannerHarness::shutdown`. A
+    // runtime can be retired in the DATABASE with its run loop perfectly
+    // healthy and unaware: `prepare_tx` supersedes the card's live predecessor
+    // and takes its pending queue, and nothing stops the predecessor's handle
+    // until a later step of the same operation tears it down. In that window
+    // the predecessor would issue a turn for a queue its successor is also
+    // carrying.
+    //
+    // Placed HERE, above the work, rather than beside the drain: below this
+    // point every tick pays a card/role lookup, a track-level transcript WRITE
+    // transaction and a diff. A runtime refused at the drain kept paying all
+    // of that, every 50ms, for as long as it lived. Above it, a refused
+    // runtime pays one indexed read by id per tick and nothing else.
+    //
+    // The refusal declines to issue and returns; it does NOT wind the handle
+    // down. A handle that stopped would still be registered, and
+    // `ensure_live_planner_harness` does not health-check a registered handle,
+    // so a predecessor a failed mint later restored would answer `Conflict` on
+    // every send with no way back but `/planner/reset`. Stopping also raced
+    // the durable-observation path, which reads `shutting_down` under a lock
+    // this had no reason to hold.
+    if !runtime_is_still_the_live_carrier(inner).await? {
+        tracing::debug!(
+            target: "calm_server::planner_harness_issue",
+            worker_session_id = %inner.worker_session_id,
+            card_id = %inner.card_id,
+            track_id = %inner.track_id,
+            "runtime is no longer the card's live carrier; leaving the queue for its successor"
+        );
+        return Ok(());
+    }
     // Two independent per-turn decisions that used to ride on one boolean
     // (#1189 review A6). Splitting them is the whole point:
     //
@@ -1634,8 +1819,28 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     } else {
         diff_with_timeout(inner, refresh_head.as_ref()).await
     };
+    // Deterministic drain-vs-supersede window for #1449. No-op in production.
+    wait_at_planner_harness_drain_race_hook(&inner.worker_session_id).await;
     let _issuance_guard = inner.issuance.lock().await;
     if inner.shutting_down.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    // #1449 — asked a SECOND time, here, and the two are not redundant.
+    //
+    // The check above runs before the transcript refresh and the diff so a
+    // retired runtime does not pay for them; but that leaves the
+    // whole of that work between the answer and the queue being taken, and a
+    // fence landing inside that gap is exactly the case this is about. This
+    // one is immediately before the drain and costs one indexed read per turn
+    // actually being issued.
+    if !runtime_is_still_the_live_carrier(inner).await? {
+        tracing::debug!(
+            target: "calm_server::planner_harness_issue",
+            worker_session_id = %inner.worker_session_id,
+            card_id = %inner.card_id,
+            track_id = %inner.track_id,
+            "runtime was retired while this turn was being prepared; leaving the queue"
+        );
         return Ok(());
     }
     tracing::debug!(
@@ -1676,12 +1881,14 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     *inner.issued_input_segments.lock().await = None;
     persist_snapshot(inner).await?;
 
-    let (drained, drained_envelope_ids) = {
+    let (drained, drained_envelope_ids, drained_message_ids) = {
         let mut queue = inner.pending_queue.lock().await;
         let mut envelope_ids = inner.pending_envelope_ids.lock().await;
+        let mut message_ids = inner.pending_message_ids.lock().await;
         (
             queue.drain(..).collect::<Vec<_>>(),
             envelope_ids.drain(..).collect::<Vec<_>>(),
+            message_ids.drain(..).collect::<Vec<_>>(),
         )
     };
     if drained.is_empty() {
@@ -1700,7 +1907,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         .collect::<Vec<_>>()
         .join("\n");
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
-        rebuffer_head(inner, drained, drained_envelope_ids).await;
+        rebuffer_head(inner, drained, drained_envelope_ids, drained_message_ids).await;
         *inner.state.lock().await = HarnessState::PendingThreadStart;
         *inner.issued_turn_id.lock().await = None;
         persist_snapshot(inner).await?;
@@ -1739,10 +1946,10 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 turn_id,
                 segments: input_segments,
             });
-            persist_snapshot(inner).await?;
+            persist_issuance_outcome(inner).await?;
         }
         Err(e) => {
-            rebuffer_head(inner, drained, drained_envelope_ids).await;
+            rebuffer_head(inner, drained, drained_envelope_ids, drained_message_ids).await;
             *inner.state.lock().await = prior_turn
                 .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
                 .unwrap_or(HarnessState::TurnCompleted {
@@ -1750,7 +1957,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 });
             *inner.issued_turn_id.lock().await = None;
             *inner.issued_turn_head.lock().await = None;
-            persist_snapshot(inner).await?;
+            persist_issuance_outcome(inner).await?;
             tracing::warn!(error = %e, "planner harness turn/start failed; re-buffered batch");
         }
     }
@@ -1944,14 +2151,21 @@ async fn rebuffer_head(
     inner: &Arc<Inner>,
     drained: Vec<Observation>,
     drained_envelope_ids: Vec<Option<i64>>,
+    drained_message_ids: Vec<Vec<String>>,
 ) {
     let mut queue = inner.pending_queue.lock().await;
     let mut envelope_ids = inner.pending_envelope_ids.lock().await;
+    let mut message_ids = inner.pending_message_ids.lock().await;
     for obs in drained.into_iter().rev() {
         queue.push_front(obs);
     }
     for envelope_id in drained_envelope_ids.into_iter().rev() {
         envelope_ids.push_front(envelope_id);
+    }
+    // #1449 — a re-buffered batch keeps the ids it was drained with: it is the
+    // same instances going back, not new ones.
+    for ids in drained_message_ids.into_iter().rev() {
+        message_ids.push_front(ids);
     }
     let now = Instant::now();
     *inner.debounce.lock().await = DebounceState {
@@ -2107,6 +2321,13 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
         .iter()
         .copied()
         .collect();
+    let pending_message_ids = inner
+        .pending_message_ids
+        .lock()
+        .await
+        .iter()
+        .cloned()
+        .collect();
     let push_watermark = *inner.push_watermark.lock().await;
     let last_thread_id = inner.thread_id.read().await.clone();
     let last_turn_id = inner.last_turn_id.lock().await.clone();
@@ -2118,8 +2339,11 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let mut snapshot = HarnessSnapshot::from_state(
         &state,
         push_watermark,
-        queue,
-        pending_envelope_ids,
+        crate::harness::snapshot::PendingQueueState {
+            queue,
+            envelope_ids: pending_envelope_ids,
+            message_ids: pending_message_ids,
+        },
         last_thread_id,
         last_turn_id,
         last_report_body_sha256,
@@ -2131,13 +2355,140 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     snapshot
 }
 
+/// #1449 — is this runtime still the row the card is being driven from?
+///
+/// A pool read of one row by id. NOT `write_in_tx_typed`, which opens with
+/// `BEGIN IMMEDIATE` and takes SQLite's single writer lock; this runs on every
+/// issuance attempt, and behind the writer lock it starved other writers
+/// (`token_usage_round_trips_through_the_persisted_runtime_snapshot` went red
+/// in a full-suite run while it was one). NOT `session_projection_by_id`
+/// either: that SELECT is card-backed, so a row the card has moved off answers
+/// `None`, and a `None` here refuses — which would refuse every runtime whose
+/// card has moved on, live or not.
+///
+/// A missing row is refused. The rows are deleted by card, track and area
+/// deletion, by a start's compensation, and by the dev replay reset; that list
+/// comes from scanning every `DELETE FROM worker_sessions` in the tree and is
+/// not ratcheted — `worker_sessions_row_disappearance.rs` freezes the FK
+/// cascades and triggers, which is a different set.
+async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
+    let state = inner
+        .repo
+        .session_projection_state_by_id(inner.worker_session_id.as_str())
+        .await?;
+    Ok(match state {
+        Some(state) => state.is_active_authority(),
+        None => false,
+    })
+}
+
+/// #1449 — persist what the runtime owes after an issuance resolved, on a row
+/// the ordinary writer may already refuse.
+///
+/// Two independent gates make the ordinary [`persist_snapshot`] a no-op exactly
+/// when this write matters most, and BOTH are set by the re-point fence before
+/// the run loop reaches this point:
+///
+/// * `persist_snapshot_inner` returns early once `shutting_down` is set, and
+///   `shutdown_inner` sets that flag BEFORE it queues behind `inner.issuance`;
+/// * `session_set_handle_state_tx` carries
+///   `AND state IN ('starting','running','idle','turn_pending')`, and the
+///   fence's transaction commits `superseded` before it touches the process.
+///
+/// So the last thing ever written about a fenced runtime is the pre-drain
+/// snapshot — "the batch is still queued" — no matter what happened to the
+/// batch. That was invisible while nothing read an abandoned snapshot; it is
+/// the whole basis of the harvest now. `session_set_handle_state_of_retired_runtime_tx`
+/// is the narrow exception: `handle_state_json` and `updated_at_ms`, retired
+/// rows only.
+///
+/// It runs after the ordinary write, not instead of it — and only when that
+/// write cannot have landed, so a live runtime does not open a second
+/// transaction per turn to discover it matched nothing.
+async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
+    persist_snapshot(inner).await?;
+    // Only the runtimes that can actually need it open the second transaction.
+    // For a live runtime the ordinary write above is the one that lands and
+    // this one matches zero rows, so opening a write transaction to discover
+    // that on every turn is pure contention on the single writer lock.
+    if !inner.shutting_down.load(Ordering::SeqCst)
+        && runtime_is_still_the_live_carrier(inner).await?
+    {
+        return Ok(());
+    }
+    let snapshot = snapshot_for(inner).await;
+    let worker_session_id = inner.worker_session_id.clone();
+    let snapshot_value = serde_json::to_value(snapshot)?;
+    let now = crate::model::now_ms();
+    let written = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            crate::db::sqlite::session_set_handle_state_of_retired_runtime_tx(
+                tx,
+                &worker_session_id,
+                Some(snapshot_value),
+                now,
+            )
+            .await
+            .map_err(CalmError::from)
+        })
+    })
+    .await?;
+    if !written {
+        // Neither writer matched: the row flipped back into the active set
+        // between the ordinary write and this one (`restore_old_runtime`), so
+        // it still carries its PRE-drain queue. Once a restore clears its
+        // marker that queue is harvestable again — the same sentence twice.
+        // Logged rather than returned: this runs after the daemon already has
+        // the batch, so failing here would undo nothing.
+        tracing::warn!(
+            target: "calm_server::planner_harness_issue",
+            worker_session_id = %inner.worker_session_id,
+            card_id = %inner.card_id,
+            "planner harness: neither handle-state writer matched after an issuance; the row \
+             may still carry the pre-drain queue"
+        );
+    }
+    Ok(())
+}
+
 async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
-    persist_snapshot_inner(inner, None).await
+    persist_snapshot_inner(inner, None).await.map(|_| ())
+}
+
+/// #1449 — persist a durable user send, and REFUSE it if the row was not
+/// written.
+///
+/// `session_set_handle_state_tx` carries
+/// `AND state IN ('starting','running','idle','turn_pending')`, so the write
+/// matches nothing once the row leaves that set — and it used to report success
+/// anyway. That is how a sentence got a 201, an `harness.user_message.enqueued`
+/// row, and no durable home.
+///
+/// The write can miss for four reasons, and only one of them has a successor:
+/// the row is `superseded` (a mint took over), `failed`/`exited`/`completed`,
+/// the row was deleted, or `shutting_down` short-circuited the write. The
+/// message therefore says "retry" without promising where it lands.
+///
+/// The `shutting_down` case is not reachable from HERE, and the argument is
+/// specific: its only setter, `shutdown_inner`, takes `inner.durable_observation`
+/// first, and `observe_durable_observations` holds that same lock across both
+/// the send and its confirmation.
+///
+/// Writing through the retired-row writer instead would not help for the
+/// `superseded` case: that row is stamped, so what landed on it would not be
+/// read again.
+async fn persist_snapshot_for_durable_send(inner: &Arc<Inner>) -> Result<()> {
+    if persist_snapshot_inner(inner, None).await? {
+        return Ok(());
+    }
+    Err(CalmError::PlannerHarnessRuntimeSuperseded(
+        "this runtime is no longer the card's; your message was not stored — send it again".into(),
+    ))
 }
 
 async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()> {
     let issued_head = inner.issued_turn_head.lock().await.clone();
-    persist_snapshot_inner(inner, issued_head.clone()).await?;
+    let _written = persist_snapshot_inner(inner, issued_head.clone()).await?;
     if issued_head.is_some() {
         *inner.last_seen_head.lock().await = issued_head;
     }
@@ -2145,12 +2496,15 @@ async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()>
     Ok(())
 }
 
+/// Returns whether the runtime's own row was written. `false` means the write
+/// matched no row — the runtime is shutting down, or its row has left the
+/// active set — and a caller that promised durability must not report success.
 async fn persist_snapshot_inner(
     inner: &Arc<Inner>,
     last_seen_head_override: Option<track_vcs::CommitHash>,
-) -> Result<()> {
+) -> Result<bool> {
     if inner.shutting_down.load(Ordering::SeqCst) {
-        return Ok(());
+        return Ok(false);
     }
     let mut snapshot = snapshot_for(inner).await;
     if let Some(head) = last_seen_head_override {
@@ -2175,10 +2529,14 @@ async fn persist_snapshot_inner(
     let snapshot_value = serde_json::to_value(snapshot)?;
     let repo = Arc::clone(&inner.repo);
 
-    write_in_tx_typed(repo.as_ref(), move |tx| {
+    let written = write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
-            crate::db::sqlite::session_set_handle_state_tx(tx, &runtime_id, Some(snapshot_value))
-                .await?;
+            let written = crate::db::sqlite::session_set_handle_state_tx(
+                tx,
+                &runtime_id,
+                Some(snapshot_value),
+            )
+            .await?;
             crate::db::sqlite::session_set_harness_observation_runtime_tx(
                 tx,
                 &runtime_id,
@@ -2187,7 +2545,7 @@ async fn persist_snapshot_inner(
                 active_turn_id.as_deref(),
             )
             .await?;
-            Ok(())
+            Ok(written)
         })
     })
     .await?;
@@ -2228,11 +2586,11 @@ async fn persist_snapshot_inner(
             // is intentionally retryable/best-effort here: reporting failure
             // would make durable ingress roll back memory after its message was
             // durably accepted, allowing a later snapshot to erase it.
-            return Ok(());
+            return Ok(written);
         }
         *last_phase = new_phase;
     }
-    Ok(())
+    Ok(written)
 }
 
 fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {
@@ -2339,18 +2697,22 @@ mod tests {
 
         let mut queue: VecDeque<Observation> = VecDeque::new();
         let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
+        let mut msg_ids: VecDeque<Vec<String>> = VecDeque::new();
         queue.push_back(Observation::UserMessage {
             text: "first message".into(),
         });
         env_ids.push_back(Some(1));
+        msg_ids.push_back(vec!["first-instance".to_string()]);
 
         let folded = try_fold_pending_tail(
             &mut queue,
             &mut env_ids,
+            &mut msg_ids,
             &Observation::UserMessage {
                 text: "second message".into(),
             },
             Some(2),
+            &["second-instance".to_string()],
         );
 
         assert!(folded);
@@ -2364,6 +2726,16 @@ mod tests {
             Some(2),
             "folded envelope id should advance to the newest send"
         );
+        // #1449 — the envelope id ADVANCES to the newest send, but the message
+        // ids UNION. They answer different questions: one is "which push am I
+        // acknowledging", the other is "which instances am I still holding",
+        // and a fold is still holding both.
+        assert_eq!(
+            msg_ids.back().cloned().unwrap_or_default(),
+            vec!["first-instance".to_string(), "second-instance".to_string()],
+            "a fold must keep BOTH instances identifiable; dropping one is the loss of \
+             identity the ids exist to prevent"
+        );
     }
 
     #[test]
@@ -2374,6 +2746,7 @@ mod tests {
 
         let mut queue: VecDeque<Observation> = VecDeque::new();
         let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
+        let mut msg_ids: VecDeque<Vec<String>> = VecDeque::new();
         queue.push_back(Observation::TrackGoal {
             text: "goal".into(),
         });
@@ -2382,10 +2755,12 @@ mod tests {
         let folded = try_fold_pending_tail(
             &mut queue,
             &mut env_ids,
+            &mut msg_ids,
             &Observation::UserMessage {
                 text: "user".into(),
             },
             None,
+            &[],
         );
 
         assert!(!folded, "UserMessage must not fold into TrackGoal");
@@ -2488,6 +2863,7 @@ mod tests {
 
         let mut queue: VecDeque<Observation> = VecDeque::new();
         let mut env_ids: VecDeque<Option<i64>> = VecDeque::new();
+        let mut msg_ids: VecDeque<Vec<String>> = VecDeque::new();
         let seed = "a".repeat(MAX_FOLDED_USER_MESSAGE_CHARS - 1);
         queue.push_back(Observation::UserMessage { text: seed });
         env_ids.push_back(Some(1));
@@ -2495,10 +2871,12 @@ mod tests {
         let folded = try_fold_pending_tail(
             &mut queue,
             &mut env_ids,
+            &mut msg_ids,
             &Observation::UserMessage {
                 text: "x".repeat(10),
             },
             Some(2),
+            &["second-instance".to_string()],
         );
 
         assert!(!folded, "fold must refuse when result would exceed cap");

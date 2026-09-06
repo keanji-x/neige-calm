@@ -939,7 +939,7 @@
             }
           },
           "409": {
-            "description": "Runtime is shutting down (code `conflict`), or the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`)",
+            "description": "Runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5808,7 +5808,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`idempotency_collision`, `idempotency_key_exhausted`,\n`bad_request`, `unauthorized`,\n`forbidden`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,\n`plugin_manifest_unloaded`, `plugin_config_corrupt`,\n`plugin_config_too_large`,\n`planner_harness_dormant`, `today_summary_no_activity`,\n`db_error`, `io_error`, `serde_error`,\n`codex_app_server`, `service_unavailable`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
+            "description": "Stable machine-readable code.\n\nEvery variant of `CalmError` maps to one, in `CalmError::code`:\n`not_found`, `conflict`, `idempotency_collision`,\n`idempotency_key_exhausted`, `today_summary_no_activity`,\n`bad_request`, `unauthorized`, `forbidden`, `plugin_install`,\n`plugin_permission`, `plugin_conflict`, `plugin_busy`,\n`plugin_manifest_unloaded`, `plugin_config_corrupt`,\n`plugin_config_too_large`, `plugin_kernel_too_old`,\n`planner_reset_unsupported_in_shared_mode`, `planner_harness_dormant`,\n`planner_harness_runtime_superseded`, `db_error`, `io_error`,\n`serde_error`, `codex_app_server`, `service_unavailable`, `internal`.\n\nThree more are written by routes that build the body directly rather\nthan through a `CalmError`: `forbidden_tool` (`routes/plugins.rs`),\n`not_a_card_tool` and `tool_call_failed` (`routes/cards.rs`). A client\nreading this list as closed has to include those."
           },
           "error": {
             "type": "string",

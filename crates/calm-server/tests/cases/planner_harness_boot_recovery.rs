@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, session_prepare_deferred_planner_tx, session_start_runtime_tx,
+    SqlxRepo, card_create_with_id_tx, session_mark_queue_harvested_tx,
+    session_mark_superseded_runtime_tx, session_prepare_deferred_planner_tx,
+    session_start_runtime_tx, session_supersede_and_start_tx,
 };
 use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
@@ -24,6 +26,37 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use serde_json::json;
 use tempfile::TempDir;
+
+/// The stored `planner-harness-start` payload every boot-recovery fixture in
+/// this file needs, differing only in `goal`.
+///
+/// One place spells the struct so a field added to it is a compile error here
+/// once rather than five times, and so the five fixtures cannot drift apart on
+/// a field none of them is about.
+fn start_payload(
+    track_id: &str,
+    planner_card_id: &CardId,
+    cwd: &str,
+    goal: Option<&str>,
+) -> serde_json::Value {
+    serde_json::to_value(PlannerHarnessStartOperationPayload {
+        actor: ActorId::User,
+        track_id: track_id.to_string(),
+        planner_card_id: planner_card_id.clone(),
+        report_card_id: None,
+        sort: None,
+        cwd: cwd.to_string(),
+        goal: goal.map(ToOwned::to_owned),
+        reset_harness_items: false,
+        force_new_thread: true,
+        profile: Default::default(),
+        create_card: None,
+        opening_briefing: None,
+        first_message: None,
+        create_request_sha256: None,
+    })
+    .expect("planner-harness-start payload serializes")
+}
 
 fn app_state_for_boot_test_with_role_cache(
     repo: Arc<SqlxRepo>,
@@ -1229,23 +1262,12 @@ async fn force_new_thread_recovery_after_phase2_crash() {
         let placeholder_id = new_id();
         let placeholder_snapshot = HarnessSnapshot::initial(0, vec![]);
         let now = now_ms();
-        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-            actor: ActorId::User,
-            track_id: track.id.to_string(),
-            planner_card_id: card.id.clone(),
-            report_card_id: None,
-            sort: None,
-            cwd: track.workspace.path.clone(),
-            goal: Some("recover after crash".into()),
-            reset_harness_items: false,
-            force_new_thread: true,
-            profile: Default::default(),
-            create_card: None,
-            opening_briefing: None,
-            first_message: None,
-            create_request_sha256: None,
-        })
-        .unwrap();
+        let payload = start_payload(
+            track.id.as_ref(),
+            &card.id,
+            &track.workspace.path,
+            Some("recover after crash"),
+        );
         let mut output = TxOutput::new(
             "card",
             Some(card.id.to_string()),
@@ -1995,4 +2017,902 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_planner_bac
             handle.shutdown().await.unwrap();
         }
     }
+}
+
+/// #1449 — a start re-driven after a crash must hand the racer's undelivered
+/// sentence to the runtime it ACTUALLY starts, not only to the row.
+///
+/// The shape is the one `app_server_interact`'s deferred branch exists for: this
+/// operation's placeholder was displaced by another runtime while the thread was
+/// being minted, so at re-drive time the card's active row is a stranger. That
+/// stranger is retired here, and — since #1449 — whatever it never delivered is
+/// harvested into the successor.
+///
+/// Boot recovery rather than a hand-built race: the deferred window is inside
+/// one serially-driven operation, so nothing in-process can race into it, and
+/// buying the race with a second `fixtures`-gated park in the deferred window
+/// would be production state that exists only for a test. A crash between the
+/// mint transaction and the thread mint is a genuinely reachable path, and
+/// `recover_operations_on_boot` is the production code that re-drives it.
+///
+/// **What this pins that a row assertion would not.** The harvest writes three
+/// copies of "what the successor owes": the row (inside the transaction), the
+/// operation checkpoint (inside the transaction) and `output`.
+/// `spawn_side_effect` builds the harness from `output` and then calls
+/// `handle.persist_snapshot()`, which writes that snapshot straight back over
+/// the row. So a harvest that reached only the row is not merely incomplete —
+/// it is erased moments later, by the successful path, with the source rows
+/// already stamped as taken. Asserting on the started runtime is what catches
+/// that; asserting on the row inside the transaction would not.
+#[tokio::test]
+async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it_starts() {
+    const STRANDED: &str = "the racer never got to say this";
+
+    let tmp = TempDir::new().unwrap();
+    let db_url = sqlite_url(&tmp, "raced-in-harvest.db");
+    let (card_id, track_id, racer_id, placeholder_id, op_id) = {
+        let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+        let area = repo
+            .area_create(NewArea {
+                name: "raced-in-harvest".into(),
+                color: "#111111".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "raced in".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card = seed_planner_card_row(&repo, &track.id).await;
+
+        let placeholder_id = new_id();
+        let placeholder_snapshot = HarnessSnapshot::initial(0, vec![]);
+        // The racer carries a sentence a human typed into it during the window.
+        let racer_id = new_id();
+        let racer_snapshot = HarnessSnapshot::initial(
+            0,
+            vec![Observation::UserMessage {
+                text: STRANDED.into(),
+            }],
+        );
+        let now = now_ms();
+        let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
+        let mut output = TxOutput::new(
+            "card",
+            Some(card.id.to_string()),
+            serde_json::to_value(&card).unwrap(),
+        );
+        // Exactly what `prepare_tx` committed: the placeholder's own snapshot,
+        // which knows nothing about the racer.
+        //
+        // #1316: the retiring key below, and the same one in the `fail_runtime`
+        // step args further down, are not names this file chooses.
+        // `planner_harness_start_adapter.rs` reads them back out of rows
+        // written by shipped binaries (`output_string` and `step.arg_string`).
+        // Spelling them anything else would build a payload the adapter cannot
+        // read, so these fixtures would stop standing for the stored row they
+        // exist to reproduce.
+        output.data = json!({
+            "card_id": card.id.to_string(),
+            "track_id": track.id.to_string(),
+            "runtime_id": placeholder_id.clone(),
+            "runtime_deferred": true,
+            "cwd": track.workspace.path.clone(),
+            "goal": null,
+            "report_card_id": null,
+            "snapshot": serde_json::to_value(&placeholder_snapshot).unwrap(),
+        });
+        let op_id = new_id();
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        // 1. the deferred placeholder this operation minted...
+        session_prepare_deferred_planner_tx(
+            &mut tx,
+            &WorkerSessionInit {
+                id: placeholder_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&placeholder_snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now,
+            },
+        )
+        .await
+        .unwrap();
+        // 2. ...displaced by a runtime that took the card's active slot while
+        //    the thread was being minted. This is the production pair that does
+        //    it (`/planner/reset` reaches `session_supersede_and_start_tx`), and
+        //    it deliberately does NOT stamp the placeholder: nothing has taken
+        //    the placeholder's queue.
+        session_supersede_and_start_tx(
+            &mut tx,
+            &placeholder_id,
+            WorkerSessionInit {
+                id: racer_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some("thread-racer".into()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&racer_snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now + 1,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO operations (
+                   id, operation_key, kind, idempotency_key, payload_hash,
+                   target_type, target_id, target_json, payload_json,
+                   tx_output_json, phase, created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
+                       'card', ?4, ?5, ?6, ?7, 'tx_committed', ?8, ?8)"#,
+        )
+        .bind(&op_id)
+        .bind(new_id())
+        .bind(new_id())
+        .bind(card.id.as_str())
+        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(serde_json::to_string(&output).unwrap())
+        .bind(now + 2)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        (
+            card.id.to_string(),
+            track.id.to_string(),
+            racer_id,
+            placeholder_id,
+            op_id,
+        )
+    };
+
+    let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+    let role_cache = calm_server::card_role_cache::CardRoleCache::new();
+    role_cache.insert(
+        CardId::from(card_id.clone()),
+        CardRole::Planner,
+        TrackId::from(track_id.clone()),
+    );
+    let state = app_state_for_boot_test_with_role_cache(repo.clone(), role_cache)
+        .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
+            repo.clone(),
+            None,
+        ));
+
+    calm_server::recover_operations_on_boot(&state)
+        .await
+        .unwrap();
+
+    let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
+        .bind(&op_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(phase, "succeeded", "premise: the re-drive must complete");
+    let racer_state: String = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = ?1")
+        .bind(&racer_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        racer_state, "superseded",
+        "premise: the re-drive must retire the runtime that raced in"
+    );
+    assert!(
+        state.harness.get(&placeholder_id).is_some(),
+        "premise: the re-drive must start the placeholder's harness"
+    );
+
+    // THE assertion: the DAEMON got it. Asserting on the row would be the weak
+    // form — since S1 the row is the single home for a queue, so it is the one
+    // copy that is correct by construction, and a harvest that reached the row
+    // and nowhere else would still pass. What has to be true is that the
+    // runtime this re-drive actually started delivered the sentence.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let delivered = loop {
+        let handed_over =
+            serde_json::to_string(&state.shared_codex_appserver.started_turns_for_test())
+                .unwrap_or_default()
+                .matches(STRANDED)
+                .count();
+        if handed_over > 0 || std::time::Instant::now() >= deadline {
+            break handed_over;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(
+        delivered, 1,
+        "the harvested sentence must be delivered by the runtime the re-drive actually started, \
+         exactly once"
+    );
+    // #1449 B2 — and the undo journal names the racer.
+    //
+    // This is a structural assertion, deliberately: the end-to-end witness
+    // would need this operation to fail AFTER its app-server transaction
+    // committed, and the reachable failure injections all land before it. What
+    // the journal records is exactly what was missing — `taken_from` was built
+    // inside the transaction closure and dropped there, so
+    // `output.data["harvested_from"]`, the only thing compensation reads, never
+    // learned about the racer's sentence and a later failure stranded it on a
+    // `failed` row.
+    let tx_output: String =
+        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id = ?1")
+            .bind(&op_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let tx_output: serde_json::Value = serde_json::from_str(&tx_output).unwrap();
+    let journal = tx_output["data"]["harvested_from"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        journal.iter().any(
+            |entry| entry["worker_session_id"] == serde_json::json!(racer_id)
+                && entry["messages"].to_string().contains(STRANDED)
+        ),
+        "the app-server transaction's harvest must reach the undo journal, or a later failure \
+         strands the racer's sentence on a `failed` runtime: {journal:#?}"
+    );
+
+    let racer_stamp: Option<i64> =
+        sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")
+            .bind(&racer_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        racer_stamp.is_some(),
+        "and the row it came from must be stamped, or the next start takes it again"
+    );
+
+    if let Some(handle) = state.harness.remove(&placeholder_id) {
+        handle.shutdown().await.unwrap();
+    }
+}
+
+/// #1449 S1 — a harness is started from the queue on its OWN ROW, never from
+/// the copy its operation output has been carrying since `prepare_tx`.
+///
+/// `output` is durable (`operations.tx_output_json`) and is written once, at
+/// mint time. Everything else in it is the operation's own decision and rightly
+/// travels there — but the pending queue is shared state that later mints move
+/// between rows, and no transfer can reach a copy sitting in a finished
+/// operation's output.
+///
+/// So an operation whose `prepare_tx` committed and which is re-driven later —
+/// after a crash, or on a second `AppState` over the same file — would start its
+/// harness from a queue somebody else has already taken, deliver the sentence a
+/// second time, and then write the resurrected queue back over the row via
+/// `handle.persist_snapshot()`. That is one of the four concurrency
+/// constructions the second review round found, and it is the reason the row is
+/// now the single home for a queue.
+///
+/// Staged at **`TxCommitted`**, not `SpawnStarted`. That is the whole point of
+/// the phase choice: `app_server_interact` runs on the way through and writes
+/// the row itself, so a version of this rule that only converted
+/// `spawn_side_effect` passes at `SpawnStarted` and fails here — which is
+/// exactly how the second writer survived a round of review.
+#[tokio::test]
+async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_output() {
+    const MOVED_AWAY: &str = "this sentence already belongs to somebody else";
+
+    let tmp = TempDir::new().unwrap();
+    let db_url = sqlite_url(&tmp, "row-is-the-single-home.db");
+    let (card_id, track_id, worker_session_id, op_id) = {
+        let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+        let area = repo
+            .area_create(NewArea {
+                name: "single-home".into(),
+                color: "#111111".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "single home".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card = seed_planner_card_row(&repo, &track.id).await;
+
+        let worker_session_id = new_id();
+        // The row: the queue is empty, because a mint in between moved the
+        // sentence to another runtime.
+        let row_snapshot = HarnessSnapshot::initial(0, vec![]);
+        // The carried output: still holds it, frozen at `prepare_tx` time.
+        let carried_snapshot = HarnessSnapshot::initial(
+            0,
+            vec![Observation::UserMessage {
+                text: MOVED_AWAY.into(),
+            }],
+        );
+        let now = now_ms();
+        let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
+        let mut output = TxOutput::new(
+            "card",
+            Some(card.id.to_string()),
+            serde_json::to_value(&card).unwrap(),
+        );
+        output.data = json!({
+            "card_id": card.id.to_string(),
+            "track_id": track.id.to_string(),
+            "runtime_id": worker_session_id.clone(),
+            "runtime_deferred": true,
+            "cwd": track.workspace.path.clone(),
+            "goal": null,
+            "report_card_id": null,
+            // No `codex_thread_id`: with one already in the output the
+            // app-server phase short-circuits and never writes the row, which
+            // is precisely the writer under test.
+            "snapshot": serde_json::to_value(&carried_snapshot).unwrap(),
+        });
+        let op_id = new_id();
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: worker_session_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&row_snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO operations (
+                   id, operation_key, kind, idempotency_key, payload_hash,
+                   target_type, target_id, target_json, payload_json,
+                   tx_output_json, phase, created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
+                       'card', ?4, ?5, ?6, ?7, 'tx_committed', ?8, ?8)"#,
+        )
+        .bind(&op_id)
+        .bind(new_id())
+        .bind(new_id())
+        .bind(card.id.as_str())
+        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(serde_json::to_string(&output).unwrap())
+        .bind(now + 1)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        (
+            card.id.to_string(),
+            track.id.to_string(),
+            worker_session_id,
+            op_id,
+        )
+    };
+
+    let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+    let role_cache = calm_server::card_role_cache::CardRoleCache::new();
+    role_cache.insert(
+        CardId::from(card_id.clone()),
+        CardRole::Planner,
+        TrackId::from(track_id.clone()),
+    );
+    let state = app_state_for_boot_test_with_role_cache(repo.clone(), role_cache)
+        .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
+            repo.clone(),
+            None,
+        ));
+
+    calm_server::recover_operations_on_boot(&state)
+        .await
+        .unwrap();
+
+    let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
+        .bind(&op_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        phase, "succeeded",
+        "premise: the re-drive must run the operation to completion, THROUGH \
+         `app_server_interact` — that is the writer this test exists for"
+    );
+    assert!(
+        state.harness.get(&worker_session_id).is_some(),
+        "premise: the re-drive must start the harness: op {op_id}"
+    );
+
+    // The harness must have started from the row's (empty) queue. Give the run
+    // loop room to drain anything it thinks it owes before concluding.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        let handed_over =
+            serde_json::to_string(&state.shared_codex_appserver.started_turns_for_test())
+                .unwrap_or_default();
+        assert!(
+            !handed_over.contains(MOVED_AWAY),
+            "the re-drive started the harness from the queue its output has been carrying since \
+             `prepare_tx`, so a sentence another mint already took has been delivered again"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let persisted: Option<String> =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&worker_session_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        !persisted.unwrap_or_default().contains(MOVED_AWAY),
+        "and `handle.persist_snapshot()` must not have written the resurrected queue back onto \
+         the row"
+    );
+
+    if let Some(handle) = state.harness.remove(&worker_session_id) {
+        handle.shutdown().await.unwrap();
+    }
+}
+
+/// #1449 S3 — the give-back returns only what is still on the failing
+/// runtime's queue.
+///
+/// The construction the second review round called out: `A` harvests `X` off a
+/// retired row `R`; another mint then takes `X` onward off `A`; only afterwards
+/// does `A`'s `thread/start` failure compensate. A give-back that trusted its
+/// journal alone would put `X` back on `R` while somebody else is also holding
+/// it — the same sentence in two places, which is the unconditional-restore
+/// failure wearing a different coat.
+///
+/// The condition is identity: return a message only if its id is still on the
+/// failing runtime's queue. Here it is not, so nothing comes back and `R` keeps
+/// its marker — its queue left legitimately.
+///
+/// Staged at `Phase::Compensating` so boot recovery resumes the compensation,
+/// which is how a crash between the failure and the undo is re-driven.
+#[tokio::test]
+async fn the_give_back_returns_nothing_that_somebody_else_has_taken_onward() {
+    const MOVED_ONWARD: &str = "a sentence that has since moved on";
+    const MESSAGE_ID: &str = "instance-of-the-moved-sentence";
+
+    let tmp = TempDir::new().unwrap();
+    let db_url = sqlite_url(&tmp, "give-back-condition.db");
+    let (source_id, failing_id) = {
+        let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+        let area = repo
+            .area_create(NewArea {
+                name: "give-back".into(),
+                color: "#111111".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "give back".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card = seed_planner_card_row(&repo, &track.id).await;
+
+        // `R`: harvested from, therefore emptied and stamped.
+        let source_id = new_id();
+        // The failing runtime: its queue no longer holds the sentence, because
+        // another mint inherited it away.
+        let failing_id = new_id();
+        let now = now_ms();
+
+        let mut output = TxOutput::new(
+            "card",
+            Some(card.id.to_string()),
+            serde_json::to_value(&card).unwrap(),
+        );
+        output.data = json!({
+            "card_id": card.id.to_string(),
+            "track_id": track.id.to_string(),
+            "runtime_id": failing_id.clone(),
+            "runtime_deferred": true,
+            "cwd": track.workspace.path.clone(),
+            "goal": null,
+            "report_card_id": null,
+            "snapshot": serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
+            "harvested_from": [{
+                "worker_session_id": source_id.clone(),
+                "messages": [{"text": MOVED_ONWARD, "ids": [MESSAGE_ID]}],
+            }],
+        });
+        let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
+        let compensation_state = json!({
+            "version": 1,
+            "from_phase": "app_server_interact",
+            "reason": "injected thread/start failure",
+            "steps": [{
+                "op": "fail_runtime",
+                "args": {"runtime_id": failing_id.clone()},
+                "completed": false,
+                "attempts": 0,
+                "last_error": null,
+            }],
+        });
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: source_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(
+                    serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
+                ),
+                spawn_op_id: None,
+                now_ms: now,
+            },
+        )
+        .await
+        .unwrap();
+        session_mark_superseded_runtime_tx(&mut tx, &source_id)
+            .await
+            .unwrap();
+        session_mark_queue_harvested_tx(&mut tx, &source_id, now)
+            .await
+            .unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: failing_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                // The sentence is NOT here: somebody inherited it away.
+                handle_state_json: Some(
+                    serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
+                ),
+                spawn_op_id: None,
+                now_ms: now + 1,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO operations (
+                   id, operation_key, kind, idempotency_key, payload_hash,
+                   target_type, target_id, target_json, payload_json,
+                   tx_output_json, compensation_state, phase, last_error,
+                   created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
+                       'card', ?4, ?5, ?6, ?7, ?8, 'compensating',
+                       'injected thread/start failure', ?9, ?9)"#,
+        )
+        .bind(new_id())
+        .bind(new_id())
+        .bind(new_id())
+        .bind(card.id.as_str())
+        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(serde_json::to_string(&output).unwrap())
+        .bind(serde_json::to_string(&compensation_state).unwrap())
+        .bind(now + 2)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        (source_id, failing_id)
+    };
+
+    let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+    let state = app_state_for_boot_test(repo.clone()).with_shared_codex_appserver(
+        SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
+    );
+    calm_server::recover_operations_on_boot(&state)
+        .await
+        .unwrap();
+
+    let source_state: Option<String> =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&source_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        !source_state.unwrap_or_default().contains(MOVED_ONWARD),
+        "the give-back put back a sentence its journal named but the failing runtime no longer \
+         held, so the same sentence is now in two places"
+    );
+    let source_stamp: Option<i64> =
+        sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")
+            .bind(&source_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        source_stamp.is_some(),
+        "and a row that got nothing back keeps its marker: its queue is somewhere else, \
+         legitimately"
+    );
+    let failing_state: String =
+        sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = ?1")
+            .bind(&failing_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        failing_state, "failed",
+        "premise: the compensation must have run its fail_runtime step"
+    );
+}
+
+/// #1449 — the give-back must not delete a sentence it cannot identify.
+///
+/// `remaining.is_empty()` has two causes and the code cannot tell them apart
+/// from the value alone: every id went back, or the entry never had one. An
+/// entry with no ids was enqueued before #1449 shipped — migration 0095
+/// deliberately does not stamp live rows, so such a queue is still harvestable
+/// — and it is NOT returned, because the give-back only returns ids the failing
+/// runtime still holds. Pruning it as "returned" deletes it from the successor
+/// while the source row has already been emptied: gone from both sides, with no
+/// error and no log line.
+///
+/// It is also the exact opposite of what `HarnessSnapshot::pending_message_ids`
+/// documents. The false statement and the defect were the same thing.
+#[tokio::test]
+async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
+    const LEGACY: &str = "typed before the upgrade, no id to its name";
+    const RETURNED: &str = "typed after, and going back";
+    const RETURNED_ID: &str = "instance-of-the-returned-sentence";
+
+    let tmp = TempDir::new().unwrap();
+    let db_url = sqlite_url(&tmp, "give-back-legacy.db");
+    let (source_id, failing_id) = {
+        let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+        let area = repo
+            .area_create(NewArea {
+                name: "give-back-legacy".into(),
+                color: "#111111".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "give back legacy".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let card = seed_planner_card_row(&repo, &track.id).await;
+
+        let source_id = new_id();
+        let failing_id = new_id();
+        let now = now_ms();
+
+        // The failing runtime holds both: an upgraded entry with no identity,
+        // and one this operation harvested and can name.
+        let mut failing_snapshot = HarnessSnapshot::initial(
+            0,
+            vec![
+                Observation::UserMessage {
+                    text: LEGACY.into(),
+                },
+                Observation::UserMessage {
+                    text: RETURNED.into(),
+                },
+            ],
+        );
+        failing_snapshot.pending_message_ids = vec![Vec::new(), vec![RETURNED_ID.to_string()]];
+
+        let mut output = TxOutput::new(
+            "card",
+            Some(card.id.to_string()),
+            serde_json::to_value(&card).unwrap(),
+        );
+        output.data = json!({
+            "card_id": card.id.to_string(),
+            "track_id": track.id.to_string(),
+            "runtime_id": failing_id.clone(),
+            "runtime_deferred": true,
+            "cwd": track.workspace.path.clone(),
+            "goal": null,
+            "report_card_id": null,
+            "snapshot": serde_json::to_value(&failing_snapshot).unwrap(),
+            "harvested_from": [{
+                "worker_session_id": source_id.clone(),
+                "messages": [{"text": RETURNED, "ids": [RETURNED_ID]}],
+            }],
+        });
+        let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
+        let compensation_state = json!({
+            "version": 1,
+            "from_phase": "app_server_interact",
+            "reason": "injected thread/start failure",
+            "steps": [{
+                "op": "fail_runtime",
+                "args": {"runtime_id": failing_id.clone()},
+                "completed": false,
+                "attempts": 0,
+                "last_error": null,
+            }],
+        });
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: source_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                // Emptied by the harvest, as a move leaves it.
+                handle_state_json: Some(
+                    serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
+                ),
+                spawn_op_id: None,
+                now_ms: now,
+            },
+        )
+        .await
+        .unwrap();
+        session_mark_superseded_runtime_tx(&mut tx, &source_id)
+            .await
+            .unwrap();
+        session_mark_queue_harvested_tx(&mut tx, &source_id, now)
+            .await
+            .unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: failing_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Starting,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&failing_snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now + 1,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO operations (
+                   id, operation_key, kind, idempotency_key, payload_hash,
+                   target_type, target_id, target_json, payload_json,
+                   tx_output_json, compensation_state, phase, last_error,
+                   created_at_ms, updated_at_ms
+               )
+               VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
+                       'card', ?4, ?5, ?6, ?7, ?8, 'compensating',
+                       'injected thread/start failure', ?9, ?9)"#,
+        )
+        .bind(new_id())
+        .bind(new_id())
+        .bind(new_id())
+        .bind(card.id.as_str())
+        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(serde_json::to_string(&output).unwrap())
+        .bind(serde_json::to_string(&compensation_state).unwrap())
+        .bind(now + 2)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        (source_id, failing_id)
+    };
+
+    let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
+    let state = app_state_for_boot_test(repo.clone()).with_shared_codex_appserver(
+        SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
+    );
+    calm_server::recover_operations_on_boot(&state)
+        .await
+        .unwrap();
+
+    let source_state: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&source_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        source_state.contains(RETURNED),
+        "premise: the identifiable sentence must go back to the row it came from"
+    );
+
+    let failing_state: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&failing_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        failing_state.contains(LEGACY),
+        "a sentence with no id was never returned, and its source row is already empty — \
+         pruning it here deletes it from both sides. It has to stay: {failing_state}"
+    );
+    assert!(
+        !failing_state.contains(RETURNED),
+        "premise: what WAS returned is pruned from the failing runtime"
+    );
 }

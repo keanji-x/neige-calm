@@ -897,7 +897,7 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
         (status = 400, description = "Empty text", body = ErrorBody),
         (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card or track not found", body = ErrorBody),
-        (status = 409, description = "Runtime is shutting down (code `conflict`), or the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`)", body = ErrorBody),
+        (status = 409, description = "Runtime is shutting down (code `conflict`); the planner harness session is dormant and not recoverable — reset to start a session (code `planner_harness_dormant`); or the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor (code `planner_harness_runtime_superseded`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
         (status = 503, description = "Observation queue saturated, shared codex app-server not running, or a planner-harness start is still in flight — retry shortly", body = ErrorBody),
     ),

@@ -251,6 +251,49 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
   };
 }
 
+/**
+ * What became of one send, for a caller that has to decide whether the text is
+ * still the reader's to hold (#1449).
+ *
+ * The five cases are not degrees of success. They differ in what the caller may
+ * conclude about the server's store:
+ *
+ * - `delivered` — the server answered 2xx. It has the text.
+ * - `refused` — the server answered that it stored nothing. Only a refusal the
+ *   server *names* qualifies; see `isSendRefusalCode`.
+ * - `unresolved` — every other rejection the send saw. Some of them do say
+ *   what happened to the text (a 400 stored nothing); some of them are raised
+ *   after a 2xx, by the success handler itself. What they share is that this
+ *   value does not tell them apart, so a caller may not act on the text's
+ *   fate. `POST /planner/input` carries no `Idempotency-Key`, so re-sending
+ *   here can deliver the message twice and start a second turn.
+ * - `not-sent` — the send never left the browser, refused by a guard in this
+ *   tab. Nothing was stored and nothing failed.
+ * - `abandoned` — the answer arrived after the reader moved on, so it is no
+ *   longer about the conversation in front of them.
+ *
+ * Whether to put the text back in front of the reader is the caller's rule,
+ * not this type's; the composer's is at its `onSubmit`.
+ */
+export type SendOutcome = 'delivered' | 'refused' | 'unresolved' | 'not-sent' | 'abandoned';
+
+/**
+ * Whether an `ErrorBody.code` names a refusal decided before any write.
+ *
+ * Both are raised while the route is still looking for a runtime to hand the
+ * message to (`routes/cards.rs`, `ensure_live_planner_harness` and the
+ * superseded check), so the send provably stored nothing and the text is
+ * unspent. It does not follow that sending it again succeeds — a dormant card
+ * stays dormant until it is reset — only that the reader still has it.
+ *
+ * The generic `conflict` is deliberately out. `harness/run_loop.rs` closes a
+ * runtime at a point where the write may already have been persisted, and this
+ * endpoint carries no `Idempotency-Key`, so a retry there is a second delivery.
+ */
+export function isSendRefusalCode(code: string | null): boolean {
+  return code === 'planner_harness_runtime_superseded' || code === 'planner_harness_dormant';
+}
+
 export function sendPlannerInputOperation(cardId: string, text: string): ApiOperation<unknown> {
   return {
     method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input`, body: { text },

@@ -53,10 +53,11 @@ import {
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
-  mergeTranscript, reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
-  trackConversationCardId,
+  isSendRefusalCode, mergeTranscript, reconcileOptimisticConversationTurns, reconcileUserEchoes,
+  serverItemHighWater, trackConversationCardId,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
-  type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry,
+  type ConversationTurn, type OptimisticConversationTurn, type SendOutcome,
+  type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister, createTrackWorkspaceFilesPort } from '../providers/directory.ts';
@@ -67,7 +68,7 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction, PanelEmpty } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ApiError, folderConflictOf, harnessItemsQueryOptions,
+  ApiError, apiFailureCodeOf, folderConflictOf, harnessItemsQueryOptions,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
   usePlannerMutations, useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
   useTrackConversationMutations, useTrackMutations, useTrackRecipeMutations, useTrackRecipes,
@@ -116,7 +117,8 @@ type ConversationStore = Readonly<{
   loadingEarlier: boolean;
   historyError: string | null;
   actionError: string | null;
-  send: (conversationId: string, text: string) => void;
+  /** What became of the send — see `SendOutcome` for what each case licenses. */
+  send: (conversationId: string, text: string) => Promise<SendOutcome>;
   interrupt: () => void;
   retryHistory: () => void;
   loadEarlier: () => void;
@@ -548,8 +550,8 @@ export function useConversationStore(
     ? listedConversations
     : listedConversations.map((row) => row.id === conversation.id ? conversation : row);
 
-  const send = (_conversationId: string, text: string) => {
-    if (sendingRef.current || !registry.tryBeginSend(cardId)) return;
+  const send = async (_conversationId: string, text: string): Promise<SendOutcome> => {
+    if (sendingRef.current || !registry.tryBeginSend(cardId)) return 'not-sent';
     sendingRef.current = true;
     setSending(true);
     setActionError(null);
@@ -563,9 +565,20 @@ export function useConversationStore(
        another conversation (the `cardId` effect) or started a later send. */
     const stillActive = () => activeSend.current?.echoId === echo.id;
     let sendFailure: string | null = null;
+    /*
+     * What this send became, decided where the fact is known and read once at
+     * the end. `sendFailure` cannot stand in for it: it is set before the
+     * `stillActive()` guard below, so it is non-null for answers this store has
+     * already stopped speaking for, and it says nothing about whether the
+     * server stored the text.
+     */
+    let settled: SendOutcome = 'delivered';
+    /* Set inside `finally`, where `stillActive()` is asked before it is
+       cleared. */
+    let answeredHere = false;
     setEchoes((current) => [...current, echo]);
     setUnconfirmedEchoId(echo.id);
-    void mutations.send(text).then(() => {
+    return mutations.send(text).then(() => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
       /*
        * The answer can outlive the drawer, and the effects above cannot.
@@ -627,7 +640,13 @@ export function useConversationStore(
         };
       });
     }).catch((error: unknown) => {
+      /* KNOWN GAP (#1449): one sentence for both. `settled` on the next line
+         already separates "the server has nothing, send it again" from "this
+         may have landed"; the reader is left to infer which from whether the
+         text came back, and on an endpoint with no idempotency key a wrong
+         guess is a duplicate turn. */
       sendFailure = errorMessage(error, 'Could not send the message.');
+      settled = isSendRefusalCode(apiFailureCodeOf(error)) ? 'refused' : 'unresolved';
       /* A failure belongs to the conversation that failed. Reported on another
          one it is a sentence under a composer the reader never sent from, and
          dropping the echo there would be dropping someone else's. The provider
@@ -643,10 +662,11 @@ export function useConversationStore(
          the request left behind by a conversation switch cleared the flag of a
          send that had not been answered yet. See `unconfirmedEchoId`. */
       if (!stillActive()) return;
+      answeredHere = true;
       activeSend.current = null;
       sendingRef.current = false;
       setSending(false);
-    });
+    }).then((): SendOutcome => answeredHere ? settled : 'abandoned');
   };
 
   /*
@@ -1252,6 +1272,16 @@ function useConversationPanel(
     return 'landed';
   };
 
+  /*
+   * The draft's own send, and it owns a different stage than `store.send`.
+   *
+   * This one runs while there is no card: it mints one, and its text lives in
+   * the registry's draft entry until the row it created is adopted. The draft
+   * branch renders its own turns and its own `<ChatComposer onSend={sendDraft}>`
+   * below, not `ChatThread`, so the composer's `SendOutcome` restore governs a
+   * stage this function never reaches, and the registry draft governs a stage
+   * that one never reaches. Returning `void` keeps this stage on the registry.
+   */
   const sendDraft = (text: string) => {
     if (creating || draft === null) return;
     const { create, refresh, scopeId, derivedCardId } = source;

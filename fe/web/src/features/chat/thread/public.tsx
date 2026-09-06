@@ -47,7 +47,7 @@ import { useState } from '../../../ui/state/public.ts';
 
 import {
   isLiveConversation, opensAfterGap, opensExchange,
-  type Conversation, type ConversationActivity, type TranscriptEntry,
+  type Conversation, type ConversationActivity, type SendOutcome, type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import styles from './thread.module.css';
 
@@ -1791,6 +1791,17 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
 });
 
 /**
+ * `onSend` answers either way, and the caller's choice decides which.
+ *
+ * Checked by shape rather than by `!== undefined`: the `void` half of the
+ * signature is a return the caller does not make, and a caller that returns
+ * some other value would otherwise be awaited as if it were an outcome.
+ */
+function isThenable(value: unknown): value is Promise<SendOutcome> {
+  return typeof (value as { then?: unknown } | null | undefined)?.then === 'function';
+}
+
+/**
  * The composer is Astryx's ChatComposer: rounded well, auto-grow, send/stop
  * geometry, Enter-to-send with IME guard. We own the value and the send
  * callback so the kernel path stays a string.
@@ -1798,7 +1809,8 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
 export function ChatComposer({
   onSend, onStop, onNewConversation, disabled = false, focusOnMount = false,
 }: {
-  onSend: (text: string) => void;
+  /** See `SendOutcome`. A caller with its own draft persistence returns `void`. */
+  onSend: (text: string) => void | Promise<SendOutcome>;
   /**
    * Interrupt the turn in flight. Its presence is what turns Send into Stop.
    *
@@ -2115,8 +2127,34 @@ export function ChatComposer({
         onSubmit={(value) => {
           const text = value.trim();
           if (text === '' || disabled || stopShown) return;
-          onSend(text);
+          const outcome = onSend(text);
           setDraft('');
+          /*
+           * Cleared optimistically, put back for the one outcome that says the
+           * server has nothing and named it. `unresolved` is excluded on
+           * purpose — the endpoint carries no idempotency key, so offering the
+           * text back there is one Enter away from a second delivery.
+           * `abandoned` is excluded because that answer is about a conversation
+           * this composer is no longer showing. `not-sent` is excluded because
+           * a second submission's text must not take the field from an earlier
+           * send that is still waiting to hear whether it was refused; the
+           * residual that leaves is in #1449's list.
+           *
+           * Only into an empty field: the reader can type again the moment the
+           * field is cleared, and what they typed is theirs.
+           *
+           * KNOWN GAPs (#1449). The restore reaches THIS composer, not the
+           * conversation: close the drawer during the request and re-open the
+           * same conversation and it runs into an unmounted one, so the error
+           * line stands with the sentence gone. And the trimmed `text` is what
+           * goes back, so trailing whitespace the reader typed does not.
+           */
+          if (isThenable(outcome)) {
+            void outcome.then((result) => {
+              if (result !== 'refused') return;
+              setDraft((current) => current === '' ? text : current);
+            });
+          }
           /* The caret goes back to the field from the effect above, not from
              here: `onSend` may have already queued the `disabled` that takes
              the field away, and this handler runs before React flushes it. */
