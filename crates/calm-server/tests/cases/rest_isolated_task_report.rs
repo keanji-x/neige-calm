@@ -1,36 +1,37 @@
 //! Accepted report writes use the production MCP registry and DecisionSink.
 use super::*;
-use calm_server::db::sqlite::{
-    begin_immediate_tx, session_start_runtime_tx, task_claim_pending_tx, task_mark_running_tx,
-};
+use calm_server::db::sqlite::{begin_immediate_tx, task_claim_pending_tx, task_mark_running_tx};
 use calm_server::event::EventScope;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry, registry::AppContext};
 use calm_server::model::{CardRole, Task};
-use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
-use calm_server::session_projection_repo::{
-    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
-};
+use calm_server::operation::{OperationKey, OperationRepo, ProviderAdapter, SqlxOperationRepo};
+use calm_server::session_projection_repo::AgentProvider;
 
 async fn running_worker(boot: &Boot, task: &Task) -> ToolCallIdentity {
-    let card = boot
-        .repo
-        .card_create(NewCard {
-            track_id: boot.track_id.clone(),
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"idempotency_key":task.id}),
-            title: None,
-        })
+    let root = tempfile::tempdir().unwrap();
+    let roles = calm_server::card_role_cache::CardRoleCache::new();
+    let areas = calm_server::track_area_cache::TrackAreaCache::new();
+    boot.repo.seed_card_role_cache(&roles).await.unwrap();
+    boot.repo.seed_track_area_cache(&areas).await.unwrap();
+    let write = calm_server::state::WriteContext::new(roles, areas);
+    let monitor = calm_server::task_context::TaskContextMonitor::new(
+        boot.repo.clone(),
+        boot.state.events.clone(),
+        write.clone(),
+    );
+    let closure = monitor
+        .resolve_task_closure(&task.track_id, &task.key)
         .await
         .unwrap();
-    crate::support::mcp::set_persisted_card_role(
-        boot.repo.as_ref(),
-        card.id.as_str(),
-        CardRole::Worker,
-    )
-    .await;
+    let adapter = calm_server::isolated_codex::adapter::IsolatedCodexAdapter::new(
+        Some(fake_backend(root.path())),
+        boot.repo.clone(),
+        Some(root.path().join("fake-native.sock")),
+        write,
+    );
     let (_, payload) = calm_server::scheduler::build_worker_payload(task).unwrap();
-    let operation = SqlxOperationRepo::new(boot.repo.pool().clone())
+    let operations = SqlxOperationRepo::new(boot.repo.pool().clone());
+    let operation_id = operations
         .insert_operation(
             "codex-isolated-worker",
             OperationKey {
@@ -39,45 +40,43 @@ async fn running_worker(boot: &Boot, task: &Task) -> ToolCallIdentity {
                 payload_hash: calm_server::routes::terminal_cards::stable_payload_hash(&payload)
                     .unwrap(),
             },
-            payload,
+            payload.clone(),
         )
         .await
         .unwrap();
-    sqlx::query("UPDATE operations SET target_type='card',target_id=?1 WHERE id=?2")
-        .bind(card.id.as_str())
-        .bind(&operation)
-        .execute(boot.repo.pool())
+    let operation = operations
+        .get_operation(&operation_id)
         .await
+        .unwrap()
         .unwrap();
-    let session_id = format!("session-{}", task.id);
     let mut tx = begin_immediate_tx(boot.repo.pool()).await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some("fake-thread".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: Some(operation),
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
     assert_eq!(
-        task_claim_pending_tx(&mut tx, &task.id, 10, &[], false)
+        task_claim_pending_tx(&mut tx, &task.id, 10, &closure.refs, false)
             .await
             .unwrap(),
         1
     );
+    // Produce the immutable receipt through actual preparation, without invoking
+    // controller/provider start or copying the production receipt shape into a fixture.
+    let output = adapter
+        .prepare_tx(&mut tx, &payload, &operation)
+        .await
+        .unwrap();
+    let card_id = output.target_id.as_ref().unwrap().clone();
+    let session_id = output.data["worker_session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sqlx::query("UPDATE operations SET target_type=?1,target_id=?2,tx_output_json=?3 WHERE id=?4")
+        .bind(&output.target_type)
+        .bind(&card_id)
+        .bind(serde_json::to_string(&output).unwrap())
+        .bind(&operation_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     assert_eq!(
-        task_mark_running_tx(&mut tx, &task.id, Some(card.id.as_str()), 11, 100000)
+        task_mark_running_tx(&mut tx, &task.id, Some(&card_id), 11, 100000)
             .await
             .unwrap(),
         1
@@ -90,7 +89,7 @@ async fn running_worker(boot: &Boot, task: &Task) -> ToolCallIdentity {
         .unwrap()
         .unwrap();
     ToolCallIdentity {
-        card_id: card.id.to_string(),
+        card_id,
         role: CardRole::Worker,
         provider: AgentProvider::Codex,
         session_id,
@@ -345,4 +344,106 @@ async fn task_shaped_foreign_events_and_dispatcher_failure_are_not_worker_report
         request(&app, &uri, &cookie, "user", None).await.1["report"]["result"],
         42
     );
+}
+
+async fn require_original_receipt_identity(
+    boot: &Boot,
+    app: &axum::Router,
+    cookie: &str,
+    uri: &str,
+    attempt_id: &str,
+) {
+    let (op_id, original): (String, String) = sqlx::query_as("SELECT id,tx_output_json FROM operations WHERE kind='codex-isolated-worker' AND idempotency_key=?1")
+        .bind(attempt_id).fetch_one(boot.repo.pool()).await.unwrap();
+    for path in [
+        "$.data.isolated_execution.version",
+        "$.data.isolated_execution.track_id",
+        "$.data.isolated_execution.request.identity.run_id",
+        "$.data.isolated_execution.request.identity.attempt_id",
+        "$.data.isolated_execution.request.identity.card_id",
+        "$.data.isolated_execution.request.identity.session_id",
+    ] {
+        sqlx::query("UPDATE operations SET tx_output_json=json_set(?1,?2,'foreign') WHERE id=?3")
+            .bind(&original)
+            .bind(path)
+            .bind(&op_id)
+            .execute(boot.repo.pool())
+            .await
+            .unwrap();
+        let observed = request(app, uri, cookie, "user", None).await;
+        assert_eq!(
+            observed,
+            (
+                StatusCode::OK,
+                json!({"attemptId":attempt_id,"report":null})
+            ),
+            "{path}"
+        );
+    }
+    sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE id=?2")
+        .bind(original)
+        .bind(op_id)
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn accepted_report_survives_worker_card_deletion() {
+    let boot = boot().await;
+    let root = tempfile::tempdir().unwrap();
+    let app = app(
+        configured(boot.state.clone(), root.path()),
+        boot.auth_state.clone(),
+    );
+    let cookie = login(&app).await;
+    let start = format!("/api/tracks/{}/isolated-tasks", boot.track_id);
+    assert_eq!(
+        request(&app, &start, &cookie, "user", Some(intent("retained", 0)))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let task = boot
+        .repo
+        .tasks_by_track(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .remove(0);
+    let identity = running_worker(&boot, &task).await;
+    native_report(&boot, identity.clone(), &task, true, json!({"answer":42})).await;
+    let uri = format!(
+        "/api/tracks/{}/tasks/retained/attempts/{}/report",
+        boot.track_id, task.id
+    );
+    let expected = request(&app, &uri, &cookie, "user", None).await;
+    assert_eq!(expected.1["report"]["result"], json!({"answer":42}));
+    require_original_receipt_identity(&boot, &app, &cookie, &uri, &task.id).await;
+    let deleted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/cards/{}", identity.card_id))
+                .header(header::COOKIE, &cookie)
+                .header("X-Calm-Actor", "user")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = deleted.status();
+    let bytes = deleted.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(count(&boot, "worker_sessions").await, 0);
+    assert_eq!(count(&boot, "task_attempt_allocations").await, 1);
+    assert_eq!(count(&boot, "operations").await, 1);
+    assert_eq!(request(&app, &uri, &cookie, "user", None).await, expected);
+    require_original_receipt_identity(&boot, &app, &cookie, &uri, &task.id).await;
+    assert_eq!(request(&app, &uri, &cookie, "user", None).await, expected);
 }

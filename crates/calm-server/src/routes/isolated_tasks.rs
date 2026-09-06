@@ -1,10 +1,7 @@
 //! One User-authored independent task and its exact accepted execution report.
 use crate::actor::Actor;
 use crate::auth::Principal;
-use crate::db::{
-    sqlite::{task_attempt_get_tx, task_get_tx},
-    write_in_tx_typed,
-};
+use crate::db::{sqlite::task_attempt_get_tx, write_in_tx_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::state::{AppState, RouteState};
@@ -127,44 +124,40 @@ pub async fn report(
     let response = write_in_tx_typed(state.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let track = crate::track_lifecycle::track_get_tx(tx, &track_id.clone().into()).await?;
-            let allocation = task_attempt_get_tx(tx, &attempt_id)
+            task_attempt_get_tx(tx, &attempt_id)
                 .await?
                 .filter(|allocation| allocation.track_id == track_id && allocation.key == key)
                 .ok_or_else(|| CalmError::NotFound("Task attempt".into()))?;
-            let task = task_get_tx(tx, &allocation.attempt_id)
-                .await?
-                .filter(|task| task.track_id == track_id && task.key == key);
-            // Only the durable kernel Task event channel is read. Provider-native
-            // logs, mutable card payloads and process/Operation exit are not reports.
-            // Bind the actor's executor session to this exact worker Operation;
-            // a task-shaped event at another card/Track or a planner verdict fails closed.
-            let rows: Vec<(String, String)> = if let Some(task) = task {
-                sqlx::query_as(
-                    "SELECT e.kind,e.payload FROM events e \
-                     JOIN worker_sessions s ON s.id=json_extract(e.actor,'$.id') \
-                     JOIN operations o ON o.id=s.spawn_op_id \
-                     WHERE e.kind IN ('task.completed','task.failed') \
-                     AND json_extract(e.payload,'$.idempotency_key')=?1 \
-                     AND e.scope_kind='card' AND e.scope_track=?2 AND e.scope_area=?3 \
-                     AND e.scope_card=?4 AND s.card_id=e.scope_card AND s.track_id=?2 \
-                     AND s.contract='executor' AND s.provider='codex' \
-                     AND json_extract(e.actor,'$.kind')='AiCodexSession' \
-                     AND o.kind='codex-isolated-worker' AND o.idempotency_key=?1 \
-                     AND o.target_type='card' AND o.target_id=e.scope_card \
-                     ORDER BY e.id ASC LIMIT 1",
-                )
-                .bind(&attempt_id)
-                .bind(&track_id)
-                .bind(track.area_id.as_str())
-                .bind(task.worker_card_id)
-                .fetch_all(&mut **tx)
-                .await?
-            } else {
-                Vec::new()
-            };
-            let report = rows
-                .into_iter()
-                .next()
+            // Card deletion removes worker_sessions but retains keyed Operations,
+            // allocation history and Events. Use only the original Operation's
+            // immutable identity as provenance; report content comes from Events.
+            // Never deserialize or return private paths, tokens or provider state.
+            let row: Option<(String, String)> = sqlx::query_as(
+                "SELECT e.kind,e.payload FROM operations o JOIN events e ON e.scope_card=o.target_id \
+                 WHERE o.kind='codex-isolated-worker' AND o.idempotency_key=?1 \
+                 AND o.target_type='card' \
+                 AND json_extract(o.payload_json,'$.version')='isolated-worker-v1' \
+                 AND json_extract(o.payload_json,'$.actor.kind')='KernelDispatcher' \
+                 AND json_extract(o.payload_json,'$.track_id')=?2 \
+                 AND json_extract(o.payload_json,'$.task_id')=?1 \
+                 AND json_extract(o.payload_json,'$.idempotency_key')=?1 \
+                 AND json_extract(o.tx_output_json,'$.target_type')='card' \
+                 AND json_extract(o.tx_output_json,'$.target_id')=o.target_id \
+                 AND json_extract(o.tx_output_json,'$.data.isolated_execution.version')='isolated-run-v1' \
+                 AND json_extract(o.tx_output_json,'$.data.isolated_execution.track_id')=?2 \
+                 AND json_extract(o.tx_output_json,'$.data.isolated_execution.request.identity.run_id')=o.id \
+                 AND json_extract(o.tx_output_json,'$.data.isolated_execution.request.identity.attempt_id')=?1 \
+                 AND json_extract(o.tx_output_json,'$.data.isolated_execution.request.identity.card_id')=o.target_id \
+                 AND json_extract(o.tx_output_json,'$.data.isolated_execution.request.identity.session_id')=json_extract(e.actor,'$.id') \
+                 AND e.kind IN ('task.completed','task.failed') \
+                 AND json_extract(e.payload,'$.idempotency_key')=?1 \
+                 AND e.scope_kind='card' AND e.scope_track=?2 AND e.scope_area=?3 \
+                 AND json_extract(e.actor,'$.kind')='AiCodexSession' \
+                 ORDER BY e.id ASC LIMIT 1",
+            )
+            .bind(&attempt_id).bind(&track_id).bind(track.area_id.as_str())
+            .fetch_optional(&mut **tx).await?;
+            let report = row
                 .map(|(kind, payload)| {
                     let event =
                         Event::from_kind_and_payload(&kind, serde_json::from_str(&payload)?)?;

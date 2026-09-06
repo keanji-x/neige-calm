@@ -3,7 +3,7 @@ use super::*;
 use calm_server::isolated_codex::config::{Backend, IsolatedCodexConfig};
 use calm_server::model::{TaskStatus, TrackLifecycle};
 
-fn configured(state: AppState, root: &std::path::Path) -> AppState {
+fn fake_backend(root: &std::path::Path) -> Arc<Backend> {
     let config = root.join("provider.toml");
     let auth = root.join("auth.json");
     std::fs::write(&config, "model = \"fake\"\n").unwrap();
@@ -26,7 +26,11 @@ fn configured(state: AppState, root: &std::path::Path) -> AppState {
         task_timeout_ms: 1000,
     })
     .unwrap();
-    let state = state.with_isolated_codex_backend(Arc::new(backend));
+    Arc::new(backend)
+}
+
+fn configured(state: AppState, root: &std::path::Path) -> AppState {
+    let state = state.with_isolated_codex_backend(fake_backend(root));
     // This suite owns authoring and report admission. Existing execution tests
     // own provider dispatch; keep that independent background actor out of assertions.
     state.dispatcher.abort_event_listener_for_test();
