@@ -14,42 +14,69 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "asset": { "type": "string", "description": "Asset name, e.g. BTC" }
+          "asset": {
+            "type": "string",
+            "description": "Asset name, e.g. BTC"
+          }
         },
-        "required": ["asset"],
+        "required": [
+          "asset"
+        ],
         "additionalProperties": false
       },
-      "annotations": { "title": "Quote", "readOnlyHint": true, "openWorldHint": true }
+      "annotations": {
+        "title": "Quote",
+        "readOnlyHint": true,
+        "openWorldHint": true
+      }
     },
     {
       "name": "market.holdings.set",
-      "description": "Record how much of an asset this Track holds, and start pricing it. Replaces any existing quantity for that asset. A quantity of 0 removes it.",
+      "description": "Record how much of an asset this Track holds. Replaces any existing quantity for that asset; 0 removes it. Records only — the price is fetched by the plugin's own refresh, which this call wakes.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "asset": { "type": "string", "description": "Asset name, e.g. BTC" },
-          "quantity": { "type": "number", "description": "How much is held. 0 removes the holding." }
+          "asset": {
+            "type": "string",
+            "description": "Asset name, e.g. BTC"
+          },
+          "quantity": {
+            "type": "number",
+            "description": "How much is held. 0 removes the holding."
+          }
         },
-        "required": ["asset", "quantity"],
+        "required": [
+          "asset",
+          "quantity"
+        ],
         "additionalProperties": false
       },
-      "annotations": { "title": "Set Holding", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": true }
+      "annotations": {
+        "title": "Set Holding",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
     },
     {
       "name": "market.holdings.list",
       "description": "What this Track currently holds, with the latest price and value of each.",
-      "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
-      "annotations": { "title": "List Holdings", "readOnlyHint": true, "openWorldHint": true }
-    },
-    {
-      "name": "market.refresh",
-      "description": "Re-price this Track's holdings now instead of waiting for the next tick.",
-      "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
-      "annotations": { "title": "Refresh", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": true }
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "List Holdings",
+        "readOnlyHint": true,
+        "openWorldHint": true
+      }
     }
   ],
   "permissions": {
-    "overlays_write": ["track"],
+    "overlays_write": [
+      "track"
+    ],
     "kv_quota_bytes": 262144
   },
   "config_schema": {

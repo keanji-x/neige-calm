@@ -18,10 +18,25 @@ it calls it with `0`, which removes the holding.
 
 | tool | what it does |
 | --- | --- |
-| `market.holdings.set` | record a quantity for one asset and re-price now (`0` removes it) |
+| `market.holdings.set` | record a quantity for one asset (`0` removes it) and wake a refresh |
 | `market.holdings.list` | what this Track holds, with current price and value |
 | `market.quote` | the price of one asset, without touching any holding |
-| `market.refresh` | re-price this Track now instead of waiting for the next tick |
+
+### Why `set` does not price
+
+Because a tool that prices touches the network, and a tool that touches the
+network must declare `openWorldHint: true` — which is exactly what makes codex
+demand approval for it. The kernel spawns every agent with
+`approval_policy: "never"`, so such a tool is not "gated", it is **unusable**.
+We found this by running it: the Planner produced a perfectly-formed
+`market.holdings.set { asset: "BTC", quantity: 100 }` and got back *"MCP tool
+call requires approval, but approval policy is never"*.
+
+The fix is not to relabel a tool that does touch the open world. `set` records
+state and **wakes** the poll thread, which does the pricing a moment later. The
+annotation stays honest, and the reader still sees a fresh table within a
+second or two rather than at the next interval. A test in the plugin refuses
+any future write tool that declares otherwise.
 
 **Which Track a call acts on comes from the kernel**, in
 `params._meta["dev.neige/track"]`, filled from the identity it resolved for the
@@ -98,7 +113,9 @@ is a working install.
 | `binance_endpoint` | `https://data-api.binance.vision` | the Binance market-data base URL |
 
 Configuration is read at handshake, so a change takes effect when the plugin is
-restarted. Holdings are not configuration and are never affected by this.
+restarted; a re-handshake replaces it for the running poll thread too, rather
+than starting a second one. Holdings are not configuration and are never
+affected by this.
 
 ## Limits worth knowing
 
