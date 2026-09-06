@@ -992,6 +992,62 @@
   }
 
   /*
+   * ── The message the agent has not been handed yet ────────────────────────
+   *
+   * Sent while a turn was running, so the kernel put it on the harness pending
+   * queue and will issue it as the next turn. Without a word for it, a queued
+   * message is pixel-identical to one being answered — same fill, same side,
+   * and the live dot pulsing a line below it belongs to the *previous* turn,
+   * which makes the wrong reading the easy one.
+   *
+   * It rides under the turn on the turn's own edge (`margin-inline-start:
+   * auto`, `text-align: end`) rather than centred like `.gap`: `.gap` is a seam
+   * in the transcript and belongs to neither side, this is a property of the
+   * one message above it and has to read as attached to it.
+   *
+   * Caption rank — `--text-xs` / `--text-3`, which is exactly what `.activity`
+   * below and `.commandHint` use for "what happened" and "what this does". That
+   * is the register this belongs to: a fact about machinery, not a third voice.
+   * It carries no fill and no icon; it is on screen only for as long as the
+   * queue holds the message, and anything heavier would still be there in the
+   * reader's memory after it went.
+   *
+   * **`--text-4` was tried here and is wrong, and the reason is not taste.**
+   * Measured with `tools/styles/check-contrast.mjs`'s own oklch→sRGB code, on
+   * the two grounds this note can sit on — the drawer's card (`--surface-card`,
+   * identical in value to `--paper`) and the page behind it:
+   *
+   *              vs --surface-card                vs --bg
+   *   --text-4   2.11 light / 1.82 dark           1.91 light / 2.28 dark
+   *   --text-3   7.00 light / 6.47 dark           6.34 light / 8.10 dark
+   *
+   * — against the 4.5:1 WCAG AA floor that 11px text is held to. (The same four
+   * figures the rail's note quotes further up, taken the same way.) This
+   * sentence is the only thing on the screen that answers "where did my message
+   * go?", so it is content, not decoration, and it does not get the
+   * decoration exemption.
+   *
+   * **The contrast gate would not have caught it.** `check-contrast.mjs` walks
+   * a hardcoded pair list that is entirely `--warn*` / `--error*` plus the
+   * plugin chips; it does not read this stylesheet, and neither `--text-4` nor
+   * this rule is in its table. The number above was taken by hand with its
+   * arithmetic. Anything added here at a fainter rank has to be measured the
+   * same way — a green gate is not evidence about this rule.
+   */
+  .queuedNote {
+    inline-size: fit-content;
+    max-inline-size: 88%;
+    margin-block-start: var(--space-1);
+    margin-inline-start: auto;
+    padding-inline: var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+    text-align: end;
+  }
+
+  /*
    * ── The reply is the report's voice, in the report's family ─────────────
    *
    * `--font-serif` and `--leading-loose` are taken straight off `.calm-prose`
@@ -1389,6 +1445,44 @@
    * that cannot exist. They are what lets this out-rank Astryx's compiled
    * StyleX without `!important`.
    */
+  /*
+   * ── The queue control, beside Stop ───────────────────────────────────────
+   *
+   * On screen only while `sendButton` is showing Stop, which is the whole of
+   * why it exists: with one two-state button there is no way to send during a
+   * turn, because the one button is Stop. It sits in Astryx's `sendActions`
+   * slot, i.e. immediately to the left of Stop on the footer's own row.
+   *
+   * It is a **text** button against Stop's round icon, and deliberately the
+   * quieter of the two: Stop is the control this state is normally about, and
+   * the queue is the second thing you might want. `--surface-chip` is the same
+   * fill the Send rule below gives Astryx's own button, so the two send-shaped
+   * controls are one material even though only one of them is Astryx's.
+   *
+   * `32px` block size is Astryx's own footer row height (`ChatComposer`'s
+   * `.footer { min-height: 32px }`, sized for a `size="md"` button), so this
+   * sits on Stop's baseline without moving the row.
+   */
+  .queueSend {
+    flex: none;
+    block-size: 32px;
+    padding-inline: var(--space-3);
+    border: none;
+    border-radius: var(--radius-pill);
+    background: var(--surface-chip);
+    font-family: inherit;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .queueSend:disabled {
+    color: var(--text-4);
+    cursor: default;
+  }
+
   .composer :is(button[aria-label='Send']):not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) {
     background: var(--surface-chip);
     color: var(--text);

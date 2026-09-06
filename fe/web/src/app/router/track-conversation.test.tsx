@@ -27,7 +27,7 @@ import { useEffect } from 'react';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
+import { isQueuedConversationTurn, trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter, useConversationStore } from './public.tsx';
@@ -1572,6 +1572,7 @@ describe('create placeholder lifetime', () => {
   function mountSlotStore(transport: ApiTransportPort) {
     const seen: (readonly TranscriptEntry[])[] = [];
     let note: (text: string) => void = () => undefined;
+    let send: (text: string) => void = () => undefined;
 
     function Probe({ scope }: { scope: typeof SCOPE | null }) {
       const registry = useConversationRegistry();
@@ -1579,6 +1580,7 @@ describe('create placeholder lifetime', () => {
         rows: [], rememberOn: 'w1',
       });
       note = (text) => { registry.noteCreateEcho(ASSISTANT_CARD.id, text); };
+      send = (text) => { void store.send(ASSISTANT_CARD.id, text); };
       seen.push(store.turnsOf(ASSISTANT_CARD.id));
       return null;
     }
@@ -1596,6 +1598,10 @@ describe('create placeholder lifetime', () => {
     return {
       seen,
       note: async (text: string) => { await act(async () => { note(text); await Promise.resolve(); }); },
+      send: async (text: string) => {
+        await act(async () => { send(text); await Promise.resolve(); });
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      },
       open: async () => { await act(async () => { rerender(view(SCOPE)); await Promise.resolve(); }); await settle(); },
       close: async () => { await act(async () => { rerender(view(null)); await Promise.resolve(); }); await settle(); },
       settle,
@@ -1631,6 +1637,86 @@ describe('create placeholder lifetime', () => {
     const doubled = store.seen.filter((entries) =>
       entries.filter((entry) => entry.author === 'you').length > 1);
     expect(doubled).toEqual([]);
+  });
+
+  /*
+   * ── #1449's placeholder and #1505's queued echo, on one transcript ────────
+   *
+   * The construction the two features share: create a track with a first
+   * sentence (the placeholder is minted), then say a second thing while that
+   * first turn is still running (a queued echo is minted). Both are optimistic
+   * user lines that nothing on the server has confirmed yet, and before this
+   * test nothing pinned what happens when they are on screen together.
+   *
+   * They do not collide, and the reason is structural rather than lucky.
+   *
+   *   **Different containers.** The placeholder lives in the registry's
+   *   `createEchoes` record and is injected into `transcript` at render; it is
+   *   in neither `echoes` nor `registry.turnsOf`, which is where every
+   *   optimistic echo lives.
+   *
+   *   **Opposite ends, by construction and not by sort.** `mergeTranscript`
+   *   appends echoes after the server entries, and the placeholder is
+   *   `[createEchoLine(...), ...merged]`. Head and tail; there is no comparison
+   *   that could put them the other way round.
+   *
+   *   **Neither can be read as the other.** The placeholder is a plain
+   *   `ConversationTurn` with no provenance, so `isOptimisticConversationTurn`
+   *   is false for it, so `awaitsReconciliation` never counts it and
+   *   `isQueuedConversationTurn` never marks it. #1505's relaxation of
+   *   `hasUnreconciledSend` is therefore strictly inside a set the placeholder
+   *   was already outside.
+   *
+   * What they *do* share is a text matcher, and the reach of that sharing is
+   * narrower than an earlier version of this note claimed. `createEchoShown`
+   * scans `serverTurns` **only**, so a client-side queued echo cannot retire the
+   * placeholder at all, however its text reads — measured: with the placeholder
+   * holding `the first sentence` and a queued send of `the first sentence\nand
+   * more`, both lines survive. `userTextMatchesEcho`'s `startsWith(`${echo}\n`)`
+   * arm — #1449's own KNOWN GAP, recorded at `createEchoLine` — can only fire
+   * once the queued message has become a persisted row, and by then the create's
+   * own sentence has usually landed with it, since the queue drains into one
+   * turn that keeps its `input_segments`. So: an existing gap, reachable only
+   * after persistence, and not opened wider by anything here. Narrowing the
+   * matcher would be a change to the send path and is not done.
+   */
+  it('shows the create placeholder and a queued echo as two lines, once each', async () => {
+    const transport: ApiTransportPort = {
+      send(request) {
+        if (request.path.includes(HISTORY_PATH)) return Promise.resolve(ok([]));
+        if (request.path.endsWith('/planner/run')) {
+          /* The turn the create started is still running, which is what makes
+             the second message a queued one. */
+          return Promise.resolve(ok({
+            card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running',
+          }));
+        }
+        if (request.path.endsWith('/planner/input')) {
+          return Promise.resolve(ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r' }));
+        }
+        return Promise.resolve(ok([]));
+      },
+    };
+    const store = mountSlotStore(transport);
+    await store.note('the first sentence');
+    await store.open();
+    await store.settle();
+    expect(store.said()).toEqual(['the first sentence']);
+
+    await store.send('and a second while it works');
+
+    /* Two lines, in the order they were said, each exactly once. */
+    expect(store.said()).toEqual(['the first sentence', 'and a second while it works']);
+    /* And the placeholder is still the head of the whole transcript, not merely
+       the first `you` line. */
+    expect((store.seen.at(-1) ?? [])[0]).toMatchObject({ text: 'the first sentence' });
+
+    /* Only the send is a queued echo. The placeholder carries no provenance, so
+       the marker cannot land on it — which is what keeps #1505's caption off a
+       line whose retirement story is #1449's, not the queue's. */
+    const queued = (store.seen.at(-1) ?? []).filter(isQueuedConversationTurn);
+    expect(queued.map((entry) => 'text' in entry ? entry.text : ''))
+      .toEqual(['and a second while it works']);
   });
 
   /*

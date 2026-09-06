@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { HarnessItem } from '../api/generated/wire.js';
+import type { HarnessItem, HarnessPhaseTag } from '../api/generated/wire.js';
 import {
   PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, TRACK_RENAME_TOOL,
   TRACK_TOOL_PREFIX,
@@ -11,7 +11,8 @@ import {
   CONVERSATION_STATE_SOURCE, conversationCreateFailure,
   createTrackConversationOperation,
   harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages, isLiveConversation,
-  isOptimisticConversationTurn, mergeTranscript, readableCommand,
+  isOptimisticConversationTurn, isQueuedConversationTurn, kernelQueuesInput,
+  mergeTranscript, readableCommand,
   reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
   toTrackConversation, trackConversationCardId,
   trackConversationsOperation,
@@ -57,8 +58,12 @@ describe('reconcileUserEchoes', () => {
 
 describe('optimistic conversation provenance', () => {
   const serverTurn = (id: string, text = 'same'): ConversationTurn => ({ id, author: 'you', text, atMs: 1 });
-  const echo = (id: string, before: number): OptimisticConversationTurn => ({
-    id, author: 'you', text: 'same', atMs: 2, serverHighWaterBefore: before,
+  /* No default on `queued`: a helper that back-fills a newly required field is
+     how a new guard gets hidden from the tests that should be exercising it. */
+  const echo = (
+    id: string, before: number, queued: boolean,
+  ): OptimisticConversationTurn => ({
+    id, author: 'you', text: 'same', atMs: 2, serverHighWaterBefore: before, queued,
   });
 
   it('takes the highest persisted item id as the pre-send boundary', () => {
@@ -67,23 +72,101 @@ describe('optimistic conversation provenance', () => {
   });
 
   it('does not let an identical older row confirm a newer echo', () => {
-    expect(reconcileOptimisticConversationTurns([serverTurn('4')], [echo('echo-1', 4)]))
+    expect(reconcileOptimisticConversationTurns([serverTurn('4')], [echo('echo-1', 4, false)]))
       .toHaveLength(1);
-    expect(reconcileOptimisticConversationTurns([serverTurn('5')], [echo('echo-1', 4)]))
+    expect(reconcileOptimisticConversationTurns([serverTurn('5')], [echo('echo-1', 4, false)]))
       .toHaveLength(0);
   });
 
   it('lets one new server row confirm only one of two identical echoes', () => {
     expect(reconcileOptimisticConversationTurns(
-      [serverTurn('5')], [echo('echo-1', 4), echo('echo-2', 4)],
+      [serverTurn('5')], [echo('echo-1', 4, false), echo('echo-2', 4, false)],
     ).map((turn) => turn.id)).toEqual(['echo-2']);
   });
 
   it('recognises only finite user turns carrying provenance', () => {
-    const invalid = { ...echo('echo-2', 4), serverHighWaterBefore: Number.NaN };
-    expect(isOptimisticConversationTurn(echo('echo-1', 4))).toBe(true);
+    const invalid = { ...echo('echo-2', 4, false), serverHighWaterBefore: Number.NaN };
+    expect(isOptimisticConversationTurn(echo('echo-1', 4, false))).toBe(true);
     expect(isOptimisticConversationTurn(serverTurn('5'))).toBe(false);
     expect(isOptimisticConversationTurn(invalid)).toBe(false);
+  });
+
+  /*
+   * The queue flag is a property of the *send*, so it has to be readable off a
+   * merged transcript entry — the renderer holds `TranscriptEntry`, never the
+   * echo type — and it has to be false for everything that is not an echo at
+   * all. A server row has no `queued` field, and "no field" must not read as
+   * "queued": that is the direction that would put the caption under a message
+   * the agent already answered.
+   */
+  it('reads the queue flag only off an optimistic turn that carries it', () => {
+    expect(isQueuedConversationTurn(echo('echo-1', 4, true))).toBe(true);
+    expect(isQueuedConversationTurn(echo('echo-2', 4, false))).toBe(false);
+    expect(isQueuedConversationTurn(serverTurn('5'))).toBe(false);
+  });
+});
+
+/*
+ * The kernel's whitelist, transcribed and asserted both ways.
+ *
+ * `HarnessState::can_issue_turn()` is `matches!(self, Self::Idle |
+ * Self::TurnCompleted { .. })`, so these two issue at once and the other six
+ * queue. Written as a table over the *whole* phase enum rather than as a couple
+ * of spot checks: the failure this predicate exists to prevent is a phase that
+ * nobody thought about landing on the wrong side, which only exhaustiveness can
+ * catch. `resumed` is the one that reads wrong at a glance — the session
+ * projection maps it to `Idle`, but `can_issue_turn` does not accept it.
+ */
+describe('kernelQueuesInput', () => {
+  /*
+   * ── The table is bound to the enum by the compiler, not by care ──────────
+   *
+   * `Record<HarnessPhaseTag, boolean>` is exhaustive in both directions: the
+   * annotation rejects a missing key, and the `satisfies` rejects an extra one.
+   * So a ninth phase cannot land quietly on either side of this table —
+   * `tsc -b` is a gate, and it fails until someone decides which column the new
+   * phase belongs in.
+   *
+   * **The `satisfies` is load-bearing and was not there at first.** Excess
+   * properties are only checked against a *fresh* literal, and `Object.freeze`
+   * is a function call, so with the annotation alone an unknown key passed
+   * silently — measured, by adding one. The first version of this note claimed
+   * both directions anyway. Both directions are now checked by mutation, one
+   * per direction.
+   *
+   * `HarnessPhaseTag` is the right authority for that and the only one
+   * available. `core/api/generated/wire.ts` is ts-rs output from the Rust enum,
+   * and CI re-runs the generator and `git diff --exit-code`s the result, so the
+   * type cannot drift from `HarnessState` without a second gate saying so. The
+   * two hand-written zod copies of this list (`core/api/schemas.ts`,
+   * and `harnessPhaseSchema` in the module under test) were *not* used: checking
+   * a hand-written table against a hand-written list would look like a machine
+   * check and be nothing of the kind.
+   *
+   * What it still cannot do, stated because the type gives no help here: it
+   * pins the shape of the table, not the truth of a cell. Both columns are
+   * `HarnessState::can_issue_turn()` read by a person.
+   */
+  const QUEUES: Readonly<Record<HarnessPhaseTag, boolean>> = Object.freeze({
+    idle: false,
+    turn_completed: false,
+    pending_thread_start: true,
+    issuing_turn: true,
+    issuing_interrupt: true,
+    turn_running: true,
+    resumed: true,
+    wedged: true,
+  } satisfies Record<HarnessPhaseTag, boolean>);
+
+  it.each(Object.entries(QUEUES))('%s queues: %s', (phase, queues) => {
+    expect(kernelQueuesInput(phase as HarnessPhaseTag)).toBe(queues);
+  });
+
+  /* Unknown, and read as queueing on purpose — the note on the function has the
+     asymmetry that decides it. Pinned so the reading is a decision rather than
+     whatever the expression happens to do. */
+  it('reads an unknown phase as queueing', () => {
+    expect(kernelQueuesInput(null)).toBe(true);
   });
 });
 
