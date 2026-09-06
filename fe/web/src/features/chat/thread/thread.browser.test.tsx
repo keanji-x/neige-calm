@@ -328,7 +328,7 @@ describe('the / command menu, as the engine lays it out', () => {
     await page.viewport(1400, 900);
     const queuedTurn: OptimisticConversationTurn = {
       id: 'echo-1', author: 'you', text: 'A message that is waiting its turn.',
-      atMs: 4_000, serverHighWaterBefore: 0, queued: true,
+      atMs: 4_000, serverHighWaterBefore: 0, queued: true, entryId: null,
     };
     render(<RailPane turns={[...railTurns(1), queuedTurn]} />);
 

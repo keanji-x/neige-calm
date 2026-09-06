@@ -531,6 +531,21 @@ pub struct HarvestedQueues {
 pub struct HarvestedMessage {
     pub text: String,
     pub ids: Vec<String>,
+    /// #1505 PR4 review — the addressable `QueueEntryId` this sentence already
+    /// had, carried across the move so it keeps it.
+    ///
+    /// `None` means it had none: a pre-#1505 entry, which gains one on arrival
+    /// and can then be edited for the first time. That is the case the old
+    /// unconditional re-mint was written for, and it still behaves that way.
+    ///
+    /// What the re-mint also did — and must not — is take a live id away from
+    /// an entry that had one. A browser holding that id after a harvest asks
+    /// the server about an entry the server has renamed: `GET /planner/run`
+    /// lists the new id, so the message is drawn twice; an edit or a delete
+    /// against the old one 404s, which this UI reports as "already left the
+    /// queue" about a message that is still queued and still going to be sent.
+    /// Identity that changes under the holder is not identity.
+    pub entry_id: Option<String>,
 }
 
 /// #1449 — give a harvested queue back, because the mint that took it did not

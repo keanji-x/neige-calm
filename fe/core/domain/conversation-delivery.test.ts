@@ -18,7 +18,7 @@ describe('failed conversation delivery', () => {
   });
 
   it('identifies newly observed matching text only as evidence for review', () => {
-    const echo = { id: 'echo-1', author: 'you' as const, text: 'do this', atMs: 0, serverHighWaterBefore: 5, queued: false };
+    const echo = { id: 'echo-1', author: 'you' as const, text: 'do this', atMs: 0, serverHighWaterBefore: 5, queued: false, entryId: null };
     expect(hasUnseenMatchingConversationMessage([{ id: '6:0', author: 'you', text: 'do this', atMs: 1 }], echo)).toBe(true);
     expect(hasUnseenMatchingConversationMessage([{ id: '6', author: 'agent', text: 'do this', atMs: 1 }], echo)).toBe(false);
     expect(hasUnseenMatchingConversationMessage([{ id: '5', author: 'you', text: 'do this', atMs: 1 }], echo)).toBe(false);

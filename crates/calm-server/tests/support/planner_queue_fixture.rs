@@ -93,7 +93,33 @@ pub enum Issuance {
     Paused,
 }
 
+/// Boot with the `events` table renamed away just before the harness starts,
+/// so every event insert it attempts fails.
+///
+/// Fault injection, not a knob that omits an invariant: the production write
+/// path is the one under test, and what changes is only whether the database
+/// accepts it. Renaming BEFORE `PlannerHarness::run` is the point — doing it
+/// afterwards races the run loop's own early flush, which under load wins and
+/// leaves nothing outstanding for the assertion to observe.
+pub async fn boot_with_broken_event_writes(snapshot: HarnessSnapshot) -> Boot {
+    boot_inner(snapshot, Issuance::Paused, EventWrites::Broken).await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EventWrites {
+    Working,
+    Broken,
+}
+
 pub async fn boot_with_issuance(snapshot: HarnessSnapshot, issuance: Issuance) -> Boot {
+    boot_inner(snapshot, issuance, EventWrites::Working).await
+}
+
+async fn boot_inner(
+    snapshot: HarnessSnapshot,
+    issuance: Issuance,
+    event_writes: EventWrites,
+) -> Boot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(NewArea {
@@ -180,6 +206,13 @@ pub async fn boot_with_issuance(snapshot: HarnessSnapshot, issuance: Issuance) -
         Some(role_cache.clone()),
         Some(track_area_cache.clone()),
     );
+
+    if event_writes == EventWrites::Broken {
+        sqlx::query("ALTER TABLE events RENAME TO events_hidden")
+            .execute(repo.pool())
+            .await
+            .expect("hide the events table");
+    }
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let daemon_handle = Arc::clone(&daemon);

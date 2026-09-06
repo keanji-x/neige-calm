@@ -280,7 +280,14 @@ pub enum HarnessQueueChange {
     Steered,
     /// The kernel discarded the entry without delivering it: a snapshot loaded
     /// with more than `MAX_PENDING_QUEUE_LEN` entries drops from the head.
-    /// **Nothing emits this yet** — that call site is #1505 PR2b.
+    /// Emitted by `harness::run_loop`'s load-time truncation (#1505 PR2b).
+    ///
+    /// It is the only announcement such an entry ever gets: the sentence is
+    /// never delivered, so it never reaches the transcript, so a client that
+    /// is still showing it has nothing else to learn from. No frontend reads
+    /// this variant yet — `harness.queue.changed` drives query invalidation
+    /// and nothing per-entry — so the row is an audit record and an input for
+    /// a later slice, not a placeholder fix.
     Dropped,
 }
 
@@ -2098,10 +2105,11 @@ mod scope_tests {
     ///
     /// The golden file for `harness.queue.changed` fixes the payload's field
     /// names but exercises a single `change` value, and two of the four have
-    /// no emitter in this slice, so nothing else in the tree would notice a
-    /// renamed variant. `Steered` and `Dropped` are the ones this test exists
-    /// for: their first production use is PR3 and PR2b, and by then a client
-    /// is already parsing this enum.
+    /// no emitter when this test was written, so nothing else in the tree
+    /// would have noticed a renamed variant. `Dropped` has one now (PR2b);
+    /// `Steered` is still the one this test exists for, and its first
+    /// production use is PR3, by which time a client is already parsing this
+    /// enum.
     #[test]
     fn harness_queue_change_wire_spellings() {
         for (change, wire) in [

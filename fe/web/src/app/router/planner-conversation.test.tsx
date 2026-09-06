@@ -554,6 +554,198 @@ describe('planner conversation regressions', () => {
       .toContain('sends when this turn ends');
   });
 
+  /*
+   * #1505 PR4 rule 3 — one renderer per message.
+   *
+   * Once the POST answers with an entry id and `GET /planner/run` lists that
+   * id, the queue region owns the message: it is the only surface that can
+   * offer Edit and Delete, so the transcript echo must step aside. The bug
+   * this pins is the double render — the same sentence twice, once with
+   * controls and once without.
+   */
+  it('draws a queued message once, in the queue region, after its entry id is listed', async () => {
+    const entry = { entry_id: 'entry-9', text: 'queued once', rev: 0, queued_at_ms: 5 };
+    let listed = false;
+    setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({
+          ...PLANNER_RUN_IDLE, phase: 'turn_running',
+          pending: listed ? [entry] : [], pending_overflow: 0,
+        });
+      }
+      if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
+        listed = true;
+        return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: entry.entry_id });
+      }
+      return undefined;
+    });
+    await openConversation();
+    await screen.findByRole('button', { name: 'Stop' });
+
+    const field = messageField();
+    await typeInto(field, 'queued once');
+    await sendWithEnter(field);
+
+    // The queue region takes it over, and the transcript's copy goes away.
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-queue]')).not.toBeNull();
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText('queued once')).toHaveLength(1);
+    });
+    expect(document.querySelector('[data-nc-pending-entry="entry-9"]')?.textContent)
+      .toContain('queued once');
+    expect(document.querySelector('[data-nc-queued]')).toBeNull();
+  });
+
+  /*
+   * #1505 PR4 — the compare-and-swap reaches the wire.
+   *
+   * The revision is the entry's, read from the page the reader was shown, not
+   * a constant and not the client's guess. Sending the wrong one is how an
+   * edit silently overwrites text somebody else already changed — which is
+   * the whole reason the endpoint takes it.
+   */
+  it('sends the listed revision as if_entry_rev when editing a queued message', async () => {
+    const entry = { entry_id: 'entry-9', text: 'first words', rev: 3, queued_at_ms: 5 };
+    const { requests } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 });
+      }
+      if (request.method === 'PATCH' && request.path.includes('/planner/input/')) {
+        return ok({ card_id: CARD.id, entry_id: entry.entry_id, rev: 4, text: 'second words' });
+      }
+      return undefined;
+    });
+    await openConversation();
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Edit queued message' }), {
+      target: { value: 'second words' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(requests.some((request) => request.method === 'PATCH')).toBe(true);
+    });
+    const patch = requests.find((request) => request.method === 'PATCH');
+    expect(patch?.path).toBe(`/api/cards/${CARD.id}/planner/input/entry-9`);
+    expect(patch?.body).toEqual({ text: 'second words', if_entry_rev: 3 });
+  });
+
+  /*
+   * #1505 PR4 review — an EDITED queued message survives the drain exactly once.
+   *
+   * The echo is retired by TEXT (`userTextMatchesEcho`). Rewriting the queue
+   * entry without rewriting the echo therefore breaks its only retirement
+   * route: the row that eventually lands says the new text, the echo still
+   * says the old one, they never match, and once the entry leaves `pending`
+   * the visibility filter stops hiding it. The reader is then looking at the
+   * edited message AND at a permanent pre-edit ghost.
+   *
+   * This test drains after the edit, which is what the original PR4 tests
+   * never did — they stopped at the 200.
+   */
+  it('does not leave a pre-edit ghost after an edited message drains', async () => {
+    const entry = { entry_id: 'entry-9', text: 'look at report', rev: 0, queued_at_ms: 5 };
+    let listed = false;
+    let edited = false;
+    setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({
+          ...PLANNER_RUN_IDLE, phase: 'turn_running',
+          // The drain: after the edit the entry leaves the queue.
+          pending: listed && !edited ? [entry] : [], pending_overflow: 0,
+        });
+      }
+      if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
+        listed = true;
+        return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: entry.entry_id });
+      }
+      if (request.method === 'PATCH' && request.path.includes('/planner/input/')) {
+        edited = true;
+        return ok({ card_id: CARD.id, entry_id: entry.entry_id, rev: 1, text: 'look at the diff' });
+      }
+      return undefined;
+    });
+    await openConversation();
+    await screen.findByRole('button', { name: 'Stop' });
+    const field = messageField();
+    await typeInto(field, 'look at report');
+    await sendWithEnter(field);
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Edit queued message' }), {
+      target: { value: 'look at the diff' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    // Drained: the queue region lets go, and the echo comes back carrying the
+    // text that was actually saved.
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText('look at the diff')).toHaveLength(1);
+    });
+    expect(screen.queryAllByText('look at report')).toHaveLength(0);
+  });
+
+  /*
+   * #1505 PR4 rule 4 — a deleted queued message is gone, not hidden.
+   *
+   * Deleting removes the entry from `pending`, which un-hides the transcript
+   * echo by rule 3. Nothing else can ever retire that echo: the message never
+   * reaches the model, so no transcript row will arrive to reconcile it. Left
+   * alone it is a permanent ghost of a message the reader explicitly took
+   * back — which is worse than the confusion the slice set out to fix.
+   */
+  it('does not put a deleted queued message back into the transcript', async () => {
+    const entry = { entry_id: 'entry-9', text: 'take this back', rev: 0, queued_at_ms: 5 };
+    let deleted = false;
+    let listed = false;
+    setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({
+          ...PLANNER_RUN_IDLE, phase: 'turn_running',
+          pending: listed && !deleted ? [entry] : [], pending_overflow: 0,
+        });
+      }
+      if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
+        listed = true;
+        return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: entry.entry_id });
+      }
+      if (request.method === 'DELETE' && request.path.includes('/planner/input/')) {
+        deleted = true;
+        return ok({ card_id: CARD.id, entry_id: entry.entry_id, rev: 1, text: null });
+      }
+      return undefined;
+    });
+    await openConversation();
+    await screen.findByRole('button', { name: 'Stop' });
+    const field = messageField();
+    await typeInto(field, 'take this back');
+    await sendWithEnter(field);
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
+    });
+    await waitFor(() => {
+      expect(screen.queryAllByText('take this back')).toHaveLength(0);
+    });
+  });
+
   /* The same send from an idle conversation is not queued behind anything, and
      must not claim to be — the marker is a fact about the send, so the negative
      is what keeps it from decaying into decoration on every optimistic turn. */
