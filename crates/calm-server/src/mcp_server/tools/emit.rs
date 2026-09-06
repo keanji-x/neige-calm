@@ -200,7 +200,9 @@ async fn submit_worker_success_commit(
     identity: &ToolCallIdentity,
 ) -> Result<(), String> {
     if crate::isolated_codex::lookup::is_isolated_card(ctx.repo.as_ref(), &identity.card_id)
-        .await.map_err(|error| error.to_string())? {
+        .await
+        .map_err(|error| error.to_string())?
+    {
         return Ok(());
     }
     let track_id = identity

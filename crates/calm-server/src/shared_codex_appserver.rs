@@ -3438,7 +3438,8 @@ impl SharedCodexAppServer {
 
         let active_threads = merge_active_shared_thread_attribution(self.repo.as_ref()).await?;
         for (card_id, thread_id) in active_threads {
-            if crate::isolated_codex::lookup::is_isolated_card(self.repo.as_ref(), &card_id).await? {
+            if crate::isolated_codex::lookup::is_isolated_card(self.repo.as_ref(), &card_id).await?
+            {
                 continue;
             }
             self.thread_cache.insert(thread_id, card_id);
