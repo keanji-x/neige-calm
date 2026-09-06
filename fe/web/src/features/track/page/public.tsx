@@ -514,8 +514,9 @@ export function TrackPage({
           </>
         }
         actions={(
+          <>
+          {onCreateTask !== undefined && <span title={taskUnavailable ?? undefined}><AstryxButton variant="ghost" size="sm" label="Run independent task" isDisabled={taskUnavailable !== null} onClick={onCreateTask} /></span>}
           <span className={styles.headerActions}>
-            {onCreateTask !== undefined && <span title={taskUnavailable ?? undefined}><AstryxButton variant="ghost" size="sm" label="Run independent task" isDisabled={taskUnavailable !== null} onClick={onCreateTask} /></span>}
             <AstryxDropdownMenu
               button={{
                 ref: desktopActionsRef,
@@ -536,6 +537,7 @@ export function TrackPage({
               }}
             />
           </span>
+          </>
         )}
         /*
          * No identity row — `--header-h` is 62 here now, not 92.

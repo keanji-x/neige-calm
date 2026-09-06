@@ -63,6 +63,10 @@ it('runs one immutable intent through the real goal dialog, navigation and repor
   const mount = () => render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);
   await page.viewport(1080, 800);
   const view = mount();
+  await expect.element(page.getByRole('button', { name: 'Run independent task', exact: true })).toBeVisible();
+  const entry = page.getByRole('button', { name: 'Run independent task', exact: true }).element();
+  const label = Array.from(entry.querySelectorAll('span')).reverse().find((span) => span.textContent === 'Run independent task')!;
+  expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
   await page.getByRole('button', { name: 'Run independent task', exact: true }).click();
   await expect.element(page.getByText('Starting this task also starts the Track. Other ready tasks in this Track may run.')).toBeVisible();
   await page.getByRole('textbox', { name: 'Goal' }).fill('Explain the moon.');
@@ -89,6 +93,9 @@ it('runs one immutable intent through the real goal dialog, navigation and repor
   await page.viewport(390, 844);
   await expect.element(page.getByRole('button', { name: 'Refresh accepted report' })).toBeVisible();
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+  const resultText = document.querySelector('pre')!;
+  expect(resultText.scrollWidth).toBeLessThanOrEqual(resultText.clientWidth);
+  expect(document.querySelector('main')!.getBoundingClientRect().width).toBe(390);
   await page.screenshot({ path: '__screenshots__/issue-1501-launch-phone.png' });
   await page.getByRole('button', { name: 'Track actions', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Run independent task' }).click();

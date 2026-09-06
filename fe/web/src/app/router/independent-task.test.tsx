@@ -20,7 +20,7 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
-function setup(mode: 'success' | 'lost' | 'lost-committed' | 'conflict' | 'unavailable' = 'success', lifecycle: TrackLifecycle = 'draft') {
+function setup(mode: 'success' | 'lost' | 'lost-committed' | 'lost-hidden' | 'conflict' | 'unavailable' = 'success', lifecycle: TrackLifecycle = 'draft') {
   const requests: ApiRequest[] = [];
   const track = { id: 'w1', area_id: 'c1', title: 'Independent work', sort: 1, lifecycle, cwd: '/tmp',
     archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
@@ -31,6 +31,7 @@ function setup(mode: 'success' | 'lost' | 'lost-committed' | 'conflict' | 'unava
     ] as unknown[] } };
   let submitted: IndependentTaskRequest | null = null;
   let writes = 0;
+  let reconciliationReads = 0;
   let acceptedReport: unknown = null;
   let status = 'running';
   let rejectReport = false;
@@ -42,6 +43,7 @@ function setup(mode: 'success' | 'lost' | 'lost-committed' | 'conflict' | 'unava
     if (request.method === 'POST') {
       writes += 1;
       const body = request.body as IndependentTaskRequest;
+      if (mode === 'lost-hidden' && writes > 1) return { status: 409, statusText: 'Conflict', body: { error: 'Task key already exists.', code: 'conflict' } };
       if (hold) await new Promise<void>((resolve) => { release = resolve; });
       if (mode === 'conflict') return { status: 409, statusText: 'Conflict', body: { error: 'Report revision changed.', code: 'conflict' } };
       if (mode === 'unavailable') return { status: 503, statusText: 'Unavailable', body: { error: 'Codex backend unavailable.', code: 'unavailable' } };
@@ -52,12 +54,16 @@ function setup(mode: 'success' | 'lost' | 'lost-committed' | 'conflict' | 'unava
         key: body.key, kind: 'codex', declared_by: 'user', ready: true, goal: body.goal,
       } });
       track.lifecycle = 'working';
-      if (mode === 'lost-committed') throw new Error('Response lost after commit');
+      if (mode === 'lost-committed' || mode === 'lost-hidden') throw new Error('Response lost after commit');
       return ok({ taskKey: body.key, blockId: 'created-task', docRev: 13 });
     }
     if (request.path === '/api/areas') return ok([area]);
     if (request.path === '/api/areas/c1/tracks') return ok([track]);
-    if (request.path === '/api/tracks/w1') return ok({ track, can_resume: false, cards: [reportCard], overlays: [] });
+    if (request.path === '/api/tracks/w1') {
+      const hide = mode === 'lost-hidden' && writes > 0 && ++reconciliationReads < 3;
+      const visible = hide ? { ...reportCard, payload: { ...reportCard.payload, blocks: reportCard.payload.blocks.slice(0, 1) } } : reportCard;
+      return ok({ track, can_resume: false, cards: [visible], overlays: [] });
+    }
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: submitted === null ? [] : [
       { blockId: 'created-task', key: submitted.key, schedulable: true, status, statusDetail: null, workerCardId: null, diagnostics: [] },
     ] });
@@ -193,4 +199,17 @@ it.each(['blocked', 'done', 'canceled', 'failed'] as const)('disables new task e
   expect(entry.disabled).toBe(true);
   expect(entry.parentElement?.title).toContain(lifecycle === 'blocked' ? 'blocked' : 'ended');
   expect(fixture.requests.filter((request) => request.method === 'POST')).toHaveLength(0);
+});
+
+it('reconciles an exact-repeat 409 after a lost committed response without replacing its intent', async () => {
+  const fixture = setup('lost-hidden');
+  await enterGoal();
+  fireEvent.submit(screen.getByRole('textbox', { name: 'Goal' }).closest('form')!);
+  await screen.findByRole('button', { name: 'Retry same request' });
+  await userEvent.click(screen.getByRole('button', { name: 'Retry same request' }));
+  await screen.findByText('Current attempt 1 · Running');
+  const writes = fixture.requests.filter((request) => request.method === 'POST');
+  expect(writes).toHaveLength(2);
+  expect(writes[1].body).toEqual(writes[0].body);
+  expect(fixture.reportCard.payload.blocks).toHaveLength(2);
 });
