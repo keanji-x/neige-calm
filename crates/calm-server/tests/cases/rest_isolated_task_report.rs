@@ -1,5 +1,6 @@
 //! Accepted report writes use the production MCP registry and DecisionSink.
 use super::*;
+use calm_server::db::RepoEventWrite;
 use calm_server::db::sqlite::{begin_immediate_tx, task_claim_pending_tx, task_mark_running_tx};
 use calm_server::event::EventScope;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry, registry::AppContext};
@@ -331,10 +332,28 @@ async fn task_shaped_foreign_events_and_dispatcher_failure_are_not_worker_report
         Value::Null
     );
     // Provider-native observations remain observations even with a task-shaped payload.
-    sqlx::query("INSERT INTO events(kind,payload,actor,at,event_version,scope_kind,scope_area,scope_track,scope_card) VALUES('codex.hook',?1,?2,1,1,'card',?3,?4,?5)")
-        .bind(completed.payload_value().to_string()).bind(serde_json::to_string(&identity.to_actor_id()).unwrap())
-        .bind(&identity.area_id).bind(boot.track_id.as_str()).bind(&identity.card_id)
-        .execute(boot.repo.pool()).await.unwrap();
+    // Use the gated writer so this prunable event receives its real insertion time.
+    let roles = calm_server::card_role_cache::CardRoleCache::new();
+    boot.repo.seed_card_role_cache(&roles).await.unwrap();
+    let areas = calm_server::track_area_cache::TrackAreaCache::new();
+    boot.repo.seed_track_area_cache(&areas).await.unwrap();
+    RepoEventWrite::log_pure_event(
+        boot.repo.as_ref(),
+        identity.to_actor_id(),
+        good_scope,
+        None,
+        &boot.state.events,
+        &roles,
+        &areas,
+        Event::CodexHook {
+            card_id: identity.card_id.clone().into(),
+            kind: "hook.codex.stop".into(),
+            hook_idempotency_key: format!("task-shaped-{}", task.id),
+            payload: completed.payload_value(),
+        },
+    )
+    .await
+    .expect("record provider observation through the production event writer");
     assert_eq!(
         request(&app, &uri, &cookie, "user", None).await.1["report"],
         Value::Null
