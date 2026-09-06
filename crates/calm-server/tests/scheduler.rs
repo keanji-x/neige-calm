@@ -4228,6 +4228,40 @@ async fn persist_context_report_body(boot: &Boot, body: String) {
     .unwrap();
 }
 
+// These race tests hold the SQLite writer themselves. Publish a complete report
+// snapshot through the production CRDT codec; changing only the derived payload
+// cannot simulate a revert or withdrawal once the report has body_crdt.
+async fn replace_context_report_snapshot(
+    connection: &mut sqlx::SqliteConnection,
+    card_id: &str,
+    report: &TrackReportPayload,
+) {
+    let mut doc = calm_server::track_report_doc::ReportDoc::from_blocks_exact(
+        &report.summary,
+        report
+            .blocks
+            .as_deref()
+            .expect("explicit test block snapshot"),
+    )
+    .unwrap();
+    for _ in 0..report.doc_rev {
+        doc.increment_doc_rev().unwrap();
+    }
+    let mut mirror = report.clone();
+    (mirror.summary, mirror.body) = doc.project().unwrap();
+    assert_eq!(
+        sqlx::query("UPDATE cards SET payload=?1,body_crdt=?2 WHERE id=?3")
+            .bind(serde_json::to_string(&mirror).unwrap())
+            .bind(doc.to_bytes())
+            .bind(card_id)
+            .execute(connection)
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
+}
+
 async fn context_verdicts_for_task(boot: &Boot, task_id: &str) -> Vec<(String, String)> {
     event_rows(boot, "task.context_advanced")
         .await
@@ -4843,11 +4877,10 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
     let boot = boot().await;
     let (monitor, task_id, original_body) =
         seed_production_report_context_fixture(&boot, "material-a5-fence").await;
-    let (_, original_card, _) =
+    let (_, original_card, original_report) =
         resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
             .unwrap();
-    let original_payload = original_card.payload.to_string();
     let temporary_body =
         original_body.replacen("referenced original", "referenced original temporary", 1);
     persist_context_report_body(&boot, temporary_body).await;
@@ -4881,12 +4914,12 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
     })
     .await
     .expect("detector must classify the committed temporary content before the lock releases");
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(original_payload)
-        .bind(original_card.id.as_str())
-        .execute(&mut *locked_revert)
-        .await
-        .unwrap();
+    replace_context_report_snapshot(
+        &mut locked_revert,
+        original_card.id.as_str(),
+        &original_report,
+    )
+    .await;
     sqlx::query("COMMIT")
         .execute(&mut *locked_revert)
         .await
@@ -4939,12 +4972,12 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     restored_report.body = original_body.clone();
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced original\n\n");
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&restored_report).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+    replace_context_report_snapshot(
+        &mut pool.acquire().await.unwrap(),
+        report_card.id.as_str(),
+        &restored_report,
+    )
+    .await;
 
     // W3 owns the real SQLite writer slot while the old restore R reads the
     // last committed Equal evidence. R must park at BEGIN IMMEDIATE; W3 then
@@ -4990,12 +5023,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     w3_report.body = second_material;
     w3_report.blocks.as_mut().unwrap()[0].payload["markdown"] = json!("referenced W3 material\n\n");
     w3_report.doc_rev += 1;
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&w3_report).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(&mut *w3)
-        .await
-        .unwrap();
+    replace_context_report_snapshot(&mut w3, report_card.id.as_str(), &w3_report).await;
     sqlx::query("COMMIT").execute(&mut *w3).await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), old_restore)
         .await
@@ -5026,12 +5054,12 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     restored_report.body = original_body.clone();
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced original\n\n");
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&restored_report).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+    replace_context_report_snapshot(
+        &mut pool.acquire().await.unwrap(),
+        report_card.id.as_str(),
+        &restored_report,
+    )
+    .await;
     monitor
         .detect_track_edit(boot.track_id.as_str())
         .await
@@ -5047,12 +5075,12 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
         original_body.replacen("referenced original", "referenced material after R", 1);
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced material after R\n\n");
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&restored_report).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+    replace_context_report_snapshot(
+        &mut pool.acquire().await.unwrap(),
+        report_card.id.as_str(),
+        &restored_report,
+    )
+    .await;
     monitor
         .detect_track_edit(boot.track_id.as_str())
         .await
@@ -5142,7 +5170,7 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
         .await
         .unwrap();
 
-    let (_, report_card, current) =
+    let (_, report_card, mut current) =
         resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
             .unwrap();
@@ -5151,17 +5179,17 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
         (blocks[0].id.as_str(), blocks[1].id.as_str()),
         ("b_2000", "b_1000")
     );
-    // One atomic DB-bypass mutation constructs the safety boundary directly:
-    // frozen projection hashes are equal again while `ready` remains withdrawn.
-    sqlx::query(
-        "UPDATE cards SET payload=json_set(payload,\
-         '$.blocks[0].payload.markdown',?1,'$.blocks[1].payload.ready',json('false')) WHERE id=?2",
+    // Restore the authoritative content while withdrawing readiness in the same
+    // snapshot: hash equality alone must not authorize restoration.
+    let blocks = current.blocks.as_mut().unwrap();
+    blocks[0].payload["markdown"] = json!("referenced original\n\n");
+    blocks[1].payload["ready"] = json!(false);
+    replace_context_report_snapshot(
+        &mut boot.repo.sqlite_pool().unwrap().acquire().await.unwrap(),
+        report_card.id.as_str(),
+        &current,
     )
-    .bind("referenced original\n\n")
-    .bind(report_card.id.as_str())
-    .execute(&boot.repo.sqlite_pool().unwrap())
-    .await
-    .unwrap();
+    .await;
     monitor
         .detect_track_edit(boot.track_id.as_str())
         .await
