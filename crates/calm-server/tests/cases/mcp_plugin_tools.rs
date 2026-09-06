@@ -570,7 +570,6 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
 
 /// `tools/call` that must fail: returns the complete `error` object.
 /// `thread_id: None` sends an empty `_meta` (no threadId key).
-
 /// A plugin must be told which Track a `tools/call` came from — and must be
 /// told it by the KERNEL.
 ///

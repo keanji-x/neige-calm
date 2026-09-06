@@ -1,0 +1,76 @@
+{
+  "manifest_version": 3,
+  "id": "dev-neige-market",
+  "version": "0.2.0",
+  "min_kernel_version": "0.0.1",
+  "display_name": "Market data",
+  "entrypoint": {
+    "command": "bin/market"
+  },
+  "exposes_tools": [
+    {
+      "name": "market.quote",
+      "description": "Current price of one asset by name, e.g. BTC. The source is chosen by this plugin; callers name the asset, not the venue.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset": { "type": "string", "description": "Asset name, e.g. BTC" }
+        },
+        "required": ["asset"],
+        "additionalProperties": false
+      },
+      "annotations": { "title": "Quote", "readOnlyHint": true, "openWorldHint": true }
+    },
+    {
+      "name": "market.holdings.set",
+      "description": "Record how much of an asset this Track holds, and start pricing it. Replaces any existing quantity for that asset. A quantity of 0 removes it.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset": { "type": "string", "description": "Asset name, e.g. BTC" },
+          "quantity": { "type": "number", "description": "How much is held. 0 removes the holding." }
+        },
+        "required": ["asset", "quantity"],
+        "additionalProperties": false
+      },
+      "annotations": { "title": "Set Holding", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": true }
+    },
+    {
+      "name": "market.holdings.list",
+      "description": "What this Track currently holds, with the latest price and value of each.",
+      "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
+      "annotations": { "title": "List Holdings", "readOnlyHint": true, "openWorldHint": true }
+    },
+    {
+      "name": "market.refresh",
+      "description": "Re-price this Track's holdings now instead of waiting for the next tick.",
+      "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
+      "annotations": { "title": "Refresh", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": true }
+    }
+  ],
+  "permissions": {
+    "overlays_write": ["track"],
+    "kv_quota_bytes": 262144
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "quote": {
+        "type": "string",
+        "default": "USDT",
+        "description": "The asset every holding is priced in"
+      },
+      "poll_seconds": {
+        "type": "integer",
+        "default": 30,
+        "description": "Seconds between price refreshes (minimum 5)"
+      },
+      "binance_endpoint": {
+        "type": "string",
+        "default": "https://data-api.binance.vision",
+        "description": "Base URL of the Binance market-data source. api.binance.com is geo-restricted from some hosts; data-api.binance.vision serves the same /api/v3 paths with no key."
+      }
+    },
+    "additionalProperties": false
+  }
+}

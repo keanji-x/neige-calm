@@ -1125,7 +1125,7 @@ mod tests {
         .await
         .expect("connect");
         let result = client
-            .tools_call("make_status_card", json!({ "x": 1 }))
+            .tools_call("make_status_card", json!({ "x": 1 }), None)
             .await
             .expect("tools_call");
         assert_eq!(result.is_error, Some(false));
