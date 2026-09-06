@@ -35,7 +35,11 @@ async fn claude_transcript_preserves_unterminated_final_line_until_complete() {
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
     wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
-        async move { item_count(&repo, "card-claude-torn").await == 2 }
+        async move {
+            // Recording and its checkpoint are separate asynchronous writes.
+            item_count(&repo, "card-claude-torn").await == 2
+                && cursor_index(&repo, "card-claude-torn").await == Some(2)
+        }
     })
     .await;
     assert_cursor(&repo, "card-claude-torn", 2, first_len).await;
@@ -56,7 +60,11 @@ async fn claude_transcript_preserves_unterminated_final_line_until_complete() {
     let second_len = file_len(&path);
     wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
-        async move { item_count(&repo, "card-claude-torn").await == 3 }
+        async move {
+            // Recording and its checkpoint are separate asynchronous writes.
+            item_count(&repo, "card-claude-torn").await == 3
+                && cursor_index(&repo, "card-claude-torn").await == Some(3)
+        }
     })
     .await;
     assert_cursor(&repo, "card-claude-torn", 3, second_len).await;
@@ -79,6 +87,13 @@ async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {
         .await
         .unwrap()
         .len()
+}
+
+async fn cursor_index(repo: &SqlxRepo, card_id: &str) -> Option<i64> {
+    repo.worker_flow_cursor_get(card_id, CLAUDE_TRANSCRIPT_SOURCE_KIND)
+        .await
+        .unwrap()
+        .map(|cursor| cursor.record_index)
 }
 
 async fn assert_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64, byte_offset: i64) {
