@@ -824,7 +824,7 @@ fn tool_error(text: impl Into<String>) -> Value {
 /// is a call from somewhere that has none (a direct daemon connection), and it
 /// is refused rather than defaulted: silently acting on some other Track is
 /// the failure this whole namespace exists to prevent.
-fn tools_call_reply(rpc: &Rpc, cfg: &Config, frame: &Value) -> Value {
+fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Value) -> Value {
     let name = frame
         .pointer("/params/name")
         .and_then(Value::as_str)
@@ -896,28 +896,33 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, frame: &Value) -> Value {
             if let Err(e) = store_holdings(rpc, &track_id, &holdings) {
                 return tool_error(format!("Could not save this Track's holdings — {e}."));
             }
-            // Re-price immediately. Someone who has just said what they hold
-            // is looking at the report now, not in `poll_seconds`.
-            let outcome = refresh(rpc, cfg, &track_id, &mut PriceCache::new());
+            // Recording a holding does NOT price it here. Pricing is a network
+            // call, and a tool that touches the open world needs
+            // `openWorldHint: true`, which is what makes codex demand approval
+            // (`requires_mcp_tool_approval`) — and the kernel spawns agents
+            // with `approval_policy: "never"`, so such a tool is not "gated",
+            // it is *unusable*. Found by running it: the Planner produced a
+            // perfectly-formed call and got back "requires approval, but
+            // approval policy is never".
+            //
+            // So this writes state and wakes the poll thread, which does the
+            // pricing a moment later. The tool stays honestly annotated
+            // (`openWorldHint: false`), the reader still gets a fresh table
+            // within a second or two, and nothing has to lie about what it
+            // touches.
+            let _ = wake.send(());
             let summary = if quantity > 0.0 {
                 format!("Holding {quantity} {asset}")
             } else {
                 format!("No longer holding {asset}")
             };
-            match outcome {
-                // `NothingHeld` here means the last holding was just removed
-                // and an empty table was published — a success, not a gap.
-                Refreshed::Fully | Refreshed::NothingHeld => text_result(
-                    format!("{summary}. {} asset(s) tracked.", holdings.len()),
-                    json!({ "holdings": holdings.iter().map(Holding::to_json).collect::<Vec<_>>() }),
+            text_result(
+                format!(
+                    "{summary}. {} asset(s) tracked; the tables refresh in a moment.",
+                    holdings.len()
                 ),
-                // Saved, but the tables the reader will look at are not
-                // current. Reported as an error because the next act is to
-                // read a number off one of them.
-                Refreshed::Partially(why) => tool_error(format!(
-                    "{summary}, but the tables are not current — {why}."
-                )),
-            }
+                json!({ "holdings": holdings.iter().map(Holding::to_json).collect::<Vec<_>>() }),
+            )
         }
         "market.holdings.list" => {
             let holdings = match load_holdings(rpc, &track_id) {
@@ -958,16 +963,6 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, frame: &Value) -> Value {
                 }),
             )
         }
-        "market.refresh" => match refresh(rpc, cfg, &track_id, &mut PriceCache::new()) {
-            Refreshed::Fully => text_result(
-                "Re-priced this Track's holdings.".into(),
-                json!({ "track_id": track_id }),
-            ),
-            Refreshed::NothingHeld => {
-                tool_error("This Track holds nothing — record a holding with market.holdings.set.")
-            }
-            Refreshed::Partially(why) => tool_error(format!("Refresh incomplete — {why}.")),
-        },
         other => tool_error(format!("unknown tool `{other}`")),
     }
 }
@@ -998,9 +993,18 @@ fn main() {
     // a `thread::spawn` that then failed would panic on the reader and take
     // the plugin down silently.
     let (tool_calls, tool_queue) = mpsc::channel::<Value>();
+    // Recording a holding wakes the poll thread instead of pricing inline, so
+    // the write tool never touches the network — see the note at the
+    // `market.holdings.set` arm.
+    // `wake_tx` stays alive in this scope for the process's lifetime: if every
+    // sender dropped, the poller's `recv_timeout` would return `Disconnected`
+    // immediately and spin. The receiver is taken by the single poll thread.
+    let (wake_tx, wake_rx) = mpsc::channel::<()>();
+    let mut wake_rx = Some(wake_rx);
     {
         let rpc = Arc::clone(&rpc);
         let config = Arc::clone(&config);
+        let wake_tx = wake_tx.clone();
         std::thread::spawn(move || {
             for frame in tool_queue {
                 let Some(id) = frame.get("id").cloned() else {
@@ -1009,7 +1013,7 @@ fn main() {
                 // Read the configuration per call, so a call that was queued
                 // before a re-initialize still runs on the current one.
                 let cfg = config.lock().map(|cfg| cfg.clone()).unwrap_or_default();
-                let reply = tools_call_reply(&rpc, &cfg, &frame);
+                let reply = tools_call_reply(&rpc, &cfg, &wake_tx, &frame);
                 rpc.reply(id, reply);
             }
         });
@@ -1056,7 +1060,7 @@ fn main() {
                 if let Ok(mut cfg) = config.lock() {
                     *cfg = parsed;
                 }
-                if !polling {
+                if let Some(wake_rx) = wake_rx.take().filter(|_| !polling) {
                     polling = true;
                     let rpc = Arc::clone(&rpc);
                     let config = Arc::clone(&config);
@@ -1064,7 +1068,12 @@ fn main() {
                         loop {
                             let cfg = config.lock().map(|cfg| cfg.clone()).unwrap_or_default();
                             refresh_all(&rpc, &cfg);
-                            std::thread::sleep(cfg.poll);
+                            // Sleep, but wake early when a tool records a
+                            // holding. Draining the backlog afterwards keeps a
+                            // burst of edits to one pass instead of one pass
+                            // each.
+                            let _ = wake_rx.recv_timeout(cfg.poll);
+                            while wake_rx.try_recv().is_ok() {}
                         }
                     });
                 }
@@ -1341,6 +1350,49 @@ mod tests {
         let now = now_rfc3339();
         assert_eq!(now.len(), 20, "{now}");
         assert!(now.ends_with('Z'), "{now}");
+    }
+
+    /// Every tool this plugin exposes must be callable by a Planner.
+    ///
+    /// Found by running it, not by reading it: the Planner produced a
+    /// perfectly-formed `market.holdings.set` call and got back *"MCP tool
+    /// call requires approval, but approval policy is never"*. Codex's
+    /// `requires_mcp_tool_approval` short-circuits to "no approval needed"
+    /// only for a read-only tool, or for one declaring BOTH
+    /// `destructiveHint: false` and `openWorldHint: false` — and the kernel
+    /// spawns every agent with `approval_policy: "never"`
+    /// (`shared_codex_appserver.rs`), so a tool outside that set is not
+    /// "gated", it is unusable.
+    ///
+    /// The fix is never to relabel a tool that does touch the open world.
+    /// It is to make the write tool not touch it: `market.holdings.set`
+    /// records state and wakes the poll thread, and the pricing happens
+    /// there.
+    #[test]
+    fn every_exposed_tool_is_callable_under_approval_policy_never() {
+        let manifest: Value =
+            serde_json::from_str(include_str!("manifest.json")).expect("manifest parses");
+        let tools = manifest["exposes_tools"].as_array().expect("exposes_tools");
+        assert!(!tools.is_empty());
+        for tool in tools {
+            let name = tool["name"].as_str().unwrap_or_default();
+            let annotations = &tool["annotations"];
+            if annotations["readOnlyHint"] == json!(true) {
+                continue;
+            }
+            assert_eq!(
+                annotations["destructiveHint"],
+                json!(false),
+                "`{name}` is not read-only, so it must declare destructiveHint:false or no \
+                 Planner can ever call it"
+            );
+            assert_eq!(
+                annotations["openWorldHint"],
+                json!(false),
+                "`{name}` is not read-only, so it must not touch the open world — move the \
+                 network call to the poll thread rather than relaxing this"
+            );
+        }
     }
 
     #[test]
