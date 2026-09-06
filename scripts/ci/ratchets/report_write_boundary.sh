@@ -130,7 +130,7 @@ set -euo pipefail
 #     That function is gone — the create paths now enter this file through
 #     `structural_init_report_tx` — so the class stays open while its one known
 #     member does not.
-#   * **who calls the four entries, or with what.** `agent_report_op` is
+#   * **who calls the production entries, or with what.** `agent_report_op` is
 #     `pub(crate)` and takes `ActorId` / `EditAuthor` / `auto_promote_draft` /
 #     probe from its caller, so a sibling module can compose a combination no
 #     production path uses without touching the file this gate reads. Nothing
