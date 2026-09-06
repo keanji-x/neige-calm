@@ -4256,6 +4256,106 @@
         }
       }
     },
+    "/api/tracks/{id}/isolated-tasks": {
+      "post": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "start",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartIsolatedTaskBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartIsolatedTaskResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tracks/{id}/report": {
       "get": {
         "tags": [
@@ -4851,6 +4951,82 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TaskRecoveryView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tracks/{id}/tasks/{key}/attempts/{attempt_id}/report": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "report",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAttemptReportResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -5657,6 +5833,51 @@
   },
   "components": {
     "schemas": {
+      "AcceptedTaskReport": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "result",
+              "artifacts",
+              "kind"
+            ],
+            "properties": {
+              "artifacts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "completed"
+                ]
+              },
+              "result": {}
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
       "AgentProvider": {
         "type": "string",
         "enum": [
@@ -8022,6 +8243,71 @@
             "propertyNames": {
               "type": "string"
             }
+          }
+        }
+      },
+      "StartIsolatedTaskBody": {
+        "type": "object",
+        "required": [
+          "key",
+          "goal",
+          "ifDocRev"
+        ],
+        "properties": {
+          "goal": {
+            "type": "string"
+          },
+          "ifDocRev": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "StartIsolatedTaskResponse": {
+        "type": "object",
+        "required": [
+          "taskKey",
+          "blockId",
+          "docRev"
+        ],
+        "properties": {
+          "blockId": {
+            "type": "string"
+          },
+          "docRev": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "taskKey": {
+            "type": "string"
+          }
+        }
+      },
+      "TaskAttemptReportResponse": {
+        "type": "object",
+        "required": [
+          "attemptId",
+          "report"
+        ],
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "report": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AcceptedTaskReport"
+              }
+            ]
           }
         }
       },

@@ -777,12 +777,13 @@ impl ReportEditTarget {
     }
 }
 
+mod user_start;
 /// #1318 §1 — the writer and the complete set of ways to reach it.
 ///
 /// The mutating function lives in there as a **private** `fn`, so "which code
 /// can write a track report" is a question `rustc` answers: this module's file
 /// and nothing else. Read [`write`]'s header for what that does and does not
-/// close. Everything outside calls one of its three `pub(crate)` entry points.
+/// close. Everything outside calls one of its purpose-specific entry points.
 pub(crate) mod write;
 
 /// The pre-#1318 direct handle on the persist boundary, kept for tests only.

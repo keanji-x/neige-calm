@@ -21,6 +21,7 @@ import { MoreMenu as AstryxMoreMenu } from '@astryxdesign/core/MoreMenu';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { useEffect, useRef, type ReactNode } from 'react';
 
+import { independentTaskUnavailableReason } from '../../../../../core/domain/independent-task.ts';
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
 import {
   UNTITLED_TRACK_LABEL, trackDisplayTitle, type CardWire, type Track,
@@ -103,6 +104,8 @@ export type TrackPageProps = Readonly<{
   onStartConversation?: () => void;
   /** The Cards module head's `+`, composed by `app/router`. */
   cardsAction?: ReactNode;
+  /** CR-1501-FE: app owns the goal dialog and immutable start request. */
+  onCreateTask?: () => void;
   /** Browser-local file history, composed by the report feature through app. */
   recentFiles?: ReactNode;
   onOpenCard?: (cardId: string) => void;
@@ -203,7 +206,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
 export function TrackPage({
   track, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation, conversationOpen = false, inputNotifications = [], onOpenInputNotification,
-  cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
+  cardsAction, onCreateTask, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack,
   canResumeTrack, onRenameTrack, onResumeTrack, onDeleteTrack,
@@ -264,7 +267,9 @@ export function TrackPage({
     }
     return resumed;
   };
+  const taskUnavailable = independentTaskUnavailableReason(track.lifecycle);
   const trackMutationActions = [
+    ...(onCreateTask === undefined ? [] : [{ label: 'Run independent task', isDisabled: taskUnavailable !== null, onClick: onCreateTask }]),
     ...(canResumeTrack ? [
       { label: 'Resume work', isDisabled: resumePending, onClick: resumeWork },
       { type: 'divider' as const },
@@ -509,6 +514,8 @@ export function TrackPage({
           </>
         }
         actions={(
+          <>
+          {onCreateTask !== undefined && <span title={taskUnavailable ?? undefined}><AstryxButton variant="ghost" size="sm" label="Run independent task" isDisabled={taskUnavailable !== null} onClick={onCreateTask} /></span>}
           <span className={styles.headerActions}>
             <AstryxDropdownMenu
               button={{
@@ -530,6 +537,7 @@ export function TrackPage({
               }}
             />
           </span>
+          </>
         )}
         /*
          * No identity row — `--header-h` is 62 here now, not 92.

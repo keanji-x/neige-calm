@@ -18,6 +18,7 @@ pub mod codex;
 pub mod codex_cards;
 pub mod conversations_shared;
 pub mod fs;
+pub mod isolated_tasks;
 pub mod models;
 pub mod overlays;
 pub mod planner_input;
@@ -67,6 +68,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(track_conversations::router())
         .merge(track_report_blocks::router())
         .merge(task_recovery::router())
+        .merge(isolated_tasks::router())
         .merge(track_recipes::router())
         .merge(track_templates::router())
         .merge(cards::router())

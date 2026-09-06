@@ -122,6 +122,10 @@ run_case() {
 # all be passing because the gate is broken in general.
 run_case "green: production boundary as-is" green "" ""
 
+# The explicit User start entry is admitted by exact name, never by pattern.
+run_case "red: User start entry replaced by another writer" red "R3:" \
+  's/pub(crate) async fn rest_user_start(/pub(crate) async fn unreviewed_start(/'
+
 # R1 — the writer goes `pub(crate)`. This is the shape the old census could
 # never see coming and the one that silently restores the pre-#1318 world.
 run_case "R1: writer becomes pub(crate)" red \

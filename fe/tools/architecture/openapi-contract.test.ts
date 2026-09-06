@@ -25,6 +25,9 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'ThreadCardResolution', 'TodayLaunchpad', 'TodayLaunchpadReportReset', 'TodayLaunchpadResolved',
   'TodaySummaryStarted',
   'VersionInfo',
+  // calm-server/routes/isolated_tasks.rs DTOs; core/domain/independent-task.ts
+  // owns their strict Zod decoders. calm-types cannot export these (#1501).
+  'StartIsolatedTaskResponse', 'TaskAttemptReportResponse',
   'ViewCatalogEntry', 'TrackBacklinksResponse', 'TrackDetail', 'TrackFsContent', 'TrackFsEntry',
   'TrackReportReadResponse', 'TrackTemplate',
 ]);
@@ -184,6 +187,23 @@ describe('generated OpenAPI integrity', () => {
     expect(() => validateDocument({ paths: { '/a': { get: {} } } }, ''))
       .toThrow('operation has no responses');
   });
+
+  it.each(['StartIsolatedTaskResponse', 'TaskAttemptReportResponse'])(
+    'accepts only the exact server-local %s response exception', (name) => {
+      const responseDocument = (schemaName: string) => ({
+        paths: {
+          '/task': { get: { responses: { 200: { content: { 'application/json': {
+            schema: { $ref: `#/components/schemas/${schemaName}` },
+          } } } } } },
+        },
+        components: { schemas: { [schemaName]: { type: 'object' } } },
+      });
+      expect(() => validateDocument(responseDocument(name), '')).not.toThrow();
+      const unknown = `${name}Unexpected`;
+      expect(() => validateDocument(responseDocument(unknown), ''))
+        .toThrow(`response schema wire types missing: ${unknown}`);
+    },
+  );
 
   it('rejects a top-level response schema without a wire type', () => {
     const document = {

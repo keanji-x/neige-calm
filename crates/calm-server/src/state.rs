@@ -636,6 +636,10 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
 }
 
 impl AppState {
+    pub(crate) fn isolated_tasks_available(&self) -> bool {
+        self.isolated_codex_backend.is_some()
+    }
+
     /// Bypass the sync-domain gate. **For test-fixture seeding only** —
     /// production code MUST go through `write_with_event_typed` /
     /// `log_pure_event`. Gated behind the `fixtures` cargo feature so

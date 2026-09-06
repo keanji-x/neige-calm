@@ -1225,3 +1225,6 @@ async fn resolve_report_for_track_ok_when_report_card_present() {
     assert_eq!(track.id, track_id);
     assert_eq!(card.kind, "track-report");
 }
+
+#[path = "rest_isolated_tasks.rs"]
+mod isolated_tasks;

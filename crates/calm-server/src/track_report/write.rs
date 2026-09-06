@@ -72,10 +72,11 @@
 //! |---|---|---|
 //! | [`rest_user_replace`] | `routes::tracks::update_track_report` | `User`, fixed |
 //! | [`rest_user_block_op`] | `routes::track_report_blocks::commit` | `User`, fixed |
+//! | [`rest_user_start`] | `routes::isolated_tasks::start` | `User`, fixed |
 //! | [`agent_report_op`] | `decision_sink::CardDecisionSink::commit_report_op` | caller-supplied; that caller derives it from `identity.role` |
 //! | [`structural_init_report_tx`] | `routes::tracks::create_track_structure` | **none — no parameter of it names one, pinned by name *and* written type in `fork_guard_exemption_invariant`** |
 //!
-//! The fourth row is a different kind of entry from the first three and the
+//! The fifth row is a different kind of entry from the first four and the
 //! table would mislead without this sentence: it does not reach [`persist`],
 //! and it is not an edit. It is #1252 S2's **structural door** — track creation
 //! laying a forked or templated report onto the card it just INSERTed, inside
@@ -88,11 +89,11 @@
 //! and `tests/cases/fork_guard_exemption_invariant.rs` parses this file to keep
 //! them absent.
 //!
-//! The two REST entries do not *take* an `ActorId` or an `EditAuthor`. Both
-//! handlers used to pass `User` / `User` as arguments under a comment saying
-//! they always would; now the signature says it.
+//! The three REST entries do not *take* an `ActorId` or an `EditAuthor`.
+//! The original edit handlers used to pass `User` / `User` as arguments; now
+//! the signatures fix attribution, including the explicit User start purpose.
 //!
-//! That narrows those two *entries* and nothing else. It does **not** mean a
+//! That narrows those three *entries* and nothing else. It does **not** mean a
 //! REST handler can no longer write as `Spec`: it can call [`agent_report_op`]
 //! instead, which is `pub(crate)` and takes an arbitrary `ActorId` /
 //! `EditAuthor` / `auto_promote_draft` / probe. Item 1 of "What is still not
@@ -102,38 +103,36 @@
 //! (`decision_sink::report_op_attribution`, exhaustive on `CardRole`), and
 //! moving it here would relocate it, not close it.
 //!
-//! ## What "three sites, each honest" is carried by, after this slice
+//! ## What the bounded edit entry set is carried by
 //!
 //! Read the claim precisely, because the boundary closes one half of it and
 //! not the other, and the old census's mistake was letting the two blur:
 //!
-//! * *only three* — **closed for the boundary's own signature set**: three is
-//!   the number of `pub(crate)` doors that reach [`persist`], and a fourth such
+//! * *only four* — **closed for the boundary's own signature set**: four is
+//!   the number of `pub(crate)` doors that reach [`persist`], and a fifth such
 //!   door has to be cut in this file because nothing else can reach it.
-//!   (#1252 S2 added a fourth `pub(crate)` entry,
-//!   [`structural_init_report_tx`], which is why "three doors" and "three
-//!   `pub(crate)` fns" are no longer the same count: that one does not reach
-//!   [`persist`] and performs no edit.) It is emphatically *not*
-//!   "only three (actor, author, auto-promote, probe) tuples ever reach the
-//!   writer": [`agent_report_op`] takes all four from its caller, so any
+//!   The separate [`structural_init_report_tx`] entry does not reach [`persist`]
+//!   and performs no edit. This does *not* bound the set of
+//!   (actor, author, auto-promote, probe) tuples that reach the writer: [`agent_report_op`] takes all four from its caller, so any
 //!   sibling module can compose a new one without touching this file. Item 1
 //!   below is that hole, stated in full.
-//! * *each honest* — `tests/cases/report_write_characterization.rs` drives all
-//!   three decision points through the real router / tool registry and asserts
-//!   the persisted `events.actor` and `TrackReportEdited.author`. Still a test,
-//!   still the carrier for this half.
+//! * *each honest* — `tests/cases/report_write_characterization.rs` drives the
+//!   original three decision points through the real router / tool registry.
+//!   `tests/cases/rest_isolated_tasks.rs` adds the User start purpose. These
+//!   assert attribution, CAS and lifecycle effects; tests carry this half.
 //!
 //! ## What is still not closed, stated plainly
 //!
 //! 1. **Who may call these entries is not bounded, and through
-//!    [`agent_report_op`] neither is what they may say.** All three are
+//!    [`agent_report_op`] neither is what they may say.** All four edit entries are
 //!    `pub(crate)`, so any sibling can call any of them — exactly as any
-//!    sibling could call the old `pub(crate) persist_report_with_shadow`. Two
-//!    consequences, the second sharp:
+//!    sibling could call the old `pub(crate) persist_report_with_shadow`:
 //!
 //!    * A new caller of `rest_user_replace` / `rest_user_block_op` produces the
 //!      same `User`-attributed, un-auto-promoting, un-gated edit the REST
 //!      handlers do — bounded by the signature, which cannot say anything else.
+//!    * A new caller of `rest_user_start` gets fixed User attribution, key and
+//!      revision admission, and explicit Draft promotion in the same transaction.
 //!    * A new caller of `agent_report_op` is bounded by nothing. It hands over
 //!      `ActorId`, `EditAuthor`, `auto_promote_draft` and the probe, so a
 //!      sibling can compose a tuple no production path uses today — including
@@ -329,11 +328,11 @@ pub(crate) async fn rest_user_replace(
         ActorId::User,
         EditAuthor::User,
         target,
-        ReportDocOp::Replace {
+        PersistPurpose::Edit(ReportDocOp::Replace {
             summary: Some(next.summary),
             body: next.body,
             if_doc_rev,
-        },
+        }),
         None,
         None,
         false,
@@ -364,7 +363,7 @@ pub(crate) async fn rest_user_block_op(
         ActorId::User,
         EditAuthor::User,
         target,
-        op,
+        PersistPurpose::Edit(op),
         None,
         None,
         false,
@@ -373,11 +372,53 @@ pub(crate) async fn rest_user_block_op(
     .await
 }
 
+/// The explicit User start purpose. Attribution, lifecycle intent, and task
+/// shape are fixed here; ordinary REST block edits remain ordinary edits.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn rest_user_start(
+    repo: &dyn RouteRepo,
+    events: &EventBus,
+    write: &WriteContext,
+    target: ReportEditTarget,
+    key: String,
+    goal: String,
+    if_doc_rev: u64,
+) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
+    persist(
+        repo,
+        events,
+        write,
+        ActorId::User,
+        EditAuthor::User,
+        target,
+        PersistPurpose::UserStart {
+            key,
+            goal,
+            if_doc_rev,
+        },
+        None,
+        None,
+        false,
+        None,
+    )
+    .await
+}
+
+#[derive(Clone)]
+enum PersistPurpose {
+    Edit(ReportDocOp),
+    UserStart {
+        key: String,
+        goal: String,
+        if_doc_rev: u64,
+    },
+}
+
 /// The agent-MCP funnel — `calm.report.write` / `calm.report.edit` /
 /// `calm.report.blocks.*`, reached through
 /// `decision_sink::CardDecisionSink::commit_report_op`.
 ///
-/// Unlike the two REST entries this one takes its attribution, its
+/// Unlike the three REST entries this one takes its attribution, its
 /// auto-promote verdict and its recorder-shadow probe. Only the first two come
 /// from the role: `decision_sink::report_op_attribution` maps
 /// `ToolCallIdentity::role` to `(EditAuthor, auto_promote_draft)`, exhaustively
@@ -414,7 +455,7 @@ pub(crate) async fn agent_report_op(
         actor,
         author,
         target,
-        op,
+        PersistPurpose::Edit(op),
         agent_message,
         lifecycle,
         auto_promote_draft,
@@ -602,11 +643,11 @@ pub async fn persist_report(
             report_card,
             current_payload,
         },
-        ReportDocOp::Replace {
+        PersistPurpose::Edit(ReportDocOp::Replace {
             summary: Some(next.summary),
             body: next.body,
             if_doc_rev,
-        },
+        }),
         agent_message,
         lifecycle,
         auto_promote_draft,
@@ -659,7 +700,7 @@ pub async fn persist_report(
 /// Issue #247 PR3 — `author` became a parameter (was hard-coded `Spec`), and
 /// #1318 §1 narrowed who may supply it: only [`agent_report_op`] passes one
 /// through from its caller, and it comes from `report_op_attribution`'s
-/// exhaustive match on `CardRole`. The two REST entries fix `EditAuthor::User`
+/// exhaustive match on `CardRole`. The three REST entries fix `EditAuthor::User`
 /// in their own bodies. The `EditAuthor::Kernel` arm has no production caller
 /// — #1300 removed the last one — and is reserved for future server-internal
 /// rewrites.
@@ -709,7 +750,7 @@ async fn persist(
     actor: ActorId,
     author: EditAuthor,
     target: ReportEditTarget,
-    op: ReportDocOp,
+    purpose: PersistPurpose,
     agent_message: Option<String>,
     lifecycle: Option<TrackLifecycle>,
     auto_promote_draft: bool,
@@ -746,7 +787,7 @@ async fn persist(
             let scope = scope.clone();
             let track_scope = track_scope.clone();
             let current_payload = current_payload.clone();
-            let op = op.clone();
+            let purpose = purpose.clone();
             let actor = actor.clone();
             let agent_message = agent_message.clone();
             let recorder_shadow = recorder_shadow.clone();
@@ -833,6 +874,25 @@ async fn persist(
                 let (summary_before, body_before) = doc.project().map_err(|e| {
                     CalmError::Internal(format!("track_report: project CRDT for card {id}: {e}"))
                 })?;
+                let op = match purpose {
+                    PersistPurpose::Edit(op) => op,
+                    PersistPurpose::UserStart { key, goal, if_doc_rev } => {
+                        let op = super::user_start::prepare_tx(
+                            tx, &track_id, &doc, &key, &goal, if_doc_rev,
+                        ).await?;
+                        let current = track_get_tx(tx, &track_id).await?;
+                        if current.lifecycle == TrackLifecycle::Draft
+                            && let Some(transitions) = apply_requested_transition_in_tx(
+                                tx, &track_id, TrackLifecycle::Planning, &ActorId::User,
+                                "Start independent task".to_string(),
+                            ).await?
+                        {
+                            events.extend(transitions.into_iter().map(|event|
+                                (ActorId::User, track_scope.clone(), event)));
+                        }
+                        op
+                    }
+                };
                 // 3. Apply the requested op on the doc. `if_rev`
                 //    checks happen in here, against the CRDT truth
                 //    inside this transaction — a conflict aborts the

@@ -6,6 +6,7 @@ import { recoverTaskOperation, taskAttemptsOperation, type TaskRecoveryRequest, 
 import { TaskRecoveryDetails } from '../../features/report/task/recovery.tsx';
 import { ApiError, queryKeys, runOperation } from '../providers/queries.ts';
 import { currentTaskExecution, type TaskRecoveryIntent as Intent } from '../../../../core/domain/task-execution.ts';
+import { TaskReport } from './task-report.tsx';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 
 function uncertainFailure(failure: ApiFailure): boolean {
@@ -89,7 +90,11 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
       ? 'The recovery response could not be confirmed. Retry the same request to check its outcome.' : null}
     accepted={accepted} retryUncertain={intent.phase === 'uncertain'}
     onRefresh={() => { void refresh(); }} onRecover={canRecover ? () => { void recover(); } : undefined}
-    openWorker={openWorker} openableWorkerIds={openableWorkerIds} />;
+    openWorker={openWorker} openableWorkerIds={openableWorkerIds}
+    renderReport={expanded ? (attemptId) => <TaskReport trackId={trackId} taskKey={taskKey} attemptId={attemptId}
+      status={attemptId === execution?.attemptId ? execution.status
+        : history.data?.attempts.find((attempt) => attempt.attempt_id === attemptId)?.status ?? null}
+      transport={transport} unauthorized={unauthorized} /> : undefined} />;
 }
 
 function taskHistoryKey(trackId: string, key: string) {

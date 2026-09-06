@@ -27,6 +27,9 @@ it('recovers from the task disclosure and navigates prior evidence at desktop an
   const transport: ApiTransportPort = { send(request) {
     return Promise.resolve().then(() => {
     requests.push(request);
+    if (request.path.endsWith('/report')) return { status: 200, statusText: 'OK', body: {
+      attemptId: decodeURIComponent(request.path.split('/').at(-2)!), report: null,
+    } };
     if (request.method === 'POST') {
       current = second;
       return { status: 200, statusText: 'OK', body: { key: 'b', previous_attempt_id: first.attempt_id,
@@ -98,7 +101,8 @@ it('recovers from the task disclosure and navigates prior evidence at desktop an
 
 it('shows empty history before allocation and refreshes the first attempt in the report disclosure', async () => {
   let current: TaskAttempt | null = null;
-  const transport: ApiTransportPort = { send: () => Promise.resolve({ status: 200, statusText: 'OK', body: {
+  const transport: ApiTransportPort = { send: (request) => Promise.resolve({ status: 200, statusText: 'OK', body: request.path.endsWith('/report')
+    ? { attemptId: decodeURIComponent(request.path.split('/').at(-2)!), report: null } : {
     key: 'waiting', current, attempts: current === null ? [] : [current],
     recovery: { allowed: false, code: current === null ? 'not_started' : 'not_failed', reason: 'No failed execution.' },
   } }) };

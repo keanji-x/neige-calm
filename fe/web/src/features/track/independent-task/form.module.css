@@ -1,0 +1,21 @@
+@layer features {
+  .form { display: grid; gap: var(--space-4); }
+  .goal {
+    inline-size: 100%;
+    box-sizing: border-box;
+    padding: var(--space-4);
+    border-radius: var(--radius-sm);
+    background: var(--surface-code);
+    color: var(--text);
+    font: inherit;
+    resize: vertical;
+  }
+  .actions { display: flex; flex-wrap: wrap; gap: var(--space-4); }
+  .action {
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-sm);
+    background: var(--surface-chip);
+    color: var(--text);
+    cursor: pointer;
+  }
+}

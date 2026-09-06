@@ -101,10 +101,10 @@ set -euo pipefail
 #      is the export surface: R3 counts `fn` declarations, so a `pub use`
 #      carrying some *other* item out of this file is an export R3 never sees.
 #
-#   R3 The exported entry set is exactly the five pinned `visibility|name`
-#      pairs. Adding a sixth door is a legitimate thing to do — it just has to
+#   R3 The exported entry set is exactly the six pinned `visibility|name`
+#      pairs. Adding a seventh door is a legitimate thing to do — it just has to
 #      be done in front of a reviewer, which is the same contract the census
-#      had, now over five lines instead of the repository.
+#      had, now over six lines instead of the repository.
 #
 #      #1252 S2 is what that review looks like when it happens:
 #      `structural_init_report_tx` was added as the fourth production entry and
@@ -130,7 +130,7 @@ set -euo pipefail
 #     That function is gone — the create paths now enter this file through
 #     `structural_init_report_tx` — so the class stays open while its one known
 #     member does not.
-#   * **who calls the four entries, or with what.** `agent_report_op` is
+#   * **who calls the production entries, or with what.** `agent_report_op` is
 #     `pub(crate)` and takes `ActorId` / `EditAuthor` / `auto_promote_draft` /
 #     probe from its caller, so a sibling module can compose a combination no
 #     production path uses without touching the file this gate reads. Nothing
@@ -157,6 +157,7 @@ require_path "$BOUNDARY_FILE"
 # requires its cfg.
 EXPECTED_ENTRIES="pub(crate)|rest_user_replace
 pub(crate)|rest_user_block_op
+pub(crate)|rest_user_start
 pub(crate)|agent_report_op
 pub(crate)|structural_init_report_tx
 pub|persist_report"
@@ -347,4 +348,4 @@ if [ "$failures" -ne 0 ]; then
   exit 1
 fi
 
-echo "OK: the track-report write boundary in $BOUNDARY_FILE holds its four pinned shapes (private writer, no module escape hatch, five exported entries, test entry cfg-gated)"
+echo "OK: the track-report write boundary in $BOUNDARY_FILE holds its four pinned shapes (private writer, no module escape hatch, six exported entries, test entry cfg-gated)"
