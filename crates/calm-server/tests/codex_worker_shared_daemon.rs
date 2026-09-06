@@ -1,6 +1,9 @@
 #![cfg(unix)]
 
 mod support;
+mod codex_worker_shared_daemon {
+    mod transport_tests;
+}
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1611,14 +1614,6 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
     let terminal_id = output.data["terminal_id"].as_str().unwrap().to_owned();
     let card = boot.repo.card_get(&card_id).await.unwrap().unwrap();
     assert_eq!(card.payload["idempotency_key"], attempt_id);
-    let session = boot
-        .repo
-        .session_projection_active_for_card(&card_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(session.thread_id.as_deref(), Some("fake-thread-0001"));
-    assert_eq!(session.active_turn_id.as_deref(), Some("fake-turn-0001"));
     let task = wait_for(Duration::from_secs(3), || async {
         boot.repo
             .task_get(&attempt_id)
@@ -1630,6 +1625,33 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
     .expect("scheduler binds the successfully issued business attempt");
     assert_eq!(task.status, calm_server::model::TaskStatus::Running);
     assert_eq!(task.worker_card_id.as_deref(), Some(card_id.as_str()));
+    // Operation completion precedes scheduler reconciliation. The active read
+    // also requires cards.session_id to join the current active session. Await
+    // the actual owned projection; a permanently missing/wrong owner still fails.
+    let session = wait_for(Duration::from_secs(3), || async {
+        boot.repo
+            .session_projection_active_for_card(&card_id)
+            .await
+            .unwrap()
+            .filter(|session| {
+                session.card_id == card_id
+                    && session.thread_id.as_deref() == Some("fake-thread-0001")
+                    && session.active_turn_id.as_deref() == Some("fake-turn-0001")
+            })
+    })
+    .await;
+    let Some(session) = session else {
+        let rows: Vec<(Option<String>, String, String, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT c.session_id,ws.id,ws.state,ws.thread_id,ws.active_turn_id FROM cards c JOIN worker_sessions ws ON ws.card_id=c.id WHERE c.id=?1")
+                .bind(&card_id).fetch_all(&pool).await.unwrap();
+        panic!(
+            "owned worker projection did not become active after successful business startup: {rows:?}"
+        );
+    };
+    assert_eq!(session.card_id, card_id);
+    assert_eq!(session.thread_id.as_deref(), Some("fake-thread-0001"));
+    assert_eq!(session.active_turn_id.as_deref(), Some("fake-turn-0001"));
+
     assert!(
         boot.repo
             .terminal_get(&terminal_id)

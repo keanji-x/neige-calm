@@ -1,7 +1,12 @@
 // Ported from L460eb6a9; exercise the current shared-client model/read APIs.
-use super::*;
+use calm_server::codex_appserver::{CodexAppServer, InputItem, NotificationStream};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
 use std::os::fd::AsRawFd;
+use std::{sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
+use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 async fn connected() -> (
     CodexAppServer,
@@ -118,7 +123,7 @@ async fn shared_codex_timed_out_partial_send_cannot_flush_on_automatic_pong() {
 
 #[tokio::test]
 async fn shared_codex_fully_sent_reply_timeout_preserves_healthy_transport() {
-    let (client, _notifications, peer) = CodexAppServer::connect_pair_for_test().await;
+    let (client, _notifications, peer, _root) = connected().await;
     let client = client.with_request_timeout(Duration::from_millis(30));
     let answer = tokio::spawn(async move {
         let mut peer = peer;

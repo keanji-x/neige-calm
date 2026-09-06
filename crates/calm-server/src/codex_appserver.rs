@@ -2182,6 +2182,3 @@ mod tests {
         assert_eq!(other.thread_id(), Some("thread-other"));
     }
 }
-
-#[cfg(test)]
-mod transport_tests;
