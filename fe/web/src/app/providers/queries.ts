@@ -16,7 +16,7 @@ import { performApiRequest } from '../../../../core/api/client.ts';
 import type { ApiFailure, ApiOperation, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  asFolderConflict, areaListOperation, createAreaOperation, deleteAreaOperation,
+  asFolderConflict, areaListOperation, areaCreationCapabilityOperation, createAreaOperation, deleteAreaOperation,
   newestArea, sortedAreas, toArea, updateAreaOperation, visibleAreas,
   type Area, type AreaPatchBody, type FolderConflict, type NewAreaBody,
 } from '../../../../core/domain/area.ts';
@@ -65,6 +65,14 @@ export class ApiError extends Error {
     super(failure.message);
     this.name = 'ApiError';
     this.failure = failure;
+  }
+}
+
+/** A failed capability preflight guarantees no Area POST was submitted. */
+export class AreaCreatePreflightError extends Error {
+  constructor(message: string) {
+    super(`${message} No new create request was sent.`);
+    this.name = 'AreaCreatePreflightError';
   }
 }
 
@@ -857,7 +865,7 @@ export function prefetchAreaList(client: QueryClient, transport: ApiTransportPor
 // window in which the cache and the server disagree.
 
 export type AreaMutations = Readonly<{
-  create: (body: NewAreaBody) => Promise<Area>;
+  create: (body: NewAreaBody, idempotencyKey: string) => Promise<Area>;
   update: (areaId: string, body: AreaPatchBody) => Promise<Area>;
   remove: (areaId: string, signal?: AbortSignal) => Promise<void>;
 }>;
@@ -866,7 +874,19 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
   const client = useQueryClient();
   const create = useMutation({
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: (body: NewAreaBody) => runInteractiveWrite(transport, createAreaOperation(body), unauthorized),
+    mutationFn: async ({ body, idempotencyKey }: { body: NewAreaBody; idempotencyKey: string }) => {
+      if (!onlineManager.isOnline()) throw new OfflineSubmissionError();
+      try {
+        const capability = await runOperation(transport, areaCreationCapabilityOperation(), unauthorized);
+        if (capability !== 'supported') {
+          throw new AreaCreatePreflightError('Update the server to enable safe Area creation.');
+        }
+      } catch (failure: unknown) {
+        if (failure instanceof AreaCreatePreflightError) throw failure;
+        throw new AreaCreatePreflightError(failure instanceof Error ? failure.message : 'Could not check Area creation support.');
+      }
+      return runInteractiveWrite(transport, createAreaOperation(body, idempotencyKey), unauthorized);
+    },
     onSuccess: (wire) => {
       const created = toArea(wire);
       client.setQueryData<Area[]>(queryKeys.areas(), (current) => {
@@ -878,10 +898,8 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
         ]);
       });
     },
-    // A lost response does not prove the POST rolled back. Await the refetch
-    // before the caller exposes retry UI, so that UI first observes the latest
-    // Area list. This narrows the uncertainty window; POST itself is not an
-    // idempotent API and this client-side reconciliation does not pretend it is.
+    // A lost response can follow a committed creation. Reconcile the sidebar;
+    // the retained creation key independently makes the next POST safe.
     onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),
   });
   const update = useMutation({
@@ -917,7 +935,7 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
     onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
   });
   return {
-    create: async (body) => toArea(await create.mutateAsync(body)),
+    create: async (body, idempotencyKey) => toArea(await create.mutateAsync({ body, idempotencyKey })),
     update: async (areaId, body) => toArea(await update.mutateAsync({ areaId, body })),
     remove: async (areaId, signal) => { await remove.mutateAsync({ areaId, signal }); },
   };

@@ -144,6 +144,7 @@ describe('degraded workspace reads stay usable', () => {
   it('keeps an offline Area draft editable and creates it once after an explicit online retry', async () => {
     const creates: ApiRequest[] = [];
     const { client } = renderRoute('/', (request) => {
+      if (request.path === '/api/version') return ok({ areaCreateIdempotency: true });
       if (request.path === '/api/areas') {
         if (request.method === 'POST') { creates.push(request); return ok(areas[0]); }
         return ok(areas);

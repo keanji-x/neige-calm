@@ -15,6 +15,8 @@ it('renders both pills and both actions as one compact borderless row', async ()
       <AreaEditorForm
         initial={{ name: '', defaultTemplateId: null, defaultCwd: null }}
         submitting={false}
+        locked={false}
+        cancelLabel="Cancel"
         error={null}
         templates={[]}
         templatesLoaded
@@ -56,6 +58,8 @@ it('wraps safely at phone width while keeping Cancel and Save together', async (
           defaultCwd: '/srv/a-folder-with-a-very-long-name',
         }}
         submitting={false}
+        locked={false}
+        cancelLabel="Cancel"
         error={null}
         templates={[{
           id: 'long-template',

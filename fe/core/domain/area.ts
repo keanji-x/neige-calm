@@ -110,8 +110,18 @@ export type AreaPatchBody = Readonly<{
   default_cwd?: string | null;
 }>;
 
-export function createAreaOperation(body: NewAreaBody): ApiOperation<AreaWire> {
-  return { method: 'POST', path: '/api/areas', body, responseSchema: areaWireSchema };
+/** Old servers omit this capability and must never receive a keyed create. */
+export function areaCreationCapabilityOperation(): ApiOperation<'supported' | 'unsupported'> {
+  return {
+    method: 'GET', path: '/api/version',
+    responseSchema: z.object({ areaCreateIdempotency: z.unknown().optional() })
+      .transform((value) => value.areaCreateIdempotency === true ? 'supported' as const : 'unsupported' as const),
+  };
+}
+
+/** One key identifies one exact creation intent, including every retry. */
+export function createAreaOperation(body: NewAreaBody, idempotencyKey: string): ApiOperation<AreaWire> {
+  return { method: 'POST', path: '/api/areas', body, headers: { 'Idempotency-Key': idempotencyKey }, responseSchema: areaWireSchema };
 }
 
 export function updateAreaOperation(areaId: string, body: AreaPatchBody): ApiOperation<AreaWire> {

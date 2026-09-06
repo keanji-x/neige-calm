@@ -8,6 +8,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { AREA_PALETTE } from '../../features/area/palette.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { AppShell } from './public.tsx';
+import { AreaCreatePreflightError } from '../providers/queries.ts';
 
 const harness = vi.hoisted(() => ({
   compact: false,
@@ -159,6 +160,62 @@ describe('AppShell Area editor flow', () => {
     });
     expect(AREA_PALETTE).toContain(body.color);
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New area' })).toBeNull());
+  });
+
+  it('retries a lost create confirmation with the same identity and payload after reopening', async () => {
+    harness.create.mockRejectedValueOnce(new Error('Transport request failed'))
+      .mockRejectedValueOnce(new AreaCreatePreflightError('Version read failed.'));
+    renderShell();
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: /^Name/ }), 'Keep one');
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    await screen.findByRole('alert');
+    const [body, key] = harness.create.mock.calls[0] as [unknown, string];
+    expect(key).toEqual(expect.any(String));
+    expect(key.length).toBeGreaterThan(0);
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ }).disabled).toBe(true);
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'New area' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ }).value).toBe('Keep one');
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(2));
+    expect(harness.create.mock.calls[1]).toEqual([body, key]);
+    expect((await screen.findByRole('alert')).textContent).toContain('Version read failed.');
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ }).disabled).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(3));
+    expect(harness.create.mock.calls[2]).toEqual([body, key]);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New area' })).toBeNull());
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: /^Name/ }), 'Keep one');
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(4));
+    expect(harness.create.mock.calls[3]?.[1]).not.toBe(key);
+  });
+
+  it('keeps an unsubmitted preflight failure editable and permits an explicit discard', async () => {
+    harness.create.mockRejectedValueOnce(new AreaCreatePreflightError('Update the server.'));
+    renderShell();
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: /^Name/ }), 'Before');
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    await screen.findByRole('alert');
+    const input = screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ });
+    expect(input.disabled).toBe(false);
+    await userEvent.clear(input);
+    await userEvent.type(input, 'Corrected');
+    harness.create.mockRejectedValueOnce(new Error('Response lost'));
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    const discard = await screen.findByRole('button', { name: 'Discard draft' });
+    const unresolvedKey: unknown = harness.create.mock.calls[1]?.[1];
+    await userEvent.click(discard);
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ }).value).toBe('');
+    await userEvent.type(screen.getByRole('textbox', { name: /^Name/ }), 'Corrected');
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(3));
+    expect(harness.create.mock.calls[2]?.[1]).not.toBe(unresolvedKey);
   });
 
   it('sends only a changed name when an unavailable saved template is untouched', async () => {

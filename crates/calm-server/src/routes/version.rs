@@ -146,6 +146,8 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionInfo {
+    /// True only when Area creation binds Idempotency-Key atomically and permanently.
+    pub area_create_idempotency: bool,
     pub kernel_version: String,
     /// REST contract version. Diagnostic-only on the wire — the frontend
     /// gates compatibility on `min_web_compat_version` (whole bundle) and
@@ -166,6 +168,7 @@ pub struct VersionInfo {
 pub fn current_version_info(db_instance_id: String) -> VersionInfo {
     let compatibility = current_kernel_compatibility();
     VersionInfo {
+        area_create_idempotency: true,
         kernel_version: env!("CARGO_PKG_VERSION").to_string(),
         api_version: compatibility.api_version,
         sync_event_version: compatibility.sync_event_version,
@@ -205,6 +208,7 @@ mod tests {
     #[test]
     fn min_web_compat_version_matches_constant() {
         let body = VersionInfo {
+            area_create_idempotency: true,
             kernel_version: env!("CARGO_PKG_VERSION").to_string(),
             api_version: API_VERSION.to_string(),
             sync_event_version: SYNC_EVENT_VERSION,

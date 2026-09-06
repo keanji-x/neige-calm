@@ -72,3 +72,6 @@ mod track_workspace_recycle;
 mod track_workspace_repoint;
 #[path = "cases/version.rs"]
 mod version;
+
+#[path = "cases/area_create_idempotency.rs"]
+mod area_create_idempotency;

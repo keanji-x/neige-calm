@@ -19,6 +19,8 @@ function renderForm(overrides: Partial<AreaEditorFormProps> = {}) {
   const props: AreaEditorFormProps = {
     initial: { name: 'Work', defaultTemplateId: 'small-change', defaultCwd: '/srv/work' },
     submitting: false,
+    locked: false,
+    cancelLabel: 'Cancel',
     error: null,
     templates,
     templatesLoaded: true,
