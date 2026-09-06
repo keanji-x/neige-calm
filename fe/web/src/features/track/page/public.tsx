@@ -515,7 +515,7 @@ export function TrackPage({
         }
         actions={(
           <span className={styles.headerActions}>
-            {onCreateTask !== undefined && <AstryxButton variant="ghost" size="sm" label="Run independent task" isDisabled={taskUnavailable !== null} title={taskUnavailable ?? undefined} onClick={onCreateTask} />}
+            {onCreateTask !== undefined && <span title={taskUnavailable ?? undefined}><AstryxButton variant="ghost" size="sm" label="Run independent task" isDisabled={taskUnavailable !== null} onClick={onCreateTask} /></span>}
             <AstryxDropdownMenu
               button={{
                 ref: desktopActionsRef,

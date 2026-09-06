@@ -4,6 +4,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import type { TrackLifecycle } from '../../../../core/domain/track.ts';
+import { wireEventSchema } from '../../../../core/api/schemas.ts';
+import { initialEventState, reduceEventFrame } from '../../../../core/events/reducer.ts';
+import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
 import type { IndependentTaskRequest } from '../../../../core/domain/independent-task.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { ThemeProvider } from '../theme/public.tsx';
@@ -16,9 +20,9 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
-function setup(mode: 'success' | 'lost' | 'lost-committed' | 'conflict' | 'unavailable' = 'success') {
+function setup(mode: 'success' | 'lost' | 'lost-committed' | 'conflict' | 'unavailable' = 'success', lifecycle: TrackLifecycle = 'draft') {
   const requests: ApiRequest[] = [];
-  const track = { id: 'w1', area_id: 'c1', title: 'Independent work', sort: 1, lifecycle: 'draft', cwd: '/tmp',
+  const track = { id: 'w1', area_id: 'c1', title: 'Independent work', sort: 1, lifecycle, cwd: '/tmp',
     archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
   const area = { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
   const reportCard = { id: 'report', track_id: 'w1', title: null, kind: 'track-report', sort: 1, deletable: false,
@@ -105,8 +109,17 @@ it('starts once on synchronous double submit and reveals actual status and accep
   expect(document.querySelector<HTMLDetailsElement>('[data-nc-task-state]')?.open).toBe(true);
   await screen.findByText('No accepted report yet.');
   fixture.report({ kind: 'completed', result: { answer: '<img src=x onerror="window.pwned=1">' }, artifacts: ['javascript:alert(1)', '/private/result.txt'] });
-  await userEvent.click(screen.getByRole('button', { name: 'Refresh accepted report' }));
+  await act(() => {
+    const event = wireEventSchema.parse({ ev: 'task.completed', data: {
+      idempotency_key: 'exact-attempt', result: 'Do not infer this as the accepted result', artifacts: [],
+    } });
+    applyEventEffects(fixture.client, reduceEventFrame(initialEventState(null), {
+      type: 'event', event, meta: { id: 1, eventVersion: 1 },
+    }).effects);
+    return Promise.resolve();
+  });
   await screen.findByText(/"answer": "<img/);
+  expect(screen.queryByText('Do not infer this as the accepted result')).toBeNull();
   expect(document.querySelector('img[src="x"]')).toBeNull();
   expect(document.querySelector('a[href="javascript:alert(1)"]')).toBeNull();
   expect(screen.getByText('/private/result.txt').tagName).toBe('LI');
@@ -172,4 +185,12 @@ it('shows completed null, accepted failure and exact-attempt read errors distinc
   fixture.denyReport();
   await userEvent.click(screen.getByRole('button', { name: 'Refresh accepted report' }));
   await screen.findByText(/Could not load accepted report: Attempt not found/);
+});
+
+it.each(['blocked', 'done', 'canceled', 'failed'] as const)('disables new task entry on a %s Track', async (lifecycle) => {
+  const fixture = setup('success', lifecycle);
+  const entry = await screen.findByRole<HTMLButtonElement>('button', { name: 'Run independent task' });
+  expect(entry.disabled).toBe(true);
+  expect(entry.parentElement?.title).toContain(lifecycle === 'blocked' ? 'blocked' : 'ended');
+  expect(fixture.requests.filter((request) => request.method === 'POST')).toHaveLength(0);
 });
