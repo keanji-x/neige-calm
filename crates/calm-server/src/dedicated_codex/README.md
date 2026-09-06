@@ -9,11 +9,14 @@ interactive resume viewer here. Runtime helper and server must come from the sam
 build; build the helper explicitly before this module's integration tests.
 
 `ControllerConfig` requires a private provider root, a separate runtime state root,
-the installed Codex executable, REQUIRED `sandbox_bwrap` executable (inner Codex sandbox),
+the installed Codex executable, its required matching `code_mode_host_binary` companion,
+and REQUIRED `sandbox_bwrap` executable (inner Codex sandbox),
 existing MCP shim executable, explicit provider
 transport environment, and bounded connect/request timeouts. The Codex executable
 is mounted as `/provider-bin/codex` plus a fixed set of same-binary helper aliases.
-Only those executable files, the explicit inner bwrap and MCP shim are mounted; no host
+The companion is mounted read-only at `/provider-bin/codex-code-mode-host`; real model tool
+execution requires it even when direct MCP calls work without it. Only these explicit executable
+files, the inner bwrap and MCP shim are mounted; no host
 binary directory is exposed. `sandbox_bwrap` must support `--argv0`, `--perms` and the
 required namespace/read-bind flags; a bounded env-cleared `--help` check rejects unsupported
 helpers before credentials are published. Use the existing Codex package's
@@ -142,6 +145,7 @@ let controller = Controller::new(ControllerConfig {
         timeout: Duration::from_secs(30),
     },
     codex_binary: installed_codex,
+    code_mode_host_binary: installed_codex_code_mode_host,
     sandbox_bwrap: installed_codex_package_bwrap,
     mcp_shim: installed_neige_mcp_stdio_shim,
     provider_environment: explicitly_selected_proxy_and_ca_values,

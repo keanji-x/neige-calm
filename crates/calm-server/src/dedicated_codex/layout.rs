@@ -45,6 +45,7 @@ fn destination(path: &Path) -> Result<PathBuf> {
 pub(super) fn private_sources(config: &mut ControllerConfig) -> Result<()> {
     config.private_root = destination(&config.private_root)?;
     config.codex_binary = config.codex_binary.canonicalize()?;
+    config.code_mode_host_binary = config.code_mode_host_binary.canonicalize()?;
     config.mcp_shim = config.mcp_shim.canonicalize()?;
     config.sandbox_bwrap = config.sandbox_bwrap.canonicalize()?;
     let binary_directory = config
@@ -55,6 +56,7 @@ pub(super) fn private_sources(config: &mut ControllerConfig) -> Result<()> {
     // Also fence all explicit readonly provider inputs, including TLS directories.
     let mut sources = vec![
         binary_directory.to_path_buf(),
+        config.code_mode_host_binary.clone(),
         config.mcp_shim.clone(),
         config.sandbox_bwrap.clone(),
     ];

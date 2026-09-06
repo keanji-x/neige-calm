@@ -29,6 +29,7 @@ pub(super) fn workspace_and_tools(config: &ControllerConfig, workspace: &Path) -
     }
     for executable in [
         &config.codex_binary,
+        &config.code_mode_host_binary,
         &config.sandbox_bwrap,
         &config.mcp_shim,
     ] {
@@ -114,6 +115,11 @@ pub(super) fn executable_mounts(config: &ControllerConfig) -> Vec<Mount> {
             writable: false,
         });
     }
+    mounts.push(Mount {
+        source: config.code_mode_host_binary.clone(),
+        destination: "/provider-bin/codex-code-mode-host".into(),
+        writable: false,
+    });
     mounts.push(Mount {
         source: config.sandbox_bwrap.clone(),
         destination: "/provider-bin/bwrap".into(),

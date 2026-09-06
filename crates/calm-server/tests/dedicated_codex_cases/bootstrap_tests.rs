@@ -22,6 +22,11 @@ async fn dedicated_codex_mounts_only_known_executables_and_selects_inner_bwrap()
             .any(|mount| mount.source == f.config.sandbox_bwrap
                 && mount.destination == std::path::Path::new("/provider-bin/bwrap"))
     );
+    assert!(executable_mounts.iter().any(|mount| {
+        mount.source == f.config.code_mode_host_binary
+            && mount.destination == std::path::Path::new("/provider-bin/codex-code-mode-host")
+            && !mount.writable
+    }));
     let policy = std::fs::read_to_string(endpoint.home.home.join("config.toml"))
         .unwrap()
         .parse::<toml_edit::DocumentMut>()
@@ -94,22 +99,29 @@ async fn dedicated_codex_workspace_cannot_supply_trusted_sandbox_executable() {
     let original = f.prepare("tool-outside").await;
     let helper = original.request.workspace.join("writable-bwrap");
     std::fs::copy(&f.config.sandbox_bwrap, &helper).unwrap();
-    let mut config = f.config.clone();
-    config.sandbox_bwrap = helper;
-    let controller = Controller::new(config).unwrap();
-    let mut request = original.request.clone();
-    request.identity.run_id = "writable-helper".into();
-    let result = controller.prepare(request, &f.seed, &f.native).await;
-    if let Ok(endpoint) = &result {
-        f.endpoints.lock().unwrap().push(endpoint.clone());
+    for (name, companion) in [("writable-helper", false), ("writable-companion", true)] {
+        let mut config = f.config.clone();
+        if companion {
+            config.code_mode_host_binary = helper.clone();
+        } else {
+            config.sandbox_bwrap = helper.clone();
+        }
+        let controller = Controller::new(config).unwrap();
+        let mut request = original.request.clone();
+        request.identity.run_id = name.into();
+        let result = controller.prepare(request, &f.seed, &f.native).await;
+        if let Ok(endpoint) = &result {
+            f.endpoints.lock().unwrap().push(endpoint.clone());
+        }
+        assert!(matches!(result, Err(Error::Configuration(_))));
+        assert!(
+            !f.config
+                .private_root
+                .join(name)
+                .join("home/auth.json")
+                .exists()
+        );
     }
-    assert!(matches!(result, Err(Error::Configuration(_))));
-    assert!(
-        !f.config
-            .private_root
-            .join("writable-helper/home/auth.json")
-            .exists()
-    );
 }
 
 #[tokio::test]

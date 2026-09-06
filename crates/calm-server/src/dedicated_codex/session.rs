@@ -22,6 +22,8 @@ pub struct ControllerConfig {
     pub private_root: PathBuf,
     pub runtime: RuntimeConfig,
     pub codex_binary: PathBuf,
+    /// The matching package's tool-execution host, including native MCP model calls.
+    pub code_mode_host_binary: PathBuf,
     pub mcp_shim: PathBuf,
     /// Inner Codex bwrap, explicitly selected independently from the owned runtime.
     pub sandbox_bwrap: PathBuf,

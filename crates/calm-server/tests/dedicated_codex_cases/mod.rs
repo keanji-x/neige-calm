@@ -62,7 +62,8 @@ impl Fixture {
         let mut config = ControllerConfig {
             private_root: root.path().join("endpoints"),
             runtime: runtime_config.clone(),
-            codex_binary: executable,
+            codex_binary: executable.clone(),
+            code_mode_host_binary: executable,
             mcp_shim: "/usr/bin/true".into(),
             sandbox_bwrap,
             provider_environment: BTreeMap::new(),
