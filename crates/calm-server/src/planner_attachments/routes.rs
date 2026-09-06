@@ -42,7 +42,7 @@ use crate::routes::cards::card_runs_headless_harness;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::{AppState, RouteState};
 
-use super::{attachment_root, attachment_url, resolve, store};
+use super::{attachment_root, attachment_url, open_attachment, store};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -179,35 +179,13 @@ pub(crate) async fn read_planner_attachment(
         .map_err(|error| CalmError::BadRequest(error.to_string()))?;
     let context = attachment_context(&s, &id).await?;
     let card_id: CardId = context.card.id.clone();
-    let (path, format) = resolve(&context.root, &card_id, &attachment_id)?;
-    // #1515 review round 2. `resolve` lstats a NAME; this opens the same name a
-    // moment later, and in between anything with write access to the workspace
-    // can `rename` a symlink onto it. The check therefore has to be on the
-    // handle, twice over:
-    //
-    // * `O_NOFOLLOW` makes the open itself refuse when the final component is a
-    //   symlink at the instant of the syscall — there is no window left between
-    //   the decision and the descriptor, because they are the same syscall;
-    // * the `file_type()` of the descriptor's own `fstat` rejects a directory,
-    //   a FIFO or a device swapped in the same way, which `O_NOFOLLOW` does not
-    //   cover.
-    //
-    // `resolve`'s lstat stays: it is what produces the "no such attachment"
-    // answer for an id this card does not own.
-    let file = open_regular_file_nofollow(&path).await.map_err(|error| {
-        CalmError::BadRequest(format!(
-            "attachment `{attachment_id}` is unreadable: {error}"
-        ))
-    })?;
-    let meta = file.metadata().await.map_err(|error| {
-        CalmError::Internal(format!("attachment `{attachment_id}` metadata: {error}"))
-    })?;
-    if !meta.file_type().is_file() {
-        return Err(CalmError::BadRequest(format!(
-            "attachment `{attachment_id}` is not a regular file"
-        )));
-    }
-    let size = meta.len();
+    // #1505 review round 3. This used to lstat the name and then open it —
+    // two resolutions, so a rename in between decided what was served — and
+    // then, for one round, a hand-rolled `O_NOFOLLOW` open, which still covered
+    // only the final component and could park a blocking thread on a FIFO.
+    // Both were a mirror of a primitive this repo already has. `open_attachment`
+    // calls that primitive instead.
+    let opened = open_attachment(&context.root, &card_id, &attachment_id).await?;
     // Content type comes from the id's extension, which came from the sniffed
     // magic number — never from the file's current bytes and never from a
     // header. `read_file_raw_response_from_handle` supplies `nosniff`, a
@@ -217,16 +195,11 @@ pub(crate) async fn read_planner_attachment(
     // handed the attachment id rather than the host path the bytes live at:
     // that string reaches the client.
     let for_errors = std::path::PathBuf::from(attachment_id.as_str());
-    crate::routes::fs::read_file_raw_response_from_handle(file, size, &for_errors, format.mime())
-        .await
-}
-
-/// `open(2)` with `O_NOFOLLOW`: a symlink on the final component is `ELOOP`,
-/// not a redirect.
-async fn open_regular_file_nofollow(path: &std::path::Path) -> std::io::Result<tokio::fs::File> {
-    tokio::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .await
+    crate::routes::fs::read_file_raw_response_from_handle(
+        opened.file,
+        opened.size,
+        &for_errors,
+        opened.format.mime(),
+    )
+    .await
 }

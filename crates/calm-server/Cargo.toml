@@ -262,8 +262,11 @@ nix = { version = "0.29", features = ["fs", "signal"] }
 # These fixtures are `[[bin]]`s of this crate so their deps must live
 # here, not under [dev-dependencies]. libc is already in the transitive
 # graph via tokio/sqlx; declaring it explicitly costs nothing and keeps
-# the bins self-contained. Production code paths in `calm-server` don't
-# import it.
+# the bins self-contained. Inside the library the only importer is
+# `src/test_support.rs` (process-liveness probes for the crash-recovery
+# fixtures); request-handling code reaches the kernel through `nix` and
+# `routes::fs::open_workspace_regular_file` instead of rolling its own
+# syscall flags — #1505 S6-PR1 spent three review rounds learning why.
 libc = "0.2"
 
 [dev-dependencies]

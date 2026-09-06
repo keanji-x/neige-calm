@@ -1113,9 +1113,13 @@ async fn no_refusal_body_carries_the_host_workspace_path() {
             !rendered.contains(&workspace),
             "{what}: the error body names the host workspace path: {rendered}"
         );
+        // `.neige/` on its own is allowed: it is the workspace-relative name
+        // the user is told to look under, and it appears in the budget advice
+        // too. What must never appear is an absolute host path — the
+        // workspace, or the layout above it.
         assert!(
-            !rendered.contains(".neige"),
-            "{what}: the error body names the server's subtree layout: {rendered}"
+            !rendered.contains("/workspaces/"),
+            "{what}: the error body names the server's on-disk layout: {rendered}"
         );
     };
 
@@ -1139,4 +1143,47 @@ async fn no_refusal_body_carries_the_host_workspace_path() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     check("unresolvable attachment", &body);
+
+    // (c) the git exclude entry cannot be established. Round 2's commit claimed
+    //     "the same rule holds for store_upload's failures"; it did not — this
+    //     arm interpolated the repository path into the 500 body.
+    let exclude = b.workspace.join(".git").join("info").join("exclude");
+    std::fs::remove_file(&exclude).unwrap();
+    std::fs::create_dir(&exclude).unwrap();
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"x")).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    check("git exclude failure", &body);
+}
+
+/// #1515 review round 3. The common ending for an upload is not a `return` — it
+/// is the handler future being dropped, because the client went away. Round 2
+/// put cleanup in an arm that only ran on `return`, so a reset connection left
+/// a `<uuid>.png.part` in `staging/` spending the card's budget until the 24h
+/// sweep. Cleanup now hangs off `OpenPart`'s destructor, which a drop does run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_that_disappears_mid_body_leaves_no_part() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+
+    let a = StreamingUpload::start(&b.app, &card);
+    a.send(png(&[0u8; 4]));
+    let part = wait_for_part(&b.staging()).await;
+
+    // Aborting the task drops the handler future exactly where axum drops it
+    // when a connection resets: inside `stream_into`, awaiting the next frame,
+    // with the `.part` open.
+    a.response.abort();
+    let _ = a.response.await;
+    drop(a.frames);
+
+    for _ in 0..200 {
+        if file_names(&b.staging()).is_empty() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!(
+        "the dropped handler left {part} behind: {:?}",
+        file_names(&b.staging())
+    );
 }

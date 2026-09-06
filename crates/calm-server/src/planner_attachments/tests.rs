@@ -1,5 +1,6 @@
 //! Path derivation, the budget measurement, and the staging sweep.
 
+use std::os::unix::fs::FileTypeExt;
 use std::time::{Duration, SystemTime};
 
 use calm_types::planner_attachment::{AttachmentFormat, AttachmentId};
@@ -69,8 +70,15 @@ fn a_managed_path_outside_the_workspace_root_is_refused() {
     assert!(matches!(error, CalmError::Internal(_)), "{error:?}");
 }
 
-#[test]
-fn resolve_prefers_bound_then_staging_and_refuses_anything_else() {
+async fn read_all(mut opened: OpenAttachment) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut bytes = Vec::new();
+    opened.file.read_to_end(&mut bytes).await.unwrap();
+    bytes
+}
+
+#[tokio::test]
+async fn open_attachment_prefers_bound_then_staging_and_refuses_anything_else() {
     let root = tempfile::tempdir().unwrap();
     let card = CardId::from("card-a");
     let other_card = CardId::from("card-b");
@@ -81,37 +89,35 @@ fn resolve_prefers_bound_then_staging_and_refuses_anything_else() {
     std::fs::create_dir_all(bound_dir(root.path(), &card).path()).unwrap();
     std::fs::write(
         staging_dir(root.path(), &card).path().join(staged.as_str()),
-        b"s",
+        b"staged bytes",
     )
     .unwrap();
     std::fs::write(
         bound_dir(root.path(), &card).path().join(bound.as_str()),
-        b"b",
+        b"bound bytes",
     )
     .unwrap();
 
-    let (path, format) = resolve(root.path(), &card, &bound).unwrap();
-    assert_eq!(
-        path,
-        bound_dir(root.path(), &card).path().join(bound.as_str())
-    );
-    assert_eq!(format, AttachmentFormat::Webp);
+    let opened = open_attachment(root.path(), &card, &bound).await.unwrap();
+    assert_eq!(opened.format, AttachmentFormat::Webp);
+    assert_eq!(opened.size, 11);
+    assert_eq!(read_all(opened).await, b"bound bytes");
 
-    let (path, format) = resolve(root.path(), &card, &staged).unwrap();
-    assert_eq!(
-        path,
-        staging_dir(root.path(), &card).path().join(staged.as_str())
-    );
-    assert_eq!(format, AttachmentFormat::Png);
+    let opened = open_attachment(root.path(), &card, &staged).await.unwrap();
+    assert_eq!(opened.format, AttachmentFormat::Png);
+    assert_eq!(read_all(opened).await, b"staged bytes");
 
-    // Cross-card forgery is answered by the directory, not by a comparison:
-    // card B's directory simply does not contain card A's id.
-    let error =
-        resolve(root.path(), &other_card, &bound).expect_err("another card's id must not resolve");
+    // Cross-card forgery is answered by the root the resolution is pinned
+    // beneath, not by a comparison: card B's directory does not contain card
+    // A's id, and nothing under card B's subtree can reach out of it.
+    let error = open_attachment(root.path(), &other_card, &bound)
+        .await
+        .expect_err("another card's id must not open");
     assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
 
-    let error = resolve(root.path(), &card, &id("03", AttachmentFormat::Gif))
-        .expect_err("an id that stats nowhere must not resolve");
+    let error = open_attachment(root.path(), &card, &id("03", AttachmentFormat::Gif))
+        .await
+        .expect_err("an id that names nothing must not open");
     assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
 }
 
@@ -281,11 +287,11 @@ fn a_sweep_that_cannot_stat_an_entry_deletes_nothing_at_all() {
     );
 }
 
-/// #1515 review F3. `is_file()` follows symlinks, so a link planted under a
-/// valid id served the target's bytes through the read-back endpoint. `resolve`
-/// stats with `symlink_metadata` and answers only for a regular file.
-#[test]
-fn a_symlink_under_a_valid_id_does_not_resolve() {
+/// #1515 review F3. A link planted under a valid id must not be followed. The
+/// check is `openat2` with `RESOLVE_BENEATH`, which refuses it at the syscall
+/// rather than after a separate `lstat` that something could race.
+#[tokio::test]
+async fn a_symlink_under_a_valid_id_does_not_open() {
     let root = tempfile::tempdir().unwrap();
     let card = CardId::from("card-a");
     let staging = staging_dir(root.path(), &card);
@@ -301,10 +307,88 @@ fn a_symlink_under_a_valid_id_does_not_resolve() {
     std::os::unix::fs::symlink(&secret, bound.path().join(planted_bound.as_str())).unwrap();
 
     for planted in [&staged, &planted_bound] {
-        let error = resolve(root.path(), &card, planted)
+        let error = open_attachment(root.path(), &card, planted)
+            .await
             .expect_err("a symlink is not an attachment this subtree serves");
         assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
     }
+}
+
+/// #1515 review round 3, BLOCKER. A FIFO on the final component blocks
+/// `open(2)` until a writer appears unless `O_NONBLOCK` is set — and because
+/// every `tokio::fs` open is a `spawn_blocking`, one such request parks a
+/// blocking thread that a client disconnect does not reclaim. 512 of them and
+/// every `tokio::fs` call in the process queues forever.
+///
+/// The hand-rolled `O_NOFOLLOW` open this replaced had no `O_NONBLOCK`, and the
+/// `fstat` that was supposed to reject the FIFO was never reached. The vetted
+/// opener sets it, so the refusal is `ENXIO` at the syscall.
+///
+/// The assertion is the wall clock: a regression does not fail this test, it
+/// hangs it, so the call is given a deadline of its own.
+#[tokio::test]
+async fn a_fifo_under_a_valid_id_neither_blocks_nor_serves() {
+    let root = tempfile::tempdir().unwrap();
+    let card = CardId::from("card-a");
+    let staging = staging_dir(root.path(), &card);
+    std::fs::create_dir_all(staging.path()).unwrap();
+    let planted = id("07", AttachmentFormat::Png);
+    nix::unistd::mkfifo(
+        &staging.path().join(planted.as_str()),
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+    )
+    .expect("the fixture needs a real FIFO");
+    assert!(
+        std::fs::symlink_metadata(staging.path().join(planted.as_str()))
+            .unwrap()
+            .file_type()
+            .is_fifo(),
+        "precondition: the planted entry must actually be a FIFO"
+    );
+
+    let answered = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        open_attachment(root.path(), &card, &planted),
+    )
+    .await
+    .expect("the open must return; a FIFO must not park the blocking thread");
+    let error = answered.expect_err("a FIFO is not an attachment");
+    assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
+}
+
+/// #1515 review round 3. `O_NOFOLLOW` covers the FINAL component only, so
+/// replacing the `staging` directory itself with a link to another card's
+/// subtree defeated a check placed on the leaf. `RESOLVE_BENEATH` resolves
+/// every component beneath the root, which is the difference.
+#[tokio::test]
+async fn an_intermediate_symlink_cannot_reach_another_cards_subtree() {
+    let root = tempfile::tempdir().unwrap();
+    let card_a = CardId::from("card-a");
+    let card_b = CardId::from("card-b");
+    let secret = id("08", AttachmentFormat::Png);
+
+    let b_bound = bound_dir(root.path(), &card_b);
+    std::fs::create_dir_all(b_bound.path()).unwrap();
+    std::fs::write(
+        b_bound.path().join(secret.as_str()),
+        b"card B's private image",
+    )
+    .unwrap();
+
+    // Card A has no `staging` directory of its own: the name is a link into
+    // card B's subtree, which a leaf-only check would happily walk through.
+    let a_staging = staging_dir(root.path(), &card_a);
+    std::fs::create_dir_all(a_staging.path().parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(b_bound.path(), a_staging.path()).unwrap();
+    assert!(
+        a_staging.path().join(secret.as_str()).is_file(),
+        "precondition: a path-following check really would find card B's file here"
+    );
+
+    let error = open_attachment(root.path(), &card_a, &secret)
+        .await
+        .expect_err("an intermediate symlink must not reach another card's attachments");
+    assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
 }
 
 /// The adjudication behind F3, pinned as executable facts rather than as an
@@ -517,4 +601,84 @@ async fn an_upload_that_stops_sending_gives_up_the_cards_turn() {
     .expect("a well-behaved upload after a timed-out one must succeed");
     assert_eq!(second.size, 12);
     drop(frames);
+}
+
+/// #1515 review round 3. The deadline no longer wraps `finish`, so a refused
+/// upload cannot leave an attachment published under its final name. This pins
+/// the invariant the change exists for: after a timeout, `staging/` holds
+/// nothing at all — neither the `.part` nor a published name.
+#[tokio::test]
+async fn a_timed_out_upload_publishes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git_workspace(tmp.path());
+    let root = repo.join(".neige").join("attachments");
+    let card = CardId::from("card-a");
+    let locks = crate::per_card_lock::new_per_card_locks();
+
+    let (frames, body) = futures::channel::mpsc::unbounded::<std::io::Result<axum::body::Bytes>>();
+    frames.unbounded_send(Ok(png_prefix())).unwrap();
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store::store_upload(
+            &root,
+            &repo,
+            &card,
+            &locks,
+            std::time::Duration::from_millis(120),
+            axum::body::Body::from_stream(body),
+        ),
+    )
+    .await
+    .expect("the upload must give up on its own")
+    .expect_err("a body that stops arriving must be refused");
+    assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
+
+    assert_eq!(
+        staged_names(staging_dir(&root, &card).path()),
+        Vec::<String>::new(),
+        "a refused upload must leave neither a `.part` nor a published attachment"
+    );
+    drop(frames);
+}
+
+/// #1515 review round 3. No error this module family can put in front of a
+/// client may carry a host path. Round 1 fixed one message, round 2 fixed two
+/// more and claimed the class; this drives the constructors that were still
+/// leaking.
+///
+/// The list is the `CalmError::` sites in `mod.rs` and `store.rs` that a
+/// request can reach, taken by grep rather than from memory: `attachment_root`
+/// (two arms), `directory_bytes`/`unmeasurable`, the `ensure_git_exclude_entry`
+/// arm, `staging_dir_or_refuse`, `open_attachment`, and `OpenPart`'s create /
+/// write / flush / fsync / rename arms. The ones this test cannot construct
+/// from outside (fsync failures) carry no path by inspection and are named in
+/// `store.rs`.
+#[test]
+fn attachment_root_faults_name_no_host_path() {
+    let root = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+
+    let relative = TrackWorkspace {
+        kind: TrackWorkspaceKind::Managed,
+        path: "relative/workspace".into(),
+        frozen_at: None,
+    };
+    for (what, workspace) in [
+        ("a relative managed path", relative),
+        ("a managed path outside the root", managed(elsewhere.path())),
+    ] {
+        let error = attachment_root(&workspace, root.path()).expect_err(what);
+        let message = format!("{error}");
+        assert!(matches!(error, CalmError::Internal(_)), "{what}: {error:?}");
+        for leaked in [
+            root.path().display().to_string(),
+            elsewhere.path().display().to_string(),
+            "relative/workspace".to_string(),
+        ] {
+            assert!(
+                !message.contains(&leaked),
+                "{what}: the fault names a host path: {message}"
+            );
+        }
+    }
 }

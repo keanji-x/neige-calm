@@ -99,10 +99,19 @@ pub async fn store_upload(
     let repo = repo_root.to_path_buf();
     blocking(move || {
         ensure_git_exclude_entry(&repo, NEIGE_GIT_EXCLUDE_ENTRY).map_err(|error| {
+            // Both the repository path and the underlying error carry host
+            // paths, so both go to the log and neither is returned. See
+            // `super::server_side_fault` for why this is a rule and not a
+            // judgement call.
+            tracing::error!(
+                target: "planner_attachments::store",
+                repo = %repo.display(),
+                %error,
+                "could not exclude the attachment subtree from git"
+            );
             CalmError::Internal(format!(
-                "planner attachment upload: cannot exclude {NEIGE_GIT_EXCLUDE_ENTRY} from git in \
-                 {}: {error}",
-                repo.display()
+                "planner attachment upload: {NEIGE_GIT_EXCLUDE_ENTRY} could not be excluded from \
+                 this workspace's git, so no bytes were written"
             ))
         })
     })
@@ -196,24 +205,30 @@ async fn staging_dir_or_refuse(staging: StagingDir) -> Result<StagingDir> {
 /// The temporary file is only created once the format is known, so a body that
 /// is not one of the four formats never produces a file at all.
 ///
-/// # The cleanup arm below is the only one, and it sees every failure
+/// # Cleanup is the destructor's, not an arm's
 ///
-/// [`stream_and_publish`] holds the `.part` in `open` from the moment
-/// `OpenPart::create` returns until after `finish` has renamed it — including
-/// across `finish`'s own flush, `sync_all` and `rename`, each of which can fail
-/// on a full or dying disk. So every `?` inside it is taken with the part still
-/// registered, and this arm removes it. (Round 1 got this wrong in exactly one
-/// place: it took the part out of `open` *before* calling `finish`, so an
-/// `ENOSPC` on the fsync left a `.part` on disk spending the card's budget
-/// until a sweep reclaimed it a day later.)
+/// Round 2 wrote "the cleanup arm below is the only one, and it sees every
+/// failure" here. It was false: an arm runs only when this function *returns*,
+/// and the common ending for an upload is the handler future being **dropped**
+/// — a client reset mid-body — which left a `.part` behind. Cleanup therefore
+/// hangs off [`OpenPart`]'s `Drop`, which is the one thing that does run on
+/// every way a value leaves scope: `return`, `?`, the timeout cancelling
+/// `stream_into`, and the whole handler being dropped. There is no explicit
+/// cleanup call left to forget, so there is no longer a claim to get wrong.
 ///
-/// # The deadline
+/// # The deadline covers the body read, and nothing else
 ///
-/// The whole stream-and-publish runs under `deadline`. See
-/// [`super::UPLOAD_DEADLINE`]: this upload holds its card's turn, and the turn
-/// has to end. On expiry the inner future is dropped mid-body — which is why
-/// `open` lives out here, in the caller, rather than inside it: the part
-/// survives the cancellation and is removed by the same arm.
+/// [`super::UPLOAD_DEADLINE`] wraps `stream_into`, the one step whose duration
+/// a client controls. It deliberately does **not** wrap `finish`.
+///
+/// `tokio::fs::rename` is `spawn_blocking` underneath, and dropping the future
+/// that awaits a `spawn_blocking` handle does not cancel the closure. With the
+/// publish inside the clock, the deadline could fire mid-`finish`: the client
+/// would be told 400, the `.part` would be unlinked, and the detached rename
+/// would then land, leaving the attachment published under its final name after
+/// a refusal. Keeping `finish` outside the clock is what makes "refused" and
+/// "published" exclusive. The cost is stated where the constant is defined: the
+/// deadline bounds the client's half of the turn, not a hung filesystem.
 async fn write_body(
     staging: &StagingDir,
     already_used: u64,
@@ -221,40 +236,21 @@ async fn write_body(
     body: Body,
 ) -> Result<StoredAttachment> {
     let mut open: Option<OpenPart> = None;
-    let outcome = match tokio::time::timeout(
+    // `open` lives here rather than inside the timed future so the part
+    // survives the cancellation and is unlinked by its destructor.
+    let written = match tokio::time::timeout(
         deadline,
-        stream_and_publish(&mut open, staging, already_used, body),
+        stream_into(&mut open, staging, already_used, body),
     )
     .await
     {
-        Ok(outcome) => outcome,
-        Err(_elapsed) => Err(upload_timed_out(deadline)),
+        Ok(written) => written?,
+        Err(_elapsed) => return Err(upload_timed_out(deadline)),
     };
-    if outcome.is_err()
-        && let Some(part) = open.take()
-    {
-        part.abandon(staging).await;
-    }
-    outcome
-}
-
-/// Everything that must happen with the `.part` still registered in `open`.
-async fn stream_and_publish(
-    open: &mut Option<OpenPart>,
-    staging: &StagingDir,
-    already_used: u64,
-    body: Body,
-) -> Result<StoredAttachment> {
-    let written = stream_into(open, staging, already_used, body).await?;
-    let id = open
-        .as_mut()
-        .expect("a successful stream leaves an open part")
-        .finish(staging)
-        .await?;
-    // The bytes now live under their final name and the `.part` is gone, so the
-    // part must leave `open` before the caller's cleanup arm can see it. No
-    // fallible step stands between the rename and this line.
-    open.take();
+    let mut part = open
+        .take()
+        .expect("a successful stream leaves an open part");
+    let id = part.finish(staging).await?;
     Ok(StoredAttachment { id, size: written })
 }
 
@@ -331,9 +327,9 @@ async fn stream_into(
 
 /// Sniff, create the `.part`, and write everything buffered so far.
 ///
-/// The part is moved into `open` before the first write, so a write that fails
-/// here is cleaned up by [`write_body`]'s single `Err` arm rather than by a
-/// second, duplicate arm here that no test could ever reach.
+/// The part is moved into `open` before the first write only so the caller can
+/// go on using it; the unlink on failure is [`OpenPart`]'s destructor either
+/// way, so there is no arm here to forget.
 async fn flush_pending(
     open: &mut Option<OpenPart>,
     staging: &StagingDir,
@@ -374,13 +370,51 @@ fn map_body_error(error: &(dyn std::error::Error + 'static)) -> CalmError {
 
 /// The `<id>.part` file, before it earns its final name.
 ///
-/// `file` is an `Option` only so `finish` can close the descriptor before the
-/// rename while still taking `&mut self` — the part has to stay borrowed rather
-/// than consumed, so that a failing `finish` leaves it registered for the
-/// cleanup arm in [`write_body`].
+/// # The destructor is the cleanup
+///
+/// #1505 review round 3. Every earlier shape put the unlink in an error arm,
+/// and every earlier shape missed a way out: a `?` past the arm (round 1), the
+/// handler future being dropped so the arm never ran at all (round 2). A
+/// destructor has no such gap — it runs on `return`, on `?`, on a cancelled
+/// future and on a dropped handler — so it is where the unlink belongs.
+///
+/// Two consequences, both deliberate:
+///
+/// * `Drop` cannot await, so the unlink is a blocking `std::fs::remove_file`.
+///   That is one syscall on a local file, and the alternative — spawning a task
+///   from `Drop` — is not available on a runtime that may be shutting down.
+/// * once [`OpenPart::finish`] has renamed the file, `published` is set and the
+///   destructor does nothing. Without it a late destructor would unlink a name
+///   that a later upload could legitimately have recreated.
+///
+/// `file` is an `Option` so `finish` can close the descriptor before the rename
+/// while still taking `&mut self`, which is what keeps a failing `finish` on
+/// the cleanup path.
 struct OpenPart {
     id: AttachmentId,
     file: Option<tokio::fs::File>,
+    /// The `<id>.part` path, kept whole so the destructor needs no arguments.
+    part_path: std::path::PathBuf,
+    published: bool,
+}
+
+impl Drop for OpenPart {
+    fn drop(&mut self) {
+        if self.published {
+            return;
+        }
+        drop(self.file.take());
+        match std::fs::remove_file(&self.part_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(
+                target: "planner_attachments::store",
+                attachment = %self.id,
+                %error,
+                "could not remove an abandoned attachment part"
+            ),
+        }
+    }
 }
 
 impl OpenPart {
@@ -410,6 +444,8 @@ impl OpenPart {
         Ok(OpenPart {
             id,
             file: Some(file),
+            part_path: path,
+            published: false,
         })
     }
 
@@ -426,9 +462,10 @@ impl OpenPart {
 
     /// `sync_all` then `rename` — steps 4 and 5.
     ///
-    /// Takes `&mut self` so that a failure here leaves the part registered in
-    /// [`write_body`]'s `open`, and therefore cleaned up. Every arm below is a
-    /// real failure on a full or failing disk.
+    /// Takes `&mut self` so a failure here leaves the part alive, and therefore
+    /// still owned by its destructor. `published` is set only after the rename
+    /// has returned `Ok`, which is what stops the destructor from unlinking a
+    /// name that is now a real attachment.
     async fn finish(&mut self, staging: &StagingDir) -> Result<AttachmentId> {
         let mut file = self
             .file
@@ -441,34 +478,21 @@ impl OpenPart {
             CalmError::Internal(format!("planner attachment upload: fsync: {error}"))
         })?;
         drop(file);
-        let from = staging.path().join(part_name(&self.id));
         let to = staging.path().join(self.id.as_str());
         let id = self.id.clone();
-        tokio::fs::rename(&from, &to).await.map_err(move |error| {
-            // Names the attachment, not the two absolute host paths: this
-            // string reaches the client, and the workspace layout is not the
-            // client's business.
-            CalmError::Internal(format!(
-                "planner attachment upload: `{id}` could not be published under its final name: \
-                 {error}"
-            ))
-        })?;
+        tokio::fs::rename(&self.part_path, &to)
+            .await
+            .map_err(move |error| {
+                // Names the attachment, not the two absolute host paths: this
+                // string reaches the client, and the workspace layout is not
+                // the client's business.
+                CalmError::Internal(format!(
+                    "planner attachment upload: `{id}` could not be published under its final \
+                     name: {error}"
+                ))
+            })?;
+        self.published = true;
         Ok(self.id.clone())
-    }
-
-    /// Refusal path: the bytes are dropped, so the `.part` goes too. Best
-    /// effort — a leftover `.part` is swept later and is never referenceable.
-    async fn abandon(mut self, staging: &StagingDir) {
-        let name = part_name(&self.id);
-        drop(self.file.take());
-        if let Err(error) = super::gc::remove_staged_file(staging, &name) {
-            tracing::warn!(
-                target: "planner_attachments::store",
-                file = %name,
-                %error,
-                "could not remove an abandoned attachment part"
-            );
-        }
     }
 }
 

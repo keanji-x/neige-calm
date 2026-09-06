@@ -442,17 +442,34 @@ fn workspace_relative_path(raw: &str) -> Result<PathBuf> {
 }
 
 #[derive(Debug)]
-struct OpenWorkspaceFile {
-    file: tokio::fs::File,
-    display_path: PathBuf,
-    size: u64,
+pub(crate) struct OpenWorkspaceFile {
+    pub(crate) file: tokio::fs::File,
+    pub(crate) display_path: PathBuf,
+    pub(crate) size: u64,
 }
 
 /// Open one workspace file with the root directory descriptor as the
 /// authority. `openat2` resolves and opens atomically, so a concurrent worker
 /// cannot swap a checked parent for an escaping symlink before the read.
+///
+/// What this establishes, in one syscall, is the whole list a hand-rolled
+/// `open` has to re-derive and keeps getting wrong (#1505 S6-PR1 spent three
+/// review rounds on exactly that):
+///
+/// * `RESOLVE_BENEATH` — **every** component resolves beneath `workspace_root`,
+///   not just the last one, so an intermediate directory replaced by a symlink
+///   is `EXDEV` rather than a redirect;
+/// * `RESOLVE_NO_MAGICLINKS` — no `/proc/self/fd` style reopen;
+/// * `O_NONBLOCK` — a FIFO swapped onto the path returns `ENXIO` instead of
+///   parking the blocking thread until a writer appears;
+/// * the `is_file()` check on the returned descriptor — not on the name — so a
+///   directory, socket or device is refused after the open, with no window
+///   between the check and the handle.
+///
+/// Callers outside `routes::fs` must treat the returned `CalmError` as
+/// internal: its messages carry the requested host path.
 #[cfg(target_os = "linux")]
-async fn open_workspace_regular_file(
+pub(crate) async fn open_workspace_regular_file(
     workspace_root: &Path,
     relative_path: &str,
 ) -> Result<OpenWorkspaceFile> {
@@ -541,7 +558,7 @@ fn map_workspace_open_err(
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn open_workspace_regular_file(
+pub(crate) async fn open_workspace_regular_file(
     _workspace_root: &Path,
     relative_path: &str,
 ) -> Result<OpenWorkspaceFile> {

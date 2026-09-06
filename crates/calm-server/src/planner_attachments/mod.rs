@@ -62,19 +62,23 @@ pub const NEIGE_DIR: &str = ".neige";
 /// The line `ensure_git_exclude_entry` keeps in `.git/info/exclude`.
 pub const NEIGE_GIT_EXCLUDE_ENTRY: &str = ".neige/";
 
-/// Total bytes one card's uploads may add to `staging/` and `bound/` together.
+/// The most [`used_bytes`] may report before an upload is refused.
 ///
-/// Not a bound on the subtree's size: [`used_bytes`] counts the regular files
-/// directly in those two directories, so bytes parked in a subdirectory, or
+/// An instantaneous ceiling, not a lifetime quota. [`gc::sweep_staging`]
+/// reclaims staged files older than [`gc::ORPHAN_TTL`], so a card that fills
+/// the budget and then goes quiet for a day can fill it again — which, since
+/// this slice writes nothing into `bound/`, is the only behaviour it actually
+/// has today.
+///
+/// Nor is it a bound on the subtree's size: [`used_bytes`] counts the regular
+/// files directly in the two directories, so bytes parked in a subdirectory, or
 /// behind a symlink, by anything else with write access to the workspace are
 /// invisible to it and keep being invisible however many there are.
 ///
-/// Bound bytes are never reclaimed, so uploads have to be refused rather than
-/// evicted: exceeding the budget is an error the user can see, not a silent
-/// eviction of bytes codex may still be asked to read. What the number bounds
-/// is the regular files [`used_bytes`] counts — i.e. what this store wrote,
-/// plus anything else that happens to be a regular file in the two
-/// directories. It is enforced under the card's upload lock (see
+/// Once the bind path lands (S6-PR2), bound bytes are not reclaimed by
+/// anything, which is why exceeding the ceiling has to be a refusal the user
+/// can see rather than a silent eviction of bytes codex may still be asked to
+/// read. It is enforced under the card's upload lock (see
 /// [`store::store_upload`]), so concurrent uploads cannot each measure the same
 /// "before" and both fit.
 pub const PER_CARD_ATTACHMENT_BUDGET: u64 = 64 * 1024 * 1024;
@@ -83,20 +87,66 @@ pub const PER_CARD_ATTACHMENT_BUDGET: u64 = 64 * 1024 * 1024;
 /// `http_body_util::Limited` while the body streams.
 pub const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 
-/// How long one upload may hold its card's turn, measured from the first byte
-/// read to the rename.
+/// How long the *body read* of one upload may run.
 ///
-/// #1515 review round 2. The per-card lock that makes the budget honest is also
+/// #1505 review round 2. The per-card lock that makes the budget honest is also
 /// a lane one client can sit in: the guard is held across the body read, and
 /// nothing else in this server bounds a request body's duration (there is no
 /// `TimeoutLayer`). Without this, a connection that sends a 12-byte PNG header
 /// and then stops holds the lane until the socket dies, and every later upload
 /// on that card waits behind it.
 ///
+/// # What it does not bound
+///
+/// Round 2 called this "how long an upload may hold its card's turn". That is
+/// wider than the code and is corrected here. The turn is taken before the
+/// budget measurement and released after the staging sweep, and the clock
+/// covers only `stream_into` — the client-controlled step — between them. The
+/// filesystem work on either side (`used_bytes`, `create_dir_all`, `finish`,
+/// the sweep) is outside it, so a workspace on a wedged mount can hold the turn
+/// past this deadline with it never firing. Bounding that would mean bounding
+/// local filesystem calls, which this server does nowhere; it is recorded as a
+/// known gap rather than implied away. `finish` is outside the clock for a
+/// second, deliberate reason — see [`store`]'s `write_body`.
+///
+/// The clock starts when the timeout is constructed, i.e. once the exclude
+/// entry, the budget and the staging directory are already done.
+///
 /// Generous on purpose — 8 MiB over a bad mobile link is minutes, and a refusal
 /// the user did not earn is worse than a lane held a while — but finite, which
 /// is the property the lock needs.
 pub const UPLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The one way this module reports a fault whose detail is a host path.
+///
+/// #1505 review round 3. Every `CalmError` built anywhere under
+/// `planner_attachments` is rendered into an HTTP error body, so a path
+/// interpolated into a message is a path handed to the client — and rounds 1
+/// and 2 each fixed one message and left the rest of the class. There is now
+/// exactly one constructor that takes paths, it puts them in the log, and the
+/// returned sentence carries none of them.
+///
+/// The class-level check is a grep, and it is the reason this is stated as a
+/// rule rather than as a claim about particular messages: **every `.display()`
+/// under `crates/calm-server/src/planner_attachments/` sits inside a
+/// `tracing::` macro.** A path reaching a `CalmError` would have to appear
+/// outside one, so `grep -n '\.display()' planner_attachments/*.rs` and reading
+/// the enclosing call is the whole audit. `{error}` interpolations are safe
+/// alongside it because `std::fs` I/O errors carry no path of their own — the
+/// one place that was false, `ensure_git_exclude_entry`, formats its own paths
+/// in, and `store.rs` logs that error instead of returning it.
+fn server_side_fault(summary: &str, paths: &[(&str, &Path)]) -> CalmError {
+    for (label, path) in paths {
+        tracing::error!(
+            target: "planner_attachments",
+            path_kind = %label,
+            path = %path.display(),
+            %summary,
+            "planner attachment fault"
+        );
+    }
+    CalmError::Internal(format!("planner attachments: {summary}"))
+}
 
 /// `<workspace>/.neige/attachments` for a managed workspace.
 ///
@@ -115,17 +165,16 @@ pub fn attachment_root(workspace: &TrackWorkspace, workspace_root: &Path) -> Res
     }
     let path = Path::new(&workspace.path);
     if !path.is_absolute() {
-        return Err(CalmError::Internal(format!(
-            "managed workspace path `{}` is not absolute",
-            workspace.path
-        )));
+        return Err(server_side_fault(
+            "the track's managed workspace path is not absolute",
+            &[("workspace", path)],
+        ));
     }
     if !path.starts_with(workspace_root) {
-        return Err(CalmError::Internal(format!(
-            "managed workspace path `{}` is outside the workspace root `{}`",
-            workspace.path,
-            workspace_root.display()
-        )));
+        return Err(server_side_fault(
+            "the track's managed workspace lies outside the workspace root",
+            &[("workspace", path), ("workspace_root", workspace_root)],
+        ));
     }
     Ok(path.join(NEIGE_DIR).join("attachments"))
 }
@@ -151,48 +200,94 @@ impl BoundDir {
     }
 }
 
+/// The two directory names, single-sourced: [`staging_dir`] joins this one and
+/// [`open_attachment`] spells the same segment into the relative path it hands
+/// the workspace opener.
+const STAGING: &str = "staging";
+const BOUND: &str = "bound";
+
 /// `<root>/<card_id>/staging`.
 pub fn staging_dir(root: &Path, card_id: &CardId) -> StagingDir {
-    StagingDir(root.join(card_id.as_str()).join("staging"))
+    StagingDir(root.join(card_id.as_str()).join(STAGING))
 }
 
 /// `<root>/<card_id>/bound`.
 pub fn bound_dir(root: &Path, card_id: &CardId) -> BoundDir {
-    BoundDir(root.join(card_id.as_str()).join("bound"))
+    BoundDir(root.join(card_id.as_str()).join(BOUND))
 }
 
-/// A path this subtree is willing to serve: a *regular* file, stat'd with
-/// `symlink_metadata` so the link itself is described rather than followed.
+/// An attachment the server has already opened.
 ///
-/// Nothing in this module ever creates a symlink here, so an entry that is one
-/// was planted by something else with write access to the workspace — an agent,
-/// say — and serving its target would turn this endpoint into a reader for a
-/// path the server never chose. `false` for every non-regular entry, and for an
-/// entry that cannot be stat'd at all.
-fn is_regular_file(path: &Path) -> bool {
-    std::fs::symlink_metadata(path)
-        .map(|meta| meta.file_type().is_file())
-        .unwrap_or(false)
+/// A descriptor, not a path: nothing downstream re-opens by name, so there is
+/// no second resolution for anything to race.
+#[derive(Debug)]
+pub struct OpenAttachment {
+    pub file: tokio::fs::File,
+    pub size: u64,
+    pub format: AttachmentFormat,
 }
 
-/// The one place an [`AttachmentId`] becomes a path.
+/// The one place an [`AttachmentId`] becomes bytes.
 ///
-/// `bound/` first, then `staging/`. An id that names no regular file in either
-/// is a `BadRequest` — which is also the whole cross-card forgery answer: the
-/// directory comes from the card in the URL, so another card's id simply is not
-/// there. No comparison, no ownership column, no second check.
-pub fn resolve(
+/// # Why this delegates instead of checking
+///
+/// The obvious shape — `lstat` the name, decide, then `open` it — is wrong, and
+/// #1505 review rounds 2 and 3 each caught a different way it is wrong: the
+/// `open` is a second resolution, so a rename between the two decides what is
+/// served; `O_NOFOLLOW` closes only the final component, leaving an
+/// intermediate directory swapped for a symlink to another card's subtree; and
+/// without `O_NONBLOCK` a FIFO on the path parks a blocking thread forever.
+///
+/// Every one of those is already answered by
+/// [`crate::routes::fs::open_workspace_regular_file`], which resolves and opens
+/// atomically with `openat2` under `RESOLVE_BENEATH`. So this calls it rather
+/// than re-deriving its checks: the root descriptor is `<workspace>/.neige/
+/// attachments`, and `<card_id>/<dir>/<id>` is resolved beneath it.
+///
+/// `bound/` first, then `staging/`. What answers cross-card forgery is that the
+/// root is derived from the card in the URL and the resolution cannot leave it
+/// — including through an intermediate symlink, which is the part a name-based
+/// check could not carry.
+///
+/// The opener's own errors name host paths, so they are logged and replaced
+/// with one refusal that names only the attachment and the card.
+pub async fn open_attachment(
     root: &Path,
     card_id: &CardId,
     id: &AttachmentId,
-) -> Result<(PathBuf, AttachmentFormat)> {
-    let bound = bound_dir(root, card_id).path().join(id.as_str());
-    if is_regular_file(&bound) {
-        return Ok((bound, id.format()));
-    }
-    let staged = staging_dir(root, card_id).path().join(id.as_str());
-    if is_regular_file(&staged) {
-        return Ok((staged, id.format()));
+) -> Result<OpenAttachment> {
+    for dir in [BOUND, STAGING] {
+        let relative = format!("{}/{dir}/{}", card_id.as_str(), id.as_str());
+        match crate::routes::fs::open_workspace_regular_file(root, &relative).await {
+            Ok(opened) => {
+                return Ok(OpenAttachment {
+                    file: opened.file,
+                    size: opened.size,
+                    format: id.format(),
+                });
+            }
+            // The platform cannot do a bounded, root-anchored open at all
+            // (no `openat2`). That is not "this card does not have that
+            // attachment", and must not be reported as one.
+            Err(CalmError::Internal(error)) => {
+                tracing::error!(
+                    target: "planner_attachments",
+                    %error,
+                    "the workspace opener is unavailable; attachments cannot be read"
+                );
+                return Err(CalmError::Internal(
+                    "planner attachment read: the secure workspace open path is unavailable".into(),
+                ));
+            }
+            Err(error) => {
+                tracing::debug!(
+                    target: "planner_attachments",
+                    %relative,
+                    %error,
+                    "attachment did not open here"
+                );
+            }
+        }
     }
     Err(CalmError::BadRequest(format!(
         "attachment `{id}` does not belong to card {card_id}"
@@ -265,6 +360,9 @@ fn unmeasurable(dir: &Path, error: &std::io::Error) -> CalmError {
         %error,
         "could not measure a card's attachment budget"
     );
+    // `BadRequest`, not [`server_side_fault`]: the caller can act on it (free
+    // space, remove the planted entry), so it is a refusal rather than a fault.
+    // The path rule is the same and is why `dir` appears only above.
     CalmError::BadRequest(format!(
         "cannot measure this card's attachment budget: {error}"
     ))
