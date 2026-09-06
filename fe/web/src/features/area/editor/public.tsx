@@ -40,6 +40,9 @@ export type AreaEditorPatch = Readonly<{
 export type AreaEditorFormProps = Readonly<{
   initial: AreaEditorValues;
   submitting: boolean;
+  /** An unconfirmed creation must retry its original payload. */
+  locked: boolean;
+  cancelLabel: string;
   error: string | null;
   templates: readonly TrackTemplate[];
   templatesLoaded: boolean;
@@ -52,7 +55,7 @@ export type AreaEditorFormProps = Readonly<{
 }>;
 
 export function AreaEditorForm({
-  initial, submitting, error, templates, templatesLoaded, templatesError,
+  initial, submitting, locked, cancelLabel, error, templates, templatesLoaded, templatesError,
   listDirectory, nameInputRef, submitLabel, onCancel, onSubmit,
 }: AreaEditorFormProps) {
   const folderId = `${useId()}-default-folder`;
@@ -119,7 +122,7 @@ export function AreaEditorForm({
         value={name}
         onChange={setName}
         width="100%"
-        isDisabled={submitting}
+        isDisabled={submitting || locked}
       />
       <HStack gap={1} align="center" className={styles.controlRow}>
         <HStack gap={1} align="center" className={styles.pills}>
@@ -130,20 +133,20 @@ export function AreaEditorForm({
             onChange={setTemplateId}
             placement="below"
             controlLabel="Default template"
-            isDisabled={submitting}
+            isDisabled={submitting || locked}
           />
           <FolderPill
             buttonId={folderId}
             value={cwd}
             controlLabel="Default folder"
             clearLabel="Use a new Neige workspace"
-            isDisabled={submitting}
+            isDisabled={submitting || locked}
             onBrowse={() => setBrowsing(true)}
             onClear={() => setCwd('')}
           />
         </HStack>
         <HStack gap={1} justify="end" className={styles.actions}>
-          <Button type="button" variant="ghost" label="Cancel" isDisabled={submitting} onClick={onCancel} />
+          <Button type="button" variant="ghost" label={cancelLabel} isDisabled={submitting} onClick={onCancel} />
           <Button
             type="submit"
             variant="primary"

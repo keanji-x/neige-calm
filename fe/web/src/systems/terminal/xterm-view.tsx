@@ -1,10 +1,10 @@
-// Ported from web/src/XtermView.tsx. Protocol, handshake, resize, OSC 52,
-// and teardown stay with the original file; import paths are the only
-// intentional adaptation for the fe layer.
+// Terminal protocol, rendering and connection lifecycle. Reconnect replaces
+// only the WebSocket; retained output is replaced by the next full replay.
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { useState } from '../../ui/state/public.ts';
+import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { dlog } from './debug.ts';
 import { makeUuid } from './uuid.ts';
 import { MONO_STACK } from './font-stack.ts';
@@ -97,6 +97,7 @@ interface XtermViewProps {
    * badge immediately without waiting for the WS attach.
    */
   onExitChange?: (exit: ExitChange | null) => void;
+  onStatusChange?: (status: TerminalConnectionStatus) => void;
   /**
    * Overlay visibility. The view stays mounted after the first open
    * (keep-alive). Hidden cards must not ResizeCommit or accept OSC 52.
@@ -153,7 +154,7 @@ function isNonDegenerateMountSize(width: number, height: number): boolean {
  *   exited        — daemon sent `TerminalExited` (terminal mode child exited)
  *   protocol-error — daemon sent `ProtocolError`; connection terminated
  */
-type Status =
+export type TerminalConnectionStatus =
   | 'connecting'
   | 'handshaking'
   | 'connected'
@@ -191,6 +192,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   theme = 'light',
   onRoleChange,
   onExitChange,
+  onStatusChange,
   visible = true,
 }, ref) {
   // #177 — Playwright instrumentation. Gated on `?testMounts=1` so
@@ -230,17 +232,11 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   useEffect(() => {
     if (visible) flushResizeRef.current?.();
   }, [visible]);
-  const [status, setStatus] = useState<Status>('connecting');
-  // #306 — `closeInfo` / `exitInfo` state retained as setter-only seams:
-  // the WS handlers still write the latest values (useful for debug-
-  // tooling / future tests that need to query last-close metadata) but
-  // no UI reads them post-#306 — the overlays they used to feed were
-  // removed in favor of the parent-rendered header badge. `void` on the
-  // reader suppresses the "declared but never read" warning without
-  // forcing us to drop the setter (which would require unwinding the
-  // close-frame logic that still calls it for status promotion).
+  const [status, setStatus] = useState<TerminalConnectionStatus>('connecting');
+  const onStatusChangeRef = useRef(onStatusChange);
+  onStatusChangeRef.current = onStatusChange;
+  useEffect(() => { onStatusChangeRef.current?.(status); }, [status]);
   const [closeInfo, setCloseInfo] = useState<CloseInfo | null>(null);
-  void closeInfo;
   const [protocolError, setProtocolError] = useState<ProtocolError | null>(null);
   const [exitInfo, setExitInfo] = useState<ExitInfo | null>(null);
   void exitInfo;
@@ -266,19 +262,13 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   // flip on the callback shouldn't tear down the WebSocket effect.
   const onExitChangeRef = useRef<XtermViewProps['onExitChange']>(onExitChange);
   onExitChangeRef.current = onExitChange;
-  // #306 — `reconnectKey` is retained as a remount lever: bumping it
-  // re-runs the WS effect (rebuilding the WS + xterm.js Terminal +
-  // re-attaching to the daemon). The pre-#306 build called the
-  // setter from the in-XtermView Restart / Reconnect buttons; those
-  // overlays were removed in v1, so the parent-facing path is now the
-  // imperative handle below: card heads can call `refresh()` without
-  // re-introducing UI state inside XtermView. The deps array below still
-  // references `reconnectKey` so the effect re-runs on bump.
-  const [reconnectKey, setReconnectKey] = useState(0);
+  // Reconnect only the browser transport. The mounted xterm and its output
+  // stay available until a successful attach supplies an authoritative replay.
+  const reconnectRef = useRef<(() => void) | null>(null);
   useImperativeHandle(
     ref,
     () => ({
-      refresh: () => setReconnectKey((k) => k + 1),
+      refresh: () => reconnectRef.current?.(),
       getWheelTarget: () => {
         if (!rootRef.current) {
           return null;
@@ -420,6 +410,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       convertEol: true,
       allowProposedApi: true,
       cursorBlink: true,
+      disableStdin: true,
     });
     termRef.current = term;
     // OSC-echo regression instrumentation. Gated on `?testMounts=1` (so
@@ -564,297 +555,510 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     }
     lastFailedMountSizeRef.current = null;
 
-    const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${
-      location.host
-    }/api/terminals/${encodeURIComponent(terminalId)}`;
-    const ws = new WebSocket(wsUrl);
+    const connect = () => {
+      setStatus('connecting');
+      setCloseInfo(null);
+      setProtocolError(null);
+      exitInfoRef.current = null;
+      term.options.disableStdin = true;
+      let connectionReady = false;
+      let awaitingOwner = false;
+      const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${
+        location.host
+      }/api/terminals/${encodeURIComponent(terminalId)}`;
+      const ws = new WebSocket(wsUrl);
 
-    // #177 — queue frames produced before the WS finishes its handshake.
-    // The theme-effect (sibling below) can fire between `new WebSocket(…)`
-    // and `ws.onopen` — the pre-#177 `send()` silently dropped such
-    // frames and the daemon never learned about the toggle. Buffer here
-    // and flush in `ws.onopen` (after the ClientHello). On WS close /
-    // teardown the queue is GC'd along with the closure, so there's no
-    // zombie-message risk.
-    const pendingFrames: ClientMsg[] = [];
-    const send = (msg: ClientMsg) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(msg));
-      } else {
-        pendingFrames.push(msg);
-      }
-    };
-    // #177 — surface `send` so the theme-effect (above) can post
-    // `TerminalThemeUpdate` without owning a WebSocket of its own.
-    // Cleared in the teardown below.
-    sendRef.current = send;
-    // #177 — drain a `TerminalThemeUpdate` buffered by the theme-effect
-    // before this WS effect ran. `send()` itself handles the
-    // not-yet-OPEN case via `pendingFrames`, so this works on a cold
-    // mount (where readyState is CONNECTING and the message rides the
-    // `pendingFrames` queue until `ws.onopen` drains it) AND on a
-    // reconnect (same path).
-    if (pendingThemeRef.current) {
-      send(pendingThemeRef.current);
-      pendingThemeRef.current = null;
-    }
-
-    // Per-connection client id. The daemon's `OwnerRegistry` keys on this
-    // so the same browser tab survives WS reconnects without losing
-    // ownership. We can't call `crypto.randomUUID()` directly: it is
-    // restricted to secure contexts (https + localhost), so the LAN-http
-    // case (http://192.168.x.x:4040) hits `TypeError: crypto.randomUUID
-    // is not a function`. `makeUuid()` falls back to a v4 synthesized
-    // from `crypto.getRandomValues`, which is always available — see
-    // `util/uuid.ts`.
-    const clientId = makeUuid();
-    // Monotonic resize epoch. Bumped on every `ResizeCommit` so a
-    // `ResizeApplied` echo can be matched to its request (and stale
-    // applies from a previous epoch ignored).
-    let resizeEpoch = 0;
-    // Geometry captured by the successful mount-time fit. Keep it separate
-    // from `term.cols/rows`: ServerHello may resize the local xterm back to
-    // the authoritative PTY geometry before we decide whether first attach
-    // can be synchronized safely.
-    const mountDesired = { cols: term.cols, rows: term.rows };
-    let lastCols = term.cols;
-    let lastRows = term.rows;
-    // Track the latest render_rev / pty_seq the daemon emitted. Future
-    // PRs use these to send `RenderAck` for back-pressure; today we just
-    // keep them current for the (unimplemented) resume path.
-    let renderRev = 0;
-    let ptySeq = 0;
-
-    // Liveness detection is owned server-side (ws/terminal.rs: 10s ping,
-    // 30s pong_timeout — closes with 1011 on timeout). The browser's WS
-    // impl handles TCP-level death itself and fires onclose/onerror. We
-    // previously kept a 40s client-side timer too, but it only observed
-    // JS-level `onmessage` (Text/Binary), NOT browser auto-pongs — so a
-    // healthy WS attached to an idle codex prompt (no PTY output for 40s)
-    // would false-positive close as code 1006. Server-side heartbeat
-    // already covers the real failure modes; the client-side timer was
-    // redundant and harmful.
-
-    ws.onopen = () => {
-      setStatus('handshaking');
-      send({
-        ClientHello: {
-          protocol_version: PROTOCOL_VERSION,
-          terminal_id: terminalId,
-          client_id: clientId,
-          desired_size: {
-            cols: mountDesired.cols,
-            rows: mountDesired.rows,
-            pixel_width: null,
-            pixel_height: null,
-          },
-          cell_size: null,
-          // 'All' restores daemon-retained scrollback on remount (track nav
-          // remounts XtermView); server bound is SCROLLBACK_MAX_LINES so
-          // this is not unbounded.
-          initial_scrollback: 'All',
-          resume_from: null,
-          // The browser is the user's primary interaction surface, so we
-          // hint Owner. The daemon may still hand us Observer if someone
-          // else (CLI client, another tab) already owns the session.
-          role_hint: 'Owner',
-          capabilities: {
-            render_encodings: ['Vt'],
-            supports_scrollback: true,
-            supports_sixel: false,
-            supports_images: false,
-            // Browser is an untrusted ingress; the WS bridge force-strips
-            // this to false on every ClientHello regardless of what we
-            // send, but we declare false here to match the trust model
-            // documented on the field (see crates/calm-session/src/lib.rs).
-            kernel_originated_input: false,
-          },
-        },
-      });
-      // #177 — flush frames queued before the WS finished its handshake.
-      // Typical culprit: a theme toggle in the brief window between
-      // `new WebSocket(…)` and `ws.onopen`. Without this drain, the
-      // toggle would be silently dropped at the readyState check in
-      // `send()` and the daemon's OSC 10/11 defaults would never
-      // update to match the new host theme. Drains via `ws.send`
-      // directly (bypasses the queueing branch — we're definitely
-      // OPEN inside `onopen`).
-      while (pendingFrames.length > 0) {
-        const queued = pendingFrames.shift()!;
-        ws.send(JSON.stringify(queued));
-      }
-    };
-
-    ws.onmessage = (e) => {
-      let msg: DaemonMsg;
-      try {
-        msg = JSON.parse(typeof e.data === 'string' ? e.data : '') as DaemonMsg;
-      } catch {
-        return;
-      }
-      // Dispatch over the externally-tagged enum. Each branch narrows the
-      // payload via TypeScript's discriminated-union rules; this is why
-      // `DaemonMsg` is sourced from `generated-terminal.ts`.
-      if ('ServerHello' in msg) {
-        const sh = msg.ServerHello;
-        onRoleChangeRef.current?.(sh.client_role);
-        setStatus('connected');
-        if (wantedOwnerRef.current && sh.client_role === 'Observer') {
-          // Previous owner's pump may not have released yet; claim eagerly
-          // instead of waiting for the first owner-gated frame to fail.
-          send('OwnerClaim');
+      // #177 — queue frames produced before the WS finishes its handshake.
+      // The theme-effect (sibling below) can fire between `new WebSocket(…)`
+      // and `ws.onopen` — the pre-#177 `send()` silently dropped such
+      // frames and the daemon never learned about the toggle. Buffer here
+      // and flush in `ws.onopen` (after the ClientHello). On WS close /
+      // teardown the queue is GC'd along with the closure, so there's no
+      // zombie-message risk.
+      const pendingFrames: ClientMsg[] = [];
+      const send = (msg: ClientMsg) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(msg));
+        } else if (ws.readyState === WebSocket.CONNECTING) {
+          pendingFrames.push(msg);
         }
-        // Snapshot may be bigger or smaller than the viewport we opened
-        // with; resize the local terminal to match before writing the
-        // replay so the cursor lines up.
-        if (sh.snapshot.cols !== term.cols || sh.snapshot.rows !== term.rows) {
-          term.resize(sh.snapshot.cols, sh.snapshot.rows);
-          lastCols = sh.snapshot.cols;
-          lastRows = sh.snapshot.rows;
-        }
-        if (sh.snapshot.scrollback) {
-          term.write(Uint8Array.from(sh.snapshot.scrollback));
-          // Flush viewport into xterm's scrollback ring before the next
-          // write: snapshot.data leads with ED 2 (`\x1b[2J`), which would
-          // otherwise erase the tail of replayed history still sitting in
-          // the visible viewport.
-          term.write('\r\n'.repeat(term.rows));
-        }
-        term.write(Uint8Array.from(sh.snapshot.data), () => {
-          term.scrollToBottom();
-        });
-        // A pure expansion cannot clip the authoritative recovery model, so
-        // it is safe to apply after the snapshot write is queued. This keeps
-        // a fresh 80x24 renderer in sync with a larger first mount while
-        // refusing remount-time shrink or mixed-axis changes, either of which
-        // can destroy history and must wait for stable ResizeObserver intent.
-        const mountIsPureExpansion =
-          mountDesired.cols >= sh.pty_size.cols &&
-          mountDesired.rows >= sh.pty_size.rows &&
-          (mountDesired.cols > sh.pty_size.cols ||
-            mountDesired.rows > sh.pty_size.rows);
-        if (sh.client_role === 'Owner' && mountIsPureExpansion) {
-          resizeEpoch += 1;
-          send({
-            ResizeCommit: {
-              epoch: resizeEpoch,
+      };
+      // #177 — surface `send` so the theme-effect (above) can post
+      // `TerminalThemeUpdate` without owning a WebSocket of its own.
+      // Cleared in the teardown below.
+      sendRef.current = send;
+      // #177 — drain a `TerminalThemeUpdate` buffered by the theme-effect
+      // before this WS effect ran. `send()` itself handles the
+      // not-yet-OPEN case via `pendingFrames`, so this works on a cold
+      // mount (where readyState is CONNECTING and the message rides the
+      // `pendingFrames` queue until `ws.onopen` drains it) AND on a
+      // reconnect (same path).
+      if (pendingThemeRef.current) {
+        send(pendingThemeRef.current);
+        pendingThemeRef.current = null;
+      }
+
+      // Per-connection client id. The daemon's `OwnerRegistry` keys on this
+      // so the same browser tab survives WS reconnects without losing
+      // ownership. We can't call `crypto.randomUUID()` directly: it is
+      // restricted to secure contexts (https + localhost), so the LAN-http
+      // case (http://192.168.x.x:4040) hits `TypeError: crypto.randomUUID
+      // is not a function`. `makeUuid()` falls back to a v4 synthesized
+      // from `crypto.getRandomValues`, which is always available — see
+      // `util/uuid.ts`.
+      const clientId = makeUuid();
+      // Monotonic resize epoch. Bumped on every `ResizeCommit` so a
+      // `ResizeApplied` echo can be matched to its request (and stale
+      // applies from a previous epoch ignored).
+      let resizeEpoch = 0;
+      // Geometry captured by the successful mount-time fit. Keep it separate
+      // from `term.cols/rows`: ServerHello may resize the local xterm back to
+      // the authoritative PTY geometry before we decide whether first attach
+      // can be synchronized safely.
+      const mountDesired = { cols: term.cols, rows: term.rows };
+      let lastCols = term.cols;
+      let lastRows = term.rows;
+      // Track the latest render_rev / pty_seq the daemon emitted. Future
+      // PRs use these to send `RenderAck` for back-pressure; today we just
+      // keep them current for the (unimplemented) resume path.
+      let renderRev = 0;
+      let ptySeq = 0;
+
+      // Liveness detection is owned server-side (ws/terminal.rs: 10s ping,
+      // 30s pong_timeout — closes with 1011 on timeout). The browser's WS
+      // impl handles TCP-level death itself and fires onclose/onerror. We
+      // previously kept a 40s client-side timer too, but it only observed
+      // JS-level `onmessage` (Text/Binary), NOT browser auto-pongs — so a
+      // healthy WS attached to an idle codex prompt (no PTY output for 40s)
+      // would false-positive close as code 1006. Server-side heartbeat
+      // already covers the real failure modes; the client-side timer was
+      // redundant and harmful.
+
+      ws.onopen = () => {
+        setStatus('handshaking');
+        send({
+          ClientHello: {
+            protocol_version: PROTOCOL_VERSION,
+            terminal_id: terminalId,
+            client_id: clientId,
+            desired_size: {
               cols: mountDesired.cols,
               rows: mountDesired.rows,
+              pixel_width: null,
+              pixel_height: null,
             },
-          });
-        }
-        renderRev = sh.snapshot.render_rev;
-        ptySeq = sh.snapshot.pty_seq;
-        return;
-      }
-      if ('RenderPatch' in msg) {
-        const p = msg.RenderPatch;
-        if (p.encoding === 'Vt') {
-          term.write(Uint8Array.from(p.data));
-        }
-        renderRev = p.render_rev;
-        ptySeq = p.pty_seq;
-        return;
-      }
-      if ('RenderSnapshot' in msg) {
-        // Standalone snapshot — daemon decided we need a hard re-sync
-        // (typically because a `ResizeCommit` triggered a model reframe, or
-        // because the client lagged on the broadcast channel and the server
-        // pump issued a fresh snapshot — see calm-server client_pump.rs).
-        const s = msg.RenderSnapshot;
-        if (s.cols !== term.cols || s.rows !== term.rows) {
-          term.resize(s.cols, s.rows);
-          lastCols = s.cols;
-          lastRows = s.rows;
-        }
-        if (s.scrollback) {
-          term.clear();
-          // xterm clear() keeps the current cursor column; ServerHello uses a
-          // fresh Terminal, but lag-recovery snapshots replay into an existing
-          // session and need to start restored history at column 0.
-          term.write('\x1b[H');
-          term.write(Uint8Array.from(s.scrollback));
-          // Same ED 2 erasure guard as ServerHello: snapshot.data leads with
-          // `\x1b[2J`, which would otherwise erase the tail of just-replayed
-          // history still sitting in the viewport.
-          term.write('\r\n'.repeat(term.rows));
-        }
-        term.write(Uint8Array.from(s.data), () => {
-          term.scrollToBottom();
+            cell_size: null,
+            // 'All' restores daemon-retained scrollback on remount (track nav
+            // remounts XtermView); server bound is SCROLLBACK_MAX_LINES so
+            // this is not unbounded.
+            initial_scrollback: 'All',
+            resume_from: null,
+            // The browser is the user's primary interaction surface, so we
+            // hint Owner. The daemon may still hand us Observer if someone
+            // else (CLI client, another tab) already owns the session.
+            role_hint: 'Owner',
+            capabilities: {
+              render_encodings: ['Vt'],
+              supports_scrollback: true,
+              supports_sixel: false,
+              supports_images: false,
+              // Browser is an untrusted ingress; the WS bridge force-strips
+              // this to false on every ClientHello regardless of what we
+              // send, but we declare false here to match the trust model
+              // documented on the field (see crates/calm-session/src/lib.rs).
+              kernel_originated_input: false,
+            },
+          },
         });
-        renderRev = s.render_rev;
-        ptySeq = s.pty_seq;
-        return;
-      }
-      if ('ResizeApplied' in msg) {
-        const r = msg.ResizeApplied;
-        // Stale-epoch guard: a `ResizeApplied` from a previous request
-        // (out-of-order on a slow network) shouldn't clobber the now-newer
-        // local geometry. We track epoch monotonically below.
-        if (r.epoch < resizeEpoch) return;
-        lastCols = r.cols;
-        lastRows = r.rows;
-        renderRev = r.render_rev;
-        ptySeq = r.pty_seq;
-        return;
-      }
-      if ('SnapshotRequired' in msg) {
-        // Daemon is about to send a fresh snapshot. Clear local state and
-        // wait — the `RenderSnapshot` will arrive next.
-        term.clear();
-        return;
-      }
-      if ('TerminalExited' in msg) {
-        const t = msg.TerminalExited;
-        exitInfoRef.current = { code: t.code };
-        setExitInfo({ code: t.code });
-        setStatus('exited');
-        // #306 — fire `onExitChange` so the parent renders the header
-        // badge (`exit N` / `signal`). The JSON `TerminalExited` frame
-        // doesn't carry a signal flag (the daemon's wire enum predates
-        // signal awareness — `code` here is whatever
-        // `ExitStatus::exit_code()` returned, which is 128+sig for a
-        // signal-killed child on POSIX). For v1 we surface that as the
-        // numeric code; the more reliable signal_killed flag arrives
-        // via the sidecar / REST seed (see parent's terminal-card
-        // builtin). Idempotent against the duplicate `onclose` fire.
-        onExitChangeRef.current?.({
-          exit_code: t.code,
-          signal_killed: false,
-        });
-        term.writeln(
-          `\r\n\x1b[2m[process exited${
-            t.code != null ? ` (code ${t.code})` : ''
-          }]\x1b[0m`,
-        );
-        return;
-      }
-      if ('ProtocolError' in msg) {
-        setProtocolError({
-          code: msg.ProtocolError.code,
-          message: msg.ProtocolError.message,
-        });
-        setStatus('protocol-error');
-        return;
-      }
-      if ('OwnerChanged' in msg) {
-        const { owner_client_id: newOwnerId } = msg.OwnerChanged;
-        dlog('XtermView', 'OwnerChanged', msg.OwnerChanged);
-        if (newOwnerId === null) {
-          if (wantedOwnerRef.current) {
+        // #177 — flush frames queued before the WS finished its handshake.
+        // Typical culprit: a theme toggle in the brief window between
+        // `new WebSocket(…)` and `ws.onopen`. Without this drain, the
+        // toggle would be silently dropped at the readyState check in
+        // `send()` and the daemon's OSC 10/11 defaults would never
+        // update to match the new host theme. Drains via `ws.send`
+        // directly (bypasses the queueing branch — we're definitely
+        // OPEN inside `onopen`).
+        while (pendingFrames.length > 0) {
+          const queued = pendingFrames.shift()!;
+          ws.send(JSON.stringify(queued));
+        }
+      };
+
+      ws.onmessage = (e) => {
+        let msg: DaemonMsg;
+        try {
+          msg = JSON.parse(typeof e.data === 'string' ? e.data : '') as DaemonMsg;
+        } catch {
+          return;
+        }
+        // Dispatch over the externally-tagged enum. Each branch narrows the
+        // payload via TypeScript's discriminated-union rules; this is why
+        // `DaemonMsg` is sourced from `generated-terminal.ts`.
+        if ('ServerHello' in msg) {
+          const sh = msg.ServerHello;
+          onRoleChangeRef.current?.(sh.client_role);
+          setStatus('connected');
+          awaitingOwner = false;
+          connectionReady = true;
+          term.options.disableStdin = false;
+          // A full replay replaces the retained view; do not append it twice.
+          term.reset();
+          if (wantedOwnerRef.current && sh.client_role === 'Observer') {
+            // Previous owner's pump may not have released yet; claim eagerly
+            // instead of waiting for the first owner-gated frame to fail.
             send('OwnerClaim');
+          }
+          // Snapshot may be bigger or smaller than the viewport we opened
+          // with; resize the local terminal to match before writing the
+          // replay so the cursor lines up.
+          if (sh.snapshot.cols !== term.cols || sh.snapshot.rows !== term.rows) {
+            term.resize(sh.snapshot.cols, sh.snapshot.rows);
+            lastCols = sh.snapshot.cols;
+            lastRows = sh.snapshot.rows;
+          }
+          if (sh.snapshot.scrollback) {
+            term.write(Uint8Array.from(sh.snapshot.scrollback));
+            // Flush viewport into xterm's scrollback ring before the next
+            // write: snapshot.data leads with ED 2 (`\x1b[2J`), which would
+            // otherwise erase the tail of replayed history still sitting in
+            // the visible viewport.
+            term.write('\r\n'.repeat(term.rows));
+          }
+          term.write(Uint8Array.from(sh.snapshot.data), () => {
+            term.scrollToBottom();
+          });
+          // A pure expansion cannot clip the authoritative recovery model, so
+          // it is safe to apply after the snapshot write is queued. This keeps
+          // a fresh 80x24 renderer in sync with a larger first mount while
+          // refusing remount-time shrink or mixed-axis changes, either of which
+          // can destroy history and must wait for stable ResizeObserver intent.
+          const mountIsPureExpansion =
+            mountDesired.cols >= sh.pty_size.cols &&
+            mountDesired.rows >= sh.pty_size.rows &&
+            (mountDesired.cols > sh.pty_size.cols ||
+              mountDesired.rows > sh.pty_size.rows);
+          if (sh.client_role === 'Owner' && mountIsPureExpansion) {
+            resizeEpoch += 1;
+            send({
+              ResizeCommit: {
+                epoch: resizeEpoch,
+                cols: mountDesired.cols,
+                rows: mountDesired.rows,
+              },
+            });
+          }
+          renderRev = sh.snapshot.render_rev;
+          ptySeq = sh.snapshot.pty_seq;
+          return;
+        }
+        if ('RenderPatch' in msg) {
+          const p = msg.RenderPatch;
+          if (p.encoding === 'Vt') {
+            term.write(Uint8Array.from(p.data));
+          }
+          renderRev = p.render_rev;
+          ptySeq = p.pty_seq;
+          return;
+        }
+        if ('RenderSnapshot' in msg) {
+          // Standalone snapshot — daemon decided we need a hard re-sync
+          // (typically because a `ResizeCommit` triggered a model reframe, or
+          // because the client lagged on the broadcast channel and the server
+          // pump issued a fresh snapshot — see calm-server client_pump.rs).
+          const s = msg.RenderSnapshot;
+          if (s.cols !== term.cols || s.rows !== term.rows) {
+            term.resize(s.cols, s.rows);
+            lastCols = s.cols;
+            lastRows = s.rows;
+          }
+          if (s.scrollback) {
+            term.clear();
+            // xterm clear() keeps the current cursor column; ServerHello uses a
+            // fresh Terminal, but lag-recovery snapshots replay into an existing
+            // session and need to start restored history at column 0.
+            term.write('\x1b[H');
+            term.write(Uint8Array.from(s.scrollback));
+            // Same ED 2 erasure guard as ServerHello: snapshot.data leads with
+            // `\x1b[2J`, which would otherwise erase the tail of just-replayed
+            // history still sitting in the viewport.
+            term.write('\r\n'.repeat(term.rows));
+          }
+          term.write(Uint8Array.from(s.data), () => {
+            term.scrollToBottom();
+          });
+          renderRev = s.render_rev;
+          ptySeq = s.pty_seq;
+          return;
+        }
+        if ('ResizeApplied' in msg) {
+          const r = msg.ResizeApplied;
+          // Stale-epoch guard: a `ResizeApplied` from a previous request
+          // (out-of-order on a slow network) shouldn't clobber the now-newer
+          // local geometry. We track epoch monotonically below.
+          if (r.epoch < resizeEpoch) return;
+          lastCols = r.cols;
+          lastRows = r.rows;
+          renderRev = r.render_rev;
+          ptySeq = r.pty_seq;
+          return;
+        }
+        if ('SnapshotRequired' in msg) {
+          // Daemon is about to send a fresh snapshot. Clear local state and
+          // wait — the `RenderSnapshot` will arrive next.
+          term.clear();
+          return;
+        }
+        if ('TerminalExited' in msg) {
+          const t = msg.TerminalExited;
+          exitInfoRef.current = { code: t.code };
+          setExitInfo({ code: t.code });
+          setStatus('exited');
+          awaitingOwner = false;
+          connectionReady = false;
+          term.options.disableStdin = true;
+          // #306 — fire `onExitChange` so the parent renders the header
+          // badge (`exit N` / `signal`). The JSON `TerminalExited` frame
+          // doesn't carry a signal flag (the daemon's wire enum predates
+          // signal awareness — `code` here is whatever
+          // `ExitStatus::exit_code()` returned, which is 128+sig for a
+          // signal-killed child on POSIX). For v1 we surface that as the
+          // numeric code; the more reliable signal_killed flag arrives
+          // via the sidecar / REST seed (see parent's terminal-card
+          // builtin). Idempotent against the duplicate `onclose` fire.
+          onExitChangeRef.current?.({
+            exit_code: t.code,
+            signal_killed: false,
+          });
+          term.writeln(
+            `\r\n\x1b[2m[process exited${
+              t.code != null ? ` (code ${t.code})` : ''
+            }]\x1b[0m`,
+          );
+          return;
+        }
+        if ('ProtocolError' in msg) {
+          // NotOwner rejects an operation without closing the established
+          // connection. Only an owner acknowledgement may restore its input.
+          awaitingOwner = msg.ProtocolError.code === 'NotOwner'
+            && (connectionReady || awaitingOwner) && ws.readyState === WebSocket.OPEN;
+          setProtocolError({
+            code: msg.ProtocolError.code,
+            message: msg.ProtocolError.message,
+          });
+          setStatus('protocol-error');
+          connectionReady = false;
+          term.options.disableStdin = true;
+          return;
+        }
+        if ('OwnerChanged' in msg) {
+          // Late ownership events cannot recover fatal errors, exits or a
+          // closed transport, even when they name this client.
+          if ((!connectionReady && !awaitingOwner) || ws.readyState !== WebSocket.OPEN) return;
+          const { owner_client_id: newOwnerId } = msg.OwnerChanged;
+          dlog('XtermView', 'OwnerChanged', msg.OwnerChanged);
+          if (newOwnerId === null) {
+            if (wantedOwnerRef.current) {
+              send('OwnerClaim');
+            }
+            return;
+          }
+          if (newOwnerId === clientId) {
+            onRoleChangeRef.current?.('Owner');
+            if (awaitingOwner) {
+              awaitingOwner = false;
+              connectionReady = true;
+              term.options.disableStdin = false;
+              setStatus('connected');
+              setProtocolError(null);
+            }
+            // A ResizeCommit sent while we were Observer may have been
+            // rejected, leaving the PTY at the previous owner's geometry.
+            // Our local terminal is already fitted, so resend its current
+            // dimensions when ownership transfers to this client, unless
+            // the current geometry is clearly too small to be a real PTY.
+            if (term.cols >= MIN_COMMIT_COLS && term.rows >= MIN_COMMIT_ROWS) {
+              resizeEpoch += 1;
+              send({
+                ResizeCommit: {
+                  epoch: resizeEpoch,
+                  cols: term.cols,
+                  rows: term.rows,
+                },
+              });
+            } else {
+              dlog(
+                'XtermView',
+                'OwnerChanged ResizeCommit suppressed: degenerate geometry',
+                {
+                  cols: term.cols,
+                  rows: term.rows,
+                },
+              );
+            }
+          } else {
+            onRoleChangeRef.current?.('Observer');
           }
           return;
         }
-        if (newOwnerId === clientId) {
-          onRoleChangeRef.current?.('Owner');
-          setProtocolError(null);
-          // A ResizeCommit sent while we were Observer may have been
-          // rejected, leaving the PTY at the previous owner's geometry.
-          // Our local terminal is already fitted, so resend its current
-          // dimensions when ownership transfers to this client, unless
-          // the current geometry is clearly too small to be a real PTY.
-          if (term.cols >= MIN_COMMIT_COLS && term.rows >= MIN_COMMIT_ROWS) {
+        if ('Backpressure' in msg) {
+          // Wire shape only in this PR — the daemon never emits it yet, but
+          // log if it ever shows up so we can debug. Future work: implement
+          // policy-aware throttling.
+          dlog('XtermView', 'Backpressure', msg.Backpressure);
+          return;
+        }
+      };
+
+      ws.onclose = (e) => {
+        const wasAwaitingOwner = awaitingOwner;
+        awaitingOwner = false;
+        connectionReady = false;
+        term.options.disableStdin = true;
+        // Keep the buffer visible, lift connection truth to the header, and
+        // retain technical close details in the recovery disclosure.
+        // 1000 + `child-exited` reason = daemon's clean child-exit close
+        //   (see ws/terminal.rs::CLOSE_REASON_CHILD_EXITED). We map this
+        //   to the `exited` state even if the prior `TerminalExited`
+        //   JSON frame got dropped on a slow link.
+        // 1006 = abnormal closure (network / proxy cut, no Close frame).
+        // 1011 = server-side heartbeat trip (see ws/terminal.rs PONG_TIMEOUT).
+        // 1001 = endpoint going away (server restart, page navigation).
+        setCloseInfo({ code: e.code, reason: e.reason || '' });
+        dlog('XtermView', 'WS close', {
+          code: e.code,
+          reason: e.reason,
+          wasClean: e.wasClean,
+        });
+        const isChildExitClose =
+          e.code === 1000 && e.reason === 'child-exited';
+        // Don't clobber a more-specific terminal state (`exited`,
+        // `protocol-error`) — those carry richer information than the
+        // generic close code. A `child-exited` close promotes us to
+        // `exited` even if the JSON exit frame never arrived.
+        setStatus((prev) => {
+          if (prev === 'exited' || (prev === 'protocol-error' && !wasAwaitingOwner)) return prev;
+          if (isChildExitClose) return 'exited';
+          return 'closed';
+        });
+        // #306 — backstop for the parent's exit badge. Fires ONLY when no
+        // prior `TerminalExited` JSON frame already
+        // delivered an exit code on this connection. The parent's
+        // `onExitChange` callback (terminal.tsx) is a plain setState
+        // with no dedupe / no "fill-if-null" semantic, so firing
+        // unconditionally here would clobber a live `{exit_code: 137,…}`
+        // back to `{exit_code: null,…}` on the normal happy path
+        // (TerminalExited frame followed by code-1000 child-exited
+        // close). The `exitInfoRef` mirror tracks the latest JSON-frame
+        // delivery synchronously so this gate is race-free against the
+        // setState in the JSON branches above.
+        if (isChildExitClose && exitInfoRef.current === null) {
+          onExitChangeRef.current?.({
+            exit_code: null,
+            signal_killed: false,
+          });
+        }
+        // Role is undefined once the WS is gone — parent clears any pill.
+        onRoleChangeRef.current?.(null);
+      };
+      ws.onerror = (e) => {
+        const wasAwaitingOwner = awaitingOwner;
+        awaitingOwner = false;
+        connectionReady = false;
+        term.options.disableStdin = true;
+        dlog('XtermView', 'WS error', e);
+        setStatus((prev) =>
+          prev === 'exited' || (prev === 'protocol-error' && !wasAwaitingOwner) ? prev : 'closed',
+        );
+        onRoleChangeRef.current?.(null);
+      };
+
+      const dataSub = term.onData((d) => {
+        if (!connectionReady) return;
+        const bytes = Array.from(new TextEncoder().encode(d));
+        // Browser typing path: `input_seq: 0` means "no ack requested"
+        // (option (b) from issue #115). The daemon writes the bytes and
+        // stays silent — no `DaemonMsg::InputAck` frame is emitted on the
+        // hot typing path. Only kernel-originated transient clients
+        // (DaemonClient::inject_stdin) use non-zero seqs to await
+        // deterministic delivery confirmation.
+        send({ Input: { data: bytes, input_seq: 0 } });
+      });
+
+      // Batch resize work to one tick per animation frame and skip cases
+      // where fit() didn't actually change the grid. RGL's resize handle
+      // fires the ResizeObserver on every mousemove; without the rAF guard
+      // the terminal re-fits and re-renders constantly, which shows up as a
+      // 1-2px shake on the inner canvas.
+      let pending = false;
+      let resizeFrame: number | null = null;
+      let sawInitialResizeObservation = false;
+      const onResize = () => {
+        // ResizeObserver always delivers an initial observation. Mount-time
+        // fit already supplied ClientHello.desired_size, and ServerHello may
+        // meanwhile have restored xterm to a wider authoritative PTY size.
+        // Treating this first notification as user intent would immediately
+        // narrow the PTY again and recreate the remount data-loss bug.
+        if (!sawInitialResizeObservation) {
+          sawInitialResizeObservation = true;
+          return;
+        }
+        if (pending) return;
+        pending = true;
+        resizeFrame = requestAnimationFrame(() => {
+          resizeFrame = null;
+          pending = false;
+          if (!connectionReady) return;
+          if (!visibleRef.current) return;
+          // Don't fit() against a collapsed container — fit() mutates the local
+          // xterm in-place, so even if we suppress the daemon ResizeCommit the
+          // local buffer would be left at e.g. 2x1 and interpret incoming
+          // RenderPatch bytes at the wrong geometry until the next observer fire.
+          // Mirrors the mount-path MIN_MOUNT_WIDTH_PX / MIN_MOUNT_HEIGHT_PX floor.
+          if (
+            !isNonDegenerateMountSize(container.offsetWidth, container.offsetHeight)
+          ) {
+            dlog('XtermView', 'resize → skip fit (container degenerate)', {
+              containerW: container.offsetWidth,
+              containerH: container.offsetHeight,
+              lastCols,
+              lastRows,
+            });
+            return;
+          }
+          try {
+            fit.fit();
+          } catch {
+            return;
+          }
+          // Belt-and-suspenders: even with the pixel-floor pre-gate, fit() can
+          // land on a marginal grid (e.g. very narrow column or 1-row card).
+          // fit() has already mutated the local xterm in-place; restore it to
+          // last-known-good so RenderPatch bytes don't render against a degenerate
+          // grid until the next observer fire. Mirrors the mount-path floor.
+          if (term.cols < MIN_COMMIT_COLS || term.rows < MIN_COMMIT_ROWS) {
+            dlog('XtermView', 'resize → fit DEGENERATE — restore last good', {
+              cols: term.cols,
+              rows: term.rows,
+              lastCols,
+              lastRows,
+            });
+            if (term.cols !== lastCols || term.rows !== lastRows) {
+              term.resize(lastCols, lastRows);
+            }
+            return;
+          }
+          if (term.cols !== lastCols || term.rows !== lastRows) {
+            dlog('XtermView', 'resize → fit', {
+              from: { cols: lastCols, rows: lastRows },
+              to: { cols: term.cols, rows: term.rows },
+              containerW: container.offsetWidth,
+              containerH: container.offsetHeight,
+            });
+            // Bump epoch on every commit so the daemon can ignore stale
+            // applies. `lastCols/Rows` stay at their previous value until
+            // `ResizeApplied` confirms — otherwise a debounce / coalesce
+            // could swallow a subsequent intentional resize back to the
+            // same size.
             resizeEpoch += 1;
             send({
               ResizeCommit: {
@@ -863,261 +1067,80 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
                 rows: term.rows,
               },
             });
-          } else {
-            dlog(
-              'XtermView',
-              'OwnerChanged ResizeCommit suppressed: degenerate geometry',
-              {
-                cols: term.cols,
-                rows: term.rows,
-              },
-            );
           }
-        } else {
-          onRoleChangeRef.current?.('Observer');
-        }
-        return;
-      }
-      if ('Backpressure' in msg) {
-        // Wire shape only in this PR — the daemon never emits it yet, but
-        // log if it ever shows up so we can debug. Future work: implement
-        // policy-aware throttling.
-        dlog('XtermView', 'Backpressure', msg.Backpressure);
-        return;
-      }
-    };
-
-    ws.onclose = (e) => {
-      // Capture close code/reason for debug logging. Post-#306 we no
-      // longer surface either as an overlay — the buffer stays visible
-      // and the parent's header badge carries any exit info. The
-      // `status` state is still maintained for the protocol-error
-      // overlay branch and for tests that pin the post-close state.
-      // 1000 + `child-exited` reason = daemon's clean child-exit close
-      //   (see ws/terminal.rs::CLOSE_REASON_CHILD_EXITED). We map this
-      //   to the `exited` state even if the prior `TerminalExited`
-      //   JSON frame got dropped on a slow link.
-      // 1006 = abnormal closure (network / proxy cut, no Close frame).
-      // 1011 = server-side heartbeat trip (see ws/terminal.rs PONG_TIMEOUT).
-      // 1001 = endpoint going away (server restart, page navigation).
-      setCloseInfo({ code: e.code, reason: e.reason || '' });
-      dlog('XtermView', 'WS close', {
-        code: e.code,
-        reason: e.reason,
-        wasClean: e.wasClean,
-      });
-      const isChildExitClose =
-        e.code === 1000 && e.reason === 'child-exited';
-      // Don't clobber a more-specific terminal state (`exited`,
-      // `protocol-error`) — those carry richer information than the
-      // generic close code. A `child-exited` close promotes us to
-      // `exited` even if the JSON exit frame never arrived.
-      setStatus((prev) => {
-        if (prev === 'exited' || prev === 'protocol-error') return prev;
-        if (isChildExitClose) return 'exited';
-        return 'closed';
-      });
-      // #306 — backstop for the parent's exit badge. Fires ONLY when no
-      // prior `TerminalExited` JSON frame already
-      // delivered an exit code on this connection. The parent's
-      // `onExitChange` callback (terminal.tsx) is a plain setState
-      // with no dedupe / no "fill-if-null" semantic, so firing
-      // unconditionally here would clobber a live `{exit_code: 137,…}`
-      // back to `{exit_code: null,…}` on the normal happy path
-      // (TerminalExited frame followed by code-1000 child-exited
-      // close). The `exitInfoRef` mirror tracks the latest JSON-frame
-      // delivery synchronously so this gate is race-free against the
-      // setState in the JSON branches above.
-      if (isChildExitClose && exitInfoRef.current === null) {
-        onExitChangeRef.current?.({
-          exit_code: null,
-          signal_killed: false,
         });
-      }
-      // Role is undefined once the WS is gone — parent clears any pill.
-      onRoleChangeRef.current?.(null);
-    };
-    ws.onerror = (e) => {
-      dlog('XtermView', 'WS error', e);
-      setStatus((prev) =>
-        prev === 'exited' || prev === 'protocol-error' ? prev : 'closed',
-      );
-      onRoleChangeRef.current?.(null);
-    };
+      };
+      flushResizeRef.current = onResize;
+      const ro = new ResizeObserver(onResize);
+      ro.observe(container);
 
-    const dataSub = term.onData((d) => {
-      const bytes = Array.from(new TextEncoder().encode(d));
-      // Browser typing path: `input_seq: 0` means "no ack requested"
-      // (option (b) from issue #115). The daemon writes the bytes and
-      // stays silent — no `DaemonMsg::InputAck` frame is emitted on the
-      // hot typing path. Only kernel-originated transient clients
-      // (DaemonClient::inject_stdin) use non-zero seqs to await
-      // deterministic delivery confirmation.
-      send({ Input: { data: bytes, input_seq: 0 } });
-    });
+      // Surface ack ref so future tests / devtools can inspect; unused at
+      // runtime so the variable doesn't trip TS's no-unused warning.
+      void renderRev;
+      void ptySeq;
 
-    // Batch resize work to one tick per animation frame and skip cases
-    // where fit() didn't actually change the grid. RGL's resize handle
-    // fires the ResizeObserver on every mousemove; without the rAF guard
-    // the terminal re-fits and re-renders constantly, which shows up as a
-    // 1-2px shake on the inner canvas.
-    let pending = false;
-    let sawInitialResizeObservation = false;
-    const onResize = () => {
-      // ResizeObserver always delivers an initial observation. Mount-time
-      // fit already supplied ClientHello.desired_size, and ServerHello may
-      // meanwhile have restored xterm to a wider authoritative PTY size.
-      // Treating this first notification as user intent would immediately
-      // narrow the PTY again and recreate the remount data-loss bug.
-      if (!sawInitialResizeObservation) {
-        sawInitialResizeObservation = true;
-        return;
-      }
-      if (pending) return;
-      pending = true;
-      requestAnimationFrame(() => {
-        pending = false;
-        if (!visibleRef.current) return;
-        // Don't fit() against a collapsed container — fit() mutates the local
-        // xterm in-place, so even if we suppress the daemon ResizeCommit the
-        // local buffer would be left at e.g. 2x1 and interpret incoming
-        // RenderPatch bytes at the wrong geometry until the next observer fire.
-        // Mirrors the mount-path MIN_MOUNT_WIDTH_PX / MIN_MOUNT_HEIGHT_PX floor.
-        if (
-          !isNonDegenerateMountSize(container.offsetWidth, container.offsetHeight)
-        ) {
-          dlog('XtermView', 'resize → skip fit (container degenerate)', {
-            containerW: container.offsetWidth,
-            containerH: container.offsetHeight,
-            lastCols,
-            lastRows,
-          });
-          return;
-        }
+      return () => {
+        if (flushResizeRef.current === onResize) flushResizeRef.current = null;
+        ro.disconnect();
+        if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+        dataSub.dispose();
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onclose = null;
+        ws.onerror = null;
         try {
-          fit.fit();
+          ws.close();
         } catch {
-          return;
+          /* already closed */
         }
-        // Belt-and-suspenders: even with the pixel-floor pre-gate, fit() can
-        // land on a marginal grid (e.g. very narrow column or 1-row card).
-        // fit() has already mutated the local xterm in-place; restore it to
-        // last-known-good so RenderPatch bytes don't render against a degenerate
-        // grid until the next observer fire. Mirrors the mount-path floor.
-        if (term.cols < MIN_COMMIT_COLS || term.rows < MIN_COMMIT_ROWS) {
-          dlog('XtermView', 'resize → fit DEGENERATE — restore last good', {
-            cols: term.cols,
-            rows: term.rows,
-            lastCols,
-            lastRows,
-          });
-          if (term.cols !== lastCols || term.rows !== lastRows) {
-            term.resize(lastCols, lastRows);
-          }
-          return;
+        // #177 — symmetric guard for `sendRef`. Same strict-mode
+        // double-invoke risk as `termRef`: a teardown that runs after
+        // the next mount installed its own `send` would null out the
+        // new value. Only clear if we still own it.
+        if (sendRef.current === send) {
+          sendRef.current = null;
         }
-        if (term.cols !== lastCols || term.rows !== lastRows) {
-          dlog('XtermView', 'resize → fit', {
-            from: { cols: lastCols, rows: lastRows },
-            to: { cols: term.cols, rows: term.rows },
-            containerW: container.offsetWidth,
-            containerH: container.offsetHeight,
-          });
-          // Bump epoch on every commit so the daemon can ignore stale
-          // applies. `lastCols/Rows` stay at their previous value until
-          // `ResizeApplied` confirms — otherwise a debounce / coalesce
-          // could swallow a subsequent intentional resize back to the
-          // same size.
-          resizeEpoch += 1;
-          send({
-            ResizeCommit: {
-              epoch: resizeEpoch,
-              cols: term.cols,
-              rows: term.rows,
-            },
-          });
-        }
-      });
+        // Parent should reset any role pill when the bridge tears down — the
+        // next mount will re-emit on `ServerHello`. Sync here (not via
+        // onclose) so a strict-mode unmount or a `terminalId` change clears
+        // the parent state even if no close frame fires.
+        onRoleChangeRef.current?.(null);
+        // #306 followup — defensive: reset the live exit mirror on teardown.
+        // On a terminal swap or reconnect the next attach must not inherit
+        // this ref still
+        // pointing at the previous terminal's exit, and the close-frame
+        // backstop in `ws.onclose` (which gates on `exitInfoRef.current
+        // === null`) could be suppressed for the new terminal if its
+        // `TerminalExited` JSON frame is lost on a slow link. Narrow edge
+        // today, one line to prevent.
+        exitInfoRef.current = null;
+        // #421 followup — mirror `onRoleChange` above: the parent's `exit`
+        // state must also be cleared on teardown so a user-triggered
+        // reconnect (Refresh / Reset) doesn't inherit a `TerminalExited`
+        // badge from the previous daemon attach. Without this, a clean
+        // exit_code=1 delivered just before tear-down (e.g. the old codex
+        // daemon exits when its app-server is reaped during Reset) stays
+        // pinned on the new card head even though the new daemon is up.
+        // Synced here (not via `ws.onclose`) so a strict-mode unmount or a
+        // reconnect always clears it, matching the role pill.
+        onExitChangeRef.current?.(null);
+      };
     };
-    flushResizeRef.current = onResize;
-    const ro = new ResizeObserver(onResize);
-    ro.observe(container);
-
-    // Surface ack ref so future tests / devtools can inspect; unused at
-    // runtime so the variable doesn't trip TS's no-unused warning.
-    void renderRev;
-    void ptySeq;
-
+    let disconnect = connect();
+    const reconnect = () => {
+      disconnect();
+      disconnect = connect();
+    };
+    reconnectRef.current = reconnect;
     return () => {
-      if (flushResizeRef.current === onResize) flushResizeRef.current = null;
-      ro.disconnect();
-      dataSub.dispose();
-      ws.onopen = null;
-      ws.onmessage = null;
-      ws.onclose = null;
-      ws.onerror = null;
-      try {
-        ws.close();
-      } catch {
-        /* already closed */
-      }
+      if (reconnectRef.current === reconnect) reconnectRef.current = null;
+      disconnect();
       term.dispose();
-      // Tear down this terminal's test-only buffer-dump hook (only
-      // present under `?testMounts=1`). Keyed by `terminalId` so we only
-      // remove our own entry, never a sibling card's.
       removeTestDumpHook();
-      // Only clear the ref if it's still pointing at *this* term. A
-      // strict-mode double-invoke teardown can run after the next mount
-      // has already installed its own term; without this guard we'd null
-      // out the new instance.
       if (termRef.current === term) termRef.current = null;
-      // #177 — symmetric guard for `sendRef`. Same strict-mode
-      // double-invoke risk as `termRef`: a teardown that runs after
-      // the next mount installed its own `send` would null out the
-      // new value. Only clear if we still own it.
-      if (sendRef.current === send) {
-        sendRef.current = null;
-      }
-      // Parent should reset any role pill when the bridge tears down — the
-      // next mount will re-emit on `ServerHello`. Sync here (not via
-      // onclose) so a strict-mode unmount or a `terminalId` change clears
-      // the parent state even if no close frame fires.
-      onRoleChangeRef.current?.(null);
-      // #306 followup — defensive: reset the live exit mirror on teardown.
-      // Effect deps are `[terminalId, reconnectKey]`; on a future swap or
-      // bump the next mount would otherwise inherit this ref still
-      // pointing at the previous terminal's exit, and the close-frame
-      // backstop in `ws.onclose` (which gates on `exitInfoRef.current
-      // === null`) could be suppressed for the new terminal if its
-      // `TerminalExited` JSON frame is lost on a slow link. Narrow edge
-      // today, one line to prevent.
-      exitInfoRef.current = null;
-      // #421 followup — mirror `onRoleChange` above: the parent's `exit`
-      // state must also be cleared on teardown so a user-triggered
-      // reconnect (Refresh / Reset) doesn't inherit a `TerminalExited`
-      // badge from the previous daemon attach. Without this, a clean
-      // exit_code=1 delivered just before tear-down (e.g. the old codex
-      // daemon exits when its app-server is reaped during Reset) stays
-      // pinned on the new card head even though the new daemon is up.
-      // Synced here (not via `ws.onclose`) so a strict-mode unmount or a
-      // `reconnectKey` bump always clears it, matching the role pill.
-      onExitChangeRef.current?.(null);
     };
-    // `theme` deliberately omitted: a theme flip should NOT rebuild the
-    // WebSocket / Terminal. The sibling effect above mutates
-    // `term.options.theme` in place. `latestThemeRef` captures the current
-    // value for the initial constructor.
-    //
-    // `status` intentionally omitted — adding it would trigger
-    // `term.dispose()` on close (any status transition would re-run this
-    // effect's cleanup) and erase the buffer. #306's UX contract is
-    // warp-style hold-on-close: the buffer must stay visible after exit
-    // so the user can scroll back / copy output, and the header badge
-    // (rendered by the parent off `onExitChange`) is the only signal
-    // that the child is gone. The `setStatus` calls inside the WS
-    // handlers above feed the local protocol-error overlay branch only
-    // — they intentionally don't re-arm this effect.
-  }, [terminalId, reconnectKey, layoutRetryKey]);
+    // Theme changes and connection status must never tear down the buffer.
+  }, [terminalId, layoutRetryKey]);
 
   return (
     <div ref={rootRef} className="xterm-view" data-nc-terminal-id={terminalId}>
@@ -1157,17 +1180,16 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       {!geometryDeferred && status === 'handshaking' && (
         <div className="xterm-status">handshaking…</div>
       )}
-      {/*
-       * #306 — the `'exited'` and `'closed'` overlays were intentionally
-       * removed. Buffer-stays-on-close (warp / zellij convention) is the
-       * v1 UX: the terminal contents stay visible and a small exit-code
-       * badge on the card header carries the exit info. The
-       * `'protocol-error'` overlay is the one remaining branch because
-       * it's a developer-facing red error (wrong wire version, etc.)
-       * that genuinely warrants taking over the surface. `exitInfo` /
-       * `closeInfo` state is still maintained for test seams; the
-       * `void` suppresses the unused-variable lint on the unread side.
-       */}
+      {status === 'closed' && (
+        <ErrorBox
+          message="Connection lost."
+          description="Reconnect to the same terminal."
+          actionLabel="Reconnect"
+          onRetry={() => reconnectRef.current?.()}
+          details={closeInfo === null ? undefined : `WebSocket ${closeInfo.code}${closeInfo.reason ? `: ${closeInfo.reason}` : ''}`}
+          floating
+        />
+      )}
       {status === 'protocol-error' && protocolError && (
         <div
           className="xterm-status xterm-status-closed"

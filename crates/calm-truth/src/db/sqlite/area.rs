@@ -53,6 +53,57 @@ pub async fn area_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewArea) -> Res
     })
 }
 
+/// Read a permanent creation binding inside the same immediate transaction as
+/// minting. An absent/deleted Area never frees the key for a second creation.
+pub async fn area_create_replay_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &str,
+    fingerprint: &str,
+) -> Result<Option<Area>> {
+    let binding: Option<(String, String)> = sqlx::query_as(
+        "SELECT request_fingerprint, area_id FROM area_create_idempotency WHERE idempotency_key = ?1",
+    )
+    .bind(key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((original_fingerprint, area_id)) = binding else {
+        return Ok(None);
+    };
+    if original_fingerprint != fingerprint {
+        return Err(CalmError::Conflict(
+            "This Area creation key belongs to a different request. Retry the original request or explicitly start a new Area.",
+        ));
+    }
+    let area = sqlx::query_as::<_, crate::db::rows::AreaRow>(
+        "SELECT id, name, color, sort, kind, default_template_id, default_cwd, created_at, updated_at FROM areas WHERE id = ?1",
+    )
+    .bind(&area_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .map(Area::from)
+    .ok_or_else(|| CalmError::Conflict(
+        "The Area created by this request was deleted. Discard this draft to explicitly start a new Area.",
+    ))?;
+    Ok(Some(area))
+}
+
+/// Must commit with the Area and its creation event; never claim a key in a
+/// separate transaction, or a lost response could leave unbound side effects.
+pub async fn area_create_bind_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &str,
+    fingerprint: &str,
+    area_id: &str,
+) -> Result<()> {
+    sqlx::query("INSERT INTO area_create_idempotency (idempotency_key, request_fingerprint, area_id) VALUES (?1, ?2, ?3)")
+        .bind(key)
+        .bind(fingerprint)
+        .bind(area_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// Issue #175 — mint the singleton system area that hosts the default
 /// Today terminal's track + card. The unique partial index on
 /// `areas(kind) WHERE kind = 'system'` from migration 0009 enforces the

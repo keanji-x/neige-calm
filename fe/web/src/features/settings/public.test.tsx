@@ -44,6 +44,15 @@ function generalProps(overrides: Partial<GeneralPaneProps> = {}): GeneralPanePro
 }
 
 describe('Settings general form', () => {
+  it('keeps an unfinished edit but withdraws Saved when the server changes underneath it', async () => {
+    const view = render(<GeneralPane {...generalProps()} />);
+    const field = screen.getByLabelText('Task concurrency');
+    await userEvent.clear(field); await userEvent.type(field, '2');
+    view.rerender(<GeneralPane {...generalProps({ settings: { [TASK_BUDGET_DEFAULT_KEY]: '3' } })} />);
+    expect(screen.getByLabelText<HTMLInputElement>('Task concurrency').value).toBe('2');
+    expect(screen.getByText('Changed elsewhere to 3. Your edit is not saved.')).toBeTruthy();
+    expect(field.closest('li')?.textContent).not.toContain('Saved.');
+  });
   it('shows the effective task concurrency supplied by the kernel', () => {
     render(<GeneralPane {...generalProps({
       settings: { [TASK_BUDGET_DEFAULT_KEY]: '4' },
@@ -75,6 +84,13 @@ describe('Settings general form', () => {
 });
 
 describe('Settings network form', () => {
+  it('keeps dirty proxy text and names a remotely changed reference', async () => {
+    const view = render(<NetworkPane {...props({ settings: { [HTTP_PROXY_KEY]: 'http://old' } })} />);
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), '/draft');
+    view.rerender(<NetworkPane {...props({ settings: { [HTTP_PROXY_KEY]: 'http://remote' } })} />);
+    expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://old/draft');
+    expect(screen.getByText('Changed elsewhere. Your edit is not saved.')).toBeTruthy();
+  });
   it('seeds the proxy fields from the settings bag', () => {
     render(<NetworkPane {...props({
       settings: { [HTTP_PROXY_KEY]: 'http://box:3128', [HTTPS_PROXY_KEY]: 'http://box:3129' },

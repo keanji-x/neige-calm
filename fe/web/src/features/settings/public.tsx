@@ -270,6 +270,7 @@ export function GeneralPane({
   const sent = useRef<number | null>(null);
   const sequence = useRef(0);
   const [status, setStatus] = useState<GeneralRowStatus>(GENERAL_IDLE);
+  const [changedElsewhere, setChangedElsewhere] = useState<number | null>(null);
   const statusRef = useRef(status);
   statusRef.current = status;
 
@@ -277,6 +278,12 @@ export function GeneralPane({
     const previous = seed;
     setSeed(incoming);
     if (statusRef.current.phase !== 'saving') sent.current = null;
+    if (statusRef.current.phase === 'saved' && statusRef.current.value !== incoming) setStatus(GENERAL_IDLE);
+    if (previous !== null && draft !== previous && draft !== incoming
+      && statusRef.current.phase !== 'saving'
+      && (statusRef.current.phase === 'idle' || statusRef.current.value !== incoming)) {
+      setChangedElsewhere(incoming);
+    } else if (draft === previous || draft === incoming) setChangedElsewhere(null);
     setDraft((current) => (previous === null || current === previous ? incoming : current));
   }
 
@@ -285,6 +292,7 @@ export function GeneralPane({
     if (!Number.isSafeInteger(value) || value < 1) return;
     if (value === (sent.current ?? base)) return;
     sent.current = value;
+    setChangedElsewhere(null);
     const ticket = (sequence.current += 1);
     const settle = (next: GeneralRowStatus) => {
       if (sequence.current !== ticket) return;
@@ -322,7 +330,9 @@ export function GeneralPane({
     return () => clearTimeout(id);
   }, [savedAt, savedNoticeMs]);
 
-  const inputStatus = status.phase !== 'idle' && status.value === draft
+  const inputStatus = changedElsewhere !== null && draft !== changedElsewhere
+    ? { type: 'warning' as const, message: `Changed elsewhere to ${changedElsewhere}. Your edit is not saved.` }
+    : status.phase !== 'idle' && status.value === draft
     ? status.phase === 'failed'
       ? { type: 'error' as const, message: status.message }
       : status.phase === 'saved'
@@ -492,6 +502,7 @@ export function NetworkPane({
   const [status, setStatus] = useState<Readonly<Record<ProxyField, RowStatus>>>(
     { http: IDLE, https: IDLE },
   );
+  const [changedElsewhere, setChangedElsewhere] = useState<Readonly<Record<ProxyField, boolean>>>({ http: false, https: false });
   /* Read by the re-seed block (render phase) and by the unmount cleanup, both
      of which need the *current* verdicts rather than a captured render's. */
   const statusRef = useRef(status);
@@ -515,6 +526,21 @@ export function NetworkPane({
     for (const field of PROXY_FIELDS) {
       if (statusRef.current[field].phase !== 'saving') sent.current[field] = null;
     }
+    setChangedElsewhere((current) => {
+      const next = { ...current };
+      for (const field of PROXY_FIELDS) {
+        const row = statusRef.current[field];
+        if (previous !== null && draft[field] !== previous[field] && draft[field] !== incoming[field]
+          && row.phase !== 'saving'
+          && (row.phase === 'idle' || row.value !== incoming[field])) next[field] = true;
+        else if (previous === null || draft[field] === previous[field] || draft[field] === incoming[field]) next[field] = false;
+      }
+      return next;
+    });
+    setStatus((current) => ({
+      http: current.http.phase === 'saved' && current.http.value !== incoming.http ? IDLE : current.http,
+      https: current.https.phase === 'saved' && current.https.value !== incoming.https ? IDLE : current.https,
+    }));
     setDraft((current) => ({
       http: previous === null || current.http === previous.http ? incoming.http : current.http,
       https: previous === null || current.https === previous.https ? incoming.https : current.https,
@@ -542,6 +568,7 @@ export function NetworkPane({
   const commit = (field: ProxyField, value: string) => {
     if (value === referenceFor(field)) return;
     sent.current[field] = value;
+    setChangedElsewhere((current) => ({ ...current, [field]: false }));
     const ticket = (sequence.current[field] += 1);
     const settle = (next: RowStatus) => {
       // A response for a superseded commit says nothing about the current one.
@@ -627,6 +654,9 @@ export function NetworkPane({
    * to say.
    */
   const statusFor = (field: ProxyField) => {
+    if (changedElsewhere[field] && draft[field] !== base[field]) {
+      return { type: 'warning' as const, message: 'Changed elsewhere. Your edit is not saved.' };
+    }
     const row = status[field];
     if (row.phase === 'idle') return undefined;
     /* A verdict describes **the value it was for**. Once the reader has moved

@@ -57,6 +57,20 @@
           "areas"
         ],
         "operationId": "create_area",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Optional creation identity. The same key and typed request return the same Area with 201 without another creation event; differing inputs or a deleted Area return 409. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -79,7 +93,17 @@
             }
           },
           "400": {
-            "description": "Unknown default template or invalid attached default folder",
+            "description": "Unknown default template, invalid attached default folder, or malformed Idempotency-Key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Creation key belongs to different inputs or its Area was deleted",
             "content": {
               "application/json": {
                 "schema": {
@@ -8628,6 +8652,7 @@
         "type": "object",
         "description": "Response shape for `GET /api/version`. camelCase on the wire so it lines\nup with the rest of the TypeScript-facing surface.",
         "required": [
+          "areaCreateIdempotency",
           "kernelVersion",
           "apiVersion",
           "syncEventVersion",
@@ -8642,6 +8667,10 @@
           "apiVersion": {
             "type": "string",
             "description": "REST contract version. Diagnostic-only on the wire — the frontend\ngates compatibility on `min_web_compat_version` (whole bundle) and\n`sync_event_version` (per-event-frame). See `API_VERSION` for the\nrationale. (Issue #198, concern 3.)"
+          },
+          "areaCreateIdempotency": {
+            "type": "boolean",
+            "description": "True only when Area creation binds Idempotency-Key atomically and permanently."
           },
           "buildSha": {
             "type": [

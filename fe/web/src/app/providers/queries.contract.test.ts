@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // Invariants owned by the shared query layer.
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElement, type ReactNode } from 'react';
 import { z } from 'zod';
 
@@ -16,6 +16,7 @@ import { NEUTRAL_ACTIVITY, type TrackDetailWire } from '../../../../core/domain/
 import {
   ApiError, areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
   useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
+  useTodayLaunchpadEnsureMutation, useTrackConversationMutations, useTrackRecipeMutations,
 } from './queries.ts';
 
 function recordingTransport(reply: (request: ApiRequest) => ApiTransportResponse) {
@@ -40,6 +41,64 @@ const baseTrackWire = {
   id: 'w1', area_id: 'c1', title: 'Ship it', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
 };
+
+afterEach(() => { cleanup(); onlineManager.setOnline(true); });
+
+describe('Area creation capability', () => {
+  it.each([{}, { areaCreateIdempotency: false }, { areaCreateIdempotency: 'true' }])(
+    'refuses to POST before an older or malformed server proves safe creation: %j', async (version) => {
+      const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+      const send = vi.fn(() => Promise.resolve(ok(version)));
+      const { result } = renderHook(() => useAreaMutations({ send }, unauthorized), {
+        wrapper: ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children),
+      });
+      await expect(result.current.create({ name: 'Safe', color: '#123456' }, 'safe-key')).rejects.toThrow();
+      expect(send.mock.calls).toHaveLength(1);
+      expect(send.mock.calls[0]).toEqual([expect.objectContaining({ method: 'GET', path: '/api/version' })]);
+    },
+  );
+});
+
+describe('interactive writes never queue an offline submission', () => {
+  function useWrites(transport: ApiTransportPort) {
+    return {
+      area: useAreaMutations(transport, unauthorized),
+      track: useTrackMutations(transport, unauthorized),
+      recipe: useTrackRecipeMutations(transport, unauthorized),
+      conversation: useTrackConversationMutations(transport, 'w1', unauthorized),
+      today: useTodayLaunchpadEnsureMutation(transport, unauthorized),
+    };
+  }
+  const cases: [string, (writes: ReturnType<typeof useWrites>) => Promise<unknown>][] = [
+    ['area create', ({ area }) => area.create({ name: 'Offline area', color: '#123456' }, 'offline-area')],
+    ['area update', ({ area }) => area.update('c1', { name: 'Offline rename' })],
+    ['track create', ({ track }) => track.create({ area_id: 'c1', theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
+    ['terminal create', ({ track }) => track.createTerminal('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
+    ['codex create', ({ track }) => track.createCodex('w1', { theme: { fg: [0, 0, 0], bg: [255, 255, 255] } })],
+    ['card create', ({ track }) => track.createCard('w1', { kind: 'note', title: 'Offline note', payload: {} })],
+    ['recipe create', ({ recipe }) => recipe.create({ title: 'Offline recipe', body: '' })],
+    ['recipe save', ({ recipe }) => recipe.save('recipe-1', { title: 'Offline recipe', body: '', if_revision: 1 })],
+    ['conversation create', ({ conversation }) => conversation.create('Offline message', 'offline-key')],
+    ['Today ensure', ({ today }) => today.ensure()],
+  ];
+  it.each(cases)('rejects %s before dispatch and does not replay it on reconnect', async (_name, submit) => {
+    const send = vi.fn(() => Promise.resolve(ok({})));
+    const transport: ApiTransportPort = { send };
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => useWrites(transport), { wrapper });
+    act(() => onlineManager.setOnline(false));
+    const rejected = vi.fn<(error: unknown) => void>();
+    act(() => { void submit(result.current).catch(rejected); });
+    await waitFor(() => expect(rejected).toHaveBeenCalledOnce());
+    const failure = rejected.mock.calls[0]?.[0];
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure instanceof ApiError ? failure.message : '').toMatch(/offline.*reconnect/i);
+    expect(client.getMutationCache().getAll().some((mutation) => mutation.state.isPaused)).toBe(false);
+    await act(async () => { onlineManager.setOnline(true); await client.resumePausedMutations(); });
+    expect(send).not.toHaveBeenCalled();
+  });
+});
 
 describe('E2E-INV-SHELL-003 the system area never reaches the workspace surface', () => {
   it('filters a system area out of the list the shell renders', async () => {
@@ -227,13 +286,14 @@ describe('delete mutation wiring', () => {
     const refetchHeld = new Promise<void>((resolve) => { releaseRefetch = resolve; });
     const invalidate = vi.spyOn(client, 'invalidateQueries').mockReturnValue(refetchHeld);
     const transport: ApiTransportPort = {
-      send: () => Promise.reject(new Error('POST response lost')),
+      send: (request) => request.path === '/api/version'
+        ? Promise.resolve(ok({ areaCreateIdempotency: true })) : Promise.reject(new Error('POST response lost')),
     };
     const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
       wrapper: mutationWrapper(client),
     });
 
-    const pending = result.current.create({ name: 'Reading', color: '#5B8DEF' });
+    const pending = result.current.create({ name: 'Reading', color: '#5B8DEF' }, 'reading-key');
     let settled = false;
     void pending.then(() => { settled = true; }, () => { settled = true; });
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() }));
@@ -301,12 +361,14 @@ describe('delete mutation wiring', () => {
       default_template_id: null,
       default_cwd: null,
     };
-    const transport: ApiTransportPort = { send: () => Promise.resolve(ok(createdWire)) };
+    const transport: ApiTransportPort = { send: (request) => Promise.resolve(ok(
+      request.path === '/api/version' ? { areaCreateIdempotency: true } : createdWire,
+    )) };
     const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
       wrapper: mutationWrapper(client),
     });
 
-    await act(() => result.current.create({ name: 'Reading', color: '#5B8DEF' }));
+    await act(() => result.current.create({ name: 'Reading', color: '#5B8DEF' }, 'reading-key'));
 
     expect(client.getQueryData<ReturnType<typeof toArea>[]>(queryKeys.areas()))
       .toEqual([expect.objectContaining({ id: 'c-new', name: 'Reading' })]);
@@ -325,7 +387,8 @@ describe('delete mutation wiring', () => {
     };
     let releaseResponse!: () => void;
     const responseHeld = new Promise<void>((resolve) => { releaseResponse = resolve; });
-    const send = vi.fn(async () => {
+    const send = vi.fn(async (request: ApiRequest) => {
+      if (request.path === '/api/version') return ok({ areaCreateIdempotency: true });
       await responseHeld;
       return ok(responseWire);
     });
@@ -335,8 +398,8 @@ describe('delete mutation wiring', () => {
     });
 
     let pending!: ReturnType<typeof result.current.create>;
-    act(() => { pending = result.current.create({ name: 'Reading', color: '#5B8DEF' }); });
-    await waitFor(() => expect(send).toHaveBeenCalledOnce());
+    act(() => { pending = result.current.create({ name: 'Reading', color: '#5B8DEF' }, 'reading-key'); });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
 
     const newerEvent = {
       ...toArea(areaWireSchema.parse(responseWire)),
@@ -361,12 +424,14 @@ describe('delete mutation wiring', () => {
       default_template_id: null,
       default_cwd: null,
     };
-    const transport: ApiTransportPort = { send: () => Promise.resolve(ok(createdWire)) };
+    const transport: ApiTransportPort = { send: (request) => Promise.resolve(ok(
+      request.path === '/api/version' ? { areaCreateIdempotency: true } : createdWire,
+    )) };
     const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
       wrapper: mutationWrapper(client),
     });
 
-    await act(() => result.current.create({ name: 'Reading', color: '#5B8DEF' }));
+    await act(() => result.current.create({ name: 'Reading', color: '#5B8DEF' }, 'reading-key'));
 
     expect(client.getQueryData(queryKeys.areas())).toBeUndefined();
     expect(client.getQueryState(queryKeys.areas())).toBeUndefined();
@@ -387,12 +452,14 @@ describe('delete mutation wiring', () => {
       default_template_id: null,
       default_cwd: null,
     };
-    const transport: ApiTransportPort = { send: () => Promise.resolve(ok(createdWire)) };
+    const transport: ApiTransportPort = { send: (request) => Promise.resolve(ok(
+      request.path === '/api/version' ? { areaCreateIdempotency: true } : createdWire,
+    )) };
     const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
       wrapper: mutationWrapper(client),
     });
 
-    await act(() => result.current.create({ name: 'Reading', color: '#5B8DEF' }));
+    await act(() => result.current.create({ name: 'Reading', color: '#5B8DEF' }, 'reading-key'));
 
     expect(client.getQueryData(queryKeys.areas())).toBeUndefined();
     expect(client.getQueryState(queryKeys.areas())?.status).toBe('error');

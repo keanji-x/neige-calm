@@ -3429,6 +3429,8 @@ export interface components {
              *     rationale. (Issue #198, concern 3.)
              */
             apiVersion: string;
+            /** @description True only when Area creation binds Idempotency-Key atomically and permanently. */
+            areaCreateIdempotency: boolean;
             buildSha?: string | null;
             /** @description UUID v4 minted once per process boot. See module doc. */
             dbInstanceId: string;
@@ -3535,7 +3537,10 @@ export interface operations {
     create_area: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Optional creation identity. The same key and typed request return the same Area with 201 without another creation event; differing inputs or a deleted Area return 409. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name. */
+                "Idempotency-Key"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -3554,8 +3559,17 @@ export interface operations {
                     "application/json": components["schemas"]["Area"];
                 };
             };
-            /** @description Unknown default template or invalid attached default folder */
+            /** @description Unknown default template, invalid attached default folder, or malformed Idempotency-Key */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Creation key belongs to different inputs or its Area was deleted */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

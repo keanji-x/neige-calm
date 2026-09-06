@@ -1552,6 +1552,12 @@
   /* The caption rank — the same 11px `.activity` uses for what the agent did.
      It is the smaller half of the strip; the button carries its own geometry
      from base.css. */
+  .footerNoticeNeutral {
+    background: var(--bg);
+    color: var(--text-2);
+    font-size: var(--text-xs);
+  }
+
   .footerError {
     min-inline-size: 0;
     font-size: var(--text-xs);

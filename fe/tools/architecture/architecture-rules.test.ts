@@ -292,6 +292,26 @@ describe('architecture/no-create-context-outside-allowlist', () => {
 });
 
 describe('architecture allowlists', () => {
+  it('permits only the exact Track draft provider context path', async () => {
+    const eslint = new ESLint({
+      cwd: root,
+      overrideConfigFile: true,
+      overrideConfig: [{
+        files: ['**/*.{ts,tsx}'],
+        languageOptions: { parser: tsParser, parserOptions: { project: false } },
+        plugins: { architecture: architecturePlugin },
+      }, {
+        files: ['**/*.{ts,tsx}'], ignores: [...createContextAllowlist],
+        rules: { 'architecture/no-create-context-outside-allowlist': 'error' },
+      }],
+    });
+    const source = 'import { createContext } from "react"; export const context = createContext(null);';
+    const [owner] = await eslint.lintText(source, { filePath: resolve(root, 'web/src/app/router/new-track-drafts.tsx') });
+    const [sibling] = await eslint.lintText(source, { filePath: resolve(root, 'web/src/app/router/new-track-drafts-other.tsx') });
+    expect(owner.messages).toEqual([]);
+    expect(sibling.messages.map((message) => message.ruleId)).toEqual(['architecture/no-create-context-outside-allowlist']);
+  });
+
   it('requires a substantive reason beside every exception', () => {
     expect([...moduleRuntimeStateExceptions, ...createContextExceptions].every(({ reason }) => reason.trim().length >= 20)).toBe(true);
   });

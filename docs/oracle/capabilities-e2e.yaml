@@ -4899,7 +4899,7 @@
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every track onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
   source: fe/web/src/features/area/new-track/public.tsx:253-275,498-511,651-681;
-    fe/web/src/app/router/public.tsx:2209-2266
+    fe/web/src/app/router/new-track-route.tsx:59-81
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:401-443
   owner_slice: features/track/create
   intentional_omission: false
@@ -4912,9 +4912,11 @@
   kind: capability
   family: input-path
   statement: >
-    A message typed while the kernel cannot start a turn must still be posted, be marked as queued
-    by `kernelQueuesInput` against the phase at the press, and must not be counted by
-    `hasUnreconciledSend` — so the composer stays open and a second message can follow it.
+    A message typed during a healthy running or stopping turn must still be posted. After its
+    POST is acknowledged, `kernelQueuesInput` classifies its queued echo without letting
+    `hasUnreconciledSend` lock the composer. Pending, rejected, or uncertain submissions must not
+    claim to be queued. A known wedged harness blocks new submissions and offers recovery while
+    retaining existing words; queued entries must no longer promise delivery from that harness.
   why: >
     `POST /planner/input` never reads the phase: it folds the text into the harness pending queue
     and `can_issue_turn()` (`harness/state.rs`) starts a turn only from `Idle`/`TurnCompleted`.
@@ -4928,15 +4930,19 @@
     notion of "busy": `working` (`issuing_turn || turn_running`) omits four queueing phases, and
     the composer sends in one of them (`issuing_interrupt`) because `stopShown` is
     `working || stopping`.
+    A phase of `wedged` is the explicit #1500 recovery exception: its queue never drains,
+    so accepting more words there would create an unrecoverable wait. A failed request's text
+    remains recovery evidence rather than an acknowledged queue entry.
     The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
     stays `migration: pending` against `web/e2e`.
-  source: fe/web/src/app/router/public.tsx:604-606,765-770
+  source: fe/web/src/app/router/public.tsx:415-430,571-572,620-623,780-789
   # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
   # the composer stays open, and whether a second message can be sent. The predicate itself is
   # tabulated a second time at the platform-independent tier
   # (`fe/core/domain/conversation.test.ts`, `describe('kernelQueuesInput')`), which is not cited
   # here because a row declares one `test_tier` and that suite is not jsdom.
-  authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:698-731
+  authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:698-744;
+    fe/web/src/app/router/track-conversation.test.tsx:660-744,860-879
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
@@ -4956,7 +4962,7 @@
     no-op when this area already covers the path (same-area arm), so a second track in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-area case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/router/public.tsx:2272-2280
+  source: fe/web/src/app/router/new-track-route.tsx:65-72
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:529-556
   owner_slice: features/track/create
   intentional_omission: false
@@ -5061,7 +5067,7 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The area name comes from the workspace read, which is why the decode is rendered
     by the route that owns the create and not by the presentational form.
-  source: fe/core/domain/area.ts:193-229; fe/web/src/app/router/public.tsx:2289-2296
+  source: fe/core/domain/area.ts:193-229; fe/web/src/app/router/new-track-route.tsx:88-100
   authoritative_test: fe/web/src/app/router/new-track-route.test.tsx:583
   owner_slice: features/track/create
   intentional_omission: false
@@ -5095,7 +5101,7 @@
     which is why the screen half is asserted on a control *named* a title rather than on the
     absence of the one field the page has.
   source: fe/web/src/features/area/new-track/public.tsx:253-275,498-532;
-    fe/web/src/app/router/public.tsx:2209-2214,2263-2266
+    fe/web/src/app/router/new-track-route.tsx:65-81
   authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:209;
     fe/web/src/app/router/new-track-route.test.tsx:374
   owner_slice: features/track/create

@@ -8,19 +8,6 @@
 // `area_id` is not a field. The page is `/area/{id}/new`; the route already
 // knows which area and sends it.
 //
-// ## Why this is a page and not a dialog (#1211)
-//
-// It used to be a modal over whatever you were looking at. A modal was the
-// wrong container for the *only* thing this surface does: it cannot be linked,
-// it does not survive a refresh, it has no Back, and it asks the reader to
-// finish or discard before they may look at anything else — which is exactly
-// backwards for a screen whose two settings are things you might want to go
-// check on. A route has all four properties for free.
-//
-// It also makes the composer the subject of a page rather than a control in a
-// box, which is what the shape is: one centred field, and the page is
-// otherwise empty on purpose.
-//
 // ## Why this is a composer and not a form (#1211)
 //
 // The field this replaced was the track's `title`, and it was doing two jobs at
@@ -137,15 +124,6 @@
 // `render_fence` in TypeScript — a second fence writer, which is exactly the
 // duplication #1300 spent a slice removing. It belongs on the server if it is
 // ever wanted.
-//
-// ## Mobile: declared, not inherited
-//
-// **This page has no mobile entry point today.** The only way in is the
-// sidebar's per-area `+`, and the sidebar is not rendered below
-// `@media (width < 60rem)` — so nothing here, including the two-group picker,
-// is reachable on a phone. That is a pre-existing divergence this slice does
-// not widen and does not fix; it is written down because the project's rule is
-// that mobile may be partial as long as the difference is declared.
 //
 // ### Collapsed, not spread out
 //
@@ -278,6 +256,13 @@ export type NewTrackDraft = Readonly<{
 export type NewTrackFormProps = Readonly<{
   submitting: boolean;
   error: string | null;
+  /** In-memory route draft, including unfinished template input. */
+  initialDraft?: NewTrackFormState;
+  onDraftChange?: (draft: NewTrackFormState) => void;
+  /** Keep the text available when its parent Area cannot accept a write. */
+  submitBlocked?: boolean;
+  /** An uncertain creation retries the original request instead of new edits. */
+  locked?: boolean;
   /**
    * One caller-owned recovery beside the create error. It may re-key an
    * ambiguous retry or create the retained draft in the Area that owns its
@@ -370,6 +355,14 @@ const TASK_PLACEHOLDER = 'What should this track do?';
 /** The way back to the managed default, which exists nowhere else. */
 const FOLDER_CLEAR_LABEL = 'Use a Neige workspace instead';
 
+export type NewTrackFormState = Readonly<{
+  message: string;
+  selected: StartingPoint;
+  issueUrl: string;
+  autoMerge: boolean;
+  cwd: string;
+}>;
+
 /** Mirrors the enum in the bound plugin's `input_schema`. */
 type MergePolicy = 'hold-for-ratify' | 'auto-merge';
 
@@ -387,7 +380,7 @@ function needsInput(template: TrackTemplate | undefined): boolean {
 export function NewTrackForm({
   submitting, error, templates, templatesLoaded, templatesError = null,
   initialTemplateId, initialCwd, recipes = [], onManageRecipes, listDirectory, onSubmit,
-  errorAction,
+  errorAction, initialDraft, onDraftChange, submitBlocked = false, locked = false,
 }: NewTrackFormProps) {
   const fieldId = useId();
   // Creation preferences are a route-opening snapshot. Area events may update
@@ -395,17 +388,21 @@ export function NewTrackForm({
   // value with the existing local selection would silently clear an unresolved
   // opening default instead of either keeping or adopting one coherent state.
   const openingTemplateId = useRef(initialTemplateId).current;
-  const [message, setMessage] = useState('');
-  const [selected, setSelected] = useState<StartingPoint>(openingTemplateId === null
+  const [message, setMessage] = useState(initialDraft?.message ?? '');
+  const [selected, setSelected] = useState<StartingPoint>(initialDraft?.selected ?? (openingTemplateId === null
     ? NO_STARTING_POINT
-    : { kind: 'template', id: openingTemplateId });
-  const [issueUrl, setIssueUrl] = useState('');
-  const [autoMerge, setAutoMerge] = useState(false);
-  const [cwd, setCwd] = useState(initialCwd ?? '');
+    : { kind: 'template', id: openingTemplateId }));
+  const [issueUrl, setIssueUrl] = useState(initialDraft?.issueUrl ?? '');
+  const [autoMerge, setAutoMerge] = useState(initialDraft?.autoMerge ?? false);
+  const [cwd, setCwd] = useState(initialDraft?.cwd ?? initialCwd ?? '');
   const [browsing, setBrowsing] = useState(false);
   const composerHostRef = useRef<HTMLDivElement | null>(null);
   const folderId = `${fieldId}-folder`;
   const triggerId = `${fieldId}-start-from-trigger`;
+
+  useEffect(() => {
+    onDraftChange?.({ message, selected, issueUrl, autoMerge, cwd });
+  }, [message, selected, issueUrl, autoMerge, cwd, onDraftChange]);
 
   /*
    * The caret starts in the field (#1161's rule, on a route instead of a
@@ -480,7 +477,7 @@ export function NewTrackForm({
      below asks it the same question. A gate that used `trim()` here would
      light up Create for a draft the server refuses — see that function for the
      code point the two disagree about. */
-  const valid = !isBlankForKernel(message) && !inputBlocker;
+  const valid = !isBlankForKernel(message) && (locked || !inputBlocker);
   /*
    * One status slot on the composer, and the two things that can fill it never
    * coexist: `templatesError` means the list is empty, and an empty list has no
@@ -502,13 +499,13 @@ export function NewTrackForm({
       ? { type: 'warning' as const, message: `${templatesError} You can still create a track without one.` }
       : undefined;
 
-  function draftFor(text: string): NewTrackDraft | null {
+  function draftFor(text: string, forAction = false): NewTrackDraft | null {
     /* Blank refuses the submit; it does not *rewrite* it. `text` goes on to
        the caller exactly as typed — the draft is what the reader said, and the
        kernel forwards it to the agent untrimmed. An earlier cut passed
        `text.trim()` on, and `"  keep indentation  "` reached the agent with
        the indentation gone. */
-    if (isBlankForKernel(text) || inputBlocker || submitting) return null;
+    if (isBlankForKernel(text) || (!locked && inputBlocker) || submitting || (submitBlocked && !forAction)) return null;
     /* Spread, not `cwd: cwd || undefined`: the caller keys the whole
        managed-vs-attached decision on whether the key is *there*, and
        `cwd: undefined` is a different object from no `cwd` for anything that
@@ -543,7 +540,7 @@ export function NewTrackForm({
     if (draft !== null) onSubmit(draft);
   }
 
-  const actionDraft = draftFor(message);
+  const actionDraft = draftFor(message, true);
   const shownErrorAction = errorAction !== undefined
     && actionDraft !== null
     && (errorAction.isApplicable?.(actionDraft) ?? true)
@@ -553,24 +550,7 @@ export function NewTrackForm({
   return (
     <div className={styles.page}>
       <VStack gap={2} className={styles.form}>
-        {error !== null && (
-          <Banner
-            status="error"
-            title={error}
-            endContent={shownErrorAction === undefined
-              ? undefined
-              : (
-                <Button
-                  label={shownErrorAction.label}
-                  variant="ghost"
-                  onClick={() => {
-                    if (actionDraft !== null) shownErrorAction.onClick(actionDraft);
-                  }}
-                />
-              )}
-            data-nc-new-track-error
-          />
-        )}
+
 
         {/* The mark, the greeting, and where you are — see `.masthead`. */}
         <div className={styles.masthead}>
@@ -667,7 +647,7 @@ export function NewTrackForm({
             isDisabled={submitting}
             onSubmit={submit}
             status={status}
-            input={<ChatComposerInput label={TASK_LABEL} placeholder={TASK_PLACEHOLDER} />}
+            input={<ChatComposerInput label={TASK_LABEL} placeholder={TASK_PLACEHOLDER} isDisabled={submitting || locked} />}
             /* ── The two settings, as chips under the sentence ─────────────────
                What this track starts from and where it runs are the same *kind* of
                thing: one optional choice each, both defaulted, both changing only
@@ -687,6 +667,7 @@ export function NewTrackForm({
                   onManageRecipes={onManageRecipes}
                   placement="above"
                   triggerId={triggerId}
+                  isDisabled={submitting || locked}
                 />
 
                 {/* Shared with the Area editor so the two folder preferences
@@ -697,6 +678,7 @@ export function NewTrackForm({
                   clearLabel={FOLDER_CLEAR_LABEL}
                   onBrowse={() => setBrowsing(true)}
                   onClear={() => setCwd('')}
+                  isDisabled={submitting || locked}
                 />
               </HStack>
             )}
@@ -711,14 +693,44 @@ export function NewTrackForm({
                 isIconOnly
                 icon={<Icon icon="arrowUp" size="sm" />}
                 label={submitting ? 'Creating…' : 'Create track'}
-                isDisabled={submitting || !valid}
+                isDisabled={submitting || submitBlocked || !valid}
                 onClick={() => submit(message)}
               />
             )}
           />
         </div>
 
-        {inheritedAreaDefault && chosen !== undefined && (
+        {error !== null && (
+          <Banner
+            status="error"
+            title={error}
+            endContent={shownErrorAction === undefined
+              ? submitBlocked && message !== ''
+                ? <Button label="Select draft" variant="ghost" onClick={() => {
+                  const field = composerHostRef.current?.querySelector<HTMLElement>('[role="textbox"]');
+                  if (field === null || field === undefined) return;
+                  field.focus();
+                  const range = document.createRange();
+                  range.selectNodeContents(field);
+                  const selection = window.getSelection();
+                  selection?.removeAllRanges();
+                  selection?.addRange(range);
+                }} />
+                : undefined
+              : (
+                <Button
+                  label={shownErrorAction.label}
+                  variant="ghost"
+                  onClick={() => {
+                    if (actionDraft !== null) shownErrorAction.onClick(actionDraft);
+                  }}
+                />
+              )}
+            data-nc-new-track-error
+          />
+        )}
+
+        {!locked && inheritedAreaDefault && chosen !== undefined && (
           <AreaDefaultNotice
             template={chosen}
             onClear={() => {
@@ -735,6 +747,7 @@ export function NewTrackForm({
           <div className={styles.panel} role="group" aria-label={chosen?.title ?? ''}>
             <TextInput
               label="Issue URL"
+              isDisabled={submitting || locked}
               value={issueUrl}
               width="100%"
               placeholder="https://github.com/owner/repo/issues/123"
@@ -758,6 +771,7 @@ export function NewTrackForm({
               description="Off: the track waits for you to approve the merge."
               value={autoMerge}
               onChange={(checked) => setAutoMerge(checked)}
+              isDisabled={submitting || locked}
             />
           </div>
         )}

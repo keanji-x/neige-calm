@@ -12,7 +12,7 @@
 // This drives the real router, the real QueryClient and the real form — the
 // wiring *is* the thing under test, and a fixture that re-implemented the
 // branch would prove only that the fixture agrees with itself.
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -27,7 +27,7 @@ import { ThemeProvider } from '../theme/public.tsx';
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
-afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
+afterEach(() => { cleanup(); onlineManager.setOnline(true); delete document.documentElement.dataset.theme; });
 
 function memoryStorage() {
   const values = new Map<string, string>();
@@ -96,6 +96,7 @@ function harness(options: {
   trackCreate?: ApiTransportResponse;
   /** Ordered create outcomes for retry/recovery paths that cross Area scope. */
   trackCreateSequence?: readonly ApiTransportResponse[];
+  loseFirstCreateAck?: boolean;
   /** Override the detail read the track page makes when the create lands. */
   trackDetail?: ApiTransportResponse;
   /** Hold the detail read open until this resolves, to drive a slow landing. */
@@ -125,10 +126,15 @@ function harness(options: {
 } = {}) {
   const sent: ApiRequest[] = [];
   let trackCreateIndex = 0;
+  let firstCreateAckLost = false;
   const transport: ApiTransportPort = {
     send(request: ApiRequest): Promise<ApiTransportResponse> {
       sent.push(request);
       const posted = request.body as { area_id?: string } | undefined;
+      if (request.method === 'POST' && request.path === '/api/tracks' && options.loseFirstCreateAck && !firstCreateAckLost) {
+        firstCreateAckLost = true;
+        return Promise.reject(new Error('Connection closed after server commit'));
+      }
       if (request.method === 'POST' && request.path === '/api/tracks' && options.trackCreate) {
         return Promise.resolve(options.trackCreate);
       }
@@ -224,8 +230,118 @@ function harness(options: {
       </QueryClientProvider>
     </StrictMode>,
   );
-  return { sent };
+  return { sent, client, router };
 }
+
+describe('Track creation drafts survive navigation', () => {
+  it.each(['offline', 'rate-limit', 'folder-conflict'] as const)('keeps an earlier unconfirmed request after a later %s rejection', async (rejection) => {
+    const { sent } = harness({ templates: [], loseFirstCreateAck: true,
+      otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
+      trackCreateSequence: rejection === 'offline' ? undefined : [
+        rejection === 'rate-limit'
+          ? { status: 429, statusText: 'Too Many Requests', body: { error: 'rate limited' } }
+          : { status: 409, statusText: 'Conflict', body: CONFLICT },
+      ],
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Keep original intent');
+    document.documentElement.dataset.theme = 'light';
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await screen.findByText('Transport request failed');
+    const original = createdTrackRequests(sent)[0];
+    if (rejection === 'offline') act(() => onlineManager.setOnline(false));
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).not.toContain('Transport request failed'));
+    expect(screen.getByLabelText(TASK_LABEL).getAttribute('contenteditable')).toBe('false');
+    expect(screen.queryByRole('button', { name: 'Create in Work' })).toBeNull();
+    act(() => onlineManager.setOnline(true));
+    await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    document.documentElement.dataset.theme = 'dark';
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(rejection === 'offline' ? 2 : 3));
+    const retry = createdTrackRequests(sent).at(-1);
+    expect(retry?.headers).toEqual(original?.headers);
+    expect(retry?.body).toEqual(original?.body);
+  });
+
+  it('restores unsent text and options independently for each Area', async () => {
+    harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Unsent intent');
+    await userEvent.click(screen.getByRole('button', { name: 'Template: No template' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Issue development/ }));
+    await userEvent.type(screen.getByLabelText('Issue URL'), 'unfinished-url');
+    await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    expect(composerText()).toBe('');
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Other draft');
+    await userEvent.click(screen.getByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    expect(composerText()).toBe('Unsent intent');
+    expect(screen.getByLabelText<HTMLInputElement>('Issue URL').value).toBe('unfinished-url');
+    await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    expect(composerText()).toBe('Other draft');
+  }, 15_000);
+
+  it('retries the exact lost-ack request and key after leaving and returning', async () => {
+    const { sent } = harness({ templates: TEMPLATES, loseFirstCreateAck: true });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), '  Create once  ');
+    document.documentElement.dataset.theme = 'light';
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await screen.findByText('Transport request failed');
+    const first = createdTrackRequests(sent)[0];
+    expect(first?.body).toMatchObject({ theme: { fg: [42, 47, 58] } });
+    await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    expect(composerText()).toBe('  Create once  ');
+    document.documentElement.dataset.theme = 'dark';
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    const retry = createdTrackRequests(sent)[1];
+    expect(retry?.headers).toEqual(first?.headers);
+    expect(retry?.body).toEqual(first?.body);
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
+  });
+
+  it('retains an unsent draft when its parent is deleted and prevents an orphan create', async () => {
+    const { sent, client } = harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Keep this after Area deletion');
+    await act(async () => { client.setQueryData(['areas'], []); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(screen.getByLabelText(TASK_LABEL).textContent).toBe('Keep this after Area deletion');
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Create track' }).disabled).toBe(true);
+    await userEvent.keyboard('{Enter}');
+    expect(createdTrackRequests(sent)).toEqual([]);
+    expect(screen.getByRole('main').textContent).toContain('draft');
+  });
+
+  it('keeps a pending creation leased across route remount and offers its late acknowledgement', async () => {
+    let release!: () => void;
+    const heldCreate = new Promise<void>((resolve) => { release = resolve; });
+    const { sent } = harness({ templates: TEMPLATES, heldCreate });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Create while away');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    expect(await screen.findByRole('button', { name: 'Creating…' })).toBeTruthy();
+    expect(createdTrackRequests(sent)).toHaveLength(1);
+    release();
+    await userEvent.click(await screen.findByRole('button', { name: 'Open track' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
+    expect(createdTrackRequests(sent)).toHaveLength(1);
+  });
+});
 
 /*
  * Waits for the new-track page to be on screen and returns its composer.

@@ -20,8 +20,9 @@
 
 use crate::actor::Actor;
 use crate::db::sqlite::{
-    area_create_system_tx, area_create_tx, area_delete_tx, area_update_tx,
-    overlay_delete_by_entity_tx, overlay_delete_subtree_by_area_tx, terminal_delete_tx,
+    area_create_bind_tx, area_create_replay_tx, area_create_system_tx, area_create_tx,
+    area_delete_tx, area_update_tx, overlay_delete_by_entity_tx, overlay_delete_subtree_by_area_tx,
+    terminal_delete_tx,
 };
 use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -40,15 +41,16 @@ use crate::workspace_recycle;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::get,
 };
 use futures::FutureExt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use utoipa::{IntoParams, ToSchema};
 
 use super::area_folders::normalize_path;
+use super::terminal_cards::{parse_idempotency_key_header, stable_payload_hash};
 use crate::templates::template_by_key;
 #[cfg(feature = "fixtures")]
 use std::collections::HashMap;
@@ -92,7 +94,7 @@ pub struct ListAreasQuery {
 /// Deliberately permissive about unknown JSON keys, matching the historical
 /// `NewArea` contract: in particular a caller-supplied `kind` must continue to
 /// be ignored rather than gaining a path to create a system Area.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct CreateAreaRequest {
     pub name: String,
     pub color: String,
@@ -156,61 +158,82 @@ pub(crate) async fn list_areas(
     path = "/api/areas",
     tag = "areas",
     request_body = CreateAreaRequest,
+    params(("Idempotency-Key" = Option<String>, Header, description = "Optional creation identity. The same key and typed request return the same Area with 201 without another creation event; differing inputs or a deleted Area return 409. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name.")),
     responses(
         (status = 201, description = "Area created", body = Area),
-        (status = 400, description = "Unknown default template or invalid attached default folder", body = ErrorBody),
+        (status = 400, description = "Unknown default template, invalid attached default folder, or malformed Idempotency-Key", body = ErrorBody),
+        (status = 409, description = "Creation key belongs to different inputs or its Area was deleted", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn create_area(
     State(s): State<RouteState>,
     actor: Actor,
+    headers: HeaderMap,
     Json(mut request): Json<CreateAreaRequest>,
 ) -> Result<(StatusCode, Json<Area>)> {
-    validate_default_template(request.default_template_id.as_deref())?;
-    validate_and_normalize_default_cwd(&mut request.default_cwd)?;
-    let p = NewArea {
-        name: request.name,
-        color: request.color,
-        sort: request.sort,
-    };
-    let has_defaults = request.default_template_id.is_some() || request.default_cwd.is_some();
-    let defaults = AreaPatch {
-        default_template_id: request.default_template_id.map(Some),
-        default_cwd: request.default_cwd.map(Some),
-        ..AreaPatch::default()
-    };
-    // Judgment call (PR2 of #136): create uses `EventScope::System`
-    // rather than `EventScope::Area { area: <new_id> }`. The area id is
-    // minted inside the txn closure; we don't know it before the write.
-    // Capturing the id post-commit to pass into the scope would make the
-    // commit-then-emit invariant racy. `System` is also defensible
-    // semantically — at the moment the event fires, the area is new to
-    // every replica anyway, so per-area subscribers can pick it up via
-    // the broader system-wide channel.
-    //
-    // Issue #175 — `NewArea` carries no `kind` field; `area_create_tx`
-    // unconditionally lands rows as `AreaKind::User`. The system area
-    // has its own endpoint below.
-    let (area, _id) = write_with_event_typed(
-        s.repo.as_ref(),
-        actor.to_actor_id(),
-        EventScope::System,
-        None,
-        &s.events,
-        &s.write,
-        move |tx| {
+    let key = parse_idempotency_key_header(&headers)?;
+    // Versioned identity uses the original typed inputs, before mutable path
+    // normalization or template validation. Null and absent options are equal.
+    let fingerprint = format!("v1:{}", stable_payload_hash(&request)?);
+    // Event writes refuse empty batches. A replay rolls back its read-only
+    // transaction and returns the proven row through this local channel. Only
+    // that branch populates it; unrelated errors cannot become successes.
+    let (replay_tx, mut replay_rx) = tokio::sync::oneshot::channel();
+    let result =
+        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
-                let mut area = area_create_tx(tx, p).await?;
-                if has_defaults {
-                    let area_id = area.id.clone();
-                    area = area_update_tx(tx, area_id.as_str(), defaults).await?;
+                if let Some(key) = &key
+                    && let Some(area) = area_create_replay_tx(tx, key, &fingerprint).await?
+                {
+                    let _ = replay_tx.send(area);
+                    return Err(CalmError::Conflict(
+                        "Area creation already committed".into(),
+                    ));
                 }
-                Ok((area.clone(), Event::AreaUpdated(area)))
+                validate_default_template(request.default_template_id.as_deref())?;
+                validate_and_normalize_default_cwd(&mut request.default_cwd)?;
+                let mut area = area_create_tx(
+                    tx,
+                    NewArea {
+                        name: request.name,
+                        color: request.color,
+                        sort: request.sort,
+                    },
+                )
+                .await?;
+                if request.default_template_id.is_some() || request.default_cwd.is_some() {
+                    let area_id = area.id.clone();
+                    area = area_update_tx(
+                        tx,
+                        area_id.as_str(),
+                        AreaPatch {
+                            default_template_id: request.default_template_id.map(Some),
+                            default_cwd: request.default_cwd.map(Some),
+                            ..AreaPatch::default()
+                        },
+                    )
+                    .await?;
+                }
+                if let Some(key) = &key {
+                    area_create_bind_tx(tx, key, &fingerprint, area.id.as_str()).await?;
+                }
+                // Creation reaches every replica through System scope. The
+                // same transaction commits the row, optional binding and event.
+                let event = (
+                    actor.to_actor_id(),
+                    EventScope::System,
+                    Event::AreaUpdated(area.clone()),
+                );
+                Ok((area, vec![event]))
             })
-        },
-    )
-    .await?;
+        })
+        .await;
+    let area = match result {
+        Ok((area, _ids)) => area,
+        Err(error @ CalmError::Conflict(_)) => replay_rx.try_recv().map_err(|_| error)?,
+        Err(error) => return Err(error),
+    };
     Ok((StatusCode::CREATED, Json(area)))
 }
 

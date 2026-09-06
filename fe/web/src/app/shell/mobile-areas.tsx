@@ -21,10 +21,12 @@ import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
 } from '../../ui/mobile-list/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
+import { ErrorBox } from '../../ui/error-box/public.tsx';
 
 export function MobileAreas({
   areas, tracksByArea, selectedAreaId, motion,
   onSelectArea, onBack, onCreateArea, onEditArea, onOpenTrack,
+  readError = null, readLoading = false, onRetryRead = () => undefined,
 }: Readonly<{
   areas: readonly Area[];
   tracksByArea: ReadonlyMap<string, readonly Track[]>;
@@ -35,6 +37,9 @@ export function MobileAreas({
   onCreateArea: () => void;
   onEditArea: (area: Area) => void;
   onOpenTrack: (trackId: string) => void;
+  readError?: string | null;
+  readLoading?: boolean;
+  onRetryRead?: () => void;
 }>) {
   const rows = visibleAreas(areas);
   const selected = selectedAreaId === null ? undefined : rows.find((area) => area.id === selectedAreaId);
@@ -57,6 +62,8 @@ export function MobileAreas({
           />
         )}
       >
+        {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
+        {readLoading && <p role="status">Loading workspace…</p>}
         <MobileList title="Tracks">
           {tracks.map((track) => (
             <MobileListItem
@@ -66,7 +73,7 @@ export function MobileAreas({
               onSelect={() => onOpenTrack(track.id)}
             />
           ))}
-          {tracks.length === 0 && <MobileListEmpty>No tracks in this area yet.</MobileListEmpty>}
+          {readError === null && !readLoading && tracks.length === 0 && <MobileListEmpty>No tracks in this area yet.</MobileListEmpty>}
         </MobileList>
       </MobileListPage>
     );
@@ -86,6 +93,8 @@ export function MobileAreas({
         />
       )}
     >
+      {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
+      {readLoading && <p role="status">Loading workspace…</p>}
       <MobileList>
         {rows.map((area) => {
           const tracks = visibleTracks(tracksByArea.get(area.id) ?? []);

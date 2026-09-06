@@ -74,8 +74,8 @@ mod track_tree;
 mod track_workspace;
 
 pub use area::{
-    area_create_system_tx, area_create_tx, area_delete_tx, area_folder_create_tx,
-    area_folders_list_all_tx, area_update_tx,
+    area_create_bind_tx, area_create_replay_tx, area_create_system_tx, area_create_tx,
+    area_delete_tx, area_folder_create_tx, area_folders_list_all_tx, area_update_tx,
 };
 pub use card::{
     card_body_crdt_get_tx, card_create_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,

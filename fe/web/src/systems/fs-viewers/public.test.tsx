@@ -6,7 +6,7 @@
 // is under test is the shell around the panes — which read runs when, what the
 // selection means, and what each failure looks like on screen.
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -69,6 +69,59 @@ function renderViewer(files: CardFilesPort | null, path = '/repo') {
 }
 
 describe('FileViewer', () => {
+  it.each(['Permission denied', 'Path not found'])('retries the selected file after %s without changing tabs', async (reason) => {
+    const readFile = vi.fn()
+      .mockRejectedValueOnce(new Error(`${reason}: /repo/notes.txt`))
+      .mockResolvedValueOnce({ path: '/repo/notes.txt', size: 8, text: 'restored', truncated: false });
+    renderViewer(port({ readFile }));
+    await userEvent.click(await screen.findByRole('button', { name: /notes\.txt/ }));
+    await screen.findByRole('alert');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('restored')).toBeTruthy();
+    expect(readFile.mock.calls).toEqual([['/repo/notes.txt'], ['/repo/notes.txt']]);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('retries a failed image in the selected code pane', async () => {
+    renderViewer(port({ listDirectory: () => Promise.resolve({
+      path: '/repo', parent: '/', entries: [{ name: 'logo.png', is_dir: false }],
+    }) }));
+    await userEvent.click(await screen.findByRole('button', { name: /logo\.png/ }));
+    const image = await screen.findByRole('img', { name: '/repo/logo.png' });
+    fireEvent.error(image);
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    const retried = await screen.findByRole('img', { name: '/repo/logo.png' });
+    expect(retried).not.toBe(image);
+    expect(retried.getAttribute('src')).toBe(image.getAttribute('src'));
+  });
+
+  it('retries a failed folder listing in place', async () => {
+    const listDirectory = vi.fn()
+      .mockResolvedValueOnce({ path: '/repo', parent: '/', entries: [{ name: 'src', is_dir: true }] })
+      .mockRejectedValueOnce(new Error('Permission denied: /repo/src'))
+      .mockResolvedValueOnce({ path: '/repo/src', parent: '/repo', entries: [{ name: 'ok.txt', is_dir: false }] });
+    renderViewer(port({ listDirectory }));
+    await userEvent.click(await screen.findByRole('button', { name: /src/ }));
+    await screen.findByRole('alert');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('button', { name: /ok\.txt/ })).toBeTruthy();
+    expect(listDirectory.mock.calls).toEqual([['/repo'], ['/repo/src'], ['/repo/src']]);
+  });
+
+  it.each(['status', 'diff'])('retries the failed git %s read', async (failure) => {
+    const gitStatus = vi.fn(port().gitStatus);
+    const gitDiff = vi.fn(port().gitDiff);
+    if (failure === 'status') gitStatus.mockRejectedValueOnce(new Error('Status unavailable'));
+    else gitDiff.mockRejectedValueOnce(new Error('Diff unavailable'));
+    renderViewer(port({ gitStatus, gitDiff }));
+    await screen.findByRole('button', { name: /notes\.txt/ });
+    await userEvent.click(screen.getByRole('tab', { name: 'Diff' }));
+    await screen.findByRole('alert');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByTestId('diff-pane')).toBeTruthy();
+    expect(failure === 'status' ? gitStatus : gitDiff).toHaveBeenCalledTimes(2);
+  });
+
   it('lists the card\'s folder', async () => {
     renderViewer(port());
     expect(await screen.findByRole('button', { name: /src/ })).toBeTruthy();
@@ -135,7 +188,7 @@ describe('FileViewer', () => {
   it('shows the read failure instead of an empty pane', async () => {
     renderViewer(port({ readFile: () => Promise.reject(new Error('Permission denied')) }));
     await userEvent.click(await screen.findByRole('button', { name: /notes\.txt/ }));
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Permission denied');
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Permission denied'));
   });
 
   describe('the diff tab', () => {
@@ -206,7 +259,7 @@ describe('FileViewer', () => {
         gitStatus: () => Promise.reject(new Error('not inside a git repository')),
       }));
       await userEvent.click(await screen.findByRole('tab', { name: 'Diff' }));
-      expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'not inside a git repository');
+      expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('not inside a git repository'));
     });
 
     /*
@@ -298,7 +351,7 @@ describe('FileViewer', () => {
     renderViewer(port({ listDirectory }));
 
     await userEvent.click(await screen.findByRole('button', { name: /src/ }));
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Permission denied');
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Permission denied'));
     expect(listDirectory.mock.calls.map(([requested]) => requested))
       .toEqual(['/repo', '/repo/src']);
   });

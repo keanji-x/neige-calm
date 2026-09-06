@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  asFolderConflict, areaFolderWireSchema, areaFoldersOperation, areaListOperation, areaOf,
+  areaCreationCapabilityOperation, createAreaOperation, asFolderConflict, areaFolderWireSchema, areaFoldersOperation, areaListOperation, areaOf,
   areaWireSchema, folderConflictMessage, newestArea, sortedAreaFolders, sortedAreas, toArea, toAreaFolder,
   visibleAreas, type Area, type AreaFolder,
 } from './area.js';
@@ -41,6 +41,22 @@ describe('area wire decode', () => {
     });
     expect(toArea(parsed)).toMatchObject({
       defaultTemplateId: 'small-change', defaultCwd: '/srv/work',
+    });
+  });
+
+  it('requires explicit capability proof from older and malformed version responses', () => {
+    const operation = areaCreationCapabilityOperation();
+    expect(operation).toMatchObject({ method: 'GET', path: '/api/version' });
+    for (const wire of [{}, { areaCreateIdempotency: false }, { areaCreateIdempotency: 'true' }]) {
+      expect(operation.responseSchema.parse(wire)).toBe('unsupported');
+    }
+    expect(operation.responseSchema.parse({ areaCreateIdempotency: true })).toBe('supported');
+  });
+
+  it('carries the caller-owned creation identity independently of the payload', () => {
+    const body = { name: 'Work', color: '#123456' };
+    expect(createAreaOperation(body, 'create-intent')).toMatchObject({
+      method: 'POST', path: '/api/areas', body, headers: { 'Idempotency-Key': 'create-intent' },
     });
   });
 

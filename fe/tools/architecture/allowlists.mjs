@@ -16,6 +16,7 @@ export const moduleRuntimeStateExceptions = Object.freeze([
 export const moduleRuntimeStateAllowlist = Object.freeze(moduleRuntimeStateExceptions.map(({ path }) => path));
 
 export const createContextExceptions = Object.freeze([
+  Object.freeze({ path: 'web/src/app/router/new-track-drafts.tsx', reason: 'The shell-lifetime Track draft provider retains per-Area text, exact request identity and pending leases across route navigation without persisted user data.' }),
   Object.freeze({ path: 'web/src/app/conversations/public.tsx', reason: 'The visit-scoped conversation registry provider must sit above the route outlet so navigation cannot discard remembered conversations.' }),
   Object.freeze({ path: 'web/src/app/shell/public.tsx', reason: 'The shell owns mobile workspace-sheet state while Track routes inside <Outlet /> need to reopen the Areas or Pages sheet on Back.' }),
   Object.freeze({ path: 'web/src/app/theme/public.tsx', reason: 'App theme provider owns the document dataset mirror.' }),

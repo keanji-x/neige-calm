@@ -16,7 +16,7 @@ import { createContext, useContext, useEffect, useRef, type CSSProperties } from
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import type { Area } from '../../../../core/domain/area.ts';
+import type { Area, NewAreaBody } from '../../../../core/domain/area.ts';
 import {
   AreaEditorForm, type AreaEditorPatch, type AreaEditorValues,
 } from '../../features/area/editor/public.tsx';
@@ -25,8 +25,9 @@ import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { createDirectoryLister } from '../providers/directory.ts';
 import {
-  useAreaMutations, useTrackMutations, useTrackTemplates, useWorkspace,
+  ApiError, AreaCreatePreflightError, OfflineSubmissionError, useAreaMutations, useTrackMutations, useTrackTemplates, useWorkspace,
 } from '../providers/queries.ts';
+import { mintIdempotencyKey } from '../router/idempotency-key.ts';
 import { routeParamFromPath, useCurrentPath, useGo, useTrackPanelNavigation } from '../router/navigation.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { DOCK_ITEMS, dockSelection, type MobileSection } from './dock.ts';
@@ -63,6 +64,10 @@ type OpenMobileSection = (section: MobileSection, areaId?: string | null) => voi
 
 const MobileSectionContext = createContext<OpenMobileSection | null>(null);
 
+type AreaCreateRequest = Readonly<{ body: NewAreaBody; key: string }>;
+
+const UNCONFIRMED_AREA = 'Creation could not be confirmed. Try again to safely check the same area.';
+
 type AreaEditorTarget = Readonly<{ kind: 'create' }> | Readonly<{ kind: 'edit'; area: Area }>;
 
 function randomAreaColor(): string {
@@ -97,6 +102,7 @@ export function AppShell({
   const trackMutations = useTrackMutations(transport, unauthorized);
   const templates = useTrackTemplates(transport, unauthorized);
   const listDirectory = createDirectoryLister(transport, unauthorized);
+  const [areaCreateRequest, setAreaCreateRequest] = useState<AreaCreateRequest | null>(null);
   const [areaEditorTarget, setAreaEditorTarget] = useState<AreaEditorTarget | null>(null);
   const [areaEditorPending, setAreaEditorPending] = useState(false);
   const [areaEditorError, setAreaEditorError] = useState<string | null>(null);
@@ -106,8 +112,15 @@ export function AppShell({
   // The report's panel is a history *destination* (§1.1), so the shell leaves
   // it the same way the report does — see `clearReportPanel`.
   const { closePanel } = useTrackPanelNavigation();
-  const readError = workspace.areasError
-    ?? workspace.trackErrorsByArea.values().next().value ?? null;
+  const readError = workspace.areasError !== null
+    ? `Areas ${workspace.areas.length > 0 ? 'could not be refreshed' : 'are unavailable'}: ${workspace.areasError.message}`
+    : workspace.trackErrorsByArea.values().next().value?.message ?? null;
+  const readLoading = workspace.areasLoading
+    || [...workspace.tracksLoadingByArea.values()].some(Boolean);
+  const retryRead = () => {
+    workspace.retryAreas(); workspace.retryOverlays();
+    for (const area of workspace.areas) workspace.retryTracks(area.id);
+  };
 
   /*
    * The collapsed flag lives here, not inside `Sidebar`, because collapsing is
@@ -231,7 +244,7 @@ export function AppShell({
   };
 
   const requestCreateArea = () => {
-    setAreaEditorError(null);
+    setAreaEditorError(areaCreateRequest === null ? null : UNCONFIRMED_AREA);
     setAreaEditorTarget({ kind: 'create' });
   };
   const requestEditArea = (area: Area) => {
@@ -258,25 +271,40 @@ export function AppShell({
     }
     setAreaEditorPending(true);
     setAreaEditorError(null);
-    const write = target.kind === 'create'
-      ? areaMutations.create({
-        name: values.name,
-        color: randomAreaColor(),
-        default_template_id: values.defaultTemplateId,
-        default_cwd: values.defaultCwd,
-      })
-      : areaMutations.update(target.area.id, {
+    let write: Promise<Area>;
+    if (target.kind === 'create') {
+      const creation = areaCreateRequest ?? {
+        key: mintIdempotencyKey(),
+        body: {
+          name: values.name,
+          color: randomAreaColor(),
+          default_template_id: values.defaultTemplateId,
+          default_cwd: values.defaultCwd,
+        },
+      };
+      setAreaCreateRequest(creation);
+      write = areaMutations.create(creation.body, creation.key);
+    } else {
+      write = areaMutations.update(target.area.id, {
         ...(patch?.name === undefined ? {} : { name: patch.name }),
         ...(patch?.defaultTemplateId === undefined
           ? {} : { default_template_id: patch.defaultTemplateId }),
         ...(patch?.defaultCwd === undefined ? {} : { default_cwd: patch.defaultCwd }),
       });
+    }
     void write.then(() => {
+      if (target.kind === 'create') setAreaCreateRequest(null);
       setAreaEditorTarget(null);
     }).catch((failure: unknown) => {
-      setAreaEditorError(
-        failure instanceof Error ? failure.message : `Could not ${target.kind === 'create' ? 'create' : 'update'} the area.`,
-      );
+      const rejected = failure instanceof AreaCreatePreflightError || failure instanceof OfflineSubmissionError
+        || (failure instanceof ApiError && (failure.failure.kind === 'unauthorized'
+          || (failure.failure.kind === 'http' && [400, 403, 404, 422, 429].includes(failure.failure.status))));
+      // A refused retry says nothing about an earlier unconfirmed POST.
+      const unconfirmed = target.kind === 'create' && (areaCreateRequest !== null || !rejected);
+      if (target.kind === 'create' && !unconfirmed) setAreaCreateRequest(null);
+      const reason = failure instanceof Error ? failure.message
+        : `Could not ${target.kind === 'create' ? 'create' : 'update'} the area.`;
+      setAreaEditorError(unconfirmed ? `${reason} ${UNCONFIRMED_AREA}` : reason);
     }).finally(() => { setAreaEditorPending(false); });
   };
 
@@ -309,6 +337,9 @@ export function AppShell({
               <MobilePages
                 areas={workspace.areas}
                 tracks={workspace.tracks}
+                readError={readError}
+                readLoading={readLoading}
+                onRetryRead={retryRead}
                 onOpenTrack={(trackId) => {
                   closeMobileSection();
                   // The sheets are the only writers of `?from=` (#1191 §1.3):
@@ -320,6 +351,9 @@ export function AppShell({
               <MobileAreas
                 areas={workspace.areas}
                 tracksByArea={workspace.tracksByArea}
+                readError={readError}
+                readLoading={readLoading}
+                onRetryRead={retryRead}
                 selectedAreaId={areaSelection.areaId}
                 motion={areaSelection.motion}
                 onSelectArea={(areaId) => setAreaSelection({ areaId, motion: 'forward' })}
@@ -342,14 +376,10 @@ export function AppShell({
             tracksByArea={workspace.tracksByArea}
             tracks={workspace.tracks}
             currentPath={currentPath}
-            readError={readError?.message ?? null}
-            readLoading={workspace.areasLoading || workspace.overlaysLoading
-              || [...workspace.tracksLoadingByArea.values()].some(Boolean)}
+            readError={readError}
+            readLoading={readLoading || workspace.overlaysLoading}
             activityError={workspace.overlaysError?.message ?? null}
-            onRetryRead={() => {
-              workspace.retryAreas(); workspace.retryOverlays();
-              for (const area of workspace.areas) workspace.retryTracks(area.id);
-            }}
+            onRetryRead={retryRead}
             onGo={navigateFromRail}
             onRequestCreateArea={requestCreateArea}
             onRequestEditArea={requestEditArea}
@@ -439,16 +469,27 @@ export function AppShell({
                 defaultTemplateId: areaEditorTarget.area.defaultTemplateId,
                 defaultCwd: areaEditorTarget.area.defaultCwd,
               }
-              : { name: '', defaultTemplateId: null, defaultCwd: null }}
+              : {
+                name: areaCreateRequest?.body.name ?? '',
+                defaultTemplateId: areaCreateRequest?.body.default_template_id ?? null,
+                defaultCwd: areaCreateRequest?.body.default_cwd ?? null,
+              }}
             submitting={areaEditorPending}
+            locked={areaEditorTarget.kind === 'create' && areaCreateRequest !== null}
             error={areaEditorError}
             templates={templates.templates}
             templatesLoaded={templates.loaded}
             templatesError={templates.error}
             listDirectory={listDirectory}
             nameInputRef={areaEditorNameRef}
-            submitLabel={areaEditorTarget.kind === 'edit' ? 'Save changes' : 'Create area'}
-            onCancel={closeAreaEditor}
+            submitLabel={areaEditorTarget.kind === 'edit' ? 'Save changes'
+              : areaCreateRequest === null ? 'Create area' : 'Try again'}
+            cancelLabel={!areaEditorPending && areaEditorTarget.kind === 'create' && areaCreateRequest !== null ? 'Discard draft' : 'Cancel'}
+            onCancel={() => {
+              if (areaEditorPending) return;
+              if (areaEditorTarget.kind === 'create') setAreaCreateRequest(null);
+              closeAreaEditor();
+            }}
             onSubmit={submitAreaEditor}
           />
         )}

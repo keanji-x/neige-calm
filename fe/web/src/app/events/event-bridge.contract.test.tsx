@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { WireEvent } from '../../../../core/api/schemas.ts';
@@ -82,6 +83,34 @@ function eventFrame(id: number, event: { ev: string; data: unknown }): EventFram
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('EventBridge contracts', () => {
+  it('restores actual event-driven query refresh after retrying a failed preflight', async () => {
+    const { record, stream, emit } = fakeStream();
+    const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
+    const fetchVersion = vi.fn().mockRejectedValueOnce(new Error('Version unavailable'))
+      .mockRejectedValueOnce(new Error('Version unavailable')).mockResolvedValue(compatible);
+    const fetchAreas = vi.fn().mockResolvedValueOnce(['Initial area']).mockResolvedValue(['Initial area', 'Live area']);
+    const observer = new QueryObserver(client, { queryKey: ['areas'], queryFn: fetchAreas, staleTime: Infinity });
+    const unsubscribe = observer.subscribe(() => undefined);
+    const cursor = memoryCursor();
+    render(<ServerCompatGate client={client} runtime={runtime({ fetchVersion })} cursorStore={cursor}
+      renderEventBridge={(server) => <EventBridge client={client} stream={stream}
+        syncEventVersion={server.syncEventVersion} dbInstanceId={server.dbInstanceId} cursor={cursor} />}>
+      route
+    </ServerCompatGate>);
+    await screen.findByRole('status');
+    expect(record.startCalls).toBe(0);
+    await userEvent.click(screen.getByRole('button', { name: 'Retry live updates' }));
+    await waitFor(() => expect(record.startCalls).toBe(1));
+    emit(eventFrame(1, { ev: 'area.updated', data: {
+      id: 'c2', name: 'Live area', color: '#123456', sort: 2, kind: 'user',
+      default_template_id: null, default_cwd: null, created_at: 1, updated_at: 1,
+    } }));
+    await waitFor(() => expect(client.getQueryData(['areas'])).toEqual(['Initial area', 'Live area']));
+    expect(fetchAreas).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('status')).toBeNull();
+    unsubscribe();
+  });
+
   it('INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict', async () => {
     const { record, stream } = fakeStream();
     const client = new QueryClient();
