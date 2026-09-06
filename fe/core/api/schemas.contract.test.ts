@@ -11,12 +11,15 @@ import {
   cardSchema,
   overlaySchema,
 } from './schemas.js';
+import { areaFolderWireSchema, folderConflictSchema } from '../domain/area.js';
 import type {
   Event as GeneratedEvent,
   Area as GeneratedArea,
   Track as GeneratedTrack,
   Card as GeneratedCard,
   Overlay as GeneratedOverlay,
+  AreaFolder as GeneratedAreaFolder,
+  FolderConflict as GeneratedFolderConflict,
 } from './generated/wire.js';
 import type { ApiDecodeFailure } from './types.js';
 import type { WireEventDecodeResult } from './schemas.js';
@@ -235,6 +238,11 @@ describe('zod ↔ ts-rs conformance', () => {
     expectTypeOf<z.infer<typeof trackSchema>>().toEqualTypeOf<GeneratedTrack>();
     expectTypeOf<z.infer<typeof cardSchema>>().toEqualTypeOf<GeneratedCard>();
     expectTypeOf<z.infer<typeof overlaySchema>>().toEqualTypeOf<GeneratedOverlay>();
+  });
+
+  it('REST-only sub-schemas match their generated counterparts', () => {
+    expectTypeOf<z.infer<typeof areaFolderWireSchema>>().toEqualTypeOf<GeneratedAreaFolder>();
+    expectTypeOf<z.infer<typeof folderConflictSchema>>().toEqualTypeOf<GeneratedFolderConflict>();
   });
 });
 

@@ -139,17 +139,11 @@ export function deleteAreaOperation(areaId: string): ApiOperation<undefined> {
  * because the row never enters the sync engine's event log — that is the
  * kernel's reason (see `AreaFolder` in `core/api/generated/wire.ts`), repeated
  * here only so a reader does not "fix" the type.
- *
- * `repo_identity` / `repo_identity_probed_at` are `null` until the kernel has
- * probed the folder's Git origin, so they stay nullable through the decode
- * rather than being defaulted into a lie.
  */
 export const areaFolderWireSchema = z.object({
   id: z.number(),
   area_id: z.string(),
   path: z.string(),
-  repo_identity: z.string().nullable().default(null),
-  repo_identity_probed_at: z.number().nullable().default(null),
   created_at: z.number(),
 });
 export type AreaFolderWire = z.infer<typeof areaFolderWireSchema>;
@@ -158,8 +152,6 @@ export type AreaFolder = Readonly<{
   id: number;
   areaId: string;
   path: string;
-  repoIdentity: string | null;
-  repoIdentityProbedAt: number | null;
   createdAt: number;
 }>;
 
@@ -168,8 +160,6 @@ export function toAreaFolder(wire: AreaFolderWire): AreaFolder {
     id: wire.id,
     areaId: wire.area_id,
     path: wire.path,
-    repoIdentity: wire.repo_identity,
-    repoIdentityProbedAt: wire.repo_identity_probed_at,
     createdAt: wire.created_at,
   };
 }
