@@ -222,7 +222,9 @@ async fn bind_acknowledgement_tx(
     } else {
         session.status
     };
-    crate::db::sqlite::session_set_status_tx(tx, id, status).await?;
+    if session.status != status {
+        crate::db::sqlite::session_set_status_tx(tx, id, status).await?;
+    }
     let area_id: Option<String> = sqlx::query_scalar("SELECT area_id FROM tracks WHERE id=?1")
         .bind(&record.track_id)
         .fetch_optional(&mut **tx)

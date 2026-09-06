@@ -33,3 +33,6 @@ mod task_recovery_reads;
 
 #[path = "cases/isolated_codex_selection.rs"]
 mod isolated_codex_selection;
+
+#[path = "cases/isolated_codex_smoke.rs"]
+mod isolated_codex_smoke;
