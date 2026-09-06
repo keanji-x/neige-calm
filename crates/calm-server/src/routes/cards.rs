@@ -346,10 +346,22 @@ pub(crate) async fn get_harness_items(
     // displace a real transcript row behind "Load earlier". The narrowing is in
     // the SQL — see `RepoRead::harness_item_list_transcript_by_card`, including
     // the note for the UI slice that will want to read plan rows.
-    let items = s
+    let mut items = s
         .repo
         .harness_item_list_transcript_by_card(card.id.as_str(), after_id, limit, descending)
         .await?;
+    // #1505 S6 review — the stored blob keeps the path, the wire does not.
+    //
+    // Redacted at the serialization boundary rather than at the write, because
+    // the stored blob is a verbatim record of what codex sent and is read for
+    // replay and diagnosis; rewriting it on the way IN would make the stored
+    // row a second, quieter truth. The frontend never reads a path from
+    // here — attachments reach the transcript through
+    // `HarnessInputSegment.attachments`, as an id and a server-built url — so
+    // nothing downstream loses anything.
+    for item in &mut items {
+        item.params = crate::planner_attachments::redact_local_image_paths(&item.params);
+    }
     Ok(Json(items))
 }
 

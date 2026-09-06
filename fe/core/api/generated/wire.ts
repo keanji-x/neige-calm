@@ -297,12 +297,14 @@ export type HarnessInputSegment = { presentation: HarnessInputPresentation, text
  * #1505 S6 — the images this segment carried into `turn/start`.
  *
  * Carried here rather than left for the client to dig out of the
- * transcript row's own `params`: that blob holds codex's own
- * `{"type":"localImage","path":...}` item, whose `path` is an absolute
- * host path. A transcript that rendered from that would have to turn a
- * host path back into a REST url, which is a second, guessable naming of
- * the same bytes. The id is the naming; the read-back url is built from
- * it by the same server function the upload response used.
+ * transcript row's own `params`. Two reasons, and the second one is why
+ * the first is not merely tidier: that blob is codex's own item, and a
+ * transcript rendering from it would have to turn the server's private
+ * naming of the bytes back into a REST url — a second, guessable naming
+ * of the same thing. The id is the naming; the read-back url is built
+ * from it by the same server function the upload response used. Because
+ * nothing reads a path from that blob, the transcript route redacts the
+ * one this slice put there (#1505 S6 review).
  *
  * `#[serde(default)]` because every segment persisted before this slice
  * has no such key, and an old transcript is a transcript with no

@@ -977,7 +977,26 @@ export function useConversationStore(
     failedSend,
     matchingSendMessage,
     retrySend: (echoId) => {
-      if (failedSend?.echo.id === echoId) void send(cardId, failedSend.echo.text);
+      /*
+       * #1505 S6 review — the retry carries the echo's images, and it has to.
+       *
+       * Two failures came out of not passing them, and the second is a dead
+       * end rather than a surprise:
+       *
+       *  - a message with words AND an image, shown back to the reader WITH
+       *    its thumbnail, was re-sent as text alone. The UI said the image was
+       *    attached and then quietly delivered a message without it.
+       *  - a message that was ONLY an image re-sent as `{ text: "" }`, which
+       *    the server refuses with `text must not be empty`. `sendBlocked`
+       *    stays true while a failure is outstanding, so the only recovery the
+       *    UI offers was the one that could not succeed.
+       *
+       * `attachments.clear()` at the composer is gated on `delivered`, so the
+       * ids on a failed echo are still bound and still nameable.
+       */
+      if (failedSend?.echo.id === echoId) {
+        void send(cardId, failedSend.echo.text, failedSend.echo.attachments);
+      }
     },
     send: (conversationId, text, attachments) => failedSend === null || failedSend.delivery === 'refused'
       ? send(conversationId, text, attachments) : Promise.resolve('not-sent'),

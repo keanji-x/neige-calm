@@ -734,10 +734,31 @@ pub fn try_fold_tail(
             // incoming message takes a slot of its own, which preserves both
             // intents whole. That is the same fallback an over-long text
             // already takes.
-            if attachments.len() + new_attachments.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+            // #1505 S6 review — the union must be DEDUPLICATED, and the cap
+            // applies to the deduplicated result.
+            //
+            // Naming an already-bound attachment on a second message is legal
+            // and is a no-op on disk, so two adjacent queued messages can
+            // legitimately name the same image. Folding them by concatenation
+            // put that id in the survivor twice: two identical `localImage`
+            // items in one `turn/start` payload, and two identical thumbnails
+            // in the pending page. `validate_attachment_list` refuses a
+            // repeat within one message for exactly that reason, and a fold
+            // producing a message the entry point would have refused is the
+            // same defect arriving by a different door.
+            //
+            // The survivor keeps its own order and gains only what it did not
+            // already have — the earlier position is the one the reader saw
+            // first.
+            let merged = new_attachments
+                .iter()
+                .filter(|incoming| !attachments.iter().any(|held| held.id == incoming.id))
+                .cloned()
+                .collect::<Vec<_>>();
+            if attachments.len() + merged.len() > MAX_ATTACHMENTS_PER_MESSAGE {
                 false
             } else if fold_user_text(text, new_text, max_folded_user_chars) {
-                attachments.extend(new_attachments.iter().cloned());
+                attachments.extend(merged);
                 *rev = rev.saturating_add(1);
                 true
             } else {
@@ -919,19 +940,74 @@ mod tests {
         assert!(ids[0].ends_with("5e60.png") && ids[1].ends_with("5e61.png"));
     }
 
+    /// #1505 S6 review — the union deduplicates, because naming an
+    /// already-bound attachment on a second message is legal and two adjacent
+    /// queued messages can therefore legitimately hold the same id.
+    /// Concatenating put it in the survivor twice: two identical `localImage`
+    /// items in one payload and two identical thumbnails in the queue page —
+    /// a message `validate_attachment_list` would have refused at the entry
+    /// point, arriving through the fold instead.
+    #[test]
+    fn a_fold_does_not_hold_the_same_attachment_twice() {
+        let shared = attachment('0');
+        let mut queue = VecDeque::from(vec![user_with("first", vec![shared.clone()])]);
+        let outcome = try_fold_tail(
+            &mut queue,
+            &user_with("second", vec![shared.clone(), attachment('1')]),
+            10_000,
+        );
+        assert!(matches!(outcome, FoldOutcome::Folded { .. }));
+        let ids = queue[0]
+            .attachments()
+            .iter()
+            .map(|a| a.id.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids.len(),
+            2,
+            "the repeat is dropped, the new one is kept: {ids:?}"
+        );
+        assert!(ids[0].ends_with("5e60.png"), "{ids:?}");
+        assert!(ids[1].ends_with("5e61.png"), "{ids:?}");
+    }
+
+    /// The cap counts the DEDUPLICATED result, so a fold that only repeats
+    /// what the survivor already holds is not refused for being too long.
+    #[test]
+    fn the_fold_cap_counts_what_the_survivor_would_actually_hold() {
+        let held = ['0', '1', '2', '3', '4', '5', '6', '7']
+            .into_iter()
+            .map(attachment)
+            .collect::<Vec<_>>();
+        let mut queue = VecDeque::from(vec![user_with("first", held.clone())]);
+        assert!(
+            matches!(
+                try_fold_tail(&mut queue, &user_with("second", held), 10_000),
+                FoldOutcome::Folded { .. },
+            ),
+            "8 + 8 identical ids is 8, not 16"
+        );
+        assert_eq!(queue[0].attachments().len(), 8);
+    }
+
     /// Over the cap the fold is DECLINED, and declining is the point: the
     /// incoming message keeps its own slot, so neither text nor image is lost.
     /// Folding and then truncating the list would silently drop images.
     #[test]
     fn a_fold_that_would_exceed_the_cap_is_declined_rather_than_truncated() {
-        let seeds = ['0', '1', '2', '3', '4', '5'];
+        // DISJOINT sets, deliberately: the cap counts the deduplicated union,
+        // so overlapping ones would fit and this test would be asserting the
+        // wrong thing. 5 + 4 distinct = 9 > 8.
         let mut queue = VecDeque::from(vec![user_with(
             "first",
-            seeds[..5].iter().copied().map(attachment).collect(),
+            ['0', '1', '2', '3', '4']
+                .into_iter()
+                .map(attachment)
+                .collect(),
         )]);
         let incoming = user_with(
             "second",
-            seeds[..4].iter().copied().map(attachment).collect(),
+            ['5', '6', '7', '8'].into_iter().map(attachment).collect(),
         );
         assert_eq!(
             try_fold_tail(&mut queue, &incoming, 10_000),

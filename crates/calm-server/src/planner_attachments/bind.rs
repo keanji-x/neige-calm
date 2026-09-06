@@ -21,35 +21,59 @@
 //! codex replaces an unreadable `localImage` with placeholder text and reports
 //! nothing.
 //!
-//! # Copy, not rename, and the source is a descriptor
+//! # Every path this module touches is a descriptor plus one name
 //!
-//! The bytes are copied out of the descriptor
-//! [`super::open_attachment`] returned, not read back from the path. That
-//! matters because the path is the thing that cannot be trusted twice: the
-//! workspace is writable by the agent working in it, so between a check on a
-//! name and a later use of that name a component can be replaced. The opener
-//! resolves with `openat2` under `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` and
-//! hands back a descriptor, and a descriptor cannot be re-pointed.
+//! The workspace is writable by the agent working in it, so a *name* is
+//! something that can mean a different file between one syscall and the next.
+//! `openat2` under `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` is how this
+//! repository answers that for reads, and a descriptor it returns cannot be
+//! re-pointed.
 //!
-//! What that leaves uncovered is the *destination*: `bound/` is a directory
-//! name this module joins, and nothing above stops something else from having
-//! replaced it with a symlink first. So the bind does not assert its way past
-//! that — after the rename it re-opens through the same guarded opener and
-//! requires the attachment to come back as [`AttachmentLocation::Bound`]. A
-//! tampered subtree therefore ends in a refusal with the staged file still in
-//! place, not in bytes written somewhere unexpected.
+//! **The first version of this file applied that to the source only.** The
+//! bytes were copied out of a guarded descriptor and then written to
+//! `bound_dir(root, card).join(id)` — a plain path — with `create_dir_all` and
+//! `rename`, both of which resolve every component with no `RESOLVE_*` flags
+//! at all. `ln -s ../card-b/bound <root>/card-a/bound` was enough to land card
+//! A's attachment in card B's never-swept `bound/`, and pointing the link
+//! anywhere on the same filesystem wrote attacker-named bytes there. The
+//! re-open that was supposed to catch it ran AFTER the rename and returned a
+//! refusal that deleted nothing, so the bytes stayed. The sentence that used
+//! to be here — "a tampered subtree ends in a refusal with the staged file
+//! still in place, not in bytes written somewhere unexpected" — was false in
+//! its most important half.
+//!
+//! What replaces it is structural rather than a second check.
+//! [`open_card_dirs`] resolves BOTH of a card's directories through
+//! [`crate::routes::fs::open_workspace_directory`] — the same `openat2`, the
+//! same flags — and hands back two descriptors. Every write then goes through
+//! a syscall that takes a descriptor plus a single NAME component with no `/`
+//! in it: `openat` with `O_EXCL | O_NOFOLLOW`, `renameat`, `unlinkat`,
+//! `fsync`. There is no intermediate component left for anything to swap, so
+//! there is nothing to re-verify afterwards; a replaced `bound` or `staging`
+//! is `ELOOP` from the opener, **before** a byte is written.
+//!
+//! ## What this does not cover, stated rather than implied
+//!
+//! The absolute path recorded on the queue entry is read later by codex, in a
+//! different process, which resolves it as a path. Nothing here can stop a
+//! component being replaced between the bind and that read. That is not a
+//! capability this feature grants: codex's working directory IS this
+//! workspace, so a workspace-writing agent redirecting a file codex reads is
+//! something it can do without any of this. What the guard above buys is that
+//! *neige* never writes outside the directory it derived — #1505 GAP-A16.
 
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;
 
 use calm_types::planner_attachment::{AttachmentId, PlannerAttachment};
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
 
 use crate::error::{CalmError, Result};
 use crate::ids::CardId;
 use crate::per_card_lock::{PerCardLocks, lock_card};
+use crate::routes::fs::{WorkspaceSymlinks, open_workspace_directory};
 
-use super::{AttachmentLocation, bound_dir, bound_file_path, gc, open_attachment, staging_dir};
+use super::{AttachmentLocation, bound_file_path, open_attachment};
 
 /// The most attachments one message may carry.
 ///
@@ -159,123 +183,263 @@ async fn bind_one(root: &Path, card_id: &CardId, id: &AttachmentId) -> Result<Bo
             path: path.to_string(),
         })
     };
-    if opened.location == AttachmentLocation::Bound {
-        return recorded(opened.size);
-    }
-
     let size = opened.size;
-    copy_into_bound(root, card_id, id, opened.file).await?;
+    let already_bound = opened.location == AttachmentLocation::Bound;
+    // Both directories are resolved before anything is written, and both are
+    // resolved the same way the read path resolves a file. A `bound` or
+    // `staging` component that is not a real directory beneath this root is
+    // `ELOOP` or `EXDEV` here, with no bytes moved.
+    let dirs = open_card_dirs(root, card_id).await?;
+    let source = opened.file.into_std().await;
+    let name = id.as_str().to_string();
 
-    // The destination directory is a name, not a descriptor, so the only
-    // honest way to know the bytes ended up where this function claims is to
-    // ask the guarded opener again. A `Staging` answer here means the rename
-    // did not produce a readable `bound/<id>` — a replaced `bound` component
-    // is the way that happens — and the staged file is still there, so
-    // refusing loses nothing.
-    let verified = open_attachment(root, card_id, id).await?;
-    if verified.location != AttachmentLocation::Bound {
-        return Err(CalmError::BadRequest(format!(
-            "attachment `{id}` could not be made permanent on card {card_id}; it was left staged"
-        )));
-    }
+    let published = blocking(move || {
+        if already_bound {
+            // Nothing to publish — but there may be a staged twin to retire.
+            //
+            // A bind that died between its rename and its unlink leaves the
+            // same bytes in both directories, and `used_bytes` counts both, so
+            // the card is charged twice. Left alone that is not merely
+            // untidy: a card pushed over its budget refuses every upload, and
+            // the sweep that would reclaim the twin runs inside an upload, so
+            // the card cannot recover by itself. Retiring it here closes it at
+            // the first re-bind instead of waiting for the orphan TTL, and
+            // `store_upload` now sweeps before it measures so the TTL path
+            // works too.
+            retire_staged(&dirs.staging, &name);
+            return Ok(());
+        }
+        publish(&dirs, &name, source)
+    })
+    .await;
 
-    // Only now, and only through the one deletion door this module has.
-    let staging = staging_dir(root, card_id);
-    if let Err(error) = gc::remove_staged_file(&staging, id.as_str()) {
-        // The copy is committed and verified; the message may be sent. A
-        // surviving staged twin costs the card its bytes twice against the
-        // budget until the sweep reaches it, which is a cost, not a fault.
-        tracing::warn!(
-            target: "planner_attachments::bind",
-            card_id = %card_id,
-            attachment_id = %id,
-            %error,
-            "bound an attachment but could not remove its staged copy"
-        );
+    match published {
+        Ok(()) => recorded(size),
+        Err(error) => Err(error),
     }
-    recorded(size)
 }
 
-/// Stream the verified descriptor into `bound/<id>`, via a temporary that
-/// lives in `staging/`.
+/// One card's two directories, as descriptors.
 ///
-/// The temporary is in `staging/` rather than beside its destination for one
-/// reason: `staging/` is the only directory this module is allowed to delete
-/// from. A partial file left by a crash has to be reclaimable, and
-/// [`gc::sweep_staging`] already reclaims exactly this shape. Putting it in
-/// `bound/` would create permanent garbage that no code path may remove.
-async fn copy_into_bound(
-    root: &Path,
-    card_id: &CardId,
-    id: &AttachmentId,
-    mut source: tokio::fs::File,
-) -> Result<()> {
-    let bound = bound_dir(root, card_id);
-    if let Err(error) = tokio::fs::create_dir_all(bound.path()).await {
-        return Err(super::server_side_fault(
-            &format!("the bound directory could not be created: {error}"),
-            &[("bound", bound.path())],
-        ));
-    }
-    let staging = staging_dir(root, card_id);
-    let part_name = format!("{}.bind.part", id.as_str());
-    let part = staging.path().join(&part_name);
+/// [`StagingFd`] and [`BoundFd`] are separate newtypes for the same reason
+/// [`super::StagingDir`] and [`super::BoundDir`] are: deletion takes only the
+/// former, and there is no conversion from the latter into it. The rename
+/// takes both, which is correct — moving a file INTO `bound/` is a write, not
+/// a deletion.
+struct CardDirs {
+    staging: StagingFd,
+    bound: BoundFd,
+}
 
-    let mut file = match create_new(&part).await {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            // A previous bind of this same id died between creating the
-            // temporary and renaming it. Removing it goes through the same
-            // door as every other deletion here.
-            gc::remove_staged_file(&staging, &part_name).map_err(|error| {
-                super::server_side_fault(
-                    &format!("a stale bind temporary could not be removed: {error}"),
-                    &[("part", &part)],
-                )
-            })?;
-            create_new(&part).await.map_err(|error| {
-                super::server_side_fault(
-                    &format!("the bind temporary could not be created: {error}"),
-                    &[("part", &part)],
-                )
-            })?
-        }
-        Err(error) => {
-            return Err(super::server_side_fault(
-                &format!("the bind temporary could not be created: {error}"),
-                &[("part", &part)],
-            ));
+struct StagingFd(OwnedFd);
+struct BoundFd(OwnedFd);
+
+/// Resolve `<card>/staging` and `<card>/bound`, creating the latter if it does
+/// not exist yet.
+///
+/// `bound/` is created with `mkdirat` relative to the card's own descriptor
+/// rather than with `create_dir_all` on a joined path. The difference is the
+/// whole point: `create_dir_all` walks and follows every component, so a
+/// symlinked `<card>` would have it create — and later write into — a
+/// directory somewhere else entirely. `mkdirat` against a descriptor resolves
+/// exactly one name, and `EEXIST` is not an error here because two requests on
+/// the same card can race to create it.
+async fn open_card_dirs(root: &Path, card_id: &CardId) -> Result<CardDirs> {
+    use nix::sys::stat::{Mode, mkdirat};
+
+    // The opener's own errors name host paths, exactly as `open_attachment`
+    // found; they are logged and replaced with one sentence that names only
+    // the card. A symlinked or missing component is not something the client
+    // did or can fix, so it is a fault rather than a refusal.
+    let guarded = |what: &'static str| {
+        move |error: CalmError| {
+            tracing::error!(
+                target: "planner_attachments::bind",
+                directory = what,
+                %error,
+                "an attachment directory did not resolve beneath the attachment root"
+            );
+            CalmError::Internal(format!(
+                "planner attachment bind: this card's `{what}` directory is not a directory \
+                 beneath its attachment root; nothing was written"
+            ))
         }
     };
+    let card = open_workspace_directory(root, card_id.as_str(), WorkspaceSymlinks::Refused)
+        .await
+        .map_err(guarded("card"))?;
+    let card_fd = card.as_raw_fd();
+    tokio::task::spawn_blocking(move || {
+        match mkdirat(Some(card_fd), "bound", Mode::from_bits_truncate(0o700)) {
+            Ok(()) | Err(nix::errno::Errno::EEXIST) => Ok(()),
+            Err(error) => Err(error),
+        }
+    })
+    .await
+    .map_err(|error| {
+        CalmError::Internal(format!(
+            "planner attachment bind: a filesystem step did not complete: {error}"
+        ))
+    })?
+    .map_err(|error| {
+        super::server_side_fault(
+            &format!("the bound directory could not be created: {error}"),
+            &[("root", root)],
+        )
+    })?;
+    // `card` is held until here so the descriptor `mkdirat` used stays open.
+    drop(card);
 
-    let copy = async {
-        tokio::io::copy(&mut source, &mut file).await?;
-        file.flush().await?;
-        // Durable under the temporary name before it takes the final one, so
-        // a crash can only leave a `.part` the sweep removes — never a
-        // truncated file under a name a queue entry already points at.
-        file.sync_all().await?;
+    let staging = open_workspace_directory(
+        root,
+        &format!("{}/staging", card_id.as_str()),
+        WorkspaceSymlinks::Refused,
+    )
+    .await
+    .map_err(guarded("staging"))?;
+    let bound = open_workspace_directory(
+        root,
+        &format!("{}/bound", card_id.as_str()),
+        WorkspaceSymlinks::Refused,
+    )
+    .await
+    .map_err(guarded("bound"))?;
+    Ok(CardDirs {
+        staging: StagingFd(staging),
+        bound: BoundFd(bound),
+    })
+}
+
+/// Write the bytes under a temporary name in `staging/`, publish them into
+/// `bound/` with `renameat`, and retire the staged original.
+///
+/// The temporary lives in `staging/` rather than beside its destination for
+/// one reason: `staging/` is the only directory this module may delete from,
+/// and a partial file left by a crash has to be reclaimable.
+/// [`super::gc::sweep_staging`] already reclaims exactly this shape.
+///
+/// Every step names a descriptor and one component. Nothing here builds a
+/// path.
+fn publish(dirs: &CardDirs, name: &str, mut source: std::fs::File) -> Result<()> {
+    let part = format!("{name}.bind.part");
+    let mut file = create_new(&dirs.staging, &part)
+        .or_else(|error| {
+            if error == nix::errno::Errno::EEXIST {
+                // A previous bind of this same id died between creating the
+                // temporary and renaming it.
+                retire_staged(&dirs.staging, &part);
+                create_new(&dirs.staging, &part)
+            } else {
+                Err(error)
+            }
+        })
+        .map_err(|error| {
+            super::server_side_fault(
+                &format!("the bind temporary could not be created: {error}"),
+                &[("staging", Path::new(name))],
+            )
+        })?;
+
+    let moved = (|| -> std::io::Result<()> {
+        std::io::copy(&mut source, &mut file)?;
+        // Durable under the temporary name before it takes the final one, so a
+        // crash can only leave a `.part` the sweep removes — never a truncated
+        // file under a name a queue entry already points at.
+        file.sync_all()?;
         drop(file);
-        tokio::fs::rename(&part, bound.path().join(id.as_str())).await
-    }
-    .await;
-    if let Err(error) = copy {
-        let _ = gc::remove_staged_file(&staging, &part_name);
+        nix::fcntl::renameat(
+            Some(dirs.staging.0.as_raw_fd()),
+            part.as_str(),
+            Some(dirs.bound.0.as_raw_fd()),
+            name,
+        )?;
+        // #1505 S6 review. `sync_all` on the FILE makes its contents durable;
+        // it says nothing about the directory ENTRY the rename created. Without
+        // this, a power failure after the queue entry commits can leave a
+        // durable reference to a name that is not in `bound/` — and codex
+        // answers a missing `localImage` with placeholder text and no error.
+        // Both directories: the rename changed an entry in each.
+        nix::unistd::fsync(dirs.bound.0.as_raw_fd())?;
+        nix::unistd::fsync(dirs.staging.0.as_raw_fd())?;
+        Ok(())
+    })();
+
+    if let Err(error) = moved {
+        retire_staged(&dirs.staging, &part);
         return Err(super::server_side_fault(
-            &format!("the attachment could not be copied into the bound directory: {error}"),
-            &[("part", &part)],
+            &format!("the attachment could not be published into the bound directory: {error}"),
+            &[("staging", Path::new(name))],
         ));
     }
+
+    // The original is redundant now, and leaving it would charge the card for
+    // the same bytes twice. Best-effort: the publish above is committed, so a
+    // failure here is a cost the sweep reclaims, not a reason to refuse a
+    // message whose image is already permanent.
+    retire_staged(&dirs.staging, name);
+    let _ = nix::unistd::fsync(dirs.staging.0.as_raw_fd());
     Ok(())
 }
 
-/// `O_CREAT | O_EXCL` — which is also what stops the destination from being a
-/// symlink somebody else planted: `open` with both flags refuses to follow a
-/// final-component symlink rather than writing through it.
-async fn create_new(path: &Path) -> std::io::Result<tokio::fs::File> {
-    tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .await
+/// The one deletion door, and it takes a [`StagingFd`].
+///
+/// Best-effort by signature: every caller has already committed something that
+/// makes this file redundant, so a failure is a reclaimable cost rather than a
+/// fault. It is logged, never returned.
+fn retire_staged(staging: &StagingFd, name: &str) {
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+    match unlinkat(
+        Some(staging.0.as_raw_fd()),
+        name,
+        UnlinkatFlags::NoRemoveDir,
+    ) {
+        Ok(()) | Err(nix::errno::Errno::ENOENT) => {}
+        Err(error) => tracing::warn!(
+            target: "planner_attachments::bind",
+            name,
+            %error,
+            "a staged attachment copy could not be retired; the sweep will reclaim it"
+        ),
+    }
+}
+
+/// `O_CREAT | O_EXCL | O_NOFOLLOW` relative to the staging descriptor.
+///
+/// `O_EXCL` with `O_CREAT` refuses to follow a final-component symlink rather
+/// than writing through it, and there is no other component to follow.
+fn create_new(
+    staging: &StagingFd,
+    name: &str,
+) -> std::result::Result<std::fs::File, nix::errno::Errno> {
+    use nix::fcntl::{OFlag, openat};
+    use nix::sys::stat::Mode;
+    use std::os::fd::FromRawFd;
+
+    let raw = openat(
+        Some(staging.0.as_raw_fd()),
+        name,
+        OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_WRONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
+        Mode::from_bits_truncate(0o600),
+    )?;
+    // SAFETY: `openat` returned a new owned descriptor and this is its only
+    // conversion into an owning Rust value.
+    Ok(unsafe { std::fs::File::from_raw_fd(raw) })
+}
+
+/// Run one synchronous filesystem sequence off the runtime.
+///
+/// `store`'s module docs state the rule for this subtree: every synchronous
+/// filesystem step goes through `spawn_blocking`. This file is where the whole
+/// publish sequence — open, copy, fsync, rename, unlink — is charged to it as
+/// one unit.
+async fn blocking<F>(work: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(error) => Err(CalmError::Internal(format!(
+            "planner attachment bind: a filesystem step did not complete: {error}"
+        ))),
+    }
 }

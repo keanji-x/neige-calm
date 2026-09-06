@@ -10,14 +10,17 @@
 //! 1. `.neige/` is in `.git/info/exclude` — **before** any byte is written, so
 //!    a worker running `git add -A` in the same workspace can never see the
 //!    file at all;
-//! 2. the card's byte budget is measured once, and every frame is checked
+//! 2. the staging sweep runs, so the measurement below is taken against what
+//!    the card actually still holds rather than against bytes that have
+//!    already expired;
+//! 3. the card's byte budget is measured once, and every frame is checked
 //!    against that number plus the bytes read so far — the card's turn, taken
 //!    just before the measurement, is what keeps the number true for the whole
 //!    stream;
-//! 3. the bytes go to `<id>.part`;
-//! 4. `sync_all`;
-//! 5. `rename(<id>.part -> <id>)`;
-//! 6. only now is the id returned.
+//! 4. the bytes go to `<id>.part`;
+//! 5. `sync_all`;
+//! 6. `rename(<id>.part -> <id>)`;
+//! 7. only now is the id returned.
 //!
 //! A client therefore cannot reference an attachment that is not yet durable
 //! under its final name, and a crash between 4 and 5 leaves a `.part` that the
@@ -31,11 +34,11 @@
 //! * the budget is a read-then-write. Without the lock, N concurrent uploads on
 //!   a fresh card all measure `used_bytes == 0` before any of them renames, and
 //!   N * [`MAX_ATTACHMENT_BYTES`] lands however small the budget is;
-//! * the staging sweep at the end of an upload deletes by age, and an upload
-//!   still streaming has a `.part` whose mtime stopped advancing when its last
-//!   frame arrived. A stalled client's `.part` would age past
-//!   [`super::gc::ORPHAN_TTL`], a second upload's sweep would unlink it, and
-//!   the first upload's `rename` would then fail on a file it still holds open.
+//! * the staging sweep deletes by age, and an upload still streaming has a
+//!   `.part` whose mtime stopped advancing when its last frame arrived. A
+//!   stalled client's `.part` would age past [`super::gc::ORPHAN_TTL`], a
+//!   second upload's sweep would unlink it, and the first upload's `rename`
+//!   would then fail on a file it still holds open.
 //!
 //! The cost is that one card's uploads are serial, and the lane has to have an
 //! end: a client that opens a POST and stalls would otherwise hold it for as
@@ -121,7 +124,29 @@ pub async fn store_upload(
     // the module docs: the budget and the sweep both need it.
     let _turn = lock_card(locks, card_id.as_str()).await;
 
-    // (2) Cheap refusal before a single byte is read off the socket.
+    let staging = staging_dir(root, card_id);
+    let staging = staging_dir_or_refuse(staging).await?;
+
+    // (2) Reclaim before measuring.
+    //
+    // #1505 S6 review. This used to run only AFTER a successful upload, which
+    // made the budget a one-way door: a card at or over its ceiling refuses
+    // every upload at the check below, so the sweep that would free space
+    // never ran, so the card stayed over its ceiling forever. The orphan TTL
+    // was supposed to be the way out and structurally could not be.
+    //
+    // The over-budget state is reachable without any abuse: a bind that dies
+    // between its rename and its unlink leaves the same bytes in both counted
+    // directories. Sweeping first means an expired staged file is gone before
+    // the number that gates this request is taken.
+    let swept = staging.clone();
+    blocking(move || {
+        super::gc::sweep_staging(&swept);
+        Ok(())
+    })
+    .await?;
+
+    // (3) Cheap refusal before a single byte is read off the socket.
     let measured_root = root.to_path_buf();
     let measured_card = card_id.clone();
     let already_used = blocking(move || used_bytes(&measured_root, &measured_card)).await?;
@@ -129,30 +154,7 @@ pub async fn store_upload(
         return Err(budget_exhausted());
     }
 
-    let staging = staging_dir(root, card_id);
-    let staging = staging_dir_or_refuse(staging).await?;
-
-    let stored = write_body(&staging, already_used, deadline, body).await;
-    if stored.is_ok() {
-        // The sweep is here rather than on a timer: this is the only moment the
-        // directory is known to have changed, and its cardinality is tiny.
-        //
-        // It is dispatched while this upload still holds the card's turn. That
-        // is not a guarantee about when the blocking task RUNS: dropping a
-        // `spawn_blocking` handle does not cancel the closure, so if the client
-        // disconnects here the handler future — and with it `_turn` — is
-        // dropped while the sweep may still be queued or running. What keeps
-        // that harmless is not the lock but the sweep's own rule: it only
-        // removes entries older than `ORPHAN_TTL`, and a `.part` another
-        // upload opened moments ago is not one of them.
-        let swept = staging.clone();
-        blocking(move || {
-            super::gc::sweep_staging(&swept);
-            Ok(())
-        })
-        .await?;
-    }
-    stored
+    write_body(&staging, already_used, deadline, body).await
 }
 
 /// Run one synchronous step off the runtime.

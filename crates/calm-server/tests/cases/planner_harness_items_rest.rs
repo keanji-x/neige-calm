@@ -448,8 +448,11 @@ async fn transcript_route_page_budget_skips_plan_rows() {
     let mut plan_ids = Vec::new();
     // Interleaved, plan first, so an unfiltered page of 4 would be
     // [plan, item, plan, item] and only two real rows would reach the reader.
-    for index in 1..=4 {
-        plan_ids.push(
+    // One construction site for a ten-argument call that was written twice
+    // here, differing in four arguments. Written out twice, a change to the
+    // row shape has two places to be made and one place to be forgotten.
+    let insert =
+        async |uuid: Option<String>, item_type: Option<&str>, method: &str, params: String| {
             boot.repo
                 .harness_item_insert(
                     "runtime-budget",
@@ -457,39 +460,40 @@ async fn transcript_route_page_budget_skips_plan_rows() {
                     boot.planner_card.track_id.as_str(),
                     "thread-budget",
                     Some("turn-budget"),
-                    None,
-                    None,
-                    "turn/plan/updated",
-                    &json!({
-                        "threadId": "thread-budget",
-                        "turnId": "turn-budget",
-                        "explanation": null,
-                        "plan": [{ "step": format!("step {index}"), "status": "pending" }]
-                    })
-                    .to_string(),
+                    uuid.as_deref(),
+                    item_type,
+                    method,
+                    &params,
                     None,
                 )
                 .await
-                .unwrap(),
+                .unwrap()
+        };
+    for index in 1..=4 {
+        plan_ids.push(
+            insert(
+                None,
+                None,
+                "turn/plan/updated",
+                json!({
+                    "threadId": "thread-budget",
+                    "turnId": "turn-budget",
+                    "explanation": null,
+                    "plan": [{ "step": format!("step {index}"), "status": "pending" }]
+                })
+                .to_string(),
+            )
+            .await,
         );
         let uuid = format!("item-budget-{index}");
         item_ids.push(
-            boot.repo
-                .harness_item_insert(
-                    "runtime-budget",
-                    boot.planner_card.id.as_str(),
-                    boot.planner_card.track_id.as_str(),
-                    "thread-budget",
-                    Some("turn-budget"),
-                    Some(&uuid),
-                    Some("agent_message"),
-                    "item/completed",
-                    &json!({ "item": { "id": uuid, "type": "agent_message", "text": "x" } })
-                        .to_string(),
-                    None,
-                )
-                .await
-                .unwrap(),
+            insert(
+                Some(uuid.clone()),
+                Some("agent_message"),
+                "item/completed",
+                json!({ "item": { "id": uuid, "type": "agent_message", "text": "x" } }).to_string(),
+            )
+            .await,
         );
     }
 

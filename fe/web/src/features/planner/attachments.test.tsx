@@ -25,8 +25,10 @@ function png(name = 'shot.png'): File {
 
 let latest: PlannerAttachments | null = null;
 
-function Harness({ upload, supported = true }: { upload: UploadAttachment; supported?: boolean }) {
-  const attachments = usePlannerAttachments(upload, 'card-1');
+function Harness({ upload, supported = true, card = 'card-1' }: {
+  upload: UploadAttachment; supported?: boolean; card?: string;
+}) {
+  const attachments = usePlannerAttachments(upload, card);
   latest = attachments;
   return (
     <>
@@ -116,6 +118,46 @@ describe('planner attachments', () => {
     await pick(png());
     expect(screen.getByRole('alert').textContent).toContain('budget exhausted');
     expect(latest?.ids).toEqual([]);
+  });
+
+  /*
+   * #1505 S6 review — an upload that lands after the reader moved on belongs
+   * to the card it was started for.
+   *
+   * The card-change effect clears the strip, but it cannot cancel a request
+   * already in flight. Without an ownership check the answer appended to the
+   * NEW card's composer: card B showing card A's picture, and a cross-card
+   * refusal when it is sent.
+   */
+  it('does not adopt an upload that finished after the card changed', async () => {
+    let settle: ((value: UploadAttachmentResponse) => void) | undefined;
+    const upload = vi.fn<UploadAttachment>()
+      .mockImplementation(() => new Promise((resolve) => { settle = resolve; }));
+    const { rerender } = render(<Harness upload={upload} card="card-1" />);
+    await pick(png());
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(latest?.ids).toEqual([]);
+
+    rerender(<Harness upload={upload} card="card-2" />);
+    await act(async () => {
+      settle?.(uploaded(0));
+      await Promise.resolve();
+    });
+    expect(latest?.ids).toEqual([]);
+    expect(screen.queryByLabelText('Remove this image')).toBeNull();
+  });
+
+  it('does adopt an upload that finished while the same card was still open', async () => {
+    let settle: ((value: UploadAttachmentResponse) => void) | undefined;
+    const upload = vi.fn<UploadAttachment>()
+      .mockImplementation(() => new Promise((resolve) => { settle = resolve; }));
+    render(<Harness upload={upload} card="card-1" />);
+    await pick(png());
+    await act(async () => {
+      settle?.(uploaded(0));
+      await Promise.resolve();
+    });
+    expect(latest?.ids).toEqual([uploaded(0).attachmentId]);
   });
 
   /*

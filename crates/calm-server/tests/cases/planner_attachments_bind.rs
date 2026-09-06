@@ -325,6 +325,75 @@ async fn planner_run_lists_a_queued_messages_attachments_without_a_host_path() {
     );
 }
 
+/// The second route that can carry the path, and the one #1505 PR1's audit
+/// structurally could not see: `GET /harness/items` returns each stored
+/// `params` blob verbatim, and this slice made codex put an absolute host path
+/// in one.
+///
+/// The row is inserted directly rather than waited for, because the assertion
+/// is about the SERIALIZATION and an empty transcript would satisfy a grep
+/// without exercising anything — which is how a route-level "no host path"
+/// check certifies itself.
+#[tokio::test]
+async fn the_transcript_route_does_not_carry_the_local_image_host_path() {
+    use calm_server::db::prelude::*;
+
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    let card_id = boot.planner_card.id.as_str().to_string();
+    let host_path = boot
+        .bound_dir()
+        .join("0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png")
+        .to_string_lossy()
+        .into_owned();
+
+    boot.repo
+        .harness_item_insert(
+            &boot.worker_session_id,
+            &card_id,
+            boot.planner_card.track_id.as_str(),
+            "thread-redaction",
+            Some("turn-redaction"),
+            Some("user-redaction"),
+            Some("userMessage"),
+            "item/completed",
+            &json!({
+                "completedAtMs": 7,
+                "item": {
+                    "id": "user-redaction",
+                    "type": "userMessage",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {"type": "localImage", "path": host_path}
+                    ]
+                }
+            })
+            .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (status, items) = get(
+        boot.app.clone(),
+        format!("/api/cards/{card_id}/harness/items?after_id=0&limit=300&direction=asc"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={items}");
+    let serialized = items.to_string();
+    // The row really is in the response — otherwise the grep below proves
+    // nothing.
+    assert!(serialized.contains("what is this?"), "{serialized}");
+    assert!(serialized.contains("localImage"), "{serialized}");
+    assert!(
+        !serialized.contains(".neige"),
+        "the transcript read must not carry the workspace path: {serialized}"
+    );
+    assert!(
+        !serialized.contains(&host_path),
+        "the transcript read must not carry the workspace path: {serialized}"
+    );
+}
+
 /// A queued attachment is part of the entry, so it survives the snapshot the
 /// harness persists and a boot recovery replays.
 #[tokio::test]
@@ -400,10 +469,173 @@ async fn binding_does_not_change_what_the_card_has_spent() {
         calm_server::planner_attachments::used_bytes(&root, &boot.planner_card.id).unwrap();
     assert!(before > 4096);
 
-    post_input_with_attachments(boot.app.clone(), &card_id, "spend", &[id]).await;
+    let (status, body) = post_input_with_attachments(
+        boot.app.clone(),
+        &card_id,
+        "spend",
+        std::slice::from_ref(&id),
+    )
+    .await;
+    // #1505 S6 review. Asserting only "the totals are equal" made this test
+    // pass with the production bind removed entirely: nothing had moved, so
+    // nothing had changed. The bind must be shown to have HAPPENED before the
+    // equality means anything.
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(names(&boot.bound_dir()), vec![id], "the bind ran");
+    assert!(names(&boot.staging_dir()).is_empty());
 
     let after = calm_server::planner_attachments::used_bytes(&root, &boot.planner_card.id).unwrap();
     assert_eq!(after, before, "a bind is a move, not a second copy");
+}
+
+/// A symlink where `bound/` should be, pointing at ANOTHER CARD's `bound/`.
+///
+/// This is the defect the first version of this slice shipped: only the source
+/// of the copy was `openat2`-guarded, so `create_dir_all` and `rename`
+/// resolved the planted link and card A's attachment landed in card B's
+/// never-swept directory — charged to card B's budget forever, because the
+/// re-open that noticed it ran AFTER the write and deleted nothing.
+///
+/// The assertions are in the order that matters: refused, nothing written
+/// through the link, and the staged original still where it was.
+#[tokio::test]
+async fn a_bound_directory_symlinked_to_another_card_refuses_before_writing() {
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    let card_id = boot.planner_card.id.as_str().to_string();
+    let id = staged(&boot, b"do not follow me").await;
+
+    let victim = boot.attachment_root().join("card-victim").join("bound");
+    std::fs::create_dir_all(&victim).unwrap();
+    std::os::unix::fs::symlink(&victim, boot.bound_dir()).unwrap();
+
+    let (status, body) = post_input_with_attachments(
+        boot.app.clone(),
+        &card_id,
+        "planted",
+        std::slice::from_ref(&id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
+    assert!(
+        names(&victim).is_empty(),
+        "not one byte may be written through the link: {:?}",
+        names(&victim)
+    );
+    assert_eq!(
+        names(&boot.staging_dir()),
+        vec![id],
+        "the staged original is untouched, so nothing was lost"
+    );
+    let (_, run) = get(
+        boot.app.clone(),
+        format!("/api/cards/{card_id}/planner/run"),
+    )
+    .await;
+    assert_eq!(
+        run["pending"].as_array().map(Vec::len),
+        Some(0),
+        "run={run}"
+    );
+}
+
+/// The same link, pointing OUTSIDE the attachment root entirely.
+///
+/// The sibling-card spelling and this one fail for different reasons —
+/// `RESOLVE_NO_SYMLINKS` catches the first, `RESOLVE_BENEATH` would catch this
+/// one even without it — so both are asserted rather than one standing in for
+/// the other.
+#[tokio::test]
+async fn a_bound_directory_symlinked_outside_the_root_refuses_before_writing() {
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    let card_id = boot.planner_card.id.as_str().to_string();
+    let id = staged(&boot, b"do not escape").await;
+
+    let outside = boot.workspace.join("escaped");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, boot.bound_dir()).unwrap();
+
+    let (status, body) = post_input_with_attachments(
+        boot.app.clone(),
+        &card_id,
+        "escaping",
+        std::slice::from_ref(&id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
+    assert!(
+        names(&outside).is_empty(),
+        "nothing may be written outside the attachment root: {:?}",
+        names(&outside)
+    );
+    assert_eq!(names(&boot.staging_dir()), vec![id]);
+    // The refusal must not hand the client a host path — the same rule the
+    // read path follows.
+    let sentence = body["error"].as_str().unwrap_or_default();
+    assert!(!sentence.contains(".neige"), "body={body}");
+    assert!(!sentence.contains("escaped"), "body={body}");
+}
+
+/// The staging half of the same statement. A planted `staging` link must not
+/// decide where the temporary is written either.
+#[tokio::test]
+async fn a_staging_directory_symlinked_elsewhere_refuses_before_writing() {
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    let card_id = boot.planner_card.id.as_str().to_string();
+    let id = staged(&boot, b"temporary somewhere else").await;
+
+    // Move the real staging aside and put a link in its place, so the
+    // attachment still exists to be found and only the directory lies.
+    let real = boot.staging_dir();
+    let elsewhere = boot.workspace.join("elsewhere");
+    std::fs::rename(&real, &elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &real).unwrap();
+
+    let (status, body) = post_input_with_attachments(
+        boot.app.clone(),
+        &card_id,
+        "planted staging",
+        std::slice::from_ref(&id),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "body={body}");
+    assert!(
+        !names(&elsewhere).iter().any(|name| name.ends_with(".part")),
+        "no temporary may be written through the link: {:?}",
+        names(&elsewhere)
+    );
+}
+
+/// The redactor itself: shape-driven, total over nesting, and byte-identical
+/// when there is nothing to redact.
+#[test]
+fn the_redactor_rewrites_every_local_image_path_and_nothing_else() {
+    use calm_server::planner_attachments::{REDACTED_LOCAL_IMAGE_PATH, redact_local_image_paths};
+
+    let params = json!({
+        "completedAtMs": 1,
+        "item": {"content": [
+            {"type": "text", "text": "look"},
+            {"type": "localImage", "path": "/srv/w/.neige/attachments/c/bound/a.png"},
+            {"nested": {"type": "localImage", "path": "/srv/w/.neige/attachments/c/bound/b.png"}}
+        ]}
+    })
+    .to_string();
+    let redacted = redact_local_image_paths(&params);
+    assert!(!redacted.contains(".neige"), "{redacted}");
+    assert_eq!(
+        redacted.matches(REDACTED_LOCAL_IMAGE_PATH).count(),
+        2,
+        "{redacted}"
+    );
+    let value: Value = serde_json::from_str(&redacted).unwrap();
+    assert_eq!(value["completedAtMs"], json!(1));
+    assert_eq!(value["item"]["content"][0]["text"], json!("look"));
+    assert_eq!(value["item"]["content"][1]["type"], json!("localImage"));
+
+    let untouched = r#"{"item":{"text":"plain"}}"#;
+    assert_eq!(redact_local_image_paths(untouched), untouched);
+    // Not JSON at all: stored opaque, returned opaque, never a panic.
+    assert_eq!(redact_local_image_paths("{broken"), "{broken");
 }
 
 /// Naming the same attachment on a second message is legal and is a no-op on

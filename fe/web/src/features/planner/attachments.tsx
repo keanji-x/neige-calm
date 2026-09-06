@@ -100,10 +100,19 @@ export function usePlannerAttachments(
   const live = useRef<readonly PlannerAttachment[]>([]);
   live.current = items;
 
+  /* Bumped on every card change. An in-flight upload captures the value it
+     started under and refuses to adopt its own answer if it no longer
+     matches — see `attach`. */
+  const generation = useRef(0);
+
   /* A picked image belongs to the card it was uploaded to — its bytes live
      under that card's directory and the server refuses it anywhere else — so
      moving to another conversation drops the strip rather than carrying it. */
-  useEffect(() => { setItems([]); setError(null); }, [cardId]);
+  useEffect(() => {
+    generation.current += 1;
+    setItems([]);
+    setError(null);
+  }, [cardId]);
 
   const attach = useCallback(async (file: File) => {
     const refusal = refusalFor(file.type);
@@ -114,14 +123,33 @@ export function usePlannerAttachments(
     }
     setBusy(true);
     setError(null);
+    const startedAt = generation.current;
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const uploaded = await upload(bytes, file.type);
+      /*
+       * #1505 S6 review — an upload that lands after the reader moved on
+       * belongs to the card it was started for, not to whichever card is open
+       * now.
+       *
+       * The card-change effect below clears the list, but it cannot cancel a
+       * request already in flight: without this check the answer appended to
+       * the NEW card's composer, showing card A's picture under card B's
+       * message and earning a cross-card refusal on send. The generation
+       * counter is compared rather than the card id because the id can repeat
+       * (leave a card and come back) and a stale answer must not be adopted
+       * then either.
+       */
+      if (generation.current !== startedAt) return;
       setItems((current) => [...current, {
         id: uploaded.attachmentId, contentType: uploaded.contentType,
         size: uploaded.size, url: uploaded.url,
       }]);
     } catch (cause) {
+      /* Same ownership rule as the success branch: a refusal earned by the
+         card the reader has left is not a message to put in front of them
+         about the card they are on. */
+      if (generation.current !== startedAt) return;
       /* The server's own sentence when it has one — it says which of the four
          refusals this was (wrong format, attached workspace, budget, size),
          and every one of those is something the reader can act on. */

@@ -74,11 +74,21 @@ pub const NEIGE_GIT_EXCLUDE_ENTRY: &str = ".neige/";
 /// back after a day. Budget spent on **bound** bytes never comes back: nothing
 /// deletes from `bound/`, so for a card whose attachments were all actually
 /// sent this constant is a lifetime total, not a ceiling. Binding does not
-/// change the number — [`used_bytes`] counts both directories, and a bind moves
-/// bytes between them — it changes whether that number can ever go down again.
-/// The residual gap that leaves (an attachment removed from a message before
-/// it was sent, or a deleted queue entry, still costs its bytes forever) is
-/// #1505 GAP-A12, and this refusal is its only backstop.
+/// change the number in the ordinary case — [`used_bytes`] counts both
+/// directories, and a bind moves bytes between them — it changes whether that
+/// number can ever go down again.
+///
+/// "In the ordinary case" is doing real work in that sentence and is not a
+/// hedge. A bind that publishes into `bound/` and then fails, or is killed,
+/// before retiring the staged original leaves the same bytes in both
+/// directories, and this counts them twice until either the next bind of that
+/// id retires the twin or [`gc::sweep_staging`] reaches it. [`bind`] logs that
+/// branch rather than hiding it, and [`store::store_upload`] sweeps BEFORE it
+/// measures so a card double-charged past the ceiling can still recover.
+///
+/// The residual gap (an attachment removed from a message before it was sent,
+/// or a deleted queue entry, still costs its bytes forever) is #1505 GAP-A12,
+/// and this refusal is its only backstop.
 ///
 /// Nor is it a bound on the subtree's size: [`used_bytes`] counts the regular
 /// files directly in the two directories, so bytes parked in a subdirectory, or
@@ -135,6 +145,19 @@ pub const UPLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(
 /// and 2 each fixed one message and left the rest of the class. There is now
 /// exactly one constructor that takes paths, it puts them in the log, and the
 /// returned sentence carries none of them.
+///
+/// # The scope of this rule, said explicitly because it has been over-read
+///
+/// #1505 S6 review. This is a rule about **error bodies built by this
+/// module**. It is NOT the sentence "no host path reaches a client", and that
+/// wider sentence is false in this repository: a track's `cwd` is on the wire
+/// by design, and `GET /api/cards/{id}/harness/items` returns each stored
+/// `params` blob verbatim — including, once this slice landed, codex's own
+/// `{"type":"localImage","path":…}` item. That surface is reduced by
+/// [`redact_local_image_paths`], which is a reduction and not a guarantee; the
+/// route still carries whatever else codex put in a notification. Anyone
+/// citing the rule below for a claim about a route rather than about an error
+/// message is citing it for something it never said.
 ///
 /// The class-level check is a grep, and it is the reason this is stated as a
 /// rule rather than as a claim about particular messages: **every `.display()`
@@ -421,6 +444,75 @@ fn unmeasurable(dir: &Path, error: &std::io::Error) -> CalmError {
     CalmError::BadRequest(format!(
         "cannot measure this card's attachment budget: {error}"
     ))
+}
+
+/// The placeholder a redacted `localImage` path is replaced with.
+pub const REDACTED_LOCAL_IMAGE_PATH: &str = "[redacted]";
+
+/// Strip absolute host paths out of a stored harness-item `params` blob before
+/// it is put on the wire.
+///
+/// # Why this exists, and what it is NOT claiming
+///
+/// #1505 S6 review. `GET /api/cards/{id}/harness/items` returns each row's
+/// `params` verbatim, and this slice made codex put
+/// `{"type":"localImage","path":"/abs/host/path"}` in there — the very item it
+/// is handed. That path is not something a browser asked for, can act on, or
+/// needs: the transcript renders attachments from
+/// [`calm_types::model::HarnessInputSegment`], which carries an id and a REST
+/// url and no path at all.
+///
+/// **This does not establish "no host path reaches a client".** That sentence
+/// is false in this repository and was false before this slice: the same route
+/// ships whatever else codex put in a notification, and a track's `cwd` is on
+/// the wire by design. What #1515 established is narrower and is restated on
+/// [`server_side_fault`]: no path this MODULE builds reaches an error body.
+/// This function removes one path this slice would otherwise have added to a
+/// different surface; it is a reduction, not an invariant.
+///
+/// Total over shape rather than over spelling: it walks the whole document and
+/// rewrites `path` on every object whose `type` is `localImage`, wherever it
+/// sits, because codex decides that nesting and we do not.
+pub fn redact_local_image_paths(params: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(params) else {
+        // Not JSON we can walk. It is stored opaque and goes out opaque; a
+        // blob this cannot parse is also one no `localImage` item came from,
+        // since we only ever store what serde produced.
+        return params.to_string();
+    };
+    if !redact_in_place(&mut value) {
+        return params.to_string();
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| params.to_string())
+}
+
+/// Returns whether anything was rewritten, so an untouched document keeps its
+/// exact original bytes rather than being re-serialized.
+fn redact_in_place(value: &mut serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut changed = false;
+            if map.get("type").and_then(serde_json::Value::as_str) == Some("localImage")
+                && let Some(path) = map.get_mut("path")
+                && path.is_string()
+            {
+                *path = serde_json::Value::String(REDACTED_LOCAL_IMAGE_PATH.to_string());
+                changed = true;
+            }
+            for nested in map.values_mut() {
+                changed |= redact_in_place(nested);
+            }
+            changed
+        }
+        serde_json::Value::Array(items) => {
+            let mut changed = false;
+            for nested in items.iter_mut() {
+                changed |= redact_in_place(nested);
+            }
+            changed
+        }
+        _ => false,
+    }
 }
 
 /// REST path the browser reads an attachment back from.
