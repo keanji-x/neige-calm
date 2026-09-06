@@ -71,6 +71,54 @@ pub struct QueueEntryMeta {
     pub queued_at_ms: i64,
 }
 
+/// Decode one of the queue's parallel arrays ELEMENT BY ELEMENT, so a single
+/// unreadable element cannot cost the whole snapshot.
+///
+/// # Why every one of these arrays needs it, not just `pending_entry_meta`
+///
+/// `from_value_strict` `expect`s, and `recover_harnesses_on_boot`
+/// (`harness/mod.rs`) hands it `handle_state_json` with no pre-validation. So a
+/// serde error anywhere in that document is a panic on the boot path and every
+/// live harness for that card is gone until a human edits the database.
+/// `pending_entry_meta` was given a lenient decoder for exactly that reason;
+/// the other three arrays were left strict, which made the group posture stated
+/// on `pending_queue` below true of one field out of four. A row containing
+/// `"pending_message_ids": [["m1"], "oops"]` — hand-edited, or written by a
+/// binary from a slice that grew the element shape — took the whole card down.
+///
+/// # The degrade is per POSITION, never a shorter array
+///
+/// Each element that fails becomes that array's own "nothing here" value
+/// ([`Default`]), and the array keeps its length. Dropping the element instead
+/// would shift every later position by one and pair ids with the wrong
+/// sentences — the mis-attribution this module exists to remove, arriving
+/// through the repair rather than through the bug.
+///
+/// | array | element | unreadable element becomes |
+/// |---|---|---|
+/// | `pending_queue` | `Option<Observation>` | `None` — the position is skipped by [`HarnessSnapshot::pending_entries`], together with its side slots, so nothing is mis-paired |
+/// | `pending_envelope_ids` | `Option<i64>` | `None` — "no push to acknowledge" |
+/// | `pending_message_ids` | `Vec<String>` | empty — "no transfer identity yet"; the next transfer boundary mints one |
+///
+/// `pending_entry_meta` keeps its own decoder below because it demotes for two
+/// further reasons this one cannot express (an empty id, and a duplicate id).
+///
+/// Every drop is bounded and self-healing in the same way that one is: the
+/// entry either stays visible to the planner or is gone from a queue it could
+/// not have been delivered from, and the next `set_pending_entries` rewrites
+/// all four arrays from real values.
+fn lenient_parallel_array<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let raw = Vec::<Value>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .map(|value| serde_json::from_value::<T>(value).unwrap_or_default())
+        .collect())
+}
+
 /// Read the `pending_entry_meta` array without ever failing the snapshot.
 ///
 /// Three ways a slot is dropped to `None` (i.e. its entry is read back as
@@ -130,9 +178,18 @@ pub struct HarnessSnapshot {
     /// lengths still deserializes, and `pending_entries()` pads the short sides
     /// with `None` rather than panicking — deliberately, because panicking here
     /// is a boot failure for a live harness (see `token_usage` below).
-    #[serde(default)]
-    pending_queue: Vec<Observation>,
-    #[serde(default)]
+    ///
+    /// That posture is delivered by [`lenient_parallel_array`] on all four,
+    /// not by three strict decoders and one lenient one: an unreadable ELEMENT
+    /// is as fatal to `from_value_strict` as a missing field, and it degrades
+    /// per position rather than by shortening the array. `Option<Observation>`
+    /// rather than `Observation` is what buys that for this array — a hole
+    /// keeps its index so no side slot moves under it, and serializes
+    /// identically to the observation for every value this crate writes,
+    /// because `set_pending_entries` only ever writes `Some`.
+    #[serde(default, deserialize_with = "lenient_parallel_array")]
+    pending_queue: Vec<Option<Observation>>,
+    #[serde(default, deserialize_with = "lenient_parallel_array")]
     pending_envelope_ids: Vec<Option<i64>>,
     /// #1505 PR1. Absent in every row written before this slice; an absent or
     /// `None` slot beside a `UserMessage` is read back as
@@ -192,7 +249,7 @@ pub struct HarnessSnapshot {
     /// none, in the transaction that moves it, so a moved instance is always
     /// identifiable. Minting there rather than at load keeps the id stable
     /// across reads.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_parallel_array")]
     pending_message_ids: Vec<Vec<String>>,
     #[serde(default)]
     pub last_thread_id: Option<String>,
@@ -324,7 +381,7 @@ impl HarnessSnapshot {
     /// Zip the four stored arrays into one fused view.
     ///
     /// Shorter sides are padded with `None`, which is where the old
-    /// `align_pending_envelope_ids` pass went. The variant is decided by the
+    /// alignment pass went (deleted by this slice). The variant is decided by the
     /// observation together with its meta slot, and the mapping is total:
     ///
     /// | observation | meta slot | entry |
@@ -341,7 +398,11 @@ impl HarnessSnapshot {
         self.pending_queue
             .iter()
             .enumerate()
-            .map(|(index, observation)| {
+            .filter_map(|(index, observation)| {
+                // A hole is a position whose observation this build could not
+                // read. The whole position goes — entry AND side slots — so
+                // nothing below is paired with a neighbour's identity.
+                let observation = observation.as_ref()?;
                 let envelope_id = self.pending_envelope_ids.get(index).copied().flatten();
                 let meta = self.pending_entry_meta.get(index).and_then(Option::as_ref);
                 // #1449 — the same padding rule as the other side arrays: a
@@ -354,7 +415,7 @@ impl HarnessSnapshot {
                     .get(index)
                     .cloned()
                     .unwrap_or_default();
-                match (observation, meta) {
+                Some(match (observation, meta) {
                     (Observation::UserMessage { text }, Some(meta)) => QueueEntry::User {
                         id: meta.id.clone(),
                         text: text.clone(),
@@ -371,7 +432,7 @@ impl HarnessSnapshot {
                         envelope_id,
                         message_ids,
                     },
-                }
+                })
             })
             .collect()
     }
@@ -403,7 +464,7 @@ impl HarnessSnapshot {
                 // any number of restarts, and what keeps GAP-B true.
                 QueueEntry::LegacyUser { .. } | QueueEntry::System { .. } => None,
             });
-            pending_queue.push(entry.observation());
+            pending_queue.push(Some(entry.observation()));
         }
         self.pending_queue = pending_queue;
         self.pending_envelope_ids = pending_envelope_ids;
@@ -412,12 +473,16 @@ impl HarnessSnapshot {
     }
 
     /// Read-only convenience for callers that only care about the observations.
+    ///
+    /// Holes are skipped, exactly as [`Self::pending_entries`] skips them, so
+    /// this and `pending_len` cannot disagree with the entry view about how
+    /// many things are queued.
     pub fn pending_observations(&self) -> Vec<Observation> {
-        self.pending_queue.clone()
+        self.pending_queue.iter().flatten().cloned().collect()
     }
 
     pub fn pending_len(&self) -> usize {
-        self.pending_queue.len()
+        self.pending_queue.iter().flatten().count()
     }
 
     pub fn assert_known_schema(&self) {
@@ -869,6 +934,130 @@ mod tests {
     /// this repo either omits the key entirely or was serialized by the
     /// current binary, so nothing else would catch it.
     ///
+    /// #1514 review — the SAME degrade, for every array that runs parallel to
+    /// `pending_queue`, table-driven.
+    ///
+    /// One array had a lenient decoder and three did not, while the header on
+    /// `pending_queue` asserted the posture for the group. `from_value_strict`
+    /// `expect`s and `recover_harnesses_on_boot` calls it with no
+    /// pre-validation, so an unreadable ELEMENT in any of them was a boot
+    /// panic and a dead harness for that card — the exact failure the meta
+    /// decoder exists to prevent, one array over.
+    ///
+    /// A case per array, each planting ONE unreadable element beside one good
+    /// one, and each asserting the two things that make the degrade safe:
+    /// the decode does not panic, and the SURVIVING entry is still paired with
+    /// its OWN identity rather than its neighbour's. The second half is the
+    /// point — a decoder that dropped the bad element instead of holing it
+    /// would shift every later position and pass a length check while pairing
+    /// "second" with the first entry's ids.
+    ///
+    /// Sentinel for `lenient_parallel_array`: removing the
+    /// `deserialize_with` from any one of the three reddens its own case here
+    /// and nothing else.
+    #[test]
+    fn an_unreadable_element_in_any_parallel_array_degrades_instead_of_panicking() {
+        // (array under test, the two elements — one good, one this build
+        // cannot read, in that order)
+        let cases: [(&str, Value); 3] = [
+            // A future `Observation` variant, as this build sees it.
+            (
+                "pending_queue",
+                json!([
+                    {"type": "user_message", "text": "first"},
+                    {"type": "from_a_later_slice", "payload": 1}
+                ]),
+            ),
+            // A hand-edited row, or a wire shape that grew.
+            ("pending_envelope_ids", json!([7, "not an integer"])),
+            // The array the review reported.
+            ("pending_message_ids", json!([["m1"], "oops"])),
+        ];
+
+        for (array, planted) in cases {
+            let mut row = json!({
+                "schema_version": HARNESS_SNAPSHOT_SCHEMA_VERSION,
+                "mode": HARNESS_MODE,
+                "phase": "idle",
+                "pending_queue": [
+                    {"type": "user_message", "text": "first"},
+                    {"type": "user_message", "text": "second"}
+                ],
+                "pending_envelope_ids": [7, 8],
+                "pending_entry_meta": [
+                    {"id": "id-first", "rev": 0, "queued_at_ms": 5},
+                    {"id": "id-second", "rev": 0, "queued_at_ms": 6}
+                ],
+                "pending_message_ids": [["m1"], ["m2"]]
+            });
+            row[array] = planted;
+
+            // Would have panicked; `expect` on the boot path is a dead card.
+            let snapshot = HarnessSnapshot::from_value_strict(row);
+            let entries = snapshot.pending_entries();
+
+            // The good element at index 0 keeps everything that was ITS own.
+            // Held for every case, including the one that holed `pending_queue`
+            // — there the second position disappears whole, side slots and all.
+            assert_eq!(
+                entries[0].observation(),
+                Observation::UserMessage {
+                    text: "first".into()
+                },
+                "{array}: the readable entry must survive intact"
+            );
+            assert_eq!(
+                entries[0].id().map(QueueEntryId::as_str),
+                Some("id-first"),
+                "{array}: …still holding its OWN queue id"
+            );
+            assert_eq!(
+                entries[0].envelope_id(),
+                Some(7),
+                "{array}: …its own envelope id"
+            );
+            assert_eq!(
+                entries[0].message_ids(),
+                ["m1".to_string()],
+                "{array}: …and its own transfer identity, not its neighbour's"
+            );
+
+            match array {
+                // A hole removes the POSITION. Anything else would be a
+                // fabricated observation delivered to the planner.
+                "pending_queue" => assert_eq!(
+                    entries.len(),
+                    1,
+                    "an observation this build cannot read is not a queue entry"
+                ),
+                // The other two keep the entry and lose only that one
+                // position's value.
+                "pending_envelope_ids" => {
+                    assert_eq!(entries.len(), 2);
+                    assert_eq!(entries[1].envelope_id(), None, "{array}: degraded slot");
+                    assert_eq!(
+                        entries[1].id().map(QueueEntryId::as_str),
+                        Some("id-second"),
+                        "{array}: and only that slot"
+                    );
+                }
+                "pending_message_ids" => {
+                    assert_eq!(entries.len(), 2);
+                    assert!(
+                        entries[1].message_ids().is_empty(),
+                        "{array}: degraded slot says `no transfer identity yet`"
+                    );
+                    assert_eq!(
+                        entries[1].id().map(QueueEntryId::as_str),
+                        Some("id-second"),
+                        "{array}: and only that slot"
+                    );
+                }
+                other => panic!("unhandled case {other}"),
+            }
+        }
+    }
+
     /// This test is also the sentinel for the decoder itself: deleting
     /// `deserialize_pending_entry_meta` reddens it.
     #[test]

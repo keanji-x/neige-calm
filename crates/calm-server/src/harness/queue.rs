@@ -80,8 +80,32 @@ impl std::fmt::Display for QueueEntryId {
 ///   change id, because they never had one") true. It does carry
 ///   `message_ids`, which is a different identity for a different reader: see
 ///   [`QueueEntry::message_ids`] and `HarnessSnapshot::pending_message_ids`.
-///   A legacy entry gaining a message id at a transfer boundary does not make
-///   it addressable — `user_view` still denies it — so GAP-B is untouched.
+///   Whether a legacy entry stays legacy across a transfer is
+///   PATH-DEPENDENT, and the difference is worth naming rather than
+///   generalising away:
+///
+///   * [`QueueEntry::ensure_message_id`] and the **reset / inherit** boundary
+///     (`planner_harness_start_adapter`'s `prepare_tx`) carry the entry WHOLE.
+///     It gains a message id and no `QueueEntryId`; `user_view` still denies
+///     it; it stays off the addressable page. GAP-B holds verbatim.
+///   * The **harvest** boundary does not. `stranded_user_messages` admits a
+///     `LegacyUser` via `is_user_authored` — it must, or every pre-#1505
+///     sentence would be stranded on a superseded row, which is the loss #1449
+///     exists to stop — but the journal it writes carries text and message ids
+///     only, so the successor rebuilds the entry through
+///     [`QueueEntry::user_message_moved`], as a `User` with a freshly minted
+///     `QueueEntryId`. That sentence IS listed in `GET /planner/run`'s
+///     `pending` afterwards.
+///
+///   The second is deliberate, not a leak. GAP-B's reason is that an id
+///   invented at READ time would differ on every read and could not be
+///   addressed; an id minted once, inside the transaction that moves the
+///   entry, and persisted with it has neither problem. So the harvest makes a
+///   pre-#1505 sentence editable where it previously was not, which is
+///   strictly better for the person who typed it, and it does so without ever
+///   re-minting an id for an entry that already has one. What GAP-B still
+///   forbids — and what nothing here does — is repairing a legacy entry IN
+///   PLACE, on a row it is not leaving.
 ///
 ///   Two things this variant is NOT:
 ///

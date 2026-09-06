@@ -867,24 +867,26 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // already been shown. Before this the ids did not exist and the
             // reset silently re-created every entry as a fresh anonymous one.
             //
-            // KNOWN GAP (#1514 review): no test reddens if this line goes back
-            // to copying observations alone, and the reason is a property of
-            // the product, not a missing fixture. The only entries that can
-            // carry an id are user messages; user messages hard-fire; the
-            // harness this reset starts therefore drains them inside the same
-            // request, and a `LegacyUser` — which is what a lost-id inherit
-            // produces — drains byte-identically. So the window in which the
-            // two worlds differ does not survive the call, and any end-to-end
-            // assertion over it would either be a race or pass vacuously.
+            // Pinned end to end by
+            // `planner_card_reset::reset_planner_card_preserves_runtime_pending_queue_and_push_watermark`,
+            // which reddens if this line goes back to copying observations
+            // alone.
             //
-            // What IS pinned: that `pending_entries` / `set_pending_entries`
-            // preserve ids across exactly this round trip
+            // An earlier note here claimed no such test could exist, on the
+            // ground that "a user message hard-fires, so the harness this reset
+            // starts drains it inside the same request". That reason was false
+            // about THIS arm, and the correction is the reason the test works:
+            // this branch runs only under `defer_runtime_start`
+            // (`payload.force_new_thread`), which takes
+            // `session_prepare_deferred_planner_tx` and starts NO harness in
+            // this request — it writes a placeholder row. The inherited entries
+            // sit on the successor's persisted snapshot until something later
+            // spawns the harness, and that window is a state, not a race.
+            //
+            // Also pinned, one layer down: that `pending_entries` /
+            // `set_pending_entries` preserve ids across this round trip
             // (`snapshot::tests::set_pending_entries_writes_every_parallel_array_in_step`,
             // `planner_pending_queue::a_queue_entry_id_survives_a_snapshot_round_trip`).
-            // Closing the rest needs the queue projected somewhere that
-            // outlives the drain — the transcript projection #1475 adds — not
-            // a fixture. (Spelled out rather than named: the table's name is
-            // retiring vocabulary under #1316's ratchet.)
             //
             // #1449 — the inherit CARRIES the predecessor's message ids too; it
             // does not mint over them. These are the same instances, moved.
@@ -987,8 +989,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // `TrackGoal` renders as bare text and does not hard-fire, while
         // `UserMessage` renders `"User says:\n{text}"`, hard-fires (so the turn
         // issues without waiting out the debounce) and cannot be evicted under
-        // backpressure. `run_loop`'s `UserMessage must not fold into TrackGoal`
-        // assertion is the other end of the same rule.
+        // backpressure. `queue::tests::a_user_entry_never_folds_into_a_system_tail`
+        // is the other end of the same rule.
         //
         // Empty / blank text is refused rather than silently dropped: the only
         // producer validates with `validate_first_message` before anything is
@@ -1058,25 +1060,32 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             //
             // #1449 — that constructor is also where its message id is minted.
             //
-            // What holds this is the type, not a test (#1514 review). The
-            // stored arrays are private to `harness::snapshot`, so the
-            // only way to put anything on this queue is `set_pending_entries`,
-            // and the only `QueueEntry` this module can build that renders as a
-            // `UserMessage` is `User`, which cannot exist without an id
-            // (`QueueEntry::legacy_user` is `pub(in crate::harness)`, so the
-            // id-less variant has no constructor reachable from here).
+            // Pinned by
+            // `track_create_first_message::the_tracks_first_message_is_addressable_in_the_pending_page`,
+            // which reads `GET /planner/run` with the drain held and fails if
+            // this entry is not on the addressable page.
             //
-            // A test cannot add to that here, and the reason is worth writing
-            // down because it also applies to the reset inherit above: a user
-            // message hard-fires, so the harness started by this very request
-            // drains it before any caller can read the queue back, and an
-            // id-less entry would drain byte-identically. The id is real and
-            // persisted — `POST /planner/input` proves the same constructor
-            // round-trips through `GET /planner/run`
-            // (`planner_pending_queue`) — but on THIS path it is minted for a
-            // consumer that does not exist yet: #1505 PR1b returns it on the
-            // create response, and reading it back needs the queue projected
-            // somewhere that outlives the drain (#1475).
+            // That test exists because an earlier note here stood IN PLACE of
+            // one, arguing that the type made it unnecessary: "the only
+            // `QueueEntry` this module can build that renders as a
+            // `UserMessage` is `User` … the id-less variant has no constructor
+            // reachable from here". Both halves were wrong, and the second is
+            // the general lesson: `QueueEntry` is a `pub` enum this module
+            // already imports, and a variant is exactly as visible as its enum,
+            // so `QueueEntry::LegacyUser { .. }` can be written on this line
+            // today. `QueueEntry::legacy_user` being `pub(in crate::harness)`
+            // constrains the named constructor and nothing else — **"no
+            // constructor reachable from here" is not a property a `pub`
+            // variant has.** The privacy of `harness::snapshot`'s arrays is
+            // real and still worth having; it does not decide which VARIANT
+            // this line pushes, which is the only thing addressability turns
+            // on.
+            //
+            // What made it look untestable was the drain, and that is a race
+            // rather than an impossibility: a user message hard-fires, so the
+            // harness this request starts drains it almost at once. #1449's
+            // drain hook parks the runtime immediately before the drain, which
+            // turns the window into a held state the endpoint can be read in.
             entries.push(QueueEntry::user_message(text.to_string(), None));
             seeded = true;
         }
@@ -2266,7 +2275,7 @@ async fn return_harvested_queues_and_fail_tx(
         if !returned_any_ids.is_empty() {
             // #1449 — SUBTRACT the returned ids; do not delete the entry.
             //
-            // `try_fold_pending_tail` unions two `UserMessage`s into one entry
+            // `queue::try_fold_tail` unions two `UserMessage`s into one entry
             // under backpressure, so an entry can carry a returned id next to a
             // newly enqueued one that was never harvested and sits on no source
             // row. Dropping the entry on an intersection would delete that
@@ -2725,6 +2734,81 @@ mod tests {
             vec!["first thing said", "second thing said"],
             "only `UserMessage`, in queue order: `TrackGoal` and `SystemContext` are functions \
              of the SUCCESSOR's payload and cwd, which after a re-point is a different directory"
+        );
+    }
+
+    /// #1514 review — the two transfer boundaries do DIFFERENT things to a
+    /// `LegacyUser`, which is why the doc on that variant names them separately
+    /// instead of quantifying over "a transfer boundary".
+    ///
+    /// The sentence it replaced said a legacy entry gaining a message id "does
+    /// not make it addressable — `user_view` still denies it". True of
+    /// `ensure_message_id` and of the reset inherit, and false of the harvest:
+    /// the journal carries text and message ids only, so the successor has to
+    /// rebuild the entry, and the only user-authored thing it can rebuild it as
+    /// is a `User`. Addressability is therefore path-dependent, and a
+    /// universally quantified sentence over "a transfer boundary" is wrong
+    /// whichever way it is pointed.
+    ///
+    /// This test is the carrier for both halves at once, so neither can drift
+    /// back into a single claim.
+    #[test]
+    fn the_harvest_makes_a_legacy_sentence_addressable_and_the_inherit_does_not() {
+        // A row written before #1505 PR1: user text in `pending_queue`, no meta
+        // slot beside it. Reached through JSON because no constructor produces
+        // it, deliberately.
+        let seeded = crate::harness::HarnessSnapshot::initial(
+            0,
+            vec![QueueEntry::user_message(
+                "said before the upgrade".into(),
+                None,
+            )],
+        );
+        let mut row = serde_json::to_value(&seeded).expect("serialize snapshot");
+        row["pending_entry_meta"][0] = Value::Null;
+        row["pending_message_ids"][0] = json!([]);
+        let snapshot = crate::harness::HarnessSnapshot::from_value_strict(row);
+        let legacy = snapshot.pending_entries();
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].id(), None, "premise: it is a LegacyUser");
+        assert!(
+            legacy[0].message_ids().is_empty(),
+            "premise: and has no identity of either kind"
+        );
+
+        // THE INHERIT carries the entry whole, so it stays legacy. This is what
+        // `prepare_tx` does with `inherited.pending_entries()`.
+        let mut inherited = legacy.clone();
+        let minted_in_place = inherited[0].ensure_message_id().to_vec();
+        assert_eq!(minted_in_place.len(), 1, "it does gain a transfer identity");
+        assert_eq!(inherited[0].id(), None, "…and still no queue id");
+        assert!(
+            inherited[0].user_view().is_none(),
+            "the inherit boundary leaves it OFF the addressable page — GAP-B verbatim"
+        );
+
+        // THE HARVEST cannot: it round-trips through a journal that holds text
+        // and message ids only.
+        let taken = super::stranded_user_messages(
+            "r1",
+            &serde_json::to_string(&snapshot).expect("serialize snapshot"),
+        )
+        .taken;
+        assert_eq!(
+            taken.len(),
+            1,
+            "a legacy sentence is harvested like any other"
+        );
+        assert_eq!(taken[0].ids.len(), 1, "with an id minted at the boundary");
+        let rebuilt = QueueEntry::user_message_moved(taken[0].text.clone(), taken[0].ids.clone());
+        assert!(
+            rebuilt.user_view().is_some(),
+            "the harvest boundary DOES make it addressable, and the doc must say so"
+        );
+        assert_eq!(
+            rebuilt.message_ids(),
+            taken[0].ids.as_slice(),
+            "…while carrying the SAME transfer identity, so the give-back still recognises it"
         );
     }
 

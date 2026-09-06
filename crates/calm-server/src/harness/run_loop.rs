@@ -2409,7 +2409,7 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
 ///
 /// The `shutting_down` case is not reachable from HERE, and the argument is
 /// specific: its only setter, `shutdown_inner`, takes `inner.durable_observation`
-/// first, and `observe_durable_observations` holds that same lock across both
+/// first, and `observe_durable_entries` holds that same lock across both
 /// the send and its confirmation.
 ///
 /// Writing through the retired-row writer instead would not help for the
