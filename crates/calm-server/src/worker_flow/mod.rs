@@ -369,6 +369,24 @@ impl WorkerFlowDriver {
             _ => {}
         }
 
+        // Resolve ownership before deduplication: invalid isolated evidence must
+        // stop an existing tail as well as refuse a new shared-home attachment.
+        let private_codex_home = match source_kind {
+            FlowSourceKind::Codex => {
+                match crate::isolated_codex::private_codex_home(self.repo.as_ref(), &runtime).await
+                {
+                    Ok(home) => home,
+                    Err(err) => {
+                        self.cancel_card(&runtime.card_id).await;
+                        return Err(CoreError::Internal(format!(
+                            "worker-flow private Codex home lookup: {err}"
+                        )));
+                    }
+                }
+            }
+            FlowSourceKind::Claude => None,
+        };
+
         {
             let mut tasks = self.tasks.lock().await;
             tasks.retain(|_, task| !task.join.is_finished() && !task.stop.is_cancelled());
@@ -399,7 +417,9 @@ impl WorkerFlowDriver {
                 let source = CodexRolloutFlowSource::new_with_options(
                     self.repo.clone(),
                     runtime.clone(),
-                    self.shared_codex_appserver.codex_home_path().to_path_buf(),
+                    private_codex_home.unwrap_or_else(|| {
+                        self.shared_codex_appserver.codex_home_path().to_path_buf()
+                    }),
                     stop.clone(),
                     self.flow_options.clone(),
                 );
