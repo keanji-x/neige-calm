@@ -1288,15 +1288,27 @@ fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) -> Vec<QueueE
 /// if it returns `Err`, so a truncated queue reaches the row only after the
 /// record of what it discarded is already committed.
 ///
-/// **The lock is held across the inserts, and that is what makes "one row per
-/// entry" true.** Two callers really do race here: the run loop's early flush
-/// runs on the task spawned by `PlannerHarness::run`, while
-/// `planner_harness_start_adapter` calls `handle.persist_snapshot()` on its own
-/// task straight afterwards — and `persist_snapshot` yields at its first
-/// database await, which is when the spawned loop first gets polled, so this
-/// interleaves on a current-thread runtime too. Reading the head under the lock
-/// and then dropping it before the insert let both callers take the same id and
-/// announce it twice. The second caller now waits and finds the list empty.
+/// **The lock is held across the inserts, and that is what stops two flushers
+/// IN THIS PROCESS announcing the same id.** Two callers really do race: the
+/// run loop's early flush runs on the task spawned by `PlannerHarness::run`,
+/// while `planner_harness_start_adapter` calls `handle.persist_snapshot()` on
+/// its own task straight afterwards — and `persist_snapshot` yields at its
+/// first database await, which is when the spawned loop first gets polled, so
+/// this interleaves on a current-thread runtime too. Reading the head under
+/// the lock and then dropping it before the insert let both callers take the
+/// same id and announce it twice. The second caller now waits and finds the
+/// list empty.
+///
+/// **It is not a claim across boots, and one row per entry is not guaranteed
+/// there.** The list lives in memory. Give `[A, B, C]`: A's row commits and A
+/// leaves the list, B's insert fails, the write is refused, and the process
+/// restarts — boot 2 reads the still-untruncated `handle_state_json`, derives
+/// the same three ids, and nothing compares them against the rows already in
+/// `events`, so A is announced a second time. Aborting the run-loop task
+/// between the commit inside `log_pure_event` and the `retain` below has the
+/// same shape. Making it true across boots needs the announcement and the
+/// truncation to share a transaction, or the reader to dedupe on `entry_id`;
+/// neither is here.
 ///
 /// Ids are removed one at a time, as each row commits, so a failure part-way
 /// through leaves exactly the un-announced remainder behind. That also makes

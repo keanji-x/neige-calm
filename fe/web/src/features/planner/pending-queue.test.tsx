@@ -204,6 +204,92 @@ describe('PendingQueue', () => {
     expect(screen.queryByRole('button', { name: 'Use their version' })).toBeNull();
   });
 
+  /*
+   * ── The refusal matrix, one case per reachable cell ──────────────────────
+   *
+   * {refusal on the open entry, on another entry, with no editor open} ×
+   * {the reader has typed, has not}. Five reachable cells; the sixth — typing
+   * with no editor open — cannot be constructed, because typing is what having
+   * an editor open means, and that is asserted below rather than left implied.
+   *
+   * The cells above this block cover "open entry / typed" (the draft survives
+   * and the retry carries the reported revision) and "another entry / typed".
+   * These are the three that had no case, and the last of them is where the
+   * defect lived.
+   */
+
+  /* Cell: refusal on the open entry, reader has NOT typed. The editor still
+     holds the text it was seeded with, and that is a draft like any other. */
+  it('keeps an untouched editor open when its own entry is refused', async () => {
+    const onEdit = vi.fn<PendingQueueProps['onEdit']>(() => Promise.resolve(
+      { kind: 'stale', text: 'theirs', rev: 9 },
+    ));
+    render(<PendingQueue entries={[entry()]} overflow={0} busy={false} onEdit={onEdit} onDelete={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => { expect(onEdit).toHaveBeenCalledTimes(1); });
+
+    expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Edit queued message' }).value)
+      .toBe('look at the report');
+    expect(screen.getByRole('button', { name: 'Use their version' })).toBeTruthy();
+  });
+
+  /* Cell: refusal on another entry, reader has NOT typed. The untouched
+     editor stays open on its own entry; the notice lands on the other row. */
+  it('leaves an untouched editor alone when a different entry is refused', async () => {
+    const onDelete = vi.fn<PendingQueueProps['onDelete']>(() => Promise.resolve(
+      { kind: 'stale', text: 'B changed', rev: 4 },
+    ));
+    render(<PendingQueue
+      entries={[entry(), entry({ entry_id: 'e2', text: 'the other one' })]}
+      overflow={0} busy={false} onEdit={vi.fn()} onDelete={onDelete}
+    />);
+    const rows = document.querySelectorAll('[data-nc-pending-entry]');
+    fireEvent.click(within(rows[0] as HTMLElement).getByRole('button', { name: 'Edit' }));
+    fireEvent.click(within(rows[1] as HTMLElement).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => { expect(onDelete).toHaveBeenCalledTimes(1); });
+
+    expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Edit queued message' }).value)
+      .toBe('look at the report');
+    const after = document.querySelectorAll('[data-nc-pending-entry]');
+    expect((after[1] as HTMLElement).textContent).toContain('This message changed');
+  });
+
+  /*
+   * Cell: refusal with NO editor open — the one that had no test, and the one
+   * that was broken.
+   *
+   * A refused DELETE must retry against the revision the server just reported.
+   * Storing that revision inside the editor meant it existed only while the
+   * reader happened to be editing, so this path re-sent the revision it
+   * already knew was stale and could never succeed. The refresh that would
+   * eventually fix the cached page is fire-and-forget and may simply fail.
+   */
+  it('retries a refused delete against the reported revision, with no editor open', async () => {
+    const onDelete = vi.fn<PendingQueueProps['onDelete']>(() => Promise.resolve(
+      { kind: 'stale', text: 'theirs', rev: 9 },
+    ));
+    render(<PendingQueue entries={[entry({ rev: 3 })]} overflow={0} busy={false} onEdit={vi.fn()} onDelete={onDelete} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => { expect(onDelete).toHaveBeenCalledTimes(1); });
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Delete' }).getAttribute('aria-busy')).not.toBe('true');
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => { expect(onDelete).toHaveBeenCalledTimes(2); });
+
+    expect(onDelete.mock.calls[0]?.[0].rev).toBe(3);
+    expect(onDelete.mock.calls[1]?.[0].rev).toBe(9);
+  });
+
+  /* The unreachable cell, stated rather than assumed: with no editor open
+     there is no textarea, so "the reader has typed" cannot be constructed. */
+  it('offers nowhere to type until an editor is opened', () => {
+    render(<PendingQueue entries={[entry()]} overflow={0} busy={false} onEdit={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.queryByRole('textbox', { name: 'Edit queued message' })).toBeNull();
+  });
+
   it('says so when the entry has already left the queue', async () => {
     const onDelete = vi.fn<PendingQueueProps['onDelete']>(() => Promise.resolve({ kind: 'gone' }));
     render(<PendingQueue entries={[entry()]} overflow={0} busy={false} onEdit={vi.fn()} onDelete={onDelete} />);
