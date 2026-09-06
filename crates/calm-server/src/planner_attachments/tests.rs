@@ -103,6 +103,60 @@ async fn read_all(mut opened: OpenAttachment) -> Vec<u8> {
     bytes
 }
 
+/// #1505 S6 review, MAJOR 4 — two bind attempts on ONE id must never name the
+/// same temporary.
+///
+/// The corruption chain the review constructed needs a shared name: attempt A
+/// is copying into `<id>.part`; attempt B — the browser's retry, which this PR
+/// taught to carry the same attachment ids — hits `EEXIST`, unlinks A's
+/// temporary, creates its own under the same name, and starts copying; A then
+/// finishes and renames `<id>.part` into `bound/<id>`, publishing B's
+/// half-written file under a name in the one directory nothing may delete
+/// from.
+///
+/// Every step of that needs the two attempts to agree on the name. They no
+/// longer can.
+#[test]
+fn two_bind_attempts_never_name_the_same_temporary() {
+    let first = dir::Name::temporary();
+    let second = dir::Name::temporary();
+    assert_ne!(
+        first.as_str(),
+        second.as_str(),
+        "a bind temporary is per-attempt, so `EEXIST` between two attempts on \
+         one id cannot arise"
+    );
+    assert!(first.is_temporary() && second.is_temporary());
+}
+
+/// The other half, and the reason the two are different functions: an UPLOAD's
+/// temporary IS derived from its id, and that is safe because the upload mints
+/// the id itself, so the id is already unique to the request.
+#[test]
+fn an_uploads_temporary_is_derived_from_the_id_it_will_become() {
+    let id = id("07", AttachmentFormat::Png);
+    assert_eq!(
+        dir::Name::part_of(&id).as_str(),
+        format!("{}.part", id.as_str()),
+        "a test that has seen the temporary must be able to predict the \
+         published name; that is how the publish-failure path is exercised"
+    );
+    assert_eq!(dir::Name::part_of(&id), dir::Name::part_of(&id));
+}
+
+/// A `Name` cannot describe a traversal, which is what makes "descriptor plus
+/// one component" a complete statement rather than a hopeful one.
+#[test]
+fn a_name_is_always_a_single_component() {
+    for refused in ["", ".", "..", "a/b", "../escape", "with\0nul", "/abs"] {
+        assert!(
+            dir::Name::parse(refused).is_none(),
+            "`{refused}` must not parse as a name"
+        );
+    }
+    assert_eq!(dir::Name::parse("a.png").unwrap().as_str(), "a.png");
+}
+
 #[tokio::test]
 async fn open_attachment_prefers_bound_then_staging_and_refuses_anything_else() {
     let root = tempfile::tempdir().unwrap();
