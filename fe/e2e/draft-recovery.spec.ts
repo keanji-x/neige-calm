@@ -1,8 +1,10 @@
 import { expect, test } from '@playwright/test';
 
 test('keeps Today usable without claiming zero activity when Areas is unavailable', async ({ page }) => {
-  let unavailable = true;
+  // Recovery starts with the real Retry click. Background invalidations must
+  // not remove that control between enabling recovery and Playwright's click.
   await page.route('**/api/areas', async (route) => {
+    const unavailable = await page.evaluate(() => !document.documentElement.hasAttribute('data-audit-recover-areas'));
     if (unavailable && route.request().method() === 'GET') {
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Areas temporarily unavailable' }) });
     } else await route.continue();
@@ -15,8 +17,11 @@ test('keeps Today usable without claiming zero activity when Areas is unavailabl
   await expect(main.getByText('Nothing scheduled.')).toHaveCount(0);
   await expect(page.getByRole('navigation', { name: 'Workspace' })).toBeVisible();
   await page.screenshot({ path: 'test-results/today-unavailable-desktop.png' });
-  unavailable = false;
-  await failure.getByRole('button', { name: 'Retry' }).click();
+  const retry = failure.getByRole('button', { name: 'Retry' });
+  await page.evaluate(() => document.addEventListener('click', () => {
+    document.documentElement.setAttribute('data-audit-recover-areas', '');
+  }, { capture: true, once: true }));
+  await retry.click();
   await expect(failure).toHaveCount(0);
   await expect(main.locator('header[data-nc-header-rows]').first()).toContainText(/\d\s*running/);
 });
