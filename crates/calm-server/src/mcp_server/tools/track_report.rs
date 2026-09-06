@@ -502,7 +502,7 @@ pub(crate) async fn load_report_for_track(
 ) -> Result<(Card, TrackReportPayload), RpcError> {
     // Find the track-report card. Migration 0014 + `routes::tracks::create_track`
     // guarantee exactly one per track; the partial unique index
-    // `idx_cards_one_report_per_track` from migration 0013 backstops it.
+    // `idx_cards_one_report_per_track` from migration 0081 backstops it.
     // Scanning every card on the track is fine — tracks are small (single
     // digits of cards in practice).
     let cards = ctx

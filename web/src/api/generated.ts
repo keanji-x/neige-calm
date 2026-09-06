@@ -2059,8 +2059,8 @@ export interface components {
          * @description Body for `POST /api/tracks/:track_id/codex-cards`.
          *
          *     Deliberately omits `kind` (always `"codex"`) and `payload` (the kernel
-         *     persists schema/UI fields and projects identity from `runtimes`). Empty
-         *     `cwd` falls back to `$HOME` then the server's cwd.
+         *     persists schema/UI fields). Empty `cwd` falls back to `$HOME` then the
+         *     server's cwd.
          *
          *     `prompt` is the hands-free entry point: when non-empty, the kernel starts
          *     a shared thread, binds it to the runtime row, sends the prompt via
@@ -2127,8 +2127,8 @@ export interface components {
          * @description Body for `POST /api/tracks/:track_id/terminal-cards`.
          *
          *     Deliberately omits `kind` (always `"terminal"`) and `payload` (the kernel
-         *     persists schema payload and projects identity from `runtimes`). Empty
-         *     `program` falls back to `$SHELL` then `/bin/sh`; empty `cwd` falls back to
+         *     persists schema payload). Empty `program` falls back to `$SHELL` then
+         *     `/bin/sh`; empty `cwd` falls back to
          *     the track's workspace (#1147 S6). `env` is merged into the daemon's environment
          *     as additional vars on top of `TERM` / `COLORTERM` / inherited.
          */

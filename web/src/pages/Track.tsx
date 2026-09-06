@@ -260,7 +260,7 @@ export function TrackPage({
   // Default to report. Backend mints a track-report card for every track at
   // create time (`crates/calm-server/src/track_report.rs`
   // `TrackReportPayload::initial()` + the `idx_cards_one_report_per_track`
-  // partial unique index from migration 0013 / backfill in 0014), so this
+  // partial unique index from migration 0081 / backfill in 0014), so this
   // default is safe. Adding a worker card auto-switches to grid (see
   // `goGridAfterAdd`) so the new card is visible immediately.
   // The header cycle button only changes this persisted overlay value.
