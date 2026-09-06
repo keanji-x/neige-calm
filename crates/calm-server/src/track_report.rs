@@ -784,6 +784,7 @@ impl ReportEditTarget {
 /// and nothing else. Read [`write`]'s header for what that does and does not
 /// close. Everything outside calls one of its three `pub(crate)` entry points.
 pub(crate) mod write;
+mod user_start;
 
 /// The pre-#1318 direct handle on the persist boundary, kept for tests only.
 ///

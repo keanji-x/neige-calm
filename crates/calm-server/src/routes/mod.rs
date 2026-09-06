@@ -24,6 +24,7 @@ pub mod planner_input;
 pub mod plugins;
 pub mod settings;
 pub mod task_recovery;
+pub mod isolated_tasks;
 pub mod terminal;
 pub mod terminal_cards;
 pub mod theme;
@@ -67,6 +68,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(track_conversations::router())
         .merge(track_report_blocks::router())
         .merge(task_recovery::router())
+        .merge(isolated_tasks::router())
         .merge(track_recipes::router())
         .merge(track_templates::router())
         .merge(cards::router())

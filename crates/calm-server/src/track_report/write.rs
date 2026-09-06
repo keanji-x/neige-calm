@@ -72,6 +72,7 @@
 //! |---|---|---|
 //! | [`rest_user_replace`] | `routes::tracks::update_track_report` | `User`, fixed |
 //! | [`rest_user_block_op`] | `routes::track_report_blocks::commit` | `User`, fixed |
+//! | [`rest_user_start`] | `routes::isolated_tasks::start` | `User`, fixed |
 //! | [`agent_report_op`] | `decision_sink::CardDecisionSink::commit_report_op` | caller-supplied; that caller derives it from `identity.role` |
 //! | [`structural_init_report_tx`] | `routes::tracks::create_track_structure` | **none — no parameter of it names one, pinned by name *and* written type in `fork_guard_exemption_invariant`** |
 //!
@@ -329,11 +330,11 @@ pub(crate) async fn rest_user_replace(
         ActorId::User,
         EditAuthor::User,
         target,
-        ReportDocOp::Replace {
+        PersistPurpose::Edit(ReportDocOp::Replace {
             summary: Some(next.summary),
             body: next.body,
             if_doc_rev,
-        },
+        }),
         None,
         None,
         false,
@@ -364,13 +365,55 @@ pub(crate) async fn rest_user_block_op(
         ActorId::User,
         EditAuthor::User,
         target,
-        op,
+        PersistPurpose::Edit(op),
         None,
         None,
         false,
         None,
     )
     .await
+}
+
+/// The explicit User start purpose. Attribution, lifecycle intent, and task
+/// shape are fixed here; ordinary REST block edits remain ordinary edits.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn rest_user_start(
+    repo: &dyn RouteRepo,
+    events: &EventBus,
+    write: &WriteContext,
+    target: ReportEditTarget,
+    key: String,
+    goal: String,
+    if_doc_rev: u64,
+) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
+    persist(
+        repo,
+        events,
+        write,
+        ActorId::User,
+        EditAuthor::User,
+        target,
+        PersistPurpose::UserStart {
+            key,
+            goal,
+            if_doc_rev,
+        },
+        None,
+        None,
+        false,
+        None,
+    )
+    .await
+}
+
+#[derive(Clone)]
+enum PersistPurpose {
+    Edit(ReportDocOp),
+    UserStart {
+        key: String,
+        goal: String,
+        if_doc_rev: u64,
+    },
 }
 
 /// The agent-MCP funnel — `calm.report.write` / `calm.report.edit` /
@@ -414,7 +457,7 @@ pub(crate) async fn agent_report_op(
         actor,
         author,
         target,
-        op,
+        PersistPurpose::Edit(op),
         agent_message,
         lifecycle,
         auto_promote_draft,
@@ -602,11 +645,11 @@ pub async fn persist_report(
             report_card,
             current_payload,
         },
-        ReportDocOp::Replace {
+        PersistPurpose::Edit(ReportDocOp::Replace {
             summary: Some(next.summary),
             body: next.body,
             if_doc_rev,
-        },
+        }),
         agent_message,
         lifecycle,
         auto_promote_draft,
@@ -709,7 +752,7 @@ async fn persist(
     actor: ActorId,
     author: EditAuthor,
     target: ReportEditTarget,
-    op: ReportDocOp,
+    purpose: PersistPurpose,
     agent_message: Option<String>,
     lifecycle: Option<TrackLifecycle>,
     auto_promote_draft: bool,
@@ -746,7 +789,7 @@ async fn persist(
             let scope = scope.clone();
             let track_scope = track_scope.clone();
             let current_payload = current_payload.clone();
-            let op = op.clone();
+            let purpose = purpose.clone();
             let actor = actor.clone();
             let agent_message = agent_message.clone();
             let recorder_shadow = recorder_shadow.clone();
@@ -833,6 +876,25 @@ async fn persist(
                 let (summary_before, body_before) = doc.project().map_err(|e| {
                     CalmError::Internal(format!("track_report: project CRDT for card {id}: {e}"))
                 })?;
+                let op = match purpose {
+                    PersistPurpose::Edit(op) => op,
+                    PersistPurpose::UserStart { key, goal, if_doc_rev } => {
+                        let op = super::user_start::prepare_tx(
+                            tx, &track_id, &doc, &key, &goal, if_doc_rev,
+                        ).await?;
+                        let current = track_get_tx(tx, &track_id).await?;
+                        if current.lifecycle == TrackLifecycle::Draft
+                            && let Some(transitions) = apply_requested_transition_in_tx(
+                                tx, &track_id, TrackLifecycle::Planning, &ActorId::User,
+                                "Start independent task".to_string(),
+                            ).await?
+                        {
+                            events.extend(transitions.into_iter().map(|event|
+                                (ActorId::User, track_scope.clone(), event)));
+                        }
+                        op
+                    }
+                };
                 // 3. Apply the requested op on the doc. `if_rev`
                 //    checks happen in here, against the CRDT truth
                 //    inside this transaction — a conflict aborts the
