@@ -1,0 +1,76 @@
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, expect, it, vi } from 'vitest';
+import type { TaskRecoveryRequest } from '../../../../core/domain/task-recovery.ts';
+import { createIsolatedRetryFixture, mountIsolatedRetryRoute } from './isolated-task-retry-fixture.tsx';
+
+afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+it('discovers stopped recovery by the existing poll and reloads both native attempt reports after one retry', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const fixture = createIsolatedRetryFixture();
+  let app = mountIsolatedRetryRoute(fixture.transport);
+  try {
+    await user.click(await screen.findByText('Reference'));
+    await user.click(document.querySelector('[data-nc-task-state] > summary')!);
+    await screen.findByText(`Task failed: ${fixture.failureReason}`);
+    expect(screen.getByText('Current attempt 1 · Failed')).toBeTruthy();
+    expect(screen.getByText(fixture.stoppingReason)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Recover task' })).toBeNull();
+    expect(fixture.requests.filter((request) => request.method === 'POST')).toHaveLength(0);
+    const readsBeforeStop = fixture.requests.filter((request) => request.path.endsWith('/attempts')).length;
+    fixture.stopped();
+    // This is the production 3-second history interval, with no click or event invalidation.
+    await act(() => vi.advanceTimersByTimeAsync(3000));
+    const recover = await screen.findByRole('button', { name: 'Recover task' });
+    expect(screen.getByText(fixture.readyReason)).toBeTruthy();
+    expect(fixture.requests.filter((request) => request.path.endsWith('/attempts')).length).toBeGreaterThan(readsBeforeStop);
+    expect(fixture.requests.filter((request) => request.method === 'POST')).toHaveLength(0);
+    act(() => { fireEvent.click(recover); fireEvent.click(recover); });
+    await screen.findByText('Requesting recovery…');
+    const writes = fixture.requests.filter((request) => request.method === 'POST');
+    expect(writes).toHaveLength(1);
+    expect(writes[0].path).toBe(`/api/tracks/w1/tasks/${fixture.taskKey}/recover`);
+    expect(writes[0].credentials).toBe('include');
+    const request = writes[0].body as TaskRecoveryRequest;
+    expect(Object.keys(request).sort()).toEqual(['expected_attempt_id', 'idempotency_key', 'reason']);
+    expect(request.expected_attempt_id).toBe(fixture.first.attempt_id);
+    expect(request.idempotency_key).not.toBe('');
+    expect(request.reason).toBe('User requested a new attempt under the unchanged task requirements.');
+    await act(() => { fixture.acceptRecovery(); return Promise.resolve(); });
+    await screen.findByText('Current attempt 2 · Queued');
+    expect(screen.queryByRole('button', { name: 'Recover task' })).toBeNull();
+    fixture.running();
+    await user.click(screen.getByRole('button', { name: 'Refresh execution history' }));
+    await screen.findByText('Current attempt 2 · Running');
+    fixture.complete();
+    await user.click(screen.getByRole('button', { name: 'Refresh execution history' }));
+    await screen.findByText('Current attempt 2 · Completed');
+    await screen.findByText(/"answer": 42/, { selector: 'pre' });
+    await user.click(screen.getByText('Attempt history (2)'));
+    await user.click(screen.getByText('Attempt 1 · Failed'));
+    expect(screen.getByText(`Task failed: ${fixture.failureReason}`)).toBeTruthy();
+    expect(screen.getByText(fixture.goal)).toBeTruthy();
+    expect(screen.getByText('1 task')).toBeTruthy();
+    expect(document.querySelector('[data-nc-task-state] > summary')?.textContent).toContain(fixture.taskKey);
+    expect(screen.getByText(fixture.goal)).toBeTruthy();
+    const oldReads = fixture.requests.filter((request) => request.path.endsWith(`/${fixture.first.attempt_id}/report`)).length;
+    const newReads = fixture.requests.filter((request) => request.path.endsWith(`/${fixture.queued.attempt_id}/report`)).length;
+    app.dispose();
+    app = mountIsolatedRetryRoute(fixture.transport);
+    await user.click(await screen.findByText('Reference'));
+    await user.click(document.querySelector('[data-nc-task-state] > summary')!);
+    await screen.findByText('Current attempt 2 · Completed');
+    await screen.findByText(/"answer": 42/, { selector: 'pre' });
+    await user.click(screen.getByText('Attempt history (2)'));
+    await user.click(screen.getByText('Attempt 1 · Failed'));
+    await screen.findByText(`Task failed: ${fixture.failureReason}`);
+    await waitFor(() => expect(fixture.requests.filter((request) => request.path.endsWith(`/${fixture.first.attempt_id}/report`)).length).toBeGreaterThan(oldReads));
+    expect(fixture.requests.filter((request) => request.path.endsWith(`/${fixture.queued.attempt_id}/report`)).length).toBeGreaterThan(newReads);
+    expect(fixture.requests.filter((request) => request.method === 'POST')).toHaveLength(1);
+    expect(screen.getByText('1 task')).toBeTruthy();
+    expect(document.querySelector('[data-nc-task-state] > summary')?.textContent).toContain(fixture.taskKey);
+    expect(screen.getByText(fixture.goal)).toBeTruthy();
+  } finally { app.dispose(); }
+});
