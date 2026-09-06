@@ -595,8 +595,12 @@ impl Boot {
         let mut texts = Vec::new();
         for (_thread, items) in self.state.shared_codex_appserver.started_turns_for_test() {
             for item in items {
-                let calm_server::codex_appserver::InputItem::Text { text } = item;
-                texts.push(text);
+                // #1505 S6 added `InputItem::LocalImage`. Text is what this
+                // helper is for; an image item is not a turn text and is
+                // skipped rather than mis-reported as one.
+                if let calm_server::codex_appserver::InputItem::Text { text } = item {
+                    texts.push(text);
+                }
             }
         }
         texts

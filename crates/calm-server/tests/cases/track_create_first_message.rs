@@ -3975,7 +3975,7 @@ async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue(
         .get(&runtime)
         .expect("the retired handle must stay registered");
     let refused = handle
-        .observe_user_message_durable("cannot be made durable here".into())
+        .observe_user_message_durable("cannot be made durable here".into(), Vec::new())
         .await;
     assert!(
         refused.is_err(),
@@ -4256,7 +4256,7 @@ async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
 
     // A send while the runtime is still the carrier: accepted, and on the row.
     handle
-        .observe_user_message_durable("before the retirement".into())
+        .observe_user_message_durable("before the retirement".into(), Vec::new())
         .await
         .expect("premise: a live carrier accepts a durable send");
     assert_eq!(
@@ -4272,7 +4272,10 @@ async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
     let mut refused = 0usize;
     for attempt in 0..20 {
         let text = format!("after the retirement #{attempt}");
-        match handle.observe_user_message_durable(text.clone()).await {
+        match handle
+            .observe_user_message_durable(text.clone(), Vec::new())
+            .await
+        {
             Ok(_ack) => {
                 accepted += 1;
                 let persisted = b.persisted_queue(&runtime).await;

@@ -215,11 +215,13 @@ pub struct UploadAttachmentResponse {
     /// Absolute REST path the browser reads the bytes back from. Server-built:
     /// the client never composes a path of its own.
     ///
-    /// Not a durable link yet. As of S6-PR1 nothing binds an attachment to a
-    /// queue entry, so every upload stays in the server's `staging/` directory
-    /// and is swept once it is older than the 24h orphan TTL; after that this
-    /// path answers 400. S6-PR2 adds the bind that makes an attachment
-    /// permanent.
+    /// Durable only once the attachment is bound. An upload lands in the
+    /// server's `staging/` directory, and a staged attachment is swept once it
+    /// is older than the 24h orphan TTL, after which this path answers 400.
+    /// Sending or queueing a message that names the id binds it — the bytes
+    /// move into `bound/`, which nothing sweeps — and from that moment this
+    /// path is stable for the life of the card. So the window in which this
+    /// url can stop working is exactly "uploaded, never sent, 24 hours".
     pub url: String,
 }
 

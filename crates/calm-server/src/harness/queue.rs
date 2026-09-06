@@ -29,7 +29,8 @@ use std::collections::{HashSet, VecDeque};
 use crate::error::{CalmError, Result};
 use crate::event::HarnessQueueChange;
 use crate::harness::observation::Observation;
-use crate::model::{new_id, now_ms};
+use crate::model::{HarnessInputSegment, new_id, now_ms};
+use crate::planner_attachments::bind::{BoundAttachment, MAX_ATTACHMENTS_PER_MESSAGE};
 
 /// Stable identity for one addressable user entry in the pending queue.
 ///
@@ -147,6 +148,15 @@ pub enum QueueEntry {
         envelope_id: Option<i64>,
         /// #1449 transfer identity. See [`QueueEntry::message_ids`].
         message_ids: Vec<String>,
+        /// #1505 S6 — images this message carries, already bound.
+        ///
+        /// Bound before the entry existed, which is what lets the run loop
+        /// stay off the disk entirely: the path in each of these was decided
+        /// and verified on the REST side, so drain, issue and re-buffer are
+        /// pure in-memory work and a re-queued message cannot find its
+        /// attachment reclaimed. Empty for every text-only message, which is
+        /// almost all of them.
+        attachments: Vec<BoundAttachment>,
     },
     LegacyUser {
         text: String,
@@ -175,17 +185,28 @@ pub struct UserEntryView<'a> {
     pub text: &'a str,
     pub rev: u32,
     pub queued_at_ms: i64,
+    pub attachments: &'a [BoundAttachment],
 }
 
 impl QueueEntry {
     /// The one place a [`QueueEntryId`] is minted.
-    pub fn user_message(text: String, envelope_id: Option<i64>) -> Self {
+    ///
+    /// `attachments` is a required parameter rather than a builder step. Every
+    /// caller has to answer it, including the fixtures — a defaulted list here
+    /// would let a test seed a shape production cannot produce and would hide
+    /// the one thing #1505 S6 adds to this type.
+    pub fn user_message(
+        text: String,
+        envelope_id: Option<i64>,
+        attachments: Vec<BoundAttachment>,
+    ) -> Self {
         Self::User {
             id: QueueEntryId::mint(),
             text,
             rev: 0,
             queued_at_ms: now_ms(),
             envelope_id,
+            attachments,
             // #1449 — a `UserMessage` entering the queue gets its transfer
             // identity here, in the same constructor that mints its
             // `QueueEntryId`. The two are minted together and are still two
@@ -210,12 +231,18 @@ impl QueueEntry {
     /// means the mover had none — a pre-#1505 sentence — and the fresh id
     /// minted by [`Self::user_message`] stands, which is where such a sentence
     /// becomes addressable for the first time.
+    ///
+    /// Attachments are deliberately NOT carried across, and that is the one
+    /// thing a move does not preserve. An attachment's bytes live under the
+    /// card it was uploaded to; carrying the ids into a different card's queue
+    /// would produce references the successor's read-back and bind both
+    /// refuse. The moved message arrives as its text. #1505 GAP-A15.
     pub fn user_message_moved(
         text: String,
         message_ids: Vec<String>,
         entry_id: Option<QueueEntryId>,
     ) -> Self {
-        let mut entry = Self::user_message(text, None);
+        let mut entry = Self::user_message(text, None, Vec::new());
         if !message_ids.is_empty() {
             *entry.message_ids_mut() = message_ids;
         }
@@ -267,7 +294,7 @@ impl QueueEntry {
         observations
             .into_iter()
             .map(|observation| match observation {
-                Observation::UserMessage { text } => Self::user_message(text, None),
+                Observation::UserMessage { text } => Self::user_message(text, None, Vec::new()),
                 other => Self::system(other, None)
                     .expect("a non-user observation wraps as a system entry"),
             })
@@ -387,14 +414,26 @@ impl QueueEntry {
                 text,
                 rev,
                 queued_at_ms,
+                attachments,
                 ..
             } => Some(UserEntryView {
                 id,
                 text,
                 rev: *rev,
                 queued_at_ms: *queued_at_ms,
+                attachments,
             }),
             Self::LegacyUser { .. } | Self::System { .. } => None,
+        }
+    }
+
+    /// The bound attachments this entry carries. Empty for every variant that
+    /// has nowhere to hold one, which is every variant but
+    /// [`QueueEntry::User`].
+    pub fn attachments(&self) -> &[BoundAttachment] {
+        match self {
+            Self::User { attachments, .. } => attachments,
+            Self::LegacyUser { .. } | Self::System { .. } => &[],
         }
     }
 
@@ -674,20 +713,58 @@ pub fn try_fold_tail(
         // entry and lets the new message take a fresh slot. Replacing would
         // lose earlier intent; separate entries surface as separate
         // `User says:` blocks at turn issuance.
-        (QueueEntry::User { text, rev, .. }, QueueEntry::User { text: new_text, .. }) => {
-            if fold_user_text(text, new_text, max_folded_user_chars) {
+        (
+            QueueEntry::User {
+                text,
+                rev,
+                attachments,
+                ..
+            },
+            QueueEntry::User {
+                text: new_text,
+                attachments: new_attachments,
+                ..
+            },
+        ) => {
+            // #1505 S6 — the attachment budget is checked BEFORE the text is
+            // touched, because `fold_user_text` mutates in place: deciding
+            // afterwards would leave a survivor holding both texts and only
+            // one message's images. Over the cap, the fold is declined and the
+            // incoming message takes a slot of its own, which preserves both
+            // intents whole. That is the same fallback an over-long text
+            // already takes.
+            if attachments.len() + new_attachments.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+                false
+            } else if fold_user_text(text, new_text, max_folded_user_chars) {
+                attachments.extend(new_attachments.iter().cloned());
                 *rev = rev.saturating_add(1);
                 true
             } else {
                 false
             }
         }
-        (QueueEntry::LegacyUser { text, .. }, QueueEntry::User { text: new_text, .. }) => {
+        (
+            QueueEntry::LegacyUser { text, .. },
+            QueueEntry::User {
+                text: new_text,
+                attachments: new_attachments,
+                ..
+            },
+        ) => {
             // Text is appended, but no id is minted and none is assigned: a
             // legacy entry never becomes addressable. The ack degrades to
             // `None`, which the client already handles (that is also what a
             // dormant harness returns).
-            fold_user_text(text, new_text, max_folded_user_chars)
+            //
+            // #1505 S6 — a `LegacyUser` has nowhere to put an attachment, so
+            // folding a message that carries one into it would drop the images
+            // and say nothing. Declined instead: the incoming message keeps
+            // its own slot, and its attachments with it.
+            if new_attachments.is_empty() {
+                fold_user_text(text, new_text, max_folded_user_chars)
+            } else {
+                false
+            }
         }
         (
             QueueEntry::System {
@@ -754,6 +831,36 @@ pub fn try_fold_tail(
     }
 }
 
+/// The transcript view of one issued batch, attachments included.
+///
+/// This exists because [`Observation::input_segments_for`] cannot produce it:
+/// an [`Observation`] has no attachment field and is not gaining one — the
+/// attachments hang off the queue entry, which is where the bind put them. So
+/// the batch path builds segments from entries.
+///
+/// It does not restate what a segment's `presentation` or `text` should be. It
+/// calls `Observation::input_segments_for` for exactly that, one entry at a
+/// time, and fills in the one thing that function structurally cannot know.
+/// Restating the presentation table here would be a second copy of it, and the
+/// two copies would drift the first time a new observation kind was added.
+pub fn input_segments_for_entries(entries: &[QueueEntry]) -> Vec<HarnessInputSegment> {
+    entries
+        .iter()
+        .map(|entry| {
+            let mut segments = Observation::input_segments_for(&[entry.observation()]);
+            let mut segment = segments
+                .pop()
+                .expect("input_segments_for maps one observation to exactly one segment");
+            segment.attachments = entry
+                .attachments()
+                .iter()
+                .map(BoundAttachment::wire)
+                .collect();
+            segment
+        })
+        .collect()
+}
+
 fn fold_user_text(text: &mut String, new_text: &str, max_folded_user_chars: usize) -> bool {
     let current_chars = text.chars().count();
     let new_chars = new_text.chars().count();
@@ -770,7 +877,129 @@ mod tests {
     use super::*;
 
     fn user(text: &str) -> QueueEntry {
-        QueueEntry::user_message(text.to_string(), None)
+        QueueEntry::user_message(text.to_string(), None, Vec::new())
+    }
+
+    fn attachment(seed: char) -> BoundAttachment {
+        let id = format!("0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6{seed}.png");
+        BoundAttachment {
+            id: calm_types::planner_attachment::AttachmentId::parse(&id).expect("valid id"),
+            size: 11,
+            path: format!("/w/.neige/attachments/card/bound/{id}"),
+        }
+    }
+
+    fn user_with(text: &str, attachments: Vec<BoundAttachment>) -> QueueEntry {
+        QueueEntry::user_message(text.to_string(), None, attachments)
+    }
+
+    /// A fold merges two messages, so the survivor has to hold both messages'
+    /// images. Dropping the incoming set would lose the picture while keeping
+    /// the sentence that referred to it.
+    #[test]
+    fn a_fold_unions_both_messages_attachments() {
+        let mut queue = VecDeque::from(vec![user_with("first", vec![attachment('0')])]);
+        let outcome = try_fold_tail(
+            &mut queue,
+            &user_with("second", vec![attachment('1')]),
+            10_000,
+        );
+        assert!(matches!(outcome, FoldOutcome::Folded { .. }));
+        assert_eq!(queue.len(), 1);
+        let ids = queue[0]
+            .attachments()
+            .iter()
+            .map(|a| a.id.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2, "both sets survive: {ids:?}");
+        assert!(ids[0].ends_with("5e60.png") && ids[1].ends_with("5e61.png"));
+    }
+
+    /// Over the cap the fold is DECLINED, and declining is the point: the
+    /// incoming message keeps its own slot, so neither text nor image is lost.
+    /// Folding and then truncating the list would silently drop images.
+    #[test]
+    fn a_fold_that_would_exceed_the_cap_is_declined_rather_than_truncated() {
+        let seeds = ['0', '1', '2', '3', '4', '5'];
+        let mut queue = VecDeque::from(vec![user_with(
+            "first",
+            seeds[..5].iter().copied().map(attachment).collect(),
+        )]);
+        let incoming = user_with(
+            "second",
+            seeds[..4].iter().copied().map(attachment).collect(),
+        );
+        assert_eq!(
+            try_fold_tail(&mut queue, &incoming, 10_000),
+            FoldOutcome::NotFolded,
+            "5 + 4 > 8, so the tail is left alone"
+        );
+        assert_eq!(queue[0].attachments().len(), 5);
+        assert_eq!(queue[0].user_view().unwrap().text, "first");
+        assert_eq!(
+            queue[0].user_view().unwrap().rev,
+            0,
+            "a declined fold bumps nothing"
+        );
+    }
+
+    /// A legacy tail has nowhere to put an attachment. Folding into it would
+    /// drop the images with no signal, so it is declined — and only when there
+    /// are images to lose.
+    #[test]
+    fn folding_an_attachment_bearing_message_onto_a_legacy_tail_is_declined() {
+        let mut queue = VecDeque::from(vec![QueueEntry::legacy_user(
+            "older".into(),
+            None,
+            Vec::new(),
+        )]);
+        assert_eq!(
+            try_fold_tail(
+                &mut queue,
+                &user_with("with image", vec![attachment('0')]),
+                10_000
+            ),
+            FoldOutcome::NotFolded,
+        );
+        assert_eq!(queue[0].user_view().map(|view| view.text), None);
+        // Without an attachment the same fold still happens, so the guard is
+        // scoped to the case that would lose something.
+        assert!(matches!(
+            try_fold_tail(&mut queue, &user("plain"), 10_000),
+            FoldOutcome::Folded { entry_id: None },
+        ));
+    }
+
+    /// The transcript view: one segment per entry, each carrying its own
+    /// images, and the presentation/text still coming from the observation
+    /// table rather than from a second copy of it.
+    #[test]
+    fn segments_carry_each_entrys_own_attachments() {
+        let entries = vec![
+            user_with("has one", vec![attachment('0')]),
+            user("has none"),
+        ];
+        let segments = input_segments_for_entries(&entries);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].attachments.len(), 1);
+        assert_eq!(segments[0].attachments[0].content_type, "image/png");
+        assert!(segments[1].attachments.is_empty());
+        // Delegated, not restated: the rendered text is whatever
+        // `Observation::input_segments_for` produces for the same observation.
+        let expected = Observation::input_segments_for(&[entries[0].observation()]);
+        assert_eq!(segments[0].text, expected[0].text);
+        assert_eq!(segments[0].presentation, expected[0].presentation);
+    }
+
+    /// A wire attachment is the server-side one minus the host path. If the
+    /// path ever leaked into `PlannerAttachment` this would be the test that
+    /// noticed.
+    #[test]
+    fn the_wire_shape_of_an_attachment_carries_no_host_path() {
+        let json = serde_json::to_string(&attachment('0').wire()).unwrap();
+        assert!(!json.contains("/w/"), "{json}");
+        assert!(!json.contains("path"), "{json}");
+        assert!(json.contains("\"contentType\":\"image/png\""), "{json}");
     }
 
     #[test]
@@ -830,9 +1059,13 @@ mod tests {
 
     #[test]
     fn folding_two_user_entries_keeps_the_survivor_id_and_bumps_rev() {
-        let mut queue = VecDeque::from(vec![QueueEntry::user_message("first".into(), Some(1))]);
+        let mut queue = VecDeque::from(vec![QueueEntry::user_message(
+            "first".into(),
+            Some(1),
+            Vec::new(),
+        )]);
         let survivor_id = queue[0].id().cloned().expect("user entry has an id");
-        let incoming = QueueEntry::user_message("second".into(), Some(2));
+        let incoming = QueueEntry::user_message("second".into(), Some(2), Vec::new());
         let incoming_id = incoming.id().cloned().expect("user entry has an id");
 
         let outcome = try_fold_tail(&mut queue, &incoming, 4 * 32_768);

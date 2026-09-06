@@ -165,14 +165,42 @@ pub struct InitializeResult {
     pub platform_os: String,
 }
 
-/// A single `turn/start` / `turn/steer` input item. Only the `text`
-/// variant is modeled (the spike + our deterministic prompts use it); the
-/// schema also has `image`/file variants we don't need yet.
+/// A single `turn/start` / `turn/steer` input item.
+///
+/// Two of codex's `UserInput` variants are modeled. The rest (`image` with a
+/// data url, `skill`, `mention`) are not, and are not needed: planner
+/// attachments are images the server already has on local disk.
+///
+/// # The container's `rename_all` is not the wire spelling
+///
+/// codex's `UserInput` is `camelCase`, so its tag for the local-image variant
+/// is `"localImage"`. This enum is `rename_all = "lowercase"` because `Text`
+/// is `"text"` either way, and a variant added without its own `rename` would
+/// serialize as `"localimage"` — which compiles, passes every Rust test that
+/// does not read the wire bytes, and is rejected by codex at deserialization
+/// with no signal on our side. Hence the explicit variant-level rename, and
+/// hence `local_image_serializes_with_the_camel_case_tag` pinning the exact
+/// JSON.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum InputItem {
     /// `{"type":"text","text":"…"}`.
     Text { text: String },
+    /// `{"type":"localImage","path":"/abs/path"}` — codex's app-server process
+    /// reads the file itself. It is our direct child in the same mount
+    /// namespace, so an absolute host path means the same thing on both sides.
+    ///
+    /// `detail` is `Option` + `#[serde(default)]` on codex's side and is
+    /// deliberately not sent: omitting it takes codex's default, and the one
+    /// thing we would gain by sending it (`Original`, to suppress the 2048px
+    /// downscale) is not a choice this feature has any reason to make.
+    ///
+    /// A read or decode failure on codex's side is **silent** — the item is
+    /// replaced with placeholder text and no error comes back — so nothing
+    /// downstream may treat a successful `turn/start` as evidence that the
+    /// image was seen.
+    #[serde(rename = "localImage")]
+    LocalImage { path: String },
 }
 
 #[derive(Clone)]
@@ -281,6 +309,11 @@ impl InputItem {
     /// Convenience constructor for the text variant.
     pub fn text(s: impl Into<String>) -> Self {
         InputItem::Text { text: s.into() }
+    }
+
+    /// Convenience constructor for the local-image variant.
+    pub fn local_image(path: impl Into<String>) -> Self {
+        InputItem::LocalImage { path: path.into() }
     }
 }
 
@@ -2447,5 +2480,39 @@ mod tests {
 
         assert_eq!(item.thread_id(), Some("thread-item"));
         assert_eq!(other.thread_id(), Some("thread-other"));
+    }
+
+    /// #1505 S6. The tag on the wire is `localImage`, and the container's
+    /// `rename_all = "lowercase"` would make it `localimage` on its own.
+    ///
+    /// This asserts the exact bytes rather than a round trip, because there is
+    /// no round trip available: the only reader of these bytes is codex, whose
+    /// types are not a compilable dependency of this repository. Deleting the
+    /// variant-level `#[serde(rename = "localImage")]` turns this red; nothing
+    /// else in the workspace notices, which is the whole reason it is here.
+    #[test]
+    fn local_image_serializes_with_the_camel_case_tag() {
+        let json = serde_json::to_value(InputItem::local_image("/w/.neige/a.png")).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "localImage", "path": "/w/.neige/a.png"}),
+        );
+        // The sibling variant is unaffected, so the rename is scoped to the
+        // one variant that needs it rather than applied to the container.
+        assert_eq!(
+            serde_json::to_value(InputItem::text("hi")).unwrap(),
+            serde_json::json!({"type": "text", "text": "hi"}),
+        );
+    }
+
+    /// `detail` is optional on codex's side and we deliberately send nothing.
+    /// A key that appeared here would be one we never decided to send.
+    #[test]
+    fn a_local_image_item_has_exactly_two_keys() {
+        let json = serde_json::to_value(InputItem::local_image("/w/a.png")).unwrap();
+        let object = json.as_object().expect("an input item is an object");
+        let mut keys = object.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(keys, vec!["path".to_string(), "type".to_string()]);
     }
 }

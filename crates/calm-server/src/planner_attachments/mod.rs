@@ -12,16 +12,19 @@
 //! path is final from that instant — nothing in the harness run loop ever
 //! touches the disk, so a re-queued message's attachment cannot go missing.
 //!
-//! # This slice ships no bind path — uploads expire
+//! # Binding, and what still expires
 //!
-//! S6-PR1 is the disk half only. Nothing in this slice writes into `bound/`:
-//! the bind path (a queue entry taking a reference, and the `staging/ ->
-//! bound/` move) arrives in S6-PR2. Until it lands, every uploaded attachment
-//! stays in `staging/`, so [`gc::sweep_staging`] removes it once it is older
-//! than [`gc::ORPHAN_TTL`] and the URL in the upload response then answers
-//! `400`. That is a declared boundary of the slice, restated on
-//! [`calm_types::planner_attachment::UploadAttachmentResponse::url`], not a
-//! retention guarantee.
+//! [`bind::bind_attachments`] is the one writer of `bound/`. It runs on the
+//! REST side, before a queue entry that names the attachment is written, so an
+//! entry in the queue always refers to a file that is already out of the
+//! sweep's reach. Nothing in the harness run loop touches the disk: the drain
+//! path builds `{"type":"localImage","path":...}` from a path recorded at bind
+//! time, so a re-buffered batch cannot find its attachment gone.
+//!
+//! What still expires is an attachment that is uploaded and never sent:
+//! [`gc::sweep_staging`] removes it once it is older than [`gc::ORPHAN_TTL`]
+//! and the upload response's url then answers `400`. That window is stated on
+//! [`calm_types::planner_attachment::UploadAttachmentResponse::url`].
 //!
 //! # The two directories are different types on purpose
 //!
@@ -49,6 +52,7 @@ use crate::error::{CalmError, Result};
 use crate::ids::CardId;
 use crate::model::{TrackWorkspace, TrackWorkspaceKind};
 
+pub mod bind;
 pub mod gc;
 pub mod routes;
 pub mod sniff;
@@ -64,21 +68,27 @@ pub const NEIGE_GIT_EXCLUDE_ENTRY: &str = ".neige/";
 
 /// The most [`used_bytes`] may report before an upload is refused.
 ///
-/// An instantaneous ceiling, not a lifetime quota. [`gc::sweep_staging`]
-/// reclaims staged files older than [`gc::ORPHAN_TTL`], so a card that fills
-/// the budget and then goes quiet for a day can fill it again — which, since
-/// this slice writes nothing into `bound/`, is the only behaviour it actually
-/// has today.
+/// Part ceiling, part lifetime quota, and which part depends on where the
+/// bytes are. [`gc::sweep_staging`] reclaims *staged* files older than
+/// [`gc::ORPHAN_TTL`], so budget spent on uploads that were never sent comes
+/// back after a day. Budget spent on **bound** bytes never comes back: nothing
+/// deletes from `bound/`, so for a card whose attachments were all actually
+/// sent this constant is a lifetime total, not a ceiling. Binding does not
+/// change the number — [`used_bytes`] counts both directories, and a bind moves
+/// bytes between them — it changes whether that number can ever go down again.
+/// The residual gap that leaves (an attachment removed from a message before
+/// it was sent, or a deleted queue entry, still costs its bytes forever) is
+/// #1505 GAP-A12, and this refusal is its only backstop.
 ///
 /// Nor is it a bound on the subtree's size: [`used_bytes`] counts the regular
 /// files directly in the two directories, so bytes parked in a subdirectory, or
 /// behind a symlink, by anything else with write access to the workspace are
 /// invisible to it and keep being invisible however many there are.
 ///
-/// Once the bind path lands (S6-PR2), bound bytes are not reclaimed by
-/// anything, which is why exceeding the ceiling has to be a refusal the user
-/// can see rather than a silent eviction of bytes codex may still be asked to
-/// read. It is enforced under the card's upload lock (see
+/// Bound bytes are not reclaimed by anything, which is why exceeding the
+/// ceiling has to be a refusal the user can see rather than a silent eviction
+/// of bytes codex may still be asked to read. It is enforced under the card's
+/// upload lock (see
 /// [`store::store_upload`]), so concurrent uploads cannot each measure the same
 /// "before" and both fit.
 pub const PER_CARD_ATTACHMENT_BUDGET: u64 = 64 * 1024 * 1024;
@@ -218,6 +228,15 @@ pub fn bound_dir(root: &Path, card_id: &CardId) -> BoundDir {
     BoundDir(root.join(card_id.as_str()).join(BOUND))
 }
 
+/// Which of a card's two directories an attachment was found in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentLocation {
+    /// Uploaded, never named by a queue entry. Reclaimable by the sweep.
+    Staging,
+    /// Named by a queue entry at least once. Permanent.
+    Bound,
+}
+
 /// An attachment the server has already opened.
 ///
 /// A descriptor, not a path: nothing downstream re-opens by name, so there is
@@ -227,6 +246,20 @@ pub struct OpenAttachment {
     pub file: tokio::fs::File,
     pub size: u64,
     pub format: AttachmentFormat,
+    /// Where it was found. [`bind::bind_attachments`] needs this to tell an
+    /// already-bound attachment (nothing to do) from a staged one (copy it
+    /// across); it is not otherwise read.
+    pub location: AttachmentLocation,
+}
+
+/// `<root>/<card_id>/bound/<id>` — the path handed to codex, and the path an
+/// attachment keeps for the life of the card.
+///
+/// Pure string work. It is not evidence that anything exists there; the only
+/// thing that establishes that is [`open_attachment`], which is what
+/// [`bind::bind_attachments`] runs before it records this path.
+pub fn bound_file_path(root: &Path, card_id: &CardId, id: &AttachmentId) -> PathBuf {
+    bound_dir(root, card_id).path().join(id.as_str())
 }
 
 /// The one place an [`AttachmentId`] becomes bytes.
@@ -262,7 +295,10 @@ pub async fn open_attachment(
     card_id: &CardId,
     id: &AttachmentId,
 ) -> Result<OpenAttachment> {
-    for dir in [BOUND, STAGING] {
+    for (dir, location) in [
+        (BOUND, AttachmentLocation::Bound),
+        (STAGING, AttachmentLocation::Staging),
+    ] {
         let relative = format!("{}/{dir}/{}", card_id.as_str(), id.as_str());
         match crate::routes::fs::open_workspace_regular_file(
             root,
@@ -282,6 +318,7 @@ pub async fn open_attachment(
                     file: opened.file,
                     size: opened.size,
                     format: id.format(),
+                    location,
                 });
             }
             // The platform cannot do a bounded, root-anchored open at all

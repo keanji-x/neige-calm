@@ -268,7 +268,13 @@ async fn wait_for_turn_text_containing(shared: &SharedCodexAppServer, needle: &s
         let turns = shared.started_turns_for_test();
         for (_thread_id, items) in &turns {
             assert_eq!(items.len(), 1);
-            let InputItem::Text { text } = &items[0];
+            // #1505 S6 added `InputItem::LocalImage`, so this is a match and
+            // not a binding. Nothing on this path attaches an image, and a
+            // non-text item here would mean the wake path grew one — which
+            // this helper must not silently step over.
+            let InputItem::Text { text } = &items[0] else {
+                panic!("the wake path issues one text item, got {:?}", items[0]);
+            };
             if text.contains(needle) {
                 return text.clone();
             }

@@ -2135,6 +2135,22 @@ export interface components {
          *     reversible without teaching a reader how Rust joined or phrased it.
          */
         HarnessInputSegment: {
+            /**
+             * @description #1505 S6 — the images this segment carried into `turn/start`.
+             *
+             *     Carried here rather than left for the client to dig out of
+             *     `HarnessItem::params`: the params blob holds codex's own
+             *     `{"type":"localImage","path":...}` item, whose `path` is an absolute
+             *     host path. A transcript that rendered from that would have to turn a
+             *     host path back into a REST url, which is a second, guessable naming of
+             *     the same bytes. The id is the naming; the read-back url is built from
+             *     it by the same server function the upload response used.
+             *
+             *     `#[serde(default)]` because every segment persisted before this slice
+             *     has no such key, and an old transcript is a transcript with no
+             *     attachments rather than an unreadable one.
+             */
+            attachments?: components["schemas"]["PlannerAttachment"][];
             presentation: components["schemas"]["HarnessInputPresentation"];
             text: string;
         };
@@ -2503,6 +2519,15 @@ export interface components {
         };
         /** @description #1505 PR1 — one addressable user entry from the harness pending queue. */
         PendingQueueEntry: {
+            /**
+             * @description #1505 S6 — the images this queued message carries.
+             *
+             *     Each is already bound, so its read-back url resolves now and will keep
+             *     resolving. The absolute host path the server holds beside each of these
+             *     is deliberately not here: the client addresses an attachment by id and
+             *     reads it back through `GET /planner/attachments/{id}`.
+             */
+            attachments: components["schemas"]["PlannerAttachment"][];
             /** @description Stable identity. Never empty, and unique within one response. */
             entry_id: string;
             /**
@@ -2855,6 +2880,19 @@ export interface components {
             path: string;
         };
         SendPlannerInputRequest: {
+            /**
+             * @description #1505 S6 — ids returned by `POST /api/cards/{id}/planner/attachments`.
+             *
+             *     Naming an attachment here is what BINDS it: the bytes move out of the
+             *     server's sweepable staging area before this request writes anything to
+             *     the queue. So a message that reaches the queue always names files that
+             *     are already permanent, and an upload that is never named expires.
+             *
+             *     `#[serde(default)]` so every existing client keeps working unchanged.
+             *     An id belonging to another card is a 400, as is naming the same one
+             *     twice or naming more than eight.
+             */
+            attachments?: components["schemas"]["AttachmentId"][];
             text: string;
         };
         SendPlannerInputResponse: {
@@ -3877,11 +3915,13 @@ export interface components {
              * @description Absolute REST path the browser reads the bytes back from. Server-built:
              *     the client never composes a path of its own.
              *
-             *     Not a durable link yet. As of S6-PR1 nothing binds an attachment to a
-             *     queue entry, so every upload stays in the server's `staging/` directory
-             *     and is swept once it is older than the 24h orphan TTL; after that this
-             *     path answers 400. S6-PR2 adds the bind that makes an attachment
-             *     permanent.
+             *     Durable only once the attachment is bound. An upload lands in the
+             *     server's `staging/` directory, and a staged attachment is swept once it
+             *     is older than the 24h orphan TTL, after which this path answers 400.
+             *     Sending or queueing a message that names the id binds it — the bytes
+             *     move into `bound/`, which nothing sweeps — and from that moment this
+             *     path is stable for the life of the card. So the window in which this
+             *     url can stop working is exactly "uploaded, never sent, 24 hours".
              */
             url: string;
         };

@@ -2316,7 +2316,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
     // path, which is the correct fence — user input has exactly one ingress,
     // and it is the one that mints the id.
     harness
-        .observe_user_message_durable(SENTENCE_BEFORE_THE_RESET.into())
+        .observe_user_message_durable(SENTENCE_BEFORE_THE_RESET.into(), Vec::new())
         .await
         .expect("the durable send must be persisted");
     tokio::time::timeout(Duration::from_secs(10), drain_entered.notified())

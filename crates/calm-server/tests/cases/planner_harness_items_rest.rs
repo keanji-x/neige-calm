@@ -229,10 +229,12 @@ async fn transcript_route_returns_strict_structured_input_segments() {
         HarnessInputSegment {
             presentation: HarnessInputPresentation::SystemReportEdited,
             text: "wording is not the protocol".into(),
+            attachments: Vec::new(),
         },
         HarnessInputSegment {
             presentation: HarnessInputPresentation::User,
             text: "User says:\nhello".into(),
+            attachments: Vec::new(),
         },
     ];
     let segments_json = serde_json::to_string(&segments).unwrap();

@@ -48,6 +48,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use calm_types::planner_attachment::{AttachmentId, PlannerAttachment};
 use calm_types::worker::WorkerSessionId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -752,6 +753,18 @@ pub struct ResetPlannerCardResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SendPlannerInputRequest {
     pub text: String,
+    /// #1505 S6 — ids returned by `POST /api/cards/{id}/planner/attachments`.
+    ///
+    /// Naming an attachment here is what BINDS it: the bytes move out of the
+    /// server's sweepable staging area before this request writes anything to
+    /// the queue. So a message that reaches the queue always names files that
+    /// are already permanent, and an upload that is never named expires.
+    ///
+    /// `#[serde(default)]` so every existing client keeps working unchanged.
+    /// An id belonging to another card is a 400, as is naming the same one
+    /// twice or naming more than eight.
+    #[serde(default)]
+    pub attachments: Vec<AttachmentId>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -925,6 +938,13 @@ pub struct PendingQueueEntry {
     pub rev: u32,
     /// Wall-clock ms at which the entry entered the queue.
     pub queued_at_ms: i64,
+    /// #1505 S6 — the images this queued message carries.
+    ///
+    /// Each is already bound, so its read-back url resolves now and will keep
+    /// resolving. The absolute host path the server holds beside each of these
+    /// is deliberately not here: the client addresses an attachment by id and
+    /// reads it back through `GET /planner/attachments/{id}`.
+    pub attachments: Vec<PlannerAttachment>,
 }
 
 /// Hard cap on entries in one `pending` page.
@@ -987,6 +1007,11 @@ fn page_pending_entries(entries: &[QueueEntry]) -> (Vec<PendingQueueEntry>, u32)
             text: view.text.to_string(),
             rev: view.rev,
             queued_at_ms: view.queued_at_ms,
+            attachments: view
+                .attachments
+                .iter()
+                .map(crate::planner_attachments::bind::BoundAttachment::wire)
+                .collect(),
         });
     }
     (page, overflow)
@@ -1058,7 +1083,24 @@ pub(crate) const MAX_PLANNER_INPUT_CHARS: usize = 32_768;
 /// a second copy of "not empty, at most N characters" is a copy that can
 /// disagree.
 pub(crate) fn validate_planner_input_text(text: &str) -> Result<usize> {
-    if text.trim().is_empty() {
+    validate_planner_input(text, false)
+}
+
+/// The same check, told whether the message carries an image.
+///
+/// #1505 S6. Pasting a screenshot and pressing enter is the single most common
+/// thing this feature is for, so an empty text beside an attachment has to be
+/// a message rather than a refusal. The length limit is unchanged and still
+/// applies to whatever text there is: an attachment does not buy room, it
+/// buys the right to send none.
+///
+/// The edit route keeps calling [`validate_planner_input_text`], i.e. keeps
+/// requiring text. `PATCH` cannot change an entry's attachments in this slice,
+/// so it has no way to tell "this message is its picture" from "this message
+/// is now empty", and clearing the text of an image message is the second of
+/// those.
+pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Result<usize> {
+    if text.trim().is_empty() && !has_attachments {
         return Err(CalmError::BadRequest("text must not be empty".into()));
     }
     let char_count = text.chars().count();
@@ -1106,8 +1148,9 @@ pub(crate) async fn send_planner_input(
     Path(id): Path<String>,
     Json(body): Json<SendPlannerInputRequest>,
 ) -> Result<Json<SendPlannerInputResponse>> {
-    let (s, w, cs, id, text) = (s, w, cs, id, body.text);
-    let char_count = validate_planner_input_text(&text)?;
+    let SendPlannerInputRequest { text, attachments } = body;
+    let (s, w, cs, id) = (s, w, cs, id);
+    let char_count = validate_planner_input(&text, !attachments.is_empty())?;
 
     let card = s
         .repo
@@ -1140,6 +1183,38 @@ pub(crate) async fn send_planner_input(
         track: track.id.clone(),
         area: track.area_id.clone(),
     };
+    // #1505 S6 — bind BEFORE the entry exists.
+    //
+    // The order is the whole of the durability argument: the bytes leave the
+    // sweepable staging directory first, so an entry that reaches the queue
+    // always names files nothing will reclaim. The reverse order would leave a
+    // window in which a queued message points at a file the orphan sweep is
+    // still entitled to remove, and codex answers an unreadable image with
+    // placeholder text and no error.
+    //
+    // The failure direction this buys is a leak: a bind that succeeds and is
+    // followed by a failed enqueue leaves bytes in `bound/` that no message
+    // names. They cost the card's budget and nothing reclaims them (#1505
+    // GAP-A12). A dangling reference would cost a silently degraded turn,
+    // which is worse and is unobservable.
+    //
+    // `attachment_root` refuses an attached workspace, so a card on a track
+    // pointed at a directory the user owns gets a 400 here — and only when it
+    // actually names an attachment. A text-only message on such a track is
+    // untouched by any of this.
+    let attachments = if attachments.is_empty() {
+        Vec::new()
+    } else {
+        let root =
+            crate::planner_attachments::attachment_root(&track.workspace, &s.workspace_root)?;
+        crate::planner_attachments::bind::bind_attachments(
+            &root,
+            &card.id,
+            &attachments,
+            &s.planner_attachment_locks,
+        )
+        .await?
+    };
     // Migrate ONLY the AI-header path (empty placeholder card) to the live planner
     // session actor; the human web-UI path (`actor` == User) and any other actor
     // MUST stay unchanged so the audit log keeps distinguishing human input from
@@ -1154,13 +1229,17 @@ pub(crate) async fn send_planner_input(
         _ => planner_input_audit_actor(&actor, &card.id),
     };
 
-    let ack = harness.observe_user_message_durable(text).await?;
+    let attachment_count = attachments.len();
+    let ack = harness
+        .observe_user_message_durable(text, attachments)
+        .await?;
 
     tracing::info!(
         actor = %actor.as_str(),
         card_id = %card.id,
         runtime_id = %runtime.id,
         char_count,
+        attachment_count,
         "planner harness user message enqueued"
     );
 
@@ -1988,7 +2067,7 @@ mod pending_page_tests {
     }
 
     fn user(text: &str) -> QueueEntry {
-        QueueEntry::user_message(text.to_string(), None)
+        QueueEntry::user_message(text.to_string(), None, Vec::new())
     }
 
     fn system() -> QueueEntry {

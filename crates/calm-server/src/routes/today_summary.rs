@@ -756,7 +756,12 @@ async fn send_summary(
             State(cs.clone()),
             synthetic_actor(),
             Path(card_id.to_string()),
-            Json(SendPlannerInputRequest { text }),
+            // The Today summary sends text the kernel composed; it has no
+            // upload channel and no attachment to name.
+            Json(SendPlannerInputRequest {
+                text,
+                attachments: Vec::new(),
+            }),
         )
     };
     match send(text.clone()).await {

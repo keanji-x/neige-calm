@@ -2080,8 +2080,10 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
         let placeholder_snapshot = HarnessSnapshot::initial(0, vec![]);
         // The racer carries a sentence a human typed into it during the window.
         let racer_id = new_id();
-        let racer_snapshot =
-            HarnessSnapshot::initial(0, vec![QueueEntry::user_message(STRANDED.into(), None)]);
+        let racer_snapshot = HarnessSnapshot::initial(
+            0,
+            vec![QueueEntry::user_message(STRANDED.into(), None, Vec::new())],
+        );
         let now = now_ms();
         let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
         let mut output = TxOutput::new(
@@ -2352,8 +2354,14 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
         // sentence to another runtime.
         let row_snapshot = HarnessSnapshot::initial(0, vec![]);
         // The carried output: still holds it, frozen at `prepare_tx` time.
-        let carried_snapshot =
-            HarnessSnapshot::initial(0, vec![QueueEntry::user_message(MOVED_AWAY.into(), None)]);
+        let carried_snapshot = HarnessSnapshot::initial(
+            0,
+            vec![QueueEntry::user_message(
+                MOVED_AWAY.into(),
+                None,
+                Vec::new(),
+            )],
+        );
         let now = now_ms();
         let payload = start_payload(track.id.as_ref(), &card.id, &track.workspace.path, None);
         let mut output = TxOutput::new(
@@ -2754,7 +2762,7 @@ async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
         let seeded = HarnessSnapshot::initial(
             0,
             vec![
-                QueueEntry::user_message(LEGACY.into(), None),
+                QueueEntry::user_message(LEGACY.into(), None, Vec::new()),
                 QueueEntry::user_message_moved(
                     RETURNED.into(),
                     vec![RETURNED_ID.to_string()],

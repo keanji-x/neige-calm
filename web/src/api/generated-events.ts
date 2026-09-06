@@ -292,7 +292,23 @@ export type HarnessInputPresentation = "user" | "system" | "system_worker_turn_f
  * Keeping the rendered text beside its typed presentation makes a mixed batch
  * reversible without teaching a reader how Rust joined or phrased it.
  */
-export type HarnessInputSegment = { presentation: HarnessInputPresentation, text: string, };
+export type HarnessInputSegment = { presentation: HarnessInputPresentation, text: string, 
+/**
+ * #1505 S6 — the images this segment carried into `turn/start`.
+ *
+ * Carried here rather than left for the client to dig out of
+ * `HarnessItem::params`: the params blob holds codex's own
+ * `{"type":"localImage","path":...}` item, whose `path` is an absolute
+ * host path. A transcript that rendered from that would have to turn a
+ * host path back into a REST url, which is a second, guessable naming of
+ * the same bytes. The id is the naming; the read-back url is built from
+ * it by the same server function the upload response used.
+ *
+ * `#[serde(default)]` because every segment persisted before this slice
+ * has no such key, and an old transcript is a transcript with no
+ * attachments rather than an unreadable one.
+ */
+attachments: Array<PlannerAttachment>, };
 
 export type HarnessItem = { id: number, worker_session_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, input_segments?: Array<HarnessInputSegment>, created_at_ms: number, };
 
@@ -847,11 +863,13 @@ export type UploadAttachmentResponse = { attachmentId: AttachmentId, contentType
  * Absolute REST path the browser reads the bytes back from. Server-built:
  * the client never composes a path of its own.
  *
- * Not a durable link yet. As of S6-PR1 nothing binds an attachment to a
- * queue entry, so every upload stays in the server's `staging/` directory
- * and is swept once it is older than the 24h orphan TTL; after that this
- * path answers 400. S6-PR2 adds the bind that makes an attachment
- * permanent.
+ * Durable only once the attachment is bound. An upload lands in the
+ * server's `staging/` directory, and a staged attachment is swept once it
+ * is older than the 24h orphan TTL, after which this path answers 400.
+ * Sending or queueing a message that names the id binds it — the bytes
+ * move into `bound/`, which nothing sweeps — and from that moment this
+ * path is stable for the life of the card. So the window in which this
+ * url can stop working is exactly "uploaded, never sent, 24 hours".
  */
 url: string, };
 

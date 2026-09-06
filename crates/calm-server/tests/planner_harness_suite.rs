@@ -2,6 +2,8 @@ mod support;
 
 #[path = "cases/harness_turn_start_invariant.rs"]
 mod harness_turn_start_invariant;
+#[path = "cases/planner_attachments_bind.rs"]
+mod planner_attachments_bind;
 #[path = "cases/planner_attachments_bound_dir_seam.rs"]
 mod planner_attachments_bound_dir_seam;
 #[path = "cases/planner_attachments_rest.rs"]

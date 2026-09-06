@@ -15,7 +15,9 @@ use axum::http::{Request, StatusCode};
 use calm_server::auth::Principal;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, TrackWorkspacePlan, card_create_with_id_tx, session_start_runtime_tx, track_create_tx,
+};
 use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, PlannerHarness, PlannerHarnessParams,
@@ -53,6 +55,37 @@ pub struct Boot {
     pub worker_session_id: String,
     pub daemon: Arc<SharedCodexAppServer>,
     pub repo: Arc<SqlxRepo>,
+    /// The card's managed workspace on disk.
+    ///
+    /// #1505 S6 — the fixture builds a real one, through the production
+    /// `ManagedUnder` plan and the production materializer, rather than the
+    /// `cwd: "/tmp"` attached shape it used before. Attachments are refused on
+    /// an attached workspace, so a fixture that produced one would make every
+    /// attachment case in this suite pass for the wrong reason: a 400 that
+    /// says "attached workspace", read as a 400 that says whatever the test
+    /// was actually about.
+    pub workspace: PathBuf,
+    _tmp: tempfile::TempDir,
+}
+
+impl Boot {
+    /// `<workspace>/.neige/attachments` — the root both attachment endpoints
+    /// derive for themselves.
+    pub fn attachment_root(&self) -> PathBuf {
+        self.workspace.join(".neige").join("attachments")
+    }
+
+    pub fn staging_dir(&self) -> PathBuf {
+        self.attachment_root()
+            .join(self.planner_card.id.as_str())
+            .join("staging")
+    }
+
+    pub fn bound_dir(&self) -> PathBuf {
+        self.attachment_root()
+            .join(self.planner_card.id.as_str())
+            .join("bound")
+    }
 }
 
 impl Boot {
@@ -129,23 +162,40 @@ async fn boot_inner(
         })
         .await
         .unwrap();
-    let track = repo
-        .track_create(NewTrack {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace_root = tmp.path().join("workspaces");
+    let role_cache = CardRoleCache::new();
+    let track_area_cache = TrackAreaCache::new();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let track = track_create_tx(
+        &mut tx,
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "pending queue".into(),
             sort: None,
-            cwd: "/tmp".into(),
+            cwd: String::new(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
+        },
+        None,
+        &TrackWorkspacePlan::ManagedUnder(workspace_root.clone()),
+        None,
+        &track_area_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let workspace = PathBuf::from(&track.workspace.path);
+    calm_server::workspace_materialize::materialize_workspace(
+        &track.workspace,
+        &workspace_root,
+        track.id.as_str(),
+    )
+    .unwrap();
 
-    let role_cache = CardRoleCache::new();
-    let track_area_cache = TrackAreaCache::new();
     track_area_cache.insert(track.id.clone(), area.id);
 
     let mut tx = repo.pool().begin().await.unwrap();
@@ -205,7 +255,8 @@ async fn boot_inner(
         Arc::new(CodexClient::new_stub()),
         Some(role_cache.clone()),
         Some(track_area_cache.clone()),
-    );
+    )
+    .with_workspace_root(workspace_root);
 
     if event_writes == EventWrites::Broken {
         sqlx::query("ALTER TABLE events RENAME TO events_hidden")
@@ -276,6 +327,8 @@ async fn boot_inner(
         worker_session_id,
         daemon: daemon_handle,
         repo,
+        workspace,
+        _tmp: tmp,
     }
 }
 
@@ -327,6 +380,44 @@ pub async fn send_json(
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let parsed: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, parsed)
+}
+
+/// `POST /planner/input` with attachments, as the human actor.
+pub async fn post_input_with_attachments(
+    app: axum::Router,
+    card_id: &str,
+    text: &str,
+    attachments: &[String],
+) -> (StatusCode, Value) {
+    send_json(
+        app,
+        "POST",
+        format!("/api/cards/{card_id}/planner/input"),
+        "user",
+        json!({"text": text, "attachments": attachments}),
+    )
+    .await
+}
+
+/// Upload one attachment through the real endpoint and return its id.
+pub async fn upload_png(app: axum::Router, card_id: &str, payload: &[u8]) -> (StatusCode, Value) {
+    let mut bytes = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    bytes.extend_from_slice(payload);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{card_id}/planner/attachments"))
+                .header("content-type", "image/png")
+                .header("x-calm-actor", "user")
+                .body(Body::from(bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
 pub async fn post_input(app: axum::Router, card_id: &str, text: &str) -> (StatusCode, Value) {

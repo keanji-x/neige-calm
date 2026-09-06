@@ -24,12 +24,13 @@ use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
 use crate::harness::queue::{
     FoldOutcome, MutationResult, QueueEntry, QueueEntryId, QueueMutation, apply_mutation,
-    try_fold_tail,
+    input_segments_for_entries, try_fold_tail,
 };
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
 use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, TrackId};
+use crate::planner_attachments::bind::BoundAttachment;
 use crate::planner_model::{
     CardModelSelection, FailureKind, InstallationDefaults, TurnModelSelection,
     effective_model_for_catalog_lookup, resolve_turn_selection,
@@ -522,8 +523,12 @@ impl PlannerHarness {
     /// The returned [`DurableAck`] names the entry the text ended up in — which
     /// is NOT always an entry minted for this call: under backpressure the text
     /// folds into the queue tail and the ack names the survivor.
-    pub async fn observe_user_message_durable(&self, text: String) -> Result<DurableAck> {
-        self.observe_durable_entries(vec![QueueEntry::user_message(text, None)])
+    pub async fn observe_user_message_durable(
+        &self,
+        text: String,
+        attachments: Vec<BoundAttachment>,
+    ) -> Result<DurableAck> {
+        self.observe_durable_entries(vec![QueueEntry::user_message(text, None, attachments)])
             .await
     }
 
@@ -790,7 +795,9 @@ impl PlannerHarness {
     #[cfg(feature = "fixtures")]
     pub async fn observe_for_test(&self, obs: Observation, envelope_id: Option<i64>) {
         let entry = match obs {
-            Observation::UserMessage { text } => QueueEntry::user_message(text, envelope_id),
+            Observation::UserMessage { text } => {
+                QueueEntry::user_message(text, envelope_id, Vec::new())
+            }
             other => QueueEntry::system(other, envelope_id)
                 .expect("non-user observation wraps as a system entry"),
         };
@@ -2802,11 +2809,13 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     }
     *inner.debounce.lock().await = DebounceState::default();
-    let drained_observations = drained
-        .iter()
-        .map(QueueEntry::observation)
-        .collect::<Vec<_>>();
-    let input_segments = Observation::input_segments_for(&drained_observations);
+    // #1505 S6 — segments are built from the ENTRIES, not from observations.
+    // An `Observation` cannot carry an attachment; the queue entry can, and
+    // the bind put them there. `input_segments_for_entries` still delegates
+    // the presentation and the rendered text to
+    // `Observation::input_segments_for`, so this is not a second copy of that
+    // table.
+    let input_segments = input_segments_for_entries(&drained);
 
     let joined_observation_text = input_segments
         .iter()
@@ -2896,8 +2905,27 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     *inner.issuance_retry_after.lock().await = None;
 
+    // Text first, then one `localImage` per attachment, in queue order.
+    //
+    // Every path here is a string recorded at bind time and verified then;
+    // this builds no path and touches no disk, which is the property that
+    // makes a re-buffered batch safe — `rebuffer_head` below puts these same
+    // entries back, and their attachments are exactly where they were.
+    //
+    // What is lost, and is worth naming: when several queued messages are
+    // drained together their texts are joined into one string, so the payload
+    // codex receives no longer says which image belonged to which sentence.
+    // #1505 GAP-A3. The transcript is unaffected — `input_segments` keeps one
+    // segment per entry, each with its own attachments.
+    let mut items = vec![InputItem::text(text)];
+    items.extend(
+        drained
+            .iter()
+            .flat_map(QueueEntry::attachments)
+            .map(|attachment| InputItem::local_image(attachment.path.clone())),
+    );
     match IssueTurnHandle::from_reconciliation(inner)
-        .issue(&thread_id, vec![InputItem::text(text)], &selection)
+        .issue(&thread_id, items, &selection)
         .await
     {
         Ok(turn_id) => {
@@ -3787,11 +3815,15 @@ mod tests {
         use std::collections::VecDeque;
 
         let seed = "a".repeat(super::MAX_FOLDED_USER_MESSAGE_CHARS - 1);
-        let mut queue = VecDeque::from(vec![QueueEntry::user_message(seed.clone(), Some(1))]);
+        let mut queue = VecDeque::from(vec![QueueEntry::user_message(
+            seed.clone(),
+            Some(1),
+            Vec::new(),
+        )]);
 
         let outcome = try_fold_tail(
             &mut queue,
-            &QueueEntry::user_message("x".repeat(10), Some(2)),
+            &QueueEntry::user_message("x".repeat(10), Some(2), Vec::new()),
             super::MAX_FOLDED_USER_MESSAGE_CHARS,
         );
 
