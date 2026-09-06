@@ -58,7 +58,27 @@ export const chartCandlesPayloadSchema = z.strictObject({
   caption: max2048CodePoints(z.string()).nullish(),
 });
 
-export const tableBlockPayloadSchema = z.strictObject({
+/**
+ * A live `table` names where its rows come from instead of carrying them: the
+ * overlay written by `<plugin_id>` under `<overlay_kind>`. The document keeps
+ * the reference and the value moves underneath it, so a plugin that re-prices
+ * on its own clock shows up in an open report without the report being
+ * rewritten (and re-revisioned) on every tick.
+ *
+ * The pattern is the frontend's copy of `report_blocks::validate_live_source`.
+ * It is a shape check only — the plugin need not be installed, which is a
+ * normal state the renderer shows as an empty table rather than a decode
+ * failure.
+ *
+ * Written inline rather than hoisted to its own `const`: a module-level
+ * binding initialized by a call outside the zod chain is module runtime state
+ * as far as `architecture/no-module-runtime-state` is concerned, and the rule
+ * is right that the exception would have to be argued rather than assumed.
+ */
+export const LIVE_TABLE_SOURCE_PATTERN = /^neige:\/\/plugin\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+/** The rows-carrying form — and the shape a live table's overlay must hold. */
+export const inlineTableBlockPayloadSchema = z.strictObject({
   columns: z.array(z.strictObject({
     key: max2048CodePoints(z.string().min(1)),
     label: max2048CodePoints(z.string()),
@@ -77,6 +97,25 @@ export const tableBlockPayloadSchema = z.strictObject({
     const keys = new Set(table.columns.map((column) => column.key));
     return table.rows.every((row) => Object.keys(row).every((key) => keys.has(key)));
   }, { message: 'row keys must be declared column keys' });
+
+export const liveTableBlockPayloadSchema = z.strictObject({
+  source: max2048CodePoints(z.string().regex(LIVE_TABLE_SOURCE_PATTERN,
+    'must be neige://plugin/<plugin_id>/<overlay_kind>')),
+  caption: max2048CodePoints(z.string()).nullish(),
+});
+
+/*
+ * Live first. Both members are strict objects, so the order cannot change
+ * which one accepts a given payload — a payload with `source` is refused by
+ * the inline member and vice versa. It is the *error* the union reports on a
+ * malformed payload that the order picks, and "source: must be
+ * neige://plugin/…" is the more useful of the two for the payload that was
+ * clearly trying to be live.
+ */
+export const tableBlockPayloadSchema = z.union([
+  liveTableBlockPayloadSchema,
+  inlineTableBlockPayloadSchema,
+]);
 
 /**
  * `src` is a same-origin absolute path: a leading `/`, not the
@@ -171,6 +210,13 @@ export const taskBlockPayloadSchema = z.union([
 export type ProseBlockPayload = z.infer<typeof proseBlockPayloadSchema>;
 export type ChartCandlesPayload = z.infer<typeof chartCandlesPayloadSchema>;
 export type TableBlockPayload = z.infer<typeof tableBlockPayloadSchema>;
+export type InlineTableBlockPayload = z.infer<typeof inlineTableBlockPayloadSchema>;
+export type LiveTableBlockPayload = z.infer<typeof liveTableBlockPayloadSchema>;
+
+/** Narrows a table payload to its live form. */
+export function isLiveTablePayload(payload: TableBlockPayload): payload is LiveTableBlockPayload {
+  return 'source' in payload;
+}
 export type AppBlockPayload = z.infer<typeof appBlockPayloadSchema>;
 export type TaskBlockPayload = z.infer<typeof taskBlockPayloadSchema>;
 

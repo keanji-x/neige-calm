@@ -94,6 +94,45 @@ export const overlayWireSchema = z.object({
 });
 export type OverlayWire = z.infer<typeof overlayWireSchema>;
 
+/**
+ * Resolves a live `table` block's `source` against a track's overlays.
+ *
+ * `neige://plugin/<plugin_id>/<overlay_kind>` addresses exactly one overlay
+ * row: overlays are keyed by (plugin, entity, kind), so at most one can match.
+ * The payload comes back unvalidated on purpose — the renderer decodes it with
+ * the inline-table schema, and "a plugin pushed junk" must read as an empty
+ * table there rather than as a decode failure of the report itself.
+ *
+ * Returns `undefined` when the source names a plugin or kind that has written
+ * nothing to this track yet, which is the ordinary state before a plugin's
+ * first push and after it is uninstalled.
+ */
+export function liveTableOverlayPayload(
+  trackId: string,
+  overlays: readonly OverlayWire[],
+  source: string,
+): unknown {
+  const rest = source.startsWith(LIVE_TABLE_SOURCE_PREFIX)
+    ? source.slice(LIVE_TABLE_SOURCE_PREFIX.length)
+    : null;
+  if (rest === null) return undefined;
+  const slash = rest.indexOf('/');
+  if (slash <= 0 || slash === rest.length - 1) return undefined;
+  const pluginId = rest.slice(0, slash);
+  const kind = rest.slice(slash + 1);
+  // `indexOf` above splits at the FIRST slash, so a three-segment source would
+  // otherwise resolve as a kind containing a slash. Overlay kinds never do.
+  if (kind.includes('/')) return undefined;
+  const match = overlays.find((overlay) => overlay.entity_kind === 'track'
+    && overlay.entity_id === trackId
+    && overlay.plugin_id === pluginId
+    && overlay.kind === kind);
+  return match?.payload;
+}
+
+/** Scheme prefix of a live table `source`. Mirrors `report_blocks::LIVE_SOURCE_PREFIX`. */
+const LIVE_TABLE_SOURCE_PREFIX = 'neige://plugin/';
+
 function payloadField(payload: unknown, key: string): unknown {
   return typeof payload === 'object' && payload !== null
     ? (payload as Record<string, unknown>)[key]

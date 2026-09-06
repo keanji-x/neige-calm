@@ -1,5 +1,8 @@
 mod support;
 
+#[path = "cases/binance_plugin_process.rs"]
+mod binance_plugin_process;
+
 #[path = "cases/mcp_assistant_report_channel.rs"]
 mod mcp_assistant_report_channel;
 #[path = "cases/mcp_plugin_tools.rs"]

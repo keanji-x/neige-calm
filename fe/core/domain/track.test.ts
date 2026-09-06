@@ -5,8 +5,8 @@ import {
   createTrackOperation, deleteCardOperation, isBlankForKernel, isRunning, isWaitingForUser,
   lifecycleLabel, toTrack, trackDetailSchema, updateTrackOperation,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackLifecycleSchema, trackWireSchema, tracksInAreaOperation,
-  trackCreateKeyAction, userVisibleTracks,
-  type Track,
+  trackCreateKeyAction, userVisibleTracks, liveTableOverlayPayload,
+  type Track, type OverlayWire,
 } from './track.js';
 import type { Area } from './area.js';
 
@@ -290,5 +290,56 @@ describe('isBlankForKernel', () => {
     // Whitespace *around* content is content's neighbour, not blankness — and
     // the caller sends the string with it intact.
     expect(isBlankForKernel('\u0085x\u0085')).toBe(false);
+  });
+});
+
+describe('liveTableOverlayPayload', () => {
+  const overlay = (over: Partial<OverlayWire>): OverlayWire => ({
+    id: 'o1',
+    plugin_id: 'dev-neige-binance',
+    entity_kind: 'track',
+    entity_id: 't1',
+    kind: 'portfolio.holdings',
+    payload: { columns: [], rows: [] },
+    updated_at: 1,
+    ...over,
+  });
+  const SOURCE = 'neige://plugin/dev-neige-binance/portfolio.holdings';
+
+  it('returns the payload of the overlay the source addresses', () => {
+    expect(liveTableOverlayPayload('t1', [overlay({})], SOURCE))
+      .toEqual({ columns: [], rows: [] });
+  });
+
+  it('does not cross tracks, plugins, kinds or entity kinds', () => {
+    // Each of these differs from the addressed overlay in exactly one field,
+    // so a resolver that dropped any one of the four checks would return a
+    // payload written for something else — a number attributed to the wrong
+    // holding is worse than no number.
+    const wrong = [
+      overlay({ entity_id: 't2' }),
+      overlay({ plugin_id: 'other-plugin' }),
+      overlay({ kind: 'portfolio.history' }),
+      overlay({ entity_kind: 'card' }),
+    ];
+    for (const row of wrong) {
+      expect(liveTableOverlayPayload('t1', [row], SOURCE)).toBeUndefined();
+    }
+    // …and all four together still leave the right one findable.
+    expect(liveTableOverlayPayload('t1', [...wrong, overlay({})], SOURCE))
+      .toEqual({ columns: [], rows: [] });
+  });
+
+  it('returns undefined for a source that is not a plugin overlay reference', () => {
+    for (const source of [
+      'neige://track/t1#b_x',
+      'https://example.com/x',
+      'neige://plugin/only-one',
+      'neige://plugin/a/b/c',
+      'neige://plugin//portfolio.holdings',
+      'neige://plugin/dev-neige-binance/',
+    ]) {
+      expect(liveTableOverlayPayload('t1', [overlay({})], source)).toBeUndefined();
+    }
   });
 });
