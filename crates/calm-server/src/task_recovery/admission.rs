@@ -239,11 +239,37 @@ async fn check_constraint_tx(
     Ok(())
 }
 
-/// S1 supports recovery only before a worker's preparation transaction committed.
-/// A PTY leader exit (including signal exit), session terminal state, or released
-/// lease cannot prove that descendants stopped writing. Post-preparation recovery
-/// needs a supported execution/write fence; no existing exit record supplies it.
+/// Prepared isolated executions require their retained namespace stop proof.
+/// Legacy workers retain the pre-preparation fence: a PTY leader exit, terminal
+/// session state or released lease does not prove descendants stopped writing.
 async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
+    // Keyed Operation rows are permanent (migration 0093). Prepared targets and
+    // tx_output remain evidence even if worker cards/sessions were later deleted.
+    // Read every operation sharing the execution key, including a foreign kind
+    // that could have caused a scheduler payload collision; do not infer no work
+    // merely because the expected worker adapter cannot be found.
+    let operations: Vec<PredecessorOperation> = sqlx::query_as(
+        "SELECT id,kind,phase,phase_detail_json,target_type,target_id,tx_output_json,spawn_artifacts_json,compensation_state \
+         FROM operations WHERE idempotency_key=?1 \
+         OR (kind='task-verify' AND json_extract(payload_json,'$.task_id')=?1)",
+    ).bind(&task.id).fetch_all(&mut **tx).await?;
+    if operations.iter().any(|operation| {
+        operation.kind == crate::isolated_codex::OPERATION_KIND
+            && operation.tx_output_json.is_some()
+    }) {
+        if operations.len() != 1
+            || task.gate_attempt != 0
+            || task.gate_pid.is_some()
+            || task.gate_result_json.is_some()
+        {
+            return Err(conflict(
+                "predecessor isolated execution has ambiguous operations or verification effects",
+            ));
+        }
+        return crate::isolated_codex::recovery::require_stopped_tx(tx, task, &operations[0].id)
+            .await;
+    }
+
     if task.worker_card_id.is_some()
         || task.gate_attempt != 0
         || task.gate_pid.is_some()
@@ -259,16 +285,6 @@ async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Res
     {
         return Err(conflict(PREDECESSOR_WRITE_FENCE_UNAVAILABLE));
     }
-    // Keyed Operation rows are permanent (migration 0093). Prepared targets and
-    // tx_output remain evidence even if worker cards/sessions were later deleted.
-    // Read every operation sharing the execution key, including a foreign kind
-    // that could have caused a scheduler payload collision; do not infer no work
-    // merely because the expected worker adapter cannot be found.
-    let operations: Vec<PredecessorOperation> = sqlx::query_as(
-        "SELECT kind,phase,phase_detail_json,target_type,target_id,tx_output_json,spawn_artifacts_json,compensation_state \
-         FROM operations WHERE idempotency_key=?1 \
-         OR (kind='task-verify' AND json_extract(payload_json,'$.task_id')=?1)",
-    ).bind(&task.id).fetch_all(&mut **tx).await?;
     for operation in operations {
         let worker_kind = matches!(
             operation.kind.as_str(),
@@ -312,6 +328,7 @@ const PREDECESSOR_WRITE_FENCE_UNAVAILABLE: &str = "predecessor has no supported 
 
 #[derive(sqlx::FromRow)]
 struct PredecessorOperation {
+    id: String,
     kind: String,
     phase: String,
     phase_detail_json: Option<String>,

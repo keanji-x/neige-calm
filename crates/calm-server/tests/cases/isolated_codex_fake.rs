@@ -34,6 +34,7 @@ pub fn run() {
                 if method=="turn/start" && scenario=="lose-ack" {let _=peer.close(None).await;break;}
                 peer.send(tokio_tungstenite::tungstenite::Message::Text(json!({"jsonrpc":"2.0","id":request["id"],"result":result}).to_string())).await.unwrap();
                 if method=="turn/start" {
+                    assert!(!std::path::Path::new("/workspace/result.txt").exists(), "each execution starts empty");
                     std::fs::write("/workspace/result.txt",b"42\n").unwrap();
                     let directory="/provider/home/sessions/2026/09/06";std::fs::create_dir_all(directory).unwrap();
                     let mut file=std::fs::File::create(format!("{directory}/rollout-2026-09-06T00-00-00-{thread_id}.jsonl")).unwrap();
@@ -50,11 +51,17 @@ pub fn run() {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                     }
+                    if scenario=="controlled" {
+                        while !std::path::Path::new("/workspace/report-success").exists()
+                            && !std::path::Path::new("/workspace/report-failure").exists() {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                    }
                     if scenario!="no-report" {
                         let task=prompt.split("Task completion idempotency_key: ").nth(1).unwrap().lines().next().unwrap().to_string();
                         let env=config["mcp_servers"]["calm"]["env"].as_table_like().unwrap().iter()
                             .map(|(k,v)|(k.to_string(),v.as_str().unwrap().to_string())).collect::<Vec<_>>();
-                        let success=scenario!="fail";
+                        let success=scenario!="fail" && !std::path::Path::new("/workspace/report-failure").exists();
                         tokio::task::spawn_blocking(move||report(&env,&task,success)).await.unwrap();
                     }
                     let _=peer.send(tokio_tungstenite::tungstenite::Message::Text(json!({"jsonrpc":"2.0","method":"turn/completed",

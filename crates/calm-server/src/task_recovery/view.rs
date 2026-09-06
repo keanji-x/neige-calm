@@ -151,9 +151,11 @@ pub(crate) async fn task_recovery_view_tx(
                 Ok(_) => TaskRecoveryCapability {
                     allowed: true,
                     code: "available".into(),
-                    reason:
-                        "Retry the preparation failure as a new execution under its unchanged contract."
-                            .into(),
+                    reason: if crate::isolated_codex::selected(task)? {
+                        "Retry this goal as a new execution in a new empty workspace. Previous results stay with the old attempt.".into()
+                    } else {
+                        "Retry the preparation failure as a new execution under its unchanged contract.".into()
+                    },
                 },
                 Err(error @ (CalmError::Forbidden(_) | CalmError::Conflict(_))) => {
                     let reason = match error {

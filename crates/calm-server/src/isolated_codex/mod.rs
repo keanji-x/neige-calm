@@ -7,6 +7,7 @@ pub(crate) mod lookup;
 pub use lookup::private_codex_home;
 mod observe;
 mod record;
+pub(crate) mod recovery;
 pub(crate) mod turn;
 mod workspace;
 
