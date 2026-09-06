@@ -280,3 +280,6 @@ mod gate_recovery_tests;
 
 #[path = "launch_cleanup_tests.rs"]
 mod launch_cleanup_tests;
+
+#[path = "disposal_tests.rs"]
+mod disposal_tests;

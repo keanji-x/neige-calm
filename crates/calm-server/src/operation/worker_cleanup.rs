@@ -132,11 +132,18 @@ pub(crate) async fn require_cleanup_safe(
     }
     let terminal_id = output.output_string("terminal_id", "worker cleanup")?;
     let sock = match state {
-        Some(RequestState::Requested {
-            terminal_id: recorded,
-            supervisor_sock,
-            ..
-        }) => {
+        Some(
+            RequestState::Requested {
+                terminal_id: recorded,
+                supervisor_sock,
+                ..
+            }
+            | RequestState::HandedOff {
+                terminal_id: recorded,
+                supervisor_sock,
+                ..
+            },
+        ) => {
             if recorded != terminal_id {
                 return Err(crate::error::CalmError::Conflict(
                     "worker cleanup terminal identity mismatch; retain resources".into(),

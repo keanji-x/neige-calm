@@ -234,6 +234,13 @@ async fn exercise(fault: Fault) {
     }
     let output = op.tx_output.as_ref().unwrap();
     let terminal_id = output.output_string("terminal_id", "test").unwrap();
+    if matches!(fault, Fault::Commit | Fault::Deadline | Fault::AbortAndOpen) {
+        assert_eq!(
+            output.data["terminal_launch"]["state"], "requested",
+            "failed commit, timeout and read-only attachment never publish handoff"
+        );
+    }
+
     let card_id = output.output_string("card_id", "test").unwrap();
     if matches!(fault, Fault::Commit | Fault::Deadline) {
         let original = op.compensation_state.as_ref().unwrap()["reason"]

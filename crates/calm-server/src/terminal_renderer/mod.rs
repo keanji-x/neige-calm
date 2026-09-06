@@ -349,22 +349,37 @@ impl TerminalRendererRegistry {
             return Ok(existing);
         }
 
-        let entry = Arc::new(ensure_entry(cfg, self.repo.clone(), self.task_hook(), launch).await?);
-        let mut entries = self
-            .entries
-            .lock()
-            .map_err(|_| anyhow::anyhow!("terminal renderer registry mutex poisoned"))?;
-        if let Some(existing) = entries.get(&entry.terminal_id) {
-            entry.abort_tasks();
-            Ok(existing.clone())
-        } else {
-            tracing::info!(
-                terminal_id = %entry.terminal_id,
-                "terminal renderer registry inserted entry"
-            );
+        let EstablishedRenderer { entry, handoff } =
+            ensure_entry(cfg, self.repo.clone(), self.task_hook(), launch).await?;
+        let entry = Arc::new(entry);
+        {
+            let mut entries = self
+                .entries
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal renderer registry mutex poisoned"))?;
+            if let Some(existing) = entries.get(&entry.terminal_id) {
+                entry.abort_tasks();
+                // A concurrent read-only attachment is not this fresh handoff.
+                return Ok(existing.clone());
+            }
+            tracing::info!(terminal_id=%entry.terminal_id, "terminal renderer registry inserted entry");
             entries.insert(entry.terminal_id.clone(), entry.clone());
-            Ok(entry)
         }
+        if let Some((launch, pid)) = handoff {
+            let repo = self
+                .repo
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("task launch requires its repository"))?;
+            crate::operation::terminal_launch::hand_off(
+                repo,
+                launch,
+                entry.terminal_id.clone(),
+                pid,
+            )
+            .await
+            .map_err(anyhow::Error::from)?;
+        }
+        Ok(entry)
     }
 
     /// Look up an existing entry by terminal id, no spawn.
@@ -459,6 +474,21 @@ impl TerminalRendererRegistry {
         let _ = self.drop_entry_with_outcome(terminal_id).await;
     }
 
+    pub(crate) async fn require_disposal_safe(
+        &self,
+        terminal_id: &str,
+    ) -> crate::error::Result<()> {
+        if let Some(repo) = self.repo.as_deref() {
+            crate::operation::terminal_disposal::require_safe(
+                repo,
+                crate::operation::terminal_disposal::Scope::Terminal(terminal_id.to_owned()),
+                None,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn drop_entry_for_deletion(&self, terminal_id: &str) -> RendererDropOutcome {
         self.drop_entry_with_outcome(terminal_id).await
     }
@@ -518,12 +548,17 @@ impl TerminalRendererRegistry {
     }
 }
 
+struct EstablishedRenderer {
+    entry: RendererEntry,
+    handoff: Option<(crate::operation::task_launch::TaskLaunch, u32)>,
+}
+
 async fn ensure_entry(
     mut cfg: RendererConfig,
     repo: Option<Arc<dyn RouteRepo>>,
     task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
     launch: Option<crate::operation::task_launch::TaskLaunch>,
-) -> anyhow::Result<RendererEntry> {
+) -> anyhow::Result<EstablishedRenderer> {
     use crate::operation::terminal_launch::{self, TerminalStart};
     let start = match repo.as_deref() {
         Some(repo) => {
@@ -540,6 +575,7 @@ async fn ensure_entry(
             (None, true)
         }
     };
+    let mut handoff = None;
     let proc_id = format!("term:{}", cfg.terminal_id);
     let mut control_conn = match UnixStream::connect(&cfg.supervisor_sock).await {
         Ok(connection) => connection,
@@ -587,7 +623,7 @@ async fn ensure_entry(
             .map_err(|error| crate::error::CalmError::Internal(error.to_string()))?;
             Ok((reply, control_conn))
         };
-        let (reply, returned_connection) = match launch {
+        let (reply, returned_connection) = match launch.as_ref() {
             Some(launch) => {
                 let repo = repo
                     .as_deref()
@@ -596,7 +632,7 @@ async fn ensure_entry(
                     Ok(reply) => reply,
                     Err(failure) => {
                         if !failure.effect_started
-                            && let Err(error) = terminal_launch::reset_unissued(repo, &launch).await
+                            && let Err(error) = terminal_launch::reset_unissued(repo, launch).await
                         {
                             tracing::warn!(terminal_id=%cfg.terminal_id, %error, "could not record unissued terminal request; retaining ownership");
                         }
@@ -619,15 +655,12 @@ async fn ensure_entry(
         // The admission transaction is over before PID and session persistence.
         match reply {
             ControlReply::Spawned { pid } => {
-                if let Some(repo) = repo.as_ref()
-                    && let Err(e) = repo.terminal_set_pid(&cfg.terminal_id, Some(pid)).await
-                {
-                    tracing::warn!(
-                        terminal_id = %cfg.terminal_id,
-                        pid,
-                        error = %e,
-                        "failed to persist terminal pid after supervisor spawn"
-                    );
+                if let Some(repo) = repo.as_ref() {
+                    match repo.terminal_set_pid(&cfg.terminal_id, Some(pid)).await {
+                        Ok(()) => handoff = launch.map(|launch| (launch, pid)),
+                        Err(e) => tracing::warn!(terminal_id=%cfg.terminal_id, pid, error=%e,
+                            "failed to persist terminal pid after supervisor spawn; ownership retained"),
+                    }
                 }
             }
             ControlReply::SpawnFailed { error, .. } => anyhow::bail!("{error}"),
@@ -721,25 +754,28 @@ async fn ensure_entry(
     );
     let ready_task = child_ready::spawn_child_ready_poller(render_plane.clone(), event_tx.clone());
 
-    Ok(RendererEntry {
-        terminal_id: cfg.terminal_id.clone(),
-        proc_id,
-        supervisor_sock: cfg.supervisor_sock.clone(),
-        handle: RendererHandle {
-            session_id,
-            event_rx,
-            event_tx,
-            render_plane,
-            owner_registry,
-            supervisor_tx,
+    Ok(EstablishedRenderer {
+        entry: RendererEntry {
+            terminal_id: cfg.terminal_id.clone(),
+            proc_id,
+            supervisor_sock: cfg.supervisor_sock.clone(),
+            handle: RendererHandle {
+                session_id,
+                event_rx,
+                event_tx,
+                render_plane,
+                owner_registry,
+                supervisor_tx,
+            },
+            config: cfg,
+            exit,
+            initial_event_rx: StdMutex::new(Some(initial_event_rx)),
+            exited_rx: StdMutex::new(Some(exited_rx)),
+            attach_task: StdMutex::new(Some(attach_task)),
+            exit_persisted,
+            tasks: StdMutex::new(vec![control_task, ready_task]),
         },
-        config: cfg,
-        exit,
-        initial_event_rx: StdMutex::new(Some(initial_event_rx)),
-        exited_rx: StdMutex::new(Some(exited_rx)),
-        attach_task: StdMutex::new(Some(attach_task)),
-        exit_persisted,
-        tasks: StdMutex::new(vec![control_task, ready_task]),
+        handoff,
     })
 }
 

@@ -134,11 +134,17 @@ pub async fn sweep(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-/// Reap a single orphan (sweeper path). Idempotent against missing
-/// artifacts: a pre-deceased daemon, an already-unlinked socket, or a
-/// stale `pid` pointing at a recycled OS process all collapse to "row
-/// delete still succeeds, audit event still emits".
+/// Reap a single orphan using the existing cleanup behavior only after its
+/// prepared task launch is resolved. Missing artifacts do not discharge an
+/// unknown launch request that may still reach the supervisor.
 async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
+    let _operation_guard = state.operation_runtime.lock_for_track_delete().await;
+    crate::operation::terminal_disposal::require_safe(
+        state.repo.as_ref(),
+        crate::operation::terminal_disposal::Scope::Terminal(term.id.clone()),
+        state.daemon.proc_supervisor_sock.as_deref(),
+    )
+    .await?;
     // Steps 1-3: daemon + socket housekeeping, shared with the eager-
     // teardown route handlers via `reap_terminal_artifacts`.
     reap_terminal_artifacts(state, term).await;
@@ -176,6 +182,11 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         state.write(),
         move |tx| {
             Box::pin(async move {
+                crate::operation::terminal_disposal::require_safe_tx(
+                    tx,
+                    &crate::operation::terminal_disposal::Scope::Terminal(terminal_id.clone()),
+                )
+                .await?;
                 // The eager-teardown handlers (and a prior sweep tick)
                 // may already have removed the row. Treat NotFound as
                 // "nothing to do, but still emit the audit event" — but
@@ -276,10 +287,9 @@ pub async fn reap_terminal_artifacts_with_renderer(
     }
 }
 
-/// Destructive deletion fence: signal the terminal, then prove its recorded
-/// process is gone before its workspace may move. A missing/invalid pid cannot
-/// name a live process and is treated as quiesced; a known lingering process is
-/// a hard error rather than a best-effort warning.
+/// Preserve unresolved task launch ownership before the existing terminal
+/// deletion checks. A missing PID or negative probe cannot discharge a pending
+/// EnsureProc. Observed leader exit does not prove all descendants stopped.
 pub async fn quiesce_terminal_artifacts_for_deletion(
     renderer: Option<&TerminalRendererRegistry>,
     supervisor_sock: Option<&std::path::Path>,
@@ -291,7 +301,10 @@ pub async fn quiesce_terminal_artifacts_for_deletion(
     // `(pid,start_time,boot_id)` ownership proof, so deletion must observe only
     // and fail closed instead of signaling an arbitrary live pid.
     let renderer_outcome = match renderer {
-        Some(registry) => registry.drop_entry_for_deletion(&term.id).await,
+        Some(registry) => {
+            registry.require_disposal_safe(&term.id).await?;
+            registry.drop_entry_for_deletion(&term.id).await
+        }
         None => RendererDropOutcome::Missing,
     };
     if renderer_outcome == RendererDropOutcome::ExitPersisted {

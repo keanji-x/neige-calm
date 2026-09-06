@@ -13,6 +13,12 @@ pub(crate) enum RequestState {
     NotRequested {
         version: u8,
     },
+    HandedOff {
+        version: u8,
+        terminal_id: String,
+        supervisor_sock: PathBuf,
+        pid: u32,
+    },
     Requested {
         version: u8,
         terminal_id: String,
@@ -26,7 +32,9 @@ impl RequestState {
         };
         let state: Self = serde_json::from_value(value.clone())?;
         let version = match &state {
-            Self::NotRequested { version } | Self::Requested { version, .. } => *version,
+            Self::NotRequested { version }
+            | Self::Requested { version, .. }
+            | Self::HandedOff { version, .. } => *version,
         };
         if version != 1 {
             return Err(CalmError::Conflict(
@@ -87,7 +95,7 @@ pub(crate) async fn resolve(
         };
         let output: Value = serde_json::from_str(&output)?;
         match RequestState::read(&output["data"])? {
-            Some(RequestState::Requested {terminal_id: recorded, supervisor_sock,..}) => {
+            Some(RequestState::Requested {terminal_id: recorded, supervisor_sock,..} | RequestState::HandedOff {terminal_id: recorded, supervisor_sock,..}) => {
                 if recorded != terminal_id { return Err(CalmError::Conflict("terminal launch identity disagrees with prepared operation".into())); }
                 Ok(TerminalStart::AttachOnly(supervisor_sock))
             }
@@ -118,6 +126,23 @@ pub(crate) async fn reset_unissued(repo: &dyn RouteRepo, launch: &TaskLaunch) ->
         sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch',json(?1)) WHERE id=?2 AND lease_owner=?3 AND phase='spawn_started' AND json_extract(tx_output_json,'$.data.terminal_launch.state')='requested'")
             .bind(fresh_state().to_string()).bind(op.id).bind(op.lease_owner)
             .execute(&mut **tx).await?;
+        Ok(())
+    })).await
+}
+
+/// Called only after a fresh Spawned acknowledgement, persisted PID and actual
+/// registry installation. This records ownership transfer, NOT writer quiescence.
+pub(crate) async fn hand_off(
+    repo: &dyn RouteRepo,
+    launch: TaskLaunch,
+    terminal_id: String,
+    pid: u32,
+) -> Result<()> {
+    let op = launch.operation().clone();
+    write_in_tx_typed(repo, move |tx| Box::pin(async move {
+        let changed = sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch.state','handed_off','$.data.terminal_launch.pid',?1) WHERE id=?2 AND lease_owner=?3 AND phase='spawn_started' AND json_extract(tx_output_json,'$.data.terminal_launch.state')='requested' AND json_extract(tx_output_json,'$.data.terminal_launch.terminal_id')=?4 AND EXISTS(SELECT 1 FROM terminals WHERE id=?4 AND pid=?1 AND card_id=operations.target_id)")
+            .bind(i64::from(pid)).bind(op.id).bind(op.lease_owner).bind(terminal_id).execute(&mut **tx).await?.rows_affected();
+        if changed != 1 { return Err(CalmError::Conflict("terminal ownership handoff changed; retain prepared operation for reconciliation".into())); }
         Ok(())
     })).await
 }

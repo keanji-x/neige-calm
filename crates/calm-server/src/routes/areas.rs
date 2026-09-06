@@ -459,6 +459,12 @@ impl PreparedAreaDeletion {
         worker: &WorkerState,
         codex: &CodexShellState,
     ) -> Result<QuiescedAreaDeletion> {
+        crate::operation::terminal_disposal::require_safe(
+            route.repo.as_ref(),
+            crate::operation::terminal_disposal::Scope::Area(self.id.clone()),
+            worker.daemon.proc_supervisor_sock.as_deref(),
+        )
+        .await?;
         let mut terminal_ids = Vec::new();
         let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(
             codex.shared_codex_appserver.clone(),
@@ -589,6 +595,11 @@ async fn finish_area_deletion(
         &route.write,
         move |tx| {
             Box::pin(async move {
+                crate::operation::terminal_disposal::require_safe_tx(
+                    tx,
+                    &crate::operation::terminal_disposal::Scope::Area(id.clone()),
+                )
+                .await?;
                 for terminal_id in &terminal_ids {
                     match terminal_delete_tx(tx, terminal_id)
                         .await
