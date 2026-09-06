@@ -616,6 +616,9 @@ export function settingsQueryOptions(transport: ApiTransportPort, unauthorized: 
   return {
     queryKey: queryKeys.settings(),
     queryFn: (): Promise<SettingsBag> => runOperation(transport, settingsOperation(), unauthorized),
+    // Settings writes emit no event. Poll only while this query is observed so
+    // another client's change reaches the open pane without a browser refresh.
+    refetchInterval: 15_000,
   };
 }
 
@@ -1525,7 +1528,8 @@ export function usePluginConfigMutations(
 export function useSettingsMutation(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): (patch: SettingsPatch) => Promise<SettingsBag> {
   const client = useQueryClient();
   const save = useMutation({
-    mutationFn: (patch: SettingsPatch) => runOperation(transport, putSettingsOperation(patch), unauthorized),
+    ...INTERACTIVE_WRITE_OPTIONS,
+    mutationFn: (patch: SettingsPatch) => runInteractiveWrite(transport, putSettingsOperation(patch), unauthorized),
     /*
      * Invalidate; do **not** write the response through.
      *

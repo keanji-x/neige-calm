@@ -15,11 +15,10 @@ import { onlineManager, useInfiniteQuery, useQuery, type QueryClient } from '@ta
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import { hasUnseenMatchingConversationMessage, failedConversationDelivery } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  isBlankForKernel, toTrack, trackActivityFrom, trackCreateKeyAction, trackDisplayTitle,
-  type NewTrackBodyWithoutFirstMessage, type Track, type TrackDetailWire,
+  toTrack, trackActivityFrom, trackDisplayTitle,
+  type Track, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
 import type {
   BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry,
@@ -70,15 +69,16 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction, PanelEmpty } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ApiError, OfflineSubmissionError, apiFailureCodeOf, folderConflictOf, harnessItemsQueryOptions,
+  ApiError, OfflineSubmissionError, apiFailureCodeOf, harnessItemsQueryOptions,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
   usePlannerMutations, useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
   useTrackConversationMutations, useTrackMutations, useTrackRecipeMutations, useTrackRecipes,
-  useTrackTemplates, useWorkspace,
+  useWorkspace,
   trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
   trackTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
-import { NewTrackForm, type NewTrackDraft } from '../../features/area/new-track/public.tsx';
+import { NewTrackRoute } from './new-track-route.tsx';
+import { NewTrackDraftProvider } from './new-track-drafts.tsx';
 import {
   RecipesPage, type RecipeDraft, type RecipeWriteOutcome,
 } from '../../features/report/recipe/public.tsx';
@@ -1065,7 +1065,7 @@ export function createAppRouter(deps: AppRouterDeps) {
 function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void }) {
   const go = useGo();
   return (
-    <ConversationProvider>
+    <ConversationProvider><NewTrackDraftProvider>
       <AppShell
         transport={transport}
         unauthorized={unauthorized}
@@ -1073,7 +1073,7 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
         onOpenPlugins={() => go({ name: 'settings-plugins' })}
         onSignOut={onSignOut}
       />
-    </ConversationProvider>
+    </NewTrackDraftProvider></ConversationProvider>
   );
 }
 
@@ -2208,335 +2208,6 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
     />
     {chat.drawer}
     </>
-  );
-}
-
-/**
- * `/area/$areaId/new` — the page you start a track on (#1211).
- *
- * It owns the whole create, which used to be split between the shell (the POST,
- * the 409, the navigation) and a dialog inside it. There is no reason for the
- * shell to hold any of it now that the surface is a route: an Area group's `+`
- * navigates here, and one route owning one operation is the shape every other
- * write in this file already has.
- *
- * ## How the first message is delivered: on the create itself (#1299)
- *
- * The composer's sentence is the track's *intent*, and its destination is the
- * track's planner agent as the first message. It travels as `first_message` on
- * this one POST, and the reason it travels there and nowhere else is worth
- * stating so nobody moves it back into this component.
- *
- * Doing it from this page took three writes — create, read the detail to find
- * the planner card, post the message — and two review rounds established that
- * the sequence cannot be made sound from a component:
- *
- *  * the reader can navigate away mid-flight; the requests are not cancelled,
- *    the route unmounts, and the track exists with the sentence lost and nothing
- *    said; and
- *  * `POST /api/cards/{id}/planner/input` carries no idempotency key, and the
- *    server enqueues *before* it writes audit and responds — so a lost response
- *    or a 500-after-enqueue makes any retry deliver the same sentence twice.
- *
- * Neither was a defect in this file; both are what running a distributed
- * transaction in a component costs. So the kernel took the write: `POST
- * /api/tracks` validates the sentence before anything is minted and seeds it as
- * an `Observation::UserMessage` inside the same `planner-harness-start`
- * transaction that installs the harness — one write, delivered exactly once,
- * attributed to the human. Both failure classes stopped existing rather than
- * being defended against.
- *
- * What this route still owes the reader is the landing: it puts them on the
- * track with the planner conversation **already open and holding the caret**,
- * which is now where the agent's answer arrives and where the next thing they
- * say goes. That landing is stated on the navigation itself (`openPlanner`),
- * and its only effect is a drawer.
- *
- * The create is safely retryable under the draft-scoped key below. Ambiguous
- * failures preserve that key for an explicit retry, an exhausted key is replaced
- * before the next submit, and a payload conflict offers a separate explicit
- * "Start as a new track" choice. Nothing silently changes identity or submits on
- * the reader's behalf.
- *
- * The create posts **no title** — the kernel stores the empty string and the
- * planner agent names the track through `calm.track.rename` once it knows what the
- * work is (#1211 S1).
- */
-function NewTrackRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const areaId = useRouteParam('/area/');
-  const workspace = useWorkspace(transport, unauthorized);
-  const trackMutations = useTrackMutations(transport, unauthorized);
-  const templates = useTrackTemplates(transport, unauthorized);
-  const recipes = useTrackRecipes(transport, unauthorized);
-  const go = useGo();
-  const [creating, setCreating] = useState(false);
-  /*
-   * #1384 — the `Idempotency-Key` for this page's create, minted **once for the
-   * draft** rather than per submit.
-   *
-   * A key minted per submit is a different key on the retry, and a different
-   * key mints a second track holding the same sentence — which is the failure
-   * the header exists to stop, reintroduced at the caller. Same rule the
-   * conversation drawer already follows for its own draft.
-   *
-   * Mount-scoped is the normal draft lifetime: success navigates away, while
-   * an ambiguous failure preserves the key for a safe explicit retry. The one
-   * state that replaces it in-place is structured `idempotency_key_exhausted`:
-   * the server has proved that key can never recover, so the next user submit
-   * gets a fresh one (#1435).
-   *
-   * Minted off `getRandomValues` (via `mintIdempotencyKey`) because the app is
-   * served over plain http on the LAN, where `crypto.randomUUID` does not
-   * exist.
-   */
-  const [createKey, setCreateKey] = useState(mintIdempotencyKey);
-  const [error, setError] = useState<string | null>(null);
-  const [canRetryAsNewTrack, setCanRetryAsNewTrack] = useState(false);
-  const [folderConflictRecovery, setFolderConflictRecovery] = useState<Readonly<{
-    areaId: string;
-    areaName: string;
-    cwd: string;
-  }> | null>(null);
-  const listDirectory = createDirectoryLister(transport, unauthorized);
-  const area = areaId === undefined
-    ? undefined
-    : workspace.areas.find((candidate) => candidate.id === areaId);
-  /*
-   * "Is this route still the screen?" — read by the create continuation, which
-   * outlives the route whenever the reader navigates during a slow POST.
-   *
-   * The mount arm setting it back to `true` is load-bearing, not symmetry.
-   * React's StrictMode double-invokes effects in development (mount → cleanup →
-   * mount), so with only a cleanup arm the flag latched `false` on the very
-   * first render and *every* create silently stopped navigating. jsdom does not
-   * run StrictMode here, so the unit suite stayed green — the real-kernel e2e
-   * is what caught it.
-   */
-  const liveRef = useRef(true);
-  useEffect(() => {
-    liveRef.current = true;
-    return () => { liveRef.current = false; };
-  }, []);
-
-  /*
-   * Landing in the planner conversation is stated on the **navigation**, not read
-   * here (#1211 S2, `usePlannerOpenIntent`).
-   *
-   * This route cannot name the card to open — `POST /api/tracks` answers with a
-   * `Track`, and the planner card arrives a route later with the track detail — so
-   * an earlier shape of this slice read the detail here, raced it against a
-   * deadline, and wrote the card id into the conversation registry before
-   * navigating. That registry outlives every route, which is what made the
-   * write unsound in a way a deadline cannot fix: a landing that never reaches
-   * the track (a failing detail read, an error box) leaves the request standing,
-   * and it springs a drawer open on some later visit nobody asked for.
-   *
-   * `openPlanner` puts the intent on the history entry this navigation creates, so
-   * it is scoped to exactly one landing, is redeemed by the track route body
-   * against its own cards, and cannot be seen — or cleared — by any other
-   * route. `focusComposer` comes with it: the sentence has already been
-   * delivered into that conversation, so the caret belongs where its answer
-   * lands and where the next thing the reader says goes.
-   */
-  const submit = (draft: NewTrackDraft, targetAreaId = areaId, attemptKey = createKey) => {
-    if (targetAreaId === undefined) return;
-    setCreating(true);
-    setError(null);
-    setCanRetryAsNewTrack(false);
-    setFolderConflictRecovery(null);
-    const messageIsBlank = isBlankForKernel(draft.message);
-    const body = {
-      area_id: targetAreaId,
-      /* No `title` (#1211): the sentence the reader typed is the track's intent,
-         not its name. It rides on `first_message` below, and the landing still
-         opens the planner composer — now for the *reply*, not for a retype. */
-      theme: readHostThemeRgb(),
-      /*
-       * #1299 — the sentence, on the create that makes the track.
-       *
-       * Two separate decisions, and only the first one touches whitespace.
-       *
-       * *Whether* the key rides at all is decided by the two typed calls below:
-       * "the reader said nothing" is the **absent field and key**, not `''`.
-       * The kernel validates this field before it mints
-       * anything and 400s a blank one, so posting an empty string would turn
-       * "opened the page and pressed nothing" into a failed create. Blank is
-       * `isBlankForKernel` — the kernel's own criterion, written once in
-       * `core/domain/track.ts` and asked here and in `NewTrackForm` alike, so
-       * the enabled Create and the sent request can never disagree about what
-       * counts as empty.
-       *
-       * *What* rides is `draft.message` untouched. The kernel forwards the
-       * text to the agent verbatim and hashes it verbatim, so a trim here
-       * would deliver a sentence the reader did not type — and it would do it
-       * invisibly, since the composer still shows theirs.
-       */
-      // Spread, not two optional fields: no template leaves both keys absent,
-      // and `template_id: undefined` is not the same request as no
-      // `template_id` for anything that inspects the object before it is
-      // serialized.
-      ...(draft.template_id === undefined ? {} : { template_id: draft.template_id }),
-      ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
-      /* #1292 — the third starting point, spread the same way and for the same
-         reason. It is never present at the same time as `template_id`: the
-         draft comes from a tagged union with one arm at a time, and the kernel
-         answers a request naming both with a 400. */
-      ...(draft.recipe_id === undefined ? {} : { recipe_id: draft.recipe_id }),
-      /*
-       * Both keys or neither. `cwd` without `attach_folder` means "this path is
-       * already claimed by some area", which the kernel answers with a 409
-       * whenever it is not — so the omitted-flag default is a request that
-       * fails for every folder the user has not already bound. `true` is what
-       * "I picked this folder for this area" means, and it is a no-op when this
-       * area already covers the path (`tracks.rs`'s same-area arm), so a second
-       * track in the same repository does not conflict with the first.
-       */
-      ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
-    } satisfies NewTrackBodyWithoutFirstMessage;
-    /*
-     * #1384 / #1436 — the two calls are distinct overloads. The keyed one
-     * cannot be constructed without both `first_message` and its key; the
-     * message-less one cannot accidentally advertise idempotency it does not
-     * have.
-     */
-    const keyForAttempt = messageIsBlank ? undefined : attemptKey;
-    const creation = messageIsBlank
-      ? trackMutations.create(body)
-      : trackMutations.create({ ...body, first_message: draft.message }, attemptKey);
-    void creation.then((track) => {
-      /*
-       * And only if the reader is still here.
-       *
-       * `POST /api/tracks` can be slow, and nothing stops them pressing Back or
-       * picking a rail row while it is in flight. This route unmounts, but the
-       * promise continuation still runs — and an unguarded `go()` yanked them
-       * off the page they had just chosen and onto the track. The track is
-       * created either way and is in the rail; what they lose by not being
-       * navigated is nothing, and what they lose by being navigated is their
-       * own last action.
-       *
-       * **Known gap, #1299.** `liveRef` answers "did this route unmount", which
-       * is not the same question as "is this still the reader's surface". The
-       * mobile sheets (Pages / Areas) do not unmount the outlet — they cover it
-       * behind an `inert` `main` — so a create landing while a sheet is open
-       * still passes this guard and navigates underneath it. An earlier version
-       * of this comment claimed the dock was covered; it is not, and the fix is
-       * a real "is this surface current" signal rather than a mount flag.
-       */
-      if (!liveRef.current) return;
-      /*
-       * The sentence rides along (#1449).
-       *
-       * The card that holds this message does not exist as far as this route
-       * is concerned — `POST /api/tracks` answers with a `Track` — and the
-       * kernel's transcript will not carry the message either until codex
-       * echoes the turn back (the transcript table is written only there). So the
-       * words travel on the entry this navigation creates, and the track route
-       * mints the optimistic echo once it knows its planner card. Same
-       * one-landing scope as `openPlanner` itself, and struck off by the same
-       * `disarm()`.
-       */
-      go({
-        name: 'track',
-        trackId: track.id,
-        openPlanner: true,
-        ...(messageIsBlank ? {} : { openPlannerMessage: draft.message }),
-      });
-    }).catch((failure: unknown) => {
-      const conflict = folderConflictOf(failure);
-      if (conflict !== null) {
-        // The 409 body names an area by id and carries no `error` key, so the
-        // generic message below would be the bare word "Conflict".
-        const owner = workspace.areas.find((candidate) => candidate.id === conflict.area_id);
-        setError(folderConflictMessage(conflict, owner?.name ?? null));
-        if (owner !== undefined && owner.id !== targetAreaId
-          && conflict.conflict_kind !== 'ancestor' && draft.cwd !== undefined) {
-          setFolderConflictRecovery({ areaId: owner.id, areaName: owner.name, cwd: draft.cwd });
-        }
-        return;
-      }
-      if (failure instanceof ApiError && keyForAttempt !== undefined && liveRef.current) {
-        const keyAction = trackCreateKeyAction(failure.failure);
-        if (keyAction === 'replace') {
-          // Replace only the key this response spent. `creating` serializes
-          // submits today; the equality check keeps a late response safe if
-          // that policy changes later.
-          setCreateKey((current) => current === keyForAttempt ? mintIdempotencyKey() : current);
-        } else if (keyAction === 'offer-explicit-replace') {
-          setCanRetryAsNewTrack(true);
-        }
-      }
-      setError(failure instanceof ApiError ? failure.message : 'Could not create the track.');
-    }).finally(() => { setCreating(false); });
-  };
-
-  const retryAsNewTrack = () => {
-    setCreateKey(mintIdempotencyKey());
-    setCanRetryAsNewTrack(false);
-    setError(null);
-  };
-
-  const recoverFolderConflict = (draft: NewTrackDraft) => {
-    if (folderConflictRecovery === null || draft.cwd !== folderConflictRecovery.cwd) return;
-    const nextKey = mintIdempotencyKey();
-    setCreateKey(nextKey);
-    submit(draft, folderConflictRecovery.areaId, nextKey);
-  };
-
-  /*
-   * A syntactically fine id for an area that has been deleted must not render a
-   * working composer: the reader types a sentence, presses Enter and only then
-   * eats a 4xx. The rail's own area list answers it, so no extra read.
-   *
-   * Three states of that read, three answers — and the composer is behind all
-   * of them. An earlier cut computed one `areaResolved` flag and refused only
-   * the settled-and-absent case, letting the other two **fall through to the
-   * form**: a cold deep link whose `GET /api/areas` was still in flight got a
-   * submittable composer with no answer behind it, and a 500 on that read
-   * (`areas: []`, not loading, error set) got one *permanently*. Both are the
-   * 4xx-after-typing this check exists to prevent, so the fall-through is now a
-   * refusal in each direction.
-   *
-   * `areasLoading` is `areasQuery.isLoading`, which TanStack v5 derives as
-   * `isPending && isFetching` — a read with **no cached list at all** that is
-   * currently fetching. A background refetch over a cached list is
-   * `isRefetching`, not `isLoading`, so this branch cannot swallow the composer
-   * on every revalidation; it is the first paint only.
-   */
-  if (areaId === undefined) return <ErrorBox message="This area could not be found." onRetry={() => { go({ name: 'today' }); }} />;
-  /* In flight, nothing cached. Nothing on screen rather than a skeleton, the
-     same answer the index route gives while this exact list loads: this frame
-     is one round trip long on a healthy server. */
-  if (workspace.areasLoading) return null;
-  /* The read failed, so "is this area still there" has no answer. The list is
-     the rail's, so this is the rail's own message and its own retry — not a
-     "could not be found" the server never said. */
-  if (workspace.areasError !== null) return <ErrorBox message={workspace.areasError.message} onRetry={workspace.retryAreas} />;
-  /* Settled and successful: `[]` now means empty, and absence means deleted. */
-  if (area === undefined) return <ErrorBox message="This area could not be found." onRetry={() => { go({ name: 'today' }); }} />;
-  return (
-    <NewTrackForm
-      submitting={creating}
-      error={error}
-      templates={templates.templates}
-      templatesLoaded={templates.loaded}
-      templatesError={templates.error}
-      recipes={recipes.recipes}
-      errorAction={folderConflictRecovery === null
-        ? canRetryAsNewTrack
-          ? { label: 'Start as a new track', onClick: retryAsNewTrack }
-          : undefined
-        : {
-          label: `Create in ${folderConflictRecovery.areaName}`,
-          isApplicable: (draft) => draft.cwd === folderConflictRecovery.cwd,
-          onClick: recoverFolderConflict,
-        }}
-      onManageRecipes={() => go({ name: 'recipes' })}
-      initialTemplateId={area.defaultTemplateId}
-      initialCwd={area.defaultCwd}
-      listDirectory={listDirectory}
-      onSubmit={submit}
-    />
   );
 }
 

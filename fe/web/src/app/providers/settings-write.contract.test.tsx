@@ -7,17 +7,69 @@
 // key overlap routinely, and the older response can land last — after which the
 // cache held a value the server had already replaced, and the field visibly
 // reverted under a green tick.
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { act, cleanup, render, screen } from '@testing-library/react';
-import { afterEach, expect, it } from 'vitest';
+import { onlineManager, QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { HTTP_PROXY_KEY } from '../../../../core/domain/settings.ts';
+import { HTTP_PROXY_KEY, TASK_BUDGET_DEFAULT_KEY } from '../../../../core/domain/settings.ts';
+import { GeneralPane } from '../../features/settings/public.tsx';
 import { settingsQueryOptions, useSettingsMutation } from './queries.ts';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); onlineManager.setOnline(true); vi.useRealTimers(); });
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
+
+function SettingsProbe({ transport }: { transport: ApiTransportPort }) {
+  const onSave = useSettingsMutation(transport, unauthorized);
+  const query = useQuery(settingsQueryOptions(transport, unauthorized));
+  return <GeneralPane settings={query.data?.settings} loadError={null} onSave={async (patch) => { await onSave(patch); }}
+    onRetryLoad={() => { void query.refetch(); }} savedNoticeMs={60_000} />;
+}
+
+it('rejects an offline Settings write without replaying it over a newer client value', async () => {
+  let serverValue = '1';
+  const writes: string[] = [];
+  const transport: ApiTransportPort = { send: (request) => {
+    if (request.method === 'PUT') {
+      const body = request.body as { settings: Record<string, string> };
+      serverValue = body.settings[TASK_BUDGET_DEFAULT_KEY];
+      writes.push(serverValue);
+    }
+    return Promise.resolve({ status: 200, statusText: 'OK', body: { settings: { [TASK_BUDGET_DEFAULT_KEY]: serverValue } } });
+  } };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><SettingsProbe transport={transport} /></QueryClientProvider>);
+  const field = await screen.findByLabelText('Task concurrency');
+  act(() => onlineManager.setOnline(false));
+  await userEvent.clear(field); await userEvent.type(field, '2'); await userEvent.tab();
+  await screen.findByText(/offline.*Reconnect/i);
+  serverValue = '3'; // A second independent client committed this while this tab was offline.
+  await act(async () => { onlineManager.setOnline(true); await client.resumePausedMutations(); });
+  expect(serverValue).toBe('3');
+  expect(writes).toEqual([]);
+  expect(screen.getByLabelText<HTMLInputElement>('Task concurrency').value).toBe('2');
+});
+
+it('refreshes an open settings pane after another client writes and removes its obsolete Saved notice', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  let serverValue = '1';
+  const transport: ApiTransportPort = { send: (request) => {
+    if (request.method === 'PUT') serverValue = (request.body as { settings: Record<string, string> }).settings[TASK_BUDGET_DEFAULT_KEY];
+    return Promise.resolve({ status: 200, statusText: 'OK', body: { settings: { [TASK_BUDGET_DEFAULT_KEY]: serverValue } } });
+  } };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><SettingsProbe transport={transport} /></QueryClientProvider>);
+  const field = await screen.findByLabelText('Task concurrency');
+  await userEvent.clear(field); await userEvent.type(field, '3'); await userEvent.tab();
+  await waitFor(() => expect(within(field.closest('li')!).getByRole('status').textContent).toBe('Saved.'));
+  serverValue = '2';
+  await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
+  vi.useRealTimers();
+  await waitFor(() => expect(screen.getByLabelText<HTMLInputElement>('Task concurrency').value).toBe('2'));
+  expect(field.closest('li')?.textContent).not.toContain('Saved.');
+});
 
 it('does not let an older PUT response overwrite a newer one', async () => {
   const puts: Array<() => void> = [];
