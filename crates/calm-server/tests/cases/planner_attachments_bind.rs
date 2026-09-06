@@ -293,9 +293,19 @@ async fn planner_run_lists_a_queued_messages_attachments_without_a_host_path() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    // The composer asks this before it offers a paperclip. This fixture's
+    // track has a managed workspace, which is the only shape that supports
+    // attachments; the refusal on the other shape is
+    // `an_attached_workspace_is_refused_and_nothing_is_created`.
+    assert_eq!(run["attachments_supported"], json!(true));
     let entry = &run["pending"][0];
     assert_eq!(entry["attachments"][0]["id"], json!(id));
     assert_eq!(entry["attachments"][0]["contentType"], json!("image/png"));
+    assert_eq!(
+        entry["attachments"][0]["url"],
+        json!(format!("/api/cards/{card_id}/planner/attachments/{id}")),
+        "the read-back url is server-built, so no client has to compose one"
+    );
     assert!(entry["attachments"][0]["size"].as_u64().unwrap_or(0) > 0);
 
     let serialized = run.to_string();

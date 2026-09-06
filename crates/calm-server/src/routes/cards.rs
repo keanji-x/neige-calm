@@ -916,6 +916,20 @@ pub struct GetPlannerRunResponse {
     /// pre-PR1 entries with no id, plus anything past the page budget. The UI
     /// can say "N more not shown" and be honest about not offering buttons.
     pub pending_overflow: u32,
+    /// #1505 S6 — whether this card can take image attachments at all.
+    ///
+    /// It cannot when the track's workspace is a directory the person already
+    /// owns: attachments are written under `<workspace>/.neige/`, and neige
+    /// never writes into an attached workspace, so the upload endpoint answers
+    /// 400 there.
+    ///
+    /// Answered here rather than left for the client to work out, and answered
+    /// before the attempt rather than by the attempt. Half the tracks in
+    /// production were created with a `cwd` and are attached, so a paperclip
+    /// that looks available and then refuses would be the common case rather
+    /// than the edge. The criterion is the same function the upload runs
+    /// (`planner_attachments::attachment_root`), called rather than restated.
+    pub attachments_supported: bool,
 }
 
 /// #1505 PR1 — one addressable user entry from the harness pending queue.
@@ -975,7 +989,7 @@ const PENDING_PAGE_BYTES: usize = 1_536 * 1_024;
 /// unpageable, so the user could not even delete the thing that was blocking
 /// it, and the "the user can just delete it" answer that justifies the budget
 /// would be false.
-fn page_pending_entries(entries: &[QueueEntry]) -> (Vec<PendingQueueEntry>, u32) {
+fn page_pending_entries(card_id: &CardId, entries: &[QueueEntry]) -> (Vec<PendingQueueEntry>, u32) {
     let mut page = Vec::new();
     let mut used_bytes = 0usize;
     let mut overflow = 0u32;
@@ -1010,7 +1024,7 @@ fn page_pending_entries(entries: &[QueueEntry]) -> (Vec<PendingQueueEntry>, u32)
             attachments: view
                 .attachments
                 .iter()
-                .map(crate::planner_attachments::bind::BoundAttachment::wire)
+                .map(|attachment| attachment.wire(card_id))
                 .collect(),
         });
     }
@@ -1535,6 +1549,17 @@ pub(crate) async fn get_planner_run(
     // to show why.
     let selection =
         crate::planner_model::CardModelSelection::from_payload(&card.payload).unwrap_or_default();
+    // The same predicate the upload endpoint enforces, asked of the same
+    // function, so the answer cannot drift from the refusal.
+    let attachments_supported = match s.repo.track_get(card.track_id.as_str()).await? {
+        Some(track) => {
+            crate::planner_attachments::attachment_root(&track.workspace, &s.workspace_root).is_ok()
+        }
+        // No track means no workspace to write into. A missing track is
+        // already fatal for everything else on this card, but this field is
+        // not the place to raise it, and "supported" would be the wrong guess.
+        None => false,
+    };
     let dormant = GetPlannerRunResponse {
         card_id: card.id.clone(),
         worker_session_id: None,
@@ -1547,6 +1572,7 @@ pub(crate) async fn get_planner_run(
         token_usage: None,
         pending: Vec::new(),
         pending_overflow: 0,
+        attachments_supported,
     };
     let Some(runtime) = s
         .repo
@@ -1563,8 +1589,9 @@ pub(crate) async fn get_planner_run(
     // `snapshot_for` acquires a fistful of mutexes, so it is also the cheaper
     // way round.
     let snapshot = harness.snapshot().await;
-    let (pending, pending_overflow) = page_pending_entries(&snapshot.pending_entries());
+    let (pending, pending_overflow) = page_pending_entries(&card.id, &snapshot.pending_entries());
     Ok(Json(GetPlannerRunResponse {
+        attachments_supported,
         card_id: card.id,
         worker_session_id: Some(runtime.id.clone()),
         phase: Some(snapshot.phase),
@@ -2050,7 +2077,14 @@ pub(crate) async fn delete_card(
 mod pending_page_tests {
     use super::{PENDING_PAGE_BYTES, PENDING_PAGE_MAX, page_pending_entries};
     use crate::harness::{HARNESS_MODE, HarnessSnapshot, Observation, QueueEntry};
+    use crate::ids::CardId;
     use serde_json::json;
+
+    /// Any card. These cases are about which entries reach the page, not about
+    /// which card they belong to; the id only reaches the read-back urls.
+    fn test_card_id() -> CardId {
+        CardId::from("card-paging")
+    }
 
     /// A legacy entry built the ONLY way production can produce one: by
     /// deserializing a row whose `pending_entry_meta` slot is absent.
@@ -2083,7 +2117,7 @@ mod pending_page_tests {
     #[test]
     fn only_addressable_user_entries_reach_the_page() {
         let entries = vec![system(), user("mine"), legacy("older")];
-        let (page, overflow) = page_pending_entries(&entries);
+        let (page, overflow) = page_pending_entries(&test_card_id(), &entries);
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].text, "mine");
         assert_eq!(
@@ -2097,7 +2131,7 @@ mod pending_page_tests {
         let entries = (0..PENDING_PAGE_MAX + 5)
             .map(|i| user(&format!("m{i}")))
             .collect::<Vec<_>>();
-        let (page, overflow) = page_pending_entries(&entries);
+        let (page, overflow) = page_pending_entries(&test_card_id(), &entries);
         assert_eq!(page.len(), PENDING_PAGE_MAX);
         assert_eq!(overflow, 5);
         assert_eq!(page[0].text, "m0", "the page starts at the queue head");
@@ -2107,7 +2141,7 @@ mod pending_page_tests {
     fn the_page_is_capped_by_byte_budget_and_entries_stay_whole() {
         let big = "x".repeat(PENDING_PAGE_BYTES / 2 + 1);
         let entries = vec![user(&big), user(&big), user("tiny")];
-        let (page, overflow) = page_pending_entries(&entries);
+        let (page, overflow) = page_pending_entries(&test_card_id(), &entries);
         assert_eq!(page.len(), 1, "the second entry would cross the budget");
         assert_eq!(
             page[0].text.len(),
@@ -2133,7 +2167,7 @@ mod pending_page_tests {
     fn an_over_budget_head_entry_is_still_returned_whole() {
         let huge = "y".repeat(PENDING_PAGE_BYTES + 4_096);
         let entries = vec![user(&huge), user("behind it")];
-        let (page, overflow) = page_pending_entries(&entries);
+        let (page, overflow) = page_pending_entries(&test_card_id(), &entries);
         assert_eq!(page.len(), 1, "the budget never returns an empty page");
         assert_eq!(page[0].text.len(), huge.len());
         assert_eq!(overflow, 1);
@@ -2141,7 +2175,7 @@ mod pending_page_tests {
 
     #[test]
     fn an_empty_queue_pages_to_nothing() {
-        let (page, overflow) = page_pending_entries(&[]);
+        let (page, overflow) = page_pending_entries(&test_card_id(), &[]);
         assert!(page.is_empty());
         assert_eq!(overflow, 0);
     }

@@ -313,22 +313,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cards/{id}/planner/model": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put: operations["set_planner_model"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/cards/{id}/planner/reset": {
         parameters: {
             query?: never;
@@ -2034,40 +2018,22 @@ export interface components {
          */
         GetPlannerRunResponse: {
             /**
-             * @description #1505 S4 — why this conversation's queue is not draining, or `null`
-             *     when there is nothing worth saying. `null` almost always.
+             * @description #1505 S6 — whether this card can take image attachments at all.
              *
-             *     Three things fill it, and a client should render all three as the same
-             *     kind of standing notice rather than as an error about a request it just
-             *     made:
+             *     It cannot when the track's workspace is a directory the person already
+             *     owns: attachments are written under `<workspace>/.neige/`, and neige
+             *     never writes into an attached workspace, so the upload endpoint answers
+             *     400 there.
              *
-             *      * the model or effort to run under cannot be determined (codex's
-             *        configuration names none, or the stored selection is unreadable) —
-             *        the text names the choice that fixes it;
-             *      * codex refused to start the turn — the text says the message was NOT
-             *        sent, and promises no delivery;
-             *      * codex has been unreachable long enough that silence would look like
-             *        a hang — the text says the message is still queued and will go out.
-             *
-             *     A brief outage fills nothing, so this staying `null` is not evidence
-             *     that anything succeeded.
-             *
-             *     It is not a general per-turn error channel and does not diagnose why a
-             *     model failed mid-turn; that is #1507's.
+             *     Answered here rather than left for the client to work out, and answered
+             *     before the attempt rather than by the attempt. Half the tracks in
+             *     production were created with a `cwd` and are attached, so a paperclip
+             *     that looks available and then refuses would be the common case rather
+             *     than the edge. The criterion is the same function the upload runs
+             *     (`planner_attachments::attachment_root`), called rather than restated.
              */
-            blocked_reason?: string | null;
+            attachments_supported: boolean;
             card_id: string;
-            /**
-             * @description #1505 S4-3 — the model slug this conversation's turns run with, or
-             *     `null` for "follow whatever this installation is configured to use".
-             *
-             *     Read off the CARD, not off the harness, and therefore answered for a
-             *     dormant conversation as well: the selection is a property of the
-             *     conversation and outlives every runtime that serves it. That is the
-             *     opposite of `phase` and `token_usage` above, which are properties of a
-             *     live runtime and are `null` without one.
-             */
-            model?: string | null;
             /**
              * @description #1505 PR1 — the addressable user entries still waiting for the next
              *     turn, in queue order. Empty when the harness is dormant.
@@ -2087,11 +2053,6 @@ export interface components {
              */
             pending_overflow: number;
             phase?: null | components["schemas"]["HarnessPhaseTag"];
-            /**
-             * @description The chosen reasoning effort, or `null` for the default. Same source and
-             *     same reasoning as [`GetPlannerRunResponse::model`].
-             */
-            reasoning_effort?: string | null;
             token_usage?: null | components["schemas"]["PlannerRunTokenUsage"];
             /** @description Active worker-session id, or null when the harness is dormant. */
             worker_session_id?: string | null;
@@ -2138,13 +2099,15 @@ export interface components {
             /**
              * @description #1505 S6 — the images this segment carried into `turn/start`.
              *
-             *     Carried here rather than left for the client to dig out of
-             *     `HarnessItem::params`: the params blob holds codex's own
-             *     `{"type":"localImage","path":...}` item, whose `path` is an absolute
-             *     host path. A transcript that rendered from that would have to turn a
-             *     host path back into a REST url, which is a second, guessable naming of
-             *     the same bytes. The id is the naming; the read-back url is built from
-             *     it by the same server function the upload response used.
+             *     Carried here rather than left for the client to dig out of the
+             *     transcript row's own `params`. Two reasons, and the second one is why
+             *     the first is not merely tidier: that blob is codex's own item, and a
+             *     transcript rendering from it would have to turn the server's private
+             *     naming of the bytes back into a REST url — a second, guessable naming
+             *     of the same thing. The id is the naming; the read-back url is built
+             *     from it by the same server function the upload response used. Because
+             *     nothing reads a path from that blob, the transcript route redacts the
+             *     one this slice put there (#1505 S6 review).
              *
              *     `#[serde(default)]` because every segment persisted before this slice
              *     has no such key, and an old transcript is a transcript with no
@@ -2561,6 +2524,17 @@ export interface components {
             id: components["schemas"]["AttachmentId"];
             /** Format: int64 */
             size: number;
+            /**
+             * @description Where to read the bytes. Also derived, by [`attachment_url`].
+             *
+             *     #1505 S6. Carried rather than left for the client to build: the
+             *     transcript and the pending-queue read both need a way to reach these
+             *     bytes, and a client that assembles `/api/cards/{card}/planner/
+             *     attachments/{id}` for itself is a second spelling of a route only the
+             *     router should own. The host path the server holds beside this is NOT
+             *     here and must not be.
+             */
+            url: string;
         };
         PlannerInputMutationResponse: {
             card_id: string;
@@ -2909,55 +2883,6 @@ export interface components {
              */
             entry_id?: string | null;
             worker_session_id: string;
-        };
-        SetPlannerModelBody: {
-            /**
-             * @description The model **slug** to run with, or `null` to follow the installation
-             *     default. Required — see the module header.
-             *
-             *     A slug, never a catalog entry's `id`: `GET /api/models` returns both
-             *     and only `model` is the one codex is invoked by.
-             *
-             *     `#[schema(required = true)]` is not decoration and not a duplicate of
-             *     [`required_nullable`]. The two live in different worlds: serde decides
-             *     what the handler accepts, utoipa decides what the published
-             *     OpenAPI document promises, and utoipa derives optionality from the `Option<T>` in the
-             *     field type alone — it cannot see a `deserialize_with`. Without this the
-             *     document said both fields were optional while the handler answered 422
-             *     for omitting one, so a client generated from either checked-in copy was
-             *     conforming and broken at the same time.
-             */
-            model: string | null;
-            /**
-             * @description The reasoning effort, or `null` to follow the default. Required.
-             *
-             *     A bare string rather than a closed set: codex accepts any non-empty
-             *     effort, so an enum here would start refusing values the day codex ships
-             *     a new one.
-             *
-             *     `#[schema(required = true)]` for the same reason as `model` above.
-             */
-            reasoning_effort: string | null;
-        };
-        SetPlannerModelResponse: {
-            card_id: string;
-            /**
-             * @description The requested effort was not among the chosen model's supported ones
-             *     and was moved to that model's own default. Never done silently — a
-             *     caller that ignores this flag shows a value that will not run.
-             */
-            effort_adjusted: boolean;
-            /** @description The stored slug, echoed rather than assumed. */
-            model?: string | null;
-            /** @description The stored effort. Differs from the request when `effort_adjusted`. */
-            reasoning_effort?: string | null;
-            /**
-             * @description The slug is not in the catalog codex currently reports. A hint, not a
-             *     refusal: the stored value is the requested one either way. Always
-             *     `false` when the catalog could not be read, because "we could not ask"
-             *     is not evidence of absence.
-             */
-            unknown_model: boolean;
         };
         /**
          * @description Wire-shape: a flat string map of key -> value. We use `BTreeMap` for
@@ -5122,78 +5047,6 @@ export interface operations {
             };
             /** @description No live planner harness session for this card — reset to start a session (code `planner_harness_dormant`) */
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    set_planner_model: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Planner card id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SetPlannerModelBody"];
-            };
-        };
-        responses: {
-            /** @description Selection stored. `effort_adjusted` and `unknown_model` report what the catalog said about it; neither is an error */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SetPlannerModelResponse"];
-                };
-            };
-            /** @description Unauthenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Not `X-Calm-Actor: user`, or the card is not a planner codex card */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Card not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description `model` or `reasoning_effort` is missing from the body, or an unknown key is present. Both keys are required; `null` is how the default is chosen */
-            422: {
                 headers: {
                     [name: string]: unknown;
                 };

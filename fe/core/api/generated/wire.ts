@@ -296,8 +296,8 @@ export type HarnessInputSegment = { presentation: HarnessInputPresentation, text
 /**
  * #1505 S6 — the images this segment carried into `turn/start`.
  *
- * Carried here rather than left for the client to dig out of
- * `HarnessItem::params`: the params blob holds codex's own
+ * Carried here rather than left for the client to dig out of the
+ * transcript row's own `params`: that blob holds codex's own
  * `{"type":"localImage","path":...}` item, whose `path` is an absolute
  * host path. A transcript that rendered from that would have to turn a
  * host path back into a REST url, which is a second, guessable naming of
@@ -349,7 +349,18 @@ export type PlannerAttachment = { id: AttachmentId,
  * Derived from `id`, never stored separately — see
  * [`PlannerAttachment::new`].
  */
-contentType: string, size: number, };
+contentType: string, size: number, 
+/**
+ * Where to read the bytes. Also derived, by [`attachment_url`].
+ *
+ * #1505 S6. Carried rather than left for the client to build: the
+ * transcript and the pending-queue read both need a way to reach these
+ * bytes, and a client that assembles `/api/cards/{card}/planner/
+ * attachments/{id}` for itself is a second spelling of a route only the
+ * router should own. The host path the server holds beside this is NOT
+ * here and must not be.
+ */
+url: string, };
 
 /**
  * Position anchor for proposed block creation / moves (design §5.2.1).

@@ -55,6 +55,7 @@ import {
   plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
   createSerialWriter, deletePlannerInputOperation, editPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
+  uploadPlannerAttachmentOperation,
   type Conversation, type ModelSelection, type ModelSelectionResult,
   type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
@@ -323,7 +324,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     return result;
   };
   return {
-    send: (text: string) => runOperation(transport, sendPlannerInputOperation(cardId, text), unauthorized).then(refreshAfter),
+    send: (text: string, attachments: readonly string[] = []) => runOperation(transport, sendPlannerInputOperation(cardId, text, attachments), unauthorized).then(refreshAfter),
     interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
     /*
      * #1505 PR4 — the two queue writes.
@@ -371,6 +372,11 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
             .catch(() => undefined);
           return refreshAfter(result);
         }),
+    /* #1505 S6 — no `refreshAfter`: an upload changes nothing any query holds.
+       The attachment becomes part of the card's state only when a message
+       names it, and that is the send above, which does refresh. */
+    uploadAttachment: (bytes: Uint8Array, contentType: string) =>
+      runOperation(transport, uploadPlannerAttachmentOperation(cardId, bytes, contentType), unauthorized),
     /* No `reset` — see the note where `resetPlannerOperation` used to be in
        `core/domain/conversation.ts`. The endpoint is still served; nothing in
        the browser calls it. */

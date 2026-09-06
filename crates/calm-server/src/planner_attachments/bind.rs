@@ -79,8 +79,13 @@ pub struct BoundAttachment {
 
 impl BoundAttachment {
     /// The half of this that is safe to send to a client.
-    pub fn wire(&self) -> PlannerAttachment {
-        PlannerAttachment::new(self.id.clone(), self.size)
+    ///
+    /// The card is a parameter because the read-back url is derived from it,
+    /// and this type does not carry one: an attachment's card is a fact about
+    /// where it is being read, and the two call sites (the pending-queue page
+    /// and the transcript segments) both already know it.
+    pub fn wire(&self, card_id: &CardId) -> PlannerAttachment {
+        PlannerAttachment::new(card_id, self.id.clone(), self.size)
     }
 }
 

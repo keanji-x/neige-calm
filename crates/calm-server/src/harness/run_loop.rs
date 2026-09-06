@@ -2815,7 +2815,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // the presentation and the rendered text to
     // `Observation::input_segments_for`, so this is not a second copy of that
     // table.
-    let input_segments = input_segments_for_entries(&drained);
+    let input_segments = input_segments_for_entries(&inner.card_id, &drained);
 
     let joined_observation_text = input_segments
         .iter()

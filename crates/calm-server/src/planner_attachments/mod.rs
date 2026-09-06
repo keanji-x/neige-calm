@@ -423,15 +423,13 @@ fn unmeasurable(dir: &Path, error: &std::io::Error) -> CalmError {
     ))
 }
 
-/// REST path the browser reads an attachment back from. Built here so no client
-/// ever composes one.
-pub fn attachment_url(card_id: &CardId, id: &AttachmentId) -> String {
-    format!(
-        "/api/cards/{}/planner/attachments/{}",
-        card_id.as_str(),
-        id.as_str()
-    )
-}
+/// REST path the browser reads an attachment back from.
+///
+/// Re-exported rather than re-derived: the same path has to appear in the
+/// upload response, in every queued message and in every transcript segment,
+/// and two of those three are built inside `calm-types`. One builder, in the
+/// crate both sides can reach.
+pub use calm_types::planner_attachment::attachment_url;
 
 #[cfg(test)]
 mod tests;

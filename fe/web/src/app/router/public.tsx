@@ -14,7 +14,12 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { onlineManager, useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
+import type { PlannerAttachment } from '../../../../core/api/generated/wire.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import {
+  ATTACHED_WORKSPACE_REASON, PlannerAttachButton, PlannerAttachmentDrawer,
+  type UploadAttachment, usePlannerAttachments,
+} from '../../features/planner/attachments.tsx';
 import { hasUnseenMatchingConversationMessage, failedConversationDelivery } from '../../../../core/domain/conversation-delivery.ts';
 import {
   liveTableOverlayPayload, toTrack, trackActivityFrom, trackDisplayTitle,
@@ -137,8 +142,18 @@ type ConversationStore = Readonly<{
   failedSend: FailedConversationSend | null;
   matchingSendMessage: boolean;
   retrySend: (echoId: string) => void;
-  /** What became of the send — see `SendOutcome` for what each case licenses. */
-  send: (conversationId: string, text: string) => Promise<SendOutcome>;
+  /**
+   * What became of the send — see `SendOutcome` for what each case licenses.
+   *
+   * `attachments` are ids already uploaded and answered for by the server
+   * (#1505 S6). Naming one here is what makes it permanent, so the list is
+   * part of the send rather than a separate call.
+   */
+  send: (conversationId: string, text: string, attachments?: readonly PlannerAttachment[]) => Promise<SendOutcome>;
+  /** Whether this card's track can take image attachments at all. */
+  attachmentsSupported: boolean;
+  /** Upload one image for this card. See `UploadAttachment`. */
+  uploadAttachment: UploadAttachment;
   interrupt: () => void;
   retryHistory: () => void;
   loadEarlier: () => void;
@@ -628,13 +643,26 @@ export function useConversationStore(
     ? listedConversations
     : listedConversations.map((row) => row.id === conversation.id ? conversation : row);
 
-  const send = async (_conversationId: string, text: string): Promise<SendOutcome> => {
+  const send = async (
+    _conversationId: string, text: string, attachments: readonly PlannerAttachment[] = [],
+  ): Promise<SendOutcome> => {
     if (_conversationId !== cardId || stalled || sendingRef.current || !registry.tryBeginSend(cardId)) return 'not-sent';
     sendingRef.current = true;
     setSending(true);
     setActionError(null);
     const echo: OptimisticConversationTurn = {
       id: `echo-${mintIdempotencyKey()}`, author: 'you' as const, text, atMs: Date.now(),
+      /*
+       * #1505 S6 — the echo carries the images too, and it has to.
+       *
+       * An image-only message has no text, and echo reconciliation matches on
+       * text: without something else to match on, that echo is never resolved
+       * and is counted forever by `hasUnreconciledSend`, which is the dead
+       * composer this route already learned about once. The ids are what the
+       * persisted row carries back, so they are the second criterion —
+       * `userAttachmentsMatchEcho` in `core/domain/conversation`.
+       */
+      attachments,
       serverHighWaterBefore: serverItemHighWater(items),
       /*
        * Read at the press, against the **kernel's** whitelist — and read from a
@@ -704,7 +732,7 @@ export function useConversationStore(
     let answeredHere = false;
     setEchoes((current) => [...current, echo]);
     setUnconfirmedEchoId(echo.id);
-    return mutations.send(text).then((sent) => {
+    return mutations.send(text, attachments.map((attachment) => attachment.id)).then((sent) => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
       /* #1505 PR4 — the claim. It decides only who draws this message from
          here on, so it is written wherever the echo still lives: this store
@@ -951,8 +979,10 @@ export function useConversationStore(
     retrySend: (echoId) => {
       if (failedSend?.echo.id === echoId) void send(cardId, failedSend.echo.text);
     },
-    send: (conversationId, text) => failedSend === null || failedSend.delivery === 'refused'
-      ? send(conversationId, text) : Promise.resolve('not-sent'),
+    send: (conversationId, text, attachments) => failedSend === null || failedSend.delivery === 'refused'
+      ? send(conversationId, text, attachments) : Promise.resolve('not-sent'),
+    attachmentsSupported: run.data?.attachments_supported ?? false,
+    uploadAttachment: mutations.uploadAttachment,
     interrupt,
     retryHistory: () => { void history.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
@@ -1299,8 +1329,16 @@ function useConversationPanel(
     rows: source.rows, rememberOn: source.rememberOn,
   };
 
+
   const rows = source.rows;
   const store = useConversationStore(transport, unauthorized, scope, routeIntent);
+  /*
+   * #1505 S6 — the composer's pending images, for whichever conversation is
+   * open. Held here rather than inside `ChatComposer` because the send needs
+   * them and the send is the router's, and keyed to the open card so that
+   * moving to another conversation does not carry a picked image into it.
+   */
+  const attachments = usePlannerAttachments(store.uploadAttachment, scope?.cardId ?? '');
   const registry = useConversationRegistry();
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
@@ -1935,7 +1973,34 @@ function useConversationPanel(
               focusOnMount={composerFocusFor === open.id}
               draft={{ text: composerDraft, onChange: setComposerDraft }}
               disabled={store.sendBlocked || !store.historyReady}
-              onSend={(text) => store.send(open.id, text)}
+              /*
+               * #1505 S6 — the images go with the words, and they are cleared
+               * only when the server has them.
+               *
+               * `delivered` is the one outcome that licenses forgetting them:
+               * every other one leaves the message with the reader, and an
+               * image silently dropped from a message they can still see is a
+               * message they would send again without it.
+               */
+              onSend={(text) => {
+                const sent = attachments.items;
+                return store.send(open.id, text, sent).then((outcome) => {
+                  if (outcome === 'delivered') attachments.clear();
+                  return outcome;
+                });
+              }}
+              allowEmptyText={attachments.items.length > 0}
+              drawer={<PlannerAttachmentDrawer attachments={attachments} />}
+              headerActions={(
+                <PlannerAttachButton
+                  attachments={attachments}
+                  support={{
+                    available: store.attachmentsSupported,
+                    reason: ATTACHED_WORKSPACE_REASON,
+                  }}
+                  disabled={store.sendBlocked || !store.historyReady}
+                />
+              )}
               /* `stopping` keeps Stop *shown* while the interrupt is in flight;
                  it is not passed down as a prop of its own, because the composer
                  cannot make Astryx's Stop unavailable and `interrupt()` above

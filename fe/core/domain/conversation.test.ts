@@ -54,6 +54,40 @@ describe('reconcileUserEchoes', () => {
     const rows = [turn('old', 'same'), ...Array.from({ length: 50 }, (_, index) => turn(`recent-${index}`, `text-${index}`))];
     expect(reconcileUserEchoes(rows, [turn('echo', 'same')])).toHaveLength(1);
   });
+
+  /*
+   * #1505 S6. An image with no words is the commonest thing this feature is
+   * for, and its echo has an empty text. Text matching refuses two empty
+   * strings — rightly — so without a second criterion that echo is never
+   * reconciled, and an unreconciled echo blocks the composer for good.
+   */
+  const image = (id: string) => ({
+    id, contentType: 'image/png', size: 3, url: `/api/cards/c/planner/attachments/${id}`,
+  });
+  const withImages = (id: string, text: string, ids: string[]): ConversationTurn => ({
+    id, author: 'you', text, atMs: 1, attachments: ids.map(image),
+  });
+
+  it('reconciles a wordless echo against the row carrying the same image', () => {
+    expect(reconcileUserEchoes(
+      [withImages('server-1', '', ['a.png'])],
+      [withImages('echo-1', '', ['a.png'])],
+    )).toEqual([]);
+  });
+
+  it('does not reconcile a wordless echo against a row carrying a different image', () => {
+    expect(reconcileUserEchoes(
+      [withImages('server-1', '', ['b.png'])],
+      [withImages('echo-1', '', ['a.png'])],
+    ).map((entry) => entry.id)).toEqual(['echo-1']);
+  });
+
+  it('still refuses two wordless turns that carry nothing', () => {
+    expect(reconcileUserEchoes(
+      [turn('server-1', '')],
+      [turn('echo-1', '')],
+    ).map((entry) => entry.id)).toEqual(['echo-1']);
+  });
 });
 
 describe('optimistic conversation provenance', () => {
@@ -314,6 +348,40 @@ function item(overrides: Partial<HarnessItem> = {}): HarnessItem {
 }
 
 describe('transcriptRowToMessages', () => {
+  /*
+   * #1505 S6 — the two halves of one rule, and the second half is why the
+   * first cannot simply be "keep everything".
+   */
+  it('keeps a segment that is only an image, and still drops one that is nothing', () => {
+    const attachment = {
+      id: 'a.png', contentType: 'image/png', size: 3,
+      url: '/api/cards/card/planner/attachments/a.png',
+    };
+    expect(transcriptRowToMessages(item({
+      item_type: 'userMessage',
+      input_segments: [{ presentation: 'user', text: '', attachments: [attachment] }],
+      params: '{}',
+    }))).toEqual([{ id: '7', author: 'you', text: '', atMs: 50, attachments: [attachment] }]);
+
+    expect(transcriptRowToMessages(item({
+      item_type: 'userMessage',
+      input_segments: [{ presentation: 'user', text: '', attachments: [] }],
+      params: '{}',
+    }))).toEqual([]);
+  });
+
+  it('carries a segment\'s images alongside its words', () => {
+    const attachment = {
+      id: 'b.png', contentType: 'image/png', size: 3,
+      url: '/api/cards/card/planner/attachments/b.png',
+    };
+    expect(transcriptRowToMessages(item({
+      item_type: 'userMessage',
+      input_segments: [{ presentation: 'user', text: 'User says:\nlook', attachments: [attachment] }],
+      params: '{}',
+    }))).toEqual([{ id: '7', author: 'you', text: 'look', atMs: 50, attachments: [attachment] }]);
+  });
+
   it('maps completed agent messages', () => {
     expect(transcriptRowToMessages(item())).toEqual([
       { id: '7', author: 'agent', text: 'answer', atMs: 99 },
@@ -336,7 +404,7 @@ describe('transcriptRowToMessages', () => {
   ] as const)('uses structured %s metadata for the system label', (inputPresentation, label) => {
     const text = 'wording may change without changing who authored this';
     expect(transcriptRowToMessages(item({
-      item_type: 'userMessage', input_segments: [{ presentation: inputPresentation, text }],
+      item_type: 'userMessage', input_segments: [{ presentation: inputPresentation, text, attachments: [] }],
       params: '{broken upstream frame',
     }))).toEqual([{ id: '7', author: 'system', label, text, atMs: 50 }]);
   });
@@ -345,7 +413,7 @@ describe('transcriptRowToMessages', () => {
     const flattened = '## Track state changes since your last turn\nchanged\n\n---\n\nnew wording';
     expect(transcriptRowToMessages(item({
       item_type: 'userMessage',
-      input_segments: [{ presentation: 'system_report_edited', text: 'new wording' }],
+      input_segments: [{ presentation: 'system_report_edited', text: 'new wording', attachments: [] }],
       params: JSON.stringify({
         completedAtMs: 99, item: { content: [{ type: 'text', text: flattened }] },
       }),
@@ -356,7 +424,7 @@ describe('transcriptRowToMessages', () => {
 
   it('never infers system authorship from English text', () => {
     const text = 'A dispatched task completed, according to the user';
-    for (const inputSegments of [[{ presentation: 'user' as const, text }], undefined]) {
+    for (const inputSegments of [[{ presentation: 'user' as const, text, attachments: [] }], undefined]) {
       expect(transcriptRowToMessages(item({
         item_type: 'userMessage', input_segments: inputSegments,
         params: JSON.stringify({ item: { content: [{ type: 'text', text }] } }),
@@ -367,16 +435,16 @@ describe('transcriptRowToMessages', () => {
   it.each([
     [
       [
-        { presentation: 'system_report_edited' as const, text: 'report changed' },
-        { presentation: 'user' as const, text: 'User says:\nhello' },
+        { presentation: 'system_report_edited' as const, text: 'report changed', attachments: [] },
+        { presentation: 'user' as const, text: 'User says:\nhello', attachments: [] },
       ],
       ['system', 'you'],
       ['report changed', 'hello'],
     ],
     [
       [
-        { presentation: 'user' as const, text: 'User says:\nhello' },
-        { presentation: 'system_task_completed' as const, text: 'task completed' },
+        { presentation: 'user' as const, text: 'User says:\nhello', attachments: [] },
+        { presentation: 'system_task_completed' as const, text: 'task completed', attachments: [] },
       ],
       ['you', 'system'],
       ['hello', 'task completed'],
@@ -769,9 +837,9 @@ describe('buildTranscript', () => {
     const mixed = {
       ...row(4, 'userMessage', 'item/completed', { content: [{ text: 'flattened' }] }, 'u4'),
       input_segments: [
-        { presentation: 'system_report_edited' as const, text: 'report changed' },
-        { presentation: 'user' as const, text: 'User says:\nhello' },
-        { presentation: 'system_task_completed' as const, text: 'task completed' },
+        { presentation: 'system_report_edited' as const, text: 'report changed', attachments: [] },
+        { presentation: 'user' as const, text: 'User says:\nhello', attachments: [] },
+        { presentation: 'system_task_completed' as const, text: 'task completed', attachments: [] },
       ],
     };
     expect(buildTranscript([mixed])).toMatchObject([

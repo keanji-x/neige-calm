@@ -29,6 +29,7 @@ use std::collections::{HashSet, VecDeque};
 use crate::error::{CalmError, Result};
 use crate::event::HarnessQueueChange;
 use crate::harness::observation::Observation;
+use crate::ids::CardId;
 use crate::model::{HarnessInputSegment, new_id, now_ms};
 use crate::planner_attachments::bind::{BoundAttachment, MAX_ATTACHMENTS_PER_MESSAGE};
 
@@ -843,7 +844,10 @@ pub fn try_fold_tail(
 /// time, and fills in the one thing that function structurally cannot know.
 /// Restating the presentation table here would be a second copy of it, and the
 /// two copies would drift the first time a new observation kind was added.
-pub fn input_segments_for_entries(entries: &[QueueEntry]) -> Vec<HarnessInputSegment> {
+pub fn input_segments_for_entries(
+    card_id: &CardId,
+    entries: &[QueueEntry],
+) -> Vec<HarnessInputSegment> {
     entries
         .iter()
         .map(|entry| {
@@ -854,7 +858,7 @@ pub fn input_segments_for_entries(entries: &[QueueEntry]) -> Vec<HarnessInputSeg
             segment.attachments = entry
                 .attachments()
                 .iter()
-                .map(BoundAttachment::wire)
+                .map(|attachment| attachment.wire(card_id))
                 .collect();
             segment
         })
@@ -979,7 +983,7 @@ mod tests {
             user_with("has one", vec![attachment('0')]),
             user("has none"),
         ];
-        let segments = input_segments_for_entries(&entries);
+        let segments = input_segments_for_entries(&CardId::from("card-seg"), &entries);
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].attachments.len(), 1);
         assert_eq!(segments[0].attachments[0].content_type, "image/png");
@@ -996,7 +1000,8 @@ mod tests {
     /// noticed.
     #[test]
     fn the_wire_shape_of_an_attachment_carries_no_host_path() {
-        let json = serde_json::to_string(&attachment('0').wire()).unwrap();
+        let json =
+            serde_json::to_string(&attachment('0').wire(&CardId::from("card-wire"))).unwrap();
         assert!(!json.contains("/w/"), "{json}");
         assert!(!json.contains("path"), "{json}");
         assert!(json.contains("\"contentType\":\"image/png\""), "{json}");

@@ -1797,4 +1797,28 @@
       transition: none;
     }
   }
+  /* #1505 S6 — images attached to something you said. Aligned to the same
+     inline-end edge as the words above them, because side is what carries
+     "who" on this surface. */
+  .attachments {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+    margin: 4px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .attachment {
+    max-width: 160px;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .attachment img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
 }
