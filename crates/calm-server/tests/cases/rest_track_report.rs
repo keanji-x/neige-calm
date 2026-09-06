@@ -697,14 +697,33 @@ async fn extra_author_field_in_body_is_rejected() {
         )
         .await
         .unwrap();
-    // axum maps a `serde::Deserialize` failure on `Json<T>` to 400
-    // Bad Request via the default `JsonRejection` mapping. The exact
-    // body shape is irrelevant — what matters is (a) the call did NOT
-    // succeed and (b) no event was emitted.
-    assert!(
-        resp.status().is_client_error(),
-        "request with `author` field must be rejected; got {}",
+    // Assert the EXACT status, not merely `is_client_error()`. A blanket
+    // 4xx check is satisfied by a mistyped route (404), a broken cookie
+    // layer (401) or the non-user actor gate (403) — i.e. by every way
+    // this request can fail *without* `deny_unknown_fields` doing any
+    // work at all, which would leave the "hostile `author` field is
+    // bounced" invariant untested while the case still reports green.
+    //
+    // axum 0.8 routes a `serde_json::error::Category::Data` failure on
+    // `Json<T>` (which is what `deny_unknown_fields` produces) to
+    // `JsonDataError`, whose `IntoResponse` is 422 Unprocessable Entity.
+    // A *syntax* error would be 400 and a missing content-type 415, so
+    // 422 pins the rejection to the deserialize step specifically.
+    assert_eq!(
         resp.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "request with `author` field must be rejected by the body \
+         deserializer (422), not by some other 4xx path",
+    );
+    // ... and pin the *reason*: the rejection names the offending field,
+    // so a future body type that silently drops unknown fields (or a
+    // rename that turns this into a "missing field" failure) cannot keep
+    // this case green.
+    let rejection_body = resp.into_body().collect().await.unwrap().to_bytes();
+    let rejection_text = String::from_utf8_lossy(&rejection_body).into_owned();
+    assert!(
+        rejection_text.contains("unknown field") && rejection_text.contains("author"),
+        "rejection must name the unknown `author` field; got {rejection_text:?}",
     );
     expect_no_events(&events, Duration::from_millis(150)).await;
 

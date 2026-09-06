@@ -20,6 +20,32 @@ use tokio::net::UnixStream;
 /// To assert promptness, measure elapsed and assert on it instead.
 const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 
+/// Number of chunks the child emits, one every [`CHUNK_INTERVAL`]. The
+/// product is the width of the window during which the attach below must
+/// land: long enough that a scheduling hiccup on the test task cannot
+/// push the attach past the end of production (which would silently turn
+/// this back into a replay-only case), short enough to stay a cheap test.
+const CHUNKS: usize = 100;
+/// Wall-clock gap the child shell sleeps between chunks.
+const CHUNK_INTERVAL_SECS: &str = "0.05";
+/// How long the test waits before attaching. Only a couple of chunks are
+/// in the ring by then, so the overwhelming majority of the byte stream
+/// is produced *after* the attach request is written — which is the point.
+const ATTACH_AFTER: Duration = Duration::from_millis(50);
+
+/// The attach must lose no bytes and duplicate none **while the child is
+/// actively writing**. The child therefore emits its chunks spread over
+/// several seconds and the test attaches near the start, so the seam
+/// between the replay snapshot and the live broadcast subscription is
+/// crossed with output genuinely in flight. (This case previously let the
+/// child write every chunk before the attach and then sleep, so every
+/// asserted byte came out of the replay buffer and the handoff window was
+/// never open at all — a widened window in `handle_attach` could not have
+/// failed it.)
+///
+/// The race is asserted, not assumed: the `AttachOk` replay snapshot must
+/// be missing the final chunk, which is only true if production was still
+/// running when the attach registered.
 #[tokio::test]
 async fn attach_race_no_byte_loss() {
     let supervisor = InProcessProcSupervisor::start()
@@ -32,16 +58,19 @@ async fn attach_race_no_byte_loss() {
         "/bin/sh",
         &[
             "-c",
-            // The sleep must outlast `LIVENESS_BUDGET`: the loop below treats any
-            // non-`Output` frame as a hard error, so a child that exits inside
-            // the budget turns a lost-bytes failure into a misleading
-            // "unexpected attach frame: Exited" panic.
-            "for i in 1 2 3 4 5 6 7 8 9; do printf \"chunk-%d-\" \"$i\"; done; sleep 600",
+            // The trailing sleep must outlast `LIVENESS_BUDGET`: the loop below
+            // treats any non-`Output` frame as a hard error, so a child that
+            // exits inside the budget turns a lost-bytes failure into a
+            // misleading "unexpected attach frame: Exited" panic.
+            &format!(
+                "i=1; while [ $i -le {CHUNKS} ]; do printf \"chunk-%d-\" \"$i\"; \
+                 i=$((i+1)); sleep {CHUNK_INTERVAL_SECS}; done; sleep 600"
+            ),
         ],
     )
     .await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(ATTACH_AFTER).await;
 
     let mut attach = UnixStream::connect(supervisor.sock())
         .await
@@ -61,7 +90,18 @@ async fn attach_race_no_byte_loss() {
         ControlReply::AttachOk(attached) => attached.replay,
         other => panic!("unexpected attach reply: {other:?}"),
     };
-    let expected = b"chunk-1-chunk-2-chunk-3-chunk-4-chunk-5-chunk-6-chunk-7-chunk-8-chunk-9-";
+    let last_chunk = format!("chunk-{CHUNKS}-");
+    assert!(
+        !contains(&bytes, last_chunk.as_bytes()),
+        "the child must still be writing when the attach registers — otherwise \
+         every asserted byte comes from replay and no handoff race is exercised; \
+         replay already held {last_chunk:?}: {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let expected: Vec<u8> = (1..=CHUNKS)
+        .flat_map(|i| format!("chunk-{i}-").into_bytes())
+        .collect();
+    let expected = expected.as_slice();
     let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     while !contains(&bytes, expected) && tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(50), read_frame(&mut attach)).await {
@@ -81,7 +121,7 @@ async fn attach_race_no_byte_loss() {
         "attached stream should contain the complete chunk sequence; got {:?}",
         String::from_utf8_lossy(&bytes)
     );
-    for i in 1..=9 {
+    for i in 1..=CHUNKS {
         let chunk = format!("chunk-{i}-");
         assert_eq!(
             occurrence_count(&bytes, chunk.as_bytes()),
