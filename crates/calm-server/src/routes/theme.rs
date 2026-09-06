@@ -26,10 +26,17 @@ mod tests {
         // caller that sends `{ "fg": ..., "bg": ..., "extra": ... }`
         // is rejected at the deserialize step.
         let raw = r#"{"fg":[0,0,0],"bg":[1,1,1],"extra":"junk"}"#;
-        let result: Result<RequestTheme, _> = serde_json::from_str(raw);
+        let err = serde_json::from_str::<RequestTheme>(raw)
+            .expect_err("deny_unknown_fields must reject extras");
+        // Assert WHY it failed, not merely that it failed. `is_err()` is
+        // satisfied by any deserialize failure of this literal — drop
+        // `deny_unknown_fields` and rename a required field and the parse
+        // still errors ("missing field"), so a bare `is_err()` would keep
+        // reporting "unknown-field policy intact" after the policy is gone.
+        let message = err.to_string();
         assert!(
-            result.is_err(),
-            "deny_unknown_fields must reject extras; got: {result:?}"
+            message.contains("unknown field") && message.contains("extra"),
+            "rejection must be serde's unknown-field error naming `extra`; got: {message}"
         );
     }
 }

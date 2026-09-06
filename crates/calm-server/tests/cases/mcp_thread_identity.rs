@@ -1024,9 +1024,29 @@ async fn pre_initialize_tools_call_rejects() {
     )
     .await;
     let resp = recv_frame(&mut rd).await;
+    // Assert the EXACT rejection, not merely "some error came back".
+    // `error.is_some()` is satisfied by every unrelated failure on this
+    // frame — an unknown tool name (-32601), malformed params (-32602),
+    // an internal error (-32603) — so the pre-initialize authorization
+    // gate in `mcp_server::transport` could be deleted wholesale and a
+    // bare `is_some()` check would still be green.
+    //
+    // The gate answers with `RpcError::custom(-32002, "server not
+    // initialized; expected `initialize`, got `<method>`")`; pinning the
+    // code *and* the reason is what makes this case actually watch that
+    // gate. `-32002` is a JSON-RPC implementation-defined server error,
+    // deliberately NOT one of the -326xx protocol codes a generic
+    // dispatch failure would produce.
+    assert_eq!(
+        resp["error"]["code"],
+        json!(-32002),
+        "pre-initialize `tools/call` must be refused by the not-initialized \
+         gate, not by generic dispatch: {resp:#?}"
+    );
+    let message = resp["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        resp.get("error").is_some(),
-        "anonymous call must reject: {resp:#?}"
+        message.contains("not initialized"),
+        "rejection must name the uninitialized handshake; got {message:?}"
     );
     let _ = &boot.server;
 }

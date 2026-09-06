@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     HarvestOutcome, HarvestedMessage, SqlxRepo, card_with_claude_create_tx,
@@ -24,6 +27,7 @@ use calm_types::worker::{
     WorkerSession, WorkerSessionId,
 };
 use serde_json::json;
+use tokio::sync::Barrier;
 
 async fn fresh_repo() -> SqlxRepo {
     SqlxRepo::open("sqlite::memory:")
@@ -1796,39 +1800,125 @@ async fn concurrent_session_commit_exit_has_single_winner() {
     assert_eq!(session.updated_at_ms, probe_ms);
 }
 
-#[tokio::test]
+/// Two genuinely CONCURRENT starts on one card: two pooled connections,
+/// two `BEGIN IMMEDIATE` transactions, both released by one barrier.
+/// Exactly one commits; the other is rejected by the
+/// `ws_one_active_per_card` partial unique index.
+///
+/// `peak_in_flight` must reach 2: both tasks are past the barrier and
+/// inside their transactions at once. That rules out a serialized rewrite
+/// (and the single-never-committed-transaction shape this test had before),
+/// which tops out at 1 — it does NOT by itself prove the two transactions
+/// overlapped inside SQLite. The loser's error is raised against the
+/// winner's COMMITTED row across a connection boundary, which is the shape
+/// the production hazard has.
+///
+/// The loser parks at `BEGIN IMMEDIATE` rather than deadlocking — the #930
+/// rule; see `calm-truth`'s `deadlock_semantics_tests`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ws_unique_active_per_card_blocks_concurrent_double_spawn() {
-    let repo = fresh_repo().await;
+    let repo = Arc::new(fresh_repo().await);
     let card = make_card(&repo, "codex").await;
-    let mut tx = repo.pool().begin().await.unwrap();
+    let card_id = card.id.to_string();
 
-    session_start_runtime_tx(
-        &mut tx,
-        runtime_init(
-            card.id.to_string(),
-            WorkerSessionKind::CodexCard,
-            Some(AgentProvider::Codex),
-            WorkerSessionState::Running,
+    let barrier = Arc::new(Barrier::new(2));
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let peak_in_flight = Arc::new(AtomicUsize::new(0));
+
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let repo = Arc::clone(&repo);
+        let card_id = card_id.clone();
+        let barrier = Arc::clone(&barrier);
+        let in_flight = Arc::clone(&in_flight);
+        let peak_in_flight = Arc::clone(&peak_in_flight);
+        handles.push(tokio::spawn(async move {
+            // Nothing separates the two BEGINs but the barrier release.
+            barrier.wait().await;
+            let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            peak_in_flight.fetch_max(now, Ordering::SeqCst);
+
+            let outcome = async {
+                let mut tx = calm_server::db::sqlite::begin_immediate_tx(repo.pool())
+                    .await
+                    .expect("BEGIN IMMEDIATE must not fail");
+                let started = session_start_runtime_tx(
+                    &mut tx,
+                    runtime_init(
+                        card_id,
+                        WorkerSessionKind::CodexCard,
+                        Some(AgentProvider::Codex),
+                        WorkerSessionState::Running,
+                    ),
+                )
+                .await;
+                match started {
+                    Ok(session) => {
+                        tx.commit().await.expect("winner commits");
+                        Ok(session)
+                    }
+                    Err(e) => {
+                        tx.rollback().await.expect("loser rolls back");
+                        Err(e)
+                    }
+                }
+            }
+            .await;
+
+            in_flight.fetch_sub(1, Ordering::SeqCst);
+            outcome
+        }));
+    }
+
+    let mut winners = Vec::new();
+    let mut losers = Vec::new();
+    for handle in handles {
+        match handle.await.expect("spawned start task must not panic") {
+            Ok(session) => winners.push(session),
+            Err(e) => losers.push(e),
+        }
+    }
+
+    assert_eq!(
+        peak_in_flight.load(Ordering::SeqCst),
+        2,
+        "both starts must be in flight at once; a serialized run proves nothing \
+         about concurrent double-spawn"
+    );
+    assert_eq!(
+        winners.len(),
+        1,
+        "exactly one concurrent start may win; got {} winners / {} losers",
+        winners.len(),
+        losers.len()
+    );
+    assert_eq!(losers.len(), 1, "exactly one concurrent start must lose");
+    let err = losers.pop().unwrap();
+    assert!(
+        matches!(
+            &err,
+            WorkerSessionProjectionRepoError::Message { message }
+                if message.contains("worker_sessions.card_id") || message.contains("UNIQUE")
         ),
+        "the loser must be rejected by the unique index, not by lock contention \
+         (`database is locked` / `deadlock`): {err:?}"
+    );
+
+    // The committed state matches the winner exactly: one active row.
+    let active: Vec<String> = sqlx::query_scalar(
+        r#"SELECT id FROM worker_sessions
+           WHERE card_id = ?1
+             AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
     )
+    .bind(&card_id)
+    .fetch_all(repo.pool())
     .await
     .unwrap();
-    let err = session_start_runtime_tx(
-        &mut tx,
-        runtime_init(
-            card.id.to_string(),
-            WorkerSessionKind::CodexCard,
-            Some(AgentProvider::Codex),
-            WorkerSessionState::Running,
-        ),
-    )
-    .await
-    .unwrap_err();
-    assert!(matches!(
-        err,
-        WorkerSessionProjectionRepoError::Message { message }
-            if message.contains("worker_sessions.card_id") || message.contains("UNIQUE")
-    ));
+    assert_eq!(
+        active,
+        vec![winners[0].id.clone()],
+        "the winner's row must be the only active worker session on the card"
+    );
 }
 
 #[tokio::test]
