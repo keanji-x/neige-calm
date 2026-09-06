@@ -214,6 +214,12 @@ pub struct UploadAttachmentResponse {
     pub size: u64,
     /// Absolute REST path the browser reads the bytes back from. Server-built:
     /// the client never composes a path of its own.
+    ///
+    /// Not a durable link yet. As of S6-PR1 nothing binds an attachment to a
+    /// queue entry, so every upload stays in the server's `staging/` directory
+    /// and is swept once it is older than the 24h orphan TTL; after that this
+    /// path answers 400. S6-PR2 adds the bind that makes an attachment
+    /// permanent.
     pub url: String,
 }
 

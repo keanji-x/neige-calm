@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -400,8 +401,10 @@ async fn a_single_size_gate_stores_seven_mib_and_refuses_nine() {
     );
 }
 
-/// The per-card budget, in all three of its shapes: refused before the body is
-/// read, refused mid-stream, and refused when the directory cannot be measured.
+/// The per-card budget, in all of its shapes: refused before the body is read,
+/// refused mid-stream, refused when the directory cannot be enumerated at all —
+/// and *not* refused because something planted an entry this store did not
+/// write.
 #[tokio::test]
 async fn the_per_card_budget_refuses_rather_than_reclaiming() {
     let b = boot().await;
@@ -456,11 +459,26 @@ async fn the_per_card_budget_refuses_rather_than_reclaiming() {
         "{body}"
     );
 
-    // Fail-closed: a directory whose bytes cannot be counted refuses the
-    // upload rather than admitting it.
+    // #1515 review F2. A dangling symlink is something an agent can plant in
+    // this subtree, and it is not one of ours: uncounted, and — the part that
+    // used to be a latch — not a permanent refusal of every later upload.
     std::fs::remove_file(b.bound().join("bulk.png")).unwrap();
     std::fs::remove_file(b.bound().join("bulk2.png")).unwrap();
     std::os::unix::fs::symlink(b.bound().join("gone"), b.bound().join("dangling.png")).unwrap();
+    for attempt in 0..2 {
+        let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"tiny")).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "attempt {attempt}: one planted entry must not disable this card's uploads: {body}"
+        );
+    }
+
+    // Fail-closed is kept where it belongs: a subtree the filesystem will not
+    // enumerate at all refuses the upload rather than admitting it. `bound/`
+    // replaced by a regular file makes `read_dir` `ENOTDIR`.
+    std::fs::remove_dir_all(b.bound()).unwrap();
+    std::fs::write(b.bound(), b"not a directory").unwrap();
     let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"tiny")).await;
     assert_eq!(
         status,
@@ -642,4 +660,306 @@ async fn a_stored_attachment_leaves_no_part_file() {
     let (_, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"x")).await;
     let id = body["attachmentId"].as_str().unwrap().to_string();
     assert_eq!(file_names(&b.staging()), vec![id]);
+}
+
+// ---------------------------------------------------------------------------
+// #1515 review — multi-frame bodies.
+//
+// Every test above sends `Body::from(Vec<u8>)`, which is exactly one data
+// frame, so the outcome is always decided before `open` becomes `Some`: the
+// mid-stream failure arms, the in-flight `.part`, and the GC race against it
+// are all unreachable from a single frame. These drive a channel-backed body
+// instead, so the upload can be held open at a chosen point.
+// ---------------------------------------------------------------------------
+
+/// One POST whose body is fed frame by frame from the test.
+struct StreamingUpload {
+    frames: futures::channel::mpsc::UnboundedSender<Result<axum::body::Bytes, std::io::Error>>,
+    response: tokio::task::JoinHandle<(StatusCode, Value)>,
+}
+
+impl StreamingUpload {
+    fn start(app: &axum::Router, card_id: &str) -> Self {
+        let (frames, body) = futures::channel::mpsc::unbounded();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/cards/{card_id}/planner/attachments"))
+            .header(header::CONTENT_TYPE, "image/png")
+            .header("X-Calm-Actor", "user")
+            .body(Body::from_stream(body))
+            .unwrap();
+        let app = app.clone();
+        let response = tokio::spawn(async move {
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            )
+        });
+        StreamingUpload { frames, response }
+    }
+
+    fn send(&self, bytes: Vec<u8>) {
+        self.frames
+            .unbounded_send(Ok(axum::body::Bytes::from(bytes)))
+            .expect("the upload task must still be reading its body");
+    }
+
+    async fn finish(self) -> (StatusCode, Value) {
+        drop(self.frames);
+        self.response.await.unwrap()
+    }
+}
+
+/// Poll until `staging/` holds a `.part`, i.e. the streaming upload has passed
+/// the budget measurement and created its temporary file.
+async fn wait_for_part(staging: &Path) -> String {
+    for _ in 0..600 {
+        if let Some(name) = file_names(staging)
+            .into_iter()
+            .find(|name| name.ends_with(".part"))
+        {
+            return name;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!(
+        "no `.part` appeared in {staging:?} within 6s: {:?}",
+        file_names(staging)
+    );
+}
+
+fn sparse_file(path: &Path, len: u64) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = std::fs::File::create(path).unwrap();
+    file.set_len(len).unwrap();
+}
+
+fn bytes_on_disk(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .map(|entry| std::fs::symlink_metadata(entry.unwrap().path()).unwrap())
+        .filter(|meta| meta.file_type().is_file())
+        .map(|meta| meta.len())
+        .sum()
+}
+
+const MIB: u64 = 1024 * 1024;
+
+/// #1515 review F1. The budget was a read-then-write: `used_bytes` is taken
+/// before the body streams and the same stale number gates every frame, so two
+/// uploads that overlap both measure the same "before" and both fit. Here the
+/// card has exactly 1 MiB left; A takes it while B is still queued, and B must
+/// be refused rather than spending it a second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_overlapping_uploads_cannot_both_spend_the_last_megabyte() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+    // 63 MiB bound, so exactly 1 MiB of the 64 MiB budget is left.
+    sparse_file(&b.bound().join("bulk.png"), 63 * MIB);
+
+    let a = StreamingUpload::start(&b.app, &card);
+    a.send(png(&[0u8; 4])); // 12 bytes: enough to sniff and open the `.part`
+    wait_for_part(&b.staging()).await;
+
+    // B is a complete 1 MiB upload, started while A is still streaming. It
+    // must not observe A's pre-upload budget.
+    let app = b.app.clone();
+    let card_for_b = card.clone();
+    let mut second = tokio::spawn(async move {
+        upload(
+            &app,
+            &card_for_b,
+            Some("user"),
+            "image/png",
+            png(&vec![0u8; MIB as usize - 8]),
+        )
+        .await
+    });
+    let still_queued =
+        tokio::time::timeout(std::time::Duration::from_millis(400), &mut second).await;
+    assert!(
+        still_queued.is_err(),
+        "B must wait for A's turn on this card; it answered {still_queued:?}"
+    );
+
+    // A completes at exactly 1 MiB, filling the budget to the brim.
+    a.send(vec![0u8; MIB as usize - 12]);
+    let (status, body) = a.finish().await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "A takes the last megabyte: {body}"
+    );
+
+    let (status, body) = second.await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "B must be refused: A already spent the last megabyte. {body}"
+    );
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("attachment budget exhausted"),
+        "{body}"
+    );
+    assert!(
+        bytes_on_disk(&b.staging()) + bytes_on_disk(&b.bound()) <= 64 * MIB,
+        "the budget must actually bound the subtree: staging {} + bound {}",
+        bytes_on_disk(&b.staging()),
+        bytes_on_disk(&b.bound())
+    );
+}
+
+/// #1515 review F5. A stalled upload's `.part` stops advancing its mtime, so it
+/// ages; the sweep another upload runs at the end of its own turn would then
+/// unlink a file still held open, and the first upload's rename would fail on
+/// a name that no longer exists — surfacing as a 500. The card's turn is what
+/// keeps the two apart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stalled_uploads_part_is_not_reaped_by_the_next_upload() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+
+    let a = StreamingUpload::start(&b.app, &card);
+    a.send(png(&[0u8; 4]));
+    let part = wait_for_part(&b.staging()).await;
+    // A stalls here. Its `.part` is now a day old by mtime — exactly what a
+    // browser tab left open overnight produces.
+    let aged = std::fs::File::options()
+        .write(true)
+        .open(b.staging().join(&part))
+        .unwrap();
+    aged.set_modified(SystemTime::now() - Duration::from_secs(25 * 60 * 60))
+        .unwrap();
+    drop(aged);
+
+    let app = b.app.clone();
+    let card_for_b = card.clone();
+    let second = tokio::spawn(async move {
+        upload(&app, &card_for_b, Some("user"), "image/png", png(b"second")).await
+    });
+    // Give an unserialized second upload every chance to run its sweep.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let (status, body) = a.finish().await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the in-flight upload must not be reaped out from under itself: {body}"
+    );
+    assert!(
+        !body.to_string().contains(".neige"),
+        "no internal path may reach the client: {body}"
+    );
+
+    let (status, body) = second.await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// #1515 review F9. A failure that happens *after* the `.part` exists is only
+/// reachable from a body with more than one frame. Frame 1 opens the file,
+/// frame 2 crosses the budget; the single cleanup arm in `write_body` must
+/// remove what frame 1 created.
+#[tokio::test]
+async fn a_failure_after_the_part_exists_removes_it() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+    // 64 KiB of headroom: the first frame fits, the second cannot.
+    sparse_file(&b.bound().join("bulk.png"), 64 * MIB - 64 * 1024);
+
+    let a = StreamingUpload::start(&b.app, &card);
+    a.send(png(&[0u8; 4]));
+    let part = wait_for_part(&b.staging()).await;
+    a.send(vec![0u8; 128 * 1024]);
+    let (status, body) = a.finish().await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("attachment budget exhausted"),
+        "{body}"
+    );
+    assert!(
+        file_names(&b.staging()).is_empty(),
+        "the `.part` {part} opened by the first frame must be gone: {:?}",
+        file_names(&b.staging())
+    );
+}
+
+/// #1515 review F9. The sweep runs on the real upload path — no test drove it
+/// there before, only `sweep_staging_at` directly. An unbound upload older than
+/// the orphan TTL is reclaimed by the next upload on the same card, and its URL
+/// then answers 400. That is also the S6-PR1 boundary the response type
+/// declares: nothing binds yet, so every upload eventually expires.
+#[tokio::test]
+async fn the_next_upload_reclaims_an_expired_unbound_one() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"stale")).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let stale = body["attachmentId"].as_str().unwrap().to_string();
+    let file = std::fs::File::options()
+        .write(true)
+        .open(b.staging().join(&stale))
+        .unwrap();
+    file.set_modified(SystemTime::now() - Duration::from_secs(25 * 60 * 60))
+        .unwrap();
+    drop(file);
+
+    let (status, _, _) = read_back(&b.app, &card, &stale).await;
+    assert_eq!(status, StatusCode::OK, "still readable before the sweep");
+
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"fresh")).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let fresh = body["attachmentId"].as_str().unwrap().to_string();
+
+    assert_eq!(
+        file_names(&b.staging()),
+        vec![fresh],
+        "the expired upload must have been swept by the fresh one's turn"
+    );
+    let (status, _, _) = read_back(&b.app, &card, &stale).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an expired attachment's URL stops resolving — S6-PR1 ships no bind path"
+    );
+}
+
+/// #1515 review F3. `is_file()` follows symlinks, so a link planted under a
+/// well-formed id — an agent has write access to this workspace by design —
+/// made the read-back endpoint serve the link's target as `image/png`.
+#[tokio::test]
+async fn a_symlink_planted_under_a_valid_id_is_not_served() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+    let secret = b.workspace.join("id_rsa");
+    std::fs::write(&secret, b"-----BEGIN OPENSSH PRIVATE KEY-----").unwrap();
+
+    let planted = "0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png";
+    for dir in [b.staging(), b.bound()] {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(&secret, dir.join(planted)).unwrap();
+    }
+
+    let (status, _, bytes) = read_back(&b.app, &card, planted).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a planted symlink is not an attachment"
+    );
+    assert!(
+        !bytes.starts_with(b"-----BEGIN"),
+        "the link's target must never be served"
+    );
 }

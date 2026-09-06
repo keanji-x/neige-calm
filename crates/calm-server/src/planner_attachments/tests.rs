@@ -116,7 +116,7 @@ fn resolve_prefers_bound_then_staging_and_refuses_anything_else() {
 }
 
 #[test]
-fn used_bytes_sums_both_directories_and_refuses_what_it_cannot_measure() {
+fn used_bytes_sums_the_regular_files_in_both_directories() {
     let root = tempfile::tempdir().unwrap();
     let card = CardId::from("card-a");
     assert_eq!(
@@ -132,16 +132,56 @@ fn used_bytes_sums_both_directories_and_refuses_what_it_cannot_measure() {
     std::fs::write(staging.path().join("a.png"), vec![0u8; 10]).unwrap();
     std::fs::write(bound.path().join("b.png"), vec![0u8; 32]).unwrap();
     assert_eq!(used_bytes(root.path(), &card).unwrap(), 42);
+}
 
-    // Fail-closed: an entry whose size cannot be established makes the whole
-    // measurement an error, because this number gates a write.
+/// #1515 review F2. An agent has write access to this workspace by design, so
+/// it can put a dangling symlink in `staging/`. When that made the measurement
+/// `Err`, the card's upload channel was disabled permanently: every later POST
+/// answered 400, and the sweep that would have cleared the entry returned zero
+/// deletions on the same entry. The planted link must be classified as "not one
+/// of ours" — not measured, not deleted, not fatal.
+#[test]
+fn a_planted_symlink_does_not_latch_the_budget_off() {
+    let root = tempfile::tempdir().unwrap();
+    let card = CardId::from("card-a");
+    let staging = staging_dir(root.path(), &card);
+    std::fs::create_dir_all(staging.path()).unwrap();
+    std::fs::write(staging.path().join("real.png"), vec![0u8; 10]).unwrap();
     std::os::unix::fs::symlink(
-        root.path().join("gone"),
-        staging.path().join("dangling.png"),
+        root.path().join("nonexistent"),
+        staging.path().join("planted.png"),
     )
     .unwrap();
-    let error = used_bytes(root.path(), &card)
-        .expect_err("an unmeasurable entry must refuse, not be skipped");
+    // A symlink that resolves is equally not ours, and equally uncounted.
+    std::fs::write(root.path().join("elsewhere"), vec![0u8; 4096]).unwrap();
+    std::os::unix::fs::symlink(
+        root.path().join("elsewhere"),
+        staging.path().join("planted2.png"),
+    )
+    .unwrap();
+
+    for attempt in 0..3 {
+        assert_eq!(
+            used_bytes(root.path(), &card).unwrap(),
+            10,
+            "attempt {attempt}: only the regular file this store wrote is counted"
+        );
+    }
+}
+
+/// The other half of fail-closed, kept: a filesystem that will not answer still
+/// refuses the write. Here `staging` is a regular file, so `read_dir` is
+/// `ENOTDIR` — a broken subtree, not a foreign entry.
+#[test]
+fn a_directory_that_cannot_be_enumerated_still_refuses() {
+    let root = tempfile::tempdir().unwrap();
+    let card = CardId::from("card-a");
+    let staging = staging_dir(root.path(), &card);
+    std::fs::create_dir_all(staging.path().parent().unwrap()).unwrap();
+    std::fs::write(staging.path(), b"not a directory").unwrap();
+
+    let error =
+        used_bytes(root.path(), &card).expect_err("an unenumerable directory must refuse a write");
     assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
 }
 
@@ -174,8 +214,13 @@ fn sweep_removes_expired_staged_files_and_never_touches_bound() {
     );
 }
 
+/// #1515 review F2, sweep side. A dangling symlink used to abort the whole
+/// enumeration, so the expired file beside it was never reclaimed — and since
+/// the same entry also latched `used_bytes`, one planted link disabled uploads
+/// and reclamation together. The link is stepped over; the expired file goes;
+/// the link itself is left alone.
 #[test]
-fn a_sweep_that_cannot_stat_one_entry_deletes_nothing_at_all() {
+fn a_planted_symlink_is_stepped_over_and_never_deleted() {
     let root = tempfile::tempdir().unwrap();
     let card = CardId::from("card-a");
     let staging = staging_dir(root.path(), &card);
@@ -184,18 +229,128 @@ fn a_sweep_that_cannot_stat_one_entry_deletes_nothing_at_all() {
     let expired = staging.path().join("expired.png");
     std::fs::write(&expired, b"x").unwrap();
     set_age(&expired, Duration::from_secs(25 * 60 * 60));
-    std::os::unix::fs::symlink(
-        root.path().join("gone"),
-        staging.path().join("dangling.png"),
-    )
-    .unwrap();
+    let planted = staging.path().join("planted.png");
+    std::os::unix::fs::symlink(root.path().join("gone"), &planted).unwrap();
 
     let removed = sweep_staging_at(&staging, SystemTime::now(), ORPHAN_TTL);
+    assert_eq!(
+        removed,
+        vec!["expired.png".to_string()],
+        "the planted entry must not stop the sweep"
+    );
+    assert!(!expired.exists(), "the expired file is reclaimed");
+    assert!(
+        std::fs::symlink_metadata(&planted).is_ok(),
+        "the sweep must not have deleted the planted link either — it is not ours to age out"
+    );
+}
+
+/// Fail-closed is kept where it belongs: an entry the filesystem refuses to
+/// describe (here: `staging/` readable but not searchable, so `lstat` on its
+/// children is `EACCES`) means the ages are unknown and nothing is deleted.
+#[test]
+fn a_sweep_that_cannot_stat_an_entry_deletes_nothing_at_all() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let card = CardId::from("card-a");
+    let staging = staging_dir(root.path(), &card);
+    std::fs::create_dir_all(staging.path()).unwrap();
+    let expired = staging.path().join("expired.png");
+    std::fs::write(&expired, b"x").unwrap();
+    set_age(&expired, Duration::from_secs(25 * 60 * 60));
+
+    // r but not x: `read_dir` lists the names, `lstat` on each one is refused.
+    std::fs::set_permissions(staging.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+    let refused = std::fs::symlink_metadata(&expired).is_err();
+    // Root ignores the mode bits, so the construction would be vacuous there.
+    // Say so loudly rather than reporting a green that proved nothing.
+    assert!(
+        refused,
+        "precondition: the entry stat must actually be refused — these tests must not run as root"
+    );
+
+    let removed = sweep_staging_at(&staging, SystemTime::now(), ORPHAN_TTL);
+    std::fs::set_permissions(staging.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+
     assert!(removed.is_empty(), "a failed enumeration removes nothing");
     assert!(
         expired.exists(),
         "the expired file must survive: one unreadable entry means the ages here are unknown, \
          and the sweep must not delete on an unknown age"
+    );
+}
+
+/// #1515 review F3. `is_file()` follows symlinks, so a link planted under a
+/// valid id served the target's bytes through the read-back endpoint. `resolve`
+/// stats with `symlink_metadata` and answers only for a regular file.
+#[test]
+fn a_symlink_under_a_valid_id_does_not_resolve() {
+    let root = tempfile::tempdir().unwrap();
+    let card = CardId::from("card-a");
+    let staging = staging_dir(root.path(), &card);
+    let bound = bound_dir(root.path(), &card);
+    std::fs::create_dir_all(staging.path()).unwrap();
+    std::fs::create_dir_all(bound.path()).unwrap();
+    let secret = root.path().join("id_rsa");
+    std::fs::write(&secret, b"-----BEGIN OPENSSH PRIVATE KEY-----").unwrap();
+
+    let staged = id("05", AttachmentFormat::Png);
+    let planted_bound = id("06", AttachmentFormat::Png);
+    std::os::unix::fs::symlink(&secret, staging.path().join(staged.as_str())).unwrap();
+    std::os::unix::fs::symlink(&secret, bound.path().join(planted_bound.as_str())).unwrap();
+
+    for planted in [&staged, &planted_bound] {
+        let error = resolve(root.path(), &card, planted)
+            .expect_err("a symlink is not an attachment this subtree serves");
+        assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
+    }
+}
+
+/// The adjudication behind F3, pinned as executable facts rather than as an
+/// argument in a comment: neither of this module's two mutating primitives
+/// escapes the subtree through a planted link.
+#[test]
+fn neither_unlink_nor_rename_follows_a_planted_symlink() {
+    let root = tempfile::tempdir().unwrap();
+    let card = CardId::from("card-a");
+    let staging = staging_dir(root.path(), &card);
+    std::fs::create_dir_all(staging.path()).unwrap();
+    let outside = root.path().join("outside.txt");
+
+    // (a) `remove_file` unlinks the link, never the target.
+    std::fs::write(&outside, b"still here").unwrap();
+    let link = staging.path().join("unlink-me.png");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    super::gc::remove_staged_file(&staging, "unlink-me.png").unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "the link is gone"
+    );
+    assert_eq!(
+        std::fs::read(&outside).unwrap(),
+        b"still here",
+        "the target outside the subtree survives an unlink of the link"
+    );
+
+    // (b) `rename` onto a symlink replaces the link, and does not write
+    //     through it.
+    let target_name = staging.path().join("rename-onto.png");
+    std::os::unix::fs::symlink(&outside, &target_name).unwrap();
+    let part = staging.path().join("rename-onto.png.part");
+    std::fs::write(&part, b"fresh bytes").unwrap();
+    std::fs::rename(&part, &target_name).unwrap();
+    assert_eq!(
+        std::fs::read(&outside).unwrap(),
+        b"still here",
+        "the target outside the subtree is untouched by a rename onto the link"
+    );
+    assert!(
+        std::fs::symlink_metadata(&target_name)
+            .unwrap()
+            .file_type()
+            .is_file(),
+        "the link was replaced by the renamed regular file"
     );
 }
 

@@ -9,13 +9,23 @@
 //! a structural exclusion, not a probability argument about how long a bind
 //! takes.
 //!
-//! # Fail-closed means "delete nothing"
+//! # Fail-closed means "delete nothing", for a broken filesystem
 //!
-//! A sweep that cannot enumerate the directory, or cannot take an entry's
-//! metadata, deletes **nothing at all** — not "skips that one and carries on".
-//! The `?`-propagating shape of this function is load-bearing: an unreadable
-//! entry means the age of the files here is unknown, and the safe answer to an
-//! unknown age is to keep the bytes.
+//! A sweep that cannot enumerate the directory, or hits an entry that cannot be
+//! stat'd for any reason other than having vanished, deletes **nothing at all**
+//! — not "skips that one and carries on". The `?`-propagating shape of
+//! `collect_expired` is load-bearing there: a filesystem that will not answer
+//! means the ages here are unknown, and the safe answer to an unknown age is to
+//! keep the bytes.
+//!
+//! An entry that is simply *not one of ours* is the other case and must not
+//! abort: a symlink, a socket, a subdirectory. The stat is `symlink_metadata`,
+//! so a dangling link is described rather than followed, and such an entry is
+//! stepped over with nothing deleted from it. Aborting on one instead would let
+//! anything with write access to the workspace park a dangling link in
+//! `staging/` and permanently disable the sweep for that card — which, paired
+//! with the same latch in `used_bytes`, is how one planted entry used to wedge
+//! both halves of the channel at once.
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -30,10 +40,13 @@ pub const ORPHAN_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Remove one file from `staging/`.
 ///
 /// The parameter is a [`StagingDir`], and there is no conversion from
-/// [`super::BoundDir`] into one. That is the whole enforcement of "`bound/` has
-/// no deletion path": a caller holding a bound directory cannot reach this
-/// function, and `tests/ui/bound_dir_cannot_be_deleted.rs` fails to compile if
-/// a conversion is ever added.
+/// [`super::BoundDir`] into one — `tests/ui/bound_dir_cannot_be_deleted.rs`
+/// fails to compile if one is ever added. That fence proves the absence of the
+/// conversion and nothing wider; see the module docs on
+/// [`super`] for what it does not prove.
+///
+/// `remove_file` unlinks the name, never a symlink's target, so an entry
+/// planted as a link to somewhere outside this subtree loses only the link.
 pub fn remove_staged_file(dir: &StagingDir, file_name: &str) -> std::io::Result<()> {
     match std::fs::remove_file(dir.path().join(file_name)) {
         Ok(()) => Ok(()),
@@ -92,13 +105,18 @@ fn collect_expired(dir: &Path, now: SystemTime, ttl: Duration) -> std::io::Resul
     let mut expired = Vec::new();
     for entry in entries {
         let entry = entry?;
-        // `std::fs::metadata` follows symlinks where `DirEntry::metadata` would
-        // not. Following is what makes an entry we cannot stat — a dangling
-        // link, a vanished file, a directory we cannot descend — an `Err` that
-        // abandons the whole sweep instead of a silently skipped entry beside
-        // deletions that still happen.
-        let meta = std::fs::metadata(entry.path())?;
-        if !meta.is_file() {
+        let meta = match std::fs::symlink_metadata(entry.path()) {
+            Ok(meta) => meta,
+            // Gone already. Nothing to expire, and nothing broken.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            // Anything else is the filesystem refusing to answer: abandon the
+            // whole sweep, deleting nothing.
+            Err(error) => return Err(error),
+        };
+        // `is_file()` on a `symlink_metadata` file type is true only for a
+        // regular file. A symlink, a socket or a directory is not ours to age
+        // out; step over it.
+        if !meta.file_type().is_file() {
             continue;
         }
         let modified = meta.modified()?;

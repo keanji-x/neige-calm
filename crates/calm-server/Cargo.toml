@@ -287,6 +287,13 @@ tower = { version = "0.5", features = ["util"] }
 # compile-fail statement; this repo runs no doctests (nextest does not execute
 # them), so a `compile_fail` doc fence would pass vacuously.
 trybuild = "1"
+# #1515 review F1/F5/F9 — the attachment upload tests need a body that arrives
+# as SEVERAL data frames and can be held open mid-stream. Every single-frame
+# `Body::from(Vec<u8>)` decides its outcome before the `.part` exists, so no
+# such body can reach the mid-stream failure arms or the in-flight/GC race.
+# `futures` is already a normal dependency of this crate (and so already in the
+# lock); integration-test crates must re-declare it to link.
+futures = "0.3"
 # Parser-level assertions for shared CODEX_HOME TOML writer regressions.
 toml = "0.8"
 # Microbench for the sync engine event_append overhead (design doc §6.4).

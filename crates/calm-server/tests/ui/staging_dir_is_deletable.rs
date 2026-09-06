@@ -11,8 +11,9 @@ fn main() {
     let staging = staging_dir(Path::new("/tmp"), &card);
     let _ = remove_staged_file(&staging, "x.png");
 
-    // A bound directory is reachable and readable — it just cannot be handed
-    // to a deletion.
+    // A bound directory is reachable and its path is `pub`. Nothing in the
+    // type system stops that `&Path` from reaching a deletion; the fence next
+    // door only forbids handing the `BoundDir` itself to `remove_staged_file`.
     let bound = bound_dir(Path::new("/tmp"), &card);
     let _: &Path = bound.path();
 }

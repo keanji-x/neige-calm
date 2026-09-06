@@ -8933,7 +8933,7 @@
           },
           "url": {
             "type": "string",
-            "description": "Absolute REST path the browser reads the bytes back from. Server-built:\nthe client never composes a path of its own."
+            "description": "Absolute REST path the browser reads the bytes back from. Server-built:\nthe client never composes a path of its own.\n\nNot a durable link yet. As of S6-PR1 nothing binds an attachment to a\nqueue entry, so every upload stays in the server's `staging/` directory\nand is swept once it is older than the 24h orphan TTL; after that this\npath answers 400. S6-PR2 adds the bind that makes an attachment\npermanent."
           }
         }
       },

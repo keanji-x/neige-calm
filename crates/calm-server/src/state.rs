@@ -186,6 +186,15 @@ pub struct RouteState {
     /// The deployment contract is one calm-server per SQLite data directory.
     /// Multi-process serving would require a durable database fence.
     pub(crate) track_delete_locks: crate::per_card_lock::KeyedLocks,
+    /// #1505 S6-PR1 — one planner attachment upload per card at a time. The
+    /// per-card byte budget is measured and then written against, and the
+    /// staging sweep an upload runs at the end deletes by age; both need the
+    /// card's uploads serialized. See
+    /// [`crate::planner_attachments::store::store_upload`].
+    ///
+    /// Takes no other lock and is taken by nothing else, so it closes no cycle
+    /// with `conversation_first_message_locks` -> `planner_recovery_locks`.
+    pub(crate) planner_attachment_locks: crate::per_card_lock::PerCardLocks,
     /// Serializes a user-area delete with the ordinary track-create route.
     /// The creator holds it through workspace materialization and planner
     /// startup; deletion therefore snapshots a closed member set.
@@ -272,6 +281,7 @@ impl BootState {
             planner_recovery_locks: crate::per_card_lock::new_per_card_locks(),
             conversation_first_message_locks: crate::per_card_lock::new_per_card_locks(),
             track_create_mint_rendezvous: None,
+            planner_attachment_locks: crate::per_card_lock::new_per_card_locks(),
             track_delete_locks: crate::per_card_lock::new_keyed_locks(),
             area_delete_locks: crate::per_card_lock::new_keyed_locks(),
         };

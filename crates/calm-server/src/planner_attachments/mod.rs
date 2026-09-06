@@ -12,16 +12,33 @@
 //! path is final from that instant — nothing in the harness run loop ever
 //! touches the disk, so a re-queued message's attachment cannot go missing.
 //!
+//! # This slice ships no bind path — uploads expire
+//!
+//! S6-PR1 is the disk half only. Nothing in this slice writes into `bound/`:
+//! the bind path (a queue entry taking a reference, and the `staging/ ->
+//! bound/` move) arrives in S6-PR2. Until it lands, every uploaded attachment
+//! stays in `staging/`, so [`gc::sweep_staging`] removes it once it is older
+//! than [`gc::ORPHAN_TTL`] and the URL in the upload response then answers
+//! `400`. That is a declared boundary of the slice, restated on
+//! [`calm_types::planner_attachment::UploadAttachmentResponse::url`], not a
+//! retention guarantee.
+//!
 //! # The two directories are different types on purpose
 //!
-//! `bound/` has no deletion path at all: once codex may have been handed a
-//! path, that path has to keep resolving, and there is no reader anywhere that
-//! could tell us it is safe to remove. [`StagingDir`] and [`BoundDir`] are
-//! separate newtypes with no conversion between them, and
-//! [`gc::remove_expired_staged_files`] accepts only the former. A grep over the
-//! source cannot show that a `PathBuf` returned by `bound_dir` never reaches a
-//! delete call; the type system can, and
-//! `tests/ui/bound_dir_cannot_be_deleted.rs` pins it.
+//! `bound/` is not swept: once codex may have been handed a path, that path has
+//! to keep resolving, and there is no reader anywhere that could tell us it is
+//! safe to remove. [`StagingDir`] and [`BoundDir`] are separate newtypes, and
+//! [`gc::remove_staged_file`] — which [`gc::sweep_staging`] is the only other
+//! caller of — takes only the former.
+//!
+//! What the trybuild fence in `tests/ui/bound_dir_cannot_be_deleted.rs` proves
+//! is exactly one statement and no more: **there is no conversion from
+//! [`BoundDir`] into [`StagingDir`]**, so the fence turns red the moment an
+//! `impl From<BoundDir> for StagingDir` is added. It does not prove that a
+//! `BoundDir`'s path never reaches a delete — [`BoundDir::path`] is `pub`, so
+//! `std::fs::remove_dir_all(bound_dir(root, &card).path())` compiles anywhere,
+//! and the fence would stay green. Keeping `bound/` undeleted is a property of
+//! the call sites in this module, not of the type system.
 
 use std::path::{Path, PathBuf};
 
@@ -47,9 +64,14 @@ pub const NEIGE_GIT_EXCLUDE_ENTRY: &str = ".neige/";
 /// Total bytes one card's attachments may occupy, across `staging/` and
 /// `bound/` together.
 ///
-/// Attachments are never reclaimed automatically (see the module docs), so this
-/// is the only bound on the subtree. Exceeding it is a refusal the user can
-/// see, not a silent eviction of bytes codex may still be asked to read.
+/// Bound bytes are never reclaimed, so uploads have to be refused rather than
+/// evicted: exceeding the budget is an error the user can see, not a silent
+/// eviction of bytes codex may still be asked to read. What the number bounds
+/// is the regular files [`used_bytes`] counts — i.e. what this store wrote,
+/// plus anything else that happens to be a regular file in the two
+/// directories. It is enforced under the card's upload lock (see
+/// [`store::store_upload`]), so concurrent uploads cannot each measure the same
+/// "before" and both fit.
 pub const PER_CARD_ATTACHMENT_BUDGET: u64 = 64 * 1024 * 1024;
 
 /// Largest single upload. One gate, enforced by
@@ -119,10 +141,24 @@ pub fn bound_dir(root: &Path, card_id: &CardId) -> BoundDir {
     BoundDir(root.join(card_id.as_str()).join("bound"))
 }
 
+/// A path this subtree is willing to serve: a *regular* file, stat'd with
+/// `symlink_metadata` so the link itself is described rather than followed.
+///
+/// Nothing in this module ever creates a symlink here, so an entry that is one
+/// was planted by something else with write access to the workspace — an agent,
+/// say — and serving its target would turn this endpoint into a reader for a
+/// path the server never chose. `false` for every non-regular entry, and for an
+/// entry that cannot be stat'd at all.
+fn is_regular_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_file())
+        .unwrap_or(false)
+}
+
 /// The one place an [`AttachmentId`] becomes a path.
 ///
-/// `bound/` first, then `staging/`. An id that stats in neither is a
-/// `BadRequest` — which is also the whole cross-card forgery answer: the
+/// `bound/` first, then `staging/`. An id that names no regular file in either
+/// is a `BadRequest` — which is also the whole cross-card forgery answer: the
 /// directory comes from the card in the URL, so another card's id simply is not
 /// there. No comparison, no ownership column, no second check.
 pub fn resolve(
@@ -131,11 +167,11 @@ pub fn resolve(
     id: &AttachmentId,
 ) -> Result<(PathBuf, AttachmentFormat)> {
     let bound = bound_dir(root, card_id).path().join(id.as_str());
-    if bound.is_file() {
+    if is_regular_file(&bound) {
         return Ok((bound, id.format()));
     }
     let staged = staging_dir(root, card_id).path().join(id.as_str());
-    if staged.is_file() {
+    if is_regular_file(&staged) {
         return Ok((staged, id.format()));
     }
     Err(CalmError::BadRequest(format!(
@@ -145,10 +181,22 @@ pub fn resolve(
 
 /// Bytes already spent by this card, across both directories.
 ///
-/// Fail-closed: a directory that exists but cannot be read, or an entry whose
-/// metadata cannot be taken, is an error. This number gates a write, so an
-/// unknown value must refuse rather than admit. A directory that does not exist
+/// Counts the regular files this store writes. A directory that does not exist
 /// yet is zero — that is a fresh card, not an unreadable one.
+///
+/// # What refuses and what does not
+///
+/// This number gates a write, so a *broken filesystem* — a directory that
+/// exists but cannot be enumerated, an entry that cannot be stat'd for any
+/// reason other than having vanished — is an error, and the upload is refused.
+///
+/// An entry that simply is not one of ours is a different thing and must not
+/// refuse: symlinks, sockets and subdirectories contribute zero and are stepped
+/// over. Anything with write access to the workspace can create one, and if a
+/// single planted entry made this function `Err`, every later upload on that
+/// card would be refused forever — a latch, not a budget. The stat is
+/// `symlink_metadata`, which describes a dangling link instead of failing on
+/// it, so that classification is available at all.
 pub fn used_bytes(root: &Path, card_id: &CardId) -> Result<u64> {
     let staging = staging_dir(root, card_id);
     let bound = bound_dir(root, card_id);
@@ -174,15 +222,21 @@ fn directory_bytes(dir: &Path) -> Result<u64> {
                 dir.display()
             ))
         })?;
-        // Follows symlinks, unlike `DirEntry::metadata`: an entry whose size
-        // cannot be established must refuse the upload, not be skipped over.
-        let meta = std::fs::metadata(entry.path()).map_err(|error| {
-            CalmError::BadRequest(format!(
-                "cannot measure the attachment budget entry {}: {error}",
-                entry.path().display()
-            ))
-        })?;
-        if meta.is_file() {
+        let meta = match std::fs::symlink_metadata(entry.path()) {
+            Ok(meta) => meta,
+            // Gone between `read_dir` and the stat — a concurrent sweep, or a
+            // hand deleting a file. Absent bytes are zero bytes.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(CalmError::BadRequest(format!(
+                    "cannot measure the attachment budget for {}: {error}",
+                    dir.display()
+                )));
+            }
+        };
+        // `file_type()` from `symlink_metadata` is `is_file()` only for a
+        // regular file: a symlink is a symlink here, whatever it points at.
+        if meta.file_type().is_file() {
             total = total.saturating_add(meta.len());
         }
     }

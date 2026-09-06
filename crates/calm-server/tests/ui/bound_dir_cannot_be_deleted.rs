@@ -1,12 +1,15 @@
-//! `bound/` has no deletion path. This is the statement a source-text scan
-//! cannot make: it would have to prove that no `PathBuf` derived from
-//! `bound_dir` ever reaches a `remove_file`, across every present and future
-//! call site. The type system makes it structural instead — there is no
-//! conversion from `BoundDir` into `StagingDir`, and `remove_staged_file`
-//! accepts only the latter.
+//! One statement: there is no conversion from `BoundDir` into `StagingDir`,
+//! so `remove_staged_file` — which takes only the latter — cannot be reached by
+//! passing it a bound directory.
 //!
 //! Adding `impl From<BoundDir> for StagingDir` makes this file compile, which
 //! is exactly the mutation this case exists to catch.
+//!
+//! It is not a proof that `bound/` is never deleted. `BoundDir::path()` is
+//! `pub`, so `std::fs::remove_dir_all(bound_dir(root, &card).path())` compiles
+//! and this fence stays green — the fixture beside it does the first half of
+//! exactly that. Keeping `bound/` undeleted is a property of the call sites in
+//! `planner_attachments`, not of the type system.
 
 use calm_server::planner_attachments::gc::remove_staged_file;
 use calm_server::planner_attachments::{StagingDir, bound_dir};

@@ -1,7 +1,7 @@
 error[E0308]: mismatched types
-  --> tests/ui/bound_dir_cannot_be_deleted.rs:18:50
+  --> tests/ui/bound_dir_cannot_be_deleted.rs:21:50
    |
-18 |     let _ = remove_staged_file(&StagingDir::from(bound), "x.png");
+21 |     let _ = remove_staged_file(&StagingDir::from(bound), "x.png");
    |                                 ---------------- ^^^^^ expected `StagingDir`, found `BoundDir`
    |                                 |
    |                                 arguments to this function are incorrect

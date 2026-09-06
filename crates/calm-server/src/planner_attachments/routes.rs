@@ -16,8 +16,15 @@
 //! Reading is admitted for any actor, exactly like `GET /harness/items`: an
 //! agent's working directory *is* this workspace, so it can already open these
 //! bytes with its own tools, and a guard it can walk around is a guard that
-//! only misleads the next reader. Writing is human-only, because that is the
-//! one direction that puts new content into a directory an agent reads.
+//! only misleads the next reader.
+//!
+//! Writing runs `require_rest_user_actor_for`, which refuses a request that
+//! *declares* a non-`user` actor in `X-Calm-Actor`. That is the whole of it: a
+//! request with no `X-Calm-Actor` header at all is `Actor::DEFAULT` — `user` —
+//! and is accepted. So the guard turns away an agent that labels itself and
+//! nothing else; it is the same REST contract the track-report write routes
+//! carry, deliberately shared rather than tightened here, because narrowing it
+//! on this one endpoint would put two different answers on the same header.
 
 use axum::body::Body;
 use axum::extract::{Path, State};
@@ -120,7 +127,14 @@ pub(crate) async fn upload_planner_attachment(
     )?;
     let context = attachment_context(&s, &id).await?;
     let card_id = context.card.id.clone();
-    let stored = store::store_upload(&context.root, &context.repo_root, &card_id, body).await?;
+    let stored = store::store_upload(
+        &context.root,
+        &context.repo_root,
+        &card_id,
+        &s.planner_attachment_locks,
+        body,
+    )
+    .await?;
     let url = attachment_url(&card_id, &stored.id);
     tracing::info!(
         target: "planner_attachments::store",
