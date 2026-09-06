@@ -147,6 +147,7 @@ pub fn run_fake_app_server() {
         .expect("fake app-server: build tokio runtime");
     rt.block_on(async move {
         let control = WedgeControl::for_sock(&sock);
+        let reads = ReadFixtures::for_sock(&sock);
         let listener = UnixListener::bind(&sock).unwrap_or_else(|e| {
             // #1439: 把路径的字节数也打出来 —— sun_path 只有 107 字节可用，
             // 光看 "path must be shorter than SUN_LEN" 判不出是长了多少。
@@ -182,8 +183,9 @@ pub fn run_fake_app_server() {
             match listener.accept().await {
                 Ok((stream, _)) => {
                     let control = control.clone();
+                    let reads = reads.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = serve_conn(stream, control).await {
+                        if let Err(e) = serve_conn(stream, control, reads).await {
                             eprintln!("fake app-server: connection ended: {e}");
                         }
                     });
@@ -237,7 +239,77 @@ impl WedgeControl {
     }
 }
 
-async fn serve_conn(stream: tokio::net::UnixStream, control: WedgeControl) -> Result<(), String> {
+/// #1505 S4-2 — sidecar files, addressed off the listen socket path, that let
+/// a test script `model/list` and `config/read` without touching process env
+/// (env is per test *binary*, so an env knob would need a global lock and
+/// would leak between the tests in one binary):
+///
+///   * `<sock>.model-list`   — verbatim JSON-RPC `result` for `model/list`.
+///   * `<sock>.model-list-<cursor>` — the result for a `model/list` carrying
+///     that `cursor`, so a test can script a genuinely paginated catalog.
+///   * `<sock>.config-read`  — verbatim JSON-RPC `result` for `config/read`.
+///   * `<sock>.model-list-no-answer` / `<sock>.config-read-no-answer` —
+///     present ⇒ that method is read and then never answered, modelling a
+///     daemon that has accepted the request and stalled. Every other method
+///     keeps working.
+#[derive(Clone)]
+struct ReadFixtures {
+    sock: PathBuf,
+    model_list: PathBuf,
+    config_read: PathBuf,
+    model_list_no_answer: PathBuf,
+    config_read_no_answer: PathBuf,
+}
+
+impl ReadFixtures {
+    fn for_sock(sock: &std::path::Path) -> Self {
+        Self {
+            sock: sock.to_path_buf(),
+            model_list: sock.with_extension("model-list"),
+            config_read: sock.with_extension("config-read"),
+            model_list_no_answer: sock.with_extension("model-list-no-answer"),
+            config_read_no_answer: sock.with_extension("config-read-no-answer"),
+        }
+    }
+
+    /// Appends every request method this fixture sees, one per line, so a
+    /// test can assert an RPC was NOT issued. Distinct from the env-driven
+    /// `FAKE_CODEX_CAPTURE_REQUESTS`: keyed off the socket path, it needs no
+    /// process-global env and cannot bleed between tests.
+    fn record_method(&self, method: &str) {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.sock.with_extension("methods"))
+        {
+            let _ = writeln!(file, "{method}");
+        }
+    }
+
+    /// The page a `model/list` with this cursor should be answered with.
+    /// `None` (no cursor) is the first page.
+    fn model_list_page(&self, cursor: Option<&str>) -> PathBuf {
+        match cursor {
+            Some(cursor) => self.sock.with_extension(format!("model-list-{cursor}")),
+            None => self.model_list.clone(),
+        }
+    }
+
+    fn result_or(path: &std::path::Path, fallback: Value) -> Value {
+        match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("fake app-server: {} is not JSON: {e}", path.display())),
+            Err(_) => fallback,
+        }
+    }
+}
+
+async fn serve_conn(
+    stream: tokio::net::UnixStream,
+    control: WedgeControl,
+    reads: ReadFixtures,
+) -> Result<(), String> {
     let ws = tokio_tungstenite::accept_async(stream)
         .await
         .map_err(|e| format!("ws accept: {e}"))?;
@@ -267,6 +339,9 @@ async fn serve_conn(stream: tokio::net::UnixStream, control: WedgeControl) -> Re
             Err(_) => continue,
         };
         record_request(&req);
+        if let Some(m) = req.get("method").and_then(Value::as_str) {
+            reads.record_method(m);
+        }
         let id = req.get("id").cloned();
         let method = req
             .get("method")
@@ -368,6 +443,30 @@ async fn serve_conn(stream: tokio::net::UnixStream, control: WedgeControl) -> Re
                     )
                     .await?;
                 }
+            }
+            "model/list" => {
+                if reads.model_list_no_answer.exists() {
+                    continue;
+                }
+                let cursor = req
+                    .get("params")
+                    .and_then(|p| p.get("cursor"))
+                    .and_then(Value::as_str);
+                let result = ReadFixtures::result_or(
+                    &reads.model_list_page(cursor),
+                    json!({ "data": [], "nextCursor": null }),
+                );
+                send_result(&mut write, &id, result).await?;
+            }
+            "config/read" => {
+                if reads.config_read_no_answer.exists() {
+                    continue;
+                }
+                let result = ReadFixtures::result_or(
+                    &reads.config_read,
+                    json!({ "config": {}, "origins": {} }),
+                );
+                send_result(&mut write, &id, result).await?;
             }
             // Anything else (turn/steer, thread/inject_items, …) — ack with
             // an empty object so a caller never wedges on a missing response.

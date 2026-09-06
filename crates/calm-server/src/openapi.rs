@@ -30,6 +30,9 @@ use crate::routes::codex_cards::NewCodexCardBody;
 use crate::routes::fs::{
     DirEntry, GitChangedFile, GitDiffResponse, GitStatusResponse, ListdirResponse, ReadFileResponse,
 };
+use crate::routes::models::{
+    CatalogModel, DefaultSource, ModelDefaults, ModelSource, ModelsResponse, ReasoningEffortOption,
+};
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
 use crate::routes::plugins::{
     InstallBody, InstallSource, PluginDetail, PluginListItem, ToolCallBody, ViewCatalogEntry,
@@ -154,6 +157,8 @@ use utoipa::OpenApi;
         crate::routes::plugins::list_plugin_views,
         crate::routes::plugins::get_plugin_view_html,
         crate::routes::plugins::plugin_tool_call,
+        // ---- models (#1505 S4-2) ----
+        crate::routes::models::list_models,
         // ---- version ----
         crate::routes::version::get_version,
     ),
@@ -258,6 +263,21 @@ use utoipa::OpenApi;
         ViewCatalogEntry,
         ViewSizeWire,
         VersionInfo,
+        // ---- models (#1505 S4-2) ----
+        // Listed for consistency with the rest of this block, NOT because
+        // omitting them would break the document: utoipa already walks a
+        // registered path's response body and emits every schema it reaches.
+        // Measured on this tree by deleting these names and re-emitting —
+        // the two documents differed in nothing but the entry for the query
+        // struct, which utoipa inlines as parameters anyway. The list in
+        // `paths(...)` above is the hand-maintained one that really is
+        // load-bearing; this one is house style.
+        CatalogModel,
+        ReasoningEffortOption,
+        ModelDefaults,
+        DefaultSource,
+        ModelSource,
+        ModelsResponse,
         // #177 — required theme field on card/track creation DTOs
         crate::routes::theme::RequestTheme,
         // shared error response
@@ -276,6 +296,7 @@ use utoipa::OpenApi;
         (name = "fs", description = "Read-only host filesystem helpers (directory listing for path pickers)"),
         (name = "settings", description = "App-global settings (HTTP proxy override, etc.)"),
         (name = "plugins", description = "Plugin lifecycle, config, MCP fan-out"),
+        (name = "models", description = "Codex model catalog and the default model/reasoning-effort this installation follows"),
         (name = "version", description = "Kernel, REST, sync, and MCP protocol versions"),
     ),
 )]

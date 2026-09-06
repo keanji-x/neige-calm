@@ -115,6 +115,48 @@ impl SharedCodexHome {
         Ok(())
     }
 
+    /// The `model` / `model_reasoning_effort` defaults written in the shared
+    /// CODEX_HOME `config.toml`.
+    ///
+    /// This is the **dormant-only** default source for `GET /api/models`. It
+    /// answers "what does our own layer say", which is strictly weaker than
+    /// `config/read`'s layer-merged answer — a managed-config layer merges
+    /// *above* the user layer, so this file can disagree with what codex
+    /// would actually run. Whenever a daemon connection exists, `config/read`
+    /// is the source and this function must not be consulted.
+    ///
+    /// Key names are codex's own top-level spellings (`core/src/config/edit.rs`
+    /// writes `model` and `model_reasoning_effort`).
+    ///
+    /// A missing home or missing file is `Ok(default)` — "nothing configured"
+    /// is a successful read of an empty setting, and the caller reports it as
+    /// `config_toml` with null values. Unparseable TOML is an `Err`, so the
+    /// caller can fall back to `unknown` rather than claim a source it could
+    /// not read.
+    pub fn read_default_model_settings(&self) -> io::Result<ConfigTomlModelDefaults> {
+        let cfg_path = self.home.join("config.toml");
+        let text = match fs::read_to_string(&cfg_path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok(ConfigTomlModelDefaults::default());
+            }
+            Err(e) => return Err(e),
+        };
+        let doc: DocumentMut = text.parse().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "shared CODEX_HOME config.toml at {} is not valid TOML: {e}",
+                    cfg_path.display()
+                ),
+            )
+        })?;
+        Ok(ConfigTomlModelDefaults {
+            model: top_level_str(&doc, "model"),
+            reasoning_effort: top_level_str(&doc, "model_reasoning_effort"),
+        })
+    }
+
     /// #863 boot guard — parses `<home>/config.toml` (missing home/file = ok)
     /// and errors if the top-level `mcp_servers` table has any key outside
     /// `expected` OR any `hooks` table exists (same executable-vector class),
@@ -452,6 +494,21 @@ fn flock(fd: i32, operation: i32) -> io::Result<()> {
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+/// Model defaults read out of the shared CODEX_HOME `config.toml`. Both are
+/// optional because "not configured" is a state the wire represents as
+/// `null`, not a missing required field.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ConfigTomlModelDefaults {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+}
+
+fn top_level_str(doc: &DocumentMut, key: &str) -> Option<String> {
+    doc.get(key)
+        .and_then(|item| item.as_str())
+        .map(str::to_string)
 }
 
 fn ensure_top_level_str(doc: &mut DocumentMut, key: &str, value: &str) {

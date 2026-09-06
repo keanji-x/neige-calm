@@ -24,8 +24,8 @@ use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinHandle;
 
 use crate::codex_appserver::{
-    ClientInfo, CodexAppServer, InputItem, Notification, ThreadStartParams,
-    redact_thread_start_config,
+    ClientInfo, CodexAppServer, CodexConfig, CodexModel, InputItem, Notification,
+    ThreadStartParams, redact_thread_start_config,
 };
 use crate::config::Config;
 use crate::db::sqlite::session_projection_active_for_card_tx;
@@ -619,6 +619,11 @@ pub fn bounded_exponential_backoff(initial: Duration, max: Duration, attempt: u6
     initial.saturating_mul(factor).min(max)
 }
 
+/// Pagination guard for [`SharedCodexAppServer::model_list`]. Codex answers
+/// the whole catalog in one page today; this only bounds a peer that never
+/// clears `nextCursor`.
+const MODEL_LIST_MAX_PAGES: usize = 20;
+
 pub type NotificationFanout = broadcast::Sender<Notification>;
 
 pub struct SharedCodexAppServer {
@@ -1026,6 +1031,12 @@ impl SharedCodexAppServer {
         })
     }
 
+    /// The shared CODEX_HOME handle. `GET /api/models` reads its
+    /// `config.toml` directly when no daemon connection exists.
+    pub fn shared_home(&self) -> &SharedCodexHome {
+        &self.home
+    }
+
     pub fn codex_home_path(&self) -> &std::path::Path {
         self.home.path()
     }
@@ -1330,6 +1341,102 @@ impl SharedCodexAppServer {
             )));
         }
         Ok(turn_id)
+    }
+
+    /// Whether a live app-server connection exists right now.
+    ///
+    /// This is the same criterion [`Self::connected_client`] applies, so a
+    /// caller that must distinguish "codex is dormant" from "codex answered
+    /// badly" can ask it directly instead of inferring a connection from
+    /// whether some RPC happened to succeed. Unlike [`Self::is_running`] it
+    /// awaits the core lock rather than `try_lock`-ing it (a contended lock
+    /// is not evidence of a dead daemon) and it does not report the fixtures
+    /// fake as connected — the fake installs no client and can answer no RPC.
+    pub async fn has_connection(&self) -> bool {
+        self.running_client().await.is_some()
+    }
+
+    /// `model/list`, drained across codex's pagination cursor.
+    ///
+    /// Read-only and connection-only: it never spawns or heals the daemon. A
+    /// dormant installation must answer `GET /api/models` with
+    /// `source: "unavailable"`, not by booting a codex process behind a GET.
+    pub async fn model_list(&self, deadline: tokio::time::Instant) -> Result<Vec<CodexModel>> {
+        let client = self.connected_client().await?;
+        let mut models: Vec<CodexModel> = Vec::new();
+        let mut skipped = 0usize;
+        let mut cursor: Option<String> = None;
+        // A server that echoes a cursor forever would otherwise pin this loop.
+        // The real catalog is a few dozen entries in one page; the cap only
+        // ever fires on a misbehaving peer.
+        for _ in 0..MODEL_LIST_MAX_PAGES {
+            let page = client.model_list(cursor.as_deref(), deadline).await?;
+            // Entries are decoded ONE AT A TIME, and a malformed one is
+            // skipped rather than failing the page.
+            //
+            // Codex's own `Model` already carries five `#[serde(default)]`
+            // attributes because it expects to grow, and this catalog is
+            // shipped by a component that versions independently of us. If a
+            // single preset dropped a field or renamed one, an all-or-nothing
+            // decode would empty the whole picker — and it would do so with
+            // the *same* user-visible shape as a dormant daemon ("codex is
+            // not running"), i.e. a fabricated outage while codex is happily
+            // running turns. Losing one unreadable preset is strictly better
+            // than losing the catalog.
+            for entry in page.data {
+                match serde_json::from_value::<CodexModel>(entry) {
+                    Ok(model) => models.push(model),
+                    Err(e) => {
+                        skipped += 1;
+                        tracing::warn!(
+                            target = "shared_codex_daemon::model_list",
+                            error = %e,
+                            "skipping a model/list entry this build cannot decode"
+                        );
+                    }
+                }
+            }
+            match page.next_cursor {
+                Some(next) if !next.is_empty() => cursor = Some(next),
+                _ => {
+                    if skipped > 0 {
+                        tracing::warn!(
+                            target = "shared_codex_daemon::model_list",
+                            skipped,
+                            kept = models.len(),
+                            "model/list returned entries this build cannot decode"
+                        );
+                    }
+                    return Ok(models);
+                }
+            }
+        }
+        // Falling out of the loop means the peer never cleared `nextCursor`.
+        // Returning what we collected would present a TRUNCATED catalog as a
+        // complete one: the picker would show a short list with nothing on it
+        // to say the list is short, and a model the account really has would
+        // simply be absent. Erroring degrades the endpoint to
+        // `source: "unavailable"`, which at least tells the reader the list is
+        // not to be trusted.
+        //
+        // The same reasoning governs the `?` above: an `Err` from any page
+        // abandons the pages already collected rather than answering with a
+        // prefix. A partial catalog is never presented as a whole one.
+        Err(CalmError::CodexAppServer(format!(
+            "model/list did not terminate its pagination within {MODEL_LIST_MAX_PAGES} pages"
+        )))
+    }
+
+    /// `config/read` — the layer-merged effective config, narrowed to the
+    /// model defaults. `cwd` selects the project layers; see
+    /// [`CodexAppServer::config_read`].
+    pub async fn config_read(
+        &self,
+        cwd: Option<&str>,
+        deadline: tokio::time::Instant,
+    ) -> Result<CodexConfig> {
+        let client = self.connected_client().await?;
+        Ok(client.config_read(cwd, deadline).await?.config)
     }
 
     pub fn seal_turn_thread_for_deletion(&self, thread_id: &str) {

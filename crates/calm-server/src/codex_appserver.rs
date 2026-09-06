@@ -340,6 +340,95 @@ pub struct ThreadLoadedListResponse {
 // Notification stream (server -> client).
 // ===========================================================================
 
+/// One page of `model/list` (`v2/model.rs` `ModelListResponse`). The server
+/// pages the catalog; [`crate::shared_codex_appserver::SharedCodexAppServer::model_list`]
+/// drains it in one call.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelListPage {
+    /// Left undecoded on purpose. The catalog ships from a component that
+    /// versions independently of us, so one preset that grew or renamed a
+    /// field must not be able to empty the page — the caller decodes each
+    /// entry into [`CodexModel`] separately and skips the ones it cannot
+    /// read. See `SharedCodexAppServer::model_list`.
+    pub data: Vec<Value>,
+    /// `None` (or an empty string) means "no further pages".
+    pub next_cursor: Option<String>,
+}
+
+/// One catalog entry (`v2/model.rs` `Model`), narrowed to the seven fields
+/// `GET /api/models` proxies.
+///
+/// Codex's own struct carries more (`upgradeInfo`, `availabilityNux`,
+/// `hidden`, `serviceTiers`, …). We deliberately do not vendor those: nothing
+/// in this kernel reads them, and every field we decode is a field we would
+/// have to keep in step with an `[experimental]` protocol.
+///
+/// `id` is the *preset* identifier and `model` is the slug the model is
+/// invoked by. Only `model` may ever reach `turn/start`, `cards.payload_json`
+/// or the REST wire.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexModel {
+    pub id: String,
+    pub model: String,
+    pub display_name: String,
+    pub description: String,
+    pub supported_reasoning_efforts: Vec<CodexReasoningEffortOption>,
+    /// Wire type is a bare string, not a closed enum: codex's
+    /// `ReasoningEffort` has a `Custom(String)` variant and a hand-written
+    /// `Deserialize` that accepts any non-empty string
+    /// (`protocol/src/openai_models.rs`). A closed enum here would fail to
+    /// decode the whole catalog the first time codex ships a new effort.
+    pub default_reasoning_effort: String,
+    /// Codex's own notion of a catalog default. It answers "which entry does
+    /// the picker highlight", NOT "which model does this installation
+    /// currently follow" — the latter comes from `config/read`.
+    pub is_default: bool,
+}
+
+/// One selectable reasoning effort for a model (`v2/model.rs`
+/// `ReasoningEffortOption`). `description` is codex's copy; we never
+/// substitute our own.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexReasoningEffortOption {
+    /// Bare string for the same reason as
+    /// [`CodexModel::default_reasoning_effort`].
+    pub reasoning_effort: String,
+    pub description: String,
+}
+
+/// `config/read` response (`v2/config.rs` `ConfigReadResponse`), narrowed to
+/// the `config` member.
+///
+/// **The two levels do not share a serde convention.** The envelope is
+/// `rename_all = "camelCase"`, but the `Config` it wraps is
+/// `rename_all = "snake_case"` (`v2/config.rs`). So the keys inside `config`
+/// are `model` and `model_reasoning_effort` — writing `modelReasoningEffort`
+/// here parses to `None` forever, silently. (Contrast `WarningNotification`,
+/// whose `threadId` really is camelCase.)
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigReadResponse {
+    pub config: CodexConfig,
+}
+
+/// The layer-merged effective config, narrowed to the two keys the model
+/// picker needs. Field names are snake_case verbatim — see
+/// [`ConfigReadResponse`].
+///
+/// Both values are genuinely optional on codex's side: "no model configured"
+/// is a state this server has to represent (`default.model: null`), not a
+/// missing required field.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct CodexConfig {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub model_reasoning_effort: Option<String>,
+}
+
 /// A server→client notification, narrowed to the variants the push
 /// migration cares about. Anything else (the dozens of housekeeping /
 /// realtime / approval methods) lands in [`Notification::Other`] so codex
@@ -785,6 +874,41 @@ impl CodexAppServer {
         .await
     }
 
+    /// `model/list` — one page of codex's model catalog.
+    ///
+    /// `includeHidden` is pinned to `false`: the picker-visibility filter is
+    /// codex's (`preset.show_in_picker`), and a hidden preset is hidden for
+    /// the same reasons in our UI as in theirs.
+    pub async fn model_list(
+        &self,
+        cursor: Option<&str>,
+        deadline: tokio::time::Instant,
+    ) -> Result<ModelListPage> {
+        let mut params = json!({ "includeHidden": false });
+        if let Some(cursor) = cursor {
+            params["cursor"] = Value::String(cursor.to_string());
+        }
+        self.request_until("model/list", params, deadline).await
+    }
+
+    /// `config/read` — the layer-merged effective config.
+    ///
+    /// `cwd` decides which project layers are folded in. Pass the same path
+    /// the thread was started with, or `None` to read only the layers that
+    /// apply everywhere; the caller must not present a `None` read as if it
+    /// were that thread's effective default.
+    pub async fn config_read(
+        &self,
+        cwd: Option<&str>,
+        deadline: tokio::time::Instant,
+    ) -> Result<ConfigReadResponse> {
+        let mut params = json!({ "includeLayers": false });
+        if let Some(cwd) = cwd {
+            params["cwd"] = Value::String(cwd.to_string());
+        }
+        self.request_until("config/read", params, deadline).await
+    }
+
     /// `turn/steer` — redirect an in-flight turn. `expected_turn_id` must
     /// be the id returned by the `turn/start` that is still running.
     pub async fn turn_steer(
@@ -840,6 +964,42 @@ impl CodexAppServer {
         method: &str,
         params: Value,
     ) -> Result<T> {
+        let deadline = tokio::time::Instant::now() + self.request_timeout;
+        self.request_until(method, params, deadline).await
+    }
+
+    /// [`Self::request`] with an explicit deadline instead of the per-client
+    /// default.
+    ///
+    /// **Callers that want a shorter bound than
+    /// [`DEFAULT_REQUEST_TIMEOUT`] must use this, not an outer
+    /// `tokio::time::timeout` around `request`.** The cleanup that keeps the
+    /// pending map from leaking lives on the elapse arm *inside* this
+    /// function; cancelling the future from outside drops it before that arm
+    /// can run, so the `(id -> oneshot)` entry survives in the long-lived
+    /// shared client until codex answers late or the connection closes. On a
+    /// connected-but-stalled daemon that is one leaked entry per call.
+    /// Passing the deadline down keeps the bound and the cleanup together.
+    ///
+    /// A deadline already in the past elapses immediately, which is what a
+    /// caller spending one budget across several calls wants.
+    async fn request_until<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: Value,
+        deadline: tokio::time::Instant,
+    ) -> Result<T> {
+        // An already-spent budget is answered without touching the wire. A
+        // caller spending one deadline across several calls has, by the time
+        // it reaches a later one, nothing left to wait with — writing the
+        // frame anyway would put a request on the daemon whose answer we have
+        // already decided to ignore.
+        if tokio::time::Instant::now() >= deadline {
+            return Err(CalmError::CodexAppServer(format!(
+                "request {method} skipped: the caller's budget was already spent"
+            )));
+        }
+
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
@@ -872,13 +1032,12 @@ impl CodexAppServer {
         // *ack* (turn id); turn lifecycle is decided later by
         // notifications/EOF/child-exit, so this timer is not a turn
         // lifecycle criterion.
-        let outcome = match tokio::time::timeout(self.request_timeout, rx).await {
+        let outcome = match tokio::time::timeout_at(deadline, rx).await {
             Ok(received) => received,
             Err(_elapsed) => {
                 self.pending.lock().await.remove(&id);
-                let secs = self.request_timeout.as_secs_f64();
                 return Err(CalmError::CodexAppServer(format!(
-                    "request {method} timed out after {secs}s"
+                    "request {method} timed out"
                 )));
             }
         };
@@ -1459,6 +1618,71 @@ mod tests {
         assert!(
             client.pending.lock().await.is_empty(),
             "pending map must not leak the timed-out request"
+        );
+    }
+
+    /// #1505 S4-2: a caller-supplied deadline must clean the pending map the
+    /// same way the per-client one does.
+    ///
+    /// This is the regression that `never_answered_request_times_out_and_
+    /// cleans_pending` above stopped covering the moment a caller wanted a
+    /// bound shorter than `DEFAULT_REQUEST_TIMEOUT`. Wrapping `request` in an
+    /// outer `tokio::time::timeout` drops the future before its own elapse arm
+    /// runs, so the `(id -> oneshot)` entry stays in the shared client's map
+    /// until codex answers late or the connection closes — one leaked entry
+    /// per call against a connected-but-stalled daemon. `GET /api/models` is
+    /// exactly that caller, so the bound is passed down instead.
+    #[tokio::test]
+    async fn a_caller_deadline_cleans_pending_the_same_way() {
+        let h = harness().await;
+        // Server end stays alive and silent.
+        let _server = h.server;
+        let client = h.client;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(50);
+        let err = client
+            .request_until::<Value>("model/list", json!({}), deadline)
+            .await
+            .expect_err("a never-answered request must error");
+        match err {
+            CalmError::CodexAppServer(msg) => {
+                assert!(
+                    msg.contains("model/list") && msg.contains("timed out"),
+                    "unexpected error message: {msg}"
+                );
+            }
+            other => panic!("expected CodexAppServer timeout error, got {other:?}"),
+        }
+
+        assert!(
+            client.pending.lock().await.is_empty(),
+            "a caller-supplied deadline must not leak the timed-out request"
+        );
+    }
+
+    /// A budget that is already spent answers without putting a frame on the
+    /// wire — and therefore also without registering a pending entry.
+    #[tokio::test]
+    async fn an_expired_deadline_never_reaches_the_wire() {
+        let h = harness().await;
+        let _server = h.server;
+        let client = h.client;
+
+        let spent = tokio::time::Instant::now() - Duration::from_secs(1);
+        let err = client
+            .request_until::<Value>("config/read", json!({}), spent)
+            .await
+            .expect_err("a spent budget must not be waited on");
+        match err {
+            CalmError::CodexAppServer(msg) => assert!(
+                msg.contains("config/read") && msg.contains("budget"),
+                "unexpected error message: {msg}"
+            ),
+            other => panic!("expected CodexAppServer error, got {other:?}"),
+        }
+        assert!(
+            client.pending.lock().await.is_empty(),
+            "nothing was sent, so nothing may be pending"
         );
     }
 

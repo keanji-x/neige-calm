@@ -18,6 +18,7 @@ pub mod codex;
 pub mod codex_cards;
 pub mod conversations_shared;
 pub mod fs;
+pub mod models;
 pub mod overlays;
 pub mod plugins;
 pub mod settings;
@@ -75,6 +76,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(claude_cards::router())
         .merge(codex_cards::router())
         .merge(fs::router())
+        .merge(models::router())
         .merge(settings::router())
 }
 
