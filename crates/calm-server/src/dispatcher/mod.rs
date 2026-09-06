@@ -288,6 +288,13 @@ fn dispatcher_operation_runtime(
     let mcp_socket_path = mcp_server
         .as_ref()
         .map(|s| s.shim_config.socket_path.clone());
+    let isolated_codex_adapter =
+        Arc::new(crate::isolated_codex::adapter::IsolatedCodexAdapter::new(
+            None,
+            route_repo.clone(),
+            mcp_socket_path.clone(),
+            write.clone(),
+        ));
     let codex_worker_adapter = Arc::new(CodexWorkerAdapter::new(
         route_repo.clone(),
         codex.clone(),
@@ -353,6 +360,7 @@ fn dispatcher_operation_runtime(
             terminal_worker_adapter,
             codex_adapter,
             codex_worker_adapter,
+            isolated_codex_adapter,
             claude_adapter,
             claude_worker_adapter,
             claude_restart_adapter,
@@ -510,6 +518,19 @@ impl Dispatcher {
     #[cfg(any(test, feature = "fixtures"))]
     pub fn abort_event_listener_for_test(&self) {
         self.handle.abort();
+    }
+
+    /// Called only while assembling a fixture, before work is submitted.
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn stop_background_for_fixture_rebuild(&self) {
+        self.handle.abort();
+        self.reconcile_handle.abort();
+        if let Some(handle) = &self.reaper_handle {
+            handle.abort();
+        }
+        if let Some(handle) = &self.liveness_feeder_handle {
+            handle.abort();
+        }
     }
 
     #[cfg(any(test, feature = "fixtures"))]
