@@ -8,7 +8,8 @@ use crate::operation::{Operation, Tx, TxOutput};
 use std::sync::Arc;
 
 pub(crate) async fn load_tx(tx: &mut Tx<'_>, op_id: &str) -> Result<RunRecord> {
-    let row: Option<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+    type StoredOperationRow = (String, String, String, Option<String>, Option<String>);
+    let row: Option<StoredOperationRow> = sqlx::query_as(
         "SELECT kind,payload_json,target_type,target_id,tx_output_json FROM operations WHERE id=?1",
     )
     .bind(op_id)
