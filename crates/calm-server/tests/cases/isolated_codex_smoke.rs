@@ -50,6 +50,7 @@ pub(super) struct Fixture {
     pub(super) boot: crate::mcp_track_report::Boot,
     pub(super) root: tempfile::TempDir,
     pub(super) state: AppState,
+    pub(super) backend: Arc<Backend>,
 }
 
 pub(super) async fn fixture(scenario: &str) -> Fixture {
@@ -151,13 +152,20 @@ pub(super) async fn fixture(scenario: &str) -> Fixture {
     .unwrap();
     let state = state
         .with_mcp_server(mcp)
-        .with_isolated_codex_backend(backend);
+        .with_isolated_codex_backend(backend.clone());
     state.worker_flow.start_on_boot().await.unwrap();
-    Fixture { boot, root, state }
+    Fixture {
+        boot,
+        root,
+        state,
+        backend,
+    }
 }
 
 async fn run_case(scenario: &str, expected: calm_server::model::TaskStatus) {
-    let Fixture { boot, root, state } = fixture(scenario).await;
+    let Fixture {
+        boot, root, state, ..
+    } = fixture(scenario).await;
     let mut published = boot.ctx.events.subscribe();
     let declaration = json!({"key":"pilot","kind":"codex","goal":"Write result.txt containing 42 and report completion through native MCP.",
         "declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,"ready":true,
