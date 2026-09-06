@@ -24,7 +24,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useEffect } from 'react';
 
-import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
@@ -707,7 +706,7 @@ describe('track conversations', () => {
   it('[F5] keeps an uncertain attempt distinct from an acknowledged queued echo and matching history', async () => {
     const text = 'Repeat after queue';
     let attempts = 0;
-    let rows: HarnessItem[] = [];
+    let rows: ReturnType<typeof harnessMessage>[] = [];
     const { client, requests } = setup((request) => {
       if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running' });
       if (request.path.includes(HISTORY_PATH)) return ok(rows);
