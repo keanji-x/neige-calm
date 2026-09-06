@@ -46,7 +46,14 @@ async fn isolated_codex_boot_recovers_acknowledged_spawn_started_running() {
 async fn isolated_codex_boot_recovers_acknowledged_spawn_started_done() {
     run_case("crash-done", calm_server::model::TaskStatus::Done).await;
 }
-async fn run_case(scenario: &str, expected: calm_server::model::TaskStatus) {
+pub(super) struct Fixture {
+    pub(super) boot: crate::mcp_track_report::Boot,
+    pub(super) root: tempfile::TempDir,
+    pub(super) state: AppState,
+    pub(super) backend: Arc<Backend>,
+}
+
+pub(super) async fn fixture(scenario: &str) -> Fixture {
     let boot = boot().await;
     let root = tempfile::Builder::new()
         .prefix("single-loop-")
@@ -104,7 +111,6 @@ async fn run_case(scenario: &str, expected: calm_server::model::TaskStatus) {
         .unwrap(),
     );
     let events = boot.ctx.events.clone();
-    let mut published = events.subscribe();
     let areas = calm_server::track_area_cache::TrackAreaCache::new();
     boot.repo.seed_track_area_cache(&areas).await.unwrap();
     let write = WriteContext::new(boot.card_role_cache.clone(), areas.clone());
@@ -146,8 +152,21 @@ async fn run_case(scenario: &str, expected: calm_server::model::TaskStatus) {
     .unwrap();
     let state = state
         .with_mcp_server(mcp)
-        .with_isolated_codex_backend(backend);
+        .with_isolated_codex_backend(backend.clone());
     state.worker_flow.start_on_boot().await.unwrap();
+    Fixture {
+        boot,
+        root,
+        state,
+        backend,
+    }
+}
+
+async fn run_case(scenario: &str, expected: calm_server::model::TaskStatus) {
+    let Fixture {
+        boot, root, state, ..
+    } = fixture(scenario).await;
+    let mut published = boot.ctx.events.subscribe();
     let declaration = json!({"key":"pilot","kind":"codex","goal":"Write result.txt containing 42 and report completion through native MCP.",
         "declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,"ready":true,
         "no_gate_reason":"Report-driven single-task fixture.","context":{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}}});
