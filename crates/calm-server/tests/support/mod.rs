@@ -25,6 +25,8 @@ pub mod mcp;
 pub mod migration_replay;
 #[allow(dead_code)]
 pub mod oracle;
+#[allow(dead_code)]
+pub mod planner_queue_fixture;
 #[cfg(feature = "codex-e2e")]
 #[allow(dead_code)]
 pub mod planner_turn;

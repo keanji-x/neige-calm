@@ -430,6 +430,59 @@ export const harnessUserMessageEnqueuedSchema = z.object({
 });
 
 /**
+ * `ActorId`, mirrored from `wire.ts`.
+ *
+ * Rust spells it `#[serde(tag = "kind", content = "id")]`, so the three
+ * id-less actors are a bare `{kind}` object and the rest carry `id`. The
+ * `toEqualTypeOf` contract test is what keeps this union in step with the
+ * generated type; it is written out rather than collapsed to
+ * `z.object({kind: z.string(), id: z.string().optional()})` because that
+ * looser shape would parse `{kind: "User", id: "anything"}` and would no
+ * longer be the same type.
+ */
+export const actorIdSchema = z.union([
+  z.object({ kind: z.literal('User') }),
+  z.object({ kind: z.literal('Kernel') }),
+  z.object({ kind: z.literal('KernelDispatcher') }),
+  z.object({ kind: z.literal('Plugin'), id: z.string() }),
+  z.object({ kind: z.literal('AiPlanner'), id: z.string() }),
+  z.object({ kind: z.literal('AiCodex'), id: z.string() }),
+  z.object({ kind: z.literal('AiClaude'), id: z.string() }),
+  z.object({ kind: z.literal('AiPlannerSession'), id: z.string() }),
+  z.object({ kind: z.literal('AiCodexSession'), id: z.string() }),
+  z.object({ kind: z.literal('AiClaudeSession'), id: z.string() }),
+]);
+
+/**
+ * #1505 PR2 — `Event::HarnessQueueChanged`. One addressable entry in a planner
+ * card's pending queue was rewritten, removed, delivered by a steer, or
+ * discarded by the kernel.
+ *
+ * `steered` and `dropped` have no emitter yet (#1505 PR3 and PR2b); they are
+ * in the union because the value set is part of the wire contract, not because
+ * this build can produce them.
+ *
+ * `actor` is here rather than read off the envelope because the websocket
+ * frame is `{ev, data}` and carries no envelope actor at all.
+ */
+export const harnessQueueChangedSchema = z.object({
+  ev: z.literal('harness.queue.changed'),
+  data: z.object({
+    worker_session_id: z.string(),
+    card_id: z.string(),
+    track_id: z.string(),
+    entry_id: z.string(),
+    change: z.union([
+      z.literal('edited'),
+      z.literal('deleted'),
+      z.literal('steered'),
+      z.literal('dropped'),
+    ]),
+    actor: actorIdSchema,
+  }),
+});
+
+/**
  * Issue #247 PR2 — `Event::TrackReportEdited`. Structured edit-log
  * companion to `card.updated` emitted from every track-report write.
  * `card.updated` stays the generic "row changed, re-fetch" signal
@@ -1052,6 +1105,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   harnessPhaseChangedSchema,
   harnessTranscriptClearedSchema,
   harnessUserMessageEnqueuedSchema,
+  harnessQueueChangedSchema,
   trackReportEditedSchema,
   overlaySetSchema,
   overlayDeletedSchema,

@@ -186,6 +186,10 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'harness.user_message.enqueued': noop(
     'Report view card-topic consumers observe queued user messages directly.',
   ),
+  'harness.queue.changed': noop(
+    'The legacy tree has no pending-queue UI (#1505 GAP-N); its card-topic '
+    + 'consumers already refetch on the phase and item events that follow.',
+  ),
   'track.report_edited': {
     keys: (ev) => [
       trackFilesKey(ev.data.track_id),

@@ -26,9 +26,11 @@
 //!   3. asserts `canonical` is a serde fixed point (deserialize → serialize
 //!      returns it unchanged).
 
-use calm_server::event::{ArtifactRef, EditAuthor, Event, ForgeMergeSubject, TrackUpdatedPayload};
+use calm_server::event::{
+    ArtifactRef, EditAuthor, Event, ForgeMergeSubject, HarnessQueueChange, TrackUpdatedPayload,
+};
 use calm_server::harness::snapshot::HarnessPhaseTag;
-use calm_server::ids::{AreaId, CardId, TrackId};
+use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::model::{
     Area, AreaKind, Card, CardRuntimeView, Overlay, Track, TrackLifecycle, TrackWorkspace,
     TrackWorkspaceKind,
@@ -467,6 +469,24 @@ golden_test!(
         card_id: CardId::from("card-01"),
         track_id: TrackId::from("track-01"),
         char_count: 280,
+    }
+);
+
+// #1505 PR2. `change` is `deleted` here because that is the branch this slice
+// actually emits; `edited` is the other one. `steered` and `dropped` have no
+// emitter until PR3 and PR2b respectively, so this golden does not demonstrate
+// them being produced — the four spellings are pinned separately by
+// `calm_types::event::tests::harness_queue_change_wire_spellings`.
+golden_test!(
+    harness_queue_changed,
+    "harness_queue_changed.json",
+    Event::HarnessQueueChanged {
+        worker_session_id: "rt-01".into(),
+        card_id: CardId::from("card-01"),
+        track_id: TrackId::from("track-01"),
+        entry_id: "entry-01".into(),
+        change: HarnessQueueChange::Deleted,
+        actor: ActorId::User,
     }
 );
 
@@ -1176,7 +1196,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 49] = [
+const ALL_KIND_TAGS: [&str; 50] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1192,6 +1212,7 @@ const ALL_KIND_TAGS: [&str; 49] = [
     "harness.phase.changed",
     "harness.transcript.cleared",
     "harness.user_message.enqueued",
+    "harness.queue.changed",
     "track.report_edited",
     "overlay.set",
     "overlay.deleted",
@@ -1260,7 +1281,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 75,
+        files, 76,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1296,6 +1317,7 @@ fn kind_tag_list_matches_enum() {
             Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
             Event::HarnessTranscriptCleared { .. } => "harness.transcript.cleared",
             Event::HarnessUserMessageEnqueued { .. } => "harness.user_message.enqueued",
+            Event::HarnessQueueChanged { .. } => "harness.queue.changed",
             Event::TrackReportEdited { .. } => "track.report_edited",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
@@ -1338,7 +1360,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        49,
+        50,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

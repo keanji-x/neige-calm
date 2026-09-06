@@ -380,7 +380,8 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         Event::HarnessItemAdded { card_id, .. }
         | Event::HarnessPhaseChanged { card_id, .. }
         | Event::HarnessTranscriptCleared { card_id, .. }
-        | Event::HarnessUserMessageEnqueued { card_id, .. } => {
+        | Event::HarnessUserMessageEnqueued { card_id, .. }
+        | Event::HarnessQueueChanged { card_id, .. } => {
             add_card_runtime_paths(&mut delta, card_id.as_str());
         }
         Event::TrackReportEdited { card_id, .. } => {

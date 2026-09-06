@@ -1,0 +1,35 @@
+-- #1505 PR2 — SYNC_EVENT_VERSION 16 -> 17, for the new
+-- `harness.queue.changed` frame.
+--
+-- WHY A MIGRATION EXISTS FOR A KIND WITH NO HISTORY.
+--
+-- `crates/calm-truth/src/db/sqlite/events.rs` stamps every row it writes with
+-- the Rust constant, with no per-kind branch, so a `harness.queue.changed`
+-- row is born at 17 and the statement below matches zero rows on every
+-- database that has ever existed. It is not here to fix data.
+--
+-- It is here because `scripts/gate-sync-event-version-lockstep.sh` R2 pins the
+-- highest-numbered stamping migration literal by literal against the constant,
+-- in BOTH directions: a migration stamping a version the constant has not
+-- reached is caught, and so is a constant raised without a migration to go
+-- with it. That second direction is what this file answers. The effect is that
+-- "the version in force" is a fact recorded in the migration sequence rather
+-- than in one Rust literal, and the two can never quietly disagree.
+--
+-- It also writes down, executably, the sentence the constant only implies:
+-- every `harness.queue.changed` row lives at event_version 17.
+--
+-- WHAT THE BUMP COSTS, RECORDED HERE BECAUSE IT IS PAID BY EVERY BUMP AND
+-- NAMED BY NONE OF THEM SO FAR.
+--
+-- The client gate is `eventVersion > syncEventVersion`
+-- (`fe/core/events/reducer.ts`, `web/src/api/events.ts`) and it does not look
+-- at `kind`. `syncEventVersion` is fetched once, at mount. So a tab that was
+-- open across the upgrade holds 16, and from the deploy onwards it discards
+-- EVERY event — cards, tracks, reports, today, terminals — and does not
+-- advance its cursor. Live updates are frozen in that tab until it reloads.
+-- The direction is deliberate: dropping frames without advancing the cursor
+-- is undone by a reload, whereas not bumping would let that tab accept a
+-- frame it cannot classify, advance past it, and skip the invalidation
+-- permanently and silently.
+UPDATE events SET event_version = 17 WHERE kind = 'harness.queue.changed';

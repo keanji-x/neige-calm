@@ -202,6 +202,60 @@ newest_stamping_file() { # <migrations-dir>
   printf '%s' "$out"
 }
 
+# The number one past the highest-numbered migration under <dir>, zero-padded
+# to four digits.
+#
+# A planted fixture MUST sort after every real migration, and this is not
+# cosmetic. R3 compares a kind rewrite's stamp against `seen_max` — the highest
+# literal in files sorting strictly EARLIER — so a fixture dropped into the
+# middle of the sequence is judged against an OLDER maximum, where its stamp can
+# be a legitimate strict raise rather than the hazard the mutation is supposed to
+# model. The mutation then passes the gate and the selftest reports the gate as
+# broken, when in fact the fixture stopped describing a hazard.
+#
+# That is measured, not hypothetical. These fixtures were written with a
+# hardcoded `0095_` prefix while 0094 was the newest stamping migration. #1449
+# then added `0095_worker_sessions_queue_harvested.sql` and #1505 PR2 added
+# `0096_harness_queue_changed_event_version.sql`, which raised the constant to
+# 17. The fixture landed between 0094 (stamping 16) and 0096 (stamping 17), so
+# `seen_max` was 16 when R3 reached it and its own 17 was a strict raise — a
+# correct migration, correctly accepted. CI caught the resulting selftest
+# failure; nothing inside the selftest would have.
+#
+# Deriving the prefix also removes a second hazard the literal carried: a real
+# migration that ever took the fixture's exact filename would be silently
+# overwritten in the throwaway copy, and the mutation would then be testing
+# something else entirely.
+next_migration_prefix() { # <migrations-dir>
+  local f n max=0
+  while IFS= read -r f; do
+    n="$(basename "$f" | grep -oP '^[0-9]+' || true)"
+    [ -n "$n" ] || continue
+    n=$((10#$n))
+    if [ "$n" -gt "$max" ]; then max="$n"; fi
+  done < <(find "$1" -maxdepth 1 -name '*.sql')
+  if [ "$max" -eq 0 ]; then
+    echo "::error::selftest: no numbered .sql under $1 — a planted fixture cannot be ordered against anything" >&2
+    return 1
+  fi
+  printf '%04d' "$((max + 1))"
+}
+
+# Fail unless <file> is the last .sql in sort order under <dir>.
+#
+# The premise every planted-fixture mutation rests on, asserted rather than
+# assumed: if the fixture does not sort last, R3 weighs it against an older
+# `seen_max` and the mutation is no longer the hazard its label names. This is
+# the check whose absence let the `0095_` fixtures go inert.
+assert_sorts_last() { # <migrations-dir> <fixture-path>
+  local dir="$1" fixture="$2" last
+  last="$(find "$dir" -maxdepth 1 -name '*.sql' | sort | tail -n1)"
+  if [ "$last" != "$fixture" ]; then
+    echo "::error::selftest: planted fixture $(basename "$fixture") does not sort last under $dir (last is $(basename "$last")) — R3 would judge it against an older maximum, so this mutation no longer models the hazard it names" >&2
+    return 1
+  fi
+}
+
 # Rewrite exactly ONE `event_version = <from>` literal (the first) to <to>.
 mutate_one_literal() { # <file> <from> <to>
   local file="$1" from="$2" to="$3" tmpf
@@ -244,7 +298,7 @@ expect_reject() { # <label> <rust> <migrations> <why>
 }
 
 selftest() {
-  local tmp const_v bumped lowered newest base
+  local tmp const_v bumped lowered newest base fixture
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" RETURN
@@ -295,10 +349,12 @@ selftest() {
   #    greps the raw file sees a literal equal to the constant and passes,
   #    while ZERO rows are stamped.
   base="$(fresh_migrations m4)"
-  cat > "$base/0095_selftest_comment_only_stamp.sql" <<EOF
+  fixture="$base/$(next_migration_prefix "$base")_selftest_comment_only_stamp.sql"
+  cat > "$fixture" <<EOF
 -- selftest fixture: the stamp lives only in prose.
 UPDATE events SET kind = 'selftest.renamed' WHERE kind = 'selftest.legacy';  -- event_version = ${const_v}
 EOF
+  assert_sorts_last "$base" "$fixture"
   expect_reject "kind rewrite whose only event_version literal is inside a -- comment" \
     "$tmp/event.rs" "$base" \
     "comments are not executable SQL; that migration stamps nothing"
@@ -308,9 +364,11 @@ EOF
   #    equality passes it; a client at exactly that version accepts the frame,
   #    cannot classify the new tag, and loses the row.
   base="$(fresh_migrations m5)"
-  cat > "$base/0095_selftest_kind_rewrite_no_bump.sql" <<EOF
+  fixture="$base/$(next_migration_prefix "$base")_selftest_kind_rewrite_no_bump.sql"
+  cat > "$fixture" <<EOF
 UPDATE events SET kind = 'selftest.renamed', event_version = ${const_v} WHERE kind = 'selftest.legacy';
 EOF
+  assert_sorts_last "$base" "$fixture"
   expect_reject "kind rewrite restamping the version already in force ($const_v)" \
     "$tmp/event.rs" "$base" \
     "a rename must raise the version strictly or the new discriminator reaches a client that cannot read it"

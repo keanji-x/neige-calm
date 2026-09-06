@@ -75,7 +75,28 @@ pub struct ReportBlockWriteResponse {
 /// attempted and `redirect` tells the refused caller where its own channel is —
 /// those differ per endpoint, the rule does not. Restating the rule per
 /// endpoint is how the copies drift apart, so callers pass wording and never a
-/// second `actor.as_str() == "user"`.
+/// second `actor.as_str() == "user"`. A 403 that names the wrong subsystem is a
+/// false statement in the audit log, which is the other reason the wording is
+/// a parameter and not a second copy of this function.
+///
+/// # The criterion is `as_str()`, deliberately, and NOT `to_actor_id()`
+///
+/// `Actor::to_actor_id` maps `ai:codex` to `ActorId::AiCodex` and then, by a
+/// defensive default, folds every OTHER `ai:<id>` the middleware admits —
+/// `ai:claude` included — down to `ActorId::User`. A guard written on the id
+/// would therefore admit exactly the agents it was written to exclude, and
+/// would look correct doing it. Pinned by
+/// `every_ai_actor_is_refused_including_the_ones_that_map_to_user`, which
+/// walks `ai:claude` explicitly for that reason.
+///
+/// # Argument order is not type-checked
+///
+/// Two of the three parameters are `&str`, so a call that swaps `subject` and
+/// `redirect` COMPILES and produces a 403 naming the wrong subsystem — the
+/// false audit statement above, arriving silently. #1515 and #1505 PR2 each
+/// grew this helper independently with the two orders reversed, and the merge
+/// of the two is where that was nearly shipped. Read a new call site back
+/// against these names rather than trusting the build.
 pub(crate) fn require_rest_user_actor_for(
     actor: &Actor,
     subject: &str,
@@ -270,4 +291,52 @@ pub async fn move_block(
     )
     .await
     .map(Json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1505 PR2 — two write ports, one criterion, two sentences.
+    ///
+    /// The 403 body lands in the audit log, so a planner-input refusal that
+    /// tells the reader to use `calm.report.*` tools is a false statement about
+    /// what the caller should have done. This is the reason the subject is a
+    /// parameter and not a second copy of the check.
+    #[test]
+    fn each_write_port_names_itself_in_its_403() {
+        let agent = Actor("ai:codex".into());
+
+        let report = require_rest_user_actor(&agent)
+            .expect_err("an agent is refused")
+            .to_string();
+        assert!(report.contains("track-report edit"), "{report}");
+        assert!(report.contains("calm.report.*"), "{report}");
+        assert!(!report.contains("planner input"), "{report}");
+
+        let planner = require_rest_user_actor_for(
+            &agent,
+            "planner input edit",
+            "A queued message is the person's own un-sent intent.",
+        )
+        .expect_err("an agent is refused")
+        .to_string();
+        assert!(planner.contains("planner input edit"), "{planner}");
+        assert!(!planner.contains("track-report"), "{planner}");
+        assert!(!planner.contains("calm.report.*"), "{planner}");
+    }
+
+    /// The criterion itself: `ai:claude` is admitted by the middleware and
+    /// collapses to `ActorId::User` under `Actor::to_actor_id`, so a guard
+    /// written on the id would admit it. This one does not.
+    #[test]
+    fn every_ai_actor_is_refused_including_the_ones_that_map_to_user() {
+        for header in ["ai:codex", "ai:claude", "ai:planner", "ai:anything"] {
+            assert!(
+                require_rest_user_actor(&Actor(header.into())).is_err(),
+                "{header} must not reach a human-only REST write port"
+            );
+        }
+        assert!(require_rest_user_actor(&Actor("user".into())).is_ok());
+    }
 }

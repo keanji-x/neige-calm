@@ -1177,6 +1177,234 @@
         }
       }
     },
+    "/api/cards/{id}/planner/input/{entry_id}": {
+      "delete": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "delete_planner_input",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entry_id",
+            "in": "path",
+            "description": "Pending queue entry id from `GET /planner/run`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeletePlannerInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Entry removed from the queue before it was delivered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannerInputMutationResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not `X-Calm-Actor: user`, or the card is not a planner codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found, or the entry is no longer in the pending queue — it may already have been delivered. Not retryable: a re-issued DELETE can answer 200 if the batch was rebuffered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`if_entry_rev` does not match (code `planner_input_stale`), or the harness is shutting down (code `conflict`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannerInputStaleBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Harness command channel saturated — retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "edit_planner_input",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entry_id",
+            "in": "path",
+            "description": "Pending queue entry id from `GET /planner/run`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditPlannerInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Entry rewritten",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannerInputMutationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty or over-long text",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not `X-Calm-Actor: user`, or the card is not a planner codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found, or the entry is no longer in the pending queue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`if_entry_rev` does not match (code `planner_input_stale`, body carries the current text and rev), or the harness is shutting down (code `conflict`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannerInputStaleBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Harness command channel saturated — retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/planner/interrupt": {
       "post": {
         "tags": [
@@ -6163,6 +6391,21 @@
           "unknown"
         ]
       },
+      "DeletePlannerInputBody": {
+        "type": "object",
+        "required": [
+          "if_entry_rev"
+        ],
+        "properties": {
+          "if_entry_rev": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The `rev` the client last read for this entry. Required — see the\nmodule header.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "DeleteReportBlockBody": {
         "type": "object",
         "required": [
@@ -6238,6 +6481,26 @@
             "type": "string"
           }
         }
+      },
+      "EditPlannerInputBody": {
+        "type": "object",
+        "required": [
+          "text",
+          "if_entry_rev"
+        ],
+        "properties": {
+          "if_entry_rev": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The `rev` the client last read for this entry. A mismatch is a 409, not\na silent overwrite.",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string",
+            "description": "Replacement text. Held to the same limits as `POST /planner/input`,\nbecause it becomes the same turn input."
+          }
+        },
+        "additionalProperties": false
       },
       "ErrorBody": {
         "type": "object",
@@ -7206,6 +7469,72 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "PlannerInputMutationResponse": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "worker_session_id",
+          "entry_id",
+          "rev"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "entry_id": {
+            "type": "string"
+          },
+          "rev": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The entry's `rev` after the change. On a delete this is the rev it\ncarried when it left, so a client can tell which read it acted on.",
+            "minimum": 0
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The entry's text after an edit; null for a delete.\n\nEchoed rather than assumed: the client is then reconciling against what\nthe queue holds rather than against what it hoped it would hold. The\nqueue as a whole is deliberately NOT returned — this same mutation emits\n`harness.queue.changed`, which invalidates the planner-run query, so a\nlist attached here would be superseded before it could be used."
+          },
+          "worker_session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "PlannerInputStaleBody": {
+        "type": "object",
+        "description": "409 body for a compare-and-swap failure.\n\nIt carries the current text and rev because the alternative is a client\nthat has to issue a read to find out what it collided with, and the read it\nwould issue can be superseded again before it lands. The extra fields sit\nalongside `error`/`code` so a generic error handler still sees the shape it\nexpects.",
+        "required": [
+          "error",
+          "code",
+          "entry_id",
+          "text",
+          "rev"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Always `planner_input_stale`."
+          },
+          "entry_id": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "rev": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The entry's current rev — resend with this to overwrite deliberately.",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string",
+            "description": "The entry's text as it stands now."
           }
         }
       },

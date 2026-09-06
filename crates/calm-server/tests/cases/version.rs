@@ -137,10 +137,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
     );
-    // #1316 S4b: 15 -> 16 alongside migration 0094, which stamps the rows it
-    // rewrites with 16. `scripts/gate-sync-event-version-lockstep.sh` binds
-    // the constant to that literal.
-    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 16);
+    // #1505 PR2: 16 -> 17 alongside migration 0098, which stamps
+    // `harness.queue.changed` rows with 17.
+    // `scripts/gate-sync-event-version-lockstep.sh` binds the constant to that
+    // literal; the assertion below is the literal number, so bumping the
+    // constant alone cannot make this file agree with itself.
+    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 17);
 
     // minWebCompatVersion must echo the in-process constant — the whole
     // point of the field is to bind frontend expectations to a value the

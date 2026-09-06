@@ -235,6 +235,15 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/cards/{id}/harness/items", get(get_harness_items))
         .route("/api/cards/{id}/planner/input", post(send_planner_input))
+        // #1505 PR2. The handlers live in `routes::planner_input`, but the
+        // route is mounted here because this router owns `/api/cards/{id}/**`
+        // and a second router on the same prefix is how two mounts start
+        // disagreeing about a middleware.
+        .route(
+            "/api/cards/{id}/planner/input/{entry_id}",
+            axum::routing::patch(crate::routes::planner_input::edit_planner_input)
+                .delete(crate::routes::planner_input::delete_planner_input),
+        )
         .route("/api/cards/{id}/ratify", post(ratify_card))
         .route(
             "/api/cards/{id}/planner/interrupt",
@@ -996,6 +1005,27 @@ impl From<&TokenUsage> for PlannerRunTokenUsage {
 
 pub(crate) const MAX_PLANNER_INPUT_CHARS: usize = 32_768;
 
+/// The one body check for planner input, shared by the send route and the
+/// #1505 PR2 edit route.
+///
+/// An edit is a send by another name: the text it leaves in the queue is the
+/// text a turn will carry, so admitting through `PATCH` something `POST`
+/// refuses would make the limit a formality. Shared rather than restated —
+/// a second copy of "not empty, at most N characters" is a copy that can
+/// disagree.
+pub(crate) fn validate_planner_input_text(text: &str) -> Result<usize> {
+    if text.trim().is_empty() {
+        return Err(CalmError::BadRequest("text must not be empty".into()));
+    }
+    let char_count = text.chars().count();
+    if char_count > MAX_PLANNER_INPUT_CHARS {
+        return Err(CalmError::BadRequest(format!(
+            "text must be at most {MAX_PLANNER_INPUT_CHARS} characters",
+        )));
+    }
+    Ok(char_count)
+}
+
 fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
     match actor.to_actor_id() {
         ActorId::AiCodex(c) if c.as_str().is_empty() => ActorId::AiCodex(card_id.clone()),
@@ -1033,19 +1063,7 @@ pub(crate) async fn send_planner_input(
     Json(body): Json<SendPlannerInputRequest>,
 ) -> Result<Json<SendPlannerInputResponse>> {
     let (s, w, cs, id, text) = (s, w, cs, id, body.text);
-    let validate = |value: &str| {
-        if value.trim().is_empty() {
-            return Err(CalmError::BadRequest("text must not be empty".into()));
-        }
-        let char_count = value.chars().count();
-        if char_count > MAX_PLANNER_INPUT_CHARS {
-            return Err(CalmError::BadRequest(format!(
-                "text must be at most {MAX_PLANNER_INPUT_CHARS} characters",
-            )));
-        }
-        Ok(char_count)
-    };
-    let char_count = validate(&text)?;
+    let char_count = validate_planner_input_text(&text)?;
 
     let card = s
         .repo

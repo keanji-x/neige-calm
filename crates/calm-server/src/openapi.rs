@@ -34,6 +34,10 @@ use crate::routes::models::{
     CatalogModel, DefaultSource, ModelDefaults, ModelSource, ModelsResponse, ReasoningEffortOption,
 };
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
+use crate::routes::planner_input::{
+    DeletePlannerInputBody, EditPlannerInputBody, PlannerInputMutationResponse,
+    PlannerInputStaleBody,
+};
 use crate::routes::plugins::{
     InstallBody, InstallSource, PluginDetail, PluginListItem, ToolCallBody, ViewCatalogEntry,
     ViewSizeWire,
@@ -120,6 +124,12 @@ use utoipa::OpenApi;
         crate::routes::cards::interrupt_planner_card,
         crate::routes::cards::get_planner_run,
         crate::routes::cards::reset_planner_card,
+        // #1505 PR2. Mounted in `routes::cards::router()`, declared here
+        // because this list is hand-maintained: omitting a handler is not a
+        // compile error and not a drift failure — the endpoint simply never
+        // reaches either generated client.
+        crate::routes::planner_input::edit_planner_input,
+        crate::routes::planner_input::delete_planner_input,
         crate::routes::cards::delete_card,
         // ---- overlays ----
         crate::routes::overlays::list_overlays,
@@ -236,6 +246,10 @@ use utoipa::OpenApi;
         InterruptPlannerCardResponse,
         GetPlannerRunResponse,
         PlannerRunTokenUsage,
+        EditPlannerInputBody,
+        DeletePlannerInputBody,
+        PlannerInputMutationResponse,
+        PlannerInputStaleBody,
         HarnessPhaseTag,
         ResetPlannerCardResponse,
         // Issue #229 PR B — track-report card payload shape (kernel-owned;

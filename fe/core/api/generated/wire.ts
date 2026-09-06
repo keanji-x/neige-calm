@@ -159,7 +159,7 @@ cleared_params_bytes: number | null,
  * in milliseconds. Lets a retrospective tell "reset an hour in"
  * from "reset after a week". `None` on pre-#1252 rows only.
  */
-card_age_ms_at_clear: number | null, } } | { "ev": "harness.user_message.enqueued", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, char_count: number, } } | { "ev": "track.report_edited", "data": { track_id: TrackId, card_id: CardId, author: EditAuthor, 
+card_age_ms_at_clear: number | null, } } | { "ev": "harness.user_message.enqueued", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, char_count: number, } } | { "ev": "harness.queue.changed", "data": { worker_session_id: string, card_id: CardId, track_id: TrackId, entry_id: string, change: HarnessQueueChange, actor: ActorId, } } | { "ev": "track.report_edited", "data": { track_id: TrackId, card_id: CardId, author: EditAuthor, 
 /**
  * Submitting plugin id when `author == EditAuthor::Plugin`
  * (#955 §5.3); `None` for every other author.
@@ -297,6 +297,17 @@ export type HarnessInputSegment = { presentation: HarnessInputPresentation, text
 export type HarnessItem = { id: number, worker_session_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, input_segments?: Array<HarnessInputSegment>, created_at_ms: number, };
 
 export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" | "issuing_interrupt" | "turn_running" | "turn_completed" | "resumed" | "wedged";
+
+/**
+ * #1505 PR2 — what happened to one entry in the harness pending queue.
+ *
+ * Four values, and only two of them have an emitter in this slice. The other
+ * two are declared here rather than later because the wire vocabulary is a
+ * versioned artifact: adding a value to a client-visible enum is the same
+ * class of change as adding the event, and doing it once is cheaper than
+ * doing it three times. Each variant says below whether anything emits it.
+ */
+export type HarnessQueueChange = "edited" | "deleted" | "steered" | "dropped";
 
 export type Overlay = { id: string, plugin_id: string, 
 /**

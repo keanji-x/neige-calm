@@ -21,6 +21,12 @@ fn document_contains_every_annotated_path() {
         "/api/tracks/{track_id}/cards",
         "/api/cards/{id}",
         "/api/cards/{id}/planner/input",
+        // #1505 PR2. `openapi.rs`'s `paths(...)` is hand-maintained, and
+        // omitting a handler there is silent: the drift gate compares the
+        // generated files against themselves, so a route that never entered
+        // the document never enters either generated client and nothing goes
+        // red. This line is the guard.
+        "/api/cards/{id}/planner/input/{entry_id}",
         "/api/cards/{id}/planner/reset",
         "/api/cards/{card_id}/terminal",
         "/api/tracks/{track_id}/terminal-cards",
@@ -86,6 +92,11 @@ fn document_contains_every_wire_model() {
         "CardPatch",
         "SendPlannerInputRequest",
         "SendPlannerInputResponse",
+        // #1505 PR2 — the queue write port.
+        "EditPlannerInputBody",
+        "DeletePlannerInputBody",
+        "PlannerInputMutationResponse",
+        "PlannerInputStaleBody",
         "ResetPlannerCardResponse",
         "Overlay",
         "NewOverlay",

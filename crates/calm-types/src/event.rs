@@ -4,7 +4,7 @@
 //! transport and broadcast behavior live outside this IO-free crate.
 
 use crate::harness::HarnessPhaseTag;
-use crate::ids::{AreaId, CardId, TrackId};
+use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::model::{Area, Card, Overlay, Track, TrackLifecycle};
 use crate::proposal::{ProposalDecision, ProposalOp};
 use serde::{Deserialize, Serialize};
@@ -255,7 +255,34 @@ impl EventScope {
 /// Bump this together with a migration default whenever clients must gate on a
 /// new persisted wire shape; otherwise old clients can advance past events they
 /// cannot parse.
-pub const SYNC_EVENT_VERSION: u32 = 16;
+pub const SYNC_EVENT_VERSION: u32 = 17;
+
+/// #1505 PR2 — what happened to one entry in the harness pending queue.
+///
+/// Four values, and only two of them have an emitter in this slice. The other
+/// two are declared here rather than later because the wire vocabulary is a
+/// versioned artifact: adding a value to a client-visible enum is the same
+/// class of change as adding the event, and doing it once is cheaper than
+/// doing it three times. Each variant says below whether anything emits it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum HarnessQueueChange {
+    /// A human rewrote the entry's text through
+    /// `PATCH /api/cards/{id}/planner/input/{entry_id}`. Emitted by this slice.
+    Edited,
+    /// A human removed the entry through
+    /// `DELETE /api/cards/{id}/planner/input/{entry_id}`. Emitted by this
+    /// slice.
+    Deleted,
+    /// The entry left the queue because a running turn was steered with it.
+    /// **Nothing emits this yet** — the steer delivery path is #1505 PR3.
+    Steered,
+    /// The kernel discarded the entry without delivering it: a snapshot loaded
+    /// with more than `MAX_PENDING_QUEUE_LEN` entries drops from the head.
+    /// **Nothing emits this yet** — that call site is #1505 PR2b.
+    Dropped,
+}
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -464,6 +491,40 @@ pub enum Event {
         card_id: CardId,
         track_id: TrackId,
         char_count: u32,
+    },
+
+    /// #1505 PR2 — one addressable entry in the planner harness pending queue
+    /// stopped being what it was: rewritten, removed by its author, delivered
+    /// by a steer, or discarded by the kernel.
+    ///
+    /// Deliberately NOT a reuse of [`Event::HarnessUserMessageEnqueued`]: that
+    /// event's sentence is "a user message entered the queue", and a deletion
+    /// is not an entry and a steer is a departure plus a delivery. Reusing it
+    /// would make the audit log say the opposite of what happened.
+    ///
+    /// `entry_id` is the join key the enqueue event gained in the same slice,
+    /// so "where did my sentence go" is answerable from the `events` table
+    /// alone for everything except delivery (GAP-M: neither a drain nor a
+    /// refusal writes a row).
+    ///
+    /// **`actor` duplicates the envelope's actor column on purpose.** The
+    /// envelope carries it for audit, but the websocket frame handed to the
+    /// browser does not — `WireEvent` is `{ev, data}` — so a UI that wants to
+    /// tell "you deleted this" from "the kernel discarded it" has no other
+    /// source. `change` alone does not answer it either: PR2b's `Dropped` is
+    /// kernel-authored, but a future `Deleted` need not stay human-only.
+    ///
+    /// Body text is off the payload for the same reason as on
+    /// [`Event::HarnessUserMessageEnqueued`]: free-form user input would
+    /// balloon the events log, and the text is observable in the snapshot.
+    #[serde(rename = "harness.queue.changed")]
+    HarnessQueueChanged {
+        worker_session_id: String,
+        card_id: CardId,
+        track_id: TrackId,
+        entry_id: String,
+        change: HarnessQueueChange,
+        actor: ActorId,
     },
 
     /// Issue #247 PR2 — structured track-report edit-log entry. Emitted
@@ -1143,7 +1204,8 @@ impl Event {
             Event::HarnessItemAdded { card_id, .. }
             | Event::HarnessPhaseChanged { card_id, .. }
             | Event::HarnessTranscriptCleared { card_id, .. }
-            | Event::HarnessUserMessageEnqueued { card_id, .. } => EventMetadata {
+            | Event::HarnessUserMessageEnqueued { card_id, .. }
+            | Event::HarnessQueueChanged { card_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: Some("card".into()),
@@ -1330,6 +1392,7 @@ impl Event {
             Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
             Event::HarnessTranscriptCleared { .. } => "harness.transcript.cleared",
             Event::HarnessUserMessageEnqueued { .. } => "harness.user_message.enqueued",
+            Event::HarnessQueueChanged { .. } => "harness.queue.changed",
             Event::TrackReportEdited { .. } => "track.report_edited",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
@@ -1461,6 +1524,9 @@ pub fn topics(ev: &Event) -> Vec<String> {
             track_id, card_id, ..
         }
         | Event::HarnessUserMessageEnqueued {
+            track_id, card_id, ..
+        }
+        | Event::HarnessQueueChanged {
             track_id, card_id, ..
         } => vec![
             format!("card:{}", card_id),
@@ -2016,6 +2082,40 @@ mod scope_tests {
             user_message_enqueued.kind_tag(),
             "harness.user_message.enqueued"
         );
+
+        let queue_changed = Event::HarnessQueueChanged {
+            worker_session_id: "runtime-1".into(),
+            card_id: CardId::from("card-1"),
+            track_id: TrackId::from("track-1"),
+            entry_id: "entry-1".into(),
+            change: HarnessQueueChange::Deleted,
+            actor: ActorId::User,
+        };
+        assert_eq!(queue_changed.kind_tag(), "harness.queue.changed");
+    }
+
+    /// #1505 PR2 — the four `change` spellings, pinned one by one.
+    ///
+    /// The golden file for `harness.queue.changed` fixes the payload's field
+    /// names but exercises a single `change` value, and two of the four have
+    /// no emitter in this slice, so nothing else in the tree would notice a
+    /// renamed variant. `Steered` and `Dropped` are the ones this test exists
+    /// for: their first production use is PR3 and PR2b, and by then a client
+    /// is already parsing this enum.
+    #[test]
+    fn harness_queue_change_wire_spellings() {
+        for (change, wire) in [
+            (HarnessQueueChange::Edited, "\"edited\""),
+            (HarnessQueueChange::Deleted, "\"deleted\""),
+            (HarnessQueueChange::Steered, "\"steered\""),
+            (HarnessQueueChange::Dropped, "\"dropped\""),
+        ] {
+            let encoded = serde_json::to_string(&change).expect("change serializes");
+            assert_eq!(encoded, wire);
+            let decoded: HarnessQueueChange =
+                serde_json::from_str(wire).expect("change round-trips");
+            assert_eq!(decoded, change);
+        }
     }
 
     #[test]
@@ -2827,6 +2927,14 @@ mod scope_tests {
                 card_id: CardId::from("card-runtime"),
                 track_id: TrackId::from("track-1"),
                 char_count: 5,
+            },
+            Event::HarnessQueueChanged {
+                worker_session_id: "runtime-queue-changed".into(),
+                card_id: CardId::from("card-runtime"),
+                track_id: TrackId::from("track-1"),
+                entry_id: "entry-1".into(),
+                change: HarnessQueueChange::Edited,
+                actor: ActorId::User,
             },
             track_report_edited_sample(),
             Event::OverlaySet(overlay_sample("plugin-1", "card", "card-1", "status")),

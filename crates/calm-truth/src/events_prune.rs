@@ -114,6 +114,12 @@ pub const EVENTS_PRUNE_KINDS: &[&str] = &[
     "codex.hook",
     "harness.phase.changed",
     "harness.item.added",
+    // #1505 PR2 — same class as `harness.item.added`: high-frequency,
+    // card-scoped, and replayable from the live snapshot, so nothing reads it
+    // past the retention horizon. Leaving it out of this allowlist would keep
+    // every queue edit forever, which is the failure this list exists to
+    // prevent.
+    "harness.queue.changed",
     "overlay.set",
 ];
 

@@ -1,0 +1,16 @@
+{
+  "description": "harness.queue.changed (#1505 PR2); body text intentionally absent, same reason as harness.user_message.enqueued. `change` is one of edited|deleted|steered|dropped — this file shows `deleted`; `steered` and `dropped` have no emitter until PR3 and PR2b, and all four spellings are pinned by calm_types::event::tests::harness_queue_change_wire_spellings. `actor` duplicates the envelope actor because the websocket frame does not carry it.",
+  "wire": {
+    "ev": "harness.queue.changed",
+    "data": {
+      "worker_session_id": "rt-01",
+      "card_id": "card-01",
+      "track_id": "track-01",
+      "entry_id": "entry-01",
+      "change": "deleted",
+      "actor": {
+        "kind": "User"
+      }
+    }
+  }
+}
