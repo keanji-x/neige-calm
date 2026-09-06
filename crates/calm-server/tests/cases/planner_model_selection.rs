@@ -16,11 +16,16 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use calm_server::codex_appserver::CodexConfig;
 use calm_server::codex_appserver::Notification;
+use calm_server::db::sqlite::track_delete_tx;
+use calm_server::db::write_in_tx_typed;
 use calm_server::harness::HarnessPhaseTag;
 use calm_server::harness::run_loop::{
-    PlannerHarnessDrainRaceHook, install_planner_harness_drain_race_hook_for_test,
+    PlannerHarnessCwdRaceHook, PlannerHarnessDrainRaceHook,
+    install_planner_harness_cwd_race_hook_for_test,
+    install_planner_harness_drain_race_hook_for_test,
 };
 use calm_server::planner_model::TurnModelSelection;
+use calm_server::track_area_cache::TrackAreaCache;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 
@@ -1021,5 +1026,182 @@ async fn a_catalog_outage_is_not_reported_as_a_selection_the_reader_must_fix() {
     assert!(
         boot.daemon.started_turn_selections_for_test().is_empty(),
         "and nothing may go out under an effort nobody resolved"
+    );
+}
+
+/// #1505 S4 review r4 — the workspace read is a SECOND instant, and the
+/// foreign key does not reach across it.
+///
+/// An earlier round deleted this test on the argument that `cards` holds a
+/// foreign key to `tracks`, so "card present, track absent" is not a
+/// representable state. That is true of any single database instant and
+/// irrelevant here: this path reads the card, awaits, and then reads the
+/// track. A `track_delete_tx` committing in between — taking the card with it
+/// — leaves a harness whose `inner.track_id` names a track that is gone, and
+/// the track read answers `Ok(None)`. The claim that the card check "has
+/// already returned" by then was backwards: its having returned is the window.
+///
+/// Driven, not raced: the cwd hook parks the run loop between the two reads.
+#[tokio::test]
+async fn a_track_deleted_between_the_card_read_and_the_workspace_read_refuses() {
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    // Codex would answer, and would name a model — so a fallback to the global
+    // layers WOULD send a turn, which is what must not happen.
+    boot.daemon.set_config_read_for_test(CodexConfig {
+        model: Some("gpt-5-from-the-wrong-scope".into()),
+        model_reasoning_effort: None,
+    });
+    put_model(
+        &boot,
+        "user",
+        json!({"model": "gpt-5", "reasoning_effort": null}),
+    )
+    .await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": null, "reasoning_effort": null}),
+    )
+    .await;
+
+    let hook = PlannerHarnessCwdRaceHook {
+        entered: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    };
+    install_planner_harness_cwd_race_hook_for_test(&boot.worker_session_id, hook.clone());
+
+    post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;
+    tokio::time::timeout(Duration::from_secs(5), hook.entered.notified())
+        .await
+        .expect("the run loop must reach the workspace read");
+
+    // The card read has already succeeded. Now the track goes, through the
+    // SAME function a real delete uses (`track_delete_tx`) rather than
+    // hand-rolled SQL — one transaction, so the foreign key holds throughout,
+    // and every table that references the track is cleared the way production
+    // clears it.
+    let track_id = boot.planner_card.track_id.to_string();
+    let area_cache = TrackAreaCache::new();
+    write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            track_delete_tx(tx, &track_id, &area_cache)
+                .await
+                .map_err(calm_server::error::CalmError::from)
+        })
+    })
+    .await
+    .expect("delete the track the way production does");
+    hook.release.notify_one();
+
+    // Nothing may go out under a model resolved from a scope this conversation
+    // is not in.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let sent = boot.daemon.started_turn_selections_for_test();
+    assert!(
+        sent.is_empty(),
+        "a workspace that cannot be read must refuse, not fall back to the global config layers; \
+         sent {sent:?}"
+    );
+    assert!(
+        boot.harness.refused_issuances_for_test() >= 1,
+        "and it must actually have refused, or this proves nothing"
+    );
+}
+
+/// #1505 S4 review r4 (MAJOR) — `CodexRefused` was minted for `turn/start` and
+/// then consulted only there, so the same false promise survived one call
+/// above it.
+///
+/// A refused `config/read` — codex answering, and answering no, as it does for
+/// a workspace directory that has been removed — was classified retryable, so
+/// past the silence budget the reader was told "your message is still queued
+/// and will be sent when it answers" about a turn that could not go out until
+/// a person acted. That is the exact sentence `CodexRefused` exists to end.
+///
+/// It maps to `NeedsAChoice` rather than `Rejected` because a choice genuinely
+/// removes the need for the read: a card carrying an explicit model never
+/// calls `config/read` at all.
+#[tokio::test]
+async fn a_refused_config_read_is_not_sold_as_a_wait() {
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": "gpt-5", "reasoning_effort": null}),
+    )
+    .await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": null, "reasoning_effort": null}),
+    )
+    .await;
+    boot.daemon.reject_config_read_for_test();
+    post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let reason = loop {
+        if let Some(reason) = boot.harness.issuance_block().await {
+            break reason;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a refusal codex answered must be said at once, not after the silence budget"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(
+        !reason.contains("will be sent when it answers"),
+        "codex answered — waiting for it to answer is not the remedy: {reason}"
+    );
+    assert!(
+        reason.contains("has not been sent") && reason.contains("Pick a model"),
+        "it must say the message did not go, and name the choice that removes the need for the \
+         read: {reason}"
+    );
+
+    // And the choice it names works.
+    put_model(
+        &boot,
+        "user",
+        json!({"model": "gpt-5", "reasoning_effort": null}),
+    )
+    .await;
+    let seen = selections_after(&boot, 1).await;
+    assert_eq!(seen[0].model.as_deref(), Some("gpt-5"));
+    assert_eq!(boot.harness.issuance_block().await, None);
+}
+
+/// The other half of the same split: codex being UNREACHABLE for the same read
+/// still says nothing at first, because that one does clear itself.
+#[tokio::test]
+async fn an_unreachable_config_read_still_waits_quietly() {
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": "gpt-5", "reasoning_effort": null}),
+    )
+    .await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": null, "reasoning_effort": null}),
+    )
+    .await;
+    // No `reject_config_read_for_test`: the fixtures daemon simply cannot be
+    // asked, which is the outage case.
+    post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        boot.harness.refused_issuances_for_test() >= 2,
+        "the read must actually be failing, or this proves nothing"
+    );
+    assert_eq!(
+        boot.harness.issuance_block().await,
+        None,
+        "an unreachable codex is not a choice the reader has to make, and inside the silence \
+         budget it is not said at all"
     );
 }

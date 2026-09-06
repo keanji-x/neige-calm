@@ -2074,9 +2074,48 @@ struct IssuanceRefusal {
     kind: FailureKind,
     /// For the log. No advice, no audience.
     log: String,
-    /// For the reader, and only used when `kind` is
-    /// [`FailureKind::NeedsAChoice`] — see [`Inner::issuance_block`].
+    /// For the reader. Used by every kind except [`FailureKind::Retryable`],
+    /// which supplies its own text on its own schedule — see `apply_refusal`
+    /// and [`Inner::issuance_block`].
+    ///
+    /// It said "only `NeedsAChoice`" until `Rejected` was added and read it
+    /// too, 145 lines below the sentence. Empty for `Retryable`, and
+    /// `apply_refusal` is the only reader of that emptiness.
     reader: String,
+}
+
+/// Classify a codex read that failed.
+///
+/// **Every consumer of a codex call on the issuance path goes through this.**
+/// `CodexRefused` was minted so `turn/start` could stop promising delivery it
+/// could not make, and then only `turn/start` consulted it — so a refused
+/// `config/read` or `model/list` still produced "your message is still queued
+/// and will be sent when it answers" about a turn that could not go out until
+/// a person acted. That is the same falsehood, one and two calls above the
+/// site that fixed it.
+///
+/// The consumers, and what each does with a refusal:
+///
+/// | read | refused (`CodexRefused`) | could not ask |
+/// |---|---|---|
+/// | `config/read` | `NeedsAChoice` — an explicit model skips this read | `Retryable` |
+/// | `model/list` | `NeedsAChoice` — an explicit effort skips this read | `Retryable` |
+/// | `turn/start` | `Rejected` — nothing the reader picks is known to help | `Retryable` |
+///
+/// The first two are `NeedsAChoice` rather than `Rejected` because a choice
+/// genuinely removes the need for the read: a card carrying an explicit model
+/// never calls `config/read`, and one carrying an explicit effort never calls
+/// `model/list`. `turn/start` has no such escape, so its message names no
+/// certain remedy.
+///
+/// Non-codex reads on this path (`card_get`, `track_get`) cannot be refused —
+/// they have no peer to refuse them — and are `Retryable` on any failure.
+fn codex_read_refusal(e: &CalmError, log: String, reader: &str) -> IssuanceRefusal {
+    if matches!(e, CalmError::CodexRefused(_)) {
+        IssuanceRefusal::needs_a_choice(log, reader.to_string())
+    } else {
+        IssuanceRefusal::retryable(log)
+    }
 }
 
 impl IssuanceRefusal {
@@ -2113,11 +2152,17 @@ impl IssuanceRefusal {
 /// payload plus — only where the payload cannot answer alone — codex's own
 /// effective config and catalog.
 ///
-/// Returns `Err(reason)` when the answer cannot be established. The caller
-/// does not send the turn on that: see [`crate::planner_model`]'s header for
-/// why running under an unknown model is worse than not running. The reason is
-/// a LOG line, not advice to a reader — the caller re-buffers and retries, so
-/// there is nothing for anyone to be told to do.
+/// Returns `Err` when the answer cannot be established. The caller does not
+/// send the turn on that: see [`crate::planner_model`]'s header for why
+/// running under an unknown model is worse than not running.
+///
+/// The refusal carries BOTH a log line and, for the kinds a person has to act
+/// on, a sentence for the reader that reaches them as
+/// `GET /planner/run`'s `blocked_reason`. This doc previously said the reason
+/// was "a LOG line, not advice to a reader … there is nothing for anyone to be
+/// told to do" — written when every refusal was a silent retry, and left
+/// standing when `blocked_reason` was added, so it denied the existence of the
+/// field two commits of this PR are about.
 async fn resolve_model_selection(
     inner: &Arc<Inner>,
     payload: &Value,
@@ -2147,9 +2192,15 @@ async fn resolve_model_selection(
         .config_read(Some(cwd.as_str()), deadline)
         .await
         .map_err(|e| {
-            IssuanceRefusal::retryable(format!(
-                "config/read failed while resolving this conversation's default model: {e}"
-            ))
+            codex_read_refusal(
+                &e,
+                format!(
+                    "config/read failed while resolving this conversation's default model: {e}"
+                ),
+                "codex will not report this conversation's configuration, so the default model \
+                 cannot be resolved and your message has not been sent. Pick a model explicitly \
+                 to send it.",
+            )
         })?;
     let defaults = Some(InstallationDefaults {
         model: config.model,
@@ -2178,12 +2229,28 @@ fn unresolved(e: crate::planner_model::UnresolvedSelection) -> IssuanceRefusal {
     IssuanceRefusal::needs_a_choice(e.log_reason().to_string(), e.reason().to_string())
 }
 
-/// The workspace whose config layers apply to this conversation's thread.
+/// Record a refusal: how long before the next attempt, and what (if anything)
+/// the reader is told.
 ///
-/// It must be the path `thread/start` was given, or `config/read` folds in a
-/// different set of project layers and answers a question we did not ask. A
-/// track we cannot read yields `None`, which reads only the layers that apply
-/// everywhere — weaker, and logged, but not a fabricated per-workspace value.
+/// One place, because the arms that refuse must not drift into different
+/// answers for the same fact — they already had, once, when only one of them
+/// was paced.
+async fn apply_refusal(inner: &Arc<Inner>, failure: &IssuanceRefusal) {
+    let (delay, notice) = match failure.kind {
+        // Nobody can act, and repeating may work. Silent while that is
+        // plausibly still true; see `transient_notice`.
+        FailureKind::Retryable => (TRANSIENT_RETRY_DELAY, transient_notice(inner).await),
+        // Codex saw the input and said no. Retried slowly rather than not at
+        // all — the person may change the model from another tab, and a
+        // harness that stops trying is the wedge with no exit — but the reader
+        // is told now, and told the truth: nothing is on its way.
+        FailureKind::Rejected => (NEEDS_A_CHOICE_RETRY_DELAY, Some(failure.reader.clone())),
+        FailureKind::NeedsAChoice => (NEEDS_A_CHOICE_RETRY_DELAY, Some(failure.reader.clone())),
+    };
+    *inner.issuance_retry_after.lock().await = Some(Instant::now() + delay);
+    *inner.issuance_block.lock().await = notice;
+}
+
 /// What to tell the reader about a run of RETRYABLE refusals — nothing at
 /// first, and then that the conversation is waiting.
 ///
@@ -2204,28 +2271,6 @@ fn unresolved(e: crate::planner_model::UnresolvedSelection) -> IssuanceRefusal {
 /// It names no action, because there is none to name; it exists so that
 /// "queued" stops being the only thing on screen. The retry continues
 /// underneath, so the notice clears itself the moment codex answers.
-/// Record a refusal: how long before the next attempt, and what (if anything)
-/// the reader is told.
-///
-/// One place, because the two arms that refuse must not drift into different
-/// answers for the same fact — they already had, once, when only one of them
-/// was paced.
-async fn apply_refusal(inner: &Arc<Inner>, failure: &IssuanceRefusal) {
-    let (delay, notice) = match failure.kind {
-        // Nobody can act, and repeating may work. Silent while that is
-        // plausibly still true; see `transient_notice`.
-        FailureKind::Retryable => (TRANSIENT_RETRY_DELAY, transient_notice(inner).await),
-        // Codex saw the input and said no. Retried slowly rather than not at
-        // all — the person may change the model from another tab, and a
-        // harness that stops trying is the wedge with no exit — but the reader
-        // is told now, and told the truth: nothing is on its way.
-        FailureKind::Rejected => (NEEDS_A_CHOICE_RETRY_DELAY, Some(failure.reader.clone())),
-        FailureKind::NeedsAChoice => (NEEDS_A_CHOICE_RETRY_DELAY, Some(failure.reader.clone())),
-    };
-    *inner.issuance_retry_after.lock().await = Some(Instant::now() + delay);
-    *inner.issuance_block.lock().await = notice;
-}
-
 async fn transient_notice(inner: &Arc<Inner>) -> Option<String> {
     let now = Instant::now();
     let began = {
@@ -2239,7 +2284,82 @@ async fn transient_notice(inner: &Arc<Inner>) -> Option<String> {
     })
 }
 
+/// #1505 S4 review r4 — park between the card read and the track read, so a
+/// test can order "the track is deleted" strictly between them.
+///
+/// The window is real and is NOT forbidden by the schema, which is the
+/// argument an earlier round got backwards. `cards` holds a foreign key to
+/// `tracks`, so "card row present, track row absent" cannot exist at any
+/// single database INSTANT — but this path reads at two instants with an
+/// `.await` between them, and the foreign key says nothing about that. The
+/// card read succeeds, `track_delete_tx` commits and takes the card with it,
+/// and the track read then answers `Ok(None)` to a harness whose
+/// `inner.track_id` names a track that is gone. The earlier claim that the
+/// card-existence check "has already returned" by then was backwards: its
+/// having returned IS the window.
+///
+/// The general form, because it will recur: a foreign key is an invariant over
+/// one transaction, never over a read-then-read across an await.
+///
+/// Same convention as [`PlannerHarnessDrainRaceHook`]: the struct, the
+/// registry and the wait are `fixtures`-only, and in a release build the call
+/// site collapses to `let _ = worker_session_id;`.
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct PlannerHarnessCwdRaceHook {
+    pub entered: Arc<Notify>,
+    pub release: Arc<Notify>,
+}
+
+#[cfg(feature = "fixtures")]
+fn planner_harness_cwd_race_hooks() -> &'static StdMutex<HashMap<String, PlannerHarnessCwdRaceHook>>
+{
+    static HOOKS: OnceLock<StdMutex<HashMap<String, PlannerHarnessCwdRaceHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_planner_harness_cwd_race_hook_for_test(
+    worker_session_id: &str,
+    hook: PlannerHarnessCwdRaceHook,
+) {
+    planner_harness_cwd_race_hooks()
+        .lock()
+        .expect("planner harness cwd hook mutex")
+        .insert(worker_session_id.to_string(), hook);
+}
+
+async fn wait_at_planner_harness_cwd_race_hook(worker_session_id: &str) {
+    #[cfg(feature = "fixtures")]
+    {
+        let hook = planner_harness_cwd_race_hooks()
+            .lock()
+            .expect("planner harness cwd hook mutex")
+            .remove(worker_session_id);
+        if let Some(hook) = hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = worker_session_id;
+}
+
+/// The workspace whose config layers apply to this conversation's thread.
+///
+/// It must be the path `thread/start` was given, or `config/read` folds in a
+/// different set of project layers and answers a question we did not ask.
+///
+/// A track that cannot be read is therefore an `Err`, not a `None`. It used to
+/// be a `None`, which `config_read` accepts by reading only the layers that
+/// apply everywhere — a global answer handed back as this card's. That
+/// sentence survived the fix that removed the behaviour and sat here
+/// describing it as current; it is spelled out in the past tense now because
+/// re-reading it as an instruction is how the bug comes back.
 async fn installation_cwd(inner: &Arc<Inner>) -> std::result::Result<String, IssuanceRefusal> {
+    // Deterministic card-read-then-track-read window. No-op in production.
+    wait_at_planner_harness_cwd_race_hook(inner.worker_session_id.as_str()).await;
     match inner.repo.track_get(inner.track_id.as_str()).await {
         Ok(Some(track)) => Ok(track.workspace.path),
         // Both of these used to return `None`, which `config_read` accepts and
@@ -2250,16 +2370,10 @@ async fn installation_cwd(inner: &Arc<Inner>) -> std::result::Result<String, Iss
         // instead". A card whose track cannot be read is retried, not answered
         // from the wrong scope.
         //
-        // **This arm is unreachable, and the mutation that flattens it
-        // therefore survives — recorded rather than papered over.** `cards`
-        // holds a foreign key to `tracks` (deleting a track that still has one
-        // fails with SQLite 787, measured), so "the card exists and its track
-        // does not" is not a representable state; and by the time a track's
-        // cards are gone, `maybe_issue_turn`'s own card-existence check has
-        // already returned. It is kept because unreachability here rests on a
-        // schema constraint rather than on anything in this file, and the
-        // failure mode if that constraint ever relaxes is silent use of the
-        // wrong config scope.
+        // `Ok(None)` is REACHABLE, and an earlier round of this PR argued
+        // the opposite from a foreign key. See this function's header: the FK
+        // constrains one transaction, this path reads at two instants, and a
+        // `track_delete_tx` committing between them produces exactly this.
         Ok(None) => Err(IssuanceRefusal::retryable(format!(
             "track {} is not readable, so this conversation's config scope is unknown",
             inner.track_id
@@ -2300,9 +2414,12 @@ async fn catalog_default_effort(
             .into_iter()
             .find(|m| m.model == slug)
             .map(|m| m.default_reasoning_effort)),
-        Err(e) => Err(IssuanceRefusal::retryable(format!(
-            "model/list failed while resolving this conversation's default effort: {e}"
-        ))),
+        Err(e) => Err(codex_read_refusal(
+            &e,
+            format!("model/list failed while resolving this conversation's default effort: {e}"),
+            "codex will not list its models, so the default reasoning effort cannot be resolved \
+             and your message has not been sent. Pick a reasoning effort explicitly to send it.",
+        )),
     }
 }
 
@@ -2800,6 +2917,10 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             // "will be sent when it answers" about a turn that will never go
             // out. Naming the real cause of a failed turn is still #1507's;
             // this only stops promising delivery that cannot happen.
+            // Same split as `codex_read_refusal`, kept spelled out here
+            // because this one maps to `Rejected`: no choice the reader can
+            // make is KNOWN to remove the need for `turn/start`, so its
+            // sentence must not name a certain remedy the way the other two do.
             let refusal = if matches!(e, CalmError::CodexRefused(_)) {
                 IssuanceRefusal::rejected(format!("turn/start refused by codex: {e}"))
             } else {

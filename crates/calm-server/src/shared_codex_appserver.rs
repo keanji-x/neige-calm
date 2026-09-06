@@ -795,6 +795,9 @@ pub struct FakeSharedCodexAppServer {
     /// model" are the two sides of #1505 S4's transient/needs-a-choice split.
     /// A fixture that can only produce one of them cannot test the split.
     config_read: std::sync::Mutex<Option<CodexConfig>>,
+    /// Answer `config/read` the way codex does when it sees the request and
+    /// refuses it — an answer, not an outage. The two take opposite paths.
+    reject_config_read: AtomicBool,
     fail_turn_interrupt: AtomicBool,
     started_thread_params: std::sync::Mutex<Vec<StartedThreadParam>>,
     started_turns: std::sync::Mutex<Vec<(String, Vec<InputItem>)>>,
@@ -818,6 +821,7 @@ impl FakeSharedCodexAppServer {
             fail_turn_start: AtomicBool::new(false),
             reject_turn_start: AtomicBool::new(false),
             config_read: std::sync::Mutex::new(None),
+            reject_config_read: AtomicBool::new(false),
             fail_turn_interrupt: AtomicBool::new(false),
             started_thread_params: std::sync::Mutex::new(Vec::new()),
             started_turns: std::sync::Mutex::new(Vec::new()),
@@ -1482,14 +1486,20 @@ impl SharedCodexAppServer {
         deadline: tokio::time::Instant,
     ) -> Result<CodexConfig> {
         #[cfg(feature = "fixtures")]
-        if let Some(fake) = self.fake.as_ref()
-            && let Some(config) = fake
+        if let Some(fake) = self.fake.as_ref() {
+            if fake.reject_config_read.load(Ordering::SeqCst) {
+                return Err(CalmError::CodexRefused(
+                    "config/read failed: no such workspace (code -32602)".into(),
+                ));
+            }
+            if let Some(config) = fake
                 .config_read
                 .lock()
                 .expect("fake shared codex config-read mutex poisoned")
                 .clone()
-        {
-            return Ok(config);
+            {
+                return Ok(config);
+            }
         }
         let client = self.connected_client().await?;
         Ok(client.config_read(cwd, deadline).await?.config)
@@ -3693,6 +3703,14 @@ impl SharedCodexAppServer {
                 .config_read
                 .lock()
                 .expect("fake shared codex config-read mutex poisoned") = Some(config);
+        }
+    }
+
+    /// Make every subsequent `config/read` be REFUSED by codex.
+    #[cfg(feature = "fixtures")]
+    pub fn reject_config_read_for_test(&self) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.reject_config_read.store(true, Ordering::SeqCst);
         }
     }
 
