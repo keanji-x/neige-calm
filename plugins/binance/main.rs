@@ -338,21 +338,34 @@ fn round_to(value: f64, places: u32) -> f64 {
 // Overlay payloads
 // ---------------------------------------------------------------------------
 
-fn holdings_table(cfg: &Config, rows: Vec<Value>, total: f64, complete: bool, at: &str) -> Value {
+/// `total` is `None` when the values could not be summed into a finite
+/// number. The table still goes out in that case: it is the only place the
+/// per-asset rows appear, and withholding it would leave whatever was
+/// published last on screen, presented as current.
+fn holdings_table(
+    cfg: &Config,
+    rows: Vec<Value>,
+    total: Option<f64>,
+    complete: bool,
+    at: &str,
+) -> Value {
     let mut rows = rows;
     rows.push(json!({
         "asset": "Total",
         "qty": Value::Null,
         "price": Value::Null,
-        "value": round_to(total, 2),
+        "value": total.map(|total| round_to(total, 2)),
     }));
-    let caption = if complete {
-        format!("Priced in {} at {at}", cfg.quote)
-    } else {
-        format!(
+    let caption = match (total, complete) {
+        (None, _) => format!(
+            "Priced in {} at {at} — the values do not sum to a finite number, so no total is shown",
+            cfg.quote
+        ),
+        (Some(_), true) => format!("Priced in {} at {at}", cfg.quote),
+        (Some(_), false) => format!(
             "Priced in {} at {at} — some prices unavailable; the total covers the priced rows only",
             cfg.quote
-        )
+        ),
     };
     json!({
         "columns": [
@@ -480,24 +493,26 @@ fn refresh(rpc: &Rpc, cfg: &Config) -> Refreshed {
     let at = now_rfc3339();
     let (rows, total, complete) = price_holdings(cfg);
     // Each row's `price × qty` was checked for finiteness, but the sum of
-    // finite values can still overflow. Checked BEFORE anything is published:
-    // an infinite total serializes through `json!` as `null`, and the holdings
-    // table would otherwise go out with an empty Total cell under a caption
-    // claiming a clean pricing.
-    if !total.is_finite() {
-        eprintln!("binance: the portfolio total overflowed to {total}; publishing nothing");
-        return Refreshed::Partially(
-            "the portfolio total is not a finite number; nothing was published".into(),
-        );
+    // finite values can still overflow. `None` keeps the per-asset rows —
+    // which are exactly what a reader needs to see when the total is
+    // impossible — while refusing to state a total that is not a number.
+    let summed = total.is_finite().then_some(total);
+    if summed.is_none() {
+        eprintln!("binance: the portfolio total is {total}; publishing the rows without it");
     }
     if !push_overlay(
         rpc,
         cfg,
         "portfolio.holdings",
-        holdings_table(cfg, rows, total, complete, &at),
+        holdings_table(cfg, rows, summed, complete, &at),
     ) {
         return Refreshed::Partially("the holdings table could not be published".into());
     }
+    let Some(total) = summed else {
+        return Refreshed::Partially(
+            "the portfolio total is not a finite number; the history point was skipped".into(),
+        );
+    };
     if !complete {
         return Refreshed::Partially(
             "some holdings could not be priced; the history point was skipped".into(),
@@ -825,7 +840,7 @@ mod tests {
     fn pushed_payloads_are_valid_report_table_blocks() {
         let cfg = config();
         let rows = vec![json!({ "asset": "BTC", "qty": 100.0, "price": 1.0, "value": 100.0 })];
-        let holdings = holdings_table(&cfg, rows, 100.0, true, "2026-09-06T12:00:00Z");
+        let holdings = holdings_table(&cfg, rows, Some(100.0), true, "2026-09-06T12:00:00Z");
         assert_eq!(validate_payload(KIND_TABLE, &holdings), Ok(()));
 
         let points = vec![
@@ -844,7 +859,7 @@ mod tests {
         let rows = vec![
             json!({ "asset": "BTC", "qty": 100.0, "price": Value::Null, "value": Value::Null }),
         ];
-        let table = holdings_table(&cfg, rows, 0.0, false, "2026-09-06T12:00:00Z");
+        let table = holdings_table(&cfg, rows, Some(0.0), false, "2026-09-06T12:00:00Z");
         // The unpriced asset must still appear — dropping it would understate
         // the portfolio silently, which is the failure mode a null says out loud.
         let rows = table["rows"].as_array().expect("rows");
@@ -904,6 +919,29 @@ mod tests {
         // And the value that would reach the overlay is `null`, not a number:
         // the shape that `unwrap_or(0.0)` downstream would turn into a zero.
         assert!(json!(round_to(total, 2)).is_null());
+    }
+
+    #[test]
+    fn an_unsummable_portfolio_still_publishes_its_rows() {
+        // The rows are the only place the per-asset detail exists. Suppressing
+        // the whole table would leave the previous overlay on screen, read as
+        // current — the failure mode is silence, not a wrong number.
+        let cfg = config();
+        let rows = vec![json!({ "asset": "BTC", "qty": 1.0, "price": 2.0, "value": 2.0 })];
+        let table = holdings_table(&cfg, rows, None, true, "2026-09-06T12:00:00Z");
+        let rows = table["rows"].as_array().expect("rows");
+        assert_eq!(rows.len(), 2, "the asset row survives");
+        assert_eq!(rows[0]["value"], json!(2.0));
+        assert!(rows[1]["value"].is_null(), "and the total states nothing");
+        assert!(
+            table["caption"]
+                .as_str()
+                .expect("caption")
+                .contains("do not sum to a finite number"),
+            "the caption must say why the total is blank: {}",
+            table["caption"]
+        );
+        assert_eq!(validate_payload(KIND_TABLE, &table), Ok(()));
     }
 
     #[test]

@@ -69,7 +69,7 @@ describe('ReportTableBlock — live tables', () => {
   });
 
   it('falls back to the block caption when the pushed payload has none', () => {
-    const { caption: _dropped, ...captionless } = PAYLOAD;
+    const captionless = { columns: PAYLOAD.columns, rows: PAYLOAD.rows, highlight: PAYLOAD.highlight };
     render(<ReportTableBlock payload={{ ...LIVE, caption: 'Portfolio' }} resolveLive={() => captionless} />);
     expect(screen.getByText('Portfolio')).toBeTruthy();
   });

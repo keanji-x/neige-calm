@@ -143,12 +143,19 @@ impl FakeKernel {
     /// empty channel proves nothing on its own, because a plugin that crashed
     /// or wedged produces the same silence as one that correctly had nothing
     /// left to say.
+    /// Any `neige.*` request arriving before the pong is a callback the
+    /// absence assertion just declared would not happen, so it fails here
+    /// rather than being quietly consumed.
     fn is_responsive(&mut self) -> bool {
         self.send(json!({ "jsonrpc": "2.0", "id": 9_999, "method": "ping" }));
         while let Ok(frame) = self.next_frame() {
             if frame.get("id") == Some(&json!(9_999)) {
                 return true;
             }
+            assert!(
+                frame.get("method").is_none(),
+                "a late callback arrived after the tick was declared over: {frame}"
+            );
         }
         false
     }
@@ -236,6 +243,7 @@ fn a_tick_that_cannot_price_everything_writes_no_history_point() {
 
     let mut methods = Vec::new();
     let mut total = None;
+    let mut holdings_rows = Vec::new();
     while let Ok(frame) = kernel.next_frame() {
         if frame.get("method").is_some() {
             let kind = frame
@@ -244,11 +252,12 @@ fn a_tick_that_cannot_price_everything_writes_no_history_point() {
                 .unwrap_or("")
                 .to_string();
             if kind == "portfolio.holdings" {
-                total = frame
+                holdings_rows = frame
                     .pointer("/params/payload/rows")
                     .and_then(Value::as_array)
-                    .and_then(|rows| rows.last())
-                    .and_then(|row| row["value"].as_f64());
+                    .cloned()
+                    .unwrap_or_default();
+                total = holdings_rows.last().and_then(|row| row["value"].as_f64());
             }
             let method = kernel.answer(&frame);
             methods.push(if kind.is_empty() {
@@ -265,6 +274,15 @@ fn a_tick_that_cannot_price_everything_writes_no_history_point() {
         "the priced half of the portfolio is worth 3, so this tick is PARTIAL, \
          not empty — an empty one would pass even the defect this test pins"
     );
+    // …and the half that could NOT be priced is still on the table, as a row
+    // with no price. Dropping it would understate the portfolio silently,
+    // which is the failure a null says out loud; without this assertion the
+    // test passes whether the row is there or not.
+    let btc = holdings_rows
+        .iter()
+        .find(|row| row["asset"] == json!("BTC"))
+        .expect("the unpriceable holding keeps its row");
+    assert!(btc["price"].is_null() && btc["value"].is_null(), "{btc}");
     assert_eq!(
         methods,
         vec!["neige.overlay.set:portfolio.holdings"],

@@ -69,11 +69,13 @@ export const chartCandlesPayloadSchema = z.strictObject({
  * It is a shape check only — the plugin need not be installed, which is a
  * normal state the renderer shows as an empty table rather than a decode
  * failure.
+ *
+ * Written inline rather than hoisted to its own `const`: a module-level
+ * binding initialized by a call outside the zod chain is module runtime state
+ * as far as `architecture/no-module-runtime-state` is concerned, and the rule
+ * is right that the exception would have to be argued rather than assumed.
  */
-export const liveTableSourceSchema = max2048CodePoints(
-  z.string().regex(/^neige:\/\/plugin\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/,
-    'must be neige://plugin/<plugin_id>/<overlay_kind>'),
-);
+export const LIVE_TABLE_SOURCE_PATTERN = /^neige:\/\/plugin\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
 /** The rows-carrying form — and the shape a live table's overlay must hold. */
 export const inlineTableBlockPayloadSchema = z.strictObject({
@@ -97,7 +99,8 @@ export const inlineTableBlockPayloadSchema = z.strictObject({
   }, { message: 'row keys must be declared column keys' });
 
 export const liveTableBlockPayloadSchema = z.strictObject({
-  source: liveTableSourceSchema,
+  source: max2048CodePoints(z.string().regex(LIVE_TABLE_SOURCE_PATTERN,
+    'must be neige://plugin/<plugin_id>/<overlay_kind>')),
   caption: max2048CodePoints(z.string()).nullish(),
 });
 
