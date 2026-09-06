@@ -80,3 +80,45 @@ provider or isolation support produces a clear unavailable/failed state, not leg
 
 Implementation may refine the parked-Operation integration using existing framework hooks;
 any necessary change to these authority or persistence decisions is recorded here first.
+
+## Operator entry point
+
+The source-deployed pilot builds `calm-server`, `calm-worker-boundary` and
+`neige-mcp-stdio-shim`. Start the server with
+`--isolated-codex-config /absolute/path/isolated-codex.json`. The file is a strict JSON
+object; all fields below are required. Use separate, absolute directories owned by the
+kernel for workspaces, provider endpoints and runtime records.
+
+```json
+{
+  "workspace_root": "/srv/pilot/workspaces",
+  "private_root": "/srv/pilot/endpoints",
+  "runtime_root": "/srv/pilot/runtime",
+  "runtime_helper": "/srv/pilot/bin/calm-worker-boundary",
+  "runtime_bwrap": "/usr/bin/bwrap",
+  "sandbox_bwrap": "/opt/codex/codex-resources/bwrap",
+  "codex_binary": "/opt/codex/bin/codex",
+  "mcp_shim": "/srv/pilot/bin/neige-mcp-stdio-shim",
+  "provider_config": "/home/operator/.codex/config.toml",
+  "provider_auth": "/home/operator/.codex/auth.json",
+  "provider_environment": {},
+  "connect_timeout_ms": 10000,
+  "request_timeout_ms": 30000,
+  "task_timeout_ms": 180000
+}
+```
+
+The provider imports the configured model and authentication through the existing bounded
+private-home seeding policy. Explicit proxy/CA transport settings belong in
+`provider_environment`; arbitrary process-environment inheritance is not supported.
+
+Author a normal `kind: "codex"` task with the selection in its `context`, an explicit
+`no_gate_reason`, `ready: true`, and the existing user-release fields. Start its Track
+through the normal lifecycle action. A new Track is a draft even when its task is ready;
+a separate empty Git directory can satisfy the existing Track workspace requirement while
+the isolated task still receives a fresh empty workspace.
+
+The selected backend must be configured; absence never silently selects the shared daemon.
+Stop active isolated attempts before removing this configuration. Retain its roots and
+private records for recovery and investigation. Distribution packaging, repository inputs,
+and a user-facing backend chooser remain follow-ups to this source-deployed pilot.
