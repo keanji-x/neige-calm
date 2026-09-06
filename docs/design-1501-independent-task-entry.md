@@ -68,7 +68,7 @@ The generated OpenAPI contract is owned by `core` and frozen. This slice request
 only the two additive endpoints and their request/response schemas specified
 above. The parent orchestrator approves this narrow change for #1501; both
 implementation agents use that contract. Existing wire fields and ownership
-rules remain unchanged. The actual Rust generator produced the frontend spec;
+rules remain unchanged. The actual Rust generator produced the frontend OpenAPI document;
 its commit and squash body must retain this exact approval trailer:
 
 OWNERSHIP-CHANGE: fe/core/api/generated/openapi.json — regenerate approved independent task start and accepted report contract (#1501)
