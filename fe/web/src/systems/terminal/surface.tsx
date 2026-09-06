@@ -3,6 +3,8 @@ import { lazy, useEffect } from 'react';
 import type { TerminalConnectionStatus } from './xterm-view.tsx';
 import { useState } from '../../ui/state/public.ts';
 
+export type { TerminalConnectionStatus } from './xterm-view.tsx';
+
 const XtermView = lazy(async () => {
   const module = await import('./xterm-view.tsx');
   return { default: module.XtermView };

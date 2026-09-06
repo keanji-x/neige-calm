@@ -50,7 +50,7 @@ function mountTerminal(status: 'running' | 'starting' = 'running', width?: numbe
   const registry = createCardRegistry();
   registerAvailableBuiltinCards(registry);
   const card = registry.resolve({ id: 'card-1', kind: 'terminal', payload: {},
-    runtime: { runtime_id: 'run-1', kind: 'terminal', status, terminal_id: 'pty-1' },
+    runtime: { worker_session_id: 'run-1', kind: 'terminal', status, terminal_id: 'pty-1' },
   });
   if (card === null) throw new Error('Missing terminal');
   return render(<div style={{ width }}><BoardHost host={createCardHost(registry)} items={[

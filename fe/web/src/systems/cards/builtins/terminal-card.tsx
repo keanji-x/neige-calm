@@ -4,8 +4,7 @@
 import { Suspense, useCallback, useEffect } from 'react';
 
 import { useState } from '../../../ui/state/public.ts';
-import type { TerminalConnectionStatus } from '../../terminal/xterm-view.tsx';
-import { TerminalSurface } from '../../terminal/surface.tsx';
+import { TerminalSurface, type TerminalConnectionStatus } from '../../terminal/surface.tsx';
 import type { CardHostCapabilities } from '../contracts.ts';
 import { PathLabel } from '../../../ui/path-label/public.tsx';
 import { CardHead } from '../ui/card-head.tsx';
