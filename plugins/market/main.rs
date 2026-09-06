@@ -273,34 +273,25 @@ fn store_holdings(rpc: &Rpc, track_id: &str, holdings: &[Holding]) -> Result<(),
     Ok(())
 }
 
-/// Every Track this plugin holds a portfolio for, with those holdings.
+/// Every Track this plugin holds a portfolio for.
 ///
 /// The poll loop has no other way to know which Tracks to price: holdings
-/// arrive through tool calls, at any time, from any Track. `neige.kv.list`
-/// already returns each value alongside its key, so this is one round trip for
-/// the whole set rather than one per Track.
-fn portfolios(rpc: &Rpc) -> Result<Vec<(String, Vec<Holding>)>, String> {
+/// arrive through tool calls, at any time, from any Track. Only the names are
+/// taken — the values in the listing are a snapshot, and [`refresh`] re-reads
+/// each Track's own document under the lock rather than trusting one.
+fn portfolios(rpc: &Rpc) -> Result<Vec<String>, String> {
     let result = rpc.call("neige.kv.list", json!({ "prefix": HOLDINGS_PREFIX }))?;
     let entries = result
         .get("entries")
         .and_then(Value::as_array)
         .ok_or_else(|| format!("neige.kv.list returned no `entries` array: {result}"))?;
-    let mut out = Vec::new();
-    for entry in entries {
-        let Some(track_id) = entry
-            .get("key")
-            .and_then(Value::as_str)
-            .and_then(|key| key.strip_prefix(HOLDINGS_PREFIX))
-            .filter(|track_id| !track_id.is_empty())
-        else {
-            continue;
-        };
-        let holdings = holdings_from_value(entry.get("value"), track_id);
-        if !holdings.is_empty() {
-            out.push((track_id.to_string(), holdings));
-        }
-    }
-    Ok(out)
+    Ok(entries
+        .iter()
+        .filter_map(|entry| entry.get("key").and_then(Value::as_str))
+        .filter_map(|key| key.strip_prefix(HOLDINGS_PREFIX))
+        .filter(|track_id| !track_id.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +311,7 @@ fn portfolios(rpc: &Rpc) -> Result<Vec<(String, Vec<Holding>)>, String> {
 // guess made now would be a guess we would have to keep.
 
 /// What a provider answered, or why it could not.
+#[derive(Clone)]
 enum Quote {
     /// A positive, finite price in the configured quote asset.
     Price(f64),
@@ -338,6 +330,23 @@ fn quote_asset(cfg: &Config, asset: &str) -> Quote {
         return Quote::Price(1.0);
     }
     binance_spot(cfg, asset)
+}
+
+/// One asset is priced once per pass, however many Tracks hold it.
+///
+/// Without this, a pass costs one request per holding per Track — three Tracks
+/// watching BTC would ask three times for the same number within the same
+/// second, and the pass would take three times as long to finish. The cache
+/// lives for exactly one pass so a later pass always re-reads the market.
+type PriceCache = HashMap<String, Quote>;
+
+fn quote_cached(cfg: &Config, asset: &str, cache: &mut PriceCache) -> Quote {
+    if let Some(hit) = cache.get(asset) {
+        return hit.clone();
+    }
+    let quote = quote_asset(cfg, asset);
+    cache.insert(asset.to_string(), quote.clone());
+    quote
 }
 
 /// Binance spot, via `/api/v3/ticker/price`.
@@ -393,14 +402,18 @@ fn binance_spot(cfg: &Config, asset: &str) -> Quote {
 /// asset that could not be priced keeps its row with `null` price and value —
 /// dropping it would understate the portfolio silently, which is exactly what
 /// a null says out loud — and is left out of the total.
-fn price_holdings(cfg: &Config, holdings: &[Holding]) -> (Vec<Value>, f64, bool) {
+fn price_holdings(
+    cfg: &Config,
+    holdings: &[Holding],
+    cache: &mut PriceCache,
+) -> (Vec<Value>, f64, bool) {
     let mut rows = Vec::with_capacity(holdings.len());
     let mut total = 0.0;
     let mut complete = true;
     for holding in holdings {
         // `price * quantity` can overflow to infinity even when both factors
         // are finite, so the product is checked as well as the input.
-        let priced = match quote_asset(cfg, &holding.asset) {
+        let priced = match quote_cached(cfg, &holding.asset, cache) {
             Quote::Price(price) => {
                 let value = price * holding.quantity;
                 if value.is_finite() {
@@ -617,13 +630,44 @@ enum Refreshed {
 /// against totals covering the whole, which reads as a crash that never
 /// happened. The holdings table still goes out — it names the missing prices
 /// row by row, which is the honest form of that same information.
-fn refresh(rpc: &Rpc, cfg: &Config, track_id: &str, holdings: &[Holding]) -> Refreshed {
+fn refresh(rpc: &Rpc, cfg: &Config, track_id: &str, cache: &mut PriceCache) -> Refreshed {
     let _serialized = REFRESH_LOCK.lock();
-    if holdings.is_empty() {
-        return Refreshed::NothingHeld;
-    }
+    // Read the holdings HERE, inside the lock, rather than taking them from
+    // the caller. A poll pass lists every portfolio up front and then prices
+    // them one at a time; by the time a slow pass reaches this Track, a tool
+    // call may already have changed and re-published it. Publishing the
+    // caller's snapshot would overwrite that newer state with an older one and
+    // append its obsolete total to the history — a portfolio appearing to
+    // revert on its own. Re-reading costs one round trip and removes the
+    // window entirely.
+    let holdings = match load_holdings(rpc, track_id) {
+        Ok(holdings) => holdings,
+        Err(e) => {
+            eprintln!("market: reading {track_id}'s holdings failed: {e}");
+            return Refreshed::Partially("this Track's holdings could not be read".into());
+        }
+    };
     let at = now_rfc3339();
-    let (rows, total, complete) = price_holdings(cfg, holdings);
+
+    // An empty portfolio still publishes. Returning early would leave the
+    // last non-empty table on screen for a Track that now holds nothing —
+    // someone who has just sold out would keep seeing their old position,
+    // which is a worse lie than an empty table. No history point: the series
+    // is about a portfolio's value, and there is no portfolio to value.
+    if holdings.is_empty() {
+        return if push_overlay(
+            rpc,
+            track_id,
+            "portfolio.holdings",
+            holdings_table(cfg, Vec::new(), Some(0.0), true, &at),
+        ) {
+            Refreshed::NothingHeld
+        } else {
+            Refreshed::Partially("the (now empty) holdings table could not be published".into())
+        };
+    }
+
+    let (rows, total, complete) = price_holdings(cfg, &holdings, cache);
 
     // Each row's `price × qty` was checked for finiteness, but the sum of
     // finite values can still overflow. `None` keeps the per-asset rows —
@@ -687,16 +731,23 @@ fn refresh(rpc: &Rpc, cfg: &Config, track_id: &str, holdings: &[Holding]) -> Ref
 }
 
 /// One pass over every Track that holds something.
+///
+/// The listing is only used to name the Tracks; each one's holdings are read
+/// again under the lock (see [`refresh`]). One price cache spans the pass, so
+/// an asset several Tracks hold is fetched once.
 fn refresh_all(rpc: &Rpc, cfg: &Config) {
-    match portfolios(rpc) {
-        Ok(portfolios) => {
-            for (track_id, holdings) in portfolios {
-                if let Refreshed::Partially(why) = refresh(rpc, cfg, &track_id, &holdings) {
-                    eprintln!("market: incomplete refresh of {track_id} — {why}");
-                }
-            }
+    let track_ids = match portfolios(rpc) {
+        Ok(portfolios) => portfolios,
+        Err(e) => {
+            eprintln!("market: listing portfolios failed; skipping this pass: {e}");
+            return;
         }
-        Err(e) => eprintln!("market: listing portfolios failed; skipping this tick: {e}"),
+    };
+    let mut cache = PriceCache::new();
+    for track_id in track_ids {
+        if let Refreshed::Partially(why) = refresh(rpc, cfg, &track_id, &mut cache) {
+            eprintln!("market: incomplete refresh of {track_id} — {why}");
+        }
     }
 }
 
@@ -847,13 +898,15 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, frame: &Value) -> Value {
             }
             // Re-price immediately. Someone who has just said what they hold
             // is looking at the report now, not in `poll_seconds`.
-            let outcome = refresh(rpc, cfg, &track_id, &holdings);
+            let outcome = refresh(rpc, cfg, &track_id, &mut PriceCache::new());
             let summary = if quantity > 0.0 {
                 format!("Holding {quantity} {asset}")
             } else {
                 format!("No longer holding {asset}")
             };
             match outcome {
+                // `NothingHeld` here means the last holding was just removed
+                // and an empty table was published — a success, not a gap.
                 Refreshed::Fully | Refreshed::NothingHeld => text_result(
                     format!("{summary}. {} asset(s) tracked.", holdings.len()),
                     json!({ "holdings": holdings.iter().map(Holding::to_json).collect::<Vec<_>>() }),
@@ -879,7 +932,7 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, frame: &Value) -> Value {
                     json!({ "holdings": [] }),
                 );
             }
-            let (rows, total, complete) = price_holdings(cfg, &holdings);
+            let (rows, total, complete) = price_holdings(cfg, &holdings, &mut PriceCache::new());
             let text = rows
                 .iter()
                 .map(|row| {
@@ -905,24 +958,16 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, frame: &Value) -> Value {
                 }),
             )
         }
-        "market.refresh" => {
-            let holdings = match load_holdings(rpc, &track_id) {
-                Ok(holdings) => holdings,
-                Err(e) => {
-                    return tool_error(format!("Could not read this Track's holdings — {e}."));
-                }
-            };
-            match refresh(rpc, cfg, &track_id, &holdings) {
-                Refreshed::Fully => text_result(
-                    format!("Re-priced {} asset(s).", holdings.len()),
-                    json!({ "holdings": holdings.len() }),
-                ),
-                Refreshed::NothingHeld => tool_error(
-                    "This Track holds nothing yet — record a holding with market.holdings.set.",
-                ),
-                Refreshed::Partially(why) => tool_error(format!("Refresh incomplete — {why}.")),
+        "market.refresh" => match refresh(rpc, cfg, &track_id, &mut PriceCache::new()) {
+            Refreshed::Fully => text_result(
+                "Re-priced this Track's holdings.".into(),
+                json!({ "track_id": track_id }),
+            ),
+            Refreshed::NothingHeld => {
+                tool_error("This Track holds nothing — record a holding with market.holdings.set.")
             }
-        }
+            Refreshed::Partially(why) => tool_error(format!("Refresh incomplete — {why}.")),
+        },
         other => tool_error(format!("unknown tool `{other}`")),
     }
 }
@@ -935,6 +980,14 @@ fn main() {
     let rpc = Arc::new(Rpc::new());
     let reader = BufReader::new(std::io::stdin());
 
+    // One configuration, shared. A second `initialize` (a reconnect, a
+    // reload) must REPLACE what everyone reads, not hand a second copy to a
+    // second poll thread: two pollers on different configs would publish to
+    // the same overlays with, say, two different quote assets, and the
+    // reader would see the totals alternate between them.
+    let config = Arc::new(Mutex::new(Config::default()));
+    let mut polling = false;
+
     // One worker for every tool call. Not the read loop, because a tool call
     // issues `neige.*` callbacks whose replies arrive on the very stdin this
     // loop is reading — handling one inline makes the plugin wait out its own
@@ -945,18 +998,17 @@ fn main() {
     // a `thread::spawn` that then failed would panic on the reader and take
     // the plugin down silently.
     let (tool_calls, tool_queue) = mpsc::channel::<Value>();
-    let (config_tx, config_rx) = mpsc::channel::<Config>();
     {
         let rpc = Arc::clone(&rpc);
+        let config = Arc::clone(&config);
         std::thread::spawn(move || {
-            let mut cfg = Config::default();
             for frame in tool_queue {
-                while let Ok(update) = config_rx.try_recv() {
-                    cfg = update;
-                }
                 let Some(id) = frame.get("id").cloned() else {
                     continue;
                 };
+                // Read the configuration per call, so a call that was queued
+                // before a re-initialize still runs on the current one.
+                let cfg = config.lock().map(|cfg| cfg.clone()).unwrap_or_default();
                 let reply = tools_call_reply(&rpc, &cfg, &frame);
                 rpc.reply(id, reply);
             }
@@ -994,21 +1046,28 @@ fn main() {
         match method {
             "initialize" => {
                 rpc.reply(id, initialize_reply(&frame));
-                let cfg = config_from_initialize(&frame);
+                let parsed = config_from_initialize(&frame);
                 eprintln!(
                     "market: configured — quote={} poll={}s binance={}",
-                    cfg.quote,
-                    cfg.poll.as_secs(),
-                    cfg.binance_endpoint,
+                    parsed.quote,
+                    parsed.poll.as_secs(),
+                    parsed.binance_endpoint,
                 );
-                let _ = config_tx.send(cfg.clone());
-                let rpc = Arc::clone(&rpc);
-                std::thread::spawn(move || {
-                    loop {
-                        refresh_all(&rpc, &cfg);
-                        std::thread::sleep(cfg.poll);
-                    }
-                });
+                if let Ok(mut cfg) = config.lock() {
+                    *cfg = parsed;
+                }
+                if !polling {
+                    polling = true;
+                    let rpc = Arc::clone(&rpc);
+                    let config = Arc::clone(&config);
+                    std::thread::spawn(move || {
+                        loop {
+                            let cfg = config.lock().map(|cfg| cfg.clone()).unwrap_or_default();
+                            refresh_all(&rpc, &cfg);
+                            std::thread::sleep(cfg.poll);
+                        }
+                    });
+                }
             }
             "tools/call" => {
                 if tool_calls.send(frame).is_err() {
@@ -1125,6 +1184,7 @@ mod tests {
                 asset: "USDT".into(),
                 quantity: 3.0,
             }],
+            &mut PriceCache::new(),
         );
         assert!(complete && total == 3.0);
         let holdings = holdings_table(&cfg, rows, Some(total), complete, "2026-09-06T12:00:00Z");
@@ -1161,6 +1221,7 @@ mod tests {
                     quantity: 1.0,
                 },
             ],
+            &mut PriceCache::new(),
         );
         assert!(!complete);
         assert_eq!(total, 3.0, "the total covers the priced rows only");
@@ -1209,6 +1270,7 @@ mod tests {
                     quantity: 1e308,
                 },
             ],
+            &mut PriceCache::new(),
         );
         assert!(complete, "both rows price fine on their own");
         assert_eq!(rows.len(), 2);

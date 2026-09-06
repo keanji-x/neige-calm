@@ -244,12 +244,27 @@ pub const KERNEL_CALLBACKS_CAPABILITY: &str = "dev.neige/kernel-callbacks";
 /// `dev.neige/config` uses, and for the same reason: a bare string could
 /// never grow a sibling field without ambiguity.
 ///
-/// **The kernel fills this; the caller never does.** A plugin that keeps
-/// per-Track state has to know which Track it is acting for, and the only
-/// trustworthy answer is the one the kernel resolved for the calling
-/// identity — an agent that could name the Track in its own arguments could
-/// name someone else's, which is the same reasoning that makes
+/// **The kernel fills this from the resolved identity; nothing in the request
+/// body reaches it.** A plugin that keeps per-Track state has to know which
+/// Track it is acting for, and a Track named in `arguments` would be a Track
+/// the calling agent chose — the same reasoning that makes
 /// `callbacks::dispatch` inject `plugin_id` rather than read it from params.
+///
+/// Two qualifications, because "the caller cannot influence it" would be
+/// wider than what the code enforces:
+///
+/// * The value follows the **identity**, and on a `DaemonTrust` connection
+///   the caller selects the identity by naming a `threadId`
+///   (`resolve_tools_call_identity`). Such a caller can therefore have its
+///   call attributed to any live session's Track. That is what daemon trust
+///   already means everywhere else in this transport — it is not a hole this
+///   namespace opens — but it is why the guarantee is stated as "from the
+///   resolved identity" rather than "from a Track the caller cannot pick".
+///   A `CardBound` connection cannot cross sessions.
+/// * Not every production `tools/call` carries it: `routes::cards`' `via`
+///   path passes `None` (see the call site there). A plugin must treat the
+///   namespace as absent-able and refuse rather than default, which is what
+///   the market plugin's `track_from_call` does.
 pub const TRACK_META_KEY: &str = "dev.neige/track";
 
 /// Version of the `dev.neige/kernel-callbacks` capability the kernel supports.

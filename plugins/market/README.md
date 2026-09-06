@@ -23,11 +23,17 @@ it calls it with `0`, which removes the holding.
 | `market.quote` | the price of one asset, without touching any holding |
 | `market.refresh` | re-price this Track now instead of waiting for the next tick |
 
-**Which Track a call acts on is decided by the kernel**, not by the caller: it
-arrives in `params._meta["dev.neige/track"]`, filled from the identity the
-kernel resolved. A call that carries no Track is refused rather than defaulted
-— acting on some other Track's portfolio is exactly the failure that namespace
-exists to prevent. Two Tracks therefore keep two independent portfolios.
+**Which Track a call acts on comes from the kernel**, in
+`params._meta["dev.neige/track"]`, filled from the identity it resolved for the
+caller — nothing in the request body reaches it, so an agent cannot aim a
+holding at another Track by writing one into its arguments. (The value follows
+the *identity*: a caller trusted with the daemon token picks its identity by
+naming a session, and so can pick the Track. That is what daemon trust means
+everywhere in this transport, not something this plugin changes.)
+
+A call that carries no Track is refused rather than defaulted — acting on some
+other Track's portfolio is exactly the failure worth preventing. Two Tracks
+therefore keep two independent portfolios.
 
 ## What it writes
 

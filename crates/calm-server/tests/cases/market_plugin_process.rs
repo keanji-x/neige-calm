@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
 
@@ -42,9 +44,11 @@ const OTHER_TRACK: &str = "trk_someone_else";
 /// It exists so the *successful* path is exercised somewhere other than a
 /// developer's machine with a working route to the internet: without it, CI
 /// only ever sees the plugin fail to price.
-fn price_server(price: &'static str) -> String {
+fn price_server(price: &'static str) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
     let port = listener.local_addr().expect("addr").port();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&hits);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
@@ -59,6 +63,7 @@ fn price_server(price: &'static str) -> String {
                     break;
                 }
             }
+            counter.fetch_add(1, Ordering::SeqCst);
             let body = format!("{{\"symbol\":\"X\",\"price\":\"{price}\"}}");
             let _ = write!(
                 stream,
@@ -68,7 +73,7 @@ fn price_server(price: &'static str) -> String {
             let _ = stream.flush();
         }
     });
-    format!("http://127.0.0.1:{port}")
+    (format!("http://127.0.0.1:{port}"), hits)
 }
 
 struct FakeKernel {
@@ -85,10 +90,20 @@ struct FakeKernel {
     methods: Vec<String>,
     /// When set, `neige.kv.set` is answered with an error.
     refuse_kv_set: bool,
+    /// Applied to the KV immediately after answering a `neige.kv.list`, to
+    /// open exactly the window a stale-snapshot bug would fall into.
+    mutate_after_list: Option<(String, Value)>,
 }
 
 impl FakeKernel {
     fn boot(endpoint: &str) -> Self {
+        Self::boot_polling(endpoint, 3600)
+    }
+
+    /// `poll_seconds` at its floor (5) makes the background pass observable;
+    /// every other test uses an hour so that the only refreshes it sees are
+    /// the ones its own tool calls caused.
+    fn boot_polling(endpoint: &str, poll_seconds: u64) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_market"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -120,6 +135,7 @@ impl FakeKernel {
             pushes: Vec::new(),
             methods: Vec::new(),
             refuse_kv_set: false,
+            mutate_after_list: None,
         };
         kernel.send(json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -131,7 +147,7 @@ impl FakeKernel {
                         // Long enough that the poll thread never fires during
                         // a test: every refresh these tests observe is one a
                         // tool call caused.
-                        "poll_seconds": 3600,
+                        "poll_seconds": poll_seconds,
                         "quote": "USDT",
                         "binance_endpoint": endpoint,
                     } }
@@ -223,7 +239,11 @@ impl FakeKernel {
                     .filter(|(key, _)| key.starts_with(prefix))
                     .map(|(key, value)| json!({ "key": key, "value": value }))
                     .collect();
-                json!({ "entries": entries })
+                let answer = json!({ "entries": entries });
+                if let Some((key, value)) = self.mutate_after_list.take() {
+                    self.kv.insert(key, value);
+                }
+                answer
             }
             "neige.overlay.set" => {
                 let kind = params["kind"].as_str().unwrap_or_default().to_string();
@@ -254,6 +274,14 @@ impl FakeKernel {
     /// or wedged produces the same silence as one that correctly had nothing
     /// left to say. A `neige.*` request arriving before the pong is a callback
     /// the absence assertion just declared would not happen.
+    ///
+    /// **What it does not cover.** The pong comes from the read loop, so it
+    /// establishes that the reader is alive and that the tool call's own work
+    /// (which is synchronous on the worker, and finished before its reply)
+    /// emitted nothing more. It says nothing about a *background* pass: a poll
+    /// thread could still emit a callback later. Every test using this sets
+    /// `poll_seconds` to an hour so no background pass can run inside it —
+    /// that, not the ping, is what makes the absence total.
     fn is_responsive(&mut self) -> bool {
         self.send(json!({ "jsonrpc": "2.0", "id": 9_999, "method": "ping" }));
         while let Ok(frame) = self.next_frame() {
@@ -293,7 +321,7 @@ fn text_of(reply: &Value) -> String {
 /// just said what they hold is looking at the report now, not in `poll_seconds`.
 #[test]
 fn setting_a_holding_prices_it_now_and_publishes_to_the_callers_track() {
-    let endpoint = price_server("2.5");
+    let (endpoint, _hits) = price_server("2.5");
     let mut kernel = FakeKernel::boot(&endpoint);
 
     let reply = kernel.call_tool(
@@ -356,7 +384,7 @@ fn a_call_without_a_track_is_refused_rather_than_guessed() {
 /// Two Tracks keep two portfolios, and a refresh prices each against its own.
 #[test]
 fn holdings_are_per_track() {
-    let endpoint = price_server("2");
+    let (endpoint, _hits) = price_server("2");
     let mut kernel = FakeKernel::boot(&endpoint);
     kernel.call_tool(
         2,
@@ -394,13 +422,30 @@ fn holdings_are_per_track() {
         })
         .collect();
     assert_eq!(totals, vec![2.0, 10.0], "each Track priced against its own");
+
+    // Storing separately is not the same as reading separately. Without this,
+    // an implementation that wrote per Track but read from one shared
+    // document would still pass everything above, because neither Track is
+    // revisited after its own write.
+    let listed = kernel.call_tool(4, "market.holdings.list", json!({}), Some(TRACK));
+    let holdings = listed
+        .pointer("/result/structuredContent/holdings")
+        .and_then(Value::as_array)
+        .expect("holdings")
+        .clone();
+    assert_eq!(holdings.len(), 1, "{listed:#?}");
+    assert_eq!(
+        holdings[0]["qty"].as_f64(),
+        Some(1.0),
+        "reading back the first Track must not see the second Track's quantity"
+    );
 }
 
 /// Zero is the spelling of "no longer held", and it takes the holding out of
 /// the stored portfolio rather than leaving a position of nothing.
 #[test]
 fn a_quantity_of_zero_removes_the_holding() {
-    let endpoint = price_server("2");
+    let (endpoint, _hits) = price_server("2");
     let mut kernel = FakeKernel::boot(&endpoint);
     kernel.call_tool(
         2,
@@ -487,7 +532,7 @@ fn a_tick_that_cannot_price_everything_writes_no_history_point() {
 /// as data loss rather than the failed write it was.
 #[test]
 fn a_history_point_that_cannot_be_stored_is_not_published() {
-    let endpoint = price_server("2");
+    let (endpoint, _hits) = price_server("2");
     let mut kernel = FakeKernel::boot(&endpoint);
     // Seed the holding while writes still work, then refuse the history write.
     kernel.call_tool(
@@ -511,4 +556,166 @@ fn a_history_point_that_cannot_be_stored_is_not_published() {
     );
     assert_eq!(reply.pointer("/result/isError"), Some(&json!(true)));
     assert!(kernel.is_responsive());
+}
+
+/// A poll pass must not republish a portfolio it read before a tool changed it.
+///
+/// The pass lists every Track up front and then prices them one at a time. If
+/// it published the listing's snapshot, a Track that a tool call updated and
+/// re-published in the meantime would be overwritten with the older value —
+/// and its obsolete total appended to the history, drawing a move that never
+/// happened. The fake kernel changes the stored holding in exactly that
+/// window: after the listing is answered, before the Track is priced.
+#[test]
+fn a_poll_pass_prices_what_is_stored_now_not_what_it_listed() {
+    let (endpoint, _hits) = price_server("2");
+    let mut kernel = FakeKernel::boot_polling(&endpoint, 5);
+
+    kernel.call_tool(
+        2,
+        "market.holdings.set",
+        json!({ "asset": "BTC", "quantity": 1 }),
+        Some(TRACK),
+    );
+    kernel.drain();
+    let before = kernel.pushes.len();
+
+    // From the next listing onward the store says 5, not 1.
+    kernel.mutate_after_list = Some((
+        "holdings/trk_caller".to_string(),
+        json!([{ "asset": "BTC", "quantity": 5.0 }]),
+    ));
+
+    // Wait out one poll pass (5s floor) and service it.
+    let mut totals = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline && totals.is_empty() {
+        if let Ok(frame) = kernel.frames.recv_timeout(Duration::from_secs(8))
+            && frame.get("method").is_some()
+        {
+            kernel.service(&frame);
+        }
+        totals = kernel.pushes[before..]
+            .iter()
+            .filter(|(kind, _)| kind.starts_with("portfolio.holdings@"))
+            .filter_map(|(_, payload)| {
+                payload
+                    .pointer("/rows")
+                    .and_then(Value::as_array)
+                    .and_then(|rows| rows.last())
+                    .and_then(|row| row["value"].as_f64())
+            })
+            .collect();
+    }
+
+    assert_eq!(
+        totals.first(),
+        Some(&10.0),
+        "the pass must price the stored 5 BTC (=10), not the 1 BTC it listed"
+    );
+}
+
+/// One asset is priced once per pass, however many Tracks hold it.
+///
+/// Without the cache a pass costs one request per holding per Track: several
+/// Tracks watching the same asset would ask for the same number several times
+/// within the same second, and the pass would take proportionally longer.
+#[test]
+fn a_poll_pass_prices_each_asset_once_across_tracks() {
+    let (endpoint, hits) = price_server("2");
+    let mut kernel = FakeKernel::boot_polling(&endpoint, 5);
+
+    for (id, track) in [(2, TRACK), (3, OTHER_TRACK)] {
+        kernel.call_tool(
+            id,
+            "market.holdings.set",
+            json!({ "asset": "BTC", "quantity": 1 }),
+            Some(track),
+        );
+    }
+    kernel.drain();
+    let before_pass = hits.load(Ordering::SeqCst);
+
+    // Service exactly one background pass: both Tracks, one asset.
+    let mut seen_tracks = std::collections::HashSet::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline && seen_tracks.len() < 2 {
+        if let Ok(frame) = kernel.frames.recv_timeout(Duration::from_secs(8))
+            && frame.get("method").is_some()
+        {
+            {
+                let kind = frame
+                    .pointer("/params/kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let entity = frame
+                    .pointer("/params/entity_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                kernel.service(&frame);
+                if kind == "portfolio.holdings" {
+                    seen_tracks.insert(entity);
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        seen_tracks.len(),
+        2,
+        "both Tracks must be priced in the pass"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst) - before_pass,
+        1,
+        "BTC must be fetched once for the whole pass, not once per Track"
+    );
+}
+
+/// Selling out replaces the table rather than leaving the old one on screen.
+///
+/// Returning early on an empty portfolio would leave a reader who has just
+/// sold everything looking at their previous position, presented as current —
+/// a worse lie than an empty table. No history point goes with it: the series
+/// is about a portfolio's value, and there is no longer a portfolio.
+#[test]
+fn removing_the_last_holding_publishes_an_empty_table() {
+    let (endpoint, _hits) = price_server("2");
+    let mut kernel = FakeKernel::boot(&endpoint);
+    kernel.call_tool(
+        2,
+        "market.holdings.set",
+        json!({ "asset": "BTC", "quantity": 1 }),
+        Some(TRACK),
+    );
+    kernel.drain();
+    let before = kernel.pushes.len();
+
+    let reply = kernel.call_tool(
+        3,
+        "market.holdings.set",
+        json!({ "asset": "BTC", "quantity": 0 }),
+        Some(TRACK),
+    );
+    kernel.drain();
+
+    assert_ne!(
+        reply.pointer("/result/isError"),
+        Some(&json!(true)),
+        "removing the last holding is a success: {reply:#?}"
+    );
+    let after: Vec<&str> = kernel.kinds_pushed().split_off(before);
+    assert_eq!(
+        after,
+        vec![format!("portfolio.holdings@{TRACK}")],
+        "the emptied table is republished, and no history point goes with it"
+    );
+    let rows = kernel.pushes.last().unwrap().1["rows"]
+        .as_array()
+        .expect("rows")
+        .clone();
+    assert_eq!(rows.len(), 1, "only the Total row remains: {rows:?}");
+    assert_eq!(rows[0]["value"].as_f64(), Some(0.0));
 }
