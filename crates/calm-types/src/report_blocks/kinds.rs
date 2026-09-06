@@ -248,7 +248,7 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
                         map.get("kind").and_then(Value::as_str).unwrap_or(""),
                         map.get("spawn")
                             .and_then(Value::as_str)
-                            .unwrap_or("in-wave"),
+                            .unwrap_or(crate::task_recovery::TASK_IN_TRACK_ROUTE),
                         map.get("depends_on")
                             .is_some_and(|v| !matches!(v, Value::Array(items) if items.is_empty())),
                         map.get("gate").is_some_and(|v| !v.is_null()),

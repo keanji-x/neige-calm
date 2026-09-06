@@ -49,7 +49,10 @@ async fn isolated_codex_authoring_rejects_invalid_and_unsupported_selection() {
         ("depends_on", json!(["other"])),
         ("gate", json!({"steps":[{"name":"check","cmd":"true"}]})),
         ("kind", json!("claude")),
-        ("spawn", json!("sub-wave")),
+        (
+            "spawn",
+            json!(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE),
+        ),
     ] {
         let mut payload = declaration("invalid");
         payload[field] = value;
@@ -83,4 +86,52 @@ async fn isolated_codex_authoring_rejects_invalid_and_unsupported_selection() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn isolated_codex_disabled_backend_keeps_safe_preparation_recovery() {
+    let boot = boot().await;
+    declare(&boot, declaration("disabled")).await;
+    let state = crate::task_projection_acceptance::route_state(&boot).await;
+    let scheduler = state.dispatcher.scheduler();
+    scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        scheduler.schedule_track(boot.track_id.clone()),
+    )
+    .await
+    .unwrap();
+    let task = current(&boot, "disabled").await;
+    assert_eq!(task.status, calm_server::model::TaskStatus::Failed);
+    assert!(
+        task.status_detail
+            .as_deref()
+            .unwrap()
+            .contains("--isolated-codex-config")
+    );
+    let (kind, output, artifacts): (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT kind,tx_output_json,spawn_artifacts_json FROM operations WHERE idempotency_key=?1",
+    )
+    .bind(&task.id)
+    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert_eq!(kind, "codex-isolated-worker");
+    assert!(output.is_none() && artifacts.is_none());
+    let view = calm_server::task_recovery::task_recovery_view(
+        boot.repo.as_ref(),
+        boot.track_id.as_str(),
+        &task.key,
+        calm_server::ids::ActorId::User,
+        calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+    )
+    .await
+    .unwrap();
+    assert!(view.recovery.allowed, "{}", view.recovery.reason);
+    let receipt=call_tool(&boot,"calm.plan.recover",planner_identity(&boot),
+        json!({"key":task.key,"expected_attempt_id":task.id,"idempotency_key":"enable-and-recover","reason":"Retry preparation after configuring the isolated backend."})).await.unwrap();
+    assert_eq!(receipt["key"], task.key);
+    assert_ne!(receipt["attempt_id"], task.id);
+    assert_eq!(current(&boot, "disabled").await.key, task.key);
 }

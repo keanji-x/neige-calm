@@ -37,8 +37,12 @@ impl IsolatedCodexSelection {
         dependencies: bool,
         gate: bool,
     ) -> Result<(), String> {
-        if kind != "codex" || spawn != "in-wave" || dependencies || gate {
-            return Err("neige_execution: isolated Codex requires codex, in-wave, no dependencies and no gate".into());
+        if kind != "codex"
+            || spawn != crate::task_recovery::TASK_IN_TRACK_ROUTE
+            || dependencies
+            || gate
+        {
+            return Err("neige_execution: isolated Codex requires codex within the parent Track, no dependencies and no gate".into());
         }
         Ok(())
     }

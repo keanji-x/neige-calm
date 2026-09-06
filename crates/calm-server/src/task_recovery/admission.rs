@@ -272,7 +272,10 @@ async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Res
     for operation in operations {
         let worker_kind = matches!(
             operation.kind.as_str(),
-            "codex-worker" | "claude-worker" | "terminal-worker"
+            "codex-worker"
+                | "claude-worker"
+                | "terminal-worker"
+                | crate::isolated_codex::OPERATION_KIND
         );
         let failed_before_prepare = operation.phase == "failed"
             && operation
