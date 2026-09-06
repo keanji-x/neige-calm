@@ -1001,10 +1001,15 @@ function fieldText(field: HTMLElement): string {
 }
 
 describe('ChatComposer', () => {
-  it('keeps unsent words on Enter while Stop is shown', async () => {
+  it('keeps unsent words on Enter while submission is disabled during a turn', async () => {
     const onSend = vi.fn();
-    render(<ChatComposer onSend={onSend} onStop={vi.fn()} />);
-    await userEvent.type(messageField(), 'Keep these words{Enter}');
+    const onStop = vi.fn();
+    const { rerender } = render(<ChatComposer onSend={onSend} onStop={onStop} />);
+    await userEvent.type(messageField(), 'Keep these words');
+    // Stop itself allows queueing (#1506); only the explicit submission fence
+    // may prevent Enter from clearing an unsent draft (#1500 F6).
+    rerender(<ChatComposer onSend={onSend} onStop={onStop} disabled />);
+    fireEvent.keyDown(messageField(), { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
     expect(fieldText(messageField())).toBe('Keep these words');
   });

@@ -249,6 +249,8 @@ export function useConversationStore(
     ...harnessItemsQueryOptions(transport, cardId, unauthorized), enabled: scope !== null,
   });
   const run = useQuery({ ...plannerRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
+  const phase = run.data?.phase ?? null;
+  const stalled = phase === 'wedged';
   const mutations = usePlannerMutations(transport, cardId, unauthorized);
   const [echoes, setEchoes] = useState<readonly OptimisticConversationTurn[]>([]);
   /**
@@ -412,18 +414,20 @@ export function useConversationStore(
   }, [cardId, createEcho, createEchoShown, hasEarlierPage, retireCreateEcho]);
   const transcript = useMemo(
     () => {
-      const merged = mergeTranscript(serverEntries, echoes);
+      // A phase snapshot predicts queueing; only this POST's acknowledgement
+      // licenses the queued caption. A wedged queue cannot promise delivery.
+      const displayedEchoes = echoes.map((turn) => stalled || turn.id === unconfirmedEchoId
+        ? { ...turn, queued: false } : turn);
+      const merged = mergeTranscript(serverEntries, displayedEchoes);
       if (createEcho === null || createEchoShown) return merged;
       /* Borrowing the time of the entry it precedes — see `createEchoLine`. */
       return [createEchoLine(createEcho, merged[0]?.atMs ?? 0), ...merged];
     },
-    [createEcho, createEchoShown, echoes, serverEntries],
+    [createEcho, createEchoShown, echoes, serverEntries, stalled, unconfirmedEchoId],
   );
   const confirmedTranscript = useMemo(
     () => mergeTranscript(serverEntries, confirmedEchoes), [confirmedEchoes, serverEntries],
   );
-  const phase = run.data?.phase ?? null;
-  const stalled = phase === 'wedged';
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stopping = !stalled && (phase === 'issuing_interrupt' || interruptPending);
   const facts = useMemo<ConversationFacts | null>(() => trackId === undefined ? null : {
@@ -778,10 +782,12 @@ export function useConversationStore(
   const hasUnreconciledSend = echoes.some(awaitsReconciliation)
     || registry.turnsOf(cardId).some(awaitsReconciliation);
   const sendBlocked = stalled || (failedSend !== null && failedSend.delivery !== 'refused') || sending || sendingAcrossMounts || hasUnreconciledSend;
+  const displayedFailure = failedSend === null ? null : { ...failedSend.echo, queued: false };
   return {
     conversations,
     turnsOf: (conversationId) => conversation?.id === conversationId
-      ? failedSend === null || matchingSendMessage ? transcript : mergeTranscript(transcript, [failedSend.echo])
+      ? displayedFailure === null || matchingSendMessage ? transcript
+        : mergeTranscript(transcript, [displayedFailure])
       : registry.turnsOf(conversationId),
     pending: pendingConversationIds(conversation, working, !stalled && (sending || sendingAcrossMounts)),
     working,

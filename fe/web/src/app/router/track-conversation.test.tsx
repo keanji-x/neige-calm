@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useEffect } from 'react';
 
+import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
@@ -656,6 +657,88 @@ describe('track conversations', () => {
     expect(within(drawerElement()).getAllByText(text)).toHaveLength(1);
   });
 
+  it.each(['rejected', 'unknown'] as const)(
+    '[F4] never labels the %s working-turn submission as queued, including after reopen', async (outcome) => {
+      const text = `Keep ${outcome} queued attempt`;
+      const { requests } = setup((request) => {
+        if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running' });
+        if (request.path.endsWith('/planner/input')) {
+          if (outcome === 'unknown') throw new Error('response dropped');
+          return failure(429, 'rate_limited', 'Wait a moment');
+        }
+        return undefined;
+      });
+      fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+      await screen.findByRole('button', { name: 'Stop' });
+      await typeInto(messageField(), text);
+      fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+      await screen.findByRole('alert');
+      expect(within(drawerElement()).getByText(text)).toBeTruthy();
+      expect(document.querySelector('[data-nc-queued]')).toBeNull();
+      expect(document.querySelector('[data-nc-queued-note]')).toBeNull();
+      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+      fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+      fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+      expect(within(drawerElement()).getByText(text)).toBeTruthy();
+      expect(document.querySelector('[data-nc-queued-note]')).toBeNull();
+    },
+  );
+
+  it('[F4] marks a working-turn message queued only after its POST is acknowledged', async () => {
+    let resolve!: (response: ApiTransportResponse) => void;
+    const held = new Promise<ApiTransportResponse>((answer) => { resolve = answer; });
+    const { requests } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running' });
+      if (request.path.endsWith('/planner/input')) return held;
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByRole('button', { name: 'Stop' });
+    await typeInto(messageField(), 'Waiting for the server');
+    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+    await waitFor(() => expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1));
+    expect(within(drawerElement()).getByText('Waiting for the server')).toBeTruthy();
+    expect(document.querySelector('[data-nc-queued-note]')).toBeNull();
+    await act(async () => { resolve(inputAccepted()); await held; });
+    await screen.findByText('Queued · sends when this turn ends');
+    expect(messageField().getAttribute('contenteditable')).toBe('true');
+  });
+
+  it('[F5] keeps an uncertain attempt distinct from an acknowledged queued echo and matching history', async () => {
+    const text = 'Repeat after queue';
+    let attempts = 0;
+    let rows: HarnessItem[] = [];
+    const { client, requests } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running' });
+      if (request.path.includes(HISTORY_PATH)) return ok(rows);
+      if (request.path.endsWith('/planner/input')) {
+        attempts += 1;
+        if (attempts === 2) throw new Error('response dropped');
+        return inputAccepted();
+      }
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByRole('button', { name: 'Stop' });
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await typeInto(messageField(), text);
+      fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+      await waitFor(() => expect(attempts).toBe(attempt));
+      if (attempt === 1) await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    }
+    await screen.findByRole('alert');
+    expect(within(drawerElement()).getAllByText(text)).toHaveLength(2);
+    expect(document.querySelectorAll('[data-nc-queued]')).toHaveLength(1);
+    rows = [harnessMessage(1, 'userMessage', { content: [{ text }] })];
+    await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
+    await screen.findByText('A matching message is visible. Delivery is still unconfirmed.');
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    expect(document.querySelectorAll('[data-nc-queued]')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'I’ve checked' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(2);
+  });
+
   it('[F4] edits a rejected message without replaying it before an explicit send', async () => {
     const { requests } = setup((request) => request.path.endsWith('/planner/input')
       ? failure(429, 'rate_limited', 'Wait a moment') : undefined);
@@ -774,6 +857,24 @@ describe('track conversations', () => {
     expect(await screen.findByRole('complementary', { name: 'Untitled' })).toBeTruthy();
     expect(messageField().textContent).toBe('Draft written before the stall');
     expect(messageField().getAttribute('contenteditable')).toBe('true');
+  });
+
+  it('[F6] stops promising queued delivery after the harness becomes wedged', async () => {
+    let phase = 'turn_running';
+    const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
+      ? ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase }) : undefined);
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByRole('button', { name: 'Stop' });
+    await typeInto(messageField(), 'Queued before the stall');
+    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+    await screen.findByText('Queued · sends when this turn ends');
+    phase = 'wedged';
+    await act(async () => { await client.invalidateQueries({ queryKey: ['planner-run', ASSISTANT_CARD.id] }); });
+    expect((await screen.findByRole('alert')).textContent).toContain('This conversation is stuck');
+    expect(within(drawerElement()).getByText('Queued before the stall')).toBeTruthy();
+    expect(document.querySelector('[data-nc-queued-note]')).toBeNull();
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
   });
 
   it('[F6] stops claiming Working when the runtime wedges during an unanswered send', async () => {

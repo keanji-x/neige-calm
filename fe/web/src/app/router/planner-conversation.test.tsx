@@ -178,22 +178,22 @@ async function settleOneSend(requests: ApiRequest[], expected = 1) {
  * `issuing_interrupt`, the composer will happily send in, because `stopShown`
  * is `working || stopping`.
  *
- * `wedged` is in the queueing column because that is what the kernel does with
- * the message. It is *not* a claim that the queue drains: a wedged harness
- * never issues another turn, so the message waits forever. That is #1507 and it
- * is not fixed here; what this row pins is that the composer stays open and
- * says the message is queued rather than going dead with no explanation.
+ * The kernel would also queue in `wedged`, but that queue never drains.
+ * #1500 F6 deliberately blocks a new submission when that phase is known and
+ * offers recovery while preserving existing drafts. The exhaustive policy
+ * table records that one exception without weakening healthy-phase queueing.
  */
-const PHASE_QUEUES_TABLE: Readonly<Record<HarnessPhaseTag, boolean>> = Object.freeze({
-  idle: false,
-  turn_completed: false,
-  pending_thread_start: true,
-  issuing_turn: true,
-  issuing_interrupt: true,
-  turn_running: true,
-  resumed: true,
-  wedged: true,
-} satisfies Record<HarnessPhaseTag, boolean>);
+type PhaseSendPolicy = 'issued' | 'queued' | 'stalled';
+const PHASE_SEND_TABLE: Readonly<Record<HarnessPhaseTag, PhaseSendPolicy>> = Object.freeze({
+  idle: 'issued',
+  turn_completed: 'issued',
+  pending_thread_start: 'queued',
+  issuing_turn: 'queued',
+  issuing_interrupt: 'queued',
+  turn_running: 'queued',
+  resumed: 'queued',
+  wedged: 'stalled',
+} satisfies Record<HarnessPhaseTag, PhaseSendPolicy>);
 
 /*
  * Exhaustive by the compiler rather than by care: the annotation rejects a
@@ -210,10 +210,10 @@ const PHASE_QUEUES_TABLE: Readonly<Record<HarnessPhaseTag, boolean>> = Object.fr
  * were deliberately not used as the authority — a hand-written table checked
  * against a hand-written list looks machine-checked and is not.
  *
- * It pins the table's *shape*. Which column a phase belongs in is
- * `can_issue_turn()` read by a person, and no type can check that.
+ * It pins the table's *shape*. Each column follows `can_issue_turn()` plus
+ * the explicit wedged recovery policy; those semantics still need review.
  */
-const PHASE_QUEUES = Object.freeze(Object.entries(PHASE_QUEUES_TABLE));
+const PHASE_SENDS = Object.freeze(Object.entries(PHASE_SEND_TABLE));
 
 describe('planner conversation regressions', () => {
   it('does not repeat the run phase above the composer while the planner is working', async () => {
@@ -695,9 +695,9 @@ describe('planner conversation regressions', () => {
     expect(messageField().getAttribute('contenteditable')).toBe('true');
   });
 
-  it.each(PHASE_QUEUES)(
-    'phase %s queues the message: %s — marker, open composer and a second send all follow it',
-    async (phase, queues) => {
+  it.each(PHASE_SENDS)(
+    'phase %s applies %s policy to markers, composer state and subsequent sends',
+    async (phase, policy) => {
       const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
         ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase })
         : undefined);
@@ -715,7 +715,17 @@ describe('planner conversation regressions', () => {
         await Promise.resolve();
       });
       const input = () => requests.filter((request) => request.path.endsWith('/planner/input'));
-
+      if (policy === 'stalled') {
+        expect(messageField().getAttribute('contenteditable')).toBe('false');
+        expect((await screen.findByRole('alert')).textContent).toContain('This conversation is stuck');
+        expect(screen.getByRole('button', { name: 'Start a new conversation' })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: 'Queue message' })).toBeNull();
+        await sendWithEnter(messageField());
+        expect(input()).toHaveLength(0);
+        expect(document.querySelector('[data-nc-queued]')).toBeNull();
+        return;
+      }
+      const queues = policy === 'queued';
       await typeInto(messageField(), 'first');
       await sendWithEnter(messageField());
       await settleOneSend(requests);

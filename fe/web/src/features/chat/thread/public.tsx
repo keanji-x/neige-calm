@@ -2200,16 +2200,14 @@ export function ChatComposer({
       aria-label="Message composer"
       onKeyDownCapture={(event) => {
         /* Astryx clears its input after Enter even when its parent refuses
-           submission. Keep unsent words while disabled or showing Stop, and
+           submission. Keep unsent words while disabled, and
            let IME Enter accept its candidate without submitting. */
         if (event.key !== 'Enter' || event.shiftKey) return;
         if (event.nativeEvent.isComposing) {
           event.stopPropagation();
           return;
         }
-        const commandIsOpen = event.target instanceof Element
-          && event.target.closest('[role="combobox"][aria-expanded="true"]') !== null;
-        if (disabled || (stopShown && !commandIsOpen)) {
+        if (disabled) {
           event.preventDefault();
           event.stopPropagation();
         }
