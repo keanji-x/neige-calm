@@ -12,8 +12,10 @@ state store is part of this slice.
 
 - Add a narrow authenticated User-only task-start API. It creates the fixed
   isolated Codex task declaration through the existing report writer and promotes
-  a Draft Track in that same transaction. An ordinary report edit remains an edit.
-  An unavailable configured backend is rejected before a task is authored.
+  a Draft Track in that same transaction. The UI states that this starts the Track
+  (and may release its other ready work). An ordinary report edit remains an edit.
+  An unavailable configured backend or non-runnable/terminal Track is rejected
+  before a task is authored; the action does not silently resume blocked work.
 - The request carries a client-minted task key, goal and expected report revision.
   Repeated requests retain these exact values. Revision conflicts cannot silently
   obtain a new revision and create another task. Existing keys cannot be overwritten
