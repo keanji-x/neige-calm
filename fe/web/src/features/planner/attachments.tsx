@@ -112,6 +112,13 @@ export function usePlannerAttachments(
     generation.current += 1;
     setItems([]);
     setError(null);
+    /* `busy` belongs to the same rule as the other two, and leaving it out was
+       the rule stated and then not applied: an upload in flight when the
+       reader moves on left the NEW card's composer showing a disabled
+       paperclip and a spinner for work that was never its own. The in-flight
+       request cannot be cancelled, but its answer is already refused by the
+       generation check in `attach`, so nothing here is waiting for it. */
+    setBusy(false);
   }, [cardId]);
 
   const attach = useCallback(async (file: File) => {

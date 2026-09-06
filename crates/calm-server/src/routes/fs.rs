@@ -485,39 +485,13 @@ pub(crate) enum WorkspaceSymlinks {
     Refused,
 }
 
-/// Open one workspace file with the root directory descriptor as the
-/// authority. `openat2` resolves and opens atomically, so a concurrent worker
-/// cannot swap a checked parent for an escaping symlink before the read.
-///
-/// # What this establishes, and what it does not
-///
-/// The list is meant to be exhaustive, because an enumeration presented as
-/// exhaustive and read as exhaustive is what let a cross-card read ship in
-/// #1505 round 3 — the omitted line was the third one below.
-///
-/// * `RESOLVE_BENEATH` — every component resolves beneath `workspace_root`,
-///   not just the last one, so a path leaving the root is `EXDEV`;
-/// * `RESOLVE_NO_MAGICLINKS` — no `/proc/self/fd` style reopen;
-/// * **`RESOLVE_BENEATH` says nothing about symlinks whose target stays inside
-///   the root.** `a -> ../b/c` resolves and opens exactly as if it were the
-///   file. Only `RESOLVE_NO_SYMLINKS` — [`WorkspaceSymlinks::Refused`] —
-///   refuses those, and callers that treat subdirectories of the root as
-///   separate trust domains must ask for it;
-/// * `O_NONBLOCK` — a FIFO on the path returns `ENXIO` instead of parking the
-///   blocking thread until a writer appears;
-/// * the `is_file()` check on the returned descriptor — not on the name — so a
-///   directory, socket or device is refused after the open, with no window
-///   between the check and the handle.
-///
-/// Callers outside `routes::fs` must treat the returned `CalmError` as
-/// internal: its messages carry the requested host path.
 /// The resolve flags, stated once.
 ///
-/// #1505 S6 review. Two openers now share them — the regular-file one below
+/// #1505 S6 review. Two openers share them — [`open_workspace_regular_file`]
 /// and [`open_workspace_directory`] — and a second copy of this expression is
-/// a second place `RESOLVE_NO_SYMLINKS` could be forgotten. The write path
-/// that this function's directory sibling exists for was shipped once WITHOUT
-/// that flag, which is precisely the drift a duplicated flag set produces.
+/// a second place `RESOLVE_NO_SYMLINKS` could be forgotten. The write path the
+/// directory opener exists for was shipped once WITHOUT that flag, which is
+/// precisely the drift a duplicated flag set produces.
 #[cfg(target_os = "linux")]
 fn workspace_resolve_flags(symlinks: WorkspaceSymlinks) -> nix::fcntl::ResolveFlag {
     use nix::fcntl::ResolveFlag;
@@ -547,6 +521,35 @@ async fn open_workspace_root(workspace_root: &Path) -> Result<std::fs::File> {
     Ok(root.into_std().await)
 }
 
+/// Open one regular file beneath `workspace_root`, with the root's descriptor
+/// as the authority. `openat2` resolves and opens atomically, so a concurrent
+/// worker cannot swap a checked parent for an escaping symlink before the read.
+///
+/// # What this establishes, and what it does not
+///
+/// The list is meant to be exhaustive, because an enumeration presented as
+/// exhaustive and read as exhaustive is what let a cross-card read ship in
+/// #1505 round 3 — the omitted line was the third one below.
+///
+/// * `RESOLVE_BENEATH` — every component resolves beneath `workspace_root`,
+///   not just the last one, so a path leaving the root is `EXDEV`;
+/// * `RESOLVE_NO_MAGICLINKS` — no `/proc/self/fd` style reopen;
+/// * **`RESOLVE_BENEATH` says nothing about symlinks whose target stays inside
+///   the root.** `a -> ../b/c` resolves and opens exactly as if it were the
+///   file. Only `RESOLVE_NO_SYMLINKS` — [`WorkspaceSymlinks::Refused`] —
+///   refuses those, and callers that treat subdirectories of the root as
+///   separate trust domains must ask for it;
+/// * `O_NONBLOCK` — a FIFO on the path returns `ENXIO` instead of parking the
+///   blocking thread until a writer appears;
+/// * the `is_file()` check on the returned descriptor — not on the name — so a
+///   directory, socket or device is refused after the open, with no window
+///   between the check and the handle.
+///
+/// **Callers outside `routes::fs` must treat the returned [`CalmError`] as
+/// internal: its messages carry the requested host path.** That sentence
+/// belongs here, on the function that returns the error — a review round put
+/// it on the private flag helper, which returns neither an error nor a path,
+/// where the caller who needs it would never look.
 #[cfg(target_os = "linux")]
 pub(crate) async fn open_workspace_regular_file(
     workspace_root: &Path,
@@ -557,6 +560,40 @@ pub(crate) async fn open_workspace_regular_file(
     let root = open_workspace_root(workspace_root).await?;
     open_workspace_regular_file_from_fd(root, workspace_root.to_path_buf(), relative, symlinks)
         .await
+}
+
+/// Open the root itself as a directory descriptor.
+///
+/// The anchor everything else resolves against. `open_workspace_directory`
+/// cannot express it — a relative path of `"."` is refused by
+/// `workspace_relative_path`, correctly, since `.` and `..` are exactly what a
+/// relative path must not contain — and a caller that needs to create the
+/// first level under the root has nothing else to hold.
+///
+/// The root is the trust base rather than something derived from workspace
+/// contents: `planner_attachments::attachment_root` builds it from the track's
+/// stored workspace path and refuses one that is not absolute or not under the
+/// server's workspace root.
+///
+/// **Callers outside `routes::fs` must treat the returned [`CalmError`] as
+/// internal: its messages carry the requested host path.**
+#[cfg(target_os = "linux")]
+pub(crate) async fn open_workspace_root_directory(
+    workspace_root: &Path,
+) -> Result<std::os::fd::OwnedFd> {
+    Ok(std::os::fd::OwnedFd::from(
+        open_workspace_root(workspace_root).await?,
+    ))
+}
+
+/// Non-Linux placeholder, fail-closed for the same reason as the others.
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn open_workspace_root_directory(
+    _workspace_root: &Path,
+) -> Result<std::os::fd::OwnedFd> {
+    Err(CalmError::Internal(
+        "secure workspace writes require Linux openat2 support".into(),
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -583,6 +620,9 @@ pub(crate) async fn open_workspace_regular_file(
 /// `O_DIRECTORY` is passed and the `is_dir` check is kept anyway: the flag is
 /// the atomic guarantee, the check is what turns a kernel that ignored it into
 /// a refusal rather than a surprise.
+///
+/// **Callers outside `routes::fs` must treat the returned [`CalmError`] as
+/// internal: its messages carry the requested host path.**
 #[cfg(target_os = "linux")]
 pub(crate) async fn open_workspace_directory(
     workspace_root: &Path,

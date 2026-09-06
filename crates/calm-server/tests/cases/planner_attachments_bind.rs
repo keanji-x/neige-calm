@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 use axum::http::StatusCode;
 use calm_server::codex_appserver::InputItem;
 use calm_server::harness::HarnessSnapshot;
-use calm_server::planner_attachments::{bound_file_path, gc, staging_dir};
+use calm_server::planner_attachments::{bound_file_path, dir, gc};
 use calm_types::planner_attachment::AttachmentId;
 use serde_json::{Value, json};
 
@@ -40,10 +40,14 @@ async fn staged(boot: &Boot, payload: &[u8]) -> String {
 /// directory the bytes are in, and the sweep is the thing that reads that
 /// directory. Asserting the file still exists without running the sweep would
 /// pass identically before and after the bind path.
-fn sweep_everything_reclaimable(boot: &Boot) -> Vec<String> {
-    let root = boot.attachment_root();
-    let staging = staging_dir(&root, &boot.planner_card.id);
-    gc::sweep_staging_at(&staging, SystemTime::now(), Duration::from_secs(0))
+async fn sweep_everything_reclaimable(boot: &Boot) -> Vec<String> {
+    let dirs = dir::open_card_dirs(&boot.attachment_root(), &boot.planner_card.id)
+        .await
+        .expect("the card's directories open");
+    gc::sweep_staging_at(dirs.staging(), SystemTime::now(), Duration::from_secs(0))
+        .into_iter()
+        .map(|name| name.as_str().to_string())
+        .collect()
 }
 
 fn names(dir: &Path) -> Vec<String> {
@@ -98,7 +102,7 @@ async fn a_named_attachment_is_moved_out_of_reach_of_the_orphan_sweep() {
     );
     assert_eq!(names(&boot.bound_dir()), vec![id.clone()]);
 
-    let reclaimed = sweep_everything_reclaimable(&boot);
+    let reclaimed = sweep_everything_reclaimable(&boot).await;
     assert!(
         reclaimed.is_empty(),
         "the sweep found nothing to reclaim, but reported {reclaimed:?}"
@@ -119,7 +123,7 @@ async fn an_attachment_nobody_sent_is_still_reclaimed() {
     let boot = boot_with(idle_snapshot(vec![])).await;
     let id = staged(&boot, b"never sent").await;
 
-    let reclaimed = sweep_everything_reclaimable(&boot);
+    let reclaimed = sweep_everything_reclaimable(&boot).await;
     assert_eq!(reclaimed, vec![id.clone()]);
     assert_eq!(read_back(&boot, &id).await, StatusCode::BAD_REQUEST);
 }
@@ -465,8 +469,13 @@ async fn binding_does_not_change_what_the_card_has_spent() {
     let id = staged(&boot, &[7u8; 4096]).await;
 
     let root = boot.attachment_root();
-    let before =
-        calm_server::planner_attachments::used_bytes(&root, &boot.planner_card.id).unwrap();
+    let measure = || async {
+        let dirs = dir::open_card_dirs(&root, &boot.planner_card.id)
+            .await
+            .expect("the card's directories open");
+        calm_server::planner_attachments::used_bytes(&dirs).unwrap()
+    };
+    let before = measure().await;
     assert!(before > 4096);
 
     let (status, body) = post_input_with_attachments(
@@ -484,7 +493,7 @@ async fn binding_does_not_change_what_the_card_has_spent() {
     assert_eq!(names(&boot.bound_dir()), vec![id], "the bind ran");
     assert!(names(&boot.staging_dir()).is_empty());
 
-    let after = calm_server::planner_attachments::used_bytes(&root, &boot.planner_card.id).unwrap();
+    let after = measure().await;
     assert_eq!(after, before, "a bind is a move, not a second copy");
 }
 
@@ -515,6 +524,9 @@ async fn a_bound_directory_symlinked_to_another_card_refuses_before_writing() {
     // stays beneath the attachment root, so `RESOLVE_BENEATH` is happy with
     // it and only `RESOLVE_NO_SYMLINKS` refuses. It is also the exact
     // construction the review gave.
+    // The upload created `bound/` already, so the planted link replaces it —
+    // which is exactly what an agent with write access to this workspace does.
+    std::fs::remove_dir(boot.bound_dir()).unwrap();
     std::os::unix::fs::symlink("../card-victim/bound", boot.bound_dir()).unwrap();
 
     let (status, body) = post_input_with_attachments(
@@ -564,6 +576,9 @@ async fn a_bound_directory_symlinked_outside_the_root_refuses_before_writing() {
     // Relative here too, so the case is "the target leaves the root" and not
     // "the target happens to be spelled absolutely" — those are different
     // facts and `RESOLVE_BENEATH` is what answers this one.
+    // The upload created `bound/` already, so the planted link replaces it —
+    // which is exactly what an agent with write access to this workspace does.
+    std::fs::remove_dir(boot.bound_dir()).unwrap();
     std::os::unix::fs::symlink("../../../escaped", boot.bound_dir()).unwrap();
 
     let (status, body) = post_input_with_attachments(

@@ -6,6 +6,8 @@ mod harness_turn_start_invariant;
 mod planner_attachments_bind;
 #[path = "cases/planner_attachments_bound_dir_seam.rs"]
 mod planner_attachments_bound_dir_seam;
+#[path = "cases/planner_attachments_guarded_surface.rs"]
+mod planner_attachments_guarded_surface;
 #[path = "cases/planner_attachments_rest.rs"]
 mod planner_attachments_rest;
 #[path = "cases/planner_harness_backpressure.rs"]

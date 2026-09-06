@@ -482,7 +482,7 @@ async fn the_per_card_budget_refuses_rather_than_reclaiming() {
     let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"tiny")).await;
     assert_eq!(
         status,
-        StatusCode::BAD_REQUEST,
+        StatusCode::INTERNAL_SERVER_ERROR,
         "an unmeasurable budget must refuse, not admit: {body}"
     );
 }
@@ -937,6 +937,94 @@ async fn the_next_upload_reclaims_an_expired_unbound_one() {
     );
 }
 
+/// BLOCKER 1 of the S6 delta review, and it was introduced by the round that
+/// moved the sweep to the front of every upload.
+///
+/// `sweep_staging` walked `<root>/<card>/staging` with `std::fs::read_dir` and
+/// unlinked through `std::fs::remove_file` — neither under any `RESOLVE_*`
+/// flag. A **relative** link (`ln -s ../card-b/bound <root>/card-a/staging`;
+/// `RESOLVE_BENEATH` would not have caught it either, since the target is
+/// beneath the root) made every POST to card A walk into card B's `bound/` and
+/// unlink everything older than the orphan TTL — taking card B's
+/// already-issued `localImage` paths with it, which codex answers with
+/// placeholder text and no error.
+///
+/// The reachability is the second half of why this mattered: the sweep used to
+/// run only after a SUCCESSFUL upload, so reaching it meant getting past the
+/// magic-number sniff, the size gate and the budget. Moved to the front, every
+/// request reached it — including the ones about to be refused.
+#[tokio::test]
+async fn an_uploads_sweep_cannot_be_pointed_at_another_cards_bound_directory() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+
+    // Card B's bound directory, with an attachment old enough to sweep.
+    let victim = b.attachments_dir().join("card-victim").join("bound");
+    std::fs::create_dir_all(&victim).unwrap();
+    let precious = victim.join("0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png");
+    std::fs::write(&precious, b"card B's bound bytes").unwrap();
+    let aged = std::fs::File::options()
+        .write(true)
+        .open(&precious)
+        .unwrap();
+    aged.set_modified(SystemTime::now() - Duration::from_secs(25 * 60 * 60))
+        .unwrap();
+    drop(aged);
+
+    // Card A's staging, replaced by a RELATIVE link into it.
+    let staging = b.staging();
+    std::fs::create_dir_all(staging.parent().unwrap()).unwrap();
+    let _ = std::fs::remove_dir_all(&staging);
+    std::os::unix::fs::symlink("../card-victim/bound", &staging).unwrap();
+
+    // Any upload at all — it does not even have to be accepted.
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"trigger")).await;
+    assert_ne!(status, StatusCode::CREATED, "body={body}");
+
+    assert!(
+        precious.exists(),
+        "card B's bound attachment must survive an upload on card A"
+    );
+    assert_eq!(
+        std::fs::read(&precious).unwrap(),
+        b"card B's bound bytes",
+        "and must be untouched"
+    );
+}
+
+/// BLOCKER 2 of the same review: the UPLOAD write path never got the
+/// descriptor treatment, so `create_dir_all` + `File::create` + `rename` on
+/// `staging.path().join(..)` wrote wherever a planted `staging` link pointed —
+/// including outside the attachment root entirely.
+#[tokio::test]
+async fn an_upload_cannot_be_redirected_outside_the_attachment_root() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+
+    // Somewhere outside `.neige/attachments` altogether, reached relatively so
+    // the case is "the target leaves the root" rather than "it is spelled
+    // absolutely".
+    let outside = b.attachments_dir().parent().unwrap().join("escaped");
+    std::fs::create_dir_all(&outside).unwrap();
+    let staging = b.staging();
+    std::fs::create_dir_all(staging.parent().unwrap()).unwrap();
+    let _ = std::fs::remove_dir_all(&staging);
+    std::os::unix::fs::symlink("../../../escaped", &staging).unwrap();
+
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"escaping")).await;
+    assert_ne!(status, StatusCode::CREATED, "body={body}");
+    assert!(
+        file_names(&outside).is_empty(),
+        "no byte, and no `.part`, may be written outside the attachment root: {:?}",
+        file_names(&outside)
+    );
+    // The refusal must not hand the client a host path, the same rule the read
+    // path follows.
+    let sentence = body["error"].as_str().unwrap_or_default();
+    assert!(!sentence.contains(".neige"), "body={body}");
+    assert!(!sentence.contains("escaped"), "body={body}");
+}
+
 /// #1505 S6 review — a card that is over its ceiling must be able to get back
 /// under it.
 ///
@@ -1183,13 +1271,18 @@ async fn no_refusal_body_carries_the_host_workspace_path() {
         );
     };
 
-    // (a) the budget cannot be measured: `bound/` is a regular file, so
-    //     `read_dir` is ENOTDIR.
+    // (a) a card directory that is not a directory: `bound/` is a regular
+    //     file. The refusal now comes from the guarded OPEN rather than from
+    //     the measurement — every filesystem step resolves through descriptors
+    //     opened up front — and it is a 500 rather than a 400 for the reason
+    //     that distinction exists: the client did not do this and cannot fix
+    //     it. What this case is about is unchanged: whatever refuses, the body
+    //     must not carry a host path, and the opener's own errors do.
     std::fs::create_dir_all(b.bound().parent().unwrap()).unwrap();
     std::fs::write(b.bound(), b"not a directory").unwrap();
     let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"x")).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    check("unmeasurable budget", &body);
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    check("unusable card directory", &body);
 
     // (b) the read-back cannot open what the id names.
     std::fs::remove_file(b.bound()).unwrap();
