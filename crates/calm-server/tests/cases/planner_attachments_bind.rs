@@ -141,13 +141,23 @@ async fn the_issued_turn_carries_a_local_image_item_for_the_attachment() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 
+    // Wait on the CLOCK, not on the scheduler.
+    //
+    // A `yield_now()` spin was the first version of this and it went red on
+    // CI while passing on every local run. Issuance is driven by the run
+    // loop's 50ms tick, so a fixed number of cooperative yields can all be
+    // spent inside a single tick interval on a loaded machine — the loop
+    // finishes early and reports "no turn" for a turn that was merely a few
+    // milliseconds away. The subject here is what the turn CONTAINS, not how
+    // soon it appears, so the wait is a real deadline.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     let mut issued = Vec::new();
-    for _ in 0..4_000 {
+    while std::time::Instant::now() < deadline {
         issued = boot.daemon.started_turns_for_test();
         if !issued.is_empty() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let (_thread, items) = issued.first().expect("the live harness issued a turn");
     assert_eq!(items.len(), 2, "text then image: {items:?}");
