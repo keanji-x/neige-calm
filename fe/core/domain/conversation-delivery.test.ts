@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { confirmsConversationDelivery, failedConversationDelivery } from './conversation-delivery.js';
+import { hasUnseenMatchingConversationMessage, failedConversationDelivery } from './conversation-delivery.js';
 
 describe('failed conversation delivery', () => {
   it.each([400, 403, 404, 413, 422, 429])('permits an explicit %s rejection to be retried', (status) => {
@@ -17,12 +17,12 @@ describe('failed conversation delivery', () => {
     expect(failedConversationDelivery(null)).toBe('unknown');
   });
 
-  it('recognizes the matching user segment after the observed high-water', () => {
+  it('identifies newly observed matching text only as evidence for review', () => {
     const echo = { id: 'echo-1', author: 'you' as const, text: 'do this', atMs: 0, serverHighWaterBefore: 5 };
-    expect(confirmsConversationDelivery([{ id: '6:0', author: 'you', text: 'do this', atMs: 1 }], echo)).toBe(true);
-    expect(confirmsConversationDelivery([{ id: '6', author: 'agent', text: 'do this', atMs: 1 }], echo)).toBe(false);
-    expect(confirmsConversationDelivery([{ id: '5', author: 'you', text: 'do this', atMs: 1 }], echo)).toBe(false);
-    expect(confirmsConversationDelivery([{ id: '6', author: 'you', text: 'do this\nand that', atMs: 1 }], echo)).toBe(false);
-    expect(confirmsConversationDelivery([{ id: '6', author: 'you', text: '', atMs: 1 }], { ...echo, text: '' })).toBe(false);
+    expect(hasUnseenMatchingConversationMessage([{ id: '6:0', author: 'you', text: 'do this', atMs: 1 }], echo)).toBe(true);
+    expect(hasUnseenMatchingConversationMessage([{ id: '6', author: 'agent', text: 'do this', atMs: 1 }], echo)).toBe(false);
+    expect(hasUnseenMatchingConversationMessage([{ id: '5', author: 'you', text: 'do this', atMs: 1 }], echo)).toBe(false);
+    expect(hasUnseenMatchingConversationMessage([{ id: '6', author: 'you', text: 'do this\nand that', atMs: 1 }], echo)).toBe(false);
+    expect(hasUnseenMatchingConversationMessage([{ id: '6', author: 'you', text: '', atMs: 1 }], { ...echo, text: '' })).toBe(false);
   });
 });

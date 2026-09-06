@@ -675,7 +675,7 @@ describe('track conversations', () => {
   });
 
   it.each(['transport', '503', 'decode'] as const)(
-    '[F5] reconciles %s lost acknowledgement only against a newer durable message', async (mode) => {
+    '[F5] replaces the %s failure with matching-message review until acknowledged', async (mode) => {
       const text = 'repeat the same request';
       const first = harnessMessage(1, 'userMessage', { content: [{ text }] });
       let rows = [first];
@@ -708,8 +708,17 @@ describe('track conversations', () => {
         harnessMessage(4, 'agentMessage', { text: 'Received once' })];
       await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
       await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+      expect((await screen.findByText('A matching message is visible. Delivery is still unconfirmed.')).closest('[role="status"]')?.textContent).toContain('Delivery is still unconfirmed');
       expect(within(drawerElement()).getAllByText(text)).toHaveLength(2);
       expect(screen.getByText('Received once')).toBeTruthy();
+      expect(messageField().getAttribute('contenteditable')).toBe('false');
+      expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+      fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+      fireEvent.click(await screen.findByRole('button', { name: /Conversation repeat the same request/ }));
+      expect((await screen.findByText('A matching message is visible. Delivery is still unconfirmed.')).closest('[role="status"]')?.textContent).toContain('Delivery is still unconfirmed');
+      fireEvent.click(screen.getByRole('button', { name: 'I’ve checked' }));
+      await waitFor(() => expect(screen.queryByText(/A matching message is visible/)).toBeNull());
+      expect(messageField().getAttribute('contenteditable')).toBe('true');
       expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
     },
   );
@@ -1971,4 +1980,41 @@ describe('create placeholder lifetime', () => {
     await store.settle();
     expect(store.said()).toEqual([]);
   });
+});
+
+it.each(['429', 'transport'])('[F5] does not retire a %s failure when a stale read reveals an old equal message', async (mode) => {
+  const text = 'repeat this instruction';
+  const first = harnessMessage(1, 'userMessage', { content: [{ text: 'Earlier different instruction' }] });
+  const oldEqual = harnessMessage(2, 'userMessage', { content: [{ text }] });
+  let rows = [first];
+  const { client, requests } = setup((request) => {
+    if (request.path.includes(HISTORY_PATH)) return ok(rows);
+    if (request.path.endsWith('/planner/input')) {
+      if (mode === 'transport') throw new Error('Connection lost before request reached server');
+      return failure(429, 'rate_limited', 'Request rejected before acceptance');
+    }
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await write(text);
+  expect((await screen.findByRole('alert')).textContent).toContain(mode === '429' ? 'Not sent' : 'Delivery is unconfirmed');
+  // The original read was stale; a refresh reveals a pre-existing equal row.
+  // Its server timestamp is 2, earlier than this request's Date.now().
+  rows = [first, oldEqual, harnessMessage(3, 'agentMessage', { text: 'Previously completed response' })];
+  await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
+  expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+  await screen.findByText('Previously completed response');
+  if (mode === '429') {
+    expect(screen.getByRole('alert').textContent).toContain('Not sent');
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+    expect(within(drawerElement()).getAllByText(text)).toHaveLength(2);
+  } else {
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText('A matching message is visible. Delivery is still unconfirmed.').closest('[role="status"]')?.textContent).toContain('Delivery is still unconfirmed');
+    expect(screen.getByRole('button', { name: 'I’ve checked' })).toBeTruthy();
+    expect(messageField().getAttribute('contenteditable')).toBe('false');
+    expect(within(drawerElement()).getByText(text)).toBeTruthy();
+  }
+  expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
 });

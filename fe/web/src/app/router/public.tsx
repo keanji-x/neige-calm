@@ -16,7 +16,7 @@ import { onlineManager, useInfiniteQuery, useQuery, type QueryClient } from '@ta
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
-import { confirmsConversationDelivery, failedConversationDelivery } from '../../../../core/domain/conversation-delivery.ts';
+import { hasUnseenMatchingConversationMessage, failedConversationDelivery } from '../../../../core/domain/conversation-delivery.ts';
 import {
   isBlankForKernel, toTrack, trackActivityFrom, trackCreateKeyAction, trackDisplayTitle,
   type NewTrackBodyWithoutFirstMessage, type Track, type TrackDetailWire,
@@ -121,6 +121,7 @@ type ConversationStore = Readonly<{
   historyError: string | null;
   actionError: string | null;
   failedSend: FailedConversationSend | null;
+  matchingSendMessage: boolean;
   retrySend: (echoId: string) => void;
   /** What became of the send — see `SendOutcome` for what each case licenses. */
   send: (conversationId: string, text: string) => Promise<SendOutcome>;
@@ -296,16 +297,11 @@ export function useConversationStore(
       : [...items].sort((left, right) => left.id - right.id).flatMap(harnessItemToTurns),
     [history.data, items, serverEntries],
   );
-  const heldFailure = registry.failedSends[cardId] ?? null;
-  // A matching row from before the request cannot confirm this attempt. The
-  // same high-water witness used by accepted sends survives drawer remounts.
-  const deliveryConfirmed = heldFailure !== null
-    && confirmsConversationDelivery(serverTurns, heldFailure.echo);
-  const failedSend = deliveryConfirmed ? null : heldFailure;
-  const clearFailedSend = registry.clearFailedSend;
-  useEffect(() => {
-    if (heldFailure !== null && deliveryConfirmed) clearFailedSend(cardId, heldFailure.echo.id);
-  }, [cardId, clearFailedSend, deliveryConfirmed, heldFailure]);
+  const failedSend = registry.failedSends[cardId] ?? null;
+  // A stale cache can reveal an old equal message after this attempt. Only the
+  // reader may dismiss its recovery state; a match is a review hint, not an ack.
+  const matchingSendMessage = failedSend?.delivery === 'unknown'
+    && hasUnseenMatchingConversationMessage(serverTurns, failedSend.echo);
   useEffect(() => {
     setEchoes([]);
     setUnconfirmedEchoId(null);
@@ -785,7 +781,7 @@ export function useConversationStore(
   return {
     conversations,
     turnsOf: (conversationId) => conversation?.id === conversationId
-      ? failedSend === null ? transcript : mergeTranscript(transcript, [failedSend.echo])
+      ? failedSend === null || matchingSendMessage ? transcript : mergeTranscript(transcript, [failedSend.echo])
       : registry.turnsOf(conversationId),
     pending: pendingConversationIds(conversation, working, !stalled && (sending || sendingAcrossMounts)),
     working,
@@ -800,6 +796,7 @@ export function useConversationStore(
     historyError: history.error instanceof Error ? history.error.message : null,
     actionError,
     failedSend,
+    matchingSendMessage,
     retrySend: (echoId) => {
       if (failedSend?.echo.id === echoId) void send(cardId, failedSend.echo.text);
     },
@@ -1684,9 +1681,11 @@ function useConversationPanel(
               </ChatFooterNotice>
             )}
             {store.failedSend !== null && (
-              <ChatFooterNotice>
-                <ChatFooterError message={store.failedSend.delivery === 'unknown'
-                  ? `Delivery is unconfirmed. ${store.failedSend.message}` : `Not sent. ${store.failedSend.message}`} />
+              <ChatFooterNotice tone={store.matchingSendMessage ? 'neutral' : 'error'}>
+                {store.matchingSendMessage ? (
+                  <span>A matching message is visible. Delivery is still unconfirmed.</span>
+                ) : <ChatFooterError message={store.failedSend.delivery === 'unknown'
+                  ? `Delivery is unconfirmed. ${store.failedSend.message}` : `Not sent. ${store.failedSend.message}`} />}
                 {store.failedSend.delivery !== 'unknown' ? (
                   (store.failedSend.delivery !== 'refused' || composerDraft === '') && <>
                     <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
@@ -1705,9 +1704,13 @@ function useConversationPanel(
                   </>
                 ) : (
                   <>
-                    <ChatFooterRemedy disabled={store.historyLoading} onClick={store.retryHistory}>
+                    {store.matchingSendMessage ? (
+                      <ChatFooterRemedy onClick={() => {
+                        if (store.failedSend !== null) registry.clearFailedSend(open.id, store.failedSend.echo.id);
+                      }}>I’ve checked</ChatFooterRemedy>
+                    ) : <ChatFooterRemedy disabled={store.historyLoading} onClick={store.retryHistory}>
                       {store.historyLoading ? 'Checking…' : 'Check delivery'}
-                    </ChatFooterRemedy>
+                    </ChatFooterRemedy>}
                     <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
                       onClick={() => setResendConfirmation(store.failedSend?.echo.id ?? null)}>
                       Send again…

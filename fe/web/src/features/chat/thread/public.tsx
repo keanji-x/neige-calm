@@ -2359,8 +2359,9 @@ export function ChatComposer({
  *  well. It is rendered above `<ChatComposer>`, not below it — the geometry
  *  ("upper corners rounded, lower square") only reads as *attached* from that
  *  side, and the stylesheet says why that attachment is the point. */
-export function ChatFooterNotice({ children }: { children: ReactNode }) {
-  return <div role="alert" className={styles.footerNotice}>{children}</div>;
+export function ChatFooterNotice({ children, tone = 'error' }: { children: ReactNode; tone?: 'error' | 'neutral' }) {
+  return <div role={tone === 'neutral' ? 'status' : 'alert'}
+    className={`${styles.footerNotice} ${tone === 'neutral' ? styles.footerNoticeNeutral : ''}`}>{children}</div>;
 }
 
 /** What went wrong, at the caption rank the activity lines already use for a

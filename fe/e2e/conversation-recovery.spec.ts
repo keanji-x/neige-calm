@@ -116,6 +116,37 @@ test('keeps a lost acknowledgement uncertain and asks before resending', async (
     await expect(confirmation).toContainText('may already have arrived');
     await confirmation.getByRole('button', { name: 'Cancel' }).click();
     expect(attempts).toBe(1);
+
+    // Controlled stale-history reveal: these rows may predate the failed
+    // request, so matching words cannot be promoted to a delivery receipt.
+    await page.route('**/api/cards/*/harness/items?*', async (route) => {
+      const cardId = new URL(route.request().url()).pathname.split('/')[3];
+      await route.fulfill({ json: [
+        {
+          id: 1, worker_session_id: 'earlier-session', card_id: cardId, track_id: track.id,
+          thread_id: 'earlier-thread', turn_id: null, item_uuid: null, item_type: 'userMessage',
+          method: 'item/completed', created_at_ms: 1,
+          params: JSON.stringify({ item: { content: [{ text: 'Keep this uncertain message' }] } }),
+        },
+        {
+          id: 2, worker_session_id: 'earlier-session', card_id: cardId, track_id: track.id,
+          thread_id: 'earlier-thread', turn_id: null, item_uuid: null, item_type: 'agentMessage',
+          method: 'item/completed', created_at_ms: 2,
+          params: JSON.stringify({ item: { text: 'Earlier response to matching words.' } }),
+        },
+      ] });
+    });
+    await page.getByRole('button', { name: 'Check delivery' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'Delivery is still unconfirmed' })).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByText('Transport request failed', { exact: false })).toHaveCount(0);
+    await expect(composer).toHaveAttribute('contenteditable', 'false');
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.screenshot({ path: testInfo.outputPath('matching-review-desktop.png'), fullPage: true, animations: 'disabled' });
+    await page.getByRole('button', { name: 'I’ve checked' }).click();
+    await expect(page.getByText('A matching message is visible.', { exact: false })).toHaveCount(0);
+    await expect(composer).toHaveAttribute('contenteditable', 'true');
+    expect(attempts).toBe(1);
   } finally {
     await request.delete(`/api/areas/${area.id}`);
   }

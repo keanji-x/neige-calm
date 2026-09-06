@@ -10,10 +10,10 @@ export function failedConversationDelivery(failure: ApiFailure | null): 'rejecte
     ? 'rejected' : 'unknown';
 }
 
-/** A failed send is confirmed only by its exact sentence in a newer persisted
- * user row. Unlike the display echo matcher, a prefix is insufficient evidence
- * to retire recovery work. The transcript converter trims user segments. */
-export function confirmsConversationDelivery(
+/** A newly observed exact user message is a candidate for the reader to review,
+ * never proof that this request arrived. The cached high-water can be stale,
+ * and neither the item's sequence nor timestamp identifies this attempt. */
+export function hasUnseenMatchingConversationMessage(
   serverTurns: readonly ConversationMessage[], echo: OptimisticConversationTurn,
 ): boolean {
   const text = echo.text.trim();
