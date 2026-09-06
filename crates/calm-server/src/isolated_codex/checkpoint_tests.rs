@@ -234,3 +234,62 @@ async fn isolated_missing_task_failure_observation_is_a_noop() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[tokio::test]
+async fn isolated_checkpoint_stale_owner_cannot_stop_or_save() {
+    let f = Fixture::new().await;
+    let mut session = f.session.clone();
+    sqlx::query("UPDATE operations SET lease_owner='replacement' WHERE id=?1")
+        .bind(&f.checkpoint.operation.id)
+        .execute(f.repo.pool())
+        .await
+        .unwrap();
+    let stopped = f
+        .controller
+        .stop(&mut session, &f.checkpoint, Duration::from_secs(3))
+        .await;
+    assert!(stopped.is_err());
+    assert!(matches!(
+        calm_worker_runtime::Runtime::new(f.runtime.clone())
+            .unwrap()
+            .probe(&f.session.endpoint.boundary)
+            .unwrap(),
+        calm_worker_runtime::BoundaryState::Prepared
+    ));
+    let id = f.checkpoint.operation.id.clone();
+    let record = crate::db::write_in_tx_typed(f.repo.as_ref(), move |tx| {
+        Box::pin(async move { journal::load_tx(tx, &id).await })
+    })
+    .await
+    .unwrap();
+    assert_eq!(record.session().unwrap(), &f.session);
+}
+
+#[tokio::test]
+async fn isolated_native_socket_replacement_refuses_restart_but_allows_owned_stop() {
+    let f = Fixture::new().await;
+    let socket = f.session.endpoint.home.mcp_source_socket.clone();
+    std::fs::remove_file(&socket).unwrap();
+    let _replacement = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    assert!(
+        f.controller
+            .connect(f.session.clone(), &f.checkpoint)
+            .await
+            .is_err()
+    );
+    let mut record = f.session.clone();
+    let stopped = f
+        .controller
+        .stop(&mut record, &f.checkpoint, Duration::from_secs(3))
+        .await
+        .unwrap();
+    assert!(matches!(
+        stopped,
+        calm_worker_runtime::BoundaryState::Quiesced(_)
+    ));
+    assert_eq!(
+        record.phase,
+        RequestPhase::Prepared,
+        "restart must not start a provider or turn"
+    );
+}

@@ -44,6 +44,7 @@ pub fn run() {
                     file.sync_all().unwrap();
                     // Make the running phase observable; completion still uses the actual native shim/server.
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    if scenario=="wait" {continue;}
                     if scenario!="no-report" {
                         let task=prompt.split("Task completion idempotency_key: ").nth(1).unwrap().lines().next().unwrap().to_string();
                         let env=config["mcp_servers"]["calm"]["env"].as_table_like().unwrap().iter()

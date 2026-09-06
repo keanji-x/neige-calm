@@ -20,6 +20,25 @@ fn isolated_fake_provider() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
+    run_case("happy", calm_server::model::TaskStatus::Done).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn isolated_codex_native_failure_stops_and_retains_files() {
+    run_case("fail", calm_server::model::TaskStatus::Failed).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn isolated_codex_completed_turn_without_report_fails() {
+    run_case("no-report", calm_server::model::TaskStatus::Failed).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn isolated_codex_lost_turn_ack_never_reissues_on_recovery() {
+    run_case("lose-ack", calm_server::model::TaskStatus::Failed).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn isolated_codex_withdrawal_stops_owned_runtime() {
+    run_case("wait", calm_server::model::TaskStatus::Failed).await;
+}
+async fn run_case(scenario: &str, expected: calm_server::model::TaskStatus) {
     let boot = boot().await;
     let root = tempfile::Builder::new()
         .prefix("single-loop-")
@@ -45,7 +64,7 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
     );
     let config = root.path().join("config.toml");
     let auth = root.path().join("auth.json");
-    std::fs::write(&config, "model = 'happy'\n").unwrap();
+    std::fs::write(&config, format!("model = {scenario:?}\n")).unwrap();
     std::fs::write(&auth, r#"{"tokens":{"access_token":"FAKE"}}"#).unwrap();
     let backend = Arc::new(
         Backend::with_fixture_arguments(
@@ -121,9 +140,10 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
         .with_mcp_server(mcp)
         .with_isolated_codex_backend(backend);
     state.worker_flow.start_on_boot().await.unwrap();
-    declare(&boot,json!({"key":"pilot","kind":"codex","goal":"Write result.txt containing 42 and report completion through native MCP.",
+    let declaration = json!({"key":"pilot","kind":"codex","goal":"Write result.txt containing 42 and report completion through native MCP.",
         "declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,"ready":true,
-        "no_gate_reason":"Report-driven single-task fixture.","context":{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}}})).await;
+        "no_gate_reason":"Report-driven single-task fixture.","context":{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}}});
+    let (block, revision) = declare(&boot, declaration.clone()).await;
     let task = current(&boot, "pilot").await;
     let scheduler = state.dispatcher.scheduler();
     scheduler.mark_boot_sweep_complete();
@@ -138,7 +158,7 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
     let (op_id,phase,raw):(String,String,String)=sqlx::query_as("SELECT id,phase,tx_output_json FROM operations WHERE kind='codex-isolated-worker' AND idempotency_key=?1")
         .bind(&task.id).fetch_one(&pool).await.unwrap();
     assert!(
-        matches!(phase.as_str(), "parked" | "succeeded"),
+        matches!(phase.as_str(), "parked" | "succeeded" | "failed"),
         "{phase}: {}",
         current(&boot, "pilot")
             .await
@@ -151,6 +171,27 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
             .as_str()
             .unwrap(),
     );
+    if scenario == "wait" {
+        assert_eq!(
+            current(&boot, "pilot").await.status,
+            calm_server::model::TaskStatus::Running
+        );
+        let mut withdrawn = declaration.clone();
+        withdrawn["ready"] = json!(false);
+        call_tool(
+            &boot,
+            calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_BLOCKS_UPSERT,
+            planner_identity(&boot),
+            json!({"id":block,"kind":"task","payload":withdrawn,"if_rev":revision}),
+        )
+        .await
+        .unwrap();
+    }
+    let terminal_phase = if expected == calm_server::model::TaskStatus::Done {
+        "succeeded"
+    } else {
+        "failed"
+    };
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id=?1")
@@ -158,12 +199,16 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-            if phase == "succeeded" {
+            if phase == terminal_phase {
                 break;
             }
             assert_ne!(
                 phase,
-                "failed",
+                if terminal_phase == "failed" {
+                    "succeeded"
+                } else {
+                    "failed"
+                },
                 "{}; provider stderr: {}",
                 current(&boot, "pilot")
                     .await
@@ -182,14 +227,13 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
     })
     .await
     .expect("native report and exact stop must settle the parked operation");
-    assert_eq!(
-        current(&boot, "pilot").await.status,
-        calm_server::model::TaskStatus::Done
-    );
-    assert_eq!(
-        std::fs::read_to_string(workspace.join("result.txt")).unwrap(),
-        "42\n"
-    );
+    assert_eq!(current(&boot, "pilot").await.status, expected);
+    if scenario != "lose-ack" {
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("result.txt")).unwrap(),
+            "42\n"
+        );
+    }
     let raw: String = sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id=?1")
         .bind(&op_id)
         .fetch_one(&pool)
@@ -203,28 +247,39 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
         private["provider"]["record"]["endpoint"]["boundary"]
     );
     let card = private["request"]["identity"]["card_id"].as_str().unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let items = boot
-                .repo
-                .worker_flow_item_list_by_card(card, 0, 100, false)
-                .await
-                .unwrap();
-            if items
-                .iter()
-                .any(|item| item.payload.contains("Created result.txt containing 42."))
-            {
-                break;
+    if scenario != "lose-ack" {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let items = boot
+                    .repo
+                    .worker_flow_item_list_by_card(card, 0, 100, false)
+                    .await
+                    .unwrap();
+                if items
+                    .iter()
+                    .any(|item| item.payload.contains("Created result.txt containing 42."))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("private rollout must use the existing recorder");
+        })
+        .await
+        .expect("private rollout must use the existing recorder");
+    }
     let public = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
         .await
         .unwrap();
-    assert_eq!(public["tasks"][0]["status"], "done");
+    assert_eq!(
+        public["tasks"][0]["status"],
+        serde_json::to_value(expected).unwrap()
+    );
+    let recovery = state.operation_runtime.recover_on_boot().await.unwrap();
+    state
+        .operation_runtime
+        .apply_recovery(recovery)
+        .await
+        .unwrap();
     assert!(!public.to_string().contains("FAKE"));
     tokio::time::timeout(Duration::from_secs(3),async {
         loop {
