@@ -51,6 +51,9 @@ provider or isolation support produces a clear unavailable/failed state, not leg
 - Persist controller journals without allowing generic phase bookkeeping to overwrite newer
   checkpoints. Resume the same recorded endpoint after restart; uncertain IssuingTurn stays
   unresolved until reconciled or explicitly failed, never automatically resubmitted.
+  If a kernel restart replaces the native MCP socket, this slice stops the owned runtime,
+  records failure and retains files. It does not claim seamless continuation or silently
+  accept a different socket inode; a stable relay/rebinding protocol is a follow-up.
 - Reuse existing WorkerFlow recording and normalizers with an exact dedicated endpoint/session
   binding. Shared-client boot, UI attachment and reaper paths must not accidentally act on
   an isolated endpoint. No second recorder or scheduler is introduced.
@@ -69,9 +72,10 @@ provider or isolation support produces a clear unavailable/failed state, not leg
    turn or allow stale owners to issue another start. Exact cleanup still converges.
 4. Existing host/private-state, command-environment, native-MCP and endpoint isolation
    invariants remain enforced; no credentials appear in public responses or command context.
-5. On a dedicated test host, deploy the matching binaries and run a small real Codex task
-   through the product entry point. Record the actual dialogue, result and retained file,
-   then stop the temporary service. Local shared-host tests use fake providers only.
+5. The user explicitly authorized a local real-Codex deployment for this slice. Use
+   separate loopback ports, data/workspace/private roots and owned temporary processes.
+   Run a small real task through the product entry point; record the dialogue, result and
+   retained file, then stop the temporary service. Routine regression suites use fakes.
 6. Two independent complete reviews converge and all applicable CI passes before squash.
 
 Implementation may refine the parked-Operation integration using existing framework hooks;
