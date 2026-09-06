@@ -92,6 +92,8 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
     onRefresh={() => { void refresh(); }} onRecover={canRecover ? () => { void recover(); } : undefined}
     openWorker={openWorker} openableWorkerIds={openableWorkerIds}
     renderReport={expanded ? (attemptId) => <TaskReport trackId={trackId} taskKey={taskKey} attemptId={attemptId}
+      status={attemptId === execution?.attemptId ? execution.status
+        : history.data?.attempts.find((attempt) => attempt.attempt_id === attemptId)?.status ?? null}
       transport={transport} unauthorized={unauthorized} /> : undefined} />;
 }
 
