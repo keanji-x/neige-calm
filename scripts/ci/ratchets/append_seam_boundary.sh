@@ -195,6 +195,14 @@ EXPECTED_TX_CENSUS="4 authorize_with_caches|tx
 #                                              schema is the thing under test, so
 #                                              this fixture cannot reach the rows
 #                                              it needs through the seam.
+#   calm-server/tests/cases/
+#     rest_isolated_task_report.rs         2  adversarial report-reader fixtures:
+#                                              forged scope/actor and task-shaped
+#                                              provider observations must not be
+#                                              accepted worker reports (#1501).
+#                                              Valid reports use the real native
+#                                              tool/DecisionSink; these invalid
+#                                              rows cannot enter through it.
 #   calm-truth/src/db/mod.rs                2  PROSE only (module doc comments)
 #   calm-truth/src/db/sqlite/events.rs      2  the seam itself: the one real
 #                                              production INSERT, plus prose
@@ -213,6 +221,7 @@ crates/calm-server/tests/cases/briefing_in_mint_tx.rs:1
 crates/calm-server/tests/cases/events_pruner.rs:4
 crates/calm-server/tests/cases/mcp_track_report.rs:1
 crates/calm-server/tests/cases/migration_0094_worker_session_id.rs:1
+crates/calm-server/tests/cases/rest_isolated_task_report.rs:2
 crates/calm-server/tests/cases/sync_engine.rs:5
 crates/calm-server/tests/cases/ws_replay.rs:1
 crates/calm-truth/src/db/mod.rs:2
