@@ -238,6 +238,35 @@ type ResponderMap = Arc<Mutex<HashMap<RequestId, oneshot::Sender<Result<Value, R
 /// gating logic.
 pub const KERNEL_CALLBACKS_CAPABILITY: &str = "dev.neige/kernel-callbacks";
 
+/// `_meta` namespace naming the Track a `tools/call` was made from.
+///
+/// Carried as `{"id": "<track_id>"}` — the same one-level wrapper
+/// `dev.neige/config` uses, and for the same reason: a bare string could
+/// never grow a sibling field without ambiguity.
+///
+/// **The kernel fills this from the resolved identity; nothing in the request
+/// body reaches it.** A plugin that keeps per-Track state has to know which
+/// Track it is acting for, and a Track named in `arguments` would be a Track
+/// the calling agent chose — the same reasoning that makes
+/// `callbacks::dispatch` inject `plugin_id` rather than read it from params.
+///
+/// Two qualifications, because "the caller cannot influence it" would be
+/// wider than what the code enforces:
+///
+/// * The value follows the **identity**, and on a `DaemonTrust` connection
+///   the caller selects the identity by naming a `threadId`
+///   (`resolve_tools_call_identity`). Such a caller can therefore have its
+///   call attributed to any live session's Track. That is what daemon trust
+///   already means everywhere else in this transport — it is not a hole this
+///   namespace opens — but it is why the guarantee is stated as "from the
+///   resolved identity" rather than "from a Track the caller cannot pick".
+///   A `CardBound` connection cannot cross sessions.
+/// * Not every production `tools/call` carries it: `routes::cards`' `via`
+///   path passes `None` (see the call site there). A plugin must treat the
+///   namespace as absent-able and refuse rather than default, which is what
+///   the market plugin's `track_from_call` does.
+pub const TRACK_META_KEY: &str = "dev.neige/track";
+
 /// Version of the `dev.neige/kernel-callbacks` capability the kernel supports.
 /// Plugins advertise `experimental[KERNEL_CALLBACKS_CAPABILITY].version` in
 /// their `initialize` response; only an **exact** match here counts as
@@ -579,15 +608,25 @@ impl McpClient {
     /// We keep the result type loose: `_meta` is `serde_json::Value` so the
     /// host route can pluck `_meta.ui.resourceUri` (the M2 use case) without
     /// us pinning every reserved sub-key.
+    /// MCP `tools/call`. `track_id` — when the caller has one — rides in
+    /// `params._meta` under [`TRACK_META_KEY`] rather than in `arguments`:
+    /// the arguments belong to the tool's own `input_schema`, which is
+    /// authored by the plugin and frequently `additionalProperties: false`,
+    /// and a kernel-injected key there would either be rejected or collide
+    /// with a parameter of the same name.
     pub async fn tools_call(
         &self,
         name: &str,
         arguments: Value,
+        track_id: Option<&str>,
     ) -> Result<CallToolResult, RpcError> {
-        let params = json!({
+        let mut params = json!({
             "name": name,
             "arguments": arguments,
         });
+        if let Some(track_id) = track_id {
+            params["_meta"] = json!({ TRACK_META_KEY: { "id": track_id } });
+        }
         let raw = self.call("tools/call", params).await?;
         serde_json::from_value::<CallToolResult>(raw).map_err(|e| {
             RpcError::internal(format!(
@@ -1101,7 +1140,7 @@ mod tests {
         .await
         .expect("connect");
         let result = client
-            .tools_call("make_status_card", json!({ "x": 1 }))
+            .tools_call("make_status_card", json!({ "x": 1 }), None)
             .await
             .expect("tools_call");
         assert_eq!(result.is_error, Some(false));

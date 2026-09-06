@@ -556,7 +556,11 @@ async fn create_via_tool_call(
     // 3. Invoke the tool. Transport-level / RpcError failures propagate as
     //    502 with the error message inline so the client gets a clear signal.
     let result = mcp
-        .tools_call(&via.tool_name, via.arguments)
+        // No Track: this path is an iframe asking its own plugin to mint a
+        // card, and the plugin already names the destination in `via`. When a
+        // view needs per-Track state, the Track should come from the view's
+        // own binding rather than be inferred here.
+        .tools_call(&via.tool_name, via.arguments, None)
         .await
         .map_err(|e| tool_call_bad_gateway(&via.plugin_id, &via.tool_name, &e.to_string()))?;
 

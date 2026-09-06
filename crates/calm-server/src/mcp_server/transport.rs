@@ -726,7 +726,15 @@ async fn dispatch_plugin_tools_call(
                     RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
                 })?;
             let result = match &client {
-                ConnectorClient::Stdio(c) => c.tools_call(&tool_name, arguments).await?,
+                // The Track rides along only to LOCAL plugins. A remote
+                // `mcp-http` connector is somebody else's service: it has no
+                // per-Track state the kernel vouches for, and sending our
+                // identifiers to it would be telling a third party which
+                // Track a reader is looking at, for nothing in return.
+                ConnectorClient::Stdio(c) => {
+                    c.tools_call(&tool_name, arguments, identity.track_id.as_deref())
+                        .await?
+                }
                 ConnectorClient::Http(c) => c.tools_call(&tool_name, arguments).await?,
                 // #1164 P3 — the pinned local query binary. Same envelope as
                 // the other two: an `Ok` result carries the child's own
@@ -916,7 +924,9 @@ async fn dispatch_forge_action_plugin_tool(
     arguments: Value,
     identity: ToolCallIdentity,
 ) -> Result<Value, RpcError> {
-    let result = client.tools_call(tool_name, arguments).await?;
+    let result = client
+        .tools_call(tool_name, arguments, identity.track_id.as_deref())
+        .await?;
     if result.is_error == Some(true) {
         return serde_json::to_value(result)
             .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")));

@@ -50,12 +50,12 @@ path = "src/main.rs"
 name = "git-forge"
 path = "../../plugins/git-forge/main.rs"
 
-# The Binance portfolio plugin (#binance-portfolio). Same shape as git-forge:
-# a stdio MCP plugin built as a side binary of this crate so it shares the
-# workspace's `ureq`/`serde_json` trees rather than growing its own.
+# The market-data plugin. Same shape as git-forge: a stdio MCP plugin built as
+# a side binary of this crate so it shares the workspace's `ureq`/`serde_json`
+# trees rather than growing its own.
 [[bin]]
-name = "binance"
-path = "../../plugins/binance/main.rs"
+name = "market"
+path = "../../plugins/market/main.rs"
 
 # Issue #682 — the replay binary's `POST /dev/force-planner-phase` reaches the
 # fixtures-gated `PlannerHarness::force_phase_for_dev` seam via
