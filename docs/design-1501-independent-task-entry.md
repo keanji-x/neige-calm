@@ -61,3 +61,14 @@ accepted report is returned. Artifact strings are reported evidence, not publish
    closed and model text cannot execute in the page.
 5. Use two independent reviews and relevant local/CI gates before squash. Record
    follow-ups in #1501 and stop after this loop is delivered.
+
+## Contract ownership decision (CR-1501-API)
+
+The generated OpenAPI contract is owned by `core` and frozen. This slice requests
+only the two additive endpoints and their request/response schemas specified
+above. The parent orchestrator approves this narrow change for #1501; both
+implementation agents use that contract. Existing wire fields and ownership
+rules remain unchanged. The actual Rust generator produced the frontend spec;
+its commit and squash body must retain this exact approval trailer:
+
+OWNERSHIP-CHANGE: fe/core/api/generated/openapi.json — regenerate approved independent task start and accepted report contract (#1501)
