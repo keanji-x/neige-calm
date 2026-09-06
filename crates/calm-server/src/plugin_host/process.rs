@@ -40,8 +40,7 @@ pub struct PluginProcess {
     pub id: String,
 
     /// The actual child. We wrap it in an `Option` + `Mutex` so `stop` can
-    /// take ownership for the wait, while `is_alive` checks state without
-    /// blocking on the same lock.
+    /// take ownership for the wait.
     child: Mutex<Option<Child>>,
 
     /// Held only long enough for the MCP client to take over; after that
@@ -187,17 +186,6 @@ impl PluginProcess {
         self.child.lock().unwrap().is_some()
     }
 
-    /// True if the kernel-level child has not yet been observed exited.
-    /// Slice B's callers use this only for cosmetic status; the supervisor
-    /// owns the canonical state. Implemented as "haven't seen `stop` consume
-    /// the handle yet"; once `take_child` has run, we lose visibility and
-    /// fall back to `true` (let the supervisor's state event drive UX).
-    pub fn is_alive(&self) -> bool {
-        // Either we still hold the Child, or the supervisor took it but
-        // hasn't yet reported back via the host's status map.
-        self.pid.is_some()
-    }
-
     /// Snapshot the last `n` stderr lines (oldest → newest). Used by Slice D's
     /// `GET /api/plugins/:id/log` and by the supervisor when emitting a
     /// `Crashed{last_error}` state event.
@@ -209,7 +197,7 @@ impl PluginProcess {
     }
 
     /// Take the underlying `Child` for the supervisor's `wait()` loop. After
-    /// this, `is_alive` returns false and `stop` returns `AlreadyDead`.
+    /// this, `stop` returns `AlreadyDead`.
     pub fn take_child(&self) -> Option<Child> {
         self.child.lock().unwrap().take()
     }
