@@ -28,8 +28,9 @@
 //! `bound/` is not swept: once codex may have been handed a path, that path has
 //! to keep resolving, and there is no reader anywhere that could tell us it is
 //! safe to remove. [`StagingDir`] and [`BoundDir`] are separate newtypes, and
-//! [`gc::remove_staged_file`] — which [`gc::sweep_staging`] is the only other
-//! caller of — takes only the former.
+//! [`gc::remove_staged_file`] — the only `remove_file` in this module, called
+//! by [`gc::sweep_staging_at`] and by the upload's abandon path — takes only
+//! the former.
 //!
 //! What the trybuild fence in `tests/ui/bound_dir_cannot_be_deleted.rs` proves
 //! is exactly one statement and no more: **there is no conversion from
