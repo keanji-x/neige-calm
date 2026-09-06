@@ -342,7 +342,7 @@ pub async fn worker_op_targets_card_tx(
     let owns: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
                SELECT 1 FROM operations
-               WHERE kind IN ('codex-worker', 'terminal-worker', 'claude-worker')
+               WHERE kind IN ('codex-worker', 'terminal-worker', 'claude-worker', 'codex-isolated-worker')
                  AND idempotency_key = ?1
                  AND target_type = 'card'
                  AND target_id = ?2

@@ -867,6 +867,19 @@ impl OperationRuntime {
         op: Operation,
         claim_mode: ParkedClaimMode,
     ) -> Result<()> {
+        let adapter = self.adapter(&op.kind)?;
+        if adapter.owns_parked_resource() {
+            if let Some(claimed) = self.claim_parked_with_mode(&op.id, claim_mode).await? {
+                super::owned_parked::reconcile(
+                    adapter.as_ref(),
+                    &claimed,
+                    RecoveryMode::PreDeadlineProbe,
+                    &self.spawn_ctx,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
         let Some(artifacts) = op.spawn_artifacts.clone() else {
             return Ok(());
         };
@@ -927,6 +940,16 @@ impl OperationRuntime {
         let Some(op) = self.claim_parked_with_mode(op_id, claim_mode).await? else {
             return Ok(());
         };
+        let adapter = self.adapter(&op.kind)?;
+        if adapter.owns_parked_resource() {
+            return super::owned_parked::reconcile(
+                adapter.as_ref(),
+                &op,
+                RecoveryMode::PastDeadline,
+                &self.spawn_ctx,
+            )
+            .await;
+        }
         let Some(artifacts) = op.spawn_artifacts.clone() else {
             return self
                 .fail_claimed_parked(
@@ -1158,6 +1181,22 @@ impl OperationRuntime {
                 {
                     self.apply_parked_past_deadline_with_claim(&op_id, ParkedClaimMode::Boot)
                         .await?;
+                    return Ok(());
+                }
+                let adapter = self.adapter(&op.kind)?;
+                if adapter.owns_parked_resource() {
+                    if let Some(claimed) = self
+                        .claim_parked_with_mode(&op_id, ParkedClaimMode::Boot)
+                        .await?
+                    {
+                        super::owned_parked::reconcile(
+                            adapter.as_ref(),
+                            &claimed,
+                            RecoveryMode::Boot,
+                            &self.spawn_ctx,
+                        )
+                        .await?;
+                    }
                     return Ok(());
                 }
                 let Some(artifacts) = op.spawn_artifacts.clone() else {

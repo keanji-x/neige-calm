@@ -22,7 +22,21 @@ fn harness_turn_start_is_gated() {
         "maybe_issue_turn should construct IssueTurnHandle from reconciliation"
     );
 
+    // Isolated workers use a consumed TurnLaunch behind the TaskLaunch fence.
+    // Keep their sole control call separate from planner queue reconciliation.
+    let isolated_launch =
+        std::fs::read_to_string(manifest_dir.join("src/dedicated_codex/admission.rs"))
+            .expect("read dedicated admission");
+    assert_eq!(isolated_launch.matches(".turn_start(").count(), 1);
+    assert!(isolated_launch.contains("pub async fn issue(self)"));
+    let isolated_guard = std::fs::read_to_string(manifest_dir.join("src/isolated_codex/turn.rs"))
+        .expect("read isolated task admission");
+    assert!(isolated_guard.contains("impl TurnAdmission for Guard"));
+    assert!(isolated_guard.contains(".run_isolated_observed("));
+    assert_eq!(isolated_guard.matches("launch.issue()").count(), 1);
+
     let allowed = [
+        "src/dedicated_codex/admission.rs",
         "src/dispatcher/mod.rs",
         "src/harness/run_loop.rs",
         "src/operation/codex_adapter/mod.rs",

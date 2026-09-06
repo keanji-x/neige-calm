@@ -12,6 +12,7 @@ use crate::event::{Event, EventBus, EventScope};
 
 use crate::harness::HarnessRegistry;
 use crate::ids::ActorId;
+use crate::isolated_codex::config::{Backend as IsolatedCodexBackend, IsolatedCodexConfig};
 use crate::mcp_server::McpServer;
 use crate::operation::child_track_adapter::ChildTrackAdapter;
 use crate::operation::claude_adapter::{ClaudeAdapter, ClaudeWorkerAdapter};
@@ -258,6 +259,7 @@ pub struct BootState {
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     pub operation_runtime: Arc<OperationRuntime>,
     pub worker_flow: Arc<WorkerFlowDriver>,
+    pub isolated_codex_backend: Option<Arc<IsolatedCodexBackend>>,
 }
 
 impl BootState {
@@ -329,6 +331,7 @@ impl BootState {
             pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial,
             operation_runtime: self.operation_runtime,
             worker_flow: self.worker_flow,
+            isolated_codex_backend: self.isolated_codex_backend,
             raw: self.repo,
             workspace_root_guard: self.workspace_root_guard,
             route,
@@ -453,6 +456,9 @@ pub struct AppState {
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     pub operation_runtime: Arc<OperationRuntime>,
     pub worker_flow: Arc<WorkerFlowDriver>,
+    /// Explicit boot configuration, retained across fixture registry rebuilds.
+    #[cfg_attr(not(feature = "fixtures"), allow(dead_code))]
+    isolated_codex_backend: Option<Arc<IsolatedCodexBackend>>,
     /// Full-capability handle. Held separately from `repo` so the gate at
     /// `AppState::repo` survives even though the underlying concrete impl
     /// is the same `SqlxRepo`. Kept private — callers must go through
@@ -484,6 +490,7 @@ pub struct AppState {
 }
 
 struct OperationAdapterInputs {
+    isolated_codex_backend: Option<Arc<IsolatedCodexBackend>>,
     route_repo: Arc<dyn RouteRepo>,
     repo: Arc<dyn Repo>,
     plugin: Arc<PluginHost>,
@@ -502,6 +509,19 @@ struct OperationAdapterInputs {
 }
 
 fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn ProviderAdapter>> {
+    let isolated_codex_adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(crate::isolated_codex::adapter::IsolatedCodexAdapter::new(
+            input.isolated_codex_backend,
+            input.route_repo.clone(),
+            input
+                .mcp_server
+                .as_ref()
+                .map(|server| server.shim_config.socket_path.clone()),
+            WriteContext::new(
+                input.card_role_cache.clone(),
+                input.track_area_cache.clone(),
+            ),
+        ));
     let terminal_adapter: Arc<dyn ProviderAdapter> =
         if let Some(spawn_hook) = input.terminal_spawn_hook.clone() {
             Arc::new(TerminalAdapter::new_with_spawn_hook(
@@ -602,6 +622,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         terminal_worker_adapter,
         codex_adapter,
         codex_worker_adapter,
+        isolated_codex_adapter,
         claude_adapter,
         claude_worker_adapter,
         claude_restart_adapter,
@@ -868,6 +889,7 @@ impl AppState {
                 .expect("AppState::from_parts requires a sqlite-backed Repo"),
         ));
         let adapters = build_operation_adapters(OperationAdapterInputs {
+            isolated_codex_backend: None,
             route_repo: route_repo.clone(),
             repo: repo.clone(),
             plugin: plugin.clone(),
@@ -967,6 +989,7 @@ impl AppState {
             pending_codex_threads_spawn_serial,
             operation_runtime,
             worker_flow,
+            isolated_codex_backend: None,
         }
         .into_app_state()
     }
@@ -1010,6 +1033,14 @@ impl AppState {
         self
     }
 
+    /// Fixture assembly only: configure before authoring or dispatching work.
+    #[cfg(feature = "fixtures")]
+    pub fn with_isolated_codex_backend(mut self, backend: Arc<IsolatedCodexBackend>) -> Self {
+        self.isolated_codex_backend = Some(backend);
+        self.rebuild_operation_runtime();
+        self
+    }
+
     #[cfg(feature = "fixtures")]
     pub fn with_mcp_server(mut self, mcp_server: Arc<McpServer>) -> Self {
         self.mcp_server = Some(mcp_server);
@@ -1033,6 +1064,7 @@ impl AppState {
                 "OperationRuntime rebuild requires a sqlite-backed Repo",
             )));
         let adapters = build_operation_adapters(OperationAdapterInputs {
+            isolated_codex_backend: self.isolated_codex_backend.clone(),
             route_repo: route_repo.clone(),
             repo: self.raw.clone(),
             plugin: self.plugin.clone(),
@@ -1065,7 +1097,31 @@ impl AppState {
             .with_shared_codex_appserver(self.shared_codex_appserver.clone()),
         ));
         self.operation_runtime = runtime.clone();
-        self.route.operation_runtime = runtime;
+        self.route.operation_runtime = runtime.clone();
+        if self.isolated_codex_backend.is_some() {
+            // Assembly must replace every consumer of the old registry; otherwise
+            // REST sees the configured backend while the scheduler still sees None.
+            self.dispatcher.stop_background_for_fixture_rebuild();
+            let dispatcher = Arc::new(
+                Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
+                    self.raw.clone(),
+                    self.events.clone(),
+                    self.route.write.clone(),
+                    self.codex.clone(),
+                    self.daemon.clone(),
+                    self.terminal_renderer.clone(),
+                    self.mcp_server.clone(),
+                    self.harness.clone(),
+                    self.shared_codex_appserver.clone(),
+                    runtime,
+                    self.dispatcher.permits(),
+                    self.route.task_budget_default,
+                ),
+            );
+            self.worker.dispatcher = dispatcher.clone();
+            self.worker.mcp_server = self.mcp_server.clone();
+            self.dispatcher = dispatcher;
+        }
     }
 
     pub fn card_kind_registry(&self) -> &CardKindRegistry {
@@ -1091,6 +1147,13 @@ impl AppState {
     /// Shared CODEX_HOME seeding stays here because it is colocated with the
     /// CodexClient owner and `AppState::new` is the boot-time-only path.
     pub async fn new(cfg: &Config, repo: Arc<dyn Repo>) -> anyhow::Result<Self> {
+        let isolated_codex_backend = match &cfg.isolated_codex_config {
+            Some(path) => {
+                let config: IsolatedCodexConfig = serde_json::from_slice(&std::fs::read(path)?)?;
+                Some(Arc::new(IsolatedCodexBackend::new(config)?))
+            }
+            None => None,
+        };
         let plugins_dir = cfg.plugins_dir_resolved();
         if !plugins_dir.exists() {
             // Fresh-install path: a missing dir is normal on first boot. We
@@ -1300,6 +1363,7 @@ impl AppState {
                 .ok_or_else(|| anyhow::anyhow!("OperationRuntime requires a sqlite-backed Repo"))?,
         ));
         let adapters = build_operation_adapters(OperationAdapterInputs {
+            isolated_codex_backend: isolated_codex_backend.clone(),
             route_repo: route_repo.clone(),
             repo: repo.clone(),
             plugin: plugin.clone(),
@@ -1434,6 +1498,7 @@ impl AppState {
             pending_codex_threads_spawn_serial,
             operation_runtime,
             worker_flow,
+            isolated_codex_backend,
         };
         let state = state.into_app_state();
 

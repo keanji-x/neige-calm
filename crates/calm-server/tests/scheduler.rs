@@ -2780,6 +2780,14 @@ async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_budget
 async fn every_registered_task_adapter_refuses_material_context() {
     let boot = boot().await;
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let isolated: Arc<dyn ProviderAdapter> = Arc::new(
+        calm_server::isolated_codex::adapter::IsolatedCodexAdapter::new(
+            None,
+            route_repo.clone(),
+            None,
+            WriteContext::new(boot.card_role_cache.clone(), boot.track_area_cache.clone()),
+        ),
+    );
     let codex: Arc<dyn ProviderAdapter> = Arc::new(CodexWorkerAdapter::new(
         route_repo.clone(),
         Arc::new(CodexClient::new_stub()),
@@ -2806,11 +2814,18 @@ async fn every_registered_task_adapter_refuses_material_context() {
     let mut cases = Vec::new();
     for (key, task_kind, adapter) in [
         ("meta-codex", TaskKind::Codex, codex),
+        ("meta-isolated", TaskKind::Codex, isolated),
         ("meta-claude", TaskKind::Claude, claude),
         ("meta-terminal", TaskKind::Terminal, terminal),
     ] {
         let mut task = plan_task(&boot.track_id, key, task_kind, &[]);
         task.status = TaskStatus::Dispatched;
+        if adapter.kind() == "codex-isolated-worker" {
+            task.context_json = json!({"neige_execution":{
+                "version":"isolated-codex-v1","workspace":"empty"
+            }})
+            .to_string();
+        }
         let task_id = task.id.clone();
         let (kind, payload) = build_worker_payload(&task).unwrap();
         seed_task(&boot, task).await;

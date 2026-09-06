@@ -708,6 +708,23 @@ jobs:
       # .config/nextest.toml; CI uses --profile ci below.
       - uses: taiki-e/install-action@nextest
 
+      - name: install isolated provider fixture dependencies
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap python3
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          policy=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -f "$policy" ]; then
+            cat "$policy" > "$RUNNER_TEMP/isolated-provider-userns-policy"
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: build cross-package isolated provider fixture executables
+        run: |
+          cargo build --locked -p calm-worker-runtime -p neige-mcp-stdio-shim \
+            --bin calm-worker-boundary --bin neige-mcp-stdio-shim
+
       - name: cargo nextest run --workspace --locked
         # #903 — nextest replaces `cargo test`: cross-binary test parallelism
         # (the old runner executed the ~74 test binaries — post-#913 suite
@@ -719,7 +736,8 @@ jobs:
         #   resolver: unset NEIGE_CODEX_BIN → eprintln + early return, counted
         #   as pass) — the default in GHA runners; unchanged under nextest.
         # - No separate `cargo build --workspace` step: the test build covers
-        #   all bins (CARGO_BIN_EXE_*) plus the replay bin
+        #   its CARGO_BIN_EXE_* targets plus the replay bin. Cross-package
+        #   isolated fixture executables are explicitly built above.
         #   (required-features=fixtures, via calm-server's dev-dep self-loop —
         #   which also means fixtures is always ON here). Compile coverage of
         #   the not(fixtures) production cfg branches is carried by the
@@ -741,6 +759,15 @@ jobs:
           fi
           scripts/run-ci-rust-nextest.sh \
             "${{ runner.environment }}" "${partition_args[@]}"
+
+      - name: restore hosted isolated provider namespace policy
+        if: always() && runner.environment == 'github-hosted'
+        run: |
+          policy_file="$RUNNER_TEMP/isolated-provider-userns-policy"
+          if [ -f "$policy_file" ]; then
+            original_policy=$(cat "$policy_file")
+            sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$original_policy"
+          fi
 
       # #903 — per-test timing (junit.xml, written by the ci nextest profile),
       # the input for the Slice C timing analysis.

@@ -117,6 +117,21 @@ impl Reaper {
         };
 
         for session in sessions {
+            if let Some(card_id) = session.card_id.as_ref() {
+                match crate::isolated_codex::lookup::is_isolated_card(
+                    self.repo.as_ref(),
+                    card_id.as_ref(),
+                )
+                .await
+                {
+                    Ok(true) => continue,
+                    Err(error) => {
+                        tracing::warn!(session_id=%session.id,%error,"reaper backend identity unavailable");
+                        continue;
+                    }
+                    Ok(false) => {}
+                }
+            }
             let Some(provider) = self.providers.get(session.provider) else {
                 tracing::warn!(
                     session_id = %session.id,

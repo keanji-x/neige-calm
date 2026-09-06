@@ -347,3 +347,156 @@ async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {
         .unwrap()
         .len()
 }
+
+#[tokio::test]
+async fn isolated_missing_or_malformed_receipt_stops_tail_without_shared_fallback() {
+    use calm_server::isolated_codex::{OPERATION_KIND, WorkerPayload, WorkerVersion};
+    use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo, TxOutput};
+
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let seed = wf::seed_card_and_runtime(
+        &repo,
+        "card-isolated-flow-no-fallback",
+        Some("thread-isolated-flow-no-fallback"),
+    )
+    .await;
+    let shared = SharedCodexAppServer::new_stub(repo.clone());
+    let path = wf::rollout_path(
+        shared.codex_home_path(),
+        seed.runtime.thread_id.as_ref().unwrap(),
+    );
+    wf::write_rollout(
+        &path,
+        &[
+            wf::session_meta(seed.runtime.thread_id.as_ref().unwrap()),
+            wf::user_message("before-isolated", "existing legacy tail positive control"),
+        ],
+    );
+    let driver = WorkerFlowDriver::new_with_flow_options_for_test(
+        repo.clone(),
+        shared,
+        Arc::new(WorkerFlowSink::new(repo.clone())),
+        EventBus::new(),
+        CodexRolloutFlowSourceOptions {
+            path_override: None,
+            poll_interval: Duration::from_millis(20),
+            lazy_retry_delay: Duration::from_millis(10),
+            lazy_retry_attempts: 1,
+            cursor_persist_every: 1,
+        },
+    );
+    driver
+        .attach_runtime_for_test(seed.runtime.clone())
+        .await
+        .unwrap();
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
+        let repo = repo.clone();
+        let card = seed.card.id.to_string();
+        async move { item_count(&repo, &card).await == 1 }
+    })
+    .await;
+    let old_stop = driver.task_stop_tokens_for_test().await.pop().unwrap();
+    assert!(!old_stop.is_cancelled());
+
+    // Persist the actual Operation kind/target and canonical session spawn binding.
+    // The absent/invalid receipt is the defect input; no lookup implementation is copied.
+    let task_id = "task-isolated-flow-no-fallback";
+    let payload = serde_json::to_value(WorkerPayload {
+        version: WorkerVersion::V1,
+        actor: ActorId::KernelDispatcher,
+        track_id: seed.card.track_id.to_string(),
+        task_id: task_id.into(),
+        idempotency_key: task_id.into(),
+    })
+    .unwrap();
+    let operation = SqlxOperationRepo::new(repo.pool().clone())
+        .insert_operation(
+            OPERATION_KIND,
+            OperationKey {
+                operation_key: format!("{OPERATION_KIND}:{task_id}"),
+                idempotency_key: Some(task_id.into()),
+                payload_hash: calm_server::routes::terminal_cards::stable_payload_hash(&payload)
+                    .unwrap(),
+            },
+            payload,
+        )
+        .await
+        .unwrap();
+    let mut tx = repo.pool().begin().await.unwrap();
+    assert_eq!(
+        sqlx::query(
+            "UPDATE operations SET target_type='card',target_id=?1,target_json=?2 WHERE id=?3"
+        )
+        .bind(seed.card.id.as_str())
+        .bind(json!({"type":"card","id":seed.card.id}).to_string())
+        .bind(&operation)
+        .execute(&mut *tx)
+        .await
+        .unwrap()
+        .rows_affected(),
+        1
+    );
+    assert_eq!(
+        sqlx::query("UPDATE worker_sessions SET spawn_op_id=?1 WHERE id=?2 AND card_id=?3")
+            .bind(&operation)
+            .bind(&seed.runtime.id)
+            .bind(seed.card.id.as_str())
+            .execute(&mut *tx)
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
+    tx.commit().await.unwrap();
+
+    let missing = driver.attach_runtime_for_test(seed.runtime.clone()).await;
+    let stopped_after_missing = old_stop.is_cancelled();
+    let mut invalid = TxOutput::new("card", Some(seed.card.id.to_string()), json!(null));
+    invalid.data = json!({"isolated_execution":"malformed private receipt"});
+    assert_eq!(
+        sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE id=?2")
+            .bind(serde_json::to_string(&invalid).unwrap())
+            .bind(&operation)
+            .execute(repo.pool())
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
+    let malformed = driver.attach_runtime_for_test(seed.runtime.clone()).await;
+
+    const SHARED_MARKER: &str = "ISOLATED_MUST_NEVER_INGEST_THIS_SHARED_HOME_MARKER";
+    wf::append_rollout(&path, &[wf::user_message("after-isolated", SHARED_MARKER)]);
+    // Negative observation over several existing tail polls; cancellation is also
+    // asserted directly so this does not rely only on absence within a time window.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let items = repo
+        .worker_flow_item_list_by_card(seed.card.id.as_str(), 0, 100, false)
+        .await
+        .unwrap();
+    assert!(
+        missing
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("isolated preparation receipt")),
+        "missing receipt must fail through the authoritative lookup: {missing:?}"
+    );
+    assert!(
+        stopped_after_missing,
+        "failed lookup must cancel the existing tail before dedup returns"
+    );
+    assert!(
+        malformed.is_err(),
+        "malformed isolated receipt must not select shared home"
+    );
+    assert_eq!(driver.tasks_alive_for_test().await, 0);
+    assert!(
+        !items
+            .iter()
+            .any(|item| item.payload.contains(SHARED_MARKER))
+    );
+    assert_eq!(
+        items.len(),
+        1,
+        "only the earlier legacy positive-control item remains"
+    );
+}
