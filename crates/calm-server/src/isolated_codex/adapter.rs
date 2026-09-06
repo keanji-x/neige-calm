@@ -57,7 +57,6 @@ impl IsolatedCodexAdapter {
             repo: self.repo.clone(),
             operation: op.clone(),
             events: ctx.events.clone(),
-            write: self.write.clone(),
             task_timeout_ms: self.backend()?.task_timeout_ms,
         })
     }

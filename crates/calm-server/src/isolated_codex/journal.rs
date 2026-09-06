@@ -1,7 +1,7 @@
 //! Same Operation lease and one private compare-and-save record, including cleanup.
 use super::record::{Admission, ProviderRecord, RunRecord, needs_start_permission};
 use super::{OPERATION_KIND, WorkerPayload};
-use crate::db::{RouteRepo, write_with_events_typed};
+use crate::db::{RouteRepo, write_in_tx_typed};
 use crate::dedicated_codex::{self, Checkpoint, RequestPhase, SessionRecord};
 use crate::error::{CalmError, Result};
 use crate::operation::{Operation, Tx, TxOutput};
@@ -102,7 +102,6 @@ pub(crate) struct OperationCheckpoint {
     pub repo: Arc<dyn RouteRepo>,
     pub operation: Operation,
     pub events: crate::event::EventBus,
-    pub write: crate::state::WriteContext,
     pub task_timeout_ms: i64,
 }
 #[async_trait::async_trait]
@@ -116,42 +115,53 @@ impl Checkpoint for OperationCheckpoint {
         let next = next.clone();
         let op = self.operation.clone();
         let timeout_ms = self.task_timeout_ms;
-        write_with_events_typed(
-            self.repo.as_ref(),
-            crate::ids::ActorId::KernelDispatcher,
-            None,
-            &self.events,
-            &self.write,
-            move |tx| {
-                Box::pin(async move {
-                    let intent = needs_start_permission(&expected, &next)?;
-                    let current = load_tx(tx, &op.id).await?;
-                    if current.session()? != &expected {
-                        return Err(CalmError::Conflict(
-                            "stale isolated controller checkpoint".into(),
-                        ));
+        let committed = write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                let intent = needs_start_permission(&expected, &next)?;
+                let current = load_tx(tx, &op.id).await?;
+                if current.session()? != &expected {
+                    return Err(CalmError::Conflict(
+                        "stale isolated controller checkpoint".into(),
+                    ));
+                }
+                if intent {
+                    if current.admission != Admission::Open {
+                        return Err(CalmError::Conflict("isolated admission is closed".into()));
                     }
-                    if intent {
-                        if current.admission != Admission::Open {
-                            return Err(CalmError::Conflict("isolated admission is closed".into()));
-                        }
-                        super::admission::validate_start_tx(tx, &op).await?;
-                    }
-                    let mut updated = current.clone();
-                    updated.provider = ProviderRecord::Prepared(Box::new(next.clone()));
-                    replace_tx(tx, &op, &current, &updated).await?;
-                    let events = if expected.phase != next.phase {
-                        bind_acknowledgement_tx(tx, &current, &next, timeout_ms).await?
-                    } else {
-                        Vec::new()
-                    };
-                    Ok(((), events))
-                })
-            },
-        )
+                    super::admission::validate_start_tx(tx, &op).await?;
+                }
+                let mut updated = current.clone();
+                updated.provider = ProviderRecord::Prepared(Box::new(next.clone()));
+                replace_tx(tx, &op, &current, &updated).await?;
+                let events = if expected.phase != next.phase {
+                    bind_acknowledgement_tx(tx, &current, &next, timeout_ms).await?
+                } else {
+                    Vec::new()
+                };
+                let actor = crate::ids::ActorId::KernelDispatcher;
+                let mut envelopes = Vec::with_capacity(events.len());
+                for (scope, event) in events {
+                    let id = crate::db::sqlite::append_decision_event_in_tx(
+                        tx, &actor, &scope, None, &event,
+                    )
+                    .await?;
+                    envelopes.push(crate::event::BroadcastEnvelope {
+                        id,
+                        event_version: crate::event::SYNC_EVENT_VERSION,
+                        actor: actor.clone(),
+                        scope,
+                        event,
+                    });
+                }
+                Ok(envelopes)
+            })
+        })
         .await
-        .map(|_| ())
-        .map_err(|error| dedicated_codex::Error::Conflict(error.to_string()))
+        .map_err(|error| dedicated_codex::Error::Conflict(error.to_string()))?;
+        for envelope in committed {
+            self.events.emit_envelope(envelope);
+        }
+        Ok(())
     }
 }
 

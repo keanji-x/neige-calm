@@ -61,3 +61,6 @@ pub fn worker_payload(task: &Task) -> WorkerPayload {
         idempotency_key: task.id.clone(),
     }
 }
+
+#[cfg(test)]
+mod checkpoint_tests;
