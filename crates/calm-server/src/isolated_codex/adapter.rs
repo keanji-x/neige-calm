@@ -139,6 +139,8 @@ impl ProviderAdapter for IsolatedCodexAdapter {
         op: &Operation,
     ) -> Result<TxOutput> {
         self.validate(input).await?;
+        let payload: WorkerPayload = serde_json::from_value(input.clone())?;
+        crate::operation::refuse_if_context_stale(tx, Some(&payload.task_id)).await?;
         let backend = self.backend()?;
         if self.socket.is_none() {
             return Err(CalmError::Conflict(
