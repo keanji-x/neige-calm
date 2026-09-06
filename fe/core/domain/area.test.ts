@@ -101,22 +101,13 @@ describe('area ordering and lookup', () => {
 });
 
 function folder(overrides: Partial<AreaFolder>): AreaFolder {
-  return { id: 1, areaId: 'c1', path: '/srv/a', repoIdentity: null, repoIdentityProbedAt: null, createdAt: 0, ...overrides };
+  return { id: 1, areaId: 'c1', path: '/srv/a', createdAt: 0, ...overrides };
 }
 
 describe('area folders', () => {
-  it('decodes a folder row and defaults an unprobed repo identity to null', () => {
+  it('decodes a folder row', () => {
     const wire = areaFolderWireSchema.parse({ id: 7, area_id: 'c1', path: '/srv/a', created_at: 5 });
-    expect(toAreaFolder(wire)).toEqual({
-      id: 7, areaId: 'c1', path: '/srv/a', repoIdentity: null, repoIdentityProbedAt: null, createdAt: 5,
-    });
-  });
-
-  it('keeps a probed repo identity rather than flattening it', () => {
-    const wire = areaFolderWireSchema.parse({
-      id: 7, area_id: 'c1', path: '/srv/a', repo_identity: 'you/repo', repo_identity_probed_at: 9, created_at: 5,
-    });
-    expect(toAreaFolder(wire)).toMatchObject({ repoIdentity: 'you/repo', repoIdentityProbedAt: 9 });
+    expect(toAreaFolder(wire)).toEqual({ id: 7, areaId: 'c1', path: '/srv/a', createdAt: 5 });
   });
 
   it('reads the folders of one area, id-encoded into the path', () => {
