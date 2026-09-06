@@ -57,6 +57,7 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
                 runtime_bwrap: "/usr/bin/bwrap".into(),
                 sandbox_bwrap,
                 codex_binary: executable,
+                code_mode_host_binary: std::env::current_exe().unwrap(),
                 mcp_shim: shim.clone(),
                 provider_config: config,
                 provider_auth: auth,
@@ -160,9 +161,22 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
             if phase == "succeeded" {
                 break;
             }
-            assert_ne!(phase, "failed", "{}; provider stderr: {}",
-                current(&boot, "pilot").await.status_detail.unwrap_or_default(),
-                std::fs::read_to_string(root.path().join("runtime").join(&op_id).join("provider.stderr")).unwrap_or_default());
+            assert_ne!(
+                phase,
+                "failed",
+                "{}; provider stderr: {}",
+                current(&boot, "pilot")
+                    .await
+                    .status_detail
+                    .unwrap_or_default(),
+                std::fs::read_to_string(
+                    root.path()
+                        .join("runtime")
+                        .join(&op_id)
+                        .join("provider.stderr")
+                )
+                .unwrap_or_default()
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })

@@ -83,6 +83,7 @@ impl Fixture {
             private_root: root.path().join("private"),
             runtime: runtime.clone(),
             codex_binary: "/usr/bin/true".into(),
+            code_mode_host_binary: std::env::current_exe().unwrap(),
             mcp_shim: "/usr/bin/true".into(),
             sandbox_bwrap,
             provider_environment: Default::default(),

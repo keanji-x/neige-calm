@@ -46,7 +46,7 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                     if scenario!="no-report" {
                         let task=prompt.split("Task completion idempotency_key: ").nth(1).unwrap().lines().next().unwrap().to_string();
-                        let env=config["mcp_servers"]["calm"]["env"].as_table().unwrap().iter()
+                        let env=config["mcp_servers"]["calm"]["env"].as_table_like().unwrap().iter()
                             .map(|(k,v)|(k.to_string(),v.as_str().unwrap().to_string())).collect::<Vec<_>>();
                         let success=scenario!="fail";
                         tokio::task::spawn_blocking(move||report(&env,&task,success)).await.unwrap();
@@ -76,7 +76,10 @@ fn report(env: &[(String, String)], task: &str, success: bool) {
     let mut line = String::new();
     output.read_line(&mut line).unwrap();
     let response: Value = serde_json::from_str(&line).unwrap();
-    assert!(response.get("error").is_none(), "native initialize failed");
+    assert!(
+        response.get("error").is_none(),
+        "native initialize failed: {response}"
+    );
     let args = if success {
         json!({"idempotency_key":task,"result":{"answer":42},"artifacts":[]})
     } else {
