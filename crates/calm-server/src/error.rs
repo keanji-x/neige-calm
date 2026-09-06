@@ -253,6 +253,17 @@ pub enum CalmError {
     #[error("service unavailable: {0}")]
     ServiceUnavailable(String),
 
+    /// 413 — a request body exceeded a route's single size gate.
+    ///
+    /// Its own variant because the alternative is a `BadRequest`, and a client
+    /// cannot tell "your file is too big, send a smaller one" from "your
+    /// request was malformed" out of a 400. The planner attachment upload is
+    /// the only producer today; it streams the body through
+    /// `http_body_util::Limited`, which reports the overrun as it happens
+    /// rather than trusting a `Content-Length`.
+    #[error("payload too large: {0}")]
+    PayloadTooLarge(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -286,6 +297,7 @@ impl CalmError {
             CalmError::Serde(_) => "serde_error",
             CalmError::CodexAppServer(_) => "codex_app_server",
             CalmError::ServiceUnavailable(_) => "service_unavailable",
+            CalmError::PayloadTooLarge(_) => "payload_too_large",
             CalmError::Internal(_) => "internal",
         }
     }
@@ -311,6 +323,7 @@ impl CalmError {
             CalmError::PluginKernelTooOld(_)
             | CalmError::PlannerResetUnsupportedInSharedMode(_) => StatusCode::UNPROCESSABLE_ENTITY,
             CalmError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            CalmError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             CalmError::Db(_)
             | CalmError::Io(_)
             | CalmError::Serde(_)
@@ -425,6 +438,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PlannerHarnessRuntimeSuperseded(m)
             | CalmError::TodaySummaryNoActivity(m)
             | CalmError::CodexAppServer(m)
+            | CalmError::PayloadTooLarge(m)
             | CalmError::Internal(m) => calm_truth::TruthError::Internal(m),
         }
     }

@@ -496,6 +496,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "trybuild",
  "ureq",
  "url",
  "utoipa",

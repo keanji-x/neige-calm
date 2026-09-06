@@ -52,6 +52,18 @@ export type AreaResolve = { area_id: AreaId, folder_id: number, folder_path: str
  */
 export type ArtifactRef = string;
 
+/**
+ * `<uuid-v4>.<ext>` — an attachment's id *and* its file name.
+ *
+ * The inner string is private and the only constructor is
+ * [`AttachmentId::parse`], so a value of this type is always a single path
+ * segment matching
+ * `[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}.(png|jpg|gif|webp)`.
+ * `Deserialize` goes through the same gate, so an id off the wire is checked
+ * before it can reach a `join`.
+ */
+export type AttachmentId = string;
+
 export type Card = { id: CardId, track_id: TrackId, 
 /**
  * `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for
@@ -300,6 +312,17 @@ kind: string,
  * explicit `unknown` override.
  */
 payload: unknown, updated_at: number, };
+
+/**
+ * One attachment as the frontend sees it in a queue entry or a transcript
+ * segment.
+ */
+export type PlannerAttachment = { id: AttachmentId, 
+/**
+ * Derived from `id`, never stored separately — see
+ * [`PlannerAttachment::new`].
+ */
+contentType: string, size: number, };
 
 /**
  * Position anchor for proposed block creation / moves (design §5.2.1).
@@ -783,6 +806,22 @@ frozen_at: number | null, };
  * Ownership must be explicit because only managed workspaces may be recycled.
  */
 export type TrackWorkspaceKind = "managed" | "attached";
+
+/**
+ * `201` body of `POST /api/cards/{id}/planner/attachments`.
+ */
+export type UploadAttachmentResponse = { attachmentId: AttachmentId, contentType: string, size: number, 
+/**
+ * Absolute REST path the browser reads the bytes back from. Server-built:
+ * the client never composes a path of its own.
+ *
+ * Not a durable link yet. As of S6-PR1 nothing binds an attachment to a
+ * queue entry, so every upload stays in the server's `staging/` directory
+ * and is swept once it is older than the 24h orphan TTL; after that this
+ * path answers 400. S6-PR2 adds the bind that makes an attachment
+ * permanent.
+ */
+url: string, };
 
 /**
  * Opaque execution-session identifier.

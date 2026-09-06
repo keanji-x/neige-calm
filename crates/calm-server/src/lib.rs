@@ -608,6 +608,7 @@ pub mod operation;
 pub mod pending_codex_threads;
 pub(crate) mod per_card_lock;
 pub mod planner_appserver;
+pub mod planner_attachments;
 pub mod planner_card;
 pub mod plugin_host;
 pub mod proc_identity;

@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::{CalmError, Result};
 use crate::model::{TrackWorkspace, TrackWorkspaceKind};
-use crate::operation::workspace_lease::ensure_workspace_worktree_root_excluded;
+use crate::operation::workspace_lease::{
+    ensure_git_exclude_entry, ensure_workspace_worktree_root_excluded,
+};
 
 /// Author stamped on the init commit. Explicit so the produced repository does
 /// not inherit whatever `user.name` git derives from the host account (D3 step
@@ -443,6 +445,11 @@ fn materialize_managed_workspace_inner(
     }
 
     ensure_workspace_worktree_root_excluded(path)?;
+    // #1505 S6 — `.neige/` is the server's own subtree inside the work tree
+    // (planner attachments live there). Excluded at creation so a worker's
+    // `git add -A` never sees it; the upload endpoint tops the entry up for
+    // workspaces materialized before this line existed.
+    ensure_git_exclude_entry(path, crate::planner_attachments::NEIGE_GIT_EXCLUDE_ENTRY)?;
 
     assert_physically_inside_root(workspace_root, path)?;
     Ok(())

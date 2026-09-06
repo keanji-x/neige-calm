@@ -316,7 +316,12 @@ pub(crate) async fn read_track_workspace_file(
         .track_get(&track_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
-    let opened = open_workspace_regular_file(Path::new(&track.workspace.path), &q.path).await?;
+    let opened = open_workspace_regular_file(
+        Path::new(&track.workspace.path),
+        &q.path,
+        WorkspaceSymlinks::FollowedInsideRoot,
+    )
+    .await?;
     Ok(Json(read_workspace_file_response(opened).await?))
 }
 
@@ -346,7 +351,12 @@ pub(crate) async fn read_track_workspace_file_raw(
         .track_get(&track_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
-    let opened = open_workspace_regular_file(Path::new(&track.workspace.path), &q.path).await?;
+    let opened = open_workspace_regular_file(
+        Path::new(&track.workspace.path),
+        &q.path,
+        WorkspaceSymlinks::FollowedInsideRoot,
+    )
+    .await?;
     read_workspace_file_raw_response(opened).await
 }
 
@@ -442,19 +452,65 @@ fn workspace_relative_path(raw: &str) -> Result<PathBuf> {
 }
 
 #[derive(Debug)]
-struct OpenWorkspaceFile {
-    file: tokio::fs::File,
-    display_path: PathBuf,
-    size: u64,
+pub(crate) struct OpenWorkspaceFile {
+    pub(crate) file: tokio::fs::File,
+    pub(crate) display_path: PathBuf,
+    pub(crate) size: u64,
+}
+
+/// Which symlinks `openat2` may follow while resolving a workspace path.
+///
+/// #1505 review round 4. This is a parameter and not a constant because the two
+/// callers need different answers, and picking one for both is how a real
+/// cross-card read shipped:
+///
+/// * [`WorkspaceSymlinks::FollowedInsideRoot`] is what the workspace file
+///   readers want. `RESOLVE_BENEATH` rejects a symlink whose target leaves the
+///   root, and permits one whose target stays inside it — which is a deliberate
+///   feature there, pinned by `workspace_file_allows_a_symlink_that_stays_inside_the_root`.
+/// * [`WorkspaceSymlinks::Refused`] adds `RESOLVE_NO_SYMLINKS`, so a symlink
+///   anywhere on the path is `ELOOP` however local its target. A caller whose
+///   root contains several mutually-untrusted subtrees needs this: "beneath the
+///   root" is not the same statement as "inside the directory I derived", and
+///   the planner attachment store learned the difference the expensive way.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceSymlinks {
+    FollowedInsideRoot,
+    Refused,
 }
 
 /// Open one workspace file with the root directory descriptor as the
 /// authority. `openat2` resolves and opens atomically, so a concurrent worker
 /// cannot swap a checked parent for an escaping symlink before the read.
+///
+/// # What this establishes, and what it does not
+///
+/// The list is meant to be exhaustive, because an enumeration presented as
+/// exhaustive and read as exhaustive is what let a cross-card read ship in
+/// #1505 round 3 — the omitted line was the third one below.
+///
+/// * `RESOLVE_BENEATH` — every component resolves beneath `workspace_root`,
+///   not just the last one, so a path leaving the root is `EXDEV`;
+/// * `RESOLVE_NO_MAGICLINKS` — no `/proc/self/fd` style reopen;
+/// * **`RESOLVE_BENEATH` says nothing about symlinks whose target stays inside
+///   the root.** `a -> ../b/c` resolves and opens exactly as if it were the
+///   file. Only `RESOLVE_NO_SYMLINKS` — [`WorkspaceSymlinks::Refused`] —
+///   refuses those, and callers that treat subdirectories of the root as
+///   separate trust domains must ask for it;
+/// * `O_NONBLOCK` — a FIFO on the path returns `ENXIO` instead of parking the
+///   blocking thread until a writer appears;
+/// * the `is_file()` check on the returned descriptor — not on the name — so a
+///   directory, socket or device is refused after the open, with no window
+///   between the check and the handle.
+///
+/// Callers outside `routes::fs` must treat the returned `CalmError` as
+/// internal: its messages carry the requested host path.
 #[cfg(target_os = "linux")]
-async fn open_workspace_regular_file(
+pub(crate) async fn open_workspace_regular_file(
     workspace_root: &Path,
     relative_path: &str,
+    symlinks: WorkspaceSymlinks,
 ) -> Result<OpenWorkspaceFile> {
     use nix::fcntl::{OFlag, OpenHow, ResolveFlag, openat2};
     use nix::sys::stat::Mode;
@@ -476,6 +532,10 @@ async fn open_workspace_regular_file(
     }
     let requested = workspace_root.join(&relative);
     let workspace_root = workspace_root.to_path_buf();
+    let mut resolve = ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_MAGICLINKS;
+    if symlinks == WorkspaceSymlinks::Refused {
+        resolve |= ResolveFlag::RESOLVE_NO_SYMLINKS;
+    }
     let root = root.into_std().await;
     tokio::task::spawn_blocking(move || {
         let raw_fd = openat2(
@@ -484,7 +544,7 @@ async fn open_workspace_regular_file(
             OpenHow::new()
                 .flags(OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)
                 .mode(Mode::empty())
-                .resolve(ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_MAGICLINKS),
+                .resolve(resolve),
         )
         .map_err(|error| map_workspace_open_err(&requested, &workspace_root, error))?;
         // SAFETY: `openat2` returned a new owned descriptor and this is its
@@ -540,10 +600,19 @@ fn map_workspace_open_err(
     }
 }
 
+/// Non-Linux placeholder so the parameter type exists for every caller.
 #[cfg(not(target_os = "linux"))]
-async fn open_workspace_regular_file(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceSymlinks {
+    FollowedInsideRoot,
+    Refused,
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn open_workspace_regular_file(
     _workspace_root: &Path,
     relative_path: &str,
+    _symlinks: WorkspaceSymlinks,
 ) -> Result<OpenWorkspaceFile> {
     workspace_relative_path(relative_path)?;
     Err(CalmError::Internal(
@@ -601,7 +670,7 @@ async fn read_file_raw_response_from(canon: PathBuf, meta: Metadata) -> Result<R
     read_file_raw_response_from_handle(file, meta.len(), &canon, content_type).await
 }
 
-async fn read_file_raw_response_from_handle(
+pub(crate) async fn read_file_raw_response_from_handle(
     file: tokio::fs::File,
     size: u64,
     path: &Path,
@@ -1200,9 +1269,13 @@ mod tests {
         std::fs::write(&secret, "outside\n").unwrap();
         symlink(&secret, workspace.path().join("leak.txt")).unwrap();
 
-        let err = open_workspace_regular_file(workspace.path(), "leak.txt")
-            .await
-            .unwrap_err();
+        let err = open_workspace_regular_file(
+            workspace.path(),
+            "leak.txt",
+            WorkspaceSymlinks::FollowedInsideRoot,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(_)));
         assert!(err.to_string().contains("outside track workspace"));
     }
@@ -1220,9 +1293,13 @@ mod tests {
         // current spelling happens to point back into this directory.
         symlink("real.txt", workspace.path().join("alias.txt")).unwrap();
 
-        let opened = open_workspace_regular_file(workspace.path(), "alias.txt")
-            .await
-            .unwrap();
+        let opened = open_workspace_regular_file(
+            workspace.path(),
+            "alias.txt",
+            WorkspaceSymlinks::FollowedInsideRoot,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             read_workspace_file_response(opened).await.unwrap().text,
             "inside\n"
@@ -1243,12 +1320,20 @@ mod tests {
         std::fs::write(outside.path().join("value.txt"), "outside\n").unwrap();
         std::fs::write(outside.path().join("image.png"), b"outside image").unwrap();
 
-        let opened_text = open_workspace_regular_file(workspace.path(), "swap/value.txt")
-            .await
-            .unwrap();
-        let opened_image = open_workspace_regular_file(workspace.path(), "swap/image.png")
-            .await
-            .unwrap();
+        let opened_text = open_workspace_regular_file(
+            workspace.path(),
+            "swap/value.txt",
+            WorkspaceSymlinks::FollowedInsideRoot,
+        )
+        .await
+        .unwrap();
+        let opened_image = open_workspace_regular_file(
+            workspace.path(),
+            "swap/image.png",
+            WorkspaceSymlinks::FollowedInsideRoot,
+        )
+        .await
+        .unwrap();
         std::fs::rename(&live, workspace.path().join("original")).unwrap();
         symlink(outside.path(), &live).unwrap();
 
@@ -1276,8 +1361,10 @@ mod tests {
         let fifo = workspace.path().join("pipe.txt");
         mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
         let root = workspace.path().to_path_buf();
-        let mut opening =
-            tokio::spawn(async move { open_workspace_regular_file(&root, "pipe.txt").await });
+        let mut opening = tokio::spawn(async move {
+            open_workspace_regular_file(&root, "pipe.txt", WorkspaceSymlinks::FollowedInsideRoot)
+                .await
+        });
 
         match tokio::time::timeout(Duration::from_millis(250), &mut opening).await {
             Ok(result) => {
@@ -1373,9 +1460,13 @@ mod tests {
     async fn workspace_file_rejects_absolute_and_parent_paths_before_io() {
         let workspace = tempfile::tempdir().unwrap();
         for path in ["/etc/passwd", "../outside.txt", "a/../../outside.txt", ""] {
-            let err = open_workspace_regular_file(workspace.path(), path)
-                .await
-                .unwrap_err();
+            let err = open_workspace_regular_file(
+                workspace.path(),
+                path,
+                WorkspaceSymlinks::FollowedInsideRoot,
+            )
+            .await
+            .unwrap_err();
             assert!(matches!(err, CalmError::BadRequest(_)), "{path}: {err}");
         }
     }

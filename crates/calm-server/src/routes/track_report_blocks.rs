@@ -69,15 +69,34 @@ pub struct ReportBlockWriteResponse {
     pub updated_at: i64,
 }
 
-pub(crate) fn require_rest_user_actor(actor: &Actor) -> Result<()> {
+/// The judgement: REST writes are the human's channel.
+///
+/// One implementation, many sentences. `subject` names the write the caller
+/// attempted and `redirect` tells the refused caller where its own channel is —
+/// those differ per endpoint, the rule does not. Restating the rule per
+/// endpoint is how the copies drift apart, so callers pass wording and never a
+/// second `actor.as_str() == "user"`.
+pub(crate) fn require_rest_user_actor_for(
+    actor: &Actor,
+    subject: &str,
+    redirect: &str,
+) -> Result<()> {
     if actor.as_str() == "user" {
         return Ok(());
     }
     Err(CalmError::Forbidden(format!(
-        "track-report edit: only `X-Calm-Actor: user` is allowed via REST; got `{}`. MCP write \
-         paths use `calm.report.*` tools.",
+        "{subject}: only `X-Calm-Actor: user` is allowed; got `{}`. {redirect}",
         actor.as_str()
     )))
+}
+
+/// Track-report REST writes. See [`require_rest_user_actor_for`].
+pub(crate) fn require_rest_user_actor(actor: &Actor) -> Result<()> {
+    require_rest_user_actor_for(
+        actor,
+        "track-report edit",
+        "MCP write paths use `calm.report.*` tools.",
+    )
 }
 
 fn block_content(kind: &str, markdown: Option<String>, payload: Option<Value>) -> Result<String> {

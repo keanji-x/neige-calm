@@ -67,6 +67,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(track_recipes::router())
         .merge(track_templates::router())
         .merge(cards::router())
+        .merge(crate::planner_attachments::routes::router())
         .merge(overlays::router())
         .merge(plugins::router())
         .merge(terminal::router())

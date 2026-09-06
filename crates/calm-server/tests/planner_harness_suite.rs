@@ -2,6 +2,10 @@ mod support;
 
 #[path = "cases/harness_turn_start_invariant.rs"]
 mod harness_turn_start_invariant;
+#[path = "cases/planner_attachments_bound_dir_seam.rs"]
+mod planner_attachments_bound_dir_seam;
+#[path = "cases/planner_attachments_rest.rs"]
+mod planner_attachments_rest;
 #[path = "cases/planner_harness_backpressure.rs"]
 mod planner_harness_backpressure;
 #[path = "cases/planner_harness_boot_recovery.rs"]

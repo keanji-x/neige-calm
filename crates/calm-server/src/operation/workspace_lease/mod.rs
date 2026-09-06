@@ -1279,8 +1279,27 @@ pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result
     Ok(registered || path_existed || branch_existed || dir_removed)
 }
 
+/// The worktree root `provision_workspace_worktree` and
+/// `materialize_managed_workspace` keep out of git.
+const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
+
+/// Keep `.claude/worktrees/` out of the repository's git status.
 pub(crate) fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Result<()> {
-    const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
+    ensure_git_exclude_entry(repo_root, WORKTREE_EXCLUDE)
+}
+
+/// Append `entry` to `<git-dir>/info/exclude` unless a line already equals it.
+///
+/// `.git/info/exclude` rather than `.gitignore`: a `.gitignore` is a tracked
+/// file in a repository the user may inspect and a worker may commit, so
+/// server-owned directories are hidden the way git provides for hiding them
+/// locally.
+///
+/// The match is `line.trim() == entry`, which is exact on purpose. Git accepts
+/// both `.neige` and `.neige/` as ignore patterns, so a near-miss would still
+/// hide the directory while making this function append a second line on every
+/// call — the idempotence is what the exactness buys, not the hiding.
+pub(crate) fn ensure_git_exclude_entry(repo_root: &Path, entry: &str) -> Result<()> {
     let exclude_path = git_exclude_path(repo_root)?;
     let existing = match std::fs::read_to_string(&exclude_path) {
         Ok(existing) => existing,
@@ -1292,7 +1311,7 @@ pub(crate) fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Resul
             )));
         }
     };
-    if existing.lines().any(|line| line.trim() == WORKTREE_EXCLUDE) {
+    if existing.lines().any(|line| line.trim() == entry) {
         return Ok(());
     }
     if let Some(parent) = exclude_path.parent() {
@@ -1321,7 +1340,7 @@ pub(crate) fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Resul
             ))
         })?;
     }
-    file.write_all(format!("{WORKTREE_EXCLUDE}\n").as_bytes())
+    file.write_all(format!("{entry}\n").as_bytes())
         .map_err(|error| {
             CalmError::Internal(format!(
                 "write git exclude {}: {error}",

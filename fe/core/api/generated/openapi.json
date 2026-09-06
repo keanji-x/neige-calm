@@ -894,6 +894,188 @@
         }
       }
     },
+    "/api/cards/{id}/planner/attachments": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "upload_planner_attachment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Raw image bytes. The declared Content-Type is not the judgement — the file's magic number is.",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Attachment stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadAttachmentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not one of PNG/JPEG/GIF/WebP, the track has an attached workspace, or the card's attachment budget is exhausted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a planner codex card, or the actor is not `user`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card or track not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "File exceeds the per-file size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cards/{id}/planner/attachments/{attachment_id}": {
+      "get": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "read_planner_attachment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "description": "`<uuid>.<ext>` id returned by the upload",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw image bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed id, no such attachment on this card, or the track has an attached workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Card is not a planner codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card or track not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/planner/input": {
       "post": {
         "tags": [
@@ -5274,6 +5456,10 @@
           }
         }
       },
+      "AttachmentId": {
+        "type": "string",
+        "description": "`<uuid-v4>.<ext>` — an attachment's id *and* its file name.\n\nThe inner string is private and the only constructor is\n[`AttachmentId::parse`], so a value of this type is always a single path\nsegment matching\n`[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}.(png|jpg|gif|webp)`.\n`Deserialize` goes through the same gate, so an id off the wire is checked\nbefore it can reach a `join`."
+      },
       "BacklinkQuote": {
         "type": "object",
         "required": [
@@ -6871,6 +7057,29 @@
           "text": {
             "type": "string",
             "description": "The complete text. Never truncated — an entry that would not fit the\npage budget is left out of the page entirely rather than shown in a\nform the user cannot safely edit."
+          }
+        }
+      },
+      "PlannerAttachment": {
+        "type": "object",
+        "description": "One attachment as the frontend sees it in a queue entry or a transcript\nsegment.",
+        "required": [
+          "id",
+          "contentType",
+          "size"
+        ],
+        "properties": {
+          "contentType": {
+            "type": "string",
+            "description": "Derived from `id`, never stored separately — see\n[`PlannerAttachment::new`]."
+          },
+          "id": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -8700,6 +8909,33 @@
           }
         },
         "additionalProperties": false
+      },
+      "UploadAttachmentResponse": {
+        "type": "object",
+        "description": "`201` body of `POST /api/cards/{id}/planner/attachments`.",
+        "required": [
+          "attachmentId",
+          "contentType",
+          "size",
+          "url"
+        ],
+        "properties": {
+          "attachmentId": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "contentType": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "url": {
+            "type": "string",
+            "description": "Absolute REST path the browser reads the bytes back from. Server-built:\nthe client never composes a path of its own.\n\nNot a durable link yet. As of S6-PR1 nothing binds an attachment to a\nqueue entry, so every upload stays in the server's `staging/` directory\nand is swept once it is older than the 24h orphan TTL; after that this\npath answers 400. S6-PR2 adds the bind that makes an attachment\npermanent."
+          }
+        }
       },
       "VersionInfo": {
         "type": "object",

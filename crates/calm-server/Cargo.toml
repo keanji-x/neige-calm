@@ -242,6 +242,15 @@ calm-session = { path = "../calm-session" }
 calm-proc-supervisor = { path = "../calm-proc-supervisor" }
 blake3 = "1.8"
 
+# Streaming request bodies. `http_body_util::Limited` is the planner attachment
+# upload's single size gate, and `BodyExt::frame` is how the handler reads the
+# body incrementally instead of buffering it. Route tests also use
+# `BodyExt::collect` to drain a response — Axum 0.8 dropped the `to_bytes`
+# convenience — which is why this entry used to live under [dev-dependencies].
+# Already in Cargo.lock (v0.1.3) through axum/hyper, so promoting it adds a
+# direct dependency, not a compilation unit.
+http-body-util = "0.1"
+
 # Plugin host (Slice B): unix-only — used by `plugin_host::process` to send a
 # real SIGTERM before falling back to SIGKILL. `tokio::process::Child::kill()`
 # only does SIGKILL on unix, so we need this to honor the grace period
@@ -253,8 +262,11 @@ nix = { version = "0.29", features = ["fs", "signal"] }
 # These fixtures are `[[bin]]`s of this crate so their deps must live
 # here, not under [dev-dependencies]. libc is already in the transitive
 # graph via tokio/sqlx; declaring it explicitly costs nothing and keeps
-# the bins self-contained. Production code paths in `calm-server` don't
-# import it.
+# the bins self-contained. Inside the library the only importer is
+# `src/test_support.rs` (process-liveness probes for the crash-recovery
+# fixtures); request-handling code reaches the kernel through `nix` and
+# `routes::fs::open_workspace_regular_file` instead of rolling its own
+# syscall flags — #1505 S6-PR1 spent three review rounds learning why.
 libc = "0.2"
 
 [dev-dependencies]
@@ -272,9 +284,19 @@ calm-truth-test-harness = { path = "../calm-truth-test-harness" }
 # without bringing up a TCP listener. `tower` itself is already a normal dep
 # (used by axum) but the `oneshot` helper lives behind the `util` feature.
 tower = { version = "0.5", features = ["util"] }
-# Used to drain `axum::body::Body` in route tests — Axum 0.8 dropped the
-# `to_bytes` convenience; the canonical replacement is `http_body_util::BodyExt::collect`.
-http-body-util = "0.1"
+# #1505 S6 — the compile-fail half of "`bound/` has no deletion path": a
+# downstream crate must not be able to convert a `BoundDir` into the
+# `StagingDir` a deletion accepts. Only `trybuild` can carry a cross-crate
+# compile-fail statement; this repo runs no doctests (nextest does not execute
+# them), so a `compile_fail` doc fence would pass vacuously.
+trybuild = "1"
+# #1515 review F1/F5/F9 — the attachment upload tests need a body that arrives
+# as SEVERAL data frames and can be held open mid-stream. Every single-frame
+# `Body::from(Vec<u8>)` decides its outcome before the `.part` exists, so no
+# such body can reach the mid-stream failure arms or the in-flight/GC race.
+# `futures` is already a normal dependency of this crate (and so already in the
+# lock); integration-test crates must re-declare it to link.
+futures = "0.3"
 # Parser-level assertions for shared CODEX_HOME TOML writer regressions.
 toml = "0.8"
 # Microbench for the sync engine event_append overhead (design doc §6.4).
