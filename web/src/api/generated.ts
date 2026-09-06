@@ -1139,6 +1139,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tracks/{id}/isolated-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tracks/{id}/report": {
         parameters: {
             query?: never;
@@ -1239,6 +1255,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["get_attempts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tracks/{id}/tasks/{key}/attempts/{attempt_id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["report"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1418,6 +1450,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AcceptedTaskReport: {
+            artifacts: string[];
+            /** @enum {string} */
+            kind: "completed";
+            result: unknown;
+        } | {
+            /** @enum {string} */
+            kind: "failed";
+            reason: string;
+        };
         /** @enum {string} */
         AgentProvider: "codex" | "claude";
         Area: {
@@ -2778,6 +2820,22 @@ export interface components {
             settings?: {
                 [key: string]: string | null;
             };
+        };
+        StartIsolatedTaskBody: {
+            goal: string;
+            /** Format: int64 */
+            ifDocRev: number;
+            key: string;
+        };
+        StartIsolatedTaskResponse: {
+            blockId: string;
+            /** Format: int64 */
+            docRev: number;
+            taskKey: string;
+        };
+        TaskAttemptReportResponse: {
+            attemptId: string;
+            report: null | components["schemas"]["AcceptedTaskReport"];
         };
         /**
          * @description Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.
@@ -7196,6 +7254,79 @@ export interface operations {
             };
         };
     };
+    start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartIsolatedTaskBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartIsolatedTaskResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     get_track_report: {
         parameters: {
             query?: never;
@@ -7622,6 +7753,53 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskRecoveryView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    report: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                key: string;
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskAttemptReportResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             404: {
