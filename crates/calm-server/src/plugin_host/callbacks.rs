@@ -65,8 +65,8 @@ pub struct CallbackCtx<'a> {
     pub registry: Arc<PluginRegistry>,
     /// Outbound MCP channel — used to deliver subscription notifications.
     pub mcp: Arc<McpClient>,
-    /// Per-(plugin, sub_id) join-handle table. Lives on `PluginHost` so
-    /// `stop()` can abort all subscriptions for a plugin.
+    /// Live subscription join-handles. Lives on `PluginHost` so `stop()` can
+    /// abort all subscriptions for a plugin.
     pub subscriptions: Arc<Mutex<Vec<SubscriptionRecord>>>,
     /// Scope β — caller-supplied tracing id. Set when the dispatch enters
     /// from `routes::plugins::plugin_tool_call` (iframe AppBridge), `None`
@@ -128,7 +128,6 @@ async fn card_scope_for_callback(repo: &dyn RepoRead, card: CardId, track_id: &s
 /// bridge task can be aborted on plugin stop.
 pub struct SubscriptionRecord {
     pub plugin_id: String,
-    pub sub_id: u64,
     pub task: JoinHandle<()>,
 }
 
@@ -748,7 +747,6 @@ async fn event_subscribe(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, 
 
     ctx.subscriptions.lock().await.push(SubscriptionRecord {
         plugin_id: ctx.plugin_id.to_string(),
-        sub_id,
         task,
     });
 

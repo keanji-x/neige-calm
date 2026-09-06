@@ -11,10 +11,10 @@
 //!   * §6   (NEIGE_PLUGIN_TOKEN / NEIGE_PLUGIN_ID env injection)
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
@@ -51,9 +51,6 @@ pub struct PluginProcess {
     /// Joinable task that drains stderr into `stderr_ring`. Cancelled on stop.
     stderr_task: Mutex<Option<JoinHandle<()>>>,
     stderr_ring: Arc<Mutex<VecDeque<String>>>,
-
-    /// Wall-clock start time for `tracing` + crash-window bookkeeping.
-    pub started_at: Instant,
 
     /// Cached PID for SIGTERM (we can't ask `Child` after `take()`).
     pid: Option<u32>,
@@ -155,7 +152,6 @@ impl PluginProcess {
             stdout: Mutex::new(stdout),
             stderr_task: Mutex::new(stderr_task),
             stderr_ring,
-            started_at: Instant::now(),
             pid,
         })
     }
@@ -175,15 +171,6 @@ impl PluginProcess {
     /// kernel reaps it, and our drop guard ensures it goes away eventually.
     pub fn pid(&self) -> Option<u32> {
         self.pid
-    }
-
-    /// True if we still own a `Child` handle. Note this does NOT call
-    /// `try_wait` — that's the supervisor's job. After `take_child` (which
-    /// the supervisor does in normal startup), this returns false even
-    /// though the kernel-level process may still be running; the supervisor
-    /// task itself is the source of truth then.
-    pub fn has_child_handle(&self) -> bool {
-        self.child.lock().unwrap().is_some()
     }
 
     /// Snapshot the last `n` stderr lines (oldest → newest). Used by Slice D's
@@ -270,11 +257,6 @@ impl PluginProcess {
         if let Some(task) = self.stderr_task.lock().unwrap().take() {
             task.abort();
         }
-    }
-
-    /// Convenience for tests + diagnostics.
-    pub fn data_dir(plugins_data_dir: &Path, id: &str) -> PathBuf {
-        plugins_data_dir.join(id)
     }
 }
 
