@@ -5,7 +5,7 @@ use crate::dedicated_codex::{RequestPhase, Session};
 use crate::error::{CalmError, Result};
 use crate::model::{Task, TaskStatus};
 use crate::operation::{
-    Operation, ParkedObserver, ParkedOutcome, ParkedRecovery, RecoveryMode, SpawnCtx,
+    Operation, ParkedObserver, ParkedOutcome, ParkedRecovery, RecoveryMode, SpawnCtx, SpawnOutcome,
 };
 use calm_worker_runtime::BoundaryState;
 use std::time::Duration;
@@ -149,6 +149,64 @@ async fn task(adapter: &IsolatedCodexAdapter, record: &RunRecord) -> Result<Opti
         Box::pin(async move { Ok(crate::db::sqlite::task_get_tx(tx, &id).await?) })
     })
     .await
+}
+
+/// Recover the window after the turn/Running acknowledgement and before the
+/// outer Operation parked write. The returned observer runs only after parking.
+pub(super) async fn acknowledged_recovery(
+    adapter: &IsolatedCodexAdapter,
+    op: &Operation,
+    ctx: &SpawnCtx,
+) -> Result<Option<SpawnOutcome>> {
+    let owned = op.clone();
+    let deadline = write_in_tx_typed(adapter.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            super::journal::require_owner_tx(tx, &owned).await?;
+            let record = super::journal::load_tx(tx, &owned.id).await?;
+            if !matches!(record.provider, super::record::ProviderRecord::Prepared(ref session)
+                if matches!(session.phase, RequestPhase::TurnActive { .. }))
+            {
+                return Ok(None);
+            }
+            let current =
+                crate::db::sqlite::task_get_tx(tx, &record.request.identity.attempt_id).await?;
+            let deadline = match current {
+                Some(task) if !terminal(&task) => task.running_deadline_ms.ok_or_else(|| {
+                    CalmError::Conflict("acknowledged isolated task has no running deadline".into())
+                })?,
+                // Terminal or removed tasks only need cleanup; there is no launch to authorize.
+                _ => crate::model::now_ms(),
+            };
+            Ok(Some(deadline))
+        })
+    })
+    .await?;
+    let Some(deadline_ms) = deadline else {
+        return Ok(None);
+    };
+    let adapter = adapter.clone();
+    let op = op.clone();
+    let ctx = ctx.clone();
+    Ok(Some(SpawnOutcome::Parked {
+        deadline_ms,
+        observer: Box::pin(async move {
+            let result = async {
+                let Some(claimed) = ctx.operation_repo.claim_parked(&op.id).await? else {
+                    return Ok(());
+                };
+                let mode = if crate::model::now_ms() >= deadline_ms {
+                    RecoveryMode::PastDeadline
+                } else {
+                    RecoveryMode::Boot
+                };
+                crate::operation::owned_parked::reconcile(&adapter, &claimed, mode, &ctx).await
+            }
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(operation_id=%op.id,%error,"acknowledged isolated recovery awaits parked sweep");
+            }
+        }),
+    }))
 }
 
 pub(crate) async fn reconcile(

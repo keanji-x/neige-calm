@@ -38,6 +38,14 @@ async fn isolated_codex_lost_turn_ack_never_reissues_on_recovery() {
 async fn isolated_codex_withdrawal_stops_owned_runtime() {
     run_case("wait", calm_server::model::TaskStatus::Failed).await;
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn isolated_codex_boot_recovers_acknowledged_spawn_started_running() {
+    run_case("crash-running", calm_server::model::TaskStatus::Done).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn isolated_codex_boot_recovers_acknowledged_spawn_started_done() {
+    run_case("crash-done", calm_server::model::TaskStatus::Done).await;
+}
 async fn run_case(scenario: &str, expected: calm_server::model::TaskStatus) {
     let boot = boot().await;
     let root = tempfile::Builder::new()
@@ -171,6 +179,52 @@ async fn run_case(scenario: &str, expected: calm_server::model::TaskStatus) {
             .as_str()
             .unwrap(),
     );
+    if scenario.starts_with("crash-") {
+        assert_eq!(
+            current(&boot, "pilot").await.status,
+            calm_server::model::TaskStatus::Running
+        );
+        let deadline = current(&boot, "pilot").await.running_deadline_ms.unwrap();
+        // Model the crash between the genuine TurnActive/TaskRunning transaction
+        // and the separate outer Parked write. Keep the real receipt and runtime.
+        sqlx::query("UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
+            .bind(&op_id).execute(&pool).await.unwrap();
+        if scenario == "crash-done" {
+            std::fs::write(workspace.join("report-now"), b"").unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while current(&boot, "pilot").await.status != calm_server::model::TaskStatus::Done {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("real native completion before outer parking");
+        }
+        let recovery = state.operation_runtime.recover_on_boot().await.unwrap();
+        state
+            .operation_runtime
+            .apply_recovery(recovery)
+            .await
+            .unwrap();
+        let (phase, restored_deadline): (String, Option<i64>) =
+            sqlx::query_as("SELECT phase,parked_deadline_ms FROM operations WHERE id=?1")
+                .bind(&op_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(
+            matches!(phase.as_str(), "parked" | "succeeded"),
+            "acknowledged recovery must not fail Operation or strand Task: {phase}, task {:?}",
+            current(&boot, "pilot").await.status
+        );
+        if scenario == "crash-running" {
+            assert_eq!(
+                restored_deadline,
+                Some(deadline),
+                "recovery must retain original running deadline"
+            );
+            std::fs::write(workspace.join("report-now"), b"").unwrap();
+        }
+    }
     if scenario == "wait" {
         assert_eq!(
             current(&boot, "pilot").await.status,

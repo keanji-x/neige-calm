@@ -236,6 +236,10 @@ impl ProviderAdapter for IsolatedCodexAdapter {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
+        // A committed turn acknowledgement is observation recovery, not a new launch.
+        if let Some(parked) = super::observe::acknowledged_recovery(self, op, ctx).await? {
+            return Ok(parked);
+        }
         let owned = op.clone();
         write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
@@ -316,6 +320,13 @@ impl ProviderAdapter for IsolatedCodexAdapter {
                 "unknown isolated compensation step".into(),
             ));
         }
+        super::observe::fail(
+            self,
+            op,
+            ctx,
+            "Isolated execution could not finish startup or recovery; stopping its owned runtime.",
+        )
+        .await?;
         super::observe::stop(self, op, ctx).await
     }
 }
