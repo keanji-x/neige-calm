@@ -92,3 +92,18 @@ pub fn private_codex_home(
         .await
     }
 }
+
+pub(crate) async fn recorded_worker_kind_tx(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+) -> Result<Option<String>> {
+    let kinds:Vec<String>=sqlx::query_scalar("SELECT kind FROM operations WHERE idempotency_key=?1 AND kind IN ('codex-worker','claude-worker','terminal-worker','codex-isolated-worker')")
+        .bind(task_id).fetch_all(&mut **tx).await?;
+    match kinds.as_slice() {
+        [] => Ok(None),
+        [kind] => Ok(Some(kind.clone())),
+        _ => Err(CalmError::Conflict(
+            "task has ambiguous recorded execution backends".into(),
+        )),
+    }
+}

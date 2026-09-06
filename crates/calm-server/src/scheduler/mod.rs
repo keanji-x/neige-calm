@@ -219,6 +219,10 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
             serde_json::to_value(crate::isolated_codex::worker_payload(task))?,
         ));
     }
+    build_legacy_worker_payload(task)
+}
+
+fn build_legacy_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
     match task.kind {
         TaskKind::Codex => {
             let payload = serde_json::to_value(CodexWorkerOperationPayload {
@@ -1432,8 +1436,8 @@ impl Scheduler {
     /// §8). The drive lease (60s, `claim_drive_batch`) makes concurrent
     /// drivers execute no phase twice.
     async fn drive_spawn(&self, task: &Task, track: &Track) -> Result<()> {
-        let isolated = crate::isolated_codex::selected(task)?;
-        if task.spawn == "sub-wave" {
+        if task.spawn == calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE {
+            crate::isolated_codex::selected(task)?;
             return self.drive_child_track(task, track).await;
         }
         let Some(runtime) = self.operation_runtime.upgrade() else {
@@ -1443,7 +1447,44 @@ impl Scheduler {
             );
             return Ok(());
         };
-        let (op_kind, payload) = build_worker_payload(task)?;
+        let task_id = task.id.clone();
+        let recorded = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                crate::isolated_codex::lookup::recorded_worker_kind_tx(tx, &task_id).await
+            })
+        })
+        .await?;
+        let (op_kind, payload) = match recorded.as_deref() {
+            Some(crate::isolated_codex::OPERATION_KIND) => {
+                let selected = build_worker_payload(task)?;
+                if selected.0 != crate::isolated_codex::OPERATION_KIND {
+                    return self
+                        .fail_spawn(
+                            task,
+                            track,
+                            "recorded isolated backend no longer matches task contract",
+                        )
+                        .await;
+                }
+                selected
+            }
+            Some(recorded) => {
+                // Already-created legacy operations retain their original backend/serialization.
+                let legacy = build_legacy_worker_payload(task)?;
+                if legacy.0 != recorded {
+                    return self
+                        .fail_spawn(
+                            task,
+                            track,
+                            "recorded worker backend differs from task kind",
+                        )
+                        .await;
+                }
+                legacy
+            }
+            None => build_worker_payload(task)?,
+        };
+        let isolated = op_kind == crate::isolated_codex::OPERATION_KIND;
         let payload_hash = stable_payload_hash(&payload)?;
         let op_id = match runtime
             .submit(
@@ -1980,6 +2021,23 @@ impl Scheduler {
             }
         };
         for mut task in tasks {
+            if task.status == TaskStatus::Running {
+                let task_id = task.id.clone();
+                match crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
+                    Box::pin(async move {
+                        crate::isolated_codex::lookup::is_isolated_task_tx(tx, &task_id).await
+                    })
+                })
+                .await
+                {
+                    Ok(true) => continue, // Existing owned parked sweep above owns this resource's timeout/stop.
+                    Err(error) => {
+                        tracing::warn!(task_id=%task.id,%error,"task backend lookup failed; skipping generic liveness");
+                        continue;
+                    }
+                    Ok(false) => {}
+                }
+            }
             match task.status {
                 TaskStatus::Pending => {
                     pending_tracks.insert(task.track_id.clone());
@@ -2302,17 +2360,22 @@ impl Scheduler {
         if let Some(card_id) = task.worker_card_id.as_ref() {
             return Some(card_id.clone());
         }
-        let operation_kind = match task.kind {
-            TaskKind::Codex => "codex-worker",
-            TaskKind::Claude => "claude-worker",
-            TaskKind::Terminal => return None,
-        };
+        let id = task.id.clone();
+        let operation_kind = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                crate::isolated_codex::lookup::recorded_worker_kind_tx(tx, &id).await
+            })
+        })
+        .await
+        .ok()
+        .flatten()?;
         self.operation_runtime
             .upgrade()?
-            .find_by_kind_and_idempotency(operation_kind, &task.id)
+            .find_by_kind_and_idempotency(&operation_kind, &task.id)
             .await
             .ok()
             .flatten()
+            .filter(|op| op.target_type == "card")
             .and_then(|op| op.target_id)
     }
 

@@ -135,3 +135,69 @@ async fn isolated_codex_disabled_backend_keeps_safe_preparation_recovery() {
     assert_ne!(receipt["attempt_id"], task.id);
     assert_eq!(current(&boot, "disabled").await.key, task.key);
 }
+
+#[tokio::test]
+async fn isolated_selection_does_not_reinterpret_a_recorded_legacy_worker() {
+    use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+    let boot = boot().await;
+    declare(&boot, declaration("recorded")).await;
+    let task = current(&boot, "recorded").await;
+    // Historical pre-feature Operation: the context was opaque to its legacy producer.
+    let payload = serde_json::to_value(
+        calm_server::operation::codex_adapter::CodexWorkerOperationPayload {
+            actor: calm_server::ids::ActorId::KernelDispatcher,
+            track_id: task.track_id.clone(),
+            idempotency_key: task.id.clone(),
+            goal: task.goal.clone(),
+            cwd: None,
+            context: serde_json::from_str(&task.context_json).unwrap(),
+            acceptance_criteria: task.acceptance_criteria.clone(),
+        },
+    )
+    .unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let operations = SqlxOperationRepo::new(pool.clone());
+    let op = operations
+        .insert_operation(
+            "codex-worker",
+            OperationKey {
+                operation_key: "historical-worker".into(),
+                idempotency_key: Some(task.id.clone()),
+                payload_hash: calm_server::routes::terminal_cards::stable_payload_hash(&payload)
+                    .unwrap(),
+            },
+            payload,
+        )
+        .await
+        .unwrap();
+    let output = calm_server::operation::TxOutput::new(
+        "card",
+        Some(boot.worker_card_id.to_string()),
+        json!({"id":boot.worker_card_id}),
+    );
+    sqlx::query("UPDATE operations SET phase='succeeded',target_type='card',target_id=?1,tx_output_json=?2 WHERE id=?3")
+        .bind(boot.worker_card_id.as_str()).bind(serde_json::to_string(&output).unwrap()).bind(&op).execute(&pool).await.unwrap();
+    let state = crate::task_projection_acceptance::route_state(&boot).await;
+    let scheduler = state.dispatcher.scheduler();
+    scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        scheduler.schedule_track(boot.track_id.clone()),
+    )
+    .await
+    .unwrap();
+    let kind: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM operations WHERE idempotency_key=?1")
+            .bind(&task.id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(kind, vec!["codex-worker"]);
+    let current = current(&boot, "recorded").await;
+    assert_eq!(current.status, calm_server::model::TaskStatus::Running);
+    assert_eq!(
+        current.worker_card_id.as_deref(),
+        Some(boot.worker_card_id.as_str())
+    );
+}
