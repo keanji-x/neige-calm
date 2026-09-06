@@ -541,3 +541,9 @@ async fn codex_worker_prompt_includes_completion_task_id() {
         "Codex must receive the exact task id it is required to report"
     );
 }
+
+#[cfg(test)]
+mod recovery_tests;
+
+#[cfg(test)]
+mod viewer_cleanup_tests;

@@ -835,7 +835,7 @@ async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
 
 /// Minimal area → track → card → terminal chain so `terminal_set_exit` has a row
 /// to write to.
-async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
+pub(super) async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
     let area = repo
         .area_create(NewArea {
             name: "renderer-e2e".into(),
@@ -880,7 +880,7 @@ async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
 }
 
 /// Waits for the grandchild to publish its pid, then parses it.
-async fn wait_for_pid_file(path: &Path) -> i32 {
+pub(super) async fn wait_for_pid_file(path: &Path) -> i32 {
     let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     loop {
         if let Ok(raw) = std::fs::read_to_string(path)
@@ -899,7 +899,7 @@ async fn wait_for_pid_file(path: &Path) -> i32 {
 
 /// True when `pid` still names a live (non-zombie) process. A zombie has
 /// already closed every fd it held, so it proves nothing about the pty slave.
-fn process_is_alive(pid: i32) -> bool {
+pub(super) fn process_is_alive(pid: i32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
     };
@@ -911,7 +911,7 @@ fn process_is_alive(pid: i32) -> bool {
     matches!(rest.split_whitespace().next(), Some(state) if state != "Z" && state != "X")
 }
 
-async fn spawn_proc_supervisor(control_sock: &Path) -> Child {
+pub(super) async fn spawn_proc_supervisor(control_sock: &Path) -> Child {
     let child = Command::new(locate_bin("calm-proc-supervisor"))
         .arg("--control-sock")
         .arg(control_sock)

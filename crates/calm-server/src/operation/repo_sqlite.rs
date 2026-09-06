@@ -434,7 +434,10 @@ impl OperationRepo for SqlxOperationRepo {
                SET phase = 'compensating',
                    phase_detail_json = ?1,
                    compensation_state = ?2,
-                   tx_output_json = ?3,
+                   tx_output_json = CASE
+                       WHEN json_type(tx_output_json, '$.data.terminal_launch') = 'object'
+                       THEN json_set(?3, '$.data.terminal_launch', json_extract(tx_output_json, '$.data.terminal_launch'))
+                       ELSE ?3 END,
                    target_type = ?4,
                    target_id = ?5,
                    target_json = ?6,

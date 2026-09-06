@@ -95,7 +95,7 @@ async fn user_upsert(boot: &Boot, id: &str, rev: u64, payload: Value) -> (u64, u
     .expect("user task update")
 }
 
-fn principal() -> Principal {
+pub(super) fn principal() -> Principal {
     Principal {
         user_id: "owner".into(),
         display_name: "owner".into(),
@@ -104,7 +104,7 @@ fn principal() -> Principal {
     }
 }
 
-async fn route_state(boot: &Boot) -> AppState {
+pub(super) async fn route_state(boot: &Boot) -> AppState {
     let events = EventBus::new();
     let state = AppState::from_parts(
         boot.repo.clone(),
@@ -545,7 +545,7 @@ async fn fresh_reference_error_overrides_an_existing_pending_rows_old_queue_reas
 }
 
 #[tokio::test]
-async fn terminal_dependency_reason_tells_the_planner_to_revise_the_plan() {
+async fn failed_dependency_reason_points_to_recovery_options() {
     let boot = new_boot().await;
     upsert(&boot, None, task("failed-first")).await;
     let mut blocked = task("blocked-next");
@@ -558,13 +558,35 @@ async fn terminal_dependency_reason_tells_the_planner_to_revise_the_plan() {
         .unwrap();
 
     for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let failed = task_verdict(&response, "failed-first");
+        assert_eq!(failed["status"], "failed", "{surface}: {failed}");
+        let diagnostics = failed["diagnostics"].as_array().unwrap();
+        let recovery_hint = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic["action"] == "inspect_recovery_options")
+            .unwrap_or_else(|| {
+                panic!("{surface}: failed current attempt needs recovery guidance: {failed}")
+            });
+        assert!(
+            recovery_hint["message"]
+                .as_str()
+                .unwrap()
+                .contains("failed"),
+            "{surface}: {recovery_hint}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["action"] == "create_task_with_new_key"),
+            "{surface}: no mandatory key replacement"
+        );
         let reason = &task_verdict(&response, "blocked-next")["pendingReason"];
         assert_eq!(reason["kind"], "dependencyBlocked", "{surface}");
         assert_eq!(reason["dependencies"], json!(["failed-first"]), "{surface}");
         let message = reason["message"].as_str().unwrap();
         assert!(message.contains("failed"), "{surface}: {message}");
         assert!(
-            message.contains("revise dependencies"),
+            message.contains("inspect recovery options"),
             "{surface}: {message}"
         );
         assert!(!message.starts_with("Waiting"), "{surface}: {message}");
@@ -1203,10 +1225,15 @@ async fn terminal_task_does_not_receive_in_flight_withdrawal_diagnostic() {
         .unwrap();
 
     for snapshot in [&read(&boot).await, &rest_read(&boot).await] {
+        assert!(
+            has_diagnostic_code(snapshot, "finished", "task_key_completed"),
+            "{}",
+            task_verdict(snapshot, "finished")
+        );
         assert!(diagnostic_contains(
             snapshot,
             "finished",
-            "task key has already completed"
+            "this task is complete"
         ));
         assert!(!diagnostic_contains(snapshot, "finished", "in flight"));
     }
@@ -1643,7 +1670,11 @@ async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row
             "unchanged declaration bytes"
         );
         assert!(
-            !diagnostic_contains(&read(&boot).await, "flight", "declaration changes"),
+            !has_diagnostic_code(
+                &read(&boot).await,
+                "flight",
+                "declaration_changed_in_flight"
+            ),
             "unchanged declaration must not be stale"
         );
         let rev = read(&boot).await["blocks"]
@@ -1670,9 +1701,11 @@ async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row
             before,
             "{field} changed frozen task bytes"
         );
+        let snapshot = read(&boot).await;
         assert!(
-            diagnostic_contains(&read(&boot).await, "flight", "declaration changes"),
-            "{field}"
+            has_diagnostic_code(&snapshot, "flight", "declaration_changed_in_flight"),
+            "{field}: {}",
+            task_verdict(&snapshot, "flight")
         );
     }
 }
@@ -1731,7 +1764,11 @@ async fn canonical_gate_and_context_are_semantically_equal_to_block_declaration(
         .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
     upsert(&boot, Some((&id, rev)), task("flight")).await;
     assert!(
-        !diagnostic_contains(&read(&boot).await, "flight", "declaration changes"),
+        !has_diagnostic_code(
+            &read(&boot).await,
+            "flight",
+            "declaration_changed_in_flight"
+        ),
         "equivalent JSON spelling must not create a stale diagnostic"
     );
 }

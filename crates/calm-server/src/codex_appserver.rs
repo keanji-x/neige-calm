@@ -56,7 +56,10 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
+
+mod client_transport;
+use client_transport::{PendingRequest, TransportAbort};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -554,7 +557,7 @@ fn notification_stream_closed() -> CalmError {
 // ===========================================================================
 
 /// In-flight request registry: JSON-RPC id -> sender for its response.
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<std::result::Result<Value, RpcError>>>>>;
+type Pending = Arc<StdMutex<HashMap<u64, oneshot::Sender<std::result::Result<Value, RpcError>>>>>;
 
 /// A JSON-RPC error object as returned by the server (`-32600` etc.).
 #[derive(Debug, Clone, Deserialize)]
@@ -577,6 +580,7 @@ type WsSink = Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<UnixStre
 /// called concurrently, but you hold a single handle.
 pub struct CodexAppServer {
     sink: WsSink,
+    transport: TransportAbort,
     pending: Pending,
     next_id: AtomicU64,
     /// Per-request response timeout. This is a leak/wedge backstop for a
@@ -592,6 +596,7 @@ pub struct CodexAppServer {
 
 impl Drop for CodexAppServer {
     fn drop(&mut self) {
+        self.transport.poison();
         self.reader.abort();
     }
 }
@@ -655,13 +660,15 @@ impl CodexAppServer {
         let (client_ws, _resp) = client_res.expect("client handshake");
         let server = server_res.expect("server handshake");
 
+        let transport = TransportAbort::new(client_ws.get_ref()).expect("retain owned socket");
         let (write, read) = client_ws.split();
         let sink: WsSink = Arc::new(Mutex::new(write));
-        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
         let reader = tokio::spawn(reader_loop(read, pending.clone(), notif_tx));
         let client = Self {
             sink,
+            transport,
             pending,
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -736,9 +743,11 @@ impl CodexAppServer {
             }
         };
 
+        let transport = TransportAbort::new(ws.get_ref())
+            .map_err(|error| CalmError::CodexAppServer(format!("retain owned socket: {error}")))?;
         let (write, read) = ws.split();
         let sink: WsSink = Arc::new(Mutex::new(write));
-        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         // Unbounded: notification delivery must never block the reader's
         // response routing — see the backpressure note at the top of this
         // module.
@@ -750,6 +759,7 @@ impl CodexAppServer {
 
         let client = Self {
             sink,
+            transport,
             pending,
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -971,15 +981,12 @@ impl CodexAppServer {
     /// [`Self::request`] with an explicit deadline instead of the per-client
     /// default.
     ///
-    /// **Callers that want a shorter bound than
-    /// [`DEFAULT_REQUEST_TIMEOUT`] must use this, not an outer
-    /// `tokio::time::timeout` around `request`.** The cleanup that keeps the
-    /// pending map from leaking lives on the elapse arm *inside* this
-    /// function; cancelling the future from outside drops it before that arm
-    /// can run, so the `(id -> oneshot)` entry survives in the long-lived
-    /// shared client until codex answers late or the connection closes. On a
-    /// connected-but-stalled daemon that is one leaked entry per call.
-    /// Passing the deadline down keeps the bound and the cleanup together.
+    /// Callers that want a shorter bound than
+    /// [`DEFAULT_REQUEST_TIMEOUT`] should pass one absolute budget here. The
+    /// response wait uses that deadline. Cancellation also removes its pending
+    /// correlation entry; if it interrupts an incomplete send, the owned socket
+    /// is shut down without flushing and the execution outcome stays unknown.
+    /// Fully flushed requests keep the shared transport healthy on reply timeout.
     ///
     /// A deadline already in the past elapses immediately, which is what a
     /// caller spending one budget across several calls wants.
@@ -1000,9 +1007,11 @@ impl CodexAppServer {
             )));
         }
 
+        self.transport.check()?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, tx);
+        self.pending.lock().unwrap().insert(id, tx);
+        let _pending = PendingRequest::new(self.pending.clone(), id);
 
         let frame = json!({
             "jsonrpc": "2.0",
@@ -1016,11 +1025,15 @@ impl CodexAppServer {
         // WS frames.
         {
             let mut sink = self.sink.lock().await;
+            // Created after the lock: cancellation closes the owned socket BEFORE
+            // releasing the sink. This also cuts off read-side automatic flushes.
+            let mut sending = self.transport.sending()?;
             if let Err(e) = sink.send(Message::Text(text)).await {
                 // Drop the now-unanswerable pending entry.
-                self.pending.lock().await.remove(&id);
+                self.pending.lock().unwrap().remove(&id);
                 return Err(CalmError::CodexAppServer(format!("send {method}: {e}")));
             }
+            sending.complete();
         }
 
         tracing::trace!(id, method, "codex app-server: request sent");
@@ -1035,7 +1048,7 @@ impl CodexAppServer {
         let outcome = match tokio::time::timeout_at(deadline, rx).await {
             Ok(received) => received,
             Err(_elapsed) => {
-                self.pending.lock().await.remove(&id);
+                self.pending.lock().unwrap().remove(&id);
                 return Err(CalmError::CodexAppServer(format!(
                     "request {method} timed out"
                 )));
@@ -1107,7 +1120,7 @@ async fn reader_loop(
             v.as_u64()
                 .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
         }) {
-            let sender = { pending.lock().await.remove(&id) };
+            let sender = { pending.lock().unwrap().remove(&id) };
             if let Some(sender) = sender {
                 let payload = if let Some(err) = obj.get("error") {
                     match serde_json::from_value::<RpcError>(err.clone()) {
@@ -1147,7 +1160,7 @@ async fn reader_loop(
 
     // Connection ended: drain any pending requests so their futures resolve
     // with a clean "connection closed" error instead of hanging.
-    let mut guard = pending.lock().await;
+    let mut guard = pending.lock().unwrap();
     guard.clear();
 }
 
@@ -1267,14 +1280,16 @@ mod tests {
         let (client_ws, _resp) = client_res.expect("client handshake");
         let server = server_res.expect("server handshake");
 
+        let transport = TransportAbort::new(client_ws.get_ref()).expect("retain owned socket");
         let (write, read) = client_ws.split();
         let sink: WsSink = Arc::new(Mutex::new(write));
-        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
         let reader = tokio::spawn(reader_loop(read, pending.clone(), notif_tx));
 
         let client = CodexAppServer {
             sink,
+            transport,
             pending,
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -1616,7 +1631,7 @@ mod tests {
 
         // The pending entry for the timed-out request must be gone.
         assert!(
-            client.pending.lock().await.is_empty(),
+            client.pending.lock().unwrap().is_empty(),
             "pending map must not leak the timed-out request"
         );
     }
@@ -1655,7 +1670,7 @@ mod tests {
         }
 
         assert!(
-            client.pending.lock().await.is_empty(),
+            client.pending.lock().unwrap().is_empty(),
             "a caller-supplied deadline must not leak the timed-out request"
         );
     }
@@ -1681,7 +1696,7 @@ mod tests {
             other => panic!("expected CodexAppServer error, got {other:?}"),
         }
         assert!(
-            client.pending.lock().await.is_empty(),
+            client.pending.lock().unwrap().is_empty(),
             "nothing was sent, so nothing may be pending"
         );
     }

@@ -3313,7 +3313,7 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    let report = TrackReportPayload {
+    let mut report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 7,
         summary: String::new(),
@@ -3325,6 +3325,16 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
             payload: json!({"key": key, "kind": "terminal", "command": "echo hi"}),
         }]),
     };
+    // Seed the legacy payload's authoritative body from the real report
+    // renderer, so its block cache describes the same document.
+    report.body = calm_server::track_report_doc::ReportDoc::from_blocks_exact(
+        &report.summary,
+        report.blocks.as_deref().unwrap(),
+    )
+    .unwrap()
+    .project()
+    .unwrap()
+    .1;
     sqlx::query(
         "INSERT INTO cards \
          (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
@@ -3983,7 +3993,7 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
     let boot = boot().await;
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     let key = "hash-shapes";
-    let report = TrackReportPayload {
+    let mut report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
         summary: String::new(),
@@ -4006,6 +4016,16 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
             },
         ]),
     };
+    // Seed the legacy payload's authoritative body from the real report
+    // renderer, so its block cache describes the same document.
+    report.body = calm_server::track_report_doc::ReportDoc::from_blocks_exact(
+        &report.summary,
+        report.blocks.as_deref().unwrap(),
+    )
+    .unwrap()
+    .project()
+    .unwrap()
+    .1;
     insert_report_payload(
         &boot,
         "hash-shapes-report",
@@ -4206,6 +4226,40 @@ async fn persist_context_report_body(boot: &Boot, body: String) {
     )
     .await
     .unwrap();
+}
+
+// These race tests hold the SQLite writer themselves. Publish a complete report
+// snapshot through the production CRDT codec; changing only the derived payload
+// cannot simulate a revert or withdrawal once the report has body_crdt.
+async fn replace_context_report_snapshot(
+    connection: &mut sqlx::SqliteConnection,
+    card_id: &str,
+    report: &TrackReportPayload,
+) {
+    let mut doc = calm_server::track_report_doc::ReportDoc::from_blocks_exact(
+        &report.summary,
+        report
+            .blocks
+            .as_deref()
+            .expect("explicit test block snapshot"),
+    )
+    .unwrap();
+    for _ in 0..report.doc_rev {
+        doc.increment_doc_rev().unwrap();
+    }
+    let mut mirror = report.clone();
+    (mirror.summary, mirror.body) = doc.project().unwrap();
+    assert_eq!(
+        sqlx::query("UPDATE cards SET payload=?1,body_crdt=?2 WHERE id=?3")
+            .bind(serde_json::to_string(&mirror).unwrap())
+            .bind(doc.to_bytes())
+            .bind(card_id)
+            .execute(connection)
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
 }
 
 async fn context_verdicts_for_task(boot: &Boot, task_id: &str) -> Vec<(String, String)> {
@@ -4823,11 +4877,10 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
     let boot = boot().await;
     let (monitor, task_id, original_body) =
         seed_production_report_context_fixture(&boot, "material-a5-fence").await;
-    let (_, original_card, _) =
+    let (_, original_card, original_report) =
         resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
             .unwrap();
-    let original_payload = original_card.payload.to_string();
     let temporary_body =
         original_body.replacen("referenced original", "referenced original temporary", 1);
     persist_context_report_body(&boot, temporary_body).await;
@@ -4861,12 +4914,12 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
     })
     .await
     .expect("detector must classify the committed temporary content before the lock releases");
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(original_payload)
-        .bind(original_card.id.as_str())
-        .execute(&mut *locked_revert)
-        .await
-        .unwrap();
+    replace_context_report_snapshot(
+        &mut locked_revert,
+        original_card.id.as_str(),
+        &original_report,
+    )
+    .await;
     sqlx::query("COMMIT")
         .execute(&mut *locked_revert)
         .await
@@ -4919,12 +4972,12 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     restored_report.body = original_body.clone();
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced original\n\n");
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&restored_report).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+    replace_context_report_snapshot(
+        &mut pool.acquire().await.unwrap(),
+        report_card.id.as_str(),
+        &restored_report,
+    )
+    .await;
 
     // W3 owns the real SQLite writer slot while the old restore R reads the
     // last committed Equal evidence. R must park at BEGIN IMMEDIATE; W3 then
@@ -4970,12 +5023,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     w3_report.body = second_material;
     w3_report.blocks.as_mut().unwrap()[0].payload["markdown"] = json!("referenced W3 material\n\n");
     w3_report.doc_rev += 1;
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&w3_report).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(&mut *w3)
-        .await
-        .unwrap();
+    replace_context_report_snapshot(&mut w3, report_card.id.as_str(), &w3_report).await;
     sqlx::query("COMMIT").execute(&mut *w3).await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), old_restore)
         .await
@@ -5006,12 +5054,12 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     restored_report.body = original_body.clone();
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced original\n\n");
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&restored_report).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+    replace_context_report_snapshot(
+        &mut pool.acquire().await.unwrap(),
+        report_card.id.as_str(),
+        &restored_report,
+    )
+    .await;
     monitor
         .detect_track_edit(boot.track_id.as_str())
         .await
@@ -5027,12 +5075,12 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
         original_body.replacen("referenced original", "referenced material after R", 1);
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced material after R\n\n");
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&restored_report).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+    replace_context_report_snapshot(
+        &mut pool.acquire().await.unwrap(),
+        report_card.id.as_str(),
+        &restored_report,
+    )
+    .await;
     monitor
         .detect_track_edit(boot.track_id.as_str())
         .await
@@ -5122,7 +5170,7 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
         .await
         .unwrap();
 
-    let (_, report_card, current) =
+    let (_, report_card, mut current) =
         resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
             .unwrap();
@@ -5131,17 +5179,17 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
         (blocks[0].id.as_str(), blocks[1].id.as_str()),
         ("b_2000", "b_1000")
     );
-    // One atomic DB-bypass mutation constructs the safety boundary directly:
-    // frozen projection hashes are equal again while `ready` remains withdrawn.
-    sqlx::query(
-        "UPDATE cards SET payload=json_set(payload,\
-         '$.blocks[0].payload.markdown',?1,'$.blocks[1].payload.ready',json('false')) WHERE id=?2",
+    // Restore the authoritative content while withdrawing readiness in the same
+    // snapshot: hash equality alone must not authorize restoration.
+    let blocks = current.blocks.as_mut().unwrap();
+    blocks[0].payload["markdown"] = json!("referenced original\n\n");
+    blocks[1].payload["ready"] = json!(false);
+    replace_context_report_snapshot(
+        &mut boot.repo.sqlite_pool().unwrap().acquire().await.unwrap(),
+        report_card.id.as_str(),
+        &current,
     )
-    .bind("referenced original\n\n")
-    .bind(report_card.id.as_str())
-    .execute(&boot.repo.sqlite_pool().unwrap())
-    .await
-    .unwrap();
+    .await;
     monitor
         .detect_track_edit(boot.track_id.as_str())
         .await
@@ -8951,7 +8999,9 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
         let track = boot.track_id.clone();
         async move { scheduler.schedule_track(track).await }
     });
-    claimed.notified().await;
+    tokio::time::timeout(Duration::from_secs(5), claimed.notified())
+        .await
+        .expect("production claim must reach the post-claim hook");
     sqlx::query(
         "UPDATE cards SET payload=json_set(payload,'$.docRev',2, \
          '$.blocks[0].rev',2,'$.blocks[0].payload.spawn','in-wave') WHERE id='live-route-report'",
@@ -10149,4 +10199,409 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].1["passed"], true);
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn task_recovery_claim_uses_crdt_when_only_payload_cache_changed() {
+    let boot = boot().await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let task = plan_task(&boot.track_id, "cache-only", TaskKind::Terminal, &[]);
+    let expected_command = task.goal.clone();
+    let previous_id = task.id.clone();
+    seed_projected_task(&boot, task).await;
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    let closure = monitor
+        .resolve_task_closure(boot.track_id.as_str(), "cache-only")
+        .await
+        .unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    calm_server::db::sqlite::task_claim_pending_tx(&mut tx, &previous_id, 10, &closure.refs, false)
+        .await
+        .unwrap();
+    calm_server::db::sqlite::task_fail_from_worker_tx(
+        &mut tx,
+        &previous_id,
+        boot.track_id.as_str(),
+        calm_server::db::sqlite::TaskReporter::Kernel,
+        "spawn-failed: controlled pre-spawn failure",
+        11,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let receipt = call_tool(&boot, "calm.plan.recover", planner_identity(&boot), json!({
+        "key":"cache-only", "expected_attempt_id":previous_id, "idempotency_key":"cache-only-recovery", "reason":"Recover task"
+    })).await.unwrap();
+    let attempt_id = receipt["attempt_id"].as_str().unwrap();
+    let (report_id, cached): (String, String) =
+        sqlx::query_as("SELECT id,payload FROM cards WHERE track_id=?1 AND kind='track-report'")
+            .bind(boot.track_id.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut cached: Value = serde_json::from_str(&cached).unwrap();
+    let cached_root = cached["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|block| block["kind"] == "task" && block["payload"]["key"] == "cache-only")
+        .unwrap();
+    assert_eq!(cached_root["payload"]["command"], expected_command);
+    cached_root["payload"]["command"] = json!("false");
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(cached.to_string())
+        .bind(&report_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    calm_server::track_report::tasks_rebuild_tx(&mut tx, boot.track_id.as_str())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.to_string(),
+        })],
+    );
+    scheduler.schedule_track(boot.track_id.clone()).await;
+    let attempt = boot.repo.task_get(attempt_id).await.unwrap().unwrap();
+    assert_eq!(
+        attempt.status,
+        TaskStatus::Running,
+        "a stale derived cache must not strand an otherwise admissible recovery"
+    );
+    assert_eq!(attempt.goal, expected_command);
+    let frozen: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
+        .bind(attempt_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let refs: Vec<TaskContextRef> = serde_json::from_str(&frozen).unwrap();
+    assert_eq!(
+        refs[0].hash, closure.refs[0].hash,
+        "claim freezes authoritative unchanged content"
+    );
+    monitor
+        .detect_track_edit(boot.track_id.as_str())
+        .await
+        .unwrap();
+    assert!(
+        boot.repo
+            .task_get(attempt_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_stale_at_ms
+            .is_none(),
+        "a cache-only change is not a changed task contract"
+    );
+}
+
+#[tokio::test]
+async fn task_recovery_retries_real_operation_prepare_refusal_without_prior_spawn() {
+    let boot = boot().await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let task = plan_task(&boot.track_id, "prepare-refusal", TaskKind::Terminal, &[]);
+    let previous_id = task.id.clone();
+    seed_projected_task(&boot, task).await;
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    let closure = monitor
+        .resolve_task_closure(boot.track_id.as_str(), "prepare-refusal")
+        .await
+        .unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    calm_server::db::sqlite::task_claim_pending_tx(
+        &mut tx,
+        &previous_id,
+        now_ms(),
+        &closure.refs,
+        false,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    // Inject an admission veto while keeping the report itself unchanged. The
+    // actual TerminalWorkerAdapter/Operation driver must fail before preparation
+    // commits; the test never manufactures from_phase or a terminal operation.
+    mark_context_stale(&boot, &previous_id).await;
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![context_checked_terminal_adapter(&boot, spawned.clone())],
+    );
+    let previous = boot.repo.task_get(&previous_id).await.unwrap().unwrap();
+    let (kind, payload) = build_worker_payload(&previous).unwrap();
+    runtime
+        .submit(
+            kind,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(previous_id.clone()),
+                payload_hash: stable_payload_hash(&payload).unwrap(),
+            },
+            payload,
+        )
+        .await
+        .unwrap();
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    scheduler.sweep_all().await;
+    let operation = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &previous_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(operation.phase.tag(), PhaseTag::Failed);
+    assert_eq!(
+        operation.phase_detail.as_ref().unwrap()["from_phase"],
+        "pending"
+    );
+    assert_eq!(operation.target_type, "track");
+    assert_eq!(operation.target_id.as_deref(), Some(boot.track_id.as_str()));
+    assert!(operation.tx_output.is_none() && operation.spawn_artifacts.is_none());
+    assert_eq!(spawned.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        boot.repo
+            .task_get(&previous_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Failed
+    );
+    let receipt = call_tool(&boot, "calm.plan.recover", planner_identity(&boot), json!({
+        "key":"prepare-refusal", "expected_attempt_id":previous_id, "idempotency_key":"prepare-refusal-retry", "reason":"Retry preparation after an obsolete veto"
+    })).await.unwrap();
+    scheduler.schedule_track(boot.track_id.clone()).await;
+    let replacement = boot
+        .repo
+        .task_get(receipt["attempt_id"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replacement.status, TaskStatus::Running);
+    assert_eq!(spawned.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        boot.repo
+            .task_get(&previous_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Failed
+    );
+}
+
+#[tokio::test]
+async fn task_recovery_refuses_live_verifier_descendant_after_gate_exit() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let temp = tempfile::tempdir().unwrap();
+    struct StopWriter(PathBuf);
+    impl Drop for StopWriter {
+        fn drop(&mut self) {
+            let _ = std::fs::write(self.0.join("stop"), "stop");
+        }
+    }
+    let _stop = StopWriter(temp.path().to_path_buf());
+    std::fs::write(
+        temp.path().join("writer.sh"),
+        r#"
+i=0
+printf ready > "$1/ready"
+while [ -d "$1" ] && [ ! -e "$1/stop" ] && [ "$i" -lt 1500 ]; do
+    if [ -e "$1/probe" ]; then printf after-gate > "$1/written"; fi
+    i=$((i+1)); sleep 0.02
+done
+printf stopped > "$1/stopped"
+"#,
+    )
+    .unwrap();
+    let boot = boot().await;
+    set_lifecycle(&boot, TrackLifecycle::Working).await;
+    let mut task = plan_task(&boot.track_id, "gate-descendant", TaskKind::Terminal, &[]);
+    task.gate_json = Some(json!({"cwd":temp.path(), "steps":[{"name":"detached-writer", "cmd":"task_root=$(pwd -P); setsid /bin/sh ./writer.sh \"$task_root\" & while [ ! -s ./ready ]; do sleep 0.02; done; exit 7"}]}).to_string());
+    let task_id = task.id.clone();
+    seed_projected_task(&boot, task).await;
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    let closure = monitor
+        .resolve_task_closure(boot.track_id.as_str(), "gate-descendant")
+        .await
+        .unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    calm_server::db::sqlite::task_claim_pending_tx(
+        &mut tx,
+        &task_id,
+        now_ms(),
+        &closure.refs,
+        false,
+    )
+    .await
+    .unwrap();
+    calm_server::db::sqlite::task_report_success_from_worker_tx(
+        &mut tx,
+        &task_id,
+        boot.track_id.as_str(),
+        calm_server::db::sqlite::TaskReporter::Kernel,
+        now_ms(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(TaskVerifyAdapter::new(temp.path().join("logs")))],
+    );
+    scheduler.schedule_track(boot.track_id.clone()).await;
+    let row = wait_for_terminal_row(&boot, "gate-descendant", 10).await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("gate-red"));
+    assert!(
+        row.worker_card_id.is_none(),
+        "this witness isolates verifier effects from worker-card evidence"
+    );
+    assert_eq!(row.gate_attempt, 1);
+    std::fs::write(temp.path().join("probe"), "write after gate exit").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !temp.path().join("written").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("detached verifier child writes after persisted gate verdict");
+    let result = call_tool(&boot, "calm.plan.recover", planner_identity(&boot), json!({"key":"gate-descendant", "expected_attempt_id":task_id, "idempotency_key":"gate-descendant-recovery", "reason":"Recover task"})).await;
+    std::fs::write(temp.path().join("stop"), "stop").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !temp.path().join("stopped").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("owned verifier writer stops before assertion");
+    let error =
+        result.expect_err("normal gate exit cannot authorize recovery without a descendant fence");
+    assert_eq!(error.code, -32409);
+    assert!(error.message.contains("descendant write fence"));
+}
+
+#[tokio::test]
+async fn task_recovery_continues_same_attempt_after_planner_session_replacement() {
+    use calm_server::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind,
+    };
+    for remove_retired_mapping in [false, true] {
+        let boot = boot().await;
+        set_lifecycle(&boot, TrackLifecycle::Working).await;
+        let task = plan_task(&boot.track_id, "planner-handoff", TaskKind::Terminal, &[]);
+        let previous_id = task.id.clone();
+        seed_projected_task(&boot, task).await;
+        let monitor =
+            TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+        let closure = monitor
+            .resolve_task_closure(boot.track_id.as_str(), "planner-handoff")
+            .await
+            .unwrap();
+        let pool = boot.repo.sqlite_pool().unwrap();
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .unwrap();
+        calm_server::db::sqlite::task_claim_pending_tx(
+            &mut tx,
+            &previous_id,
+            now_ms(),
+            &closure.refs,
+            false,
+        )
+        .await
+        .unwrap();
+        calm_server::db::sqlite::task_fail_from_worker_tx(
+            &mut tx,
+            &previous_id,
+            boot.track_id.as_str(),
+            calm_server::db::sqlite::TaskReporter::Kernel,
+            "spawn-failed: before preparation",
+            now_ms(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let args = json!({"key":"planner-handoff", "expected_attempt_id":previous_id, "idempotency_key":"handoff", "reason":"Recover task"});
+        let receipt = call_tool(
+            &boot,
+            "calm.plan.recover",
+            planner_identity(&boot),
+            args.clone(),
+        )
+        .await
+        .unwrap();
+        let prior_identity = planner_identity(&boot);
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .unwrap();
+        calm_server::db::sqlite::session_supersede_and_start_tx(
+            &mut tx,
+            &prior_identity.session_id,
+            WorkerSessionInit {
+                id: "replacement-planner".into(),
+                card_id: boot.planner_card_id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: calm_types::worker::WorkerSessionState::Running,
+                terminal_run_id: None,
+                thread_id: Some("replacement-thread".into()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        if remove_retired_mapping {
+            calm_server::db::sqlite::session_delete_tx(&mut tx, &prior_identity.session_id)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+        let old_write = call_tool(&boot, "calm.plan.recover", prior_identity, args)
+            .await
+            .expect_err("retired caller must not regain command authority");
+        assert_eq!(old_write.code, -32403);
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let (_runtime, scheduler) = build_scheduler(
+            &boot,
+            vec![context_checked_terminal_adapter(&boot, spawned.clone())],
+        );
+        scheduler.schedule_track(boot.track_id.clone()).await;
+        let current = boot
+            .repo
+            .task_current_get(boot.track_id.as_str(), "planner-handoff")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.id, receipt["attempt_id"]);
+        assert_eq!(
+            current.status,
+            TaskStatus::Running,
+            "accepted delegation must survive session replacement/removal"
+        );
+        assert_eq!(spawned.load(Ordering::SeqCst), 1);
+    }
 }

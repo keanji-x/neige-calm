@@ -149,7 +149,7 @@ type TaskProjectionSource = (
     Vec<Vec<calm_types::report_blocks::tasks::Diagnostic>>,
 );
 
-async fn task_projection_source_tx(
+pub(crate) async fn task_projection_source_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track_id: &str,
 ) -> crate::error::Result<Option<TaskProjectionSource>> {

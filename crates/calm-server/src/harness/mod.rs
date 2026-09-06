@@ -344,7 +344,9 @@ async fn replay_harness_events_since(
         if dispatcher::is_gated_self_report(repo.as_ref(), &row.event).await {
             continue;
         }
-        let Some(obs) = dispatcher::harness_observation_from_event(track_id, &row.event) else {
+        let Some(obs) =
+            dispatcher::resolve_harness_observation(repo.as_ref(), track_id, &row.event).await?
+        else {
             continue;
         };
         // #1505 PR1 — a dispatcher observation can never be a `UserMessage`

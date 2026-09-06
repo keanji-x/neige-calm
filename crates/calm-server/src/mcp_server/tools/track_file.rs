@@ -65,8 +65,9 @@ fn cat_descriptor() -> ToolDescriptor {
              `cards/<card_id>/runtime.json`, \
              `cards/<card_id>/events.json`, `cards/<card_id>/conversation.md`, \
              `runs/index.json`, `runs/<idempotency_key>.md`, \
-             `runs/<idempotency_key>.json`, and `plan/<key>/gate.log` \
-             (planner-only: the latest verification-gate attempt's full log)."
+             `runs/<idempotency_key>.json`, `runs/<idempotency_key>/gates/<attempt>.log`, \
+             and `plan/<key>/gate.log`. Gate logs are planner-only: the exact run/gate \
+             path preserves historical evidence; the plan-key alias selects the current log."
             .into(),
         input_schema: json!({
             "type": "object",

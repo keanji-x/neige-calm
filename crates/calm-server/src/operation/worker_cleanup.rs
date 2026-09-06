@@ -88,3 +88,80 @@ pub(crate) async fn compensate_worker_rows(
     }
     WorkerCleanupOutcome::Deleted
 }
+
+/// A failed start is not permission to discard an execution that may be live.
+/// The prepared Operation is the durable obligation, including after abort.
+pub(crate) fn may_have_started(op: &super::Operation) -> crate::error::Result<bool> {
+    use super::{CompensationStateVersioned, Phase, PhaseTag};
+    let phase = match &op.phase {
+        Phase::Compensating | Phase::Failed | Phase::Stuck { .. } => {
+            let state: CompensationStateVersioned =
+                serde_json::from_value(op.compensation_state.clone().ok_or_else(|| {
+                    crate::error::CalmError::Conflict(
+                        "worker cleanup source phase is missing; retain prepared resources".into(),
+                    )
+                })?)?;
+            if state.version != 1 {
+                return Err(crate::error::CalmError::Conflict(
+                    "unknown worker compensation version; retain prepared resources".into(),
+                ));
+            }
+            state.from_phase
+        }
+        phase => phase.tag(),
+    };
+    Ok(!matches!(
+        phase,
+        PhaseTag::Pending | PhaseTag::TxCommitted | PhaseTag::AppServerInteract
+    ))
+}
+
+pub(crate) async fn require_cleanup_safe(
+    ctx: &super::SpawnCtx,
+    op: &super::Operation,
+    output: &super::TxOutput,
+    business_may_be_live: bool,
+) -> crate::error::Result<()> {
+    use super::terminal_launch::RequestState;
+    if !may_have_started(op)? {
+        return Ok(());
+    }
+    let state = RequestState::read(&output.data)?;
+    if !business_may_be_live && matches!(state, Some(RequestState::NotRequested { .. })) {
+        return Ok(());
+    }
+    let terminal_id = output.output_string("terminal_id", "worker cleanup")?;
+    let sock = match state {
+        Some(
+            RequestState::Requested {
+                terminal_id: recorded,
+                supervisor_sock,
+                ..
+            }
+            | RequestState::HandedOff {
+                terminal_id: recorded,
+                supervisor_sock,
+                ..
+            },
+        ) => {
+            if recorded != terminal_id {
+                return Err(crate::error::CalmError::Conflict(
+                    "worker cleanup terminal identity mismatch; retain resources".into(),
+                ));
+            }
+            Some(supervisor_sock)
+        }
+        _ => ctx
+            .terminal_renderer
+            .get(&terminal_id)
+            .map(|entry| entry.config().supervisor_sock.clone())
+            .or_else(|| ctx.daemon.proc_supervisor_sock.clone()),
+    };
+    if let Some(sock) = sock {
+        crate::terminal_renderer::request_terminal_stop(&sock, &terminal_id).await;
+    }
+    Err(crate::error::CalmError::Conflict(format!(
+        "worker launch cleanup is unverified for operation {} terminal {}; prepared rows and workspace retained for reconciliation",
+        op.id, terminal_id,
+    )))
+}

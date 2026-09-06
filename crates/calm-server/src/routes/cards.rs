@@ -1794,6 +1794,7 @@ pub(crate) async fn delete_card(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
+    let _operation_guard = s.operation_runtime.lock_for_track_delete().await;
     // Look up first so we have the track_id for the delete event.
     let card = s
         .repo
@@ -1810,6 +1811,19 @@ pub(crate) async fn delete_card(
              delete the parent track to remove it",
         )));
     }
+    let _delete_guard =
+        crate::per_card_lock::lock_key(&s.track_delete_locks, card.track_id.as_str()).await;
+    let card = s
+        .repo
+        .card_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    crate::operation::terminal_disposal::require_safe(
+        s.repo.as_ref(),
+        crate::operation::terminal_disposal::Scope::Card(id.clone()),
+        w.daemon.proc_supervisor_sock.as_deref(),
+    )
+    .await?;
     let card_id = card.id.clone();
     let track_id = card.track_id.clone();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), track_id.clone()).await?;
@@ -1843,6 +1857,11 @@ pub(crate) async fn delete_card(
     let (_unit, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
+                crate::operation::terminal_disposal::require_safe_tx(
+                    tx,
+                    &crate::operation::terminal_disposal::Scope::Card(card_id.to_string()),
+                )
+                .await?;
                 // Drop the terminal row first so the RESTRICT FK lets the
                 // card delete through. Idempotent: NotFound is OK (the
                 // sweeper may have raced us, or the card had no terminal

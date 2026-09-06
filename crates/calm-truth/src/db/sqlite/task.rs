@@ -31,7 +31,7 @@ pub async fn tasks_by_track_tx(
     track_id: &str,
 ) -> Result<Vec<Task>> {
     let sql = format!(
-        "SELECT {TASK_COLUMNS} FROM tasks WHERE track_id = ?1 \
+        "SELECT {TASK_COLUMNS} FROM current_tasks WHERE track_id = ?1 \
          ORDER BY priority DESC, created_at_ms ASC, key ASC"
     );
     let rows = sqlx::query_as::<_, Task>(&sql)
@@ -98,10 +98,11 @@ pub async fn task_mark_sub_track_running_tx(
 ) -> Result<u64> {
     Ok(sqlx::query(
         "UPDATE tasks SET status='running',worker_card_id=NULL,running_deadline_ms=NULL,updated_at_ms=?1 \
-         WHERE id=?2 AND status='dispatched' AND spawn='sub-wave' AND child_track_id IS NOT NULL",
+         WHERE id=?2 AND status='dispatched' AND spawn=?3 AND child_track_id IS NOT NULL",
     )
     .bind(now)
     .bind(id)
+    .bind(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE)
     .execute(&mut **tx)
     .await?
     .rows_affected())
@@ -198,7 +199,8 @@ const TASK_CLAIM_PENDING_SQL: &str = r#"UPDATE tasks
                claim_context_json = ?1,
                context_closure_truncated = ?2,
                updated_at_ms = ?3
-           WHERE id = ?4 AND status = 'pending'"#;
+           WHERE id = ?4 AND status = 'pending'
+             AND EXISTS (SELECT 1 FROM current_task_attempt_allocations a WHERE a.attempt_id=tasks.id)"#;
 
 pub async fn task_claim_pending_tx(
     tx: &mut Transaction<'_, Sqlite>,

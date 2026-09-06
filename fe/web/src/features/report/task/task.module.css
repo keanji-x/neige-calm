@@ -148,4 +148,43 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .recovery {
+    margin-block-start: var(--space-5);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+  }
+
+  .current { color: var(--text); }
+
+  .detail { overflow-wrap: anywhere; }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    margin-block: var(--space-4);
+  }
+
+  .action {
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-sm);
+    background: var(--surface-chip);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .action:disabled { cursor: wait; }
+
+  .history {
+    margin-block-start: var(--space-4);
+    overflow-wrap: anywhere;
+  }
+
+  .history summary { cursor: pointer; }
+
+  .attempts {
+    padding-inline-start: var(--space-6);
+  }
+
+  .attempts > li { margin-block: var(--space-3); }
 }

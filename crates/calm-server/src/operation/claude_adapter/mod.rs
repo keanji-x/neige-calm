@@ -80,6 +80,8 @@ pub struct ClaudeWorkerAdapter {
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
     workspace_root: PathBuf,
+    #[cfg(feature = "fixtures")]
+    preparation_hook: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
 }
 
 impl ClaudeAdapter {
@@ -135,6 +137,8 @@ impl ClaudeWorkerAdapter {
             workspace_root,
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
+            #[cfg(feature = "fixtures")]
+            preparation_hook: None,
         }
     }
 
@@ -156,6 +160,7 @@ impl ClaudeWorkerAdapter {
             track_area_cache,
             workspace_root,
             spawn_hook: Some(spawn_hook),
+            preparation_hook: None,
         }
     }
 }
@@ -872,6 +877,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             "track_id": card.track_id,
             "terminal_id": term.id,
             "settings_path": settings_path,
+            "terminal_launch": super::terminal_launch::fresh_state(),
             "settings_dir": settings_dir,
             "claude_session_id": claude_session_id,
             "command_line": command_line,
@@ -1008,6 +1014,12 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let mcp_server = self.mcp_server.as_ref().ok_or_else(|| {
             CalmError::Internal("MCP server is not running; claude worker cannot report".into())
         })?;
+        let payload: ClaudeWorkerOperationPayload = serde_json::from_value(_op.payload.clone())?;
+        super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
+        #[cfg(feature = "fixtures")]
+        if let Some(hook) = &self.preparation_hook {
+            hook().await;
+        }
         workspace::provision(self, ctx, output).await?;
 
         let raw_token = mint_claude_worker_mcp_token(ctx, &card_id, &runtime_id).await?;
@@ -1035,15 +1047,23 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .map_err(|e| CalmError::Internal(format!("write claude worker settings.json: {e}")))?;
 
+        let launch = super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op);
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {
-            hook(terminal_id.clone(), command_line, cwd, env).await
+            launch
+                .run(
+                    ctx.repo.as_ref(),
+                    hook(terminal_id.clone(), command_line, cwd, env),
+                )
+                .await
         } else {
-            ctx.spawn_terminal(&term, &command_line, &cwd, &env).await
+            ctx.spawn_task_terminal(&term, &command_line, &cwd, &env, launch)
+                .await
         };
-
         #[cfg(not(feature = "fixtures"))]
-        let handle = ctx.spawn_terminal(&term, &command_line, &cwd, &env).await;
+        let handle = ctx
+            .spawn_task_terminal(&term, &command_line, &cwd, &env, launch)
+            .await;
 
         match handle {
             Ok(handle) => {
@@ -1177,13 +1197,14 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
     async fn compensate_step(
         &self,
         step: &CompensationStep,
-        _output: &TxOutput,
-        _op: &Operation,
+        output: &TxOutput,
+        op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
         if step.completed {
             return Ok(());
         }
+        super::worker_cleanup::require_cleanup_safe(ctx, op, output, false).await?;
         match step.op.as_str() {
             "remove_workspace_artifact" => {
                 let lease_id = step_arg_string(step, "lease_id")?;

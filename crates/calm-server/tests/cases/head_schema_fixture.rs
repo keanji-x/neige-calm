@@ -34,6 +34,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0094_runtime_id_to_worker_session_id.sql",
     "0095_worker_sessions_queue_harvested.sql",
     "0096_area_create_idempotency.sql",
+    "0097_task_attempt_allocations.sql",
 ];
 
 #[test]

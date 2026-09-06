@@ -1,6 +1,9 @@
 #![cfg(unix)]
 
 mod support;
+mod codex_worker_shared_daemon {
+    mod transport_tests;
+}
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1357,9 +1360,8 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
     assert_eq!(card.payload["codex_thread_id"], "fake-thread-0001");
     assert_eq!(card.payload["appserver_sock"], boot.shared.remote_uri());
     assert!(card.payload.get("appserver_pgid").is_none());
-    // Use projectable (broadened to include terminal-status rows) so the
-    // assertion is robust to CI-only timing where the codex TUI fixture
-    // exits quickly → attach_reader marks runtime Exited before this read.
+    // Inspect the session projection used by the card payload. The viewer's
+    // own exit is independent of the resumable business session.
     let runtime = boot
         .repo
         .session_projection_projectable_for_card(&card.id.to_string())
@@ -1473,121 +1475,307 @@ async fn worker_shared_daemon_stopped_rolls_back_card() {
 }
 
 #[tokio::test]
-async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
+async fn worker_turn_start_failure_retains_execution_for_reconciliation() {
     let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let capture_file = capture.path().join("requests.ndjson");
     unsafe {
         std::env::set_var("FAKE_CODEX_FAIL_TURN_START", "1");
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
     let boot = boot(true).await;
     let _dispatcher = spawn_dispatcher(&boot);
     let mut rx = boot.events.subscribe();
     let key = "turn-fail-1";
-    let idempotency_key = task_id(&boot, key);
+    let attempt_id = task_id(&boot, key);
     write_codex_task_block(&boot, key, "turn start should fail").await;
     let failed = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let env = rx.recv().await.unwrap();
             if let Event::TaskFailed {
-                idempotency_key, ..
+                idempotency_key,
+                reason,
+                ..
             } = env.event
-                && idempotency_key == task_id(&boot, key)
+                && idempotency_key == attempt_id
             {
-                break;
+                break reason;
             }
         }
     })
     .await;
     unsafe {
         std::env::remove_var("FAKE_CODEX_FAIL_TURN_START");
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
     }
-    failed.expect("task.failed");
-
-    // Shared-worker turn_start failure runs worker compensation, which
-    // deletes the card + terminal rows entirely.
-    // The card with idempotency_key="turn-fail-1" should not exist anywhere
-    // (cards_by_track returns no row with that key). This clears the
-    // card-payload idempotency key so no orphaned worker row remains.
-    // We poll briefly because the dispatcher's rollback happens async after
-    // task.failed is emitted.
-    let leftover = wait_for(Duration::from_secs(2), || async {
-        let cards = boot
-            .repo
-            .cards_by_track(boot.track_id.as_str())
-            .await
-            .unwrap();
-        let any_left = cards.into_iter().any(|c| {
-            c.payload.get("idempotency_key").and_then(Value::as_str)
-                == Some(idempotency_key.as_str())
-        });
-        if any_left { None } else { Some(()) }
-    })
-    .await;
+    assert!(!failed.expect("task.failed").is_empty());
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let record = wait_for(Duration::from_secs(3), || async {
+        sqlx::query_as::<_, (String, String, String)>("SELECT tx_output_json,last_error,compensation_state FROM operations WHERE kind='codex-worker' AND idempotency_key=?1 AND phase='stuck'")
+            .bind(&attempt_id).fetch_optional(&pool).await.unwrap()
+    }).await.expect("uncertain provider outcome must retain its prepared operation");
+    assert!(record.1.contains("unverified"), "{record:?}");
+    let compensation: Value = serde_json::from_str(&record.2).unwrap();
     assert!(
-        leftover.is_some(),
-        "turn_start rollback must delete the worker card row so idempotency_key clears for retry"
+        compensation["reason"]
+            .as_str()
+            .unwrap()
+            .contains("forced turn/start failure")
+    );
+    let output: TxOutput = serde_json::from_str(&record.0).unwrap();
+    let card_id = output.data["card_id"].as_str().unwrap().to_owned();
+    let terminal_id = output.data["terminal_id"].as_str().unwrap().to_owned();
+    let card = boot
+        .repo
+        .card_get(&card_id)
+        .await
+        .unwrap()
+        .expect("preserved worker card");
+    assert_eq!(card.payload["idempotency_key"], attempt_id);
+    assert!(
+        boot.repo
+            .terminal_get(&terminal_id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let session_id: String = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE card_id=?1 AND thread_id='fake-thread-0001'",
+    )
+    .bind(&card_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let session = boot
+        .repo
+        .session_projection_by_id(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.thread_id.as_deref(), Some("fake-thread-0001"));
+    assert!(
+        session.active_turn_id.is_none(),
+        "a rejected request has no acknowledged turn"
+    );
+    let task = boot.repo.task_get(&attempt_id).await.unwrap().unwrap();
+    assert_eq!(task.status, calm_server::model::TaskStatus::Failed);
+    assert_eq!(
+        boot.repo
+            .task_current_get(boot.track_id.as_str(), key)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        attempt_id
+    );
+    assert_eq!(worker_card_count_by_idem(&boot, &attempt_id).await, 1);
+    let requests = wait_for_requests(&capture_file, 3).await;
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|row| row["method"] == "turn/start")
+            .count(),
+        1,
+        "no blind retry"
+    );
+    assert!(
+        !requests.iter().any(|row| row["method"] == "turn/interrupt"),
+        "do not invent an unacknowledged turn id"
     );
 }
 
 #[tokio::test]
-async fn worker_spawn_fail_after_turn_start_interrupts_turn() {
+async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
     let _guard = ENV_LOCK.lock().await;
     let capture = TempDir::new().unwrap();
     let capture_file = capture.path().join("requests.ndjson");
     unsafe {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
-        std::env::set_var("FAKE_CODEX_PTY_FAIL", "1");
     }
-    let boot = boot(true).await;
-    let _dispatcher = spawn_dispatcher(&boot);
-    let mut rx = boot.events.subscribe();
-    let key = "pty-fail-1";
-    let idempotency_key = task_id(&boot, key);
-    write_codex_task_block(&boot, key, "turn starts but pty fails").await;
-    let failed = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let env = rx.recv().await.unwrap();
-            if let Event::TaskFailed {
-                idempotency_key, ..
-            } = env.event
-                && idempotency_key == task_id(&boot, key)
-            {
-                break;
+    // The business provider is the explicit fake app-server binary. Pin the
+    // independently launched `codex resume` viewer to an owned exiting script,
+    // so this test never invokes a host Codex CLI through PATH.
+    use std::os::unix::fs::PermissionsExt;
+    let viewer_bin = capture.path().join("viewer-bin");
+    std::fs::create_dir(&viewer_bin).unwrap();
+    let viewer = viewer_bin.join("codex");
+    std::fs::write(&viewer, "#!/bin/sh\nexit 23\n").unwrap();
+    std::fs::set_permissions(&viewer, std::fs::Permissions::from_mode(0o755)).unwrap();
+    struct RestorePath(Option<std::ffi::OsString>);
+    impl Drop for RestorePath {
+        fn drop(&mut self) {
+            unsafe {
+                match self.0.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
             }
         }
-    })
-    .await;
-    let rows = wait_for_requests(&capture_file, 4).await;
+    }
+    let saved_path = std::env::var_os("PATH");
+    let _restore_path = RestorePath(saved_path.clone());
+    let mut paths = vec![viewer_bin];
+    if let Some(path) = saved_path {
+        paths.extend(std::env::split_paths(&path));
+    }
+    unsafe {
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+    }
+    let boot = boot(true).await;
+    // Fixtures resolve None to an actual in-process supervisor. Its viewer
+    // exits after the separate shared daemon acknowledged the business turn.
+    assert!(boot.daemon.proc_supervisor_sock.is_none());
+    let _dispatcher = spawn_dispatcher(&boot);
+    let key = "pty-fail-1";
+    let attempt_id = task_id(&boot, key);
+    write_codex_task_block(&boot, key, "turn starts but viewer fails").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let record = wait_for(Duration::from_secs(3), || async {
+        sqlx::query_scalar::<_, String>("SELECT tx_output_json FROM operations WHERE kind='codex-worker' AND idempotency_key=?1 AND phase='succeeded'")
+            .bind(&attempt_id).fetch_optional(&pool).await.unwrap()
+    }).await.expect("optional viewer failure must not fail business startup");
     unsafe {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
-        std::env::remove_var("FAKE_CODEX_PTY_FAIL");
     }
-    failed.expect("task.failed");
-
+    let output: TxOutput = serde_json::from_str(&record).unwrap();
+    let card_id = output.data["card_id"].as_str().unwrap().to_owned();
+    let terminal_id = output.data["terminal_id"].as_str().unwrap().to_owned();
+    let entry = wait_for(Duration::from_secs(3), || async {
+        boot.renderer.get(&terminal_id)
+    })
+    .await
+    .expect("real viewer renderer");
     assert!(
-        rows.iter().any(|row| {
-            row.get("method").and_then(Value::as_str) == Some("turn/interrupt")
-                && row.pointer("/params/threadId").and_then(Value::as_str)
-                    == Some("fake-thread-0001")
-                && row.pointer("/params/turnId").and_then(Value::as_str) == Some("fake-turn-0001")
-        }),
-        "worker PTY spawn failure must interrupt the in-flight shared turn: {rows:?}"
+        entry
+            .wait_exit_persisted_for_test(Duration::from_secs(3))
+            .await,
+        "must observe the complete real PTY exit callback before checking business state"
     );
-    let leftover = wait_for(Duration::from_secs(2), || async {
-        let cards = boot
-            .repo
-            .cards_by_track(boot.track_id.as_str())
+    assert_eq!(
+        boot.repo
+            .terminal_get(&terminal_id)
             .await
-            .unwrap();
-        let any_left = cards.into_iter().any(|c| {
-            c.payload.get("idempotency_key").and_then(Value::as_str)
-                == Some(idempotency_key.as_str())
-        });
-        if any_left { None } else { Some(()) }
+            .unwrap()
+            .unwrap()
+            .exit_code,
+        Some(23)
+    );
+
+    let card = boot.repo.card_get(&card_id).await.unwrap().unwrap();
+    assert_eq!(card.payload["idempotency_key"], attempt_id);
+    let task = wait_for(Duration::from_secs(3), || async {
+        boot.repo
+            .task_get(&attempt_id)
+            .await
+            .unwrap()
+            .filter(|task| task.worker_card_id.as_deref() == Some(card_id.as_str()))
+    })
+    .await
+    .expect("scheduler binds the successfully issued business attempt");
+    assert_eq!(task.status, calm_server::model::TaskStatus::Running);
+    assert_eq!(task.worker_card_id.as_deref(), Some(card_id.as_str()));
+    // Operation completion precedes scheduler reconciliation. The active read
+    // also requires cards.session_id to join the current active session. Await
+    // the actual owned projection; a permanently missing/wrong owner still fails.
+    let session = wait_for(Duration::from_secs(3), || async {
+        boot.repo
+            .session_projection_active_for_card(&card_id)
+            .await
+            .unwrap()
+            .filter(|session| {
+                session.card_id == card_id
+                    && session.thread_id.as_deref() == Some("fake-thread-0001")
+                    && session.active_turn_id.as_deref() == Some("fake-turn-0001")
+            })
     })
     .await;
+    let Some(session) = session else {
+        type SessionProjectionDebugRow = (
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        );
+        let rows: Vec<SessionProjectionDebugRow> =
+            sqlx::query_as("SELECT c.session_id,ws.id,ws.state,ws.thread_id,ws.active_turn_id FROM cards c JOIN worker_sessions ws ON ws.card_id=c.id WHERE c.id=?1")
+                .bind(&card_id).fetch_all(&pool).await.unwrap();
+        panic!(
+            "owned worker projection did not become active after successful business startup: {rows:?}"
+        );
+    };
+    assert_eq!(session.card_id, card_id);
+    assert_eq!(session.thread_id.as_deref(), Some("fake-thread-0001"));
+    assert_eq!(session.active_turn_id.as_deref(), Some("fake-turn-0001"));
+
     assert!(
-        leftover.is_some(),
-        "PTY spawn rollback must delete the worker card row so idempotency_key clears for retry"
+        boot.repo
+            .terminal_get(&terminal_id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let requests = wait_for_requests(&capture_file, 3).await;
+    assert!(
+        !requests.iter().any(|row| row["method"] == "turn/interrupt"),
+        "viewer failure must not cancel business"
+    );
+    // A later explicit cleanup can still address the exact acknowledged turn.
+    boot.shared
+        .interrupt_active_turn("fake-thread-0001")
+        .await
+        .unwrap();
+    let requests = wait_for_requests(&capture_file, 4).await;
+    assert!(requests.iter().any(|row| row["method"] == "turn/interrupt"
+        && row.pointer("/params/threadId").and_then(Value::as_str) == Some("fake-thread-0001")
+        && row.pointer("/params/turnId").and_then(Value::as_str) == Some("fake-turn-0001")));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|row| row["method"] == "turn/start")
+            .count(),
+        1
+    );
+    let identity = ToolCallIdentity {
+        card_id: card_id.clone(),
+        role: CardRole::Worker,
+        provider: AgentProvider::Codex,
+        session_id: session.id,
+        track_id: Some(boot.track_id.to_string()),
+        area_id: boot.area_id.to_string(),
+        thread_id: "fake-thread-0001".into(),
+    };
+    calm_server::decision_sink::CardDecisionSink::from_app_context(&boot.ctx)
+        .commit_worker_task_report(
+            &identity,
+            Event::TaskCompleted {
+                idempotency_key: attempt_id.clone(),
+                result: json!({"viewer":"unavailable","work":"complete"}),
+                artifacts: vec![],
+                agent_message: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        boot.repo
+            .task_get(&attempt_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        calm_server::model::TaskStatus::Done
+    );
+    assert!(
+        boot.repo.card_get(&card_id).await.unwrap().is_some(),
+        "completed outcome/history keeps its execution identity"
+    );
+    assert!(
+        boot.repo
+            .terminal_get(&terminal_id)
+            .await
+            .unwrap()
+            .is_some()
     );
 }
 

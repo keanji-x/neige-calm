@@ -61,6 +61,7 @@ use std::sync::Arc;
 pub const TOOL_PLAN_UPSERT: &str = "calm.plan.upsert";
 pub const TOOL_PLAN_CANCEL: &str = "calm.plan.cancel";
 pub const TOOL_PLAN_LIST: &str = "calm.plan.list";
+pub const TOOL_PLAN_RECOVER: &str = "calm.plan.recover";
 
 /// Gate timeout defaults/caps (design §4.1 rule 7). The task-verify
 /// adapter re-clamps defensively at run time
@@ -69,6 +70,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(plan_upsert_descriptor(), wrap(plan_upsert));
     registry.register(plan_cancel_descriptor(), wrap(plan_cancel));
     registry.register(plan_list_descriptor(), wrap(plan_list));
+    registry.register(plan_recover_descriptor(), wrap(plan_recover));
 }
 
 /// Common wrapper that turns a typed async fn into the boxed-future
@@ -344,6 +346,7 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
         .transpose()
         .map_err(|error| format!("task {}: invalid normalized gate_json: {error}", task.key))?;
     Ok(TaskDeclaration {
+        source: calm_types::report_blocks::tasks::TaskDeclarationSource::ValidationOnly,
         block_index: None,
         block_id: String::new(),
         key: task.key.clone(),
@@ -560,15 +563,16 @@ where
         .to_string();
 
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
-    let task_id = format!("{}:{key}", track.id.as_str());
     let task = ctx
         .repo
-        .task_get(&task_id)
+        .task_current_get(track.id.as_str(), &key)
         .await
         .map_err(|e| RpcError::internal(format!("plan_cancel: task_get: {e}")))?
         .ok_or_else(|| {
             RpcError::invalid_params(format!("plan_cancel: unknown task `{key}` in this track"))
         })?;
+
+    let task_id = task.id.clone();
 
     // A `lifecycle` equal to the track's current state is the same-state
     // idempotency shortcut: `validate_transition` blesses it for
@@ -646,6 +650,14 @@ where
                 // Guarded flip — re-checked in-tx so a task that left
                 // `pending` between the pre-read and this write rolls
                 // back instead of canceling an in-flight run.
+                let current =
+                    crate::db::sqlite::task_current_get_tx(tx, track_id_typed.as_str(), &key)
+                        .await?;
+                if current.as_ref().map(|task| task.id.as_str()) != Some(task_id.as_str()) {
+                    return Err(CalmError::Conflict(
+                        "current execution changed; refresh calm.plan.list".into(),
+                    ));
+                }
                 let rows = task_cancel_tx(tx, &task_id, now_ms()).await?;
                 if rows == 0 {
                     // Disambiguate the 0-row flip with an in-tx re-read:
@@ -773,14 +785,56 @@ async fn plan_list(
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Planner)?;
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
-    let tasks = ctx
-        .repo
-        .tasks_by_track(track.id.as_str())
-        .await
-        .map_err(|e| RpcError::internal(format!("plan_list: tasks_by_track: {e}")))?;
-
-    let tasks_json: Vec<Value> = tasks.iter().map(task_list_entry).collect();
-    Ok(json!({ "tasks": tasks_json }))
+    let actor = identity.to_actor_id();
+    let task_budget_default = ctx.task_budget_default;
+    crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let mut tasks_json = Vec::new();
+            let mut after_key = None;
+            loop {
+                let allocations = crate::db::sqlite::task_attempt_current_by_track_tx(
+                    tx,
+                    track.id.as_str(),
+                    after_key.as_deref(),
+                    128,
+                )
+                .await?;
+                let full_page = allocations.len() == 128;
+                for allocation in allocations {
+                    let task = crate::db::sqlite::task_get_tx(tx, &allocation.attempt_id).await?;
+                    let view = crate::task_recovery::task_recovery_view_tx(
+                        tx,
+                        &track.id,
+                        &allocation.key,
+                        &actor,
+                        task_budget_default,
+                    )
+                    .await?;
+                    let mut entry = task.as_ref().map(task_list_entry).unwrap_or_else(
+                        || json!({"id":allocation.attempt_id,"key":allocation.key}),
+                    );
+                    let current = view.current.ok_or_else(|| {
+                        CalmError::Internal(
+                            "allocated task has no current execution history".into(),
+                        )
+                    })?;
+                    entry["attempt_id"] = json!(current.attempt_id);
+                    entry["generation"] = json!(current.generation);
+                    entry["status"] = json!(current.status);
+                    entry["blocking_reason"] = json!(current.blocking_reason);
+                    entry["recovery"] = serde_json::to_value(view.recovery)?;
+                    tasks_json.push(entry);
+                    after_key = Some(allocation.key);
+                }
+                if !full_page {
+                    break;
+                }
+            }
+            Ok(json!({ "tasks": tasks_json }))
+        })
+    })
+    .await
+    .map_err(|error| map_plan_error("plan_list", error))
 }
 
 /// One `calm.plan.list` entry. Deliberately a projection, not the row:
@@ -836,6 +890,63 @@ fn task_list_entry(t: &Task) -> Value {
     };
     entry[instruction_field] = json!(t.goal);
     entry
+}
+
+// ---------------------------------------------------------------------------
+// calm.plan.recover
+// ---------------------------------------------------------------------------
+
+fn plan_recover_descriptor() -> ToolDescriptor {
+    ToolDescriptor {
+        name: TOOL_PLAN_RECOVER.into(),
+        description: "Retry a preparation failure of an auto-declare Planner task under its unchanged contract. Already executed work requires a supported descendant write fence and is currently refused. Planner may recover only once; User authorization is required for further recovery, user-owned tasks, or declare-and-wait. Read attempt_id from calm.plan.list and retain the idempotency_key when retrying the request. Acceptance does not mean the new Worker has started.".into(),
+        input_schema: json!({"type": "object", "additionalProperties": false,
+            "required": ["key", "expected_attempt_id", "idempotency_key", "reason"],
+            "properties": {
+                "key": {"type": "string", "minLength": 1},
+                "expected_attempt_id": {"type": "string", "minLength": 1},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 200},
+                "reason": {"type": "string", "minLength": 1, "maxLength": 4000}
+            }}),
+        annotations: Some(role_gated_write_annotations()), visible_to_roles: &[CardRole::Planner],
+    }
+}
+
+async fn plan_recover(
+    ctx: Arc<AppContext>,
+    identity: ToolCallIdentity,
+    args: Value,
+) -> Result<Value, RpcError> {
+    require_role(&identity, CardRole::Planner)?;
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Args {
+        key: String,
+        expected_attempt_id: String,
+        idempotency_key: String,
+        reason: String,
+    }
+    let args: Args = serde_json::from_value(args)
+        .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+    let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
+    let receipt = crate::task_recovery::recover_failed_task(
+        crate::task_recovery::RecoveryContext {
+            repo: ctx.repo.as_ref(),
+            events: &ctx.events,
+            write: &ctx.write,
+        },
+        track.id.as_str(),
+        &args.key,
+        calm_types::task_recovery::TaskRecoveryRequest {
+            expected_attempt_id: args.expected_attempt_id,
+            idempotency_key: args.idempotency_key,
+            reason: args.reason,
+        },
+        identity.to_actor_id(),
+    )
+    .await
+    .map_err(|error| map_plan_error("plan_recover", error))?;
+    serde_json::to_value(receipt).map_err(|error| RpcError::internal(error.to_string()))
 }
 
 // ---------------------------------------------------------------------------

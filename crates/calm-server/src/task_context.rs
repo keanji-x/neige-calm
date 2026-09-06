@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef};
-use calm_types::report_blocks::{canonical_json, flat_text, scannable_text_fields};
+use calm_types::report_blocks::{flat_text, scannable_text_fields};
 use calm_types::report_links::{parse_destination, scan_links};
 use calm_types::track_report::ReportBlock;
 use dashmap::DashMap;
@@ -40,18 +40,7 @@ enum RefsMatch {
     Retryable(String),
 }
 
-pub const ROOT_HASH_TASK_FIELDS: &[&str] = &[
-    "kind",
-    "goal",
-    "command",
-    "acceptance",
-    "gate",
-    "no_gate_reason",
-    "depends_on",
-    "refs",
-    "cwd",
-    "context",
-];
+pub use calm_types::task_recovery::TASK_ROOT_HASH_FIELDS as ROOT_HASH_TASK_FIELDS;
 pub const ROOT_HASH_EXCLUDED_TASK_FIELDS: &[&str] = &[
     "key",
     "priority",
@@ -434,6 +423,15 @@ impl TaskContextMonitor {
             .into_iter()
             .find(|card| card.kind == "track-report")
             .ok_or_else(|| ResolveError::ReportAbsent(track_id.into()))?;
+        let (report, body_crdt) = self
+            .repo
+            .card_get_with_body_crdt(report.id.as_str())
+            .await
+            .map_err(|error| ResolveError::StorageUnavailable(error.to_string()))?
+            .ok_or_else(|| ResolveError::ReportAbsent(track_id.into()))?;
+        if report.track_id.as_str() != track_id || report.kind != "track-report" {
+            return Err(ResolveError::ReportAbsent(track_id.into()));
+        }
         let doc_rev = report
             .payload
             .get("docRev")
@@ -441,12 +439,7 @@ impl TaskContextMonitor {
             .ok_or_else(|| ResolveError::MalformedStoredReport(track_id.into()))?;
         // Fence baseline is captured before the first block in this track is decoded.
         doc_revs.entry(track_id.into()).or_insert(doc_rev);
-        let values = report
-            .payload
-            .get("blocks")
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let values = context_snapshot_values(track_id, &report.payload, body_crdt.as_deref())?;
         Ok((track.area_id.to_string(), values))
     }
 
@@ -933,6 +926,40 @@ impl TaskContextMonitor {
     }
 }
 
+/// Closure resolution and transactional restoration share report authority.
+/// Old rows without CRDT retain their existing payload-block reader; when CRDT
+/// exists its block snapshot wins over a stale derived JSON cache.
+pub(crate) fn context_snapshot_values(
+    track_id: &str,
+    payload: &serde_json::Value,
+    body_crdt: Option<&[u8]>,
+) -> std::result::Result<Vec<serde_json::Value>, ResolveError> {
+    let malformed = || ResolveError::MalformedStoredReport(track_id.into());
+    let Some(bytes) = body_crdt else {
+        return Ok(payload
+            .get("blocks")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default());
+    };
+    let mut doc = crate::track_report_doc::ReportDoc::from_bytes(bytes).map_err(|_| malformed())?;
+    if !doc.has_blocks_layout().map_err(|_| malformed())? {
+        let hints = payload
+            .get("blocks")
+            .filter(|value| value.is_array())
+            .map(|value| serde_json::from_value::<Vec<ReportBlock>>(value.clone()))
+            .transpose()
+            .map_err(|_| malformed())?;
+        doc.ensure_blocks_layout(hints.as_deref())
+            .map_err(|_| malformed())?;
+    }
+    doc.blocks_snapshot()
+        .map_err(|_| malformed())?
+        .into_iter()
+        .map(|block| serde_json::to_value(block).map_err(|_| malformed()))
+        .collect()
+}
+
 type FrozenTaskDbRow = (String, String, String, Option<String>, i64, i64, i64);
 
 struct FrozenTaskTx {
@@ -1009,29 +1036,33 @@ async fn current_context_evidence_tx(
             .await?;
     let mut saw_root = false;
     for frozen in refs {
-        let report: Option<(String, String)> = sqlx::query_as(
-            "SELECT w.area_id,c.payload FROM tracks w \
+        let report: Option<(String, String, Option<Vec<u8>>)> = sqlx::query_as(
+            "SELECT w.area_id,c.payload,c.body_crdt FROM tracks w \
              JOIN cards c ON c.track_id=w.id AND c.kind='track-report' WHERE w.id=?1",
         )
         .bind(frozen.track_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
-        let Some((current_area, payload)) = report else {
+        let Some((current_area, payload, body_crdt)) = report else {
             return Ok(CurrentContextEvidence::Mismatch);
         };
         if current_area != task.area_id && system_area.as_deref() != Some(current_area.as_str()) {
             return Ok(CurrentContextEvidence::Mismatch);
         }
-        let Ok(report) =
-            serde_json::from_str::<calm_types::track_report::TrackReportPayload>(&payload)
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(&payload) else {
+            return Ok(CurrentContextEvidence::Mismatch);
+        };
+        let Ok(values) =
+            context_snapshot_values(frozen.track_id.as_str(), &payload, body_crdt.as_deref())
         else {
             return Ok(CurrentContextEvidence::Mismatch);
         };
-        let Some(block) = report
-            .blocks
-            .unwrap_or_default()
+        let Some(block) = values
             .into_iter()
-            .find(|block| block.id == frozen.block_id)
+            .find(|value| {
+                value.get("id").and_then(serde_json::Value::as_str) == Some(&frozen.block_id)
+            })
+            .and_then(|value| serde_json::from_value::<ReportBlock>(value).ok())
         else {
             return Ok(CurrentContextEvidence::Mismatch);
         };
@@ -1145,28 +1176,7 @@ pub(crate) fn context_ref(track_id: &str, block: &ReportBlock, is_root: bool) ->
 }
 
 fn task_root_projection(payload: &serde_json::Value) -> String {
-    let mut projected = serde_json::Map::new();
-    if let Some(object) = payload.as_object() {
-        let terminal = object.get("kind").and_then(serde_json::Value::as_str) == Some("terminal");
-        for key in ROOT_HASH_TASK_FIELDS {
-            // #1456 compatibility: frozen hashes written before the public
-            // field rename used the JSON key `goal` for terminal commands.
-            // Hash new `command` values under that same stable key so the
-            // rename itself does not stale every in-flight terminal task.
-            if *key == "command" {
-                continue;
-            }
-            let value = if terminal && *key == "goal" {
-                object.get("command").or_else(|| object.get("goal"))
-            } else {
-                object.get(*key)
-            };
-            if let Some(value) = value.filter(|value| !value.is_null()) {
-                projected.insert((*key).into(), value.clone());
-            }
-        }
-    }
-    canonical_json(&serde_json::Value::Object(projected))
+    calm_types::task_recovery::task_root_hash_preimage(payload)
 }
 
 fn block_links(block: &ReportBlock) -> std::result::Result<Vec<(String, String)>, ResolveError> {

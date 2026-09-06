@@ -76,6 +76,7 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "calm.plan.upsert",
     "calm.plan.cancel",
     "calm.plan.list",
+    "calm.plan.recover",
     "calm.review.round",
     "calm.ratify.request",
     "calm.admin.track_gc",

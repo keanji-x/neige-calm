@@ -14,6 +14,7 @@ pub mod proposal;
 pub mod report_blocks;
 pub mod report_links;
 pub mod runtime;
+pub mod task_recovery;
 pub mod track_fs_dto;
 pub mod track_lifecycle;
 pub mod track_report;

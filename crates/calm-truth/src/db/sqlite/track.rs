@@ -537,6 +537,11 @@ async fn track_delete_leaf_tx(
         .bind(id)
         .execute(&mut **tx)
         .await?;
+    // Explicit domain deletion removes allocation metadata after execution rows.
+    sqlx::query("DELETE FROM task_attempt_allocations WHERE track_id = ?1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
     clear_track_root_session_refs_for_worker_session_delete_tx(
         tx,
         WorkerSessionDeleteScope::Track { track_id: id },

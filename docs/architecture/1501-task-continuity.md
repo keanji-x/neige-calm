@@ -81,6 +81,13 @@ Uncertain prior external effects block the initial recovery path until
 reconciliation establishes replay safety. An ordinary recovery request does not
 override this prerequisite, and a failed row alone is not proof of safety.
 
+The first recovery implementation admits only failures before Worker/verifier
+preparation. Actual supervisor tests demonstrate surviving writers after both
+normal and signalled leader exits, including a gate whose worker binding is absent.
+Consequently, terminal/session exit flags cannot unlock recovery of executed work.
+The later owned process-boundary module must supply the exact stop proof before
+that larger recovery surface is enabled.
+
 Initial authority is deliberately bounded:
 
 | Requester/declaration | Recovery authority |
@@ -105,6 +112,14 @@ stop request nor withdrawal can undo an arbitrary external side effect.
 The recovery transaction records the new attempt and its provenance; the existing
 Operation saga prepares and starts it. A crash between these actions must be
 recoverable without a second attempt, loss of provenance or duplicate side effects.
+
+An accepted recovery is a Track-scoped delegation. The original session/card actor
+is retained as provenance; replacing that session does not revoke the accepted
+work. New commands still authenticate the current caller and role. Kernel execution
+rechecks the current task/Track intent, frozen contract and applicable release
+policy without requiring retired credentials to remain live. Explicit withdrawal
+uses the task readiness/release/cancellation or Track controls, and continues to
+block new execution at the launch boundary.
 
 S1 provides execution continuity only. The public repair experience additionally
 requires the immutable recovery manifest in S2: unchanged requirements and exact
@@ -308,11 +323,16 @@ verified; merging a design or backend foundation does not complete that outcome.
 
 | Slice | Acceptance | Status |
 | --- | --- | --- |
-| S0: protocol decisions | Reviewed identity, authorities, transitions, migration/caller map | In progress |
+| S0: protocol decisions | Reviewed identity, authorities, transitions, migration/caller map | Design merged in #1503; implementation findings refine this document |
 | S1: continuing task execution | Explicit recovery retains old attempts, preserves keys and sibling results; late messages fenced | Pending |
 | S2: reliable inputs | Sealed inputs, failure retention, exact recovery manifests and authorized repair-purpose binding; withdrawn output excluded | Pending |
 | S3: actionable task experience | Shared current/history view, recovery entry point and clear blockers; browser + product experiment | Pending |
 | S4: extended obligations and bounded supervision | General finding propagation/disposition and explicitly bounded intervention policies | Pending |
+
+Two internal foundations have shipped independently: owned process boundaries in
+#1510 and immutable artifact storage in #1511. Their module tests, independent
+reviews and applicable CI passed before merge. Neither foundation by itself enables
+post-execution repair, dedicated Codex delivery, or the integrated acceptance story.
 
 Tests must exercise production authoring, claim, reporting and recovery entry
 points. Critical invariants require production mutations with predicted complete

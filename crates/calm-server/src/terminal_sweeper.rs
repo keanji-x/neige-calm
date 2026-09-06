@@ -72,6 +72,41 @@ use crate::state::AppState;
 use crate::terminal_renderer::{RendererDropOutcome, TerminalRendererRegistry};
 use calm_session::control::ProcSignal;
 
+/// A PTY exit ends an ephemeral session. For a resumable session it is only
+/// viewer/liveness evidence: the existing provider death arbiter and explicit
+/// business/session completion retain authority over the durable session.
+/// Decide the mode and complete the same session in one write transaction.
+/// Explicit truth completion APIs are unchanged.
+pub(crate) async fn complete_ephemeral_session_from_terminal_exit(
+    repo: &dyn crate::db::RouteRepo,
+    terminal_id: &str,
+    terminal_status: crate::session_projection_repo::WorkerSessionState,
+) -> Result<()> {
+    use crate::db::sqlite::{
+        session_complete_tx, session_get_tx, session_projection_active_for_terminal_tx,
+    };
+    use calm_types::worker::{SessionMode, WorkerSessionId};
+    let terminal_id = terminal_id.to_owned();
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let Some(active) = session_projection_active_for_terminal_tx(tx, &terminal_id).await?
+            else {
+                return Ok(());
+            };
+            let session = session_get_tx(tx, &WorkerSessionId(active.id.clone()))
+                .await?
+                .ok_or_else(|| {
+                    crate::error::CalmError::NotFound(format!("worker session {}", active.id))
+                })?;
+            if session.mode == SessionMode::Ephemeral {
+                session_complete_tx(tx, &active.id, terminal_status).await?;
+            }
+            Ok(())
+        })
+    })
+    .await
+}
+
 /// Actor stamped on every event the sweeper produces. Distinct from
 /// [`ActorId::User`] (REST) and [`ActorId::Plugin`]; matches the convention
 /// used by `card_fsm` for kernel-internal projectors. PR2 of #136 typed
@@ -134,11 +169,17 @@ pub async fn sweep(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-/// Reap a single orphan (sweeper path). Idempotent against missing
-/// artifacts: a pre-deceased daemon, an already-unlinked socket, or a
-/// stale `pid` pointing at a recycled OS process all collapse to "row
-/// delete still succeeds, audit event still emits".
+/// Reap a single orphan using the existing cleanup behavior only after its
+/// prepared task launch is resolved. Missing artifacts do not discharge an
+/// unknown launch request that may still reach the supervisor.
 async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
+    let _operation_guard = state.operation_runtime.lock_for_track_delete().await;
+    crate::operation::terminal_disposal::require_safe(
+        state.repo.as_ref(),
+        crate::operation::terminal_disposal::Scope::Terminal(term.id.clone()),
+        state.daemon.proc_supervisor_sock.as_deref(),
+    )
+    .await?;
     // Steps 1-3: daemon + socket housekeeping, shared with the eager-
     // teardown route handlers via `reap_terminal_artifacts`.
     reap_terminal_artifacts(state, term).await;
@@ -176,6 +217,11 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         state.write(),
         move |tx| {
             Box::pin(async move {
+                crate::operation::terminal_disposal::require_safe_tx(
+                    tx,
+                    &crate::operation::terminal_disposal::Scope::Terminal(terminal_id.clone()),
+                )
+                .await?;
                 // The eager-teardown handlers (and a prior sweep tick)
                 // may already have removed the row. Treat NotFound as
                 // "nothing to do, but still emit the audit event" — but
@@ -276,10 +322,9 @@ pub async fn reap_terminal_artifacts_with_renderer(
     }
 }
 
-/// Destructive deletion fence: signal the terminal, then prove its recorded
-/// process is gone before its workspace may move. A missing/invalid pid cannot
-/// name a live process and is treated as quiesced; a known lingering process is
-/// a hard error rather than a best-effort warning.
+/// Preserve unresolved task launch ownership before the existing terminal
+/// deletion checks. A missing PID or negative probe cannot discharge a pending
+/// EnsureProc. Observed leader exit does not prove all descendants stopped.
 pub async fn quiesce_terminal_artifacts_for_deletion(
     renderer: Option<&TerminalRendererRegistry>,
     supervisor_sock: Option<&std::path::Path>,
@@ -291,7 +336,10 @@ pub async fn quiesce_terminal_artifacts_for_deletion(
     // `(pid,start_time,boot_id)` ownership proof, so deletion must observe only
     // and fail closed instead of signaling an arbitrary live pid.
     let renderer_outcome = match renderer {
-        Some(registry) => registry.drop_entry_for_deletion(&term.id).await,
+        Some(registry) => {
+            registry.require_disposal_safe(&term.id).await?;
+            registry.drop_entry_for_deletion(&term.id).await
+        }
         None => RendererDropOutcome::Missing,
     };
     if renderer_outcome == RendererDropOutcome::ExitPersisted {

@@ -1281,7 +1281,16 @@ impl Inner {
             );
             return;
         };
-        let Some(observation) = harness_observation_from_event(&track_id, event) else {
+        let observation = match resolve_harness_observation(self.repo.as_ref(), &track_id, event)
+            .await
+        {
+            Ok(observation) => observation,
+            Err(error) => {
+                tracing::warn!(%track_id, %error, "planner observation lookup failed; preserving cursor for replay");
+                return;
+            }
+        };
+        let Some(observation) = observation else {
             tracing::debug!(
                 track_id = %track_id,
                 planner_card_id = %planner_card_id,
@@ -1381,9 +1390,58 @@ impl Inner {
     }
 }
 
+/// Resolve execution identity identically for live notifications and boot replay.
+/// Execution IDs are opaque; a historical gate result keeps its author's key.
+pub(crate) async fn resolve_harness_observation<R: calm_truth::db::RepoRead + ?Sized>(
+    repo: &R,
+    track_id: &TrackId,
+    event: &Event,
+) -> crate::error::Result<Option<HarnessObservation>> {
+    let task_key = if let Event::TaskGateResult {
+        task_id,
+        idempotency_key,
+        attempt,
+        ..
+    } = event
+    {
+        if task_id != idempotency_key {
+            return Err(crate::error::CalmError::Conflict(
+                "gate observation execution identity mismatch".into(),
+            ));
+        }
+        // The persisted observation already carries this exact execution ID and
+        // gate number. Validate their canonical reader address before either
+        // live push or boot replay renders it; never use the current-key alias.
+        calm_truth::track_fs_view::task_gate_log_path(task_id, *attempt).map_err(|error| {
+            crate::error::CalmError::Conflict(format!("gate observation: {error:?}"))
+        })?;
+        let task = calm_truth::db::RepoRead::task_get(repo, task_id)
+            .await?
+            .ok_or_else(|| {
+                crate::error::CalmError::Conflict(format!(
+                    "gate observation: missing execution {task_id}"
+                ))
+            })?;
+        if task.track_id != track_id.as_str() {
+            return Err(crate::error::CalmError::Forbidden(
+                "gate observation belongs to another track".into(),
+            ));
+        }
+        Some(task.key)
+    } else {
+        None
+    };
+    Ok(harness_observation_from_event(
+        track_id,
+        event,
+        task_key.as_deref(),
+    ))
+}
+
 pub(crate) fn harness_observation_from_event(
     track_id: &TrackId,
     event: &Event,
+    task_key: Option<&str>,
 ) -> Option<HarnessObservation> {
     match event {
         Event::TaskCompleted {
@@ -1402,12 +1460,8 @@ pub(crate) fn harness_observation_from_event(
             idempotency_key: idempotency_key.clone(),
             error: reason.clone(),
         }),
-        // Issue #644 PR-C (§6.5) — the gate runner's verdict. The plan
-        // key is recovered from the task-id convention
-        // `"{track_id}:{key}"` (§2.1) for the turn text's
-        // `plan/<key>/gate.log` path.
+        // Gate log paths use the author key resolved from the execution row.
         Event::TaskGateResult {
-            task_id,
             idempotency_key,
             passed,
             failing_step,
@@ -1417,10 +1471,7 @@ pub(crate) fn harness_observation_from_event(
             ..
         } => Some(HarnessObservation::TaskGateResult {
             idempotency_key: idempotency_key.clone(),
-            key: task_id
-                .strip_prefix(&format!("{}:", track_id.as_str()))
-                .unwrap_or(task_id)
-                .to_string(),
+            key: task_key?.to_string(),
             passed: *passed,
             failing_step: failing_step.clone(),
             exit_code: *exit_code,
@@ -1593,3 +1644,6 @@ fn sha256_hex(text: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod recovery_tests;

@@ -439,8 +439,8 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
-    /// Terminal statuses never transition again (a `canceled`/`failed`
-    /// task is replaced by a new key, never revived — design §3.1).
+    /// Terminal executions never transition again. Explicit failed-work recovery
+    /// allocates a new execution ID under the same Track + key (#1501).
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -451,8 +451,9 @@ impl TaskStatus {
 
 /// One row of the track-scoped task plan (`tasks`, migration 0041).
 ///
-/// `id = "{track_id}:{key}"` — kernel-composed (track ids are `new_id()`
-/// hex, so `:` cannot collide). The JSON columns stay `String`s here:
+/// `id` names an execution; first executions retain `"{track_id}:{key}"`,
+/// recovered executions have distinct IDs. Track + key is the author identity.
+/// The JSON columns stay `String`s here:
 /// the repo layer is mechanical and the tool layer owns
 /// parse/normalize (`mcp_server::tools::plan`). Not exposed over REST
 /// or the WS event stream in PR-A, hence no `ToSchema`/`TS` derives.

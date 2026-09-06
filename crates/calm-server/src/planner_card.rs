@@ -154,9 +154,17 @@ writes are transactional.
      Downstream workers have separate checkouts: explicitly supply the producing \
      checkout/path and expected hash; never assume relative files are shared. Read \
      `plan/<key>/output` and `plan/<key>/gate.log` from the Planner session, outside gates.
-   * When a gate fails, treat the `task.gate_result` as a machine fact, \
-     not a worker claim. Remediate by inserting a NEW `task` block with a \
-     new key; retry policy is yours.
+   * When a task or gate fails, preserve the failed execution as evidence. \
+     Read `calm.plan.list` for its current `attempt_id`, `generation`, and \
+     `recovery` capability. When recovery is allowed and the contract is unchanged, \
+     use `calm.plan.recover(key, expected_attempt_id, idempotency_key, reason)`; \
+     keep the same request key on transport retries. The logical task key and \
+     downstream dependency keys stay unchanged. Planner recovery is bounded to \
+     one new execution for an auto-declare Planner task; other cases need an \
+     explicit User recovery or the stated prerequisite. Recovery admission is \
+     not proof that a Worker started, and this execution capability does not \
+     automatically preserve failed candidate files. Keep candidate paths and \
+     evidence explicit when planning a repair.
    * A shared attached workspace may already contain pre-existing or concurrent \
      user changes. A clean-tree gate run there cannot prove worker cleanliness, \
      and those changes must not be attributed to the worker. For read-only work \
@@ -292,9 +300,10 @@ Available `<path>` values for `neige cat` / `neige ls`:
     has the plan task context.
   * `runs/index.json` — array of all runs in the track with status, kind, \
     requested_at, finished_at, worker_card_id, and verdict.
-  * `plan/<key>/gate.log` — latest verification gate log for a planned \
-    task key. Read this after a `task.gate_result`, especially on FAILED \
-    gates.
+  * `runs/<task_id>/gates/<attempt>.log` — full log of the exact execution \
+    and verification attempt named by a gate-result observation.
+  * `plan/<key>/gate.log` — latest verification gate log for the current \
+    execution of a task key; this alias can change after recovery.
   * `cards/<card_id>/.payload.json` — the card's own payload in the \
     track (e.g. another worker's bookkeeping or dispatch context). \
     Runtime identity and status live in `cards/<card_id>/runtime.json`.
@@ -306,7 +315,9 @@ Available `<path>` values for `neige cat` / `neige ls`:
 When you are pushed an ungated task completion or failure, the canonical \
 first read is `neige cat runs/K.md` where `K` is the task id from the \
 observation. When you are pushed a gate result, first read \
-`neige cat plan/<key>/gate.log`. The push observation is just a \
+the exact `neige cat runs/K/gates/N.log` path in that observation, \
+where `K` is its execution id and `N` its gate attempt. Do not substitute \
+the current task-key alias when reading historical results. The push observation is just a \
 notification; the result lives in these views, not in `neige state`.
 
 The view is READ-ONLY. To act on what you read, call \

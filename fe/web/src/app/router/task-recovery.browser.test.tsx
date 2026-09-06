@@ -1,0 +1,127 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, render } from '@testing-library/react';
+import { page, userEvent } from 'vitest/browser';
+import { afterEach, expect, it } from 'vitest';
+import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
+import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import type { TaskAttempt, TaskRecoveryView } from '../../../../core/domain/task-recovery.ts';
+import { deriveReportTasks, type TrackReport } from '../../../../core/domain/report.ts';
+import { ReportDocument } from '../../features/report/document/public.tsx';
+import '../../styles/entry.css';
+import { wireEventSchema } from '../../../../core/api/schemas.ts';
+import { initialEventState, reduceEventFrame } from '../../../../core/events/reducer.ts';
+import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
+import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
+
+afterEach(cleanup);
+
+it('recovers from the task disclosure and navigates prior evidence at desktop and phone widths', async () => {
+  const requests: ApiRequest[] = [];
+  const first: TaskAttempt = { attempt_id: 'attempt-one', generation: 1, status: 'failed',
+    blocking_reason: null, status_detail: 'The implementation did not pass validation.', worker_card_id: 'worker-old',
+    created_at_ms: 1788600000000, finished_at_ms: 1788600060000 };
+  const second: TaskAttempt = { attempt_id: 'attempt-two', generation: 2, status: 'dispatched',
+    blocking_reason: null, status_detail: null, worker_card_id: null, created_at_ms: 1788600070000, finished_at_ms: null };
+  let current = first;
+  let conversation: string | null = null;
+  const transport: ApiTransportPort = { send(request) {
+    return Promise.resolve().then(() => {
+    requests.push(request);
+    if (request.method === 'POST') {
+      current = second;
+      return { status: 200, statusText: 'OK', body: { key: 'b', previous_attempt_id: first.attempt_id,
+        attempt_id: second.attempt_id, generation: 2 } };
+    }
+    const body: TaskRecoveryView = { key: 'b', current, attempts: current === first ? [first] : [first, current],
+      recovery: { allowed: current === first, code: current === first ? 'available' : 'not_failed',
+        reason: 'Start a new attempt under the unchanged task requirements.' } };
+    return { status: 200, statusText: 'OK', body };
+    });
+  } };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
+  await page.viewport(1080, 800);
+  const report: TrackReport = { summary: '', body: '', blocks: [{ id: 'b-b', kind: 'task', payload: {
+    key: 'b', declared_by: 'user', kind: 'codex', ready: true, goal: 'Finish the calculation under the original requirements.',
+  } }] };
+  function Document() {
+    const rows = useCurrentTaskRows('w1', deriveReportTasks(report.blocks, [
+      { blockId: 'b-b', key: 'b', schedulable: true, status: 'failed', workerCardId: 'worker-old' },
+    ]));
+    return <ReportDocument report={report} taskRows={rows} empty={null}
+      renderTaskExecution={(task, expanded) => <TaskRecovery trackId="w1" taskKey={task.key} expanded={expanded}
+        transport={transport} unauthorized={unauthorized} openableWorkerIds={new Set(['worker-old'])}
+        openWorker={(cardId) => { conversation = cardId; }} />} />;
+  }
+  render(<QueryClientProvider client={client}><div style={{ padding: 24 }}><Document /></div></QueryClientProvider>);
+  await userEvent.click(document.querySelector('[data-nc-report-reference] > summary')!);
+  await userEvent.click(document.querySelector('[data-nc-task-state] > summary')!);
+  await page.getByRole('button', { name: 'Recover task', exact: true }).click();
+  await expect.element(page.getByText('Current attempt 2 · Preparing')).toBeVisible();
+  expect(document.querySelector('[data-nc-task-state] > summary')!.textContent).toContain('Preparing');
+  expect(document.querySelector('[data-nc-task-state] > summary')!.textContent).not.toContain('failed');
+  await page.getByText('Attempt history (2)').click();
+  await page.getByText('Attempt 1 · Failed', { exact: true }).click();
+  await expect.element(page.getByText('The implementation did not pass validation.')).toBeVisible();
+  await page.getByRole('button', { name: 'Open attempt 1' }).click();
+  expect(conversation).toBe('worker-old');
+  expect(requests.filter((request) => request.method === 'POST')).toHaveLength(1);
+  await page.screenshot({ path: '__screenshots__/issue-1501-desktop.png' });
+  await page.viewport(390, 844);
+  const action = page.getByRole('button', { name: 'Refresh execution history' });
+  await expect.element(action).toBeVisible();
+  await action.click();
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: '__screenshots__/issue-1501-phone.png' });
+  current = { ...second, status: 'awaiting_projection',
+    blocking_reason: 'Execution release was withdrawn. Release this task to continue.' };
+  await action.click();
+  await expect.element(page.getByText(current.blocking_reason!)).toBeVisible();
+  expect(document.querySelector('[data-nc-task-state] > summary [title]')!.getAttribute('title')).toContain(current.blocking_reason);
+  await page.screenshot({ path: '__screenshots__/issue-1501-blocker-phone.png' });
+  const disclosure = document.querySelector<HTMLDetailsElement>('[data-nc-task-state]')!;
+  await userEvent.click(disclosure.querySelector('summary')!);
+  expect(disclosure.open).toBe(false);
+  current = { ...second, status: 'done' };
+  await act(() => {
+    const event = wireEventSchema.parse({ ev: 'task.completed', data: {
+      idempotency_key: second.attempt_id, result: {}, artifacts: [],
+    } });
+    applyEventEffects(client, reduceEventFrame(initialEventState(null), {
+      type: 'event', event, meta: { id: 1, eventVersion: 1 },
+    }).effects);
+    return Promise.resolve();
+  });
+  await expect.poll(() => disclosure.querySelector('summary')!.textContent).toContain('Completed');
+  expect(disclosure.open).toBe(false);
+});
+
+it('shows empty history before allocation and refreshes the first attempt in the report disclosure', async () => {
+  let current: TaskAttempt | null = null;
+  const transport: ApiTransportPort = { send: () => Promise.resolve({ status: 200, statusText: 'OK', body: {
+    key: 'waiting', current, attempts: current === null ? [] : [current],
+    recovery: { allowed: false, code: current === null ? 'not_started' : 'not_failed', reason: 'No failed execution.' },
+  } }) };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
+  const report: TrackReport = { summary: '', body: '', blocks: [{ id: 'waiting-block', kind: 'task', payload: {
+    key: 'waiting', declared_by: 'user', kind: 'codex', ready: false, goal: 'Wait for authorization.',
+  } }] };
+  render(<QueryClientProvider client={client}><ReportDocument report={report}
+    taskRows={deriveReportTasks(report.blocks, [{ blockId: 'waiting-block', key: 'waiting', schedulable: false, status: null }])}
+    empty={null} renderTaskExecution={(task, expanded) => <TaskRecovery trackId="w1" taskKey={task.key} expanded={expanded}
+      transport={transport} unauthorized={unauthorized} openableWorkerIds={new Set()} openWorker={() => undefined} />} />
+  </QueryClientProvider>);
+  await userEvent.click(document.querySelector('[data-nc-report-reference] > summary')!);
+  await userEvent.click(document.querySelector('[data-nc-task-state] > summary')!);
+  await expect.element(page.getByText('No attempts yet', { exact: true })).toBeVisible();
+  expect(document.querySelector('[role="alert"]')).toBeNull();
+  await expect.element(page.getByRole('button', { name: 'Recover task', exact: true })).not.toBeInTheDocument();
+  await page.screenshot({ path: '__screenshots__/issue-1501-empty-history.png' });
+  current = { attempt_id: 'first-allocated', generation: 1, status: 'pending', status_detail: null,
+    blocking_reason: null, worker_card_id: null, created_at_ms: 1788600000000, finished_at_ms: null };
+  await page.getByRole('button', { name: 'Refresh execution history' }).click();
+  await expect.element(page.getByText('Current attempt 1 · Queued')).toBeVisible();
+  await expect.element(page.getByText('No attempts yet', { exact: true })).not.toBeInTheDocument();
+  expect(document.querySelector('[role="alert"]')).toBeNull();
+});

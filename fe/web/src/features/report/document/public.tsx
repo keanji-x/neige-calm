@@ -67,6 +67,10 @@ export type ReportDocumentProps = Readonly<{
   arrivalAnchorId?: string | null;
   /** The same execution diagnostics used by the task inventory. */
   taskVerdicts?: readonly TaskVerdict[];
+  /** App-composed rows shared with the task inventory when execution evidence is loaded. */
+  taskRows?: readonly ReportTaskRow[];
+  /** App-owned current/history query and recovery action, scoped to a task. */
+  renderTaskExecution?: (task: ReportTaskRow, expanded: boolean) => ReactNode;
 }>;
 
 /**
@@ -78,7 +82,7 @@ export type ReportDocumentProps = Readonly<{
  */
 export function ReportDocument({
   report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, fileRoot, fileBasePath,
-  arrivalAnchorId, taskVerdicts,
+  arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
   useEffect(() => {
     if (arrivalAnchorId === null || arrivalAnchorId === undefined) return;
@@ -156,7 +160,7 @@ export function ReportDocument({
                   permanent empty appendix would make that look like a gap. */}
               {processBlocks.length > 0 && (
                 <ReportReference blocks={processBlocks} backlinkCounts={backlinkCounts}
-                  tasks={deriveReportTasks(report.blocks, taskVerdicts)} />
+                  tasks={taskRows ?? deriveReportTasks(report.blocks, taskVerdicts)} renderTaskExecution={renderTaskExecution} />
               )}
             </>
           );
@@ -199,10 +203,11 @@ function isProcessBlock(block: ReportBlock): boolean {
  * lands inside before it measures where to scroll, so arriving here unfolds
  * the section and the row together.
  */
-function ReportReference({ blocks, backlinkCounts, tasks }: {
+function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }: {
   blocks: readonly ReportBlock[];
   backlinkCounts?: ReadonlyMap<string, number>;
   tasks: readonly ReportTaskRow[];
+  renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
 }) {
   const tasksByBlock = new Map(tasks.map((task) => [task.blockId, task]));
   return (
@@ -246,7 +251,7 @@ function ReportReference({ blocks, backlinkCounts, tasks }: {
           const backlinks = backlinkCounts?.get(block.id) ?? 0;
           return (
             <div key={block.id} className={styles.referenceItem} id={block.id}>
-              <BlockBody block={block} task={tasksByBlock.get(block.id)} />
+              <BlockBody block={block} task={tasksByBlock.get(block.id)} renderTaskExecution={renderTaskExecution} />
               {backlinks > 0 && (
                 <span
                   className={styles.referenceSidenote}
@@ -306,11 +311,13 @@ function BlockSlot({ block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fil
 
 /** One bad block may not cost the page: an unknown kind, or a known kind whose
  *  payload did not parse, degrades to one line and the document goes on. */
-function BlockBody({ block, task }: { block: ReportBlock; task?: ReportTaskRow }): ReactNode {
+function BlockBody({ block, task, renderTaskExecution }: {
+  block: ReportBlock; task?: ReportTaskRow; renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
+}): ReactNode {
   switch (block.kind) {
     case 'table': return <ReportTableBlock payload={block.payload} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
-    case 'task': return <ReportTaskBlock payload={block.payload} blockId={block.id} task={task} />;
+    case 'task': return <ReportTaskBlock payload={block.payload} blockId={block.id} task={task} renderExecution={renderTaskExecution} />;
     case 'app': return <ReportAppBlock payload={block.payload} />;
     case 'unsupported':
       return (

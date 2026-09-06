@@ -1,5 +1,7 @@
-import type { ReportTaskRow, TaskBlockPayload } from '../../../../../core/domain/report.ts';
+import type { ReactNode } from 'react';
+import { boundedStatusDetail, type ReportTaskRow, type TaskBlockPayload } from '../../../../../core/domain/report.ts';
 import { taskStatusPhrase } from '../../../../../core/view/track-page.ts';
+import { useState } from '../../../ui/state/public.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './task.module.css';
 
@@ -18,11 +20,13 @@ function isWithdrawn(payload: TaskBlockPayload): payload is WithdrawnTask {
   return 'tombstoned_by' in payload;
 }
 
-export function ReportTaskBlock({ payload, blockId, task }: {
+export function ReportTaskBlock({ payload, blockId, task, renderExecution }: {
   payload: TaskBlockPayload;
   blockId: string;
   task?: ReportTaskRow;
+  renderExecution?: (task: ReportTaskRow, expanded: boolean) => ReactNode;
 }) {
+  const [expanded, setExpanded] = useState(false);
   if (isWithdrawn(payload)) {
     const reason = payload.tombstone.reason;
     return (
@@ -48,13 +52,13 @@ export function ReportTaskBlock({ payload, blockId, task }: {
   }
 
   const live: LiveTask = payload;
-  const status = task?.status ?? null;
+  const status = task?.execution?.status ?? task?.status ?? null;
   const explanation = [
-    status === null ? null : taskStatusPhrase(status, task?.statusDetail ?? null),
-    task?.pendingReason?.message,
+    status === null ? null : taskStatusPhrase(task?.execution?.label ?? status, task?.execution === undefined ? task?.statusDetail ?? null : boundedStatusDetail(task.execution.statusDetail)),
+    task?.execution === undefined ? task?.pendingReason?.message : task.execution.blockingReason,
   ].filter(Boolean).join(' — ');
   return (
-    <details className={styles.task} data-nc-task-state={status ?? (live.ready ? 'ready' : 'not-ready')}>
+    <details onToggle={(event) => { setExpanded(event.currentTarget.open); }} className={styles.task} data-nc-task-state={status ?? (live.ready ? 'ready' : 'not-ready')}>
       <summary className={styles.head}>
         <span className={styles.marker}><Icon name="chevron-right" size="sm" /></span>
         <span className={styles.kindLabel}>Task</span>
@@ -64,10 +68,11 @@ export function ReportTaskBlock({ payload, blockId, task }: {
           {live.kind}{live.spawn === 'sub-wave' ? ' · sub-track' : ''}
         </span>
         <span className={styles.state} title={explanation || undefined}>
-          {status ?? (live.ready ? 'Declaration ready' : 'Declaration not ready')}
+          {task?.execution?.label ?? status ?? (live.ready ? 'Declaration ready' : 'Declaration not ready')}
         </span>
       </summary>
 
+      {task !== undefined && live.key !== '' && renderExecution?.(task, expanded)}
       <p className={styles.goal}>
         {live.kind === 'terminal' ? live.command : live.goal}
       </p>

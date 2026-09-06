@@ -412,7 +412,7 @@ async fn guarded_child_success_flip_tx(
              AND status IN ('dispatched','running') \
              AND EXISTS(SELECT 1 FROM tracks child \
                 WHERE child.id=?5 AND child.lifecycle='done') \
-             AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.track_id=?5 \
+             AND NOT EXISTS(SELECT 1 FROM current_tasks ct WHERE ct.track_id=?5 \
                 AND ct.status IN ('pending','dispatched','running','verifying'))",
     )
     .bind(target_status)
@@ -441,9 +441,9 @@ async fn guarded_child_incomplete_flip_tx(
              AND status IN ('dispatched','running') \
              AND EXISTS(SELECT 1 FROM tracks child \
                 WHERE child.id=?4 AND child.lifecycle='done') \
-             AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.track_id=?4 \
+             AND NOT EXISTS(SELECT 1 FROM current_tasks ct WHERE ct.track_id=?4 \
                 AND ct.status IN ('dispatched','running','verifying')) \
-             AND EXISTS(SELECT 1 FROM tasks ct WHERE ct.track_id=?4 AND ct.status='pending')",
+             AND EXISTS(SELECT 1 FROM current_tasks ct WHERE ct.track_id=?4 AND ct.status='pending')",
     )
     .bind(now)
     .bind(task_id)
@@ -843,10 +843,10 @@ impl Scheduler {
                                   t.child_track_id AS child_track_id,
                                   child.lifecycle AS child_lifecycle,
                                   t.gate_json AS gate_json,
-                                  (SELECT count(*) FROM tasks ct
+                                  (SELECT count(*) FROM current_tasks ct
                                     WHERE ct.track_id=t.child_track_id
                                       AND ct.status IN ('dispatched','running','verifying')) AS inflight_count,
-                                  (SELECT count(*) FROM tasks ct
+                                  (SELECT count(*) FROM current_tasks ct
                                     WHERE ct.track_id=t.child_track_id
                                       AND ct.status='pending') AS pending_count
                              FROM tasks t
@@ -1243,28 +1243,19 @@ impl Scheduler {
                             }
                         }
                         if let Some(root) = claim_refs.iter().find(|reference| reference.is_root) {
-                            let payload: Option<String> = sqlx::query_scalar(
-                                "SELECT payload FROM cards WHERE track_id = ?1 \
-                                 AND kind = 'track-report' LIMIT 1",
-                            )
-                            .bind(root.track_id.as_str())
-                            .fetch_optional(&mut **tx)
-                            .await?;
-                            let current_root = payload
-                                .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
-                                .and_then(|payload| {
-                                    payload.get("blocks").and_then(Value::as_array).cloned()
+                            let snapshot: Option<(String, Option<Vec<u8>>)> = sqlx::query_as(
+                                "SELECT payload,body_crdt FROM cards WHERE track_id=?1 AND kind='track-report' LIMIT 1",
+                            ).bind(root.track_id.as_str()).fetch_optional(&mut **tx).await?;
+                            let current_root = snapshot.and_then(|(payload, crdt)| {
+                                let payload = serde_json::from_str::<Value>(&payload).ok()?;
+                                let blocks = crate::task_context::context_snapshot_values(
+                                    root.track_id.as_str(), &payload, crdt.as_deref(),
+                                ).ok()?;
+                                blocks.into_iter().find_map(|value| {
+                                    let block: calm_types::track_report::ReportBlock = serde_json::from_value(value).ok()?;
+                                    (block.id == root.block_id).then(|| context_ref(root.track_id.as_str(), &block, true))
                                 })
-                                .and_then(|blocks| {
-                                    blocks.into_iter().find_map(|value| {
-                                        let block: calm_types::track_report::ReportBlock =
-                                            serde_json::from_value(value).ok()?;
-                                        if block.id != root.block_id {
-                                            return None;
-                                        }
-                                        Some(context_ref(root.track_id.as_str(), &block, true))
-                                    })
-                                });
+                            });
                             if current_root
                                 .as_ref()
                                 .map(|current| (&current.block_id, &current.hash))
@@ -1273,6 +1264,10 @@ impl Scheduler {
                                 context_metrics.record_claim_fence_race_lost();
                                 return Err(race_lost_err());
                             }
+                        }
+                        if let Err(error) = crate::task_recovery::check_recovery_attempt_tx(tx, &task_id).await {
+                            tracing::debug!(%task_id, %error, "recovery claim refused; frozen contract or authority changed");
+                            return Err(race_lost_err());
                         }
                         let now = now_ms();
                         let rows =

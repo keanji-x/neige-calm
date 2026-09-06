@@ -109,8 +109,12 @@ pub fn spawn_supervisor_attach_reader(
                         } else {
                             WorkerSessionState::Exited
                         };
-                        if let Err(e) = repo
-                            .session_projection_complete_for_terminal(&terminal_id, terminal_status)
+                        if let Err(e) =
+                            crate::terminal_sweeper::complete_ephemeral_session_from_terminal_exit(
+                                repo.as_ref(),
+                                &terminal_id,
+                                terminal_status,
+                            )
                             .await
                         {
                             tracing::warn!(

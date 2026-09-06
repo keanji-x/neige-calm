@@ -107,7 +107,7 @@ pub const TRACK_TREE_MEMBERS_SQL: &str = concat!(
 /// excluded because they re-enter projection as candidates.
 pub const TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL: &str = concat!(
     bounded_track_descendant_cte!(),
-    "SELECT w.id, d.depth, (SELECT count(*) FROM tasks t \
+    "SELECT w.id, d.depth, (SELECT count(*) FROM current_tasks t \
        WHERE t.track_id=w.id AND t.declared_by='spec' \
          AND t.status IN ('dispatched','running','verifying')) AS fixed_live \
      FROM tracks w \
@@ -118,7 +118,7 @@ pub const TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL: &str = concat!(
 /// Whole-tree non-terminal planner inventory — enforcement point one.
 pub const TRACK_TREE_PLANNER_INVENTORY_SQL: &str = concat!(
     bounded_track_descendant_cte!(),
-    "SELECT count(*) FROM tasks t \
+    "SELECT count(*) FROM current_tasks t \
      JOIN (SELECT DISTINCT id FROM down) d ON t.track_id = d.id \
      WHERE t.declared_by = 'spec' AND t.status NOT IN ('done', 'failed', 'canceled')"
 );
@@ -357,7 +357,7 @@ pub async fn track_tree_planner_inventory_by_member(
     Ok(sqlx::query_as(concat!(
         bounded_track_descendant_cte!(),
         "SELECT d.id, count(t.id) FROM (SELECT DISTINCT id FROM down) d \
-         LEFT JOIN tasks t ON t.track_id=d.id AND t.declared_by='spec' \
+         LEFT JOIN current_tasks t ON t.track_id=d.id AND t.declared_by='spec' \
            AND t.status NOT IN ('done','failed','canceled') \
          GROUP BY d.id ORDER BY d.id"
     ))

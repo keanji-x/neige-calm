@@ -22,6 +22,7 @@
 
 import { z } from 'zod';
 
+import type { CurrentTaskExecution } from './task-execution.js';
 import type { ApiOperation } from '../api/types.js';
 import {
   extractOutline, parse, REPORT_MAX_DEPTH, reportHeadingIdPolicy,
@@ -655,6 +656,8 @@ export type TaskWorkerKind = 'codex' | 'claude' | 'terminal';
  * deciding how they are spelled next to each other.
  */
 export type ReportTaskRow = Readonly<{
+  /** Newer attempt/receipt evidence, when loaded by app; never copied into report diagnostics. */
+  execution?: CurrentTaskExecution;
   /** The block to reveal in the document — the detail lives there, not here. */
   blockId: string;
   key: string;
@@ -728,7 +731,7 @@ export const TASK_STATUS_DETAIL_LIMIT = 160;
  * empty `workerCardId` is: a blank reason renders as a dangling separator that
  * says the kernel spoke when it did not.
  */
-function boundedStatusDetail(raw: string | null | undefined): string | null {
+export function boundedStatusDetail(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
   const collapsed = raw.replace(/\s+/g, ' ').trim();
   if (collapsed === '') return null;

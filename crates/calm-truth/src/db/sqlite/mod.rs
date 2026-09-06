@@ -67,7 +67,13 @@ mod session_projection;
 mod session_repo_impl;
 mod session_row;
 mod task;
+mod task_attempt;
+#[cfg(test)]
+mod task_attempt_migration_tests;
+#[cfg(test)]
+mod task_attempt_tests;
 mod task_projection;
+mod task_recovery_projection;
 mod track;
 mod track_recipe;
 mod track_tree;
@@ -132,10 +138,17 @@ pub use task::{
     task_update_pending_tx, tasks_by_track_tx, track_lifecycle_and_budget_tx,
     track_require_task_gates_tx, worker_op_targets_card_tx,
 };
+pub use task_attempt::{
+    task_attempt_current_by_track_pool, task_attempt_current_by_track_tx,
+    task_attempt_current_pool, task_attempt_current_tx, task_attempt_get_tx, task_current_get_pool,
+    task_current_get_tx, task_history_by_key_pool, task_recovery_allocate_tx,
+    task_recovery_constraint_tx, task_recovery_lookup_tx,
+};
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskPendingReason, TaskProjectionOutcome,
-    WithdrawalEdge, evaluate_schedulability, mark_context_material_tx, project_tasks_tx,
-    project_tasks_with_tree_term_tx, task_delete_pending_tx,
+    WithdrawalEdge, evaluate_schedulability, evaluate_schedulability_with_task_budget_default,
+    mark_context_material_tx, project_tasks_tx, project_tasks_with_tree_term_tx,
+    task_delete_pending_tx,
 };
 // The request-fingerprint enum is exported with its binding: route code must
 // construct V1 on write and handle LegacyUnknown explicitly on read.

@@ -78,6 +78,8 @@ use utoipa::OpenApi;
         crate::routes::area_folders::create_folder,
         crate::routes::area_folders::delete_folder,
         crate::routes::area_folders::resolve_path,
+        crate::routes::task_recovery::get_attempts,
+        crate::routes::task_recovery::recover,
         // ---- tracks ----
         crate::routes::track_templates::list_track_templates,
         crate::routes::track_recipes::list_recipes,

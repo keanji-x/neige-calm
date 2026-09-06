@@ -21,9 +21,7 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
-use crate::operation::worker_cleanup::{
-    WorkerCleanupOutcome, compensate_worker_rows, worker_spawn_failure_preserved,
-};
+use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_rows};
 use crate::operation::workspace_lease::{
     WorkspaceLeaseTarget, acquire_workspace_lease_tx, prepare_workspace_lease_target_tx,
     provision_workspace_worktree, release_workspace_lease_by_id,
@@ -94,6 +92,10 @@ pub struct CodexWorkerAdapter {
     /// re-runs materialization for a managed track (red-team B5). Boot-frozen
     /// config, threaded rather than read from a global.
     workspace_root: std::path::PathBuf,
+    #[cfg(feature = "fixtures")]
+    preparation_hook: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
+    #[cfg(test)]
+    viewer_preparation_hook: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
 }
 
 impl CodexAdapter {
@@ -172,6 +174,10 @@ impl CodexWorkerAdapter {
             card_role_cache,
             track_area_cache,
             workspace_root,
+            #[cfg(feature = "fixtures")]
+            preparation_hook: None,
+            #[cfg(test)]
+            viewer_preparation_hook: None,
         }
     }
 }
@@ -872,6 +878,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             "repo_root": lease_target.repo_root_string(),
             "slice_branch": lease_target.branch,
             "worktree_provisioned_event_persisted": false,
+            "terminal_launch": super::terminal_launch::fresh_state(),
             "runtime_started_event_persisted": false,
             "env": env,
             "prompt": rendered_prompt,
@@ -887,6 +894,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
+        let payload: CodexWorkerOperationPayload = serde_json::from_value(op.payload.clone())?;
+        super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
         provision_codex_worker_workspace(
             ctx,
             &self.card_role_cache,
@@ -944,11 +953,17 @@ impl ProviderAdapter for CodexWorkerAdapter {
             return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
         }
 
+        let payload: CodexWorkerOperationPayload = serde_json::from_value(_op.payload.clone())?;
+        super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
         if !self.shared_codex_appserver.is_running() {
             // #953 — message-only enrichment; see prepare-side preflight.
             return Err(self.shared_codex_appserver.not_running_error());
         }
 
+        #[cfg(feature = "fixtures")]
+        if let Some(hook) = &self.preparation_hook {
+            hook().await;
+        }
         let card = ctx
             .repo
             .card_get(&card_id)
@@ -958,11 +973,14 @@ impl ProviderAdapter for CodexWorkerAdapter {
 
         let handle = spawn_codex_worker_via_shared_daemon(CodexWorkerSpawnCtx {
             spawn_ctx: ctx,
+            launch: super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op),
+            #[cfg(test)]
+            viewer_preparation_hook: self.viewer_preparation_hook.as_ref(),
             shared_codex_appserver: &self.shared_codex_appserver,
             mcp_server: self.mcp_server.as_deref(),
             card: &card,
             term: &term,
-            runtime_id: &runtime_id,
+            worker_session_id: &runtime_id,
             track_id: &track_id,
             mcp_token: Some(mcp_token.as_str()),
             rendered_prompt: &rendered_prompt,
@@ -1027,12 +1045,28 @@ impl ProviderAdapter for CodexWorkerAdapter {
         &self,
         step: &CompensationStep,
         output: &TxOutput,
-        _op: &Operation,
+        op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
         if step.completed {
             return Ok(());
         }
+        let mut business_may_be_live = false;
+        if super::worker_cleanup::may_have_started(op)? {
+            let runtime_id = output.output_string("runtime_id", "codex cleanup")?;
+            if let Some(session) = ctx.repo.session_projection_by_id(&runtime_id).await?
+                && let Some(thread_id) = session.thread_id.as_deref()
+            {
+                business_may_be_live = true;
+                // An interrupt request is not proof of stopped external writers.
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    self.shared_codex_appserver.interrupt_active_turn(thread_id),
+                )
+                .await;
+            }
+        }
+        super::worker_cleanup::require_cleanup_safe(ctx, op, output, business_may_be_live).await?;
         if step.op == "remove_workspace_artifact" {
             let lease_id = step.arg_string("lease_id", "codex")?;
             let pool = ctx.operation_repo.sqlite_pool();
@@ -1119,11 +1153,15 @@ impl ProviderAdapter for CodexWorkerAdapter {
 
 pub(crate) struct CodexWorkerSpawnCtx<'a> {
     pub(crate) spawn_ctx: &'a SpawnCtx,
+    pub(crate) launch: super::task_launch::TaskLaunch,
+    #[cfg(test)]
+    pub(crate) viewer_preparation_hook:
+        Option<&'a Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
     pub(crate) shared_codex_appserver: &'a Arc<SharedCodexAppServer>,
     pub(crate) mcp_server: Option<&'a McpServer>,
     pub(crate) card: &'a Card,
     pub(crate) term: &'a crate::model::Terminal,
-    pub(crate) runtime_id: &'a str,
+    pub(crate) worker_session_id: &'a str,
     pub(crate) track_id: &'a TrackId,
     pub(crate) mcp_token: Option<&'a str>,
     pub(crate) rendered_prompt: &'a str,
@@ -1137,7 +1175,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
     let mut notifications = ctx.shared_codex_appserver.subscribe_notifications();
     let remote_uri = ctx.shared_codex_appserver.remote_uri();
     let card_id = ctx.card.id.as_str();
-    let runtime_id = ctx.runtime_id.to_string();
+    let runtime_id = ctx.worker_session_id.to_string();
     let runtime = ctx
         .spawn_ctx
         .repo
@@ -1204,7 +1242,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
     persist_shared_worker_runtime_fields(
         ctx.spawn_ctx,
         ctx.card,
-        ctx.runtime_id,
+        ctx.worker_session_id,
         &thread_id,
         &remote_uri,
         persisted_turn_id.as_deref(),
@@ -1213,17 +1251,30 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
 
     if persisted_turn_id.is_none() {
         let initial_turn_result = async {
-            let turn_id = ctx
-                .shared_codex_appserver
-                .turn_start(
-                    &thread_id,
-                    vec![InputItem::text(ctx.rendered_prompt.trim())],
-                )
-                .await?;
+            let shared = Arc::clone(ctx.shared_codex_appserver);
+            let launch_thread = thread_id.clone();
+            let items = vec![InputItem::text(ctx.rendered_prompt.trim())];
+            let started = ctx
+                .launch
+                .clone()
+                .run_observed(ctx.spawn_ctx.repo.as_ref(), async move {
+                    shared.turn_start(&launch_thread, items).await
+                })
+                .await;
+            let turn_id = match started {
+                Ok(turn_id) => turn_id,
+                Err(failure) => {
+                    if let Some(turn_id) = failure.observed
+                        && let Err(error) = persist_shared_worker_runtime_fields(ctx.spawn_ctx, ctx.card, ctx.worker_session_id, &thread_id, &remote_uri, Some(&turn_id)).await {
+                        tracing::warn!(card_id, thread_id=%thread_id, turn_id=%turn_id, %error, "launch commit failed; prepared operation retains business ownership");
+                    }
+                    return Err(failure.error);
+                }
+            };
             persist_shared_worker_runtime_fields(
                 ctx.spawn_ctx,
                 ctx.card,
-                ctx.runtime_id,
+                ctx.worker_session_id,
                 &thread_id,
                 &remote_uri,
                 Some(&turn_id),
@@ -1246,6 +1297,20 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         }
     }
 
+    // The business turn is already issued. Optional viewer preparation must
+    // not route any subsequent failure into business startup compensation.
+    match ctx.spawn_ctx.repo.task_get(ctx.launch.task_id()).await {
+        Ok(Some(task)) if !task.status.is_terminal() => {}
+        Ok(_) => return Ok(SpawnHandle::NoOp),
+        Err(error) => {
+            tracing::warn!(card_id, %error, "optional viewer task read unavailable after business turn; retaining execution");
+            return Ok(SpawnHandle::NoOp);
+        }
+    }
+    #[cfg(test)]
+    if let Some(hook) = ctx.viewer_preparation_hook {
+        hook().await;
+    }
     let mut env_for_spawn = ctx.legacy_env.clone();
     if let Some(map) = env_for_spawn.as_object_mut() {
         map.insert(
@@ -1266,7 +1331,13 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
     );
     match ctx
         .spawn_ctx
-        .spawn_terminal(ctx.term, &command_line, ctx.cwd, &env_for_spawn)
+        .spawn_task_terminal(
+            ctx.term,
+            &command_line,
+            ctx.cwd,
+            &env_for_spawn,
+            ctx.launch.clone(),
+        )
         .await
     {
         Ok(handle) => {
@@ -1280,22 +1351,10 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             );
             Ok(handle)
         }
-        Err(e)
-            if worker_spawn_failure_preserved(ctx.spawn_ctx.repo.as_ref(), &ctx.term.id)
-                .await? =>
-        {
-            tracing::info!(
-                target: "shared_codex_daemon::worker",
-                card_id,
-                track_id = %ctx.track_id,
-                terminal_id = %ctx.term.id,
-                thread_id = %thread_id,
-                spawn_err = %e,
-                "worker shared TUI fast-exit; preserving card + terminal"
-            );
+        Err(error) => {
+            tracing::warn!(card_id, thread_id=%thread_id, %error, "optional worker viewer unavailable after business turn; retaining execution");
             Ok(SpawnHandle::NoOp)
         }
-        Err(e) => Err(e),
     }
 }
 

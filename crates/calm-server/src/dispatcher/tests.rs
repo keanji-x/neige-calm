@@ -529,9 +529,45 @@ async fn gated_self_report_predicate() {
     );
 }
 
+/// Both live and boot paths resolve opaque execution IDs through the same reader.
+#[tokio::test]
+async fn task_recovery_gate_observation_resolves_opaque_execution_identity() {
+    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    crate::db::write_in_tx_typed(&repo, |tx| Box::pin(async move {
+        sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,created_at_ms,updated_at_ms) VALUES('attempt-opaque','w','impl-parser','codex','g','{}','[]',0,'failed',1,1)")
+            .execute(&mut **tx).await?;
+        Ok(())
+    })).await.unwrap();
+    let event = Event::TaskGateResult {
+        task_id: "attempt-opaque".into(),
+        idempotency_key: "attempt-opaque".into(),
+        passed: false,
+        failing_step: None,
+        exit_code: Some(1),
+        log_tail: String::new(),
+        log_path: "/tmp/gate.log".into(),
+        attempt: 1,
+        agent_message: None,
+    };
+    let observation = resolve_harness_observation(&repo, &TrackId::from("w"), &event)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(observation, HarnessObservation::TaskGateResult { key, idempotency_key, .. }
+        if key == "impl-parser" && idempotency_key == "attempt-opaque")
+    );
+    assert!(
+        resolve_harness_observation(&repo, &TrackId::from("foreign"), &event)
+            .await
+            .is_err()
+    );
+}
+
 /// Issue #644 PR-C — `task.gate_result` maps to the hard-fire
-/// `Observation::TaskGateResult`, with the plan key recovered from
-/// the `"{track_id}:{key}"` task-id convention (§2.1).
+/// `Observation::TaskGateResult`, with the explicitly resolved author key.
 #[test]
 fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
     let track = TrackId::from("track-1");
@@ -546,7 +582,7 @@ fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
         attempt: 2,
         agent_message: None,
     };
-    let obs = harness_observation_from_event(&track, &event)
+    let obs = harness_observation_from_event(&track, &event, Some("impl-parser"))
         .expect("gate result must map to an observation");
     assert!(obs.is_hard_fire(), "gate results are hard-fired (§6.5)");
     match &obs {
@@ -560,7 +596,10 @@ fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
             ..
         } => {
             assert_eq!(idempotency_key, "track-1:impl-parser");
-            assert_eq!(key, "impl-parser", "plan key = task id minus track prefix");
+            assert_eq!(
+                key, "impl-parser",
+                "plan key is resolved separately from execution identity"
+            );
             assert!(!passed);
             assert_eq!(failing_step.as_deref(), Some("test"));
             assert_eq!(*exit_code, Some(101));
@@ -570,7 +609,7 @@ fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
     }
     let text = obs.to_turn_text();
     assert!(text.contains("Task impl-parser gate FAILED at step test (exit 101)"));
-    assert!(text.contains("plan/impl-parser/gate.log"));
+    assert!(text.contains("runs/track-1:impl-parser/gates/2.log"));
     assert!(text.contains("runs/track-1:impl-parser.md"));
 }
 
@@ -979,7 +1018,8 @@ fn harness_observation_from_event_mapping_pin() {
                 result: serde_json::json!({"ok": true, "n": 7}),
                 artifacts: vec![ArtifactRef::from("art-1")],
                 agent_message: Some("ignored".into()),
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::TaskCompleted {
             idempotency_key: "map-a".into(),
@@ -996,7 +1036,8 @@ fn harness_observation_from_event_mapping_pin() {
                 reason: "boom".into(),
                 details: None,
                 agent_message: None,
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::TaskFailed {
             idempotency_key: "map-b".into(),
@@ -1020,7 +1061,8 @@ fn harness_observation_from_event_mapping_pin() {
                 body_before: "old".into(),
                 body_after: "loop-pin-body".into(),
                 agent_message: None,
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::ReportEdited {
             track_id: track.clone(),
@@ -1040,7 +1082,8 @@ fn harness_observation_from_event_mapping_pin() {
                 card_id: worker.clone(),
                 lease_id: "lease-map".into(),
                 path: "/tmp/workspace-map".into(),
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::WorkspaceLeased {
             track_id: track.clone(),
@@ -1056,7 +1099,8 @@ fn harness_observation_from_event_mapping_pin() {
                 track_id: TrackId::from("payload-track-ignored"),
                 card_id: worker.clone(),
                 lease_id: "lease-map".into(),
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::WorkspaceReleased {
             track_id: track.clone(),
@@ -1077,7 +1121,8 @@ fn harness_observation_from_event_mapping_pin() {
                 },
                 head_sha: "head-sha".into(),
                 merge_sha: "merge-sha".into(),
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::ForgePrMerged {
             track_id: track.clone(),
@@ -1104,7 +1149,8 @@ fn harness_observation_from_event_mapping_pin() {
                 }],
                 root_cause: Some("tests failing".into()),
                 idempotency_key: "review.round:track-map:impl:5b:760:1".into(),
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::ReviewRound {
             track_id: track.clone(),
@@ -1123,7 +1169,8 @@ fn harness_observation_from_event_mapping_pin() {
             &Event::RatifyRequested {
                 track_id: TrackId::from("payload-track-ignored"),
                 reason: "cap_exhausted".into(),
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::RatifyRequested {
             track_id: track.clone(),
@@ -1136,7 +1183,8 @@ fn harness_observation_from_event_mapping_pin() {
             &Event::RatifyResolved {
                 track_id: TrackId::from("payload-track-ignored"),
                 decision: RatifyDecision::Deny,
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::RatifyResolved {
             track_id: track.clone(),
@@ -1149,7 +1197,8 @@ fn harness_observation_from_event_mapping_pin() {
             &Event::ForgeScanCompleted {
                 track_id: TrackId::from("payload-track-ignored"),
                 overlapping_prs: vec![1, 2],
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::ForgeScanCompleted {
             track_id: track.clone(),
@@ -1163,7 +1212,8 @@ fn harness_observation_from_event_mapping_pin() {
                 track_id: TrackId::from("payload-track-ignored"),
                 pr_number: 1,
                 head_sha: "head-sha".into(),
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::ForgePrOpened {
             track_id: track.clone(),
@@ -1177,7 +1227,8 @@ fn harness_observation_from_event_mapping_pin() {
                 track_id: TrackId::from("payload-track-ignored"),
                 pr_number: 1,
                 conclusion: "success".into(),
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::ForgePrChecks {
             track_id: track.clone(),
@@ -1191,7 +1242,8 @@ fn harness_observation_from_event_mapping_pin() {
             &Event::ForgeIssueClosed {
                 track_id: TrackId::from("payload-track-ignored"),
                 issue_number: 760,
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::ForgeIssueClosed {
             track_id: track.clone(),
@@ -1205,7 +1257,8 @@ fn harness_observation_from_event_mapping_pin() {
                 track_id: TrackId::from("payload-track-ignored"),
                 card_id: worker.clone(),
                 path: "/tmp/worktree-map".into(),
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::WorktreeProvisioned {
             track_id: track.clone(),
@@ -1221,7 +1274,8 @@ fn harness_observation_from_event_mapping_pin() {
                 card_id: worker.clone(),
                 commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
                 branch: "neige/w/card".into(),
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::WorktreeCommitted {
             track_id: track.clone(),
@@ -1239,7 +1293,8 @@ fn harness_observation_from_event_mapping_pin() {
                 base_sha: "base-sha".into(),
                 head_sha: "head-sha".into(),
                 artifact_path: "/tmp/diff.patch".into(),
-            }
+            },
+            Some("impl-parser")
         ),
         None
     );
@@ -1250,7 +1305,8 @@ fn harness_observation_from_event_mapping_pin() {
                 track_id: TrackId::from("payload-track-ignored"),
                 card_id: worker.clone(),
                 path: "/tmp/worktree-map".into(),
-            }
+            },
+            Some("impl-parser")
         ),
         None
     );
@@ -1264,7 +1320,8 @@ fn harness_observation_from_event_mapping_pin() {
                 kind: "hook.codex.stop".into(),
                 hook_idempotency_key: "hook-c".into(),
                 payload: serde_json::Value::Null,
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::WorkerHookStop {
             track_id: track.clone(),
@@ -1281,7 +1338,8 @@ fn harness_observation_from_event_mapping_pin() {
                 kind: "hook.claude.stop".into(),
                 hook_idempotency_key: "hook-l".into(),
                 payload: serde_json::Value::Null,
-            }
+            },
+            Some("impl-parser")
         ),
         Some(HarnessObservation::WorkerHookStop {
             track_id: track.clone(),
@@ -1300,7 +1358,8 @@ fn harness_observation_from_event_mapping_pin() {
                 kind: "hook.codex.permission_request".into(),
                 hook_idempotency_key: "hook-p".into(),
                 payload: serde_json::Value::Null,
-            }
+            },
+            Some("impl-parser")
         ),
         None
     );
@@ -1313,7 +1372,8 @@ fn harness_observation_from_event_mapping_pin() {
                 context: serde_json::Value::Null,
                 acceptance_criteria: None,
                 agent_message: None,
-            }
+            },
+            Some("impl-parser")
         ),
         None
     );
@@ -2093,7 +2153,7 @@ fn planner_push_predicate_and_observation_mapping_agree() {
             row.actor
         );
         assert_eq!(
-            harness_observation_from_event(&track, &row.event).is_some(),
+            harness_observation_from_event(&track, &row.event, Some("impl-parser")).is_some(),
             row.expect_observation,
             "observation mapping mismatch for {kind} (actor {})",
             row.actor

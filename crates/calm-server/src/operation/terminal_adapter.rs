@@ -55,6 +55,8 @@ pub struct TerminalWorkerAdapter {
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     spawn_hook: Option<SpawnHook>,
+    #[cfg(feature = "fixtures")]
+    preparation_hook: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
 }
 
 impl TerminalAdapter {
@@ -119,6 +121,8 @@ impl TerminalWorkerAdapter {
             card_role_cache,
             track_area_cache,
             spawn_hook: None,
+            #[cfg(feature = "fixtures")]
+            preparation_hook: None,
         }
     }
 
@@ -133,6 +137,8 @@ impl TerminalWorkerAdapter {
             card_role_cache,
             track_area_cache,
             spawn_hook: Some(spawn_hook),
+            #[cfg(feature = "fixtures")]
+            preparation_hook: None,
         }
     }
 }
@@ -691,6 +697,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             "cwd": cwd,
             "env": env,
             "scope": scope,
+            "terminal_launch": super::terminal_launch::fresh_state(),
         });
         Ok(output)
     }
@@ -747,6 +754,12 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             });
             return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
         }
+        let payload: TerminalWorkerOperationPayload = serde_json::from_value(_op.payload.clone())?;
+        super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
+        #[cfg(feature = "fixtures")]
+        if let Some(hook) = &self.preparation_hook {
+            hook().await;
+        }
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
         let term = ctx
             .repo
@@ -754,10 +767,17 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             .await?
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
 
+        let launch = super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op);
         let spawn_result = if let Some(hook) = &self.spawn_hook {
-            hook(terminal_id.clone(), cmd.clone(), cwd.clone(), env.clone()).await
+            launch
+                .run(
+                    ctx.repo.as_ref(),
+                    hook(terminal_id.clone(), cmd.clone(), cwd.clone(), env.clone()),
+                )
+                .await
         } else {
-            ctx.spawn_terminal(&term, &cmd, &cwd, &env).await
+            ctx.spawn_task_terminal(&term, &cmd, &cwd, &env, launch)
+                .await
         };
 
         match spawn_result {
@@ -853,13 +873,14 @@ impl ProviderAdapter for TerminalWorkerAdapter {
     async fn compensate_step(
         &self,
         step: &CompensationStep,
-        _output: &TxOutput,
-        _op: &Operation,
+        output: &TxOutput,
+        op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
         if step.completed {
             return Ok(());
         }
+        super::worker_cleanup::require_cleanup_safe(ctx, op, output, false).await?;
         if step.op != "cleanup_terminal_worker" {
             return Err(CalmError::Internal(format!(
                 "unknown terminal worker compensation op {}",

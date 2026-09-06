@@ -58,7 +58,7 @@
 // `noUnusedParameters`, so the track is left out until S2 introduces the outline
 // and gives it work to do.
 
-import type { ReportTaskRow } from '../domain/report.js';
+import { boundedStatusDetail, type ReportTaskRow } from '../domain/report.js';
 import type { CardWire } from '../domain/track.js';
 import type { PanelRow, RowAction, RowBadge, RowModuleView, TrackPageView } from './panel.js';
 
@@ -209,15 +209,17 @@ function cardRow(card: CardWire): PanelRow {
  * carries its sentences per row rather than per `kind`.
  */
 function taskRow(task: ReportTaskRow): PanelRow {
-  const workerCardId = task.workerCardId;
-  const badges: RowBadge[] = task.declaration !== null
+  const workerCardId = task.execution === undefined ? task.workerCardId : task.execution.workerCardId;
+  const currentStatus = task.execution?.status ?? task.status;
+  const badges: RowBadge[] = task.execution === undefined && task.declaration !== null
     ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
     : [];
-  const reason = task.pendingReason?.message ?? null;
-  const status = task.status !== null
+  const reason = task.execution === undefined ? task.pendingReason?.message ?? null : task.execution.blockingReason;
+  const status = currentStatus !== null
     ? {
-        token: task.status,
-        phrase: [taskStatusPhrase(task.status, task.statusDetail), reason].filter(Boolean).join(' — '),
+        token: currentStatus,
+        phrase: [taskStatusPhrase(task.execution?.label ?? currentStatus,
+          task.execution === undefined ? task.statusDetail : boundedStatusDetail(task.execution.statusDetail)), reason].filter(Boolean).join(' — '),
       }
     : null;
   const actions: RowAction[] = [{

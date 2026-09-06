@@ -3097,6 +3097,13 @@ async fn repoint_track_workspace(
     let track_id = track.id.to_string();
     let area_id = track.area_id.as_str().to_string();
 
+    // Serialize classification through the move with normal task starts and
+    // direct Track recovery. Release before restarting the planner, which uses
+    // the OperationRuntime itself.
+    let mut operation_guard = Some(s.operation_runtime.lock_for_track_delete().await);
+    let mut track_guard =
+        Some(crate::per_card_lock::lock_key(&s.track_delete_locks, &track_id).await);
+
     // ---- Step 1: criteria + fence, in one BEGIN IMMEDIATE -----------------
     let fence_conflict = FolderConflictSlot::default();
     let fence_track_id = track_id.clone();
@@ -3114,6 +3121,11 @@ async fn repoint_track_workspace(
         Box::pin(async move {
             // Authoritative re-read. The route's unlocked read answered 404
             // and scoped the event; every decision below comes from here.
+            crate::operation::terminal_disposal::require_safe_tx(
+                tx,
+                &crate::operation::terminal_disposal::Scope::Track(track_id.clone()),
+            )
+            .await?;
             let old_workspace = crate::db::sqlite::track_workspace_read_tx(tx, &track_id).await?;
             if old_workspace.kind != TrackWorkspaceKind::Managed {
                 return Err(CalmError::Conflict(format!(
@@ -3236,6 +3248,8 @@ async fn repoint_track_workspace(
     // ---- Step 2: re-check before anything irreversible --------------------
     let verdict = workspace_pristine(&old_path);
     if let PristineVerdict::Dirty { .. } = &verdict {
+        drop(track_guard.take());
+        drop(operation_guard.take());
         restart_planner_harness_at(s, actor, track, &fence.old_workspace.path).await;
         return Err(CalmError::Conflict(verdict.conflict_message(&old_path)));
     }
@@ -3285,6 +3299,11 @@ async fn repoint_track_workspace(
                     FolderClaimPass::Authoritative,
                 )
                 .await?;
+                crate::operation::terminal_disposal::require_safe_tx(
+                    tx,
+                    &crate::operation::terminal_disposal::Scope::Track(track_id.clone()),
+                )
+                .await?;
                 crate::db::sqlite::track_workspace_write_tx(tx, &track_id, &workspace).await?;
                 let track = track_get_tx(tx, &TrackId::from(track_id)).await?;
                 let events = vec![(
@@ -3304,6 +3323,8 @@ async fn repoint_track_workspace(
         Err(error) => {
             // Nothing moved and nothing was written — put the harness back
             // where it was and report.
+            drop(track_guard.take());
+            drop(operation_guard.take());
             restart_planner_harness_at(s, actor, track, &fence.old_workspace.path).await;
             return folder_conflict_response(&write_conflict, error);
         }
@@ -3356,6 +3377,8 @@ async fn repoint_track_workspace(
     // mechanism that re-reads `cwd`: a resumed codex thread keeps the cwd it
     // was minted with, so resuming here would leave the planner agent in the
     // directory that just went to the trash.
+    drop(track_guard.take());
+    drop(operation_guard.take());
     restart_planner_harness_at(s, actor, &updated, &updated.workspace.path).await;
 
     Ok(Json(updated).into_response())
@@ -3801,6 +3824,12 @@ async fn teardown_track_deletion(
     plan: &TrackDeletePlan,
 ) -> Result<Vec<String>> {
     wait_at_track_delete_teardown_hook(plan.track_id.as_str()).await;
+    crate::operation::terminal_disposal::require_safe(
+        s.repo.as_ref(),
+        crate::operation::terminal_disposal::Scope::Track(plan.track_id.to_string()),
+        w.daemon.proc_supervisor_sock.as_deref(),
+    )
+    .await?;
     let mut seals =
         crate::shared_codex_appserver::DeletionThreadSeals::new(cs.shared_codex_appserver.clone());
     for card in &plan.cards {
@@ -3891,6 +3920,11 @@ async fn finish_track_deletion(
                 // committing the delete without knowing which projections to
                 // refresh would leave directly claimable rows admitted under
                 // the old share.
+                crate::operation::terminal_disposal::require_safe_tx(
+                    tx,
+                    &crate::operation::terminal_disposal::Scope::Track(track_id.to_string()),
+                )
+                .await?;
                 let surviving_root = surviving_root_before_leaf_removal(tx, &track_id).await?;
                 for terminal in &terminals {
                     match terminal_delete_tx(tx, &terminal.id)

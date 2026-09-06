@@ -174,17 +174,19 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
   let canceled = 0;
   let done = 0;
   for (const task of tasks) {
-    if (task.status === 'dispatched' || task.status === 'running' || task.status === 'verifying') {
+    const status = task.execution?.status ?? task.status;
+    const pendingReason = task.execution === undefined ? task.pendingReason : null;
+    if (status === 'dispatched' || status === 'running' || status === 'verifying') {
       active += 1;
-    } else if (task.status === 'failed') {
+    } else if (status === 'failed') {
       failed += 1;
-    } else if (task.status === 'done') {
+    } else if (status === 'done') {
       done += 1;
-    } else if (task.status === 'canceled') {
+    } else if (status === 'canceled') {
       canceled += 1;
-    } else if (task.pendingReason?.kind === 'budgetQueued') {
+    } else if (pendingReason?.kind === 'budgetQueued') {
       queued += 1;
-    } else if (task.status === 'pending' || task.pendingReason !== null) {
+    } else if (status === 'pending' || status === 'awaiting_projection' || status === 'awaiting_refresh' || pendingReason !== null) {
       waiting += 1;
     }
   }

@@ -1215,6 +1215,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tracks/{id}/tasks/{key}/attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_attempts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tracks/{id}/tasks/{key}/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["recover"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tracks/{track_id}/cards": {
         parameters: {
             query?: never;
@@ -2667,6 +2699,23 @@ export interface components {
                 [key: string]: string | null;
             };
         };
+        /**
+         * @description Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.
+         *     Blocking reason applies only to the selected current attempt; historical attempts carry null.
+         */
+        TaskAttemptView: {
+            attempt_id: string;
+            blocking_reason: string | null;
+            /** Format: int64 */
+            created_at_ms: number;
+            /** Format: int64 */
+            finished_at_ms: number | null;
+            /** Format: int64 */
+            generation: number;
+            status: string;
+            status_detail: string | null;
+            worker_card_id: string | null;
+        };
         TaskPendingReason: {
             dependencies: string[];
             /** @enum {string} */
@@ -2686,6 +2735,34 @@ export interface components {
             /** @enum {string} */
             kind: "notAdmitted";
             message: string;
+        };
+        TaskRecoveryCapability: {
+            allowed: boolean;
+            code: string;
+            reason: string;
+        };
+        /** @description Stable acknowledgement, including when the response to the first call was lost. */
+        TaskRecoveryReceipt: {
+            attempt_id: string;
+            /** Format: int64 */
+            generation: number;
+            key: string;
+            previous_attempt_id: string;
+        };
+        TaskRecoveryRequest: {
+            expected_attempt_id: string;
+            idempotency_key: string;
+            reason: string;
+        };
+        /**
+         * @description Execution history. `current` is null only when the live declaration has never
+         *     received an allocation.
+         */
+        TaskRecoveryView: {
+            attempts: components["schemas"]["TaskAttemptView"][];
+            current: null | components["schemas"]["TaskAttemptView"];
+            key: string;
+            recovery: components["schemas"]["TaskRecoveryCapability"];
         };
         Terminal: {
             card_id: string;
@@ -7263,6 +7340,86 @@ export interface operations {
                 };
             };
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_attempts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskRecoveryView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    recover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskRecoveryRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskRecoveryReceipt"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

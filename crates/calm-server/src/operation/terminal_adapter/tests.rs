@@ -271,3 +271,15 @@ async fn terminal_worker_refuses_to_default_to_an_empty_workspace() {
         "unexpected error: {err}"
     );
 }
+
+#[cfg(test)]
+mod recovery_tests;
+
+#[cfg(test)]
+mod gate_recovery_tests;
+
+#[cfg(test)]
+mod launch_cleanup_tests;
+
+#[cfg(test)]
+mod disposal_tests;

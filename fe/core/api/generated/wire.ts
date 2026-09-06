@@ -379,6 +379,12 @@ export type ReportBlock = { id: string, kind: string, rev: number, payload: unkn
 export type ReviewSubject = { phase: string, slice_id: string, pr_number: number | null, };
 
 /**
+ * Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.
+ * Blocking reason applies only to the selected current attempt; historical attempts carry null.
+ */
+export type TaskAttemptView = { attempt_id: string, generation: number, status: string, status_detail: string | null, worker_card_id: string | null, created_at_ms: number, finished_at_ms: number | null, blocking_reason: string | null, };
+
+/**
  * One changed frozen reference carried by a context-advance verdict.
  */
 export type TaskContextChangedRef = { track_id: TrackId, block_id: string, from_rev: number, to_rev: number, from_hash: string, to_hash: string, };
@@ -387,6 +393,21 @@ export type TaskContextChangedRef = { track_id: TrackId, block_id: string, from_
  * One report-block identity captured in a task context freeze.
  */
 export type TaskContextRef = { track_id: TrackId, block_id: string, rev: number, hash: string, is_root: boolean, };
+
+export type TaskRecoveryCapability = { allowed: boolean, code: string, reason: string, };
+
+/**
+ * Stable acknowledgement, including when the response to the first call was lost.
+ */
+export type TaskRecoveryReceipt = { key: string, previous_attempt_id: string, attempt_id: string, generation: number, };
+
+export type TaskRecoveryRequest = { expected_attempt_id: string, idempotency_key: string, reason: string, };
+
+/**
+ * Execution history. `current` is null only when the live declaration has never
+ * received an allocation.
+ */
+export type TaskRecoveryView = { key: string, current: TaskAttemptView | null, attempts: Array<TaskAttemptView>, recovery: TaskRecoveryCapability, };
 
 export type Track = { id: TrackId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: TrackLifecycle, 
 /**

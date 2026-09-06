@@ -115,8 +115,18 @@ pub struct GateStepInput {
     pub cmd: String,
 }
 
+/// Required declaration provenance. Only the report extractor creates report
+/// evidence from the same raw snapshot as the executable fields. Pure validation
+/// inputs have no report root and must never be accepted by DB projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskDeclarationSource {
+    Report { root_hash_preimage: String },
+    ValidationOnly,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskDeclaration {
+    pub source: TaskDeclarationSource,
     /// Present only for declarations projected from report blocks. Plan-upsert
     /// validation has no block whose diagnostics could be indexed.
     pub block_index: Option<usize>,
@@ -297,9 +307,14 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
         ),
         "declare_and_wait" => "this track requires user release before planner tasks are queued".into(),
         "declaration_changed_in_flight" => {
-            "task is already executing; declaration changes were not applied".into()
+            "the declaration differs from the recorded execution; its frozen requirements were not changed".into()
         }
-        "task_key_completed" => "task key has already completed; declare a new key instead".into(),
+        "task_key_completed" => match arg(args, "status") {
+            "failed" => "the current attempt failed; inspect its recovery options".into(),
+            "done" => "this task is complete; its execution history remains available".into(),
+            "canceled" => "the current attempt was canceled; review its execution history".into(),
+            _ => "this execution has ended; inspect its outcome".into(),
+        },
         "context_stale_declaration" => format!(
             "task `{}` is in flight ({}) and cannot be withdrawn immediately; its declaration context is now stale, so any gate operation that has not started will be rejected",
             arg(args, "key"),
@@ -722,6 +737,9 @@ pub fn project_task_declarations(
             .get("tombstone")
             .is_some_and(|value| !value.is_null());
         let declaration = TaskDeclaration {
+            source: TaskDeclarationSource::Report {
+                root_hash_preimage: crate::task_recovery::task_root_hash_preimage(&block.payload),
+            },
             block_index: Some(index),
             block_id: block.id.clone(),
             key: payload["key"].as_str().expect("validated key").to_string(),
@@ -916,8 +934,50 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn task_recovery_source_retains_absent_and_empty_raw_fields() {
+        let absent = ReportBlock {
+            id: "b_0001".into(),
+            kind: super::super::KIND_TASK.into(),
+            rev: 0,
+            payload: json!({"key":"b","kind":"terminal","command":"true",
+                "ready":true,"declared_by":PLANNER_DECLARATION_AUTHOR}),
+        };
+        let mut explicit_empty = absent.clone();
+        explicit_empty.payload["refs"] = json!([]);
+        explicit_empty.payload["context"] = json!({});
+        let (mut first, first_diagnostics) = project_task_declarations(&[absent]);
+        let (mut second, second_diagnostics) = project_task_declarations(&[explicit_empty]);
+        assert!(first_diagnostics.iter().all(Vec::is_empty));
+        assert!(second_diagnostics.iter().all(Vec::is_empty));
+        let first = first.remove(0);
+        let second = second.remove(0);
+        assert_eq!(first.refs, second.refs);
+        assert_eq!(first.context, second.context);
+        let TaskDeclarationSource::Report {
+            root_hash_preimage: first_source,
+        } = first.source
+        else {
+            panic!("report extractor must produce report evidence");
+        };
+        let TaskDeclarationSource::Report {
+            root_hash_preimage: second_source,
+        } = second.source
+        else {
+            panic!("report extractor must produce report evidence");
+        };
+        let first_fields: Value = serde_json::from_str(&first_source).unwrap();
+        let second_fields: Value = serde_json::from_str(&second_source).unwrap();
+        assert!(first_fields.get("refs").is_none());
+        assert!(first_fields.get("context").is_none());
+        assert_eq!(second_fields["refs"], json!([]));
+        assert_eq!(second_fields["context"], json!({}));
+        assert_ne!(first_source, second_source);
+    }
+
     fn declaration(key: &str, dependencies: &[&str]) -> TaskDeclaration {
         TaskDeclaration {
+            source: TaskDeclarationSource::ValidationOnly,
             block_index: None,
             block_id: key.into(),
             key: key.into(),
