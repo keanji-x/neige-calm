@@ -60,6 +60,10 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 mod client_transport;
 use client_transport::{PendingRequest, TransportAbort};
+
+#[cfg(feature = "fixtures")]
+#[path = "dedicated_codex/client_bootstrap.rs"]
+mod client_bootstrap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -179,6 +183,51 @@ pub struct ThreadStartParams {
     pub config: Option<serde_json::Value>,
 }
 
+#[derive(Clone, Debug)]
+pub enum ThreadPermissionSelection {
+    LegacySandbox(String),
+    NamedProfile(String),
+}
+
+#[derive(Clone)]
+pub struct PermissionThreadStartParams {
+    pub cwd: String,
+    pub approval_policy: String,
+    pub permissions: ThreadPermissionSelection,
+    pub developer_instructions: Option<String>,
+    pub config: Option<Value>,
+}
+
+impl std::fmt::Debug for PermissionThreadStartParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PermissionThreadStartParams")
+            .field("cwd", &self.cwd)
+            .field("approval_policy", &self.approval_policy)
+            .field("permissions", &self.permissions)
+            .field("developer_instructions", &self.developer_instructions)
+            .field("config", &redact_thread_start_config(&self.config))
+            .finish()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionProfileListResponse {
+    pub data: Vec<PermissionProfileSummary>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PermissionProfileSummary {
+    pub id: String,
+    pub allowed: bool,
+    pub description: Option<String>,
+}
+
+#[cfg(test)]
+#[path = "dedicated_codex/client_tests.rs"]
+mod dedicated_permission_tests;
+
 impl std::fmt::Debug for ThreadStartParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ThreadStartParams")
@@ -205,6 +254,20 @@ pub(crate) fn redact_thread_start_config(cfg: &Option<serde_json::Value>) -> ser
                 for value in map.values_mut() {
                     if value.is_string() {
                         *value = Value::String("[REDACTED]".into());
+                    }
+                }
+            }
+        }
+    }
+    if let Some(servers) = redacted
+        .get_mut("mcp_servers")
+        .and_then(Value::as_object_mut)
+    {
+        for server in servers.values_mut() {
+            if let Some(map) = server.as_object_mut() {
+                for key in ["env", "http_headers", "bearer_token", "env_http_headers"] {
+                    if let Some(value) = map.get_mut(key) {
+                        *value = json!("[REDACTED]");
                     }
                 }
             }
@@ -809,11 +872,34 @@ impl CodexAppServer {
         &self,
         params: ThreadStartParams,
     ) -> Result<ThreadResult> {
-        let mut value = json!({
-            "cwd": params.cwd,
-            "approvalPolicy": params.approval_policy,
-            "sandbox": params.sandbox_mode,
-        });
+        self.thread_start_with_permissions(PermissionThreadStartParams {
+            cwd: params.cwd,
+            approval_policy: params.approval_policy,
+            permissions: ThreadPermissionSelection::LegacySandbox(params.sandbox_mode),
+            developer_instructions: params.developer_instructions,
+            config: params.config,
+        })
+        .await
+    }
+
+    pub async fn thread_start_with_permissions(
+        &self,
+        params: PermissionThreadStartParams,
+    ) -> Result<ThreadResult> {
+        let mut value = json!({"cwd":params.cwd,"approvalPolicy":params.approval_policy});
+        match params.permissions {
+            ThreadPermissionSelection::LegacySandbox(mode) => {
+                value["sandbox"] = Value::String(mode);
+            }
+            ThreadPermissionSelection::NamedProfile(profile) => {
+                if profile.trim().is_empty() {
+                    return Err(CalmError::BadRequest(
+                        "named permission profile required".into(),
+                    ));
+                }
+                value["permissions"] = Value::String(profile);
+            }
+        }
         if let Some(prompt) = params.developer_instructions {
             value["developerInstructions"] = Value::String(prompt);
         }
@@ -821,6 +907,44 @@ impl CodexAppServer {
             value["config"] = config;
         }
         self.request("thread/start", value).await
+    }
+
+    pub async fn permission_profile_list(
+        &self,
+        cwd: &str,
+        cursor: Option<&str>,
+    ) -> Result<PermissionProfileListResponse> {
+        let mut value = json!({"cwd":cwd});
+        if let Some(cursor) = cursor {
+            value["cursor"] = json!(cursor);
+        }
+        self.request("permissionProfile/list", value).await
+    }
+
+    pub async fn thread_resume_named(
+        &self,
+        thread_id: &str,
+        profile: &str,
+    ) -> Result<ThreadResult> {
+        if profile.trim().is_empty() {
+            return Err(CalmError::BadRequest(
+                "named permission profile required".into(),
+            ));
+        }
+        self.request(
+            "thread/resume",
+            json!({"threadId":thread_id,"permissions":profile,"approvalPolicy":"never"}),
+        )
+        .await
+    }
+
+    /// Full provider-owned details for exact-thread reconciliation; no new recorder.
+    pub async fn thread_read_full(&self, thread_id: &str) -> Result<ThreadResult> {
+        self.request(
+            "thread/read",
+            json!({"threadId":thread_id,"includeTurns":true}),
+        )
+        .await
     }
 
     /// `thread/resume` — attach to an existing thread by id. Fails with a

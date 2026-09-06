@@ -240,6 +240,7 @@ calm-truth = { path = "../calm-truth" }
 calm-provider = { path = "../calm-provider" }
 calm-session = { path = "../calm-session" }
 calm-proc-supervisor = { path = "../calm-proc-supervisor" }
+calm-worker-runtime = { path = "../calm-worker-runtime" }
 blake3 = "1.8"
 
 # Streaming request bodies. `http_body_util::Limited` is the planner attachment

@@ -465,6 +465,7 @@ dependencies = [
  "calm-truth",
  "calm-truth-test-harness",
  "calm-types",
+ "calm-worker-runtime",
  "chrono",
  "clap",
  "criterion",
