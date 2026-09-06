@@ -1641,7 +1641,14 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
     })
     .await;
     let Some(session) = session else {
-        let rows: Vec<(Option<String>, String, String, Option<String>, Option<String>)> =
+        type SessionProjectionDebugRow = (
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        );
+        let rows: Vec<SessionProjectionDebugRow> =
             sqlx::query_as("SELECT c.session_id,ws.id,ws.state,ws.thread_id,ws.active_turn_id FROM cards c JOIN worker_sessions ws ON ws.card_id=c.id WHERE c.id=?1")
                 .bind(&card_id).fetch_all(&pool).await.unwrap();
         panic!(
