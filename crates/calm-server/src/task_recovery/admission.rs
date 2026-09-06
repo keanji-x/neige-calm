@@ -85,10 +85,34 @@ pub(super) async fn admit_recovery_tx(
     resume_blocked: bool,
 ) -> Result<TaskRecoveryConstraint> {
     recovery_policy(tx, track, previous, generation, actor, resume_blocked).await?;
+    let constraint = claim_constraint_tx(tx, previous).await?;
+    constraint.validate(&previous.track_id).map_err(conflict)?;
+    check_constraint_tx(tx, track, &previous.key, &constraint).await?;
+    require_recoverable_predecessor_tx(tx, previous).await?;
+    Ok(constraint)
+}
+
+/// Shared exact claim-source validation; isolated first starts also require it.
+pub(crate) async fn validate_isolated_start_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
+    require_attempt_startable_tx(tx, &task.id).await?;
+    let track = crate::track_lifecycle::track_get_tx(tx, &task.track_id.clone().into()).await?;
+    if task.status != TaskStatus::Dispatched
+        || task.context_stale_at_ms.is_some()
+        || !crate::scheduler::lifecycle_allows_scheduling(track.lifecycle)
+    {
+        return Err(conflict(
+            "isolated task is not authorized for a first start",
+        ));
+    }
+    let constraint = claim_constraint_tx(tx, task).await?;
+    check_constraint_tx(tx, &track, &task.key, &constraint).await
+}
+
+async fn claim_constraint_tx(tx: &mut Tx<'_>, task: &Task) -> Result<TaskRecoveryConstraint> {
     let (json, truncated): (Option<String>, i64) = sqlx::query_as(
         "SELECT claim_context_json, context_closure_truncated FROM tasks WHERE id=?1",
     )
-    .bind(&previous.id)
+    .bind(&task.id)
     .fetch_one(&mut **tx)
     .await?;
     if truncated != 0 {
@@ -102,12 +126,9 @@ pub(super) async fn admit_recovery_tx(
     .map_err(|_| conflict("failed execution has malformed frozen context"))?;
     let constraint = TaskRecoveryConstraint::V1 {
         refs,
-        spawn: previous.spawn.clone(),
-        declared_by: previous.declared_by.clone(),
+        spawn: task.spawn.clone(),
+        declared_by: task.declared_by.clone(),
     };
-    constraint.validate(&previous.track_id).map_err(conflict)?;
-    check_constraint_tx(tx, track, &previous.key, &constraint).await?;
-    require_recoverable_predecessor_tx(tx, previous).await?;
     Ok(constraint)
 }
 

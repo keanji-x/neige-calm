@@ -112,6 +112,39 @@ impl TaskLaunch {
         T: Send + 'static,
         F: Future<Output = Result<T>> + Send + 'static,
     {
+        self.run_guarded(repo, None, effect).await
+    }
+
+    pub(crate) async fn run_isolated_observed<T, F>(
+        self,
+        repo: &dyn RepoEventWrite,
+        intent: crate::isolated_codex::turn::TurnIntent,
+        effect: F,
+    ) -> std::result::Result<T, LaunchFailure<T>>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T>> + Send + 'static,
+    {
+        self.run_guarded(repo, Some(intent), effect).await
+    }
+
+    async fn run_guarded<T, F>(
+        self,
+        repo: &dyn RepoEventWrite,
+        intent: Option<crate::isolated_codex::turn::TurnIntent>,
+        effect: F,
+    ) -> std::result::Result<T, LaunchFailure<T>>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T>> + Send + 'static,
+    {
+        let isolated = self.operation.kind == crate::isolated_codex::OPERATION_KIND;
+        if isolated != intent.is_some() {
+            return Err(CalmError::Conflict(
+                "isolated launch requires its exact turn intent".into(),
+            )
+            .into());
+        }
         let task_id = self.task_id.clone();
         let recovered = write_in_tx_typed(repo, move |tx| {
             Box::pin(async move {
@@ -128,7 +161,7 @@ impl TaskLaunch {
         .await?;
         // Keep the established already-prepared initial-attempt reconciliation
         // contract. Current/terminal execution identity is still fenced above.
-        if !recovered {
+        if !recovered && !isolated {
             return effect.await.map_err(|error| LaunchFailure {
                 error,
                 observed: None,
@@ -141,6 +174,9 @@ impl TaskLaunch {
         let started_in_tx = started.clone();
         let committed = write_in_tx_typed(repo, move |tx| Box::pin(async move {
             crate::task_recovery::require_attempt_startable_tx(tx, &self.task_id).await?;
+            if let Some(intent) = &intent {
+                crate::isolated_codex::turn::validate_tx(tx, &self.operation, intent).await?;
+            }
             let owner = self.operation.lease_owner.as_deref()
                 .ok_or_else(|| CalmError::Conflict("recovery launch requires an owned operation lease".into()))?;
             let now = crate::model::now_ms();
@@ -158,7 +194,7 @@ impl TaskLaunch {
                 WHERE id=?3 AND lease_owner=?4 AND phase='spawn_started'
                   AND json_type(tx_output_json,'$.data')='object'
                   AND (
-                    (kind IN ('codex-worker','claude-worker','terminal-worker')
+                    (kind IN ('codex-worker','claude-worker','terminal-worker','codex-isolated-worker')
                      AND idempotency_key=?5 AND json_extract(payload_json,'$.idempotency_key')=?5
                      AND target_type='card'
                      AND EXISTS(SELECT 1 FROM cards c WHERE c.id=operations.target_id AND c.role='worker'

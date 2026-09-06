@@ -1042,3 +1042,5 @@ mod boot_reconcile_retry_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
+
+pub mod isolated_codex;

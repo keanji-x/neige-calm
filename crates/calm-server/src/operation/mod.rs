@@ -1,10 +1,14 @@
 #[cfg(test)]
+mod isolated_output_tests;
+
+#[cfg(test)]
 pub(crate) mod launch_cleanup_test_support;
 
 #[cfg(test)]
 mod parked_fence_model;
 
 mod driver;
+pub(crate) mod owned_parked;
 mod repo_sqlite;
 pub(crate) mod workspace_lease;
 
@@ -60,8 +64,9 @@ const OPERATION_LEASE_MS: TimestampMs = 60_000;
 
 /// Authoritative registry of operation adapters whose payload is bound to a
 /// task row and must therefore enforce the stale-context admission fence.
-pub const TASK_BOUND_ADAPTER_KINDS: [&str; 5] = [
+pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
     "codex-worker",
+    "codex-isolated-worker",
     "claude-worker",
     "terminal-worker",
     "task-verify",
@@ -739,6 +744,23 @@ pub trait ProviderAdapter: Send + Sync {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome>;
 
+    /// Adapter-owned resources have no host process-group artifact. Their
+    /// private receipt and stop proof are reconciled before saga completion.
+    fn owns_parked_resource(&self) -> bool {
+        false
+    }
+
+    async fn recover_owned_parked(
+        &self,
+        _op: &Operation,
+        _mode: RecoveryMode,
+        _ctx: &SpawnCtx,
+    ) -> Result<ParkedRecovery> {
+        Err(CalmError::Internal(
+            "adapter does not own parked resources".into(),
+        ))
+    }
+
     async fn recover_parked(
         &self,
         _op: &Operation,
@@ -843,7 +865,9 @@ pub trait OperationRepo: Send + Sync {
                    updated_at_ms = ?1
                WHERE id = ?3
                  AND lease_owner = ?4
-                 AND spawn_artifacts_json IS NOT NULL"#,
+                 AND (spawn_artifacts_json IS NOT NULL
+                   OR (kind='codex-isolated-worker' AND json_type(tx_output_json,
+                       '$.data.isolated_execution.provider.record.endpoint.boundary')='object'))"#,
         )
         .bind(now)
         .bind(deadline_ms)

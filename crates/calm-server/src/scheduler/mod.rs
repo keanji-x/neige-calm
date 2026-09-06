@@ -39,6 +39,9 @@
 //! backstop. `Event::TaskDispatched` is appended IN the claim tx so
 //! projections stay purely event-sourced (§5.6).
 
+mod worker_failure;
+pub(crate) use worker_failure::fail_worker_task_tx;
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -210,6 +213,12 @@ pub fn compute_ready(tasks: &[Task], budget: i64) -> Vec<Task> {
 /// deterministic, so a post-crash resubmit always idempotency-matches
 /// the original operation instead of conflicting on payload hash.
 pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
+    if crate::isolated_codex::selected(task)? {
+        return Ok((
+            crate::isolated_codex::OPERATION_KIND,
+            serde_json::to_value(crate::isolated_codex::worker_payload(task))?,
+        ));
+    }
     match task.kind {
         TaskKind::Codex => {
             let payload = serde_json::to_value(CodexWorkerOperationPayload {
@@ -1423,6 +1432,7 @@ impl Scheduler {
     /// §8). The drive lease (60s, `claim_drive_batch`) makes concurrent
     /// drivers execute no phase twice.
     async fn drive_spawn(&self, task: &Task, track: &Track) -> Result<()> {
+        let isolated = crate::isolated_codex::selected(task)?;
         if task.spawn == "sub-wave" {
             return self.drive_child_track(task, track).await;
         }
@@ -1471,6 +1481,15 @@ impl Scheduler {
             // retry counting) — log-and-leave for the next trigger/sweep.
             Err(e) => return Err(e),
         };
+        if isolated {
+            // The one lifetime Operation remains parked after its canonical
+            // acknowledged-running stamp. Do not hold the track scheduler for a model turn.
+            if let Some(result) = runtime.operation_result(&op_id).await? {
+                self.reconcile_spawn_result(task, track, result.outcome)
+                    .await?;
+            }
+            return Ok(());
+        }
         let result = runtime.wait(&op_id).await?;
         self.reconcile_spawn_result(task, track, result.outcome)
             .await
@@ -1786,13 +1805,11 @@ impl Scheduler {
             .sqlite_pool()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let mut tx = begin_immediate_tx(&pool).await?;
-        let now = now_ms();
-        let rows = task_mark_running_tx(
+        let rows = mark_acknowledged_running_tx(
             &mut tx,
             task_id,
             worker_card_id,
-            now,
-            now.saturating_add(self.task_run_timeout_ms()),
+            self.task_run_timeout_ms(),
         )
         .await?;
         tx.commit().await?;
@@ -1820,14 +1837,9 @@ impl Scheduler {
     /// The `spawn-failed` CLASSIFIER stays the prefix — everything that
     /// dispatches on the vocabulary goes through `status_detail_class`.
     async fn fail_spawn(&self, task: &Task, track: &Track, reason: &str) -> Result<()> {
-        let scope = EventScope::Track {
-            track: track.id.clone(),
-            area: track.area_id.clone(),
-        };
-        let task_id = task.id.clone();
-        let track_id = track.id.clone();
-        let status_detail = status_detail_with_reason("spawn-failed", reason);
-        let reason = format!("worker spawn failed: {reason}");
+        let task = task.clone();
+        let track = track.clone();
+        let reason = reason.to_string();
         let result = write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
             None,
@@ -1835,44 +1847,8 @@ impl Scheduler {
             &self.write,
             move |tx| {
                 Box::pin(async move {
-                    let rows = task_fail_from_worker_tx(
-                        tx,
-                        &task_id,
-                        track_id.as_str(),
-                        TaskReporter::Kernel,
-                        &status_detail,
-                        now_ms(),
-                    )
-                    .await?;
-                    if rows == 0 {
-                        return Err(race_lost_err());
-                    }
-                    let mut events = vec![(
-                        ActorId::KernelDispatcher,
-                        scope.clone(),
-                        Event::TaskFailed {
-                            idempotency_key: task_id.clone(),
-                            reason,
-                            details: None,
-                            agent_message: None,
-                        },
-                    )];
-                    if let Some(auto_events) = auto_transition_if_current_in_tx(
-                        tx,
-                        &track_id,
-                        TrackLifecycle::Working,
-                        TrackLifecycle::Reviewing,
-                        &ActorId::KernelDispatcher,
-                        Some("[auto] worker spawn failed".to_string()),
-                    )
-                    .await?
-                    {
-                        events.extend(
-                            auto_events
-                                .into_iter()
-                                .map(|event| (ActorId::KernelDispatcher, scope.clone(), event)),
-                        );
-                    }
+                    let events =
+                        fail_worker_task_tx(tx, &task, &track, "spawn-failed", &reason).await?;
                     Ok(((), events))
                 })
             },
@@ -1880,10 +1856,8 @@ impl Scheduler {
         .await;
         match result {
             Ok(_) => Ok(()),
-            // 0-row flip: the row already moved on (e.g. a late worker
-            // report landed first) — nothing to record.
-            Err(e) if is_race_lost(&e) => Ok(()),
-            Err(e) => Err(e),
+            Err(error) if is_race_lost(&error) => Ok(()),
+            Err(error) => Err(error),
         }
     }
 
@@ -2944,3 +2918,22 @@ pub async fn complete_terminal_task(
 
 #[cfg(test)]
 mod tests;
+
+/// Canonical acknowledgement stamp shared by terminal startup and parked worker startup.
+/// A fast terminal report remains authoritative: the existing CAS returns zero.
+pub(crate) async fn mark_acknowledged_running_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    task_id: &str,
+    worker_card_id: Option<&str>,
+    timeout_ms: i64,
+) -> Result<u64> {
+    let now = now_ms();
+    task_mark_running_tx(
+        tx,
+        task_id,
+        worker_card_id,
+        now,
+        now.saturating_add(timeout_ms),
+    )
+    .await
+}

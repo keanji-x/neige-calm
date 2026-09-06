@@ -241,6 +241,24 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
     }
     if let Some(context) = map.get("context") {
         check_nested_string_caps("context", context, errors);
+        let selection = crate::task_execution::IsolatedCodexSelection::from_context(context)
+            .and_then(|selection| {
+                if let Some(selection) = selection {
+                    selection.validate_route(
+                        map.get("kind").and_then(Value::as_str).unwrap_or(""),
+                        map.get("spawn")
+                            .and_then(Value::as_str)
+                            .unwrap_or("in-wave"),
+                        map.get("depends_on")
+                            .is_some_and(|v| !matches!(v, Value::Array(items) if items.is_empty())),
+                        map.get("gate").is_some_and(|v| !v.is_null()),
+                    )?;
+                }
+                Ok(())
+            });
+        if let Err(error) = selection {
+            errors.push(error);
+        }
     }
     match map.get("refs") {
         None => {}

@@ -37,6 +37,11 @@ pub struct Config {
     #[arg(long, env = "CALM_WORKSPACE_ROOT")]
     pub workspace_root: Option<PathBuf>,
 
+    /// Explicit configuration for opted-in single-task isolated Codex execution.
+    /// Missing keeps this backend unavailable; existing tasks keep their route.
+    #[arg(long)]
+    pub isolated_codex_config: Option<PathBuf>,
+
     /// Unix socket used to ask calm-proc-supervisor to fork session daemons.
     /// Defaults to `<CALM_DATA_DIR>/proc-supervisor.sock`.
     #[arg(long, env = "CALM_PROC_SUPERVISOR_SOCK")]
