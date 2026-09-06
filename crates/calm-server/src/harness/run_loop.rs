@@ -805,13 +805,29 @@ fn recent_hook_keys_from_pending_queue(
     (keys, set)
 }
 
+/// Cadence timer for the harness run loop's periodic maintenance branch.
+///
+/// The loop's `select!` can be parked for a long bounded stretch inside
+/// `maybe_issue_turn` (transcript refresh + diff + head fallback + a
+/// `turn/start` round trip, ~41s worst case). With tokio's default
+/// [`MissedTickBehavior::Burst`] a 50ms interval would then hand back roughly
+/// 800 immediately-ready ticks, and every one of them competes with the
+/// observation, notification and shutdown branches of the same `select!`.
+/// [`MissedTickBehavior::Skip`] collapses that backlog into a single tick on
+/// the next aligned deadline.
+fn harness_tick() -> tokio::time::Interval {
+    let mut tick = tokio::time::interval(Duration::from_millis(50));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tick
+}
+
 async fn run_loop(
     inner: Arc<Inner>,
     mut observations: mpsc::Receiver<HarnessObservationCommand>,
     mut shutdown: broadcast::Receiver<()>,
     mut notifications: broadcast::Receiver<Notification>,
 ) {
-    let mut tick = tokio::time::interval(Duration::from_millis(50));
+    let mut tick = harness_tick();
     loop {
         tokio::select! {
             command = observations.recv() => {
@@ -2630,7 +2646,8 @@ fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {
 #[cfg(test)]
 mod tests {
     use super::{
-        HarnessObservationDelivery, map_observation_send_error, should_persist_item_method,
+        HarnessObservationDelivery, harness_tick, map_observation_send_error,
+        should_persist_item_method,
     };
     use crate::error::CalmError;
     use crate::harness::observation::Observation;
@@ -2642,6 +2659,15 @@ mod tests {
             observation: Observation::TrackGoal { text: text.into() },
             envelope_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn harness_tick_skips_missed_ticks_instead_of_bursting() {
+        assert_eq!(
+            harness_tick().missed_tick_behavior(),
+            tokio::time::MissedTickBehavior::Skip,
+            "run loop tick must not burst-replay a backlog against the other select! branches"
+        );
     }
 
     #[test]
