@@ -38,6 +38,9 @@ fn price_server(price: &'static str) -> String {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
+            // A request that stops mid-head must not park this thread
+            // forever and starve every later request.
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
             // Read just enough to reach the end of the request head; the
             // plugin sends no body.
             let mut head = Vec::new();
@@ -136,6 +139,20 @@ impl FakeKernel {
         self.frames.recv_timeout(REPLY_BUDGET)
     }
 
+    /// Does the plugin still answer? Used after an *absence* assertion: an
+    /// empty channel proves nothing on its own, because a plugin that crashed
+    /// or wedged produces the same silence as one that correctly had nothing
+    /// left to say.
+    fn is_responsive(&mut self) -> bool {
+        self.send(json!({ "jsonrpc": "2.0", "id": 9_999, "method": "ping" }));
+        while let Ok(frame) = self.next_frame() {
+            if frame.get("id") == Some(&json!(9_999)) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Answer one `neige.*` callback with a bland success, so the plugin can
     /// proceed. Returns the method that was answered.
     fn answer(&mut self, frame: &Value) -> String {
@@ -207,22 +224,33 @@ fn a_tool_call_is_answered_while_the_reader_keeps_reading() {
 /// a subset, plotted against totals covering the whole, draws a crash that
 /// never happened, and the previous point's `change` column states it as a
 /// number.
+///
+/// The portfolio is deliberately **partly** priceable: `USDT:3` is the quote
+/// asset and prices at 1.0 with no network at all, while `BTC:1` goes to a
+/// dead endpoint. A single unpriceable holding would leave the total at zero,
+/// and the defect this pins — skipping history only when the total is zero —
+/// would survive the test.
 #[test]
 fn a_tick_that_cannot_price_everything_writes_no_history_point() {
-    let mut kernel = FakeKernel::boot("BTC:1");
+    let mut kernel = FakeKernel::boot("USDT:3,BTC:1");
 
     let mut methods = Vec::new();
-    // Drive the startup refresh to completion. Every price lookup fails
-    // (nothing listens on the endpoint), so a correct plugin pushes exactly
-    // one overlay and stops.
+    let mut total = None;
     while let Ok(frame) = kernel.next_frame() {
         if frame.get("method").is_some() {
-            let method = kernel.answer(&frame);
             let kind = frame
                 .pointer("/params/kind")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
+            if kind == "portfolio.holdings" {
+                total = frame
+                    .pointer("/params/payload/rows")
+                    .and_then(Value::as_array)
+                    .and_then(|rows| rows.last())
+                    .and_then(|row| row["value"].as_f64());
+            }
+            let method = kernel.answer(&frame);
             methods.push(if kind.is_empty() {
                 method
             } else {
@@ -232,10 +260,23 @@ fn a_tick_that_cannot_price_everything_writes_no_history_point() {
     }
 
     assert_eq!(
+        total,
+        Some(3.0),
+        "the priced half of the portfolio is worth 3, so this tick is PARTIAL, \
+         not empty — an empty one would pass even the defect this test pins"
+    );
+    assert_eq!(
         methods,
         vec!["neige.overlay.set:portfolio.holdings"],
-        "an unpriceable tick publishes the holdings table and nothing else — \
+        "a partially-priced tick publishes the holdings table and nothing else — \
          no history read, no history write, no history overlay"
+    );
+    // The absence above is only evidence if the plugin was still listening
+    // through it. Without this, a crashed or wedged plugin produces exactly
+    // the same empty channel and the assertion passes for the wrong reason.
+    assert!(
+        kernel.is_responsive(),
+        "the plugin must still be answering after the partial tick"
     );
 }
 
@@ -384,5 +425,9 @@ fn a_history_point_that_cannot_be_stored_is_not_published() {
             "neige.kv.set",
         ],
         "the refused write must end the tick — no history overlay follows it"
+    );
+    assert!(
+        kernel.is_responsive(),
+        "the plugin must still be answering after the refused write"
     );
 }

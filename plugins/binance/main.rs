@@ -250,8 +250,13 @@ fn fetch_price(endpoint: &str, symbol: &str) -> Result<f64, String> {
     // propagates into the total, out through `json!` as `null`, and back in
     // through `unwrap_or(0.0)` as a *fabricated zero* — a number nobody
     // measured, indistinguishable in the table from a real one.
-    if !parsed.is_finite() {
-        return Err(format!("{url} returned a non-finite price `{price}`"));
+    // Finite is not enough: `0` and negative parse fine and would price a
+    // holding at zero or below, which no spot market means and which the
+    // tables would render as a real valuation.
+    if !parsed.is_finite() || parsed <= 0.0 {
+        return Err(format!(
+            "{url} returned `{price}`, which is not a positive finite price"
+        ));
     }
     Ok(parsed)
 }
@@ -311,9 +316,22 @@ fn price_holdings(cfg: &Config) -> (Vec<Value>, f64, bool) {
 
 /// Round for display. Overlay payloads are read by humans through a table, and
 /// an f64 rendered at full precision (`79979.99000000000001`) is noise.
+///
+/// Rounding is the one arithmetic step that can *create* an infinity out of a
+/// finite input: `1e308 * 100` overflows. That mattered — every finiteness
+/// guard upstream would pass, and the infinity would serialize as `null` and
+/// read back as a fabricated zero, which is the exact defect those guards
+/// exist to prevent. A value too large to scale is therefore returned
+/// unrounded rather than rounded to infinity: the display loses two decimals
+/// it never had at that magnitude, and finiteness — which the caller checks —
+/// is preserved.
 fn round_to(value: f64, places: u32) -> f64 {
     let factor = 10f64.powi(places as i32);
-    (value * factor).round() / factor
+    let scaled = value * factor;
+    if !scaled.is_finite() {
+        return value;
+    }
+    scaled.round() / factor
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +479,17 @@ fn refresh(rpc: &Rpc, cfg: &Config) -> Refreshed {
     }
     let at = now_rfc3339();
     let (rows, total, complete) = price_holdings(cfg);
+    // Each row's `price × qty` was checked for finiteness, but the sum of
+    // finite values can still overflow. Checked BEFORE anything is published:
+    // an infinite total serializes through `json!` as `null`, and the holdings
+    // table would otherwise go out with an empty Total cell under a caption
+    // claiming a clean pricing.
+    if !total.is_finite() {
+        eprintln!("binance: the portfolio total overflowed to {total}; publishing nothing");
+        return Refreshed::Partially(
+            "the portfolio total is not a finite number; nothing was published".into(),
+        );
+    }
     if !push_overlay(
         rpc,
         cfg,
@@ -472,15 +501,6 @@ fn refresh(rpc: &Rpc, cfg: &Config) -> Refreshed {
     if !complete {
         return Refreshed::Partially(
             "some holdings could not be priced; the history point was skipped".into(),
-        );
-    }
-    // Each row's `price × qty` was checked for finiteness, but the sum of
-    // finite values can still overflow. An infinite total serializes through
-    // `json!` as `null` and reads back through `unwrap_or(0.0)` as a
-    // fabricated zero, which the history table would plot as a total wipeout.
-    if !total.is_finite() {
-        return Refreshed::Partially(
-            "the portfolio total is not a finite number; the history point was skipped".into(),
         );
     }
 
@@ -648,8 +668,29 @@ fn tools_call_reply(rpc: &Rpc, cfg: Option<&Config>, frame: &Value) -> Value {
 
 fn main() {
     let rpc = Arc::new(Rpc::new());
-    let mut cfg: Option<Config> = None;
     let reader = BufReader::new(std::io::stdin());
+
+    // One worker for every tool call, for the reasons at the `tools/call` arm.
+    // It learns the configuration through the same channel: the handshake that
+    // produces it happens on the read loop, after this thread already exists.
+    let (tool_calls, tool_queue) = mpsc::channel::<Value>();
+    let (config_tx, config_rx) = mpsc::channel::<Option<Config>>();
+    {
+        let rpc = Arc::clone(&rpc);
+        std::thread::spawn(move || {
+            let mut cfg: Option<Config> = None;
+            for frame in tool_queue {
+                while let Ok(update) = config_rx.try_recv() {
+                    cfg = update;
+                }
+                let Some(id) = frame.get("id").cloned() else {
+                    continue;
+                };
+                let reply = tools_call_reply(&rpc, cfg.as_ref(), &frame);
+                rpc.reply(id, reply);
+            }
+        });
+    }
 
     for line in reader.lines() {
         let Ok(line) = line else { return };
@@ -685,8 +726,12 @@ fn main() {
         match method {
             "initialize" => {
                 rpc.reply(id, initialize_reply(&frame));
-                cfg = config_from_initialize(&frame);
-                match cfg.clone() {
+                // The worker owns the only copy the tool path reads; the
+                // poller below takes the other. The read loop keeps none —
+                // there is nothing left here that needs it.
+                let parsed = config_from_initialize(&frame);
+                let _ = config_tx.send(parsed.clone());
+                match parsed {
                     Some(config) => {
                         eprintln!(
                             "binance: configured — track={} holdings={} quote={} poll={}s endpoint={}",
@@ -713,18 +758,25 @@ fn main() {
                 }
             }
             "tools/call" => {
-                // Off the read loop, always. A tool call issues `neige.*`
-                // callbacks, and the replies to those arrive on the very
-                // stdin this loop is reading: handling the call inline makes
-                // the plugin wait 15s for a reply it is itself preventing
-                // itself from reading, then report a timeout — while every
-                // other request (a ping, a second tool call) queues behind it.
-                let rpc = Arc::clone(&rpc);
-                let cfg = cfg.clone();
-                std::thread::spawn(move || {
-                    let reply = tools_call_reply(&rpc, cfg.as_ref(), &frame);
-                    rpc.reply(id, reply);
-                });
+                // Handed to the single worker, never run here and never given
+                // a thread of its own. Not here, because a tool call issues
+                // `neige.*` callbacks whose replies arrive on the very stdin
+                // this loop is reading — handling it inline makes the plugin
+                // wait out its own 15s timeout for a reply it is preventing
+                // itself from reading. Not a thread each, because tool calls
+                // serialize on `REFRESH_LOCK` anyway (each holding it across
+                // network calls), so a caller that sends faster than a refresh
+                // completes would accumulate blocked threads without bound,
+                // and a `thread::spawn` that then failed would panic on the
+                // reader and take the plugin down silently.
+                if tool_calls.send(frame).is_err() {
+                    eprintln!("binance: the tool worker is gone; refusing the call");
+                    rpc.send(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32603, "message": "tool worker unavailable" },
+                    }));
+                }
             }
             "ping" => rpc.reply(id, json!({})),
             other => {
@@ -852,6 +904,36 @@ mod tests {
         // And the value that would reach the overlay is `null`, not a number:
         // the shape that `unwrap_or(0.0)` downstream would turn into a zero.
         assert!(json!(round_to(total, 2)).is_null());
+    }
+
+    #[test]
+    fn rounding_never_manufactures_an_infinity() {
+        // `1e308 * 100` overflows. Every finiteness guard upstream passes on
+        // this input, so if rounding produced `inf` here it would serialize
+        // as `null` and read back as a fabricated zero — the exact defect
+        // those guards exist to prevent, reintroduced by the display step.
+        assert!(round_to(1e308, 2).is_finite());
+        assert_eq!(round_to(1e308, 2), 1e308, "too large to scale ⇒ unrounded");
+        assert!(json!(round_to(1e308, 2)).is_number());
+        // The ordinary case still rounds.
+        assert_eq!(round_to(79_979.999_999, 2), 79_980.0);
+        // And a genuinely infinite input stays infinite for the caller's
+        // check to catch, rather than being laundered into a number.
+        assert!(!round_to(f64::INFINITY, 2).is_finite());
+    }
+
+    #[test]
+    fn a_price_must_be_strictly_positive() {
+        // Not reachable through `fetch_price` without a server, but the rule
+        // it enforces is stated here: zero and negative parse fine as f64 and
+        // would price a holding at or below nothing.
+        for text in ["0", "-2", "NaN", "inf"] {
+            let parsed = text.parse::<f64>().expect("parses as f64");
+            assert!(
+                !(parsed.is_finite() && parsed > 0.0),
+                "`{text}` must not pass the price guard"
+            );
+        }
     }
 
     #[test]
