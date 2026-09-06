@@ -63,10 +63,18 @@ the systemd unit carries no proxy variables. Point `endpoint` at
 * **History is forward-only.** It starts empty and grows one point per
   successful refresh. Nothing is back-filled, so the series says "since this
   plugin started watching", not "since you bought".
-* **A tick that cannot price anything writes no history point.** A zero total
-  would be a measurement claim that was never made. A tick that priced *some*
-  assets keeps the unpriced ones as `null` rows and says so in the caption —
-  the total covers the priced rows only.
+* **Only a fully-priced tick contributes a history point.** History is a claim
+  about the *portfolio's* value over time, so a total covering a subset —
+  plotted against totals covering the whole — would draw a crash that never
+  happened, and state it as a number in the `Change` column. The holdings
+  table still goes out either way: it names the missing prices row by row,
+  which is the honest form of the same information.
+* **A point that could not be stored is not displayed.** Publishing it would
+  put a value on screen that the next tick, which reloads from the store,
+  silently deletes.
+* **`binance.portfolio.refresh` reports a partial refresh as an error**, not as
+  success with a caveat — the caller's next act is to read a number off the
+  table.
 * **At most 500 points are kept**, oldest dropped first, well inside the KV
   quota the manifest asks for.
 * **Public market data only.** No API key, no account access, no order

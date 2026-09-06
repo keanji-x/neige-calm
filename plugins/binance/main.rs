@@ -243,9 +243,17 @@ fn fetch_price(endpoint: &str, symbol: &str) -> Result<f64, String> {
         .get("price")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("{url} returned no price: {body}"))?;
-    price
+    let parsed = price
         .parse::<f64>()
-        .map_err(|e| format!("{url} returned unparseable price `{price}`: {e}"))
+        .map_err(|e| format!("{url} returned unparseable price `{price}`: {e}"))?;
+    // `"NaN"` and `"inf"` parse successfully as f64, and a non-finite price
+    // propagates into the total, out through `json!` as `null`, and back in
+    // through `unwrap_or(0.0)` as a *fabricated zero* — a number nobody
+    // measured, indistinguishable in the table from a real one.
+    if !parsed.is_finite() {
+        return Err(format!("{url} returned a non-finite price `{price}`"));
+    }
+    Ok(parsed)
 }
 
 /// Price every holding. Returns the priced rows and the total; an asset whose
@@ -262,9 +270,22 @@ fn price_holdings(cfg: &Config) -> (Vec<Value>, f64, bool) {
         } else {
             fetch_price(&cfg.endpoint, &format!("{}{}", holding.asset, cfg.quote))
         };
+        // `price * qty` can overflow to infinity even when both factors are
+        // finite (a large holding of a large-priced asset), so the product is
+        // checked as well as the input.
+        let price = price.and_then(|price| {
+            let value = price * holding.qty;
+            if value.is_finite() {
+                Ok((price, value))
+            } else {
+                Err(format!(
+                    "{} × {} is not a finite value",
+                    holding.asset, holding.qty
+                ))
+            }
+        });
         match price {
-            Ok(price) => {
-                let value = price * holding.qty;
+            Ok((price, value)) => {
                 total += value;
                 rows.push(json!({
                     "asset": holding.asset,
@@ -370,8 +391,12 @@ fn history_table(cfg: &Config, points: &[Value]) -> Value {
 // The refresh cycle
 // ---------------------------------------------------------------------------
 
-fn push_overlay(rpc: &Rpc, cfg: &Config, kind: &str, payload: Value) {
-    if let Err(e) = rpc.call(
+/// Returns whether the overlay actually landed. A refused push (permission
+/// denied, a wedged host) leaves the previous value on display, so a caller
+/// that reported success would be telling the operator a stale number is
+/// fresh.
+fn push_overlay(rpc: &Rpc, cfg: &Config, kind: &str, payload: Value) -> bool {
+    match rpc.call(
         "neige.overlay.set",
         json!({
             "entity_kind": "track",
@@ -380,7 +405,11 @@ fn push_overlay(rpc: &Rpc, cfg: &Config, kind: &str, payload: Value) {
             "payload": payload,
         }),
     ) {
-        eprintln!("binance: pushing `{kind}` failed: {e}");
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("binance: pushing `{kind}` failed: {e}");
+            false
+        }
     }
 }
 
@@ -403,33 +432,63 @@ fn load_history(rpc: &Rpc) -> Result<Vec<Value>, String> {
 /// lands first.
 static REFRESH_LOCK: Mutex<()> = Mutex::new(());
 
-/// One refresh: price, push the holdings table, append a history point, push
-/// the history table. Returns whether anything was pushed.
-fn refresh(rpc: &Rpc, cfg: &Config) -> bool {
+/// The outcome of one refresh, as a caller can act on it.
+#[derive(Debug, PartialEq, Eq)]
+enum Refreshed {
+    /// Every holding priced and everything the tick meant to publish landed.
+    Fully,
+    /// Something did not: a price was unavailable, or a push was refused. The
+    /// string says which, for a tool caller to relay.
+    Partially(String),
+    /// Nothing to do — no holdings are configured.
+    NothingConfigured,
+}
+
+/// One refresh: price, push the holdings table, and — only when the tick is
+/// complete and persisted — append a history point and push the history table.
+///
+/// The ordering is deliberate. History is a claim about the *portfolio's*
+/// value over time, so a tick that could not price part of the portfolio must
+/// contribute no point: the alternative is a total covering a subset, plotted
+/// against totals covering the whole, which reads as a crash that never
+/// happened. The holdings table still goes out — it names the missing prices
+/// row by row, which is the honest form of that same information.
+fn refresh(rpc: &Rpc, cfg: &Config) -> Refreshed {
     let _serialized = REFRESH_LOCK.lock();
     if cfg.holdings.is_empty() {
         eprintln!("binance: no holdings configured; nothing to price");
-        return false;
+        return Refreshed::NothingConfigured;
     }
     let at = now_rfc3339();
     let (rows, total, complete) = price_holdings(cfg);
-    push_overlay(
+    if !push_overlay(
         rpc,
         cfg,
         "portfolio.holdings",
         holdings_table(cfg, rows, total, complete, &at),
-    );
-
-    // A tick that could not price a single holding contributes no history
-    // point: a zero total is a measurement claim we did not make.
-    if !complete && total == 0.0 {
-        return true;
+    ) {
+        return Refreshed::Partially("the holdings table could not be published".into());
     }
+    if !complete {
+        return Refreshed::Partially(
+            "some holdings could not be priced; the history point was skipped".into(),
+        );
+    }
+    // Each row's `price × qty` was checked for finiteness, but the sum of
+    // finite values can still overflow. An infinite total serializes through
+    // `json!` as `null` and reads back through `unwrap_or(0.0)` as a
+    // fabricated zero, which the history table would plot as a total wipeout.
+    if !total.is_finite() {
+        return Refreshed::Partially(
+            "the portfolio total is not a finite number; the history point was skipped".into(),
+        );
+    }
+
     let mut points = match load_history(rpc) {
         Ok(points) => points,
         Err(e) => {
             eprintln!("binance: reading history failed, leaving it untouched this tick: {e}");
-            return true;
+            return Refreshed::Partially("the history could not be read".into());
         }
     };
     points.push(json!({ "at": at, "total": round_to(total, 2) }));
@@ -437,14 +496,21 @@ fn refresh(rpc: &Rpc, cfg: &Config) -> bool {
         let drop = points.len() - MAX_HISTORY_POINTS;
         points.drain(0..drop);
     }
+    // Persist BEFORE publishing. Publishing a series that was not stored puts
+    // a point on screen that the next tick — which reloads from the store —
+    // silently deletes, and a point that vanishes reads as data loss rather
+    // than as the failed write it was.
     if let Err(e) = rpc.call(
         "neige.kv.set",
         json!({ "key": HISTORY_KEY, "value": points }),
     ) {
         eprintln!("binance: persisting history failed: {e}");
+        return Refreshed::Partially("the history point could not be persisted".into());
     }
-    push_overlay(rpc, cfg, "portfolio.history", history_table(cfg, &points));
-    true
+    if !push_overlay(rpc, cfg, "portfolio.history", history_table(cfg, &points)) {
+        return Refreshed::Partially("the history table could not be published".into());
+    }
+    Refreshed::Fully
 }
 
 /// RFC-3339 UTC to the second, without pulling `chrono` into a plugin that
@@ -542,18 +608,28 @@ fn tools_call_reply(rpc: &Rpc, cfg: Option<&Config>, frame: &Value) -> Value {
             }
         }
         "binance.portfolio.refresh" => match cfg {
-            Some(cfg) if refresh(rpc, cfg) => text_result(
-                format!(
-                    "Refreshed {} holding(s) on track {}",
-                    cfg.holdings.len(),
-                    cfg.track_id
+            Some(cfg) => match refresh(rpc, cfg) {
+                Refreshed::Fully => text_result(
+                    format!(
+                        "Refreshed {} holding(s) on track {}",
+                        cfg.holdings.len(),
+                        cfg.track_id
+                    ),
+                    json!({ "track_id": cfg.track_id, "holdings": cfg.holdings.len() }),
                 ),
-                json!({ "track_id": cfg.track_id, "holdings": cfg.holdings.len() }),
-            ),
-            Some(_) => json!({
-                "content": [{ "type": "text", "text": "No holdings configured — set `holdings` in the plugin's settings, e.g. \"BTC:100\"." }],
-                "isError": true,
-            }),
+                // A partial refresh is reported as an error, not as success
+                // with a caveat: the caller's next act is to read a number,
+                // and "Refreshed" would tell them a stale or subset value is
+                // current.
+                Refreshed::Partially(why) => json!({
+                    "content": [{ "type": "text", "text": format!("Refresh incomplete — {why}.") }],
+                    "isError": true,
+                }),
+                Refreshed::NothingConfigured => json!({
+                    "content": [{ "type": "text", "text": "No holdings configured — set `holdings` in the plugin's settings, e.g. \"BTC:100\"." }],
+                    "isError": true,
+                }),
+            },
             None => json!({
                 "content": [{ "type": "text", "text": "This plugin is not configured — set `track_id` in its settings." }],
                 "isError": true,
@@ -623,7 +699,9 @@ fn main() {
                         let rpc = Arc::clone(&rpc);
                         std::thread::spawn(move || {
                             loop {
-                                refresh(&rpc, &config);
+                                if let Refreshed::Partially(why) = refresh(&rpc, &config) {
+                                    eprintln!("binance: incomplete refresh — {why}");
+                                }
                                 std::thread::sleep(config.poll);
                             }
                         });
@@ -635,8 +713,18 @@ fn main() {
                 }
             }
             "tools/call" => {
-                let reply = tools_call_reply(&rpc, cfg.as_ref(), &frame);
-                rpc.reply(id, reply);
+                // Off the read loop, always. A tool call issues `neige.*`
+                // callbacks, and the replies to those arrive on the very
+                // stdin this loop is reading: handling the call inline makes
+                // the plugin wait 15s for a reply it is itself preventing
+                // itself from reading, then report a timeout — while every
+                // other request (a ping, a second tool call) queues behind it.
+                let rpc = Arc::clone(&rpc);
+                let cfg = cfg.clone();
+                std::thread::spawn(move || {
+                    let reply = tools_call_reply(&rpc, cfg.as_ref(), &frame);
+                    rpc.reply(id, reply);
+                });
             }
             "ping" => rpc.reply(id, json!({})),
             other => {
@@ -743,6 +831,39 @@ mod tests {
             Value::Null,
             "the first point has nothing to change from"
         );
+    }
+
+    #[test]
+    fn a_total_that_overflows_is_not_reported_as_a_number() {
+        // Two holdings of the quote asset itself price without any network
+        // (1.0 each), and each row's value is finite while their sum is not.
+        // The per-row check alone would pass this straight into the history.
+        let cfg = Config {
+            holdings: parse_holdings("USDT:1e308,USDT:1e308"),
+            ..config()
+        };
+        let (rows, total, complete) = price_holdings(&cfg);
+        assert!(complete, "both rows price fine on their own");
+        assert_eq!(rows.len(), 2);
+        assert!(
+            !total.is_finite(),
+            "the sum overflows — this is the input `refresh` must refuse to record"
+        );
+        // And the value that would reach the overlay is `null`, not a number:
+        // the shape that `unwrap_or(0.0)` downstream would turn into a zero.
+        assert!(json!(round_to(total, 2)).is_null());
+    }
+
+    #[test]
+    fn a_non_finite_row_value_is_a_pricing_failure_not_a_row() {
+        let cfg = Config {
+            holdings: parse_holdings("USDT:1e308"),
+            quote: "USDT".into(),
+            ..config()
+        };
+        let (rows, total, complete) = price_holdings(&cfg);
+        assert!(complete && total.is_finite(), "1e308 × 1.0 is still finite");
+        assert_eq!(rows.len(), 1);
     }
 
     #[test]
