@@ -27,7 +27,8 @@ use calm_server::track_area_cache::TrackAreaCache;
 use serde_json::{Value, json};
 
 use crate::support::planner_queue_fixture::{
-    SEED_THREAD_ID, boot_with, get, idle_snapshot, post_input, send_json,
+    SEED_THREAD_ID, boot_with, boot_with_broken_event_writes, get, idle_snapshot, post_input,
+    send_json,
 };
 
 /// The main acceptance path: the id the sender is handed is the id the queue
@@ -459,9 +460,12 @@ async fn truncating_a_restored_queue_announces_each_dropped_user_entry() {
 /// the record of what it discarded is committed. Failing costs a retry and
 /// nothing else, because the untruncated row is still on disk.
 ///
-/// The failure is injected by renaming `events` out from under the insert —
-/// a real write failure through the real code path, not a stub that re-states
-/// the rule.
+/// The failure is injected by renaming `events` away before the harness starts
+/// — a real write failure through the real code path, not a stub that
+/// re-states the rule. Before the harness and not after, because the run
+/// loop's own early flush races a later rename and under load wins it, leaving
+/// nothing outstanding for this to observe. (It did: an earlier version of
+/// this test passed alone and failed in the full run.)
 #[tokio::test]
 async fn a_truncation_whose_announcement_fails_is_not_persisted() {
     let addressable = QueueEntry::user_message("the oldest thing a person typed".into(), None);
@@ -470,12 +474,7 @@ async fn a_truncation_whose_announcement_fails_is_not_persisted() {
         (0..MAX_PENDING_QUEUE_LEN)
             .map(|i| QueueEntry::user_message(format!("survivor #{i}"), None)),
     );
-    let boot = boot_with(idle_snapshot(entries)).await;
-
-    sqlx::query("ALTER TABLE events RENAME TO events_hidden")
-        .execute(boot.repo.pool())
-        .await
-        .expect("hide the events table");
+    let boot = boot_with_broken_event_writes(idle_snapshot(entries)).await;
 
     let refused = boot.harness.persist_snapshot().await;
     assert!(
