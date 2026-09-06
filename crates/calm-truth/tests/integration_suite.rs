@@ -4,6 +4,8 @@ mod append_seam_trybuild;
 mod bounded_track_tree_sql;
 #[path = "events_since_bound.rs"]
 mod events_since_bound;
+#[path = "isolated_operation_migration.rs"]
+mod isolated_operation_migration;
 #[path = "track_vcs_prune.rs"]
 mod track_vcs_prune;
 #[path = "track_write_point_registry.rs"]

@@ -122,3 +122,19 @@ The selected backend must be configured; absence never silently selects the shar
 Stop active isolated attempts before removing this configuration. Retain its roots and
 private records for recovery and investigation. Distribution packaging, repository inputs,
 and a user-facing backend chooser remain follow-ups to this source-deployed pilot.
+
+## Parked-operation schema compatibility
+
+The integrated fake run exposed migration 0042's database CHECK: every parked operation
+requires the legacy process-group artifact column. The adapter hook alone cannot satisfy it.
+Migration 0099 therefore rebuilds only this CHECK, preserving all operation columns, indexes
+and the permanent keyed-row deletion fence. Legacy kinds still require their exact existing
+artifacts. Only the isolated kind may park without them, with a versioned private receipt
+bound to its operation, attempt and card. Application validation still verifies the full
+physical handle; JSON presence is not a quiescence proof.
+
+The migration keeps foreign-key enforcement on. It saves and temporarily clears the nullable
+`worker_sessions.spawn_op_id` references inside the migration transaction, rebuilds the parent
+table, and restores those exact references. Upgrade tests preserve complete operation/session
+rows and the keyed-delete fence, reject malformed isolated receipts, and keep the legacy
+parked-artifact requirement. No released migration is edited.
