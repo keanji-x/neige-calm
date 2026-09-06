@@ -357,11 +357,18 @@ impl PlannerHarness {
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
         let notifications = params.daemon.subscribe_notifications();
-        let inner = inner_from_params(params, ObservationIngress::Running(obs_tx), shutdown_tx);
+        let (inner, dropped_on_load) =
+            inner_from_params(params, ObservationIngress::Running(obs_tx), shutdown_tx);
         let handle = Self {
             inner: Arc::clone(&inner),
         };
-        let task = tokio::spawn(run_loop(inner, obs_rx, shutdown_rx, notifications));
+        let task = tokio::spawn(run_loop(
+            inner,
+            obs_rx,
+            shutdown_rx,
+            notifications,
+            dropped_on_load,
+        ));
         let abort = task.abort_handle();
         *handle
             .inner
@@ -382,7 +389,17 @@ impl PlannerHarness {
         params.snapshot.assert_known_schema();
         let (obs_tx, obs_rx) = mpsc::channel(observation_buffer);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel(4);
-        let inner = inner_from_params(params, ObservationIngress::Unstarted(obs_tx), shutdown_tx);
+        let (inner, dropped_on_load) =
+            inner_from_params(params, ObservationIngress::Unstarted(obs_tx), shutdown_tx);
+        // No run loop on this path, so there is no first-command ordering to
+        // hang the announcement off. The unit fixtures that use it drive the
+        // queue directly and do not read the event table.
+        if !dropped_on_load.is_empty() {
+            let announced = Arc::clone(&inner);
+            tokio::spawn(
+                async move { announce_dropped_entries(&announced, dropped_on_load).await },
+            );
+        }
         (Self { inner }, obs_rx)
     }
 
@@ -857,16 +874,16 @@ fn inner_from_params(
     params: PlannerHarnessParams,
     observations: ObservationIngress,
     shutdown: broadcast::Sender<()>,
-) -> Arc<Inner> {
+) -> (Arc<Inner>, Vec<QueueEntryId>) {
     let mut snapshot = params.snapshot;
-    truncate_snapshot_pending_queue(&mut snapshot);
+    let dropped_on_load = truncate_snapshot_pending_queue(&mut snapshot);
     let pending_queue: VecDeque<_> = snapshot.pending_entries().into_iter().collect();
     let debounce = debounce_from_initial_queue(&pending_queue);
     let state = state_from_snapshot(&snapshot);
     let last_phase = snapshot.phase;
     let (recent_hook_keys, recent_hook_key_set) =
         recent_hook_keys_from_pending_queue(&pending_queue);
-    Arc::new(Inner {
+    let inner = Arc::new(Inner {
         worker_session_id: params.worker_session_id,
         track_id: params.track_id,
         card_id: params.card_id,
@@ -906,7 +923,8 @@ fn inner_from_params(
         issuance_paused: AtomicBool::new(false),
         abort_handle: StdMutex::new(None),
         config: params.config,
-    })
+    });
+    (inner, dropped_on_load)
 }
 
 fn harness_event_scope(inner: &Inner, event_name: &'static str) -> EventScope {
@@ -988,7 +1006,16 @@ async fn run_loop(
     mut observations: mpsc::Receiver<HarnessObservationCommand>,
     mut shutdown: broadcast::Receiver<()>,
     mut notifications: broadcast::Receiver<Notification>,
+    dropped_on_load: Vec<QueueEntryId>,
 ) {
+    // #1505 PR2b — before the first command is served, and on this task rather
+    // than one of its own. The ordering is what makes the absence of a
+    // `dropped` row readable: every mutation, issuance and observation this
+    // harness will ever handle arrives through the `select!` below, so a reader
+    // that has seen any of those has provably seen the drop announcements too.
+    // Announcing in parallel would make "nothing was dropped" mean only "not
+    // yet", which is not a fact anything can assert.
+    announce_dropped_entries(&inner, dropped_on_load).await;
     let mut tick = harness_tick();
     loop {
         tokio::select! {
@@ -1192,21 +1219,84 @@ async fn on_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome
 /// below. It needs a predecessor holding more than `MAX_PENDING_QUEUE_LEN`
 /// undelivered entries, and it became reachable when the transfer became a
 /// move.
-fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) {
+///
+/// #1505 PR2b — the warn is no longer the only trace. Returns the
+/// [`QueueEntryId`]s of the addressable user entries this discarded, so the
+/// caller can announce each one as `harness.queue.changed { change: dropped }`.
+/// That announcement is what stops a permanently visible client placeholder:
+/// the sentence never reaches the model and so never lands in the transcript,
+/// which means the frontend's other retirement route — matching a persisted
+/// transcript line — can never fire for it.
+///
+/// Only `User` entries are named. A `LegacyUser` has no id (so nothing can be
+/// said about it that a client could act on) and a `System` entry was never a
+/// person's message; both are still counted in the warn's arithmetic.
+fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) -> Vec<QueueEntryId> {
     let len = snapshot.pending_len();
     if len <= MAX_PENDING_QUEUE_LEN {
-        return;
+        return Vec::new();
     }
     let drop_count = len - MAX_PENDING_QUEUE_LEN;
     let mut entries = snapshot.pending_entries();
-    entries.drain(..drop_count);
+    let dropped = entries
+        .drain(..drop_count)
+        .filter_map(|entry| entry.id().cloned())
+        .collect::<Vec<_>>();
     snapshot.set_pending_entries(entries);
     tracing::warn!(
         target: "planner.harness.backpressure",
         original_len = len,
         retained_len = snapshot.pending_len(),
+        addressable_dropped = dropped.len(),
         "snapshot pending_queue truncated to newest observations"
     );
+    dropped
+}
+
+/// #1505 PR2b — one `harness.queue.changed { change: dropped }` per entry the
+/// load-time truncation discarded.
+///
+/// Runs after the harness exists because the event needs its scope (card,
+/// track, area) and the repo; the truncation itself happens while `Inner` is
+/// still being built.
+///
+/// A failure to log is reported operationally and not retried: the entry is
+/// already gone from the queue whatever this says, and re-running the loop
+/// would announce the same drop twice.
+///
+/// Called from the top of [`run_loop`], so it completes before this harness
+/// serves its first command.
+async fn announce_dropped_entries(inner: &Arc<Inner>, dropped: Vec<QueueEntryId>) {
+    for entry_id in dropped {
+        let scope = harness_event_scope(inner, "harness.queue.changed");
+        if let Err(error) = inner
+            .repo
+            .log_pure_event(
+                ActorId::Kernel,
+                scope,
+                None,
+                &inner.events,
+                &inner.card_role_cache,
+                &inner.track_area_cache,
+                Event::HarnessQueueChanged {
+                    worker_session_id: inner.worker_session_id.clone(),
+                    card_id: inner.card_id.clone(),
+                    track_id: inner.track_id.clone(),
+                    entry_id: entry_id.as_str().to_string(),
+                    change: HarnessQueueChange::Dropped,
+                    actor: ActorId::Kernel,
+                },
+            )
+            .await
+        {
+            tracing::error!(
+                card_id = %inner.card_id,
+                entry_id = %entry_id,
+                error = %error,
+                "planner queue entry was dropped on load but its audit event failed"
+            );
+        }
+    }
 }
 
 async fn enqueue_pending_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome {
