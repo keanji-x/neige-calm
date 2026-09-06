@@ -10,7 +10,8 @@ export function TaskReport({ trackId, taskKey, attemptId, status, transport, una
 }) {
   const terminal = status === 'done' || status === 'failed' || status === 'canceled';
   const report = useQuery({
-    queryKey: [...queryKeys.trackReport(trackId), 'accepted-report', taskKey, attemptId], retry: false,
+    // A terminal observation needs its own final read, not the earlier running-time null.
+    queryKey: [...queryKeys.trackReport(trackId), 'accepted-report', taskKey, attemptId, terminal ? 'terminal' : 'active'], retry: false,
     queryFn: ({ signal }) => runOperation(transport, { ...acceptedTaskReportOperation(trackId, taskKey, attemptId), signal }, unauthorized),
     refetchInterval: (query) => status !== null && !terminal && !query.state.error && query.state.data?.report === null ? 3000 : false,
   });

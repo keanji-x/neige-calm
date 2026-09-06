@@ -85,7 +85,8 @@ it('runs one immutable intent through the real goal dialog, navigation and repor
   expect(writes).toHaveLength(2);
   expect(writes[1].body).toEqual(writes[0].body);
   result = { kind: 'completed', result: '<img src=x onerror="window.pwned=1">', artifacts: ['javascript:alert(1)', '/private/result.txt'] };
-  await page.getByRole('button', { name: 'Refresh accepted report' }).click();
+  // History can observe completion before the event channel or report poll.
+  await page.getByRole('button', { name: 'Refresh execution history' }).click();
   await expect.element(page.getByText('<img src=x onerror="window.pwned=1">', { exact: true })).toBeVisible();
   expect(document.querySelector('img[src="x"]')).toBeNull();
   expect(document.querySelector('a[href="javascript:alert(1)"]')).toBeNull();
