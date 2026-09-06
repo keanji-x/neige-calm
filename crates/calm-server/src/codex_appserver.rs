@@ -77,6 +77,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use crate::error::{CalmError, Result};
+use crate::planner_model::TurnModelSelection;
 
 /// WebSocket URI the server expects over the UDS. The host is irrelevant
 /// (there is no DNS over a unix socket) but tungstenite requires a `Host`
@@ -431,8 +432,14 @@ pub struct ModelListPage {
 /// have to keep in step with an `[experimental]` protocol.
 ///
 /// `id` is the *preset* identifier and `model` is the slug the model is
-/// invoked by. Only `model` may ever reach `turn/start`, `cards.payload_json`
-/// or the REST wire.
+/// invoked by. Only `model` may ever reach `turn/start` or
+/// `cards.payload_json`.
+///
+/// `id` is NOT kept off the REST wire, and an earlier version of this sentence
+/// claimed it was: `GET /api/models` publishes it as `CatalogModel::id` and
+/// the picker uses it as a React key. What holds is the direction — it travels
+/// outward for presentation and must never come back as a selection, which is
+/// what `SetPlannerModelBody::model` documents on the return leg.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexModel {
@@ -701,6 +708,42 @@ async fn connect_timeout_diagnostic(sock_path: &Path, awaited: &str, peer_state:
         sock_path.display(),
         if sock_exists { "present" } else { "GONE" },
     )
+}
+
+/// Build the `turn/start` params frame.
+///
+/// Split out from the method so the frame — the only thing codex actually
+/// sees — can be asserted on without a daemon, a socket or a runtime.
+///
+/// **A `None` in `selection` omits the key entirely; it never sends `null`.**
+/// The two are not interchangeable here. Codex's `TurnStartParams` fields are
+/// plain `Option`s and its overrides are sticky, so an omitted key means
+/// "leave the thread's current override alone" while an explicit `null`
+/// deserializes to the same `None` but travels as a value we chose to send.
+/// Omission is the cheaper and more honest spelling of "we have nothing to
+/// say", and it is what every turn issued before #1505 sent.
+///
+/// `effort` is spelled `effort`, not `reasoningEffort`: `TurnStartParams` is
+/// `rename_all = "camelCase"` over a field named `effort`. The `config/read`
+/// side of this feature uses `model_reasoning_effort` — a different struct
+/// with different casing rules — and confusing the two produces a frame codex
+/// silently ignores.
+fn turn_start_params(
+    thread_id: &str,
+    input: &[InputItem],
+    selection: &TurnModelSelection,
+) -> Value {
+    let mut params = json!({ "threadId": thread_id, "input": input });
+    let map = params
+        .as_object_mut()
+        .expect("a json! object literal is an object");
+    if let Some(model) = selection.model.as_deref() {
+        map.insert("model".into(), Value::String(model.to_string()));
+    }
+    if let Some(effort) = selection.effort.as_deref() {
+        map.insert("effort".into(), Value::String(effort.to_string()));
+    }
+    params
 }
 
 impl CodexAppServer {
@@ -996,14 +1039,20 @@ impl CodexAppServer {
     /// `turn/start` — begin a turn on `thread_id` with the given input.
     /// Returns quickly with the started turn's id; the actual work streams
     /// as notifications (`turn/started` → `item/*` → `turn/completed`).
+    ///
+    /// `selection` says what this turn asks of the model. It is a required
+    /// argument rather than an option with a default so that every caller has
+    /// to answer the question out loud; a caller with nothing to say passes
+    /// [`TurnModelSelection::inherit`].
     pub async fn turn_start(
         &self,
         thread_id: &str,
         input: Vec<InputItem>,
+        selection: &TurnModelSelection,
     ) -> Result<TurnStartResult> {
         self.request(
             "turn/start",
-            json!({ "threadId": thread_id, "input": input }),
+            turn_start_params(thread_id, &input, selection),
         )
         .await
     }
@@ -1182,7 +1231,10 @@ impl CodexAppServer {
         match outcome {
             Ok(Ok(value)) => serde_json::from_value(value)
                 .map_err(|e| CalmError::CodexAppServer(format!("decode {method} result: {e}"))),
-            Ok(Err(rpc)) => Err(CalmError::CodexAppServer(format!(
+            // The one place codex's own refusal is still distinguishable from
+            // everything else that can go wrong with asking. Below this line it
+            // is a formatted string like any other.
+            Ok(Err(rpc)) => Err(CalmError::CodexRefused(format!(
                 "{method} failed: {} (code {})",
                 rpc.message, rpc.code
             ))),
@@ -2156,6 +2208,97 @@ mod tests {
         let r: ThreadResult = serde_json::from_value(raw).unwrap();
         assert_eq!(r.thread_id(), Some("abc-123"));
         assert_eq!(r.model, "gpt-5.5");
+    }
+
+    /// #1505 S4-3. The assertion is on the frame, because the frame is the
+    /// entire contract: everything else in this feature only decides what
+    /// goes in these two keys.
+    #[test]
+    fn a_chosen_model_and_effort_reach_the_turn_start_frame() {
+        let frame = turn_start_params(
+            "thread-1",
+            &[InputItem::text("hi")],
+            &TurnModelSelection {
+                model: Some("gpt-5".into()),
+                effort: Some("high".into()),
+            },
+        );
+        assert_eq!(frame["threadId"], json!("thread-1"));
+        assert_eq!(frame["model"], json!("gpt-5"));
+        assert_eq!(frame["effort"], json!("high"));
+    }
+
+    /// The slug travels, the preset id does not. Asserted in both directions
+    /// so a fixture whose two identifiers happen to be equal cannot let a
+    /// read of the wrong field pass.
+    #[test]
+    fn the_frame_carries_a_slug_and_never_a_preset_id() {
+        let catalog_entry = json!({ "id": "preset-abc", "model": "gpt-5" });
+        let frame = turn_start_params(
+            "thread-1",
+            &[],
+            &TurnModelSelection {
+                model: catalog_entry["model"].as_str().map(ToOwned::to_owned),
+                effort: None,
+            },
+        );
+        assert_eq!(frame["model"], json!("gpt-5"));
+        assert_ne!(frame["model"], json!("preset-abc"));
+    }
+
+    /// `inherit` must be byte-for-byte the frame this kernel sent before
+    /// #1505 — no `model`, no `effort`, and in particular no explicit `null`,
+    /// which would be a value we chose to send rather than silence.
+    #[test]
+    fn inherit_sends_neither_key_and_not_a_null_either() {
+        let frame = turn_start_params("thread-1", &[], &TurnModelSelection::inherit());
+        let map = frame.as_object().expect("params is an object");
+        assert!(!map.contains_key("model"), "frame was {frame}");
+        assert!(!map.contains_key("effort"), "frame was {frame}");
+        assert_eq!(map.len(), 2, "only threadId and input: {frame}");
+    }
+
+    /// Half a selection puts half a frame on the wire; the absent half stays
+    /// absent rather than becoming a null.
+    #[test]
+    fn each_key_is_omitted_independently() {
+        let model_only = turn_start_params(
+            "t",
+            &[],
+            &TurnModelSelection {
+                model: Some("gpt-5".into()),
+                effort: None,
+            },
+        );
+        assert_eq!(model_only["model"], json!("gpt-5"));
+        assert!(!model_only.as_object().unwrap().contains_key("effort"));
+
+        let effort_only = turn_start_params(
+            "t",
+            &[],
+            &TurnModelSelection {
+                model: None,
+                effort: Some("low".into()),
+            },
+        );
+        assert_eq!(effort_only["effort"], json!("low"));
+        assert!(!effort_only.as_object().unwrap().contains_key("model"));
+    }
+
+    /// Codex accepts any non-empty effort string (`ReasoningEffort::Custom`),
+    /// so an effort we do not recognise must reach the wire unaltered rather
+    /// than be filtered against a set we invented.
+    #[test]
+    fn an_unrecognised_effort_string_is_not_filtered_out() {
+        let frame = turn_start_params(
+            "t",
+            &[],
+            &TurnModelSelection {
+                model: None,
+                effort: Some("ludicrous".into()),
+            },
+        );
+        assert_eq!(frame["effort"], json!("ludicrous"));
     }
 
     #[test]

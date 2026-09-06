@@ -626,6 +626,8 @@ pub(crate) mod per_card_lock;
 pub mod planner_appserver;
 pub mod planner_attachments;
 pub mod planner_card;
+// #1505 S4-3 — which model a planner conversation's turns run with.
+pub mod planner_model;
 pub mod plugin_host;
 pub mod proc_identity;
 pub(crate) mod proc_supervisor;

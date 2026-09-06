@@ -27,6 +27,8 @@ fn document_contains_every_annotated_path() {
         // the document never enters either generated client and nothing goes
         // red. This line is the guard.
         "/api/cards/{id}/planner/input/{entry_id}",
+        // #1505 S4-3 — the model write port. Same guard, same reason.
+        "/api/cards/{id}/planner/model",
         "/api/cards/{id}/planner/reset",
         "/api/cards/{card_id}/terminal",
         "/api/tracks/{track_id}/terminal-cards",
@@ -53,6 +55,38 @@ fn document_contains_every_annotated_path() {
             doc.paths.paths.keys().collect::<Vec<_>>()
         );
     }
+}
+
+/// #1505 S4 review — a required-but-nullable body field is two independent
+/// facts, and only one of them is enforced by the type.
+///
+/// `serde` makes `model` / `reasoning_effort` mandatory through a
+/// `deserialize_with`; `utoipa` derives optionality from the `Option<T>` in
+/// the field type and cannot see that attribute. They drifted apart in the
+/// first cut: the published document said both were optional while the handler
+/// answered 422 for omitting one, so a client generated from either
+/// checked-in copy conformed to the contract and was broken by it. Neither
+/// the OpenAPI drift gate nor the round-trip test above can notice — the
+/// drift gate compares the generated files against themselves.
+#[test]
+fn a_body_field_that_refuses_omission_is_published_as_required() {
+    let doc = ApiDoc::openapi();
+    let components = doc.components.as_ref().expect("components present");
+    let body = components
+        .schemas
+        .get("SetPlannerModelBody")
+        .expect("SetPlannerModelBody is a component schema");
+    let json = serde_json::to_value(body).expect("schema serializes");
+    let required: Vec<&str> = json
+        .get("required")
+        .and_then(|value| value.as_array())
+        .map(|items| items.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        required.contains(&"model") && required.contains(&"reasoning_effort"),
+        "both keys are refused when omitted, so the document must say so; got required={required:?} \
+         in {json}"
+    );
 }
 
 #[test]
@@ -97,6 +131,9 @@ fn document_contains_every_wire_model() {
         "DeletePlannerInputBody",
         "PlannerInputMutationResponse",
         "PlannerInputStaleBody",
+        // #1505 S4-3 — the model write port.
+        "SetPlannerModelBody",
+        "SetPlannerModelResponse",
         "ResetPlannerCardResponse",
         "Overlay",
         "NewOverlay",

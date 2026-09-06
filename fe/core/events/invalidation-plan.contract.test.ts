@@ -57,6 +57,23 @@ describe('invalidation plan contract', () => {
     expect(keys).toContainEqual(['track', 'lp']);
   });
 
+  /*
+   * #1505 S4 review. The failure is invisible from inside this layer and from
+   * inside the tab that causes it: the writer invalidates its own
+   * `planner-run` by hand, so every single-client test passes while a second
+   * tab shows a model the server is no longer using and sends under it.
+   * Deleting the key from the `card.updated` policy turns this red and
+   * nothing else — `PolicyMap` is exhaustive over event kinds, never over
+   * query keys.
+   */
+  it('refreshes a card\'s planner run when the card changes', () => {
+    const event = {
+      ev: 'card.updated',
+      data: { id: 'card-9', track_id: 'track-1' },
+    } as Extract<WireEvent, { ev: 'card.updated' }>;
+    expect(invalidationPlanFor(event).invalidate).toContainEqual(['planner-run', 'card-9']);
+  });
+
   it('refreshes active task diagnostics when a budget or admission setting changes', () => {
     const event = { ev: 'track.updated', data: { id: 'track-7', area_id: 'area-1' } } as Extract<
       WireEvent,

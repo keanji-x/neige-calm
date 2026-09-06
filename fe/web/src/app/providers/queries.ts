@@ -10,6 +10,7 @@
 import {
   onlineManager, useMutation, useQueries, useQuery, useQueryClient, type QueryClient,
 } from '@tanstack/react-query';
+import { useRef } from 'react';
 import { z } from 'zod';
 
 import { performApiRequest } from '../../../../core/api/client.ts';
@@ -52,8 +53,10 @@ import {
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptPlannerOperation, sendPlannerInputOperation,
   plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
-  deletePlannerInputOperation, editPlannerInputOperation, plannerQueueWriteFailure,
-  type Conversation, type PlannerQueueWriteOutcome,
+  createSerialWriter, deletePlannerInputOperation, editPlannerInputOperation,
+  modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
+  type Conversation, type ModelSelection, type ModelSelectionResult,
+  type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
@@ -201,6 +204,20 @@ export const queryKeys = Object.freeze({
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   plannerRun: (cardId: string) => ['planner-run', cardId] as const,
   /**
+   * `GET /api/models` for one card (#1505 S4-3).
+   *
+   * Keyed by card and not global: the answer includes the default resolved
+   * against *that card's* workspace, and config layers are per-directory, so
+   * one shared entry would serve one conversation's default to another's.
+   *
+   * It is deliberately absent from the invalidation plan. Nothing this kernel
+   * emits changes codex's catalog — it changes when codex's own 300 s cache
+   * turns over or when the person signs in elsewhere — so there is no event to
+   * hang an arm on. It is refetched by the write that can change the *default
+   * this card follows*, which is the only part of it we move.
+   */
+  modelCatalog: (cardId: string) => ['model-catalog', cardId] as const,
+  /**
    * One track's conversation list (#1189 §4.1), keyed by its track.
    *
    * `GET /api/tracks/{track_id}/conversations` is per-track, and unlike the area
@@ -260,8 +277,39 @@ function queueWriteMessage(error: unknown, fallback: string): string {
     : fallback;
 }
 
+/**
+ * The model catalog for one conversation.
+ *
+ * No `staleTime` of its own: codex keeps a 300 s disk cache behind this, so a
+ * refetch that arrives inside that window is answered from it, and one that
+ * arrives outside it is the fresh read a picker being opened wants.
+ */
+export function modelCatalogQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.modelCatalog(cardId),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      runOperation(transport, { ...modelCatalogOperation(cardId), signal }, unauthorized),
+  };
+}
+
 export function usePlannerMutations(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   const client = useQueryClient();
+  /*
+   * One writer per mounted card, held across renders. A fresh writer each
+   * render would have nothing in flight to serialise against and would restore
+   * exactly the reordering it exists to prevent — see `createSerialWriter`.
+   * Re-created when the card changes, because two cards' selections are
+   * independent and must not queue behind each other.
+   */
+  const setModelRef = useRef<{ cardId: string; write: (selection: ModelSelection) => Promise<ModelSelectionResult> } | null>(null);
+  if (setModelRef.current === null || setModelRef.current.cardId !== cardId) {
+    setModelRef.current = {
+      cardId,
+      write: createSerialWriter((selection: ModelSelection) =>
+        runOperation(transport, setPlannerModelOperation(cardId, selection), unauthorized)),
+    };
+  }
+  const setModelWrite = setModelRef.current.write;
   const refreshAfter = <T,>(result: T): T => {
     /* A 200 from the write is the acknowledgement. Refetch is reconciliation,
        and its failure must stay in the owning query's error channel rather
@@ -305,6 +353,24 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
           queueWriteMessage(error, 'Could not remove the queued message.'),
         ))
         .then(refreshAfter),
+    /*
+     * The stored selection is read back from `planner-run`, so that query is
+     * what has to be invalidated — `refreshAfter` already does it. The catalog
+     * goes with it because "what does this card follow by default" is part of
+     * that answer and a `null` selection is displayed through it.
+     *
+     * `INTERACTIVE_WRITE_OPTIONS` is not applied here for the same reason the
+     * two above do without it: these are plain promises the caller awaits, not
+     * `useMutation`s, and the retry policy that flag carries belongs to the
+     * ones that are.
+     */
+    setModel: (selection: ModelSelection): Promise<ModelSelectionResult> =>
+      setModelWrite(selection)
+        .then((result) => {
+          void client.invalidateQueries({ queryKey: queryKeys.modelCatalog(cardId) })
+            .catch(() => undefined);
+          return refreshAfter(result);
+        }),
     /* No `reset` — see the note where `resetPlannerOperation` used to be in
        `core/domain/conversation.ts`. The endpoint is still served; nothing in
        the browser calls it. */

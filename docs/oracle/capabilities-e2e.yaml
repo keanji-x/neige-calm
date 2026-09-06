@@ -4935,13 +4935,13 @@
     remains recovery evidence rather than an acknowledged queue entry.
     The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
     stays `migration: pending` against `web/e2e`.
-  source: fe/web/src/app/router/public.tsx:436-459,600-601,649-656,859-868
+  source: fe/web/src/app/router/public.tsx:465-488,629-630,678-685,888-897
   # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
   # the composer stays open, and whether a second message can be sent. The predicate itself is
   # tabulated a second time at the platform-independent tier
   # (`fe/core/domain/conversation.test.ts`, `describe('kernelQueuesInput')`), which is not cited
   # here because a row declares one `test_tier` and that suite is not jsdom.
-  authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:698-744;
+  authoritative_test: fe/web/src/app/router/planner-conversation.test.tsx:719-765;
     fe/web/src/app/router/track-conversation.test.tsx:660-744,860-879
   owner_slice: app/router
   intentional_omission: false

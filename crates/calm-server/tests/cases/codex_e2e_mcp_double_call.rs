@@ -77,6 +77,7 @@ use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_ru
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, auth, build_default_registry};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
+use calm_server::planner_model::TurnModelSelection;
 use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -358,7 +359,11 @@ First call: { \"idempotency_key\": \"double-call-first\", \"status\": \"accepted
 Second call: { \"idempotency_key\": \"double-call-second\", \"status\": \"accepted\", \"reason\": \"second probe\" } \
 After the second call returns, output the single word OK and stop.";
     let turn_id = daemon
-        .turn_start(&thread_id, vec![InputItem::text(prompt)])
+        .turn_start(
+            &thread_id,
+            vec![InputItem::text(prompt)],
+            &TurnModelSelection::inherit(),
+        )
         .await
         .expect("turn_start");
     eprintln!("[double-call] turn_id={turn_id}");

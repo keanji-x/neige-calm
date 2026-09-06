@@ -230,6 +230,17 @@ async fn boot_inner(
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
+            // #1505 S4 review — the production budget is thirty seconds,
+            // which no test may wait out. Shortened rather than stubbed so the
+            // tests drive the real clock and the real branch.
+            //
+            // It must stay LONGER than `TRANSIENT_RETRY_DELAY` (2 s) or it can
+            // never be the binding constraint: the notice is computed on a
+            // refusal, so with a budget below the pace it appears at the second
+            // refusal for any budget in `(0, 2 s]` and the constant stops being
+            // load bearing. At 300 ms the mutation "ignore the budget, notify
+            // from the second refusal" survived every test.
+            transient_silence_budget: Duration::from_secs(5),
             ..HarnessConfig::default()
         },
         snapshot,

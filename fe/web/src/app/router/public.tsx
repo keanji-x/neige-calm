@@ -37,6 +37,7 @@ import { ChatList } from '../../features/chat/list/public.tsx';
 import {
   ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
 } from '../../features/chat/thread/public.tsx';
+import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { useIndependentTaskLaunch } from './independent-task.tsx';
@@ -58,9 +59,11 @@ import {
   isSendRefusalCode, kernelQueuesInput,
   mergeTranscript, reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
   trackConversationCardId,
+  FOLLOW_INSTALLATION_DEFAULT,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
-  type ConversationTurn, type OptimisticConversationTurn, type SendOutcome,
-  type PendingQueueEntry, type PlannerQueueWriteOutcome, type TranscriptEntry,
+  type ConversationTurn, type ModelCatalog, type ModelSelection,
+  type OptimisticConversationTurn, type PendingQueueEntry,
+  type PlannerQueueWriteOutcome, type SendOutcome, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister, createTrackWorkspaceFilesPort } from '../providers/directory.ts';
@@ -72,6 +75,7 @@ import { PanelAction, PanelEmpty } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
   ApiError, OfflineSubmissionError, apiFailureCodeOf, harnessItemsQueryOptions,
+  modelCatalogQueryOptions,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
   usePlannerMutations, useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
   useTrackConversationMutations, useTrackMutations, useTrackRecipeMutations, useTrackRecipes,
@@ -137,6 +141,22 @@ type ConversationStore = Readonly<{
   interrupt: () => void;
   retryHistory: () => void;
   loadEarlier: () => void;
+  /**
+   * #1505 S4 review round 2 — why the queue is not draining, when it is
+   * something the reader has to act on. `null` almost always.
+   *
+   * Separate from `actionError`, which is about a request THIS tab just made.
+   * This one is a standing condition of the conversation: it is true on a page
+   * the reader has just opened, it outlives a reload, and no click of theirs
+   * caused it.
+   */
+  blockedReason: string | null;
+  /** #1505 S4-3 — what this conversation's turns run with. */
+  model: ModelSelection;
+  /** What may be chosen, or `null` until the catalog has answered once. */
+  modelCatalog: ModelCatalog | null;
+  /** Store a whole new selection. Failures land in `actionError`, like a send's. */
+  setModel: (selection: ModelSelection) => void;
 }>;
 
 /** A server-backed list and the real Track whose rows may enter the tab registry. */
@@ -262,6 +282,15 @@ export function useConversationStore(
     ...harnessItemsQueryOptions(transport, cardId, unauthorized), enabled: scope !== null,
   });
   const run = useQuery({ ...plannerRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
+  /*
+   * The catalog rides alongside the run query rather than being fetched when
+   * the picker opens: the trigger has to render the name of the chosen model,
+   * and `planner-run` gives only its slug. Fetching on open would leave the
+   * pill showing a raw slug until the menu had been opened once.
+   */
+  const modelCatalog = useQuery({
+    ...modelCatalogQueryOptions(transport, cardId, unauthorized), enabled: scope !== null,
+  });
   const phase = run.data?.phase ?? null;
   const stalled = phase === 'wedged';
   /* #1505 PR4 — the addressable queue page, and the count of what it cannot
@@ -926,6 +955,34 @@ export function useConversationStore(
     interrupt,
     retryHistory: () => { void history.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
+    blockedReason: run.data?.blocked_reason ?? null,
+    /* Before the first answer the conversation is *following the default* —
+       which is what a card with no selection really does. It is not a
+       placeholder standing in for an unknown value. */
+    model: run.data === undefined
+      ? FOLLOW_INSTALLATION_DEFAULT
+      : { model: run.data.model, reasoning_effort: run.data.reasoning_effort },
+    modelCatalog: modelCatalog.data ?? null,
+    setModel: (selection) => {
+      setActionError(null);
+      void mutations.setModel(selection)
+        .then((result) => {
+          /* Both flags are reported, never swallowed. The write succeeded
+             either way — what they say is that the value now stored is not
+             quite the value asked for, and a picker that hid that would show a
+             setting the next turn will not use. */
+          if (result.effort_adjusted) {
+            setActionError(
+              `That reasoning effort is not available on this model; it now uses ${result.reasoning_effort ?? 'the default'}.`,
+            );
+          } else if (result.unknown_model) {
+            setActionError('codex does not list that model for this account. It is saved; turns may fail.');
+          }
+        })
+        .catch((error: unknown) => {
+          setActionError(errorMessage(error, 'Could not change the model.'));
+        });
+    },
   };
 }
 
@@ -1856,6 +1913,16 @@ function useConversationPanel(
             {store.actionError !== null && (
               <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
             )}
+            {/* Above the composer, next to the send failures, because it is the
+                same question — "why has what I typed not gone anywhere?" — and
+                the answer has to be where that question is asked. It is not an
+                `alert`: nothing just happened, the condition was already true
+                when this page opened. */}
+            {store.blockedReason !== null && (
+              <ChatFooterNotice>
+                <ChatFooterError message={store.blockedReason} />
+              </ChatFooterNotice>
+            )}
             <ChatComposer
               /* Read at mount only, which is what makes it one-shot: the
                  composer mounts when the drawer opens on a row, and the flag
@@ -1874,6 +1941,31 @@ function useConversationPanel(
                  already refuses a second one. */
               onStop={store.working || store.stopping ? store.interrupt : undefined}
               onNewConversation={startAnother}
+              /* When a change takes effect. The kernel reads the selection
+                 at the moment it hands a batch to codex, so a change landing
+                 before that read is on the very next turn.
+                 A change landing after it is on the turn after — "after it"
+                 covering the turn already in flight and, for a card following
+                 a default it has previously overridden, the `config/read` and
+                 sometimes `model/list` the kernel makes while building the
+                 frame. `turn/steer` carries no settings, so nothing can move a
+                 turn already running.
+                 One exception, because it is the one a reader would otherwise
+                 be surprised by: when a turn is REFUSED, its batch goes back on
+                 the queue and is re-issued, and that re-issue reads the
+                 selection again — so a change made after a failed attempt
+                 ships on the retry of the very message that failed.
+                 The control stays available throughout, because choosing what
+                 the next message runs with is a reasonable thing to do while
+                 waiting. */
+              footerActions={(
+                <ModelPill
+                  catalog={store.modelCatalog}
+                  selection={store.model}
+                  onChange={store.setModel}
+                  isDisabled={!store.historyReady}
+                />
+              )}
             />
           </>
         )}

@@ -132,6 +132,9 @@ use utoipa::OpenApi;
         // reaches either generated client.
         crate::routes::planner_input::edit_planner_input,
         crate::routes::planner_input::delete_planner_input,
+        // #1505 S4-3. Same hand-maintained list, same failure mode: omitting
+        // a handler is neither a compile error nor a drift failure.
+        crate::routes::planner_model::set_planner_model,
         crate::routes::cards::delete_card,
         // ---- overlays ----
         crate::routes::overlays::list_overlays,
@@ -296,6 +299,8 @@ use utoipa::OpenApi;
         // struct, which utoipa inlines as parameters anyway. The list in
         // `paths(...)` above is the hand-maintained one that really is
         // load-bearing; this one is house style.
+        crate::routes::planner_model::SetPlannerModelBody,
+        crate::routes::planner_model::SetPlannerModelResponse,
         CatalogModel,
         ReasoningEffortOption,
         ModelDefaults,

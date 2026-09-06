@@ -1,5 +1,6 @@
 use super::{Error, PreparedEndpoint, Result, home};
 use crate::codex_appserver::{CodexAppServer, InputItem, TurnStartResult};
+use crate::planner_model::TurnModelSelection;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,8 +67,16 @@ impl TurnLaunch {
     pub async fn issue(self) -> Result<TurnStartResult> {
         match tokio::time::timeout(
             self.timeout,
-            self.client
-                .turn_start(&self.thread_id, vec![InputItem::text(self.prompt)]),
+            // #1505 S4-3: an isolated task's thread is minted for that one
+            // task and no picker ever addresses it, so this kernel has never
+            // put a sticky model override on it. `inherit` is that fact
+            // spelled out, and it is byte-identical to the frame this call
+            // sent before the selection existed.
+            self.client.turn_start(
+                &self.thread_id,
+                vec![InputItem::text(self.prompt)],
+                &TurnModelSelection::inherit(),
+            ),
         )
         .await
         {

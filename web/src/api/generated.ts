@@ -313,6 +313,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cards/{id}/planner/model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["set_planner_model"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cards/{id}/planner/reset": {
         parameters: {
             query?: never;
@@ -2001,7 +2017,41 @@ export interface components {
          *     it's the `{worker_session_id: null, phase: null}` answer.
          */
         GetPlannerRunResponse: {
+            /**
+             * @description #1505 S4 — why this conversation's queue is not draining, or `null`
+             *     when there is nothing worth saying. `null` almost always.
+             *
+             *     Three things fill it, and a client should render all three as the same
+             *     kind of standing notice rather than as an error about a request it just
+             *     made:
+             *
+             *      * the model or effort to run under cannot be determined (codex's
+             *        configuration names none, or the stored selection is unreadable) —
+             *        the text names the choice that fixes it;
+             *      * codex refused to start the turn — the text says the message was NOT
+             *        sent, and promises no delivery;
+             *      * codex has been unreachable long enough that silence would look like
+             *        a hang — the text says the message is still queued and will go out.
+             *
+             *     A brief outage fills nothing, so this staying `null` is not evidence
+             *     that anything succeeded.
+             *
+             *     It is not a general per-turn error channel and does not diagnose why a
+             *     model failed mid-turn; that is #1507's.
+             */
+            blocked_reason?: string | null;
             card_id: string;
+            /**
+             * @description #1505 S4-3 — the model slug this conversation's turns run with, or
+             *     `null` for "follow whatever this installation is configured to use".
+             *
+             *     Read off the CARD, not off the harness, and therefore answered for a
+             *     dormant conversation as well: the selection is a property of the
+             *     conversation and outlives every runtime that serves it. That is the
+             *     opposite of `phase` and `token_usage` above, which are properties of a
+             *     live runtime and are `null` without one.
+             */
+            model?: string | null;
             /**
              * @description #1505 PR1 — the addressable user entries still waiting for the next
              *     turn, in queue order. Empty when the harness is dormant.
@@ -2021,6 +2071,11 @@ export interface components {
              */
             pending_overflow: number;
             phase?: null | components["schemas"]["HarnessPhaseTag"];
+            /**
+             * @description The chosen reasoning effort, or `null` for the default. Same source and
+             *     same reasoning as [`GetPlannerRunResponse::model`].
+             */
+            reasoning_effort?: string | null;
             token_usage?: null | components["schemas"]["PlannerRunTokenUsage"];
             /** @description Active worker-session id, or null when the harness is dormant. */
             worker_session_id?: string | null;
@@ -2800,6 +2855,55 @@ export interface components {
              */
             entry_id?: string | null;
             worker_session_id: string;
+        };
+        SetPlannerModelBody: {
+            /**
+             * @description The model **slug** to run with, or `null` to follow the installation
+             *     default. Required — see the module header.
+             *
+             *     A slug, never a catalog entry's `id`: `GET /api/models` returns both
+             *     and only `model` is the one codex is invoked by.
+             *
+             *     `#[schema(required = true)]` is not decoration and not a duplicate of
+             *     [`required_nullable`]. The two live in different worlds: serde decides
+             *     what the handler accepts, utoipa decides what the published
+             *     OpenAPI document promises, and utoipa derives optionality from the `Option<T>` in the
+             *     field type alone — it cannot see a `deserialize_with`. Without this the
+             *     document said both fields were optional while the handler answered 422
+             *     for omitting one, so a client generated from either checked-in copy was
+             *     conforming and broken at the same time.
+             */
+            model: string | null;
+            /**
+             * @description The reasoning effort, or `null` to follow the default. Required.
+             *
+             *     A bare string rather than a closed set: codex accepts any non-empty
+             *     effort, so an enum here would start refusing values the day codex ships
+             *     a new one.
+             *
+             *     `#[schema(required = true)]` for the same reason as `model` above.
+             */
+            reasoning_effort: string | null;
+        };
+        SetPlannerModelResponse: {
+            card_id: string;
+            /**
+             * @description The requested effort was not among the chosen model's supported ones
+             *     and was moved to that model's own default. Never done silently — a
+             *     caller that ignores this flag shows a value that will not run.
+             */
+            effort_adjusted: boolean;
+            /** @description The stored slug, echoed rather than assumed. */
+            model?: string | null;
+            /** @description The stored effort. Differs from the request when `effort_adjusted`. */
+            reasoning_effort?: string | null;
+            /**
+             * @description The slug is not in the catalog codex currently reports. A hint, not a
+             *     refusal: the stored value is the requested one either way. Always
+             *     `false` when the catalog could not be read, because "we could not ask"
+             *     is not evidence of absence.
+             */
+            unknown_model: boolean;
         };
         /**
          * @description Wire-shape: a flat string map of key -> value. We use `BTreeMap` for
@@ -4955,6 +5059,78 @@ export interface operations {
             };
             /** @description No live planner harness session for this card — reset to start a session (code `planner_harness_dormant`) */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    set_planner_model: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Planner card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPlannerModelBody"];
+            };
+        };
+        responses: {
+            /** @description Selection stored. `effort_adjusted` and `unknown_model` report what the catalog said about it; neither is an error */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetPlannerModelResponse"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not `X-Calm-Actor: user`, or the card is not a planner codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `model` or `reasoning_effort` is missing from the body, or an unknown key is present. Both keys are required; `null` is how the default is chosen */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

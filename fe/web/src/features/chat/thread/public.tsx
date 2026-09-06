@@ -1837,6 +1837,7 @@ function isThenable(value: unknown): value is Promise<SendOutcome> {
  */
 export function ChatComposer({
   onSend, onStop, onNewConversation, disabled = false, focusOnMount = false, draft: controlledDraft,
+  footerActions,
 }: {
   /** See `SendOutcome`. A caller with its own draft persistence returns `void`. */
   onSend: (text: string) => void | Promise<SendOutcome>;
@@ -1914,6 +1915,18 @@ export function ChatComposer({
    * rerun — looks identical in jsdom, which resolves the selector at once.
    */
   focusOnMount?: boolean;
+  /**
+   * Per-conversation controls that belong beside the field rather than in the
+   * transcript — the model picker (#1505 S4-3).
+   *
+   * A pass-through to Astryx's `footerActions` slot and nothing more. It is a
+   * slot rather than a `modelSelection` prop because the composer has no
+   * business knowing what a model is: the controls need a query, a mutation
+   * and a card id, all of which live in `app/router`, and `features/**` may
+   * not import `app/**`. Handing the composer the rendered node keeps that
+   * edge where it is.
+   */
+  footerActions?: ReactNode;
 }) {
   const [localDraft, setLocalDraft] = useState('');
   const draft = controlledDraft?.text ?? localDraft;
@@ -2220,6 +2233,7 @@ export function ChatComposer({
         placeholder="Say something"
         isDisabled={disabled}
         isStopShown={stopShown}
+        footerActions={footerActions}
         /* Handed over whole — the "one interrupt at a time" rule is the
            router's, at the top of `interrupt()`. See the `onStop` prop note. */
         onStop={onStop}

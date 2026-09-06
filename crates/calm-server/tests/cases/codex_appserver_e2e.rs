@@ -50,6 +50,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use calm_server::codex_appserver::{ClientInfo, CodexAppServer, InputItem, Notification};
+use calm_server::planner_model::TurnModelSelection;
 // #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
 // self-skip via `skip!`. Tests must never fall back to a PATH/home codex.
 use support::codex_fixture::resolve_codex_bin;
@@ -162,6 +163,7 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
             vec![InputItem::text(
                 "Reply with exactly the word OK and nothing else.",
             )],
+            &TurnModelSelection::inherit(),
         )
         .await
         .expect("turn/start");

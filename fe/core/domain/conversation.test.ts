@@ -9,7 +9,7 @@ import {
 import {
   buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
   CONVERSATION_STATE_SOURCE, conversationCreateFailure,
-  createTrackConversationOperation,
+  createSerialWriter, createTrackConversationOperation,
   harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages, isLiveConversation,
   isOptimisticConversationTurn, isQueuedConversationTurn, kernelQueuesInput,
   mergeTranscript, plannerQueueWriteFailure, readableCommand,
@@ -916,5 +916,168 @@ describe('plannerQueueWriteFailure', () => {
       { kind: 'http', status: 500, code: 'internal', message: 'boom', body: null }, 'fallback',
     )).toEqual({ kind: 'failed', message: 'fallback' });
     expect(plannerQueueWriteFailure(null, 'fallback')).toEqual({ kind: 'failed', message: 'fallback' });
+  });
+});
+
+/*
+ * #1505 S4 review — rapid picks were last-COMMITTER-wins, not
+ * latest-CHOICE-wins. `PUT /planner/model` consults codex's catalog before it
+ * writes, so two requests fired back to back can land in the other order and
+ * an earlier choice quietly overwrites the person's latest one.
+ */
+describe('createSerialWriter', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => { resolve = r; });
+    return { promise, resolve };
+  }
+
+  it('never has two writes in flight at once', async () => {
+    const gates = [deferred<string>(), deferred<string>()];
+    const started: string[] = [];
+    let live = 0;
+    let maxLive = 0;
+    const write = createSerialWriter(async (name: string) => {
+      started.push(name);
+      live += 1;
+      maxLive = Math.max(maxLive, live);
+      const value = await gates[started.length - 1].promise;
+      live -= 1;
+      return value;
+    });
+
+    const first = write('a');
+    const second = write('b');
+    expect(started).toEqual(['a']);
+    gates[0].resolve('a-done');
+    await Promise.resolve();
+    gates[1].resolve('b-done');
+    await Promise.all([first, second]);
+
+    expect(started).toEqual(['a', 'b']);
+    expect(maxLive).toBe(1);
+  });
+
+  /*
+   * The defect itself. Without serialisation the second request skips the
+   * first one's catalog round trip, commits first, and then the first commits
+   * over it — restoring a choice the person had already moved on from.
+   */
+  it('lets the last intent be the one that lands', async () => {
+    const gate = deferred<string>();
+    const committed: string[] = [];
+    const write = createSerialWriter(async (name: string) => {
+      if (name === 'a') await gate.promise;
+      committed.push(name);
+      return name;
+    });
+
+    const first = write('a');
+    const second = write('b');
+    gate.resolve('go');
+    await Promise.all([first, second]);
+
+    expect(committed).toEqual(['a', 'b']);
+    expect(committed.at(-1)).toBe('b');
+  });
+
+  /*
+   * Four fast clicks are two requests, not four: an intent nobody can still
+   * see the effect of is not worth a round trip, and replaying it would put
+   * the store through values the person never ended on.
+   */
+  it('collapses superseded intents instead of replaying every one', async () => {
+    const gate = deferred<string>();
+    const committed: string[] = [];
+    const write = createSerialWriter(async (name: string) => {
+      if (name === 'a') await gate.promise;
+      committed.push(name);
+      return name;
+    });
+
+    const all = [write('a'), write('b'), write('c'), write('d')];
+    gate.resolve('go');
+    await Promise.all(all);
+
+    expect(committed).toEqual(['a', 'd']);
+  });
+
+  /*
+   * The rejection path, which the first cut of this function got exactly
+   * backwards. Every other test here uses a write that only ever resolves,
+   * which is why nothing caught it.
+   */
+  it('still sends the intent that superseded a failed write', async () => {
+    const gate = deferred<string>();
+    const attempted: string[] = [];
+    const write = createSerialWriter(async (name: string) => {
+      attempted.push(name);
+      if (name === 'a') {
+        await gate.promise;
+        throw new Error('offline');
+      }
+      return name;
+    });
+
+    const chain = write('a');
+    void write('b');
+    gate.resolve('go');
+    await expect(chain).resolves.toBe('b');
+    expect(attempted).toEqual(['a', 'b']);
+  });
+
+  /*
+   * And the second half: a failure must not leave the queue armed for a LATER,
+   * unrelated call to replay. Pre-fix, `queuedIsSet` survived the rejection and
+   * `c` was followed by a resurrected `b` — the server ended on `b` while the
+   * reader had chosen `c`.
+   */
+  it('cannot resurrect a stranded intent onto a later write', async () => {
+    const gate = deferred<string>();
+    const committed: string[] = [];
+    let failNext = true;
+    const write = createSerialWriter(async (name: string) => {
+      if (name === 'a') {
+        await gate.promise;
+        if (failNext) throw new Error('offline');
+      }
+      committed.push(name);
+      return name;
+    });
+
+    const chain = write('a');
+    void write('b');
+    gate.resolve('go');
+    await chain.catch(() => undefined);
+    failNext = false;
+
+    await write('c');
+    expect(committed).toEqual(['b', 'c']);
+    expect(committed.at(-1)).toBe('c');
+  });
+
+  /*
+   * A failure with nothing queued is the chain's own answer, and it must still
+   * leave the writer usable.
+   */
+  it('reports a lone failure and stays usable afterwards', async () => {
+    let fail = true;
+    const write = createSerialWriter((name: string) =>
+      fail ? Promise.reject(new Error('offline')) : Promise.resolve(name));
+
+    await expect(write('a')).rejects.toThrow('offline');
+    fail = false;
+    await expect(write('b')).resolves.toBe('b');
+  });
+
+  it('accepts new work again after the queue drains', async () => {
+    const committed: string[] = [];
+    const write = createSerialWriter((name: string) => {
+      committed.push(name);
+      return Promise.resolve(name);
+    });
+    await write('a');
+    await write('b');
+    expect(committed).toEqual(['a', 'b']);
   });
 });

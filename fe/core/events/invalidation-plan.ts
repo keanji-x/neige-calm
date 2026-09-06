@@ -227,8 +227,16 @@ function policies(): PolicyMap {
     ['track', event.data.track_id], ['track-files', event.data.track_id],
     ['track-report'], ...conversationLists(event.data.track_id),
   ])),
+  /* `['planner-run', id]` is #1505 S4's, and it is keyed by the CARD rather
+     than the track because that is what the query is keyed by. Without it a
+     second tab's model picker reads its value from a `planner-run` nothing
+     ever invalidates: tab 1 chooses a model, the write emits `card.updated`,
+     tab 2 keeps showing the previous one and sends under it while the server
+     runs the new one. The mutation's own local invalidation repairs only the
+     tab that made the change. */
   'card.updated': plan((event) => result([
     ['track', event.data.track_id], ['track-files', event.data.track_id],
+    ['planner-run', event.data.id],
     ...conversationLists(event.data.track_id),
   ])),
   /* No conversation key, and not an oversight — see the note on

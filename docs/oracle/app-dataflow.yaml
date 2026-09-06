@@ -662,7 +662,7 @@
   why: >
     `calm.plan.cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
     缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
-  source: fe/core/events/invalidation-plan.ts:317-319
+  source: fe/core/events/invalidation-plan.ts:325-327
   authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:243-249
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -682,7 +682,7 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 track。
     没有 track 被加载时，用户根本看不到那个 track 的 card overlay 变化，等下次 track detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:286-304
+  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:294-312
   authoritative_test: fe/web/src/app/events/track-lookup.test.ts:7-17
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
@@ -718,7 +718,7 @@
     所属 track detail、`['overlays','card']` 与该 track 的 track-files。
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
-  source: fe/core/events/invalidation-plan.ts:184-191,238-240; fe/web/src/app/events/track-lookup.ts:7-17
+  source: fe/core/events/invalidation-plan.ts:184-191,246-248; fe/web/src/app/events/track-lookup.ts:7-17
   authoritative_test: fe/core/events/invalidation-plan.test.ts:155-167
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -741,7 +741,7 @@
     `['today-launchpad']` 是空态判据被读出的键；缺任一个，点了「写今日进度」页面就
     不动。`PolicyMap` 只对 event kind 穷举、不对 query key 穷举，所以删掉任一行都不会
     有 golden 变红 —— 只有 authoritative_test 里那份逐字键表拦得住。
-  source: fe/core/events/invalidation-plan.ts:282-285
+  source: fe/core/events/invalidation-plan.ts:290-293
   authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:24-36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -2172,7 +2172,7 @@
     响应可能在服务端提交后丢失。等待 refetch 可让错误/重试界面先观察最新 Area 列表，并让更新后的
     template/cwd 回到 cache。创建重试另由已协商的服务器幂等能力与稳定操作键保护；
     refetch 不通过同名查找推断某次创建是否提交。
-  source: fe/web/src/app/providers/queries.ts:909-961
+  source: fe/web/src/app/providers/queries.ts:975-1027
   authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:259-305
   owner_slice: app/providers
   runtime_layer: app
