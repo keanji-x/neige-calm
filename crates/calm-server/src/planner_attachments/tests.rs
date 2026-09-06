@@ -287,9 +287,14 @@ fn a_sweep_that_cannot_stat_an_entry_deletes_nothing_at_all() {
     );
 }
 
-/// #1515 review F3. A link planted under a valid id must not be followed. The
-/// check is `openat2` with `RESOLVE_BENEATH`, which refuses it at the syscall
-/// rather than after a separate `lstat` that something could race.
+/// #1515 review F3, corrected in round 4. A link planted under a valid id must
+/// not be followed.
+///
+/// The round-3 version of this test wrote an **absolute** target, which is the
+/// one spelling `RESOLVE_BENEATH` already rejects on its own — so it passed
+/// without measuring anything the code did. Both spellings are driven here, and
+/// the relative one is the case that matters: it is what an agent in the
+/// workspace would write, and it is what `RESOLVE_NO_SYMLINKS` exists for.
 #[tokio::test]
 async fn a_symlink_under_a_valid_id_does_not_open() {
     let root = tempfile::tempdir().unwrap();
@@ -298,20 +303,112 @@ async fn a_symlink_under_a_valid_id_does_not_open() {
     let bound = bound_dir(root.path(), &card);
     std::fs::create_dir_all(staging.path()).unwrap();
     std::fs::create_dir_all(bound.path()).unwrap();
-    let secret = root.path().join("id_rsa");
+
+    // The target lives OUTSIDE the attachment root, so "it was refused" cannot
+    // be confused with "it was outside the root anyway".
+    let outside = tempfile::tempdir().unwrap();
+    let secret = outside.path().join("id_rsa");
     std::fs::write(&secret, b"-----BEGIN OPENSSH PRIVATE KEY-----").unwrap();
+    // ... and one inside it, reachable relatively, which `RESOLVE_BENEATH`
+    // permits and only `RESOLVE_NO_SYMLINKS` refuses.
+    let inside = root.path().join("inside.png");
+    std::fs::write(&inside, b"in-root bytes").unwrap();
 
-    let staged = id("05", AttachmentFormat::Png);
-    let planted_bound = id("06", AttachmentFormat::Png);
-    std::os::unix::fs::symlink(&secret, staging.path().join(staged.as_str())).unwrap();
-    std::os::unix::fs::symlink(&secret, bound.path().join(planted_bound.as_str())).unwrap();
+    let absolute_staged = id("05", AttachmentFormat::Png);
+    let absolute_bound = id("06", AttachmentFormat::Png);
+    let relative_staged = id("09", AttachmentFormat::Png);
+    let relative_bound = id("0a", AttachmentFormat::Png);
+    std::os::unix::fs::symlink(&secret, staging.path().join(absolute_staged.as_str())).unwrap();
+    std::os::unix::fs::symlink(&secret, bound.path().join(absolute_bound.as_str())).unwrap();
+    // `staging/` is `<root>/<card>/staging`, so `../../inside.png` is the root.
+    std::os::unix::fs::symlink(
+        "../../inside.png",
+        staging.path().join(relative_staged.as_str()),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        "../../inside.png",
+        bound.path().join(relative_bound.as_str()),
+    )
+    .unwrap();
+    assert!(
+        std::fs::read(staging.path().join(relative_staged.as_str())).is_ok(),
+        "precondition: the relative link really does resolve to a readable file"
+    );
 
-    for planted in [&staged, &planted_bound] {
+    for planted in [
+        &absolute_staged,
+        &absolute_bound,
+        &relative_staged,
+        &relative_bound,
+    ] {
         let error = open_attachment(root.path(), &card, planted)
             .await
             .expect_err("a symlink is not an attachment this subtree serves");
         assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
     }
+}
+
+/// #1515 review round 4, BLOCKER. `RESOLVE_BENEATH` pins resolution beneath the
+/// root, and the root is `attachments/` — so every *other card* is beneath it
+/// too. A relative link is therefore not an escape at all in `openat2`'s terms,
+/// and both of these returned card B's bytes on the delegated path as shipped
+/// in round 3.
+///
+/// (b) is the regression: the `is_regular_file` check round 3 deleted used
+/// `symlink_metadata` and refused every symlink, absolute or relative.
+#[tokio::test]
+async fn no_relative_symlink_reaches_another_cards_subtree() {
+    let root = tempfile::tempdir().unwrap();
+    let card_a = CardId::from("card-a");
+    let card_b = CardId::from("card-b");
+    let wanted = id("08", AttachmentFormat::Png);
+
+    let b_bound = bound_dir(root.path(), &card_b);
+    std::fs::create_dir_all(b_bound.path()).unwrap();
+    std::fs::write(
+        b_bound.path().join(wanted.as_str()),
+        b"card B's private image",
+    )
+    .unwrap();
+
+    // Control: card B can read its own file. Without this the test could pass
+    // because nothing opens at all.
+    let opened = open_attachment(root.path(), &card_b, &wanted)
+        .await
+        .expect("card B's own attachment must still open");
+    assert_eq!(read_all(opened).await, b"card B's private image");
+
+    // (a) intermediate: card A's `staging` IS a link into card B's subtree.
+    let a_staging = staging_dir(root.path(), &card_a);
+    std::fs::create_dir_all(a_staging.path().parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink("../card-b/bound", a_staging.path()).unwrap();
+    assert!(
+        a_staging.path().join(wanted.as_str()).is_file(),
+        "precondition (a): a following resolver really would find card B's file"
+    );
+    let error = open_attachment(root.path(), &card_a, &wanted)
+        .await
+        .expect_err("(a) an intermediate link must not reach another card");
+    assert!(matches!(error, CalmError::BadRequest(_)), "(a) {error:?}");
+
+    // (b) leaf: card A's `staging` is a real directory holding a link to card
+    // B's file. This is the spelling round 3 regressed on.
+    std::fs::remove_file(a_staging.path()).unwrap();
+    std::fs::create_dir_all(a_staging.path()).unwrap();
+    std::os::unix::fs::symlink(
+        "../../card-b/bound/08.png".replace("08.png", wanted.as_str()),
+        a_staging.path().join(wanted.as_str()),
+    )
+    .unwrap();
+    assert!(
+        a_staging.path().join(wanted.as_str()).is_file(),
+        "precondition (b): a following resolver really would find card B's file"
+    );
+    let error = open_attachment(root.path(), &card_a, &wanted)
+        .await
+        .expect_err("(b) a leaf link must not reach another card");
+    assert!(matches!(error, CalmError::BadRequest(_)), "(b) {error:?}");
 }
 
 /// #1515 review round 3, BLOCKER. A FIFO on the final component blocks
@@ -353,41 +450,6 @@ async fn a_fifo_under_a_valid_id_neither_blocks_nor_serves() {
     .await
     .expect("the open must return; a FIFO must not park the blocking thread");
     let error = answered.expect_err("a FIFO is not an attachment");
-    assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
-}
-
-/// #1515 review round 3. `O_NOFOLLOW` covers the FINAL component only, so
-/// replacing the `staging` directory itself with a link to another card's
-/// subtree defeated a check placed on the leaf. `RESOLVE_BENEATH` resolves
-/// every component beneath the root, which is the difference.
-#[tokio::test]
-async fn an_intermediate_symlink_cannot_reach_another_cards_subtree() {
-    let root = tempfile::tempdir().unwrap();
-    let card_a = CardId::from("card-a");
-    let card_b = CardId::from("card-b");
-    let secret = id("08", AttachmentFormat::Png);
-
-    let b_bound = bound_dir(root.path(), &card_b);
-    std::fs::create_dir_all(b_bound.path()).unwrap();
-    std::fs::write(
-        b_bound.path().join(secret.as_str()),
-        b"card B's private image",
-    )
-    .unwrap();
-
-    // Card A has no `staging` directory of its own: the name is a link into
-    // card B's subtree, which a leaf-only check would happily walk through.
-    let a_staging = staging_dir(root.path(), &card_a);
-    std::fs::create_dir_all(a_staging.path().parent().unwrap()).unwrap();
-    std::os::unix::fs::symlink(b_bound.path(), a_staging.path()).unwrap();
-    assert!(
-        a_staging.path().join(secret.as_str()).is_file(),
-        "precondition: a path-following check really would find card B's file here"
-    );
-
-    let error = open_attachment(root.path(), &card_a, &secret)
-        .await
-        .expect_err("an intermediate symlink must not reach another card's attachments");
     assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
 }
 

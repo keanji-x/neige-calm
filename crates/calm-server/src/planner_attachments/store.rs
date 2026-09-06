@@ -229,6 +229,15 @@ async fn staging_dir_or_refuse(staging: StagingDir) -> Result<StagingDir> {
 /// a refusal. Keeping `finish` outside the clock is what makes "refused" and
 /// "published" exclusive. The cost is stated where the constant is defined: the
 /// deadline bounds the client's half of the turn, not a hung filesystem.
+///
+/// One accepted consequence, reviewed and left as is: if the *handler* is
+/// dropped while `finish` awaits the rename, the detached rename still lands,
+/// while the [`OpenPart`] is dropped with `published == false`. The destructor
+/// then unlinks `<id>.part`, which by then may already be gone. Either order is
+/// safe and exclusivity still holds — no refusal was sent to anyone — but the
+/// published file can be left in `staging/` under a name no client was ever
+/// told, where the orphan sweep collects it after
+/// [`super::gc::ORPHAN_TTL`].
 async fn write_body(
     staging: &StagingDir,
     already_used: u64,
@@ -381,8 +390,11 @@ fn map_body_error(error: &(dyn std::error::Error + 'static)) -> CalmError {
 /// Two consequences, both deliberate:
 ///
 /// * `Drop` cannot await, so the unlink is a blocking `std::fs::remove_file`.
-///   That is one syscall on a local file, and the alternative — spawning a task
-///   from `Drop` — is not available on a runtime that may be shutting down.
+///   A guarded `tokio::runtime::Handle::try_current()` + `spawn_blocking` would
+///   also work whenever a runtime exists, so this is a choice and not a
+///   constraint: one `unlink(2)` on a local file is cheaper than a task, and it
+///   is exactly what the `abandon` method it replaced already did on the same
+///   threads.
 /// * once [`OpenPart::finish`] has renamed the file, `published` is set and the
 ///   destructor does nothing. Without it a late destructor would unlink a name
 ///   that a later upload could legitimately have recreated.

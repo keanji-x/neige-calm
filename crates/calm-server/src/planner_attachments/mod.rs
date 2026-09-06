@@ -128,8 +128,10 @@ pub const UPLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(
 ///
 /// The class-level check is a grep, and it is the reason this is stated as a
 /// rule rather than as a claim about particular messages: **every `.display()`
-/// under `crates/calm-server/src/planner_attachments/` sits inside a
-/// `tracing::` macro.** A path reaching a `CalmError` would have to appear
+/// under `crates/calm-server/src/planner_attachments/`, excluding `tests.rs`,
+/// sits inside a `tracing::` macro.** The exact audit is
+/// `grep -n '\.display()' planner_attachments/*.rs | grep -v tests.rs`; test
+/// code builds assertion messages and is not a client-facing surface. A path reaching a `CalmError` would have to appear
 /// outside one, so `grep -n '\.display()' planner_attachments/*.rs` and reading
 /// the enclosing call is the whole audit. `{error}` interpolations are safe
 /// alongside it because `std::fs` I/O errors carry no path of their own — the
@@ -244,10 +246,14 @@ pub struct OpenAttachment {
 /// than re-deriving its checks: the root descriptor is `<workspace>/.neige/
 /// attachments`, and `<card_id>/<dir>/<id>` is resolved beneath it.
 ///
-/// `bound/` first, then `staging/`. What answers cross-card forgery is that the
-/// root is derived from the card in the URL and the resolution cannot leave it
-/// — including through an intermediate symlink, which is the part a name-based
-/// check could not carry.
+/// `bound/` first, then `staging/`. What answers cross-card forgery is two
+/// things together, and round 3 shipped only the first: the relative path is
+/// built from the card in the URL, **and** the resolution refuses every symlink
+/// on that path. `RESOLVE_BENEATH` on its own is not enough — the root is
+/// `attachments/`, so a sibling card is still beneath it, and a relative link
+/// `card-a/staging -> ../card-b/bound` resolves and serves card B's bytes. That
+/// was measured, not argued. `RESOLVE_NO_SYMLINKS` is what makes the sentence
+/// true.
 ///
 /// The opener's own errors name host paths, so they are logged and replaced
 /// with one refusal that names only the attachment and the card.
@@ -258,7 +264,19 @@ pub async fn open_attachment(
 ) -> Result<OpenAttachment> {
     for dir in [BOUND, STAGING] {
         let relative = format!("{}/{dir}/{}", card_id.as_str(), id.as_str());
-        match crate::routes::fs::open_workspace_regular_file(root, &relative).await {
+        match crate::routes::fs::open_workspace_regular_file(
+            root,
+            &relative,
+            // The strict set. Every card is a separate trust domain and they
+            // are siblings under this root, so "beneath the root" is far wider
+            // than "inside this card's directory": `RESOLVE_BENEATH` alone
+            // happily follows `card-a/staging -> ../card-b/bound`. Nothing in
+            // this module ever creates a symlink in the subtree, so refusing
+            // all of them costs nothing.
+            crate::routes::fs::WorkspaceSymlinks::Refused,
+        )
+        .await
+        {
             Ok(opened) => {
                 return Ok(OpenAttachment {
                     file: opened.file,
