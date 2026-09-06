@@ -98,6 +98,7 @@ kernel for workspaces, provider endpoints and runtime records.
   "runtime_bwrap": "/usr/bin/bwrap",
   "sandbox_bwrap": "/opt/codex/codex-resources/bwrap",
   "codex_binary": "/opt/codex/bin/codex",
+  "code_mode_host_binary": "/opt/codex/bin/codex-code-mode-host",
   "mcp_shim": "/srv/pilot/bin/neige-mcp-stdio-shim",
   "provider_config": "/home/operator/.codex/config.toml",
   "provider_auth": "/home/operator/.codex/auth.json",
