@@ -12,6 +12,15 @@ async fn rest_attempts(
     key: &str,
     expected: axum::http::StatusCode,
 ) -> Value {
+    rest_attempts_for_track(boot, boot.track_id.as_str(), key, expected).await
+}
+
+async fn rest_attempts_for_track(
+    boot: &crate::mcp_track_report::Boot,
+    track_id: &str,
+    key: &str,
+    expected: axum::http::StatusCode,
+) -> Value {
     use axum::{Extension, body::Body, http::Request};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -23,10 +32,7 @@ async fn rest_attempts(
         ))
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/api/tracks/{}/tasks/{key}/attempts",
-                    boot.track_id
-                ))
+                .uri(format!("/api/tracks/{track_id}/tasks/{key}/attempts"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -36,6 +42,52 @@ async fn rest_attempts(
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(status, expected, "{}", String::from_utf8_lossy(&bytes));
     serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn task_recovery_history_is_empty_before_initial_allocation() {
+    let boot = boot().await;
+    let mut payload = declaration("waiting", &[]);
+    payload["ready"] = json!(false);
+    let (block, revision) = declare(&boot, payload).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    assert!(
+        calm_server::db::sqlite::task_attempt_current_pool(
+            &pool,
+            boot.track_id.as_str(),
+            "waiting"
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let view = rest_attempts(&boot, "waiting", axum::http::StatusCode::OK).await;
+    assert!(view.as_object().unwrap().contains_key("current"));
+    assert_eq!(view["current"], Value::Null);
+    assert_eq!(view["attempts"], json!([]));
+    assert_eq!(view["recovery"]["allowed"], false);
+    assert_eq!(view["recovery"]["code"], "not_started");
+    rest_attempts(&boot, "unknown", axum::http::StatusCode::NOT_FOUND).await;
+    rest_attempts_for_track(
+        &boot,
+        "unknown-track",
+        "waiting",
+        axum::http::StatusCode::NOT_FOUND,
+    )
+    .await;
+    call_tool(
+        &boot,
+        calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_BLOCKS_UPSERT,
+        planner_identity(&boot),
+        json!({"id":block,"kind":"task","payload":declaration("waiting", &[]),"if_rev":revision}),
+    )
+    .await
+    .unwrap();
+    let allocated = current(&boot, "waiting").await;
+    let view = rest_attempts(&boot, "waiting", axum::http::StatusCode::OK).await;
+    assert_eq!(view["current"]["attempt_id"], allocated.id);
+    assert_eq!(view["current"]["generation"], 1);
+    assert_eq!(view["attempts"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]

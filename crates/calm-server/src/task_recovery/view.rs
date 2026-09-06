@@ -70,9 +70,44 @@ pub(crate) async fn task_recovery_view_tx(
         area: track.area_id.clone(),
     };
     admission::authorize_tx(tx, actor, &scope, &event).await?;
-    let mut allocation = task_attempt_current_tx(tx, track_id.as_str(), key)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("task {key}")))?;
+    let Some(mut allocation) = task_attempt_current_tx(tx, track_id.as_str(), key).await? else {
+        // A valid authored task can await release/admission before its first row.
+        // Resolve existence from the same authoritative source used by projection.
+        let (declarations, diagnostics) =
+            crate::track_report::task_projection_source_tx(tx, track_id.as_str())
+                .await?
+                .ok_or_else(|| CalmError::NotFound(format!("task {key}")))?;
+        let matching: Vec<_> = declarations
+            .iter()
+            .filter(|declaration| declaration.key == key && !declaration.tombstone)
+            .collect();
+        let declaration = match matching.as_slice() {
+            [] => return Err(CalmError::NotFound(format!("task {key}"))),
+            [declaration] => declaration,
+            _ => {
+                return Err(CalmError::Conflict(
+                    "task declaration key is ambiguous".into(),
+                ));
+            }
+        };
+        if declaration
+            .block_index
+            .and_then(|index| diagnostics.get(index))
+            .is_none_or(|diagnostics| !diagnostics.is_empty())
+        {
+            return Err(CalmError::Conflict("task declaration is invalid".into()));
+        }
+        return Ok(TaskRecoveryView {
+            key: key.to_string(),
+            current: None,
+            attempts: Vec::new(),
+            recovery: TaskRecoveryCapability {
+                allowed: false,
+                code: "not_started".into(),
+                reason: "No execution has been allocated for this task.".into(),
+            },
+        });
+    };
     let mut allocations = Vec::new();
     loop {
         let previous = match &allocation.origin {
@@ -166,7 +201,7 @@ pub(crate) async fn task_recovery_view_tx(
     }
     Ok(TaskRecoveryView {
         key: key.to_string(),
-        current,
+        current: Some(current),
         attempts,
         recovery,
     })

@@ -24,6 +24,7 @@ export function TaskRecoveryDetails({ view, current, loading, loadError, busy, e
   return <section className={styles.recovery} aria-label="Task execution">
     {loading && view === undefined && <p role="status">Loading execution history…</p>}
     {loadError !== null && <p role="alert">Could not refresh execution history: {loadError}</p>}
+    {view?.current === null && current === undefined && <p>No attempts yet</p>}
     {current !== undefined && <>
       <p className={styles.current}>{current.generation === null ? current.label
         : `Current attempt ${current.generation} · ${current.label}`}</p>

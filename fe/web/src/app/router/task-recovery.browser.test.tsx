@@ -95,3 +95,33 @@ it('recovers from the task disclosure and navigates prior evidence at desktop an
   await expect.poll(() => disclosure.querySelector('summary')!.textContent).toContain('Completed');
   expect(disclosure.open).toBe(false);
 });
+
+it('shows empty history before allocation and refreshes the first attempt in the report disclosure', async () => {
+  let current: TaskAttempt | null = null;
+  const transport: ApiTransportPort = { send: () => Promise.resolve({ status: 200, statusText: 'OK', body: {
+    key: 'waiting', current, attempts: current === null ? [] : [current],
+    recovery: { allowed: false, code: current === null ? 'not_started' : 'not_failed', reason: 'No failed execution.' },
+  } }) };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
+  const report: TrackReport = { summary: '', body: '', blocks: [{ id: 'waiting-block', kind: 'task', payload: {
+    key: 'waiting', declared_by: 'user', kind: 'codex', ready: false, goal: 'Wait for authorization.',
+  } }] };
+  render(<QueryClientProvider client={client}><ReportDocument report={report}
+    taskRows={deriveReportTasks(report.blocks, [{ blockId: 'waiting-block', key: 'waiting', schedulable: false, status: null }])}
+    empty={null} renderTaskExecution={(task, expanded) => <TaskRecovery trackId="w1" taskKey={task.key} expanded={expanded}
+      transport={transport} unauthorized={unauthorized} openableWorkerIds={new Set()} openWorker={() => undefined} />} />
+  </QueryClientProvider>);
+  await userEvent.click(document.querySelector('[data-nc-report-reference] > summary')!);
+  await userEvent.click(document.querySelector('[data-nc-task-state] > summary')!);
+  await expect.element(page.getByText('No attempts yet', { exact: true })).toBeVisible();
+  expect(document.querySelector('[role="alert"]')).toBeNull();
+  await expect.element(page.getByRole('button', { name: 'Recover task', exact: true })).not.toBeInTheDocument();
+  await page.screenshot({ path: '__screenshots__/issue-1501-empty-history.png' });
+  current = { attempt_id: 'first-allocated', generation: 1, status: 'pending', status_detail: null,
+    blocking_reason: null, worker_card_id: null, created_at_ms: 1788600000000, finished_at_ms: null };
+  await page.getByRole('button', { name: 'Refresh execution history' }).click();
+  await expect.element(page.getByText('Current attempt 1 · Queued')).toBeVisible();
+  await expect.element(page.getByText('No attempts yet', { exact: true })).not.toBeInTheDocument();
+  expect(document.querySelector('[role="alert"]')).toBeNull();
+});

@@ -15,7 +15,7 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 afterEach(cleanup);
 
-function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 'dispatched' | 'refresh-fails' | 'stale-report' | 'lost-ahead' | 'event-advance' | 'dependency' | 'withdrawn' | 'contract-blocked' | 'capacity' = 'success') {
+function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 'dispatched' | 'refresh-fails' | 'stale-report' | 'lost-ahead' | 'event-advance' | 'dependency' | 'withdrawn' | 'contract-blocked' | 'capacity' | 'empty' = 'success') {
   const requests: ApiRequest[] = [];
   const taskKey = mode === 'dependency' ? 'c' : 'b';
   const blocker = mode === 'dependency' ? 'Blocked by b (failed). Recover b before c can continue.'
@@ -32,6 +32,7 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
     status: mode === 'dependency' || mode === 'capacity' ? 'pending' : 'awaiting_projection',
     blocking_reason: blocker,
   };
+  let initiallyEmpty = mode === 'empty';
   let writes = 0;
   const area = { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
   const track = { id: 'w1', area_id: 'c1', title: 'Continuing work', sort: 1, lifecycle: 'working', cwd: '/tmp',
@@ -39,7 +40,7 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
   const card = { id: 'report', track_id: 'w1', title: null, kind: 'track-report', sort: 1, deletable: false,
     created_at: 1, updated_at: 2, payload: { schemaVersion: 3, docRev: 1, summary: '', body: '', blocks: [
       { id: 'b-task', rev: 1, kind: 'task', payload: {
-        key: taskKey, kind: 'codex', declared_by: 'user', ready: mode !== 'withdrawn',
+        key: taskKey, kind: 'codex', declared_by: 'user', ready: mode !== 'withdrawn' && !initiallyEmpty,
         goal: `Complete ${taskKey} under the original requirements.`, depends_on: mode === 'dependency' ? ['b'] : [],
       } },
     ] } };
@@ -54,6 +55,9 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
     if (request.path === '/api/areas') return ok([area]);
     if (request.path === '/api/areas/c1/tracks') return ok([track]);
     if (request.path === '/api/tracks/w1') return ok({ track, can_resume: false, cards: [card, worker, { ...worker, id: 'new-worker', title: 'Current worker' }], overlays: [] });
+    if (request.path === '/api/tracks/w1/report' && initiallyEmpty) return ok({ taskDiagnostics: [
+      { blockId: 'b-task', key: taskKey, schedulable: false, status: null, statusDetail: null, workerCardId: null, diagnostics: [] },
+    ] });
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: [
       { blockId: 'b-task', key: taskKey, schedulable: true,
         pendingReason: mode === 'dependency' ? { kind: 'dependencyBlocked', message: blocker, dependencies: ['b'] } : null,
@@ -61,8 +65,10 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
       ...(mode === 'dependency' ? [{ blockId: 'b-dependency', key: 'b', schedulable: true, status: 'failed', statusDetail: 'gate-red', diagnostics: [] }] : []),
     ] });
     if (request.path.endsWith('/attempts') && mode === 'refresh-fails' && writes > 0) return { status: 503, statusText: 'Unavailable', body: { error: 'History temporarily unavailable.', code: 'service_unavailable' } };
+    if (request.path.endsWith('/attempts') && initiallyEmpty) return ok({ key: taskKey, current: null, attempts: [],
+      recovery: { allowed: false, code: 'not_started', reason: 'No attempts yet.' } });
     if (request.path.endsWith('/attempts')) return ok({ key: taskKey, current,
-      attempts: current === old ? [old] : mode === 'lost-ahead' ? [old, next, current] : [old, current],
+      attempts: mode === 'empty' ? [current] : current === old ? [old] : mode === 'lost-ahead' ? [old, next, current] : [old, current],
       recovery: { allowed: current === old && mode !== 'blocked', code: mode === 'blocked' ? 'predecessor_not_quiescent' : 'available',
         reason: mode === 'blocked' ? 'The previous worker is still stopping. Wait for cleanup.' : 'Recover under the unchanged contract.' },
     });
@@ -86,7 +92,10 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
   mount();
-  return { requests, client, router, mount, advance: (status: string) => {
+  return { requests, client, router, mount, allocate: () => {
+    initiallyEmpty = false;
+    current = { ...old, status: 'pending', worker_card_id: null, status_detail: null, finished_at_ms: null };
+  }, advance: (status: string) => {
     current = { ...next, status, worker_card_id: 'new-worker' };
     const event = wireEventSchema.parse(status === 'done'
       ? { ev: 'task.completed', data: { idempotency_key: current.attempt_id, result: {}, artifacts: [] } }
@@ -263,4 +272,18 @@ it.each([
   expect(screen.getByText(cause)).toBeTruthy();
   expect(document.querySelector('[data-nc-task-state] > summary [title]')!.getAttribute('title')).toContain(cause);
   expect(screen.getByTitle(cause)).toBeTruthy();
+});
+
+it('opens never-allocated task history without an alert and refreshes its first allocation', async () => {
+  const { open, allocate, requests } = setup('empty');
+  await open();
+  expect(await screen.findByText('No attempts yet')).toBeTruthy();
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Recover task' })).toBeNull();
+  allocate();
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh execution history' }));
+  expect(await screen.findByText('Current attempt 1 · Queued')).toBeTruthy();
+  expect(screen.queryByText('No attempts yet')).toBeNull();
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(requests.filter((request) => request.method === 'POST')).toHaveLength(0);
 });

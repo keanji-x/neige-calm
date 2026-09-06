@@ -104,7 +104,9 @@ pub struct TaskRecoveryCapability {
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TaskRecoveryView {
     pub key: String,
-    pub current: TaskAttemptView,
+    /// Null only when the live declaration has never received an allocation.
+    #[schema(required = true)]
+    pub current: Option<TaskAttemptView>,
     pub attempts: Vec<TaskAttemptView>,
     pub recovery: TaskRecoveryCapability,
 }

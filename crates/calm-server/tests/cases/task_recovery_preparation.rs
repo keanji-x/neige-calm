@@ -111,7 +111,7 @@ async fn task_recovery_retained_operation_evidence_blocks_unbound_predecessor() 
         .await
         .unwrap();
         assert!(!view.recovery.allowed, "{case}");
-        assert_eq!(view.current.attempt_id, b.id);
+        assert_eq!(view.current.as_ref().unwrap().attempt_id, b.id);
         assert_eq!(view.attempts.len(), 1);
         assert_eq!(view.recovery.code, "predecessor_not_quiescent");
         assert!(view.recovery.reason.contains("before worker preparation"));

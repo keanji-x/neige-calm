@@ -11,7 +11,7 @@ function view() {
 }
 
 it('requires nullable execution evidence keys and keeps an allocation without a projection', () => {
-  expect(taskRecoveryViewSchema.parse(view()).current.status).toBe('awaiting_projection');
+  expect(taskRecoveryViewSchema.parse(view()).current?.status).toBe('awaiting_projection');
   for (const field of ['blocking_reason', 'status_detail', 'worker_card_id', 'finished_at_ms']) {
     const body = view();
     Reflect.deleteProperty(body.current, field);
@@ -63,4 +63,16 @@ it('matches all generated recovery contracts, including required nullable eviden
   expectTypeOf<TaskRecoveryView['recovery']>().toEqualTypeOf<WireTaskRecoveryCapability>();
   expectTypeOf<TaskRecoveryReceipt>().toEqualTypeOf<WireTaskRecoveryReceipt>();
   expectTypeOf<TaskRecoveryRequest>().toEqualTypeOf<Readonly<WireTaskRecoveryRequest>>();
+});
+
+it('accepts explicit empty history and rejects inconsistent allocation evidence', () => {
+  const empty = { key: 'b', current: null, attempts: [],
+    recovery: { allowed: false, code: 'not_started', reason: 'No attempts yet.' } };
+  expect(taskRecoveryViewSchema.safeParse(empty).success).toBe(true);
+  const missing = { ...empty };
+  Reflect.deleteProperty(missing, 'current');
+  expect(taskRecoveryViewSchema.safeParse(missing).success).toBe(false);
+  expect(taskRecoveryViewSchema.safeParse({ ...empty, recovery: { ...empty.recovery, allowed: true } }).success).toBe(false);
+  expect(taskRecoveryViewSchema.safeParse({ ...empty, attempts: view().attempts }).success).toBe(false);
+  expect(taskRecoveryViewSchema.safeParse({ ...view(), attempts: [] }).success).toBe(false);
 });

@@ -22,7 +22,7 @@ export type CurrentTaskExecution = Readonly<{
 export function currentTaskExecution(
   view: TaskRecoveryView | undefined, intent: TaskRecoveryIntent | undefined,
 ): CurrentTaskExecution | undefined {
-  const current = view?.current;
+  const current = view?.current ?? undefined;
   if (intent?.phase === 'accepted' && (current === undefined
     || current.generation < intent.receipt.generation
     || (current.generation === intent.receipt.generation && current.attempt_id !== intent.receipt.attempt_id))) {

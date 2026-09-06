@@ -1,8 +1,8 @@
 import { expect, it } from 'vitest';
 import { currentTaskExecution } from './task-execution.js';
-import type { TaskRecoveryView } from './task-recovery.js';
+import type { TaskAttempt, TaskRecoveryView } from './task-recovery.js';
 
-function view(id: string, generation: number): TaskRecoveryView {
+function view(id: string, generation: number): TaskRecoveryView & { current: TaskAttempt } {
   const current = { attempt_id: id, generation, status: 'failed', blocking_reason: null, status_detail: 'validation failed',
     worker_card_id: `${id}-worker`, created_at_ms: 1000, finished_at_ms: 2000 };
   return { key: 'b', current, attempts: [current], recovery: { allowed: true, code: 'available', reason: 'Recover.' } };

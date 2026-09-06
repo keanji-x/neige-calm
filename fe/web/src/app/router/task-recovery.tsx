@@ -32,7 +32,7 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
     enabled: (query) => expanded || query.state.data !== undefined, retry: false,
     queryFn: ({ signal }) => runOperation(transport, { ...taskAttemptsOperation(trackId, taskKey), signal }, unauthorized),
     refetchInterval: (query) => !query.state.error && query.state.data !== undefined
-      && !['done', 'canceled'].includes(query.state.data.current.status) ? 3000 : false,
+      && !['done', 'canceled'].includes(query.state.data.current?.status ?? '') ? 3000 : false,
   });
   const refresh = async () => {
     await Promise.all([
@@ -50,7 +50,7 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
     if (active?.phase === 'uncertain') request = active.request;
     else {
       if (history.isError || history.isFetching || view === undefined || !view.recovery.allowed
-        || view.current.status !== 'failed'
+        || view.current?.status !== 'failed'
         || currentTaskExecution(view, active)?.status !== 'failed') return;
       request = { expected_attempt_id: view.current.attempt_id, idempotency_key: mintIdempotencyKey(),
         reason: 'User requested a new attempt under the unchanged task requirements.' };
@@ -76,9 +76,9 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
   const busy = intent.phase === 'sending';
   const canRecover = intent.phase === 'uncertain' || busy
     || (!history.isError && !history.isFetching && history.data?.recovery.allowed === true
-      && history.data.current.status === 'failed'
+      && history.data.current?.status === 'failed'
       && execution?.status === 'failed');
-  const current = history.data?.current;
+  const current = history.data?.current ?? undefined;
   const accepted = intent.phase === 'accepted' && (current === undefined
     || current.attempt_id === intent.receipt.previous_attempt_id
     || (current.attempt_id === intent.receipt.attempt_id

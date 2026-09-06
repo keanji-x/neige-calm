@@ -484,8 +484,8 @@ async fn task_recovery_pending_rebuild_keeps_identity_and_changed_contract_canno
     )
     .await
     .unwrap();
-    assert_eq!(view.current.attempt_id, recovered.id);
-    assert_eq!(view.current.status, "awaiting_projection");
+    assert_eq!(view.current.as_ref().unwrap().attempt_id, recovered.id);
+    assert_eq!(view.current.as_ref().unwrap().status, "awaiting_projection");
     payload["ready"] = json!(true);
     let out = call_tool(
         &boot,

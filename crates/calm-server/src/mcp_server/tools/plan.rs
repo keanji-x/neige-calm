@@ -813,10 +813,15 @@ async fn plan_list(
                     let mut entry = task.as_ref().map(task_list_entry).unwrap_or_else(
                         || json!({"id":allocation.attempt_id,"key":allocation.key}),
                     );
-                    entry["attempt_id"] = json!(view.current.attempt_id);
-                    entry["generation"] = json!(view.current.generation);
-                    entry["status"] = json!(view.current.status);
-                    entry["blocking_reason"] = json!(view.current.blocking_reason);
+                    let current = view.current.ok_or_else(|| {
+                        CalmError::Internal(
+                            "allocated task has no current execution history".into(),
+                        )
+                    })?;
+                    entry["attempt_id"] = json!(current.attempt_id);
+                    entry["generation"] = json!(current.generation);
+                    entry["status"] = json!(current.status);
+                    entry["blocking_reason"] = json!(current.blocking_reason);
                     entry["recovery"] = serde_json::to_value(view.recovery)?;
                     tasks_json.push(entry);
                     after_key = Some(allocation.key);

@@ -14,10 +14,14 @@ export const taskAttemptSchema = z.object({
 });
 export const taskRecoveryViewSchema = z.object({
   key: z.string().min(1),
-  current: taskAttemptSchema,
-  attempts: z.array(taskAttemptSchema).min(1),
+  current: taskAttemptSchema.nullable(),
+  attempts: z.array(taskAttemptSchema),
   recovery: z.object({ allowed: z.boolean(), code: z.string(), reason: z.string() }),
-});
+}).refine((view) => {
+  if (view.current === null) return view.attempts.length === 0 && !view.recovery.allowed;
+  const latest = view.attempts.at(-1);
+  return latest?.attempt_id === view.current.attempt_id && latest.generation === view.current.generation;
+}, { message: 'Task history has inconsistent current allocation evidence' });
 export const taskRecoveryReceiptSchema = z.object({
   key: z.string(), previous_attempt_id: z.string().min(1),
   attempt_id: z.string().min(1), generation: z.number().int().positive(),
