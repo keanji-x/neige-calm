@@ -47,6 +47,7 @@ pub struct StartIsolatedTaskResponse {
 #[serde(rename_all = "camelCase")]
 pub struct TaskAttemptReportResponse {
     pub attempt_id: String,
+    #[schema(required = true)]
     pub report: Option<AcceptedTaskReport>,
 }
 
