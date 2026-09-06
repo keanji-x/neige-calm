@@ -457,8 +457,10 @@ async fn truncating_a_restored_queue_announces_each_dropped_user_entry() {
 ///
 /// It does: `persist_snapshot_inner` drains the outstanding announcements first
 /// and propagates a failure, so a truncated queue reaches the row only after
-/// the record of what it discarded is committed. Failing costs a retry and
-/// nothing else, because the untruncated row is still on disk.
+/// the record of what it discarded is committed. What this pins is that the
+/// refusal leaves the row as it was — NOT that those entries are certain to be
+/// read again, which depends on what becomes of the runtime (see
+/// `flush_dropped_announcements`).
 ///
 /// The failure is injected by renaming `events` away before the harness starts
 /// — a real write failure through the real code path, not a stub that
@@ -513,6 +515,75 @@ async fn a_truncation_whose_announcement_fails_is_not_persisted() {
         "the retry announced the drop exactly once; payloads={changes:?}"
     );
     assert_eq!(changes[0]["change"], json!("dropped"));
+}
+
+/// #1505 PR4 review r2 — a dropped entry is announced ONCE, with the two real
+/// flushers racing.
+///
+/// There are two, and they are not hypothetical: the run loop's early flush
+/// runs on the task `PlannerHarness::run` spawns, and
+/// `planner_harness_start_adapter` calls `handle.persist_snapshot()` on its own
+/// task immediately afterwards. `persist_snapshot` yields at its first database
+/// await, which is exactly when the spawned loop is first polled — so the two
+/// interleave even on a current-thread runtime.
+///
+/// This drives the PRODUCTION `persist_snapshot`, which the fixture never
+/// calls, so the ordering the adapter actually creates is exercised rather than
+/// assumed. Reading the head under the lock and releasing it before the insert
+/// let both flushers take the same id: two `dropped` rows for one entry, which
+/// would also have made the exact-set assertion in the mixed-queue test above
+/// flake to `[dropped, dropped, deleted]` under load.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dropped_entry_is_announced_once_under_concurrent_persists() {
+    const DROPPED: usize = 3;
+    let head: Vec<QueueEntry> = (0..DROPPED)
+        .map(|i| QueueEntry::user_message(format!("dropped #{i}"), None))
+        .collect();
+    let dropped_ids: Vec<String> = head
+        .iter()
+        .map(|entry| entry.id().expect("minted").as_str().to_string())
+        .collect();
+    let mut entries = head;
+    entries.extend(
+        (0..MAX_PENDING_QUEUE_LEN)
+            .map(|i| QueueEntry::user_message(format!("survivor #{i}"), None)),
+    );
+    let boot = boot_with(idle_snapshot(entries)).await;
+
+    // Several concurrent persists against the one the run loop is already
+    // doing. Every one of them drains the same list.
+    let mut writes = Vec::new();
+    for _ in 0..4 {
+        let harness = boot.harness.clone();
+        writes.push(tokio::spawn(
+            async move { harness.persist_snapshot().await },
+        ));
+    }
+    for write in writes {
+        write
+            .await
+            .expect("the persist task did not panic")
+            .expect("and the persist itself succeeded");
+    }
+
+    let payloads = boot.event_payloads("harness.queue.changed").await;
+    let announced: Vec<String> = payloads
+        .iter()
+        .map(|payload| payload["entry_id"].as_str().expect("an id").to_string())
+        .collect();
+    assert_eq!(
+        announced.len(),
+        DROPPED,
+        "one row per discarded entry, however many writers raced; announced={announced:?}"
+    );
+    let unique: std::collections::HashSet<&String> = announced.iter().collect();
+    assert_eq!(unique.len(), DROPPED, "and no id was announced twice");
+    for id in &dropped_ids {
+        assert!(
+            announced.contains(id),
+            "every discarded entry is named once"
+        );
+    }
 }
 
 /// The green half of the same rule: a queue that fits under the cap discards

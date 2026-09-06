@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -142,6 +142,66 @@ describe('PendingQueue', () => {
     await waitFor(() => { expect(onEdit).toHaveBeenCalledTimes(2); });
     expect(onEdit.mock.calls[0]?.[0].rev).toBe(3);
     expect(onEdit.mock.calls[1]?.[0].rev).toBe(9);
+  });
+
+  /*
+   * A refusal belongs to the entry it was about. Before this, the notice and
+   * the open editor were one value, so a 409 on B replaced it wholesale and
+   * the sentence being typed into A was gone with no undo — the same "a
+   * refusal destroys the reader's words" defect the stale arm was fixed for,
+   * one entry over.
+   */
+  it('does not destroy a draft on another entry when a write is refused', async () => {
+    const onDelete = vi.fn<PendingQueueProps['onDelete']>(() => Promise.resolve(
+      { kind: 'stale', text: 'B changed', rev: 4 },
+    ));
+    render(<PendingQueue
+      entries={[entry(), entry({ entry_id: 'e2', text: 'the other one' })]}
+      overflow={0} busy={false} onEdit={vi.fn()} onDelete={onDelete}
+    />);
+
+    /* Static selectors only (`architecture/no-class-dom-query`): take both
+       rows once, in document order, and address them positionally. */
+    const rows = document.querySelectorAll('[data-nc-pending-entry]');
+    const rowA = rows[0] as HTMLElement;
+    const rowB = rows[1] as HTMLElement;
+    expect(rowA.textContent).toContain('look at the report');
+    expect(rowB.textContent).toContain('the other one');
+
+    fireEvent.click(within(rowA).getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Edit queued message' }), {
+      target: { value: 'words I do not want to lose' },
+    });
+    fireEvent.click(within(rowB).getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => { expect(onDelete).toHaveBeenCalledTimes(1); });
+    expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Edit queued message' }).value)
+      .toBe('words I do not want to lose');
+    /* …and the refusal is reported on the entry it happened to, not on A.
+       Matched on a phrase both wordings share, so this case answers only the
+       question it is about: which entry the notice landed on. */
+    const after = document.querySelectorAll('[data-nc-pending-entry]');
+    expect((after[1] as HTMLElement).textContent).toContain('This message changed');
+    expect((after[0] as HTMLElement).textContent).not.toContain('This message changed');
+  });
+
+  /*
+   * With no editor open there is no "your text" to point at, and a refused
+   * DELETE did not fail to save anything — it failed to remove something. The
+   * widened wording asserted a screen the reader is not looking at, and put a
+   * "Use their version" replacement beside a row with nothing to replace.
+   */
+  it('does not claim the reader has text below when no editor is open', async () => {
+    const onDelete = vi.fn<PendingQueueProps['onDelete']>(() => Promise.resolve(
+      { kind: 'stale', text: 'somebody else wrote this', rev: 9 },
+    ));
+    render(<PendingQueue entries={[entry()]} overflow={0} busy={false} onEdit={vi.fn()} onDelete={onDelete} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    const line = await screen.findByText(/nothing happened to it/);
+    expect(line.textContent).not.toContain('Your text is still below');
+    expect(document.querySelector('[data-nc-pending-entry-theirs]')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Use their version' })).toBeNull();
   });
 
   it('says so when the entry has already left the queue', async () => {

@@ -203,9 +203,13 @@ impl QueueEntry {
     /// [`Self::user_message`] is kept in that case rather than leaving the
     /// entry unidentifiable.)
     ///
-    /// The [`QueueEntryId`] is FRESH, and deliberately: the predecessor's entry
-    /// id does not survive the harvest journal, so a client still holding it
-    /// gets a miss rather than somebody else's entry.
+    /// The [`QueueEntryId`] comes from `entry_id` when the mover has one to
+    /// give (#1505 PR4 review): the harvest journal carries it, so a sentence
+    /// that was addressable before the move is addressable under the SAME id
+    /// after it, and a client still holding that id hits its own entry. `None`
+    /// means the mover had none — a pre-#1505 sentence — and the fresh id
+    /// minted by [`Self::user_message`] stands, which is where such a sentence
+    /// becomes addressable for the first time.
     pub fn user_message_moved(
         text: String,
         message_ids: Vec<String>,

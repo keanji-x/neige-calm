@@ -225,6 +225,9 @@ pub(super) struct Inner {
     /// #1505 PR2b — queue entries the load-time truncation discarded whose
     /// `harness.queue.changed { dropped }` row does not exist yet.
     ///
+    /// A `tokio::Mutex`: `flush_dropped_announcements` holds it across the
+    /// event inserts so two racing flushers cannot both take the same id.
+    ///
     /// Held here rather than passed to the run loop alone because the loss and
     /// its announcement have to share a fate, and the run loop is not the
     /// first thing that can make the loss durable:
@@ -235,7 +238,7 @@ pub(super) struct Inner {
     /// truncated queue reaches the row only once the record of what it lost
     /// is already there, and a failure leaves the untruncated row intact for
     /// the next boot to retry.
-    unannounced_drops: StdMutex<Vec<QueueEntryId>>,
+    unannounced_drops: Mutex<Vec<QueueEntryId>>,
     abort_handle: StdMutex<Option<AbortHandle>>,
     config: HarnessConfig,
 }
@@ -930,7 +933,7 @@ fn inner_from_params(
         durable_observation: Mutex::new(()),
         issuance: Mutex::new(()),
         issuance_paused: AtomicBool::new(false),
-        unannounced_drops: StdMutex::new(dropped_on_load),
+        unannounced_drops: Mutex::new(dropped_on_load),
         abort_handle: StdMutex::new(None),
         config: params.config,
     });
@@ -1283,24 +1286,40 @@ fn truncate_snapshot_pending_queue(snapshot: &mut HarnessSnapshot) -> Vec<QueueE
 /// This is the announcement's whole guarantee, and it is a fail-closed one:
 /// `persist_snapshot_inner` calls it before every write and refuses the write
 /// if it returns `Err`, so a truncated queue reaches the row only after the
-/// record of what it discarded is already committed. The entries are still on
-/// the untruncated row until then, so a failure here loses nothing — the next
-/// boot re-reads them, re-truncates, and tries again.
+/// record of what it discarded is already committed.
+///
+/// **The lock is held across the inserts, and that is what makes "one row per
+/// entry" true.** Two callers really do race here: the run loop's early flush
+/// runs on the task spawned by `PlannerHarness::run`, while
+/// `planner_harness_start_adapter` calls `handle.persist_snapshot()` on its own
+/// task straight afterwards — and `persist_snapshot` yields at its first
+/// database await, which is when the spawned loop first gets polled, so this
+/// interleaves on a current-thread runtime too. Reading the head under the lock
+/// and then dropping it before the insert let both callers take the same id and
+/// announce it twice. The second caller now waits and finds the list empty.
 ///
 /// Ids are removed one at a time, as each row commits, so a failure part-way
 /// through leaves exactly the un-announced remainder behind. That also makes
 /// the drain safe to abandon: `shutdown_inner` can abort the run-loop task
 /// mid-flush without turning the leftovers into a silent loss, because nothing
 /// can persist the truncation without draining them first.
+///
+/// A failure does not overwrite the untruncated row, so nothing is lost *by
+/// this write*. Whether those entries are ever read again depends on what
+/// becomes of the runtime: a boot that reaches this row re-truncates and
+/// retries, but a mint that fails here is compensated to `failed`, and neither
+/// the harvest (which reads `superseded` rows) nor `restore_old_runtime` reads
+/// a failed one — so entries that originated on this row, as opposed to ones
+/// recorded in the `harvested_from` journal, can still be stranded there.
 async fn flush_dropped_announcements(inner: &Arc<Inner>) -> Result<()> {
+    // One flusher at a time, for the whole drain. A `tokio::Mutex` because the
+    // guard is held across the `log_pure_event` await below — which is the
+    // point, not an oversight.
+    let mut outstanding = inner.unannounced_drops.lock().await;
     loop {
-        let next = inner
-            .unannounced_drops
-            .lock()
-            .expect("planner harness dropped-announcement mutex poisoned")
-            .first()
-            .cloned();
-        let Some(entry_id) = next else { return Ok(()) };
+        let Some(entry_id) = outstanding.first().cloned() else {
+            return Ok(());
+        };
         let scope = harness_event_scope(inner, "harness.queue.changed");
         inner
             .repo
@@ -1321,11 +1340,7 @@ async fn flush_dropped_announcements(inner: &Arc<Inner>) -> Result<()> {
                 },
             )
             .await?;
-        inner
-            .unannounced_drops
-            .lock()
-            .expect("planner harness dropped-announcement mutex poisoned")
-            .retain(|pending| pending != &entry_id);
+        outstanding.retain(|pending| pending != &entry_id);
     }
 }
 
@@ -2772,8 +2787,9 @@ async fn persist_snapshot_inner(
     // #1505 PR2b — the truncation's record goes in BEFORE the truncation does.
     // `?` and not a warn: a write that proceeded here would make a discarded
     // user message permanently gone with nothing saying so, and the caller
-    // would report success for it. The untruncated row is still on disk, so
-    // failing costs a retry and loses nothing.
+    // would report success for it. Refusing leaves the untruncated row as it
+    // was — see `flush_dropped_announcements` for what that does and does not
+    // guarantee about those entries being read again.
     flush_dropped_announcements(inner).await?;
     let mut snapshot = snapshot_for(inner).await;
     if let Some(head) = last_seen_head_override {
