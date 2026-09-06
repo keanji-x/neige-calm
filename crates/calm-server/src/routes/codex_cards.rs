@@ -7,9 +7,8 @@
 //!
 //! 1. Inside one DB transaction, `card_with_codex_create_tx` writes the
 //!    `codex`-kind card, linked `terminal` row, and initial `Starting`
-//!    runtime row. The card payload keeps schema/UI fields; API/WS reads
-//!    project legacy identity fields from `runtimes`. The transaction also
-//!    persists the `card.added` event with the final payload, so a single
+//!    worker-session row. The transaction also persists the `card.added`
+//!    event with the final payload, so a single
 //!    broadcast carries the fully-formed card to peers — no `card.updated`
 //!    follow-up, no intermediate
 //!    `payload=null` flash for the renderer's "Codex is starting…"
@@ -57,8 +56,8 @@ pub fn router() -> Router<AppState> {
 /// Body for `POST /api/tracks/:track_id/codex-cards`.
 ///
 /// Deliberately omits `kind` (always `"codex"`) and `payload` (the kernel
-/// persists schema/UI fields and projects identity from `runtimes`). Empty
-/// `cwd` falls back to `$HOME` then the server's cwd.
+/// persists schema/UI fields). Empty `cwd` falls back to `$HOME` then the
+/// server's cwd.
 ///
 /// `prompt` is the hands-free entry point: when non-empty, the kernel starts
 /// a shared thread, binds it to the runtime row, sends the prompt via

@@ -1,5 +1,5 @@
-// Filesystem reads the browser is allowed to make: today exactly one, the
-// read-only directory listing behind `GET /api/fs/listdir`.
+// Filesystem reads the browser may make: the seven read endpoints below, of
+// which `rawFileUrl` and `trackWorkspaceRawFileUrl` return raw bytes.
 //
 // The kernel's wire shape and the shape `ui/directory-browser` consumes are
 // deliberately different — the wire says `is_dir` and names an entry without

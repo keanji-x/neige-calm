@@ -45,8 +45,8 @@ pub fn router() -> Router<AppState> {
 /// Body for `POST /api/tracks/:track_id/terminal-cards`.
 ///
 /// Deliberately omits `kind` (always `"terminal"`) and `payload` (the kernel
-/// persists schema payload and projects identity from `runtimes`). Empty
-/// `program` falls back to `$SHELL` then `/bin/sh`; empty `cwd` falls back to
+/// persists schema payload). Empty `program` falls back to `$SHELL` then
+/// `/bin/sh`; empty `cwd` falls back to
 /// the track's workspace (#1147 S6). `env` is merged into the daemon's environment
 /// as additional vars on top of `TERM` / `COLORTERM` / inherited.
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
