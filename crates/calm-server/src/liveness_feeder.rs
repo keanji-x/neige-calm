@@ -3,14 +3,15 @@
 //! A long-lived task, spawned at dispatcher construction behind the SAME
 //! kill-switch as the reaper (`NEIGE_REAPER_DISABLED`), that subscribes to the
 //! shared codex daemon notification stream and push-feeds the durable
-//! `worker_sessions.{last_activity_ms,last_thread_status}` columns (added inert
-//! in 741-1) keyed by codex `thread_id`.
+//! `worker_sessions.{last_activity_ms,last_thread_status}` columns keyed by
+//! codex `thread_id`.
 //!
-//! It writes ONLY those two `worker_sessions`-only columns (never
-//! `updated_at_ms`, never `runtimes`) via
-//! [`SessionRepo::session_record_activity_by_thread`], so it is parity-safe.
-//! Nothing CONSUMES these columns yet — the reaper does not read them until
-//! 741-3. This slice only keeps them fresh.
+//! It writes ONLY those two columns via
+//! [`SessionRepo::session_record_activity_by_thread`] — not `updated_at_ms`,
+//! which orders projection reads.
+//!
+//! Both columns gate `Reaper::sweep_all` (`reaper/mod.rs`): stop stamping them
+//! and a live but quiet codex session ages past the deadline and is reapable.
 
 use std::sync::Arc;
 
