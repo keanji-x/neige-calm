@@ -1004,7 +1004,15 @@ async fn an_upload_cannot_be_redirected_outside_the_attachment_root() {
     // Somewhere outside `.neige/attachments` altogether, reached relatively so
     // the case is "the target leaves the root" rather than "it is spelled
     // absolutely".
-    let outside = b.attachments_dir().parent().unwrap().join("escaped");
+    //
+    // The arithmetic is the test. The link sits at
+    // `<workspace>/.neige/attachments/<card>/staging`, so its `..` is `<card>`
+    // and `../../../` is `<workspace>` — which is where `outside` must be. The
+    // first version of this case put `outside` under `.neige` and so pointed
+    // the link at a directory the assertion never looked in: it passed with
+    // every resolve guard removed, which is the shape of vacuous test this
+    // round exists to stop shipping.
+    let outside = b.workspace.join("escaped");
     std::fs::create_dir_all(&outside).unwrap();
     let staging = b.staging();
     std::fs::create_dir_all(staging.parent().unwrap()).unwrap();
