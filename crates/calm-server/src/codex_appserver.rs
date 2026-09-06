@@ -225,7 +225,7 @@ pub struct PermissionProfileSummary {
 }
 
 #[cfg(test)]
-#[path = "dedicated_codex/client_tests.rs"]
+#[path = "codex_appserver/dedicated_permission_tests.rs"]
 mod dedicated_permission_tests;
 
 impl std::fmt::Debug for ThreadStartParams {

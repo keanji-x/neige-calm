@@ -11,7 +11,7 @@ use toml_edit::{DocumentMut, Item, Table};
 #[path = "home_io.rs"]
 mod io;
 #[cfg(test)]
-#[path = "home_tests.rs"]
+#[path = "home/tests.rs"]
 mod tests;
 
 const MAX_SEED_BYTES: u64 = 1_048_576;
