@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
@@ -175,6 +176,107 @@ describe('degraded workspace reads stay usable', () => {
     });
     const main = await screen.findByRole('main');
     expect((await within(main).findAllByRole('alert')).some((node) => node.textContent?.includes('Track activity is unavailable: overlays down'))).toBe(true);
+  });
+
+  it('finishes an offline conversation submission without waiting for delivery reconciliation', async () => {
+    const creates: ApiRequest[] = [];
+    const { client } = renderRoute('/track/w1', (request) => {
+      if (request.path === '/api/areas') return ok(areas.slice(0, 1));
+      if (request.path === '/api/areas/c1/tracks') return ok([track]);
+      if (request.path === '/api/tracks/w1') return ok({ track, can_resume: false, cards: [], overlays: [] });
+      if (request.method === 'POST') creates.push(request);
+      return ok([]);
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
+    const drawer = await screen.findByRole('complementary', { name: 'Untitled' });
+    const field = within(drawer).getByRole('combobox', { name: 'Message' });
+    await userEvent.type(field, 'Keep my offline conversation');
+    act(() => onlineManager.setOnline(false));
+    await userEvent.keyboard('{Enter}');
+    expect((await within(drawer).findByRole('alert')).textContent).toMatch(/offline/i);
+    const retry = await within(drawer).findByRole('button', { name: 'Try again' });
+    await waitFor(() => expect(retry.hasAttribute('disabled')).toBe(false));
+    expect(within(drawer).getByText('Keep my offline conversation')).toBeTruthy();
+    expect(creates).toEqual([]);
+    await userEvent.type(within(drawer).getByRole('combobox', { name: 'Message' }), 'Revised offline conversation');
+    await userEvent.keyboard('{Enter}');
+    expect((await within(drawer).findByRole('alert')).textContent).toMatch(/offline/i);
+    expect((await within(drawer).findByRole('button', { name: 'Try again' })).hasAttribute('disabled')).toBe(false);
+    expect(within(drawer).getByText('Revised offline conversation')).toBeTruthy();
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
+    await act(async () => { onlineManager.setOnline(true); await client.resumePausedMutations(); });
+    expect(creates).toEqual([]);
+  });
+
+  it('preserves an earlier uncertain create when its edited retry is refused offline', async () => {
+    const creates: ApiRequest[] = [];
+    let revealLanding = false;
+    const { client } = renderRoute('/track/w1', (request) => {
+      if (request.path === '/api/areas') return ok(areas.slice(0, 1));
+      if (request.path === '/api/areas/c1/tracks') return ok([track]);
+      if (request.path === '/api/tracks/w1') return ok({ track, can_resume: false, cards: [], overlays: [] });
+      if (request.method === 'POST') {
+        creates.push(request);
+        return fail('Acknowledgement lost');
+      }
+      if (request.path === '/api/tracks/w1/conversations' && revealLanding) {
+        return ok([{
+          id: trackConversationCardId('w1', creates[0].headers!['Idempotency-Key']),
+          trackId: 'w1', title: null, kind: 'track-assistant', state: null, updatedAt: 1,
+        }]);
+      }
+      return ok([]);
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
+    let drawer = await screen.findByRole('complementary', { name: 'Untitled' });
+    await userEvent.type(within(drawer).getByRole('combobox', { name: 'Message' }), 'Original uncertain intent{Enter}');
+    await within(drawer).findByRole('alert');
+    await waitFor(() => expect(within(drawer).getByRole('button', { name: 'Try again' }).hasAttribute('disabled')).toBe(false));
+    expect(creates).toHaveLength(1);
+    act(() => onlineManager.setOnline(false));
+    await userEvent.type(within(drawer).getByRole('combobox', { name: 'Message' }), 'Edited offline intent{Enter}');
+    expect((await within(drawer).findByRole('alert')).textContent).toMatch(/offline/i);
+    expect(within(drawer).getByRole('button', { name: 'Try again' }).hasAttribute('disabled')).toBe(false);
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
+    revealLanding = true;
+    await act(async () => { onlineManager.setOnline(true); await client.resumePausedMutations(); });
+    expect(creates).toHaveLength(1);
+    await userEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
+    drawer = await screen.findByRole('complementary', { name: 'Untitled' });
+    expect(within(drawer).getByText('Edited offline intent')).toBeTruthy();
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Try again' }));
+    const adopted = await screen.findByRole('complementary', { name: 'Assistant' });
+    expect(within(adopted).getByText('Original uncertain intent')).toBeTruthy();
+    expect(within(adopted).queryByText('Edited offline intent')).toBeNull();
+    expect(creates).toHaveLength(1);
+  });
+
+  it('keeps a create undispatched when connectivity drops between the click and its mutation', async () => {
+    const creates: ApiRequest[] = [];
+    const { client } = renderRoute('/track/w1', (request) => {
+      if (request.path === '/api/areas') return ok(areas.slice(0, 1));
+      if (request.path === '/api/areas/c1/tracks') return ok([track]);
+      if (request.path === '/api/tracks/w1') return ok({ track, can_resume: false, cards: [], overlays: [] });
+      if (request.method === 'POST') creates.push(request);
+      return ok([]);
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
+    const drawer = await screen.findByRole('complementary', { name: 'Untitled' });
+    const field = within(drawer).getByRole('combobox', { name: 'Message' });
+    await userEvent.type(field, 'Never dispatched');
+    await act(async () => {
+      fireEvent.keyDown(field, { key: 'Enter' });
+      onlineManager.setOnline(false);
+      await Promise.resolve();
+    });
+    expect((await within(drawer).findByRole('alert')).textContent).toMatch(/offline/i);
+    expect(within(drawer).getByRole('button', { name: 'Try again' }).hasAttribute('disabled')).toBe(false);
+    expect(creates).toHaveLength(0);
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
+    await act(async () => { onlineManager.setOnline(true); await client.resumePausedMutations(); });
+    await userEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
+    expect(screen.queryByText('Never dispatched')).toBeNull();
+    expect(creates).toHaveLength(0);
   });
 
   it('keeps Today content when one area track read fails', async () => {

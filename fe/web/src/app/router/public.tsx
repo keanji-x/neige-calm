@@ -11,11 +11,12 @@ import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
 } from '@tanstack/react-router';
 import { useEffect, useMemo, useRef } from 'react';
-import { useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
+import { onlineManager, useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
+import { confirmsConversationDelivery, failedConversationDelivery } from '../../../../core/domain/conversation-delivery.ts';
 import {
   isBlankForKernel, toTrack, trackActivityFrom, trackCreateKeyAction, trackDisplayTitle,
   type NewTrackBodyWithoutFirstMessage, type Track, type TrackDetailWire,
@@ -69,7 +70,7 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction, PanelEmpty } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ApiError, apiFailureCodeOf, folderConflictOf, harnessItemsQueryOptions,
+  ApiError, OfflineSubmissionError, apiFailureCodeOf, folderConflictOf, harnessItemsQueryOptions,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
   usePlannerMutations, useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
   useTrackConversationMutations, useTrackMutations, useTrackRecipeMutations, useTrackRecipes,
@@ -85,7 +86,7 @@ import { useTheme } from '../theme/public.tsx';
 import { AppShell, useOpenMobileSection } from '../shell/public.tsx';
 import {
   ConversationProvider, useConversationRegistry,
-  type ConversationDraft, type ConversationDraftId,
+  type ConversationDraft, type ConversationDraftId, type FailedConversationSend,
 } from '../conversations/public.tsx';
 import {
   renderedMobilePanel,
@@ -109,6 +110,7 @@ type ConversationStore = Readonly<{
   turnsOf: (conversationId: string) => readonly TranscriptEntry[];
   pending: ReadonlySet<string>;
   working: boolean;
+  stalled: boolean;
   stopping: boolean;
   sending: boolean;
   sendBlocked: boolean;
@@ -118,6 +120,8 @@ type ConversationStore = Readonly<{
   loadingEarlier: boolean;
   historyError: string | null;
   actionError: string | null;
+  failedSend: FailedConversationSend | null;
+  retrySend: (echoId: string) => void;
   /** What became of the send — see `SendOutcome` for what each case licenses. */
   send: (conversationId: string, text: string) => Promise<SendOutcome>;
   interrupt: () => void;
@@ -155,6 +159,7 @@ type ConversationFacts = Readonly<{
   kind: ConversationKind;
   state: ConversationState | null;
   working: boolean;
+  stalled: boolean;
   /** The row's own time, used when no turn has supplied a later one. */
   fallbackUpdatedAt: number;
 }>;
@@ -189,7 +194,7 @@ function describeConversation(
        not a one-off kind test: this branch is silent, and a new kind
        falling into the `else` would swap the server's reading for an invented
        `'idle'` with nothing to notice it. */
-    state: CONVERSATION_STATE_SOURCE[facts.kind] === 'server'
+    state: facts.stalled ? 'failed' : CONVERSATION_STATE_SOURCE[facts.kind] === 'server'
       ? (facts.working ? 'turn_pending' : facts.state)
       : (facts.working ? 'running' : 'idle'),
     updatedAt: turns.at(-1)?.atMs ?? facts.fallbackUpdatedAt,
@@ -291,6 +296,16 @@ export function useConversationStore(
       : [...items].sort((left, right) => left.id - right.id).flatMap(harnessItemToTurns),
     [history.data, items, serverEntries],
   );
+  const heldFailure = registry.failedSends[cardId] ?? null;
+  // A matching row from before the request cannot confirm this attempt. The
+  // same high-water witness used by accepted sends survives drawer remounts.
+  const deliveryConfirmed = heldFailure !== null
+    && confirmsConversationDelivery(serverTurns, heldFailure.echo);
+  const failedSend = deliveryConfirmed ? null : heldFailure;
+  const clearFailedSend = registry.clearFailedSend;
+  useEffect(() => {
+    if (heldFailure !== null && deliveryConfirmed) clearFailedSend(cardId, heldFailure.echo.id);
+  }, [cardId, clearFailedSend, deliveryConfirmed, heldFailure]);
   useEffect(() => {
     setEchoes([]);
     setUnconfirmedEchoId(null);
@@ -412,12 +427,13 @@ export function useConversationStore(
     () => mergeTranscript(serverEntries, confirmedEchoes), [confirmedEchoes, serverEntries],
   );
   const phase = run.data?.phase ?? null;
+  const stalled = phase === 'wedged';
   const working = phase === 'issuing_turn' || phase === 'turn_running';
-  const stopping = phase === 'issuing_interrupt' || interruptPending;
+  const stopping = !stalled && (phase === 'issuing_interrupt' || interruptPending);
   const facts = useMemo<ConversationFacts | null>(() => trackId === undefined ? null : {
     cardId, trackId, trackTitle, cardTitle: cardTitle ?? null, kind: scopeKind,
-    state: scopeState, working, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
-  }, [cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working]);
+    state: scopeState, working, stalled, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
+  }, [cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working, stalled]);
   /**
    * What the reader is looking at: every turn, echoes included.
    *
@@ -552,7 +568,7 @@ export function useConversationStore(
     : listedConversations.map((row) => row.id === conversation.id ? conversation : row);
 
   const send = async (_conversationId: string, text: string): Promise<SendOutcome> => {
-    if (sendingRef.current || !registry.tryBeginSend(cardId)) return 'not-sent';
+    if (_conversationId !== cardId || stalled || sendingRef.current || !registry.tryBeginSend(cardId)) return 'not-sent';
     sendingRef.current = true;
     setSending(true);
     setActionError(null);
@@ -610,7 +626,7 @@ export function useConversationStore(
     /* Still ours to answer for. False from the moment the reader moved to
        another conversation (the `cardId` effect) or started a later send. */
     const stillActive = () => activeSend.current?.echoId === echo.id;
-    let sendFailure: string | null = null;
+    let sendFailure: FailedConversationSend | null = null;
     /*
      * What this send became, decided where the fact is known and read once at
      * the end. `sendFailure` cannot stand in for it: it is set before the
@@ -686,20 +702,17 @@ export function useConversationStore(
         };
       });
     }).catch((error: unknown) => {
-      /* KNOWN GAP (#1449): one sentence for both. `settled` on the next line
-         already separates "the server has nothing, send it again" from "this
-         may have landed"; the reader is left to infer which from whether the
-         text came back, and on an endpoint with no idempotency key a wrong
-         guess is a duplicate turn. */
-      sendFailure = errorMessage(error, 'Could not send the message.');
       settled = isSendRefusalCode(apiFailureCodeOf(error)) ? 'refused' : 'unresolved';
+      sendFailure = {
+        echo, message: errorMessage(error, 'Could not send the message.'),
+        delivery: settled === 'refused' ? 'refused' : failedConversationDelivery(error instanceof ApiError ? error.failure : null),
+      };
       /* A failure belongs to the conversation that failed. Reported on another
          one it is a sentence under a composer the reader never sent from, and
          dropping the echo there would be dropping someone else's. The provider
          still records this failure below for a remount of the owning card. */
       if (!stillActive()) return;
       setEchoes((current) => current.filter((turn) => turn.id !== echo.id));
-      setActionError(sendFailure);
     }).finally(() => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
       registry.finishSend(sentTo, sendFailure);
@@ -768,24 +781,30 @@ export function useConversationStore(
     isOptimisticConversationTurn(turn) && !turn.queued;
   const hasUnreconciledSend = echoes.some(awaitsReconciliation)
     || registry.turnsOf(cardId).some(awaitsReconciliation);
-  const sendBlocked = sending || sendingAcrossMounts || hasUnreconciledSend;
+  const sendBlocked = stalled || (failedSend !== null && failedSend.delivery !== 'refused') || sending || sendingAcrossMounts || hasUnreconciledSend;
   return {
     conversations,
     turnsOf: (conversationId) => conversation?.id === conversationId
-      ? transcript
+      ? failedSend === null ? transcript : mergeTranscript(transcript, [failedSend.echo])
       : registry.turnsOf(conversationId),
-    pending: pendingConversationIds(conversation, working, sending || sendingAcrossMounts),
+    pending: pendingConversationIds(conversation, working, !stalled && (sending || sendingAcrossMounts)),
     working,
+    stalled,
     stopping,
     sending: sending || sendingAcrossMounts,
     sendBlocked,
     historyReady: history.data !== undefined,
-    historyLoading: history.data === undefined && history.isFetching,
+    historyLoading: history.isFetching,
     hasEarlier: history.hasNextPage,
     loadingEarlier: history.isFetchingNextPage,
     historyError: history.error instanceof Error ? history.error.message : null,
-    actionError: actionError ?? registry.sendErrors[cardId] ?? null,
-    send,
+    actionError,
+    failedSend,
+    retrySend: (echoId) => {
+      if (failedSend?.echo.id === echoId) void send(cardId, failedSend.echo.text);
+    },
+    send: (conversationId, text) => failedSend === null || failedSend.delivery === 'refused'
+      ? send(conversationId, text) : Promise.resolve('not-sent'),
     interrupt,
     retryHistory: () => { void history.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
@@ -1092,6 +1111,8 @@ function useConversationPanel(
    * re-opening the same row by hand is an ordinary open.
    */
   const [composerFocusFor, setComposerFocusFor] = useState<string | null>(null);
+  const [resendConfirmation, setResendConfirmation] = useState<string | null>(null);
+  const [composerDraft, setComposerDraft] = useState('');
 
   const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
   useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
@@ -1241,6 +1262,7 @@ function useConversationPanel(
    * accepts an empty scope id.
    */
   const start = () => {
+    setComposerDraft('');
     /*
      * A draft that was sent and failed is still open business, and `+` is the
      * only way back to it once the drawer was closed. Reopening it — same key,
@@ -1283,6 +1305,12 @@ function useConversationPanel(
    * either entry point, so `start` always creates a genuinely scoped draft.
    */
   const startAnother = start;
+  const continueFromStall = () => {
+    start();
+    // Starting another conversation is a recovery handoff: keep the words
+    // the reader was composing, ready to edit before any request is sent.
+    setComposerDraft(composerDraft);
+  };
 
   /*
    * The attempt `from` became row `row`: forget the draft and open the row.
@@ -1356,6 +1384,12 @@ function useConversationPanel(
    * stage this function never reaches, and the registry draft governs a stage
    * that one never reaches. Returning `void` keeps this stage on the registry.
    */
+  const refuseOfflineDraft = (attempt: ConversationDraft, text: string): boolean => {
+    if (onlineManager.isOnline()) return false;
+    amendDraft(attempt, { text, error: new OfflineSubmissionError().message, remedy: 'retry' });
+    return true;
+  };
+
   const sendDraft = (text: string) => {
     if (creating || draft === null) return;
     const { create, refresh, scopeId, derivedCardId } = source;
@@ -1385,12 +1419,14 @@ function useConversationPanel(
       });
       return;
     }
+    if (refuseOfflineDraft(draft, text)) return;
     const previousText = draft.sentText;
     /* The draft this send is *for*, fixed here. Everything below writes through
        it, so a send that outlives its draft — adopted, closed, or left behind by
        a scope switch — changes nothing rather than writing into whatever that
        scope holds by then. */
     let attempt = draft;
+    let previouslySentText = attempt.sentText;
     amendDraft(attempt, { text, creating: true, error: null, remedy: null });
     void (async () => {
       try {
@@ -1412,11 +1448,20 @@ function useConversationPanel(
           }
           attempt = rekeyDraft(attempt, mintIdempotencyKey());
         }
+        if (refuseOfflineDraft(attempt, text)) return;
+        previouslySentText = attempt.sentText;
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
         adopt(attempt, await create(text, attempt.key), text);
       } catch (error: unknown) {
-        attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
+        if (error instanceof OfflineSubmissionError) {
+          // Marking a request optimistically must not invent dispatch when the
+          // mutation's later guard refused it. Keep any earlier unknown send.
+          registry.editDraft(attempt, (current) => ({ ...current, sentText: previouslySentText }));
+          amendDraft(attempt, { error: error.message, remedy: 'retry' });
+        } else {
+          attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
+        }
       } finally {
         amendDraft(attempt, { creating: false });
       }
@@ -1500,7 +1545,9 @@ function useConversationPanel(
     if (creating || draft === null || draft.text === null) return;
     const { create, refresh, scopeId, derivedCardId } = source;
     const text = draft.text;
+    if (refuseOfflineDraft(draft, text)) return;
     let attempt = draft;
+    let previouslySentText = attempt.sentText;
     amendDraft(attempt, { creating: true, error: null, remedy: null });
     void (async () => {
       try {
@@ -1515,11 +1562,20 @@ function useConversationPanel(
           return;
         }
         attempt = rekeyDraft(attempt, mintIdempotencyKey());
+        if (refuseOfflineDraft(attempt, text)) return;
+        previouslySentText = attempt.sentText;
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
         adopt(attempt, await create(text, attempt.key), text);
       } catch (error: unknown) {
-        attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
+        if (error instanceof OfflineSubmissionError) {
+          // Marking a request optimistically must not invent dispatch when the
+          // mutation's later guard refused it. Keep any earlier unknown send.
+          registry.editDraft(attempt, (current) => ({ ...current, sentText: previouslySentText }));
+          amendDraft(attempt, { error: error.message, remedy: 'retry' });
+        } else {
+          attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
+        }
       } finally {
         amendDraft(attempt, { creating: false });
       }
@@ -1541,6 +1597,7 @@ function useConversationPanel(
      `start` reopens exactly this state when `+` is pressed again. */
   const closeDrawer = () => {
     setOpenTarget(null);
+    setComposerDraft('');
     if (draft !== null && draft.sentText === null) registry.discardDraft(draft);
   };
 
@@ -1607,7 +1664,8 @@ function useConversationPanel(
             {/* Offered on a draft too, and it means the same thing the `+`
                 means there: throw this unsent draft away and begin another.
                 Same callback, so the two cannot disagree about that. */}
-            <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={startAnother} />
+            <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={startAnother}
+              draft={{ text: composerDraft, onChange: setComposerDraft }} />
           </>
         ) : open === null ? undefined : (
           <>
@@ -1619,6 +1677,58 @@ function useConversationPanel(
                 </ChatFooterRemedy>
               </ChatFooterNotice>
             )}
+            {store.stalled && (
+              <ChatFooterNotice>
+                <ChatFooterError message="This conversation is stuck. Start a new conversation to continue." />
+                <ChatFooterRemedy onClick={continueFromStall}>Start a new conversation</ChatFooterRemedy>
+              </ChatFooterNotice>
+            )}
+            {store.failedSend !== null && (
+              <ChatFooterNotice>
+                <ChatFooterError message={store.failedSend.delivery === 'unknown'
+                  ? `Delivery is unconfirmed. ${store.failedSend.message}` : `Not sent. ${store.failedSend.message}`} />
+                {store.failedSend.delivery !== 'unknown' ? (
+                  (store.failedSend.delivery !== 'refused' || composerDraft === '') && <>
+                    <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
+                      onClick={() => {
+                        if (store.failedSend === null) return;
+                        setComposerDraft('');
+                        store.retrySend(store.failedSend.echo.id);
+                      }}>
+                      Try again
+                    </ChatFooterRemedy>
+                    <ChatFooterRemedy onClick={() => {
+                      if (store.failedSend === null) return;
+                      setComposerDraft(store.failedSend.echo.text);
+                      registry.clearFailedSend(open.id, store.failedSend.echo.id);
+                    }}>Edit</ChatFooterRemedy>
+                  </>
+                ) : (
+                  <>
+                    <ChatFooterRemedy disabled={store.historyLoading} onClick={store.retryHistory}>
+                      {store.historyLoading ? 'Checking…' : 'Check delivery'}
+                    </ChatFooterRemedy>
+                    <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
+                      onClick={() => setResendConfirmation(store.failedSend?.echo.id ?? null)}>
+                      Send again…
+                    </ChatFooterRemedy>
+                  </>
+                )}
+              </ChatFooterNotice>
+            )}
+            <ConfirmDialog
+              open={resendConfirmation !== null && store.failedSend?.echo.id === resendConfirmation}
+              title="Send this message again?"
+              description="It may already have arrived. Sending again can deliver the same request twice. Check the conversation for a reply first."
+              confirmLabel="Send again"
+              destructive={false}
+              confirmState={store.stalled || store.sending || !store.historyReady ? 'blocked' : 'ready'}
+              onConfirm={() => {
+                if (resendConfirmation !== null) store.retrySend(resendConfirmation);
+                setResendConfirmation(null);
+              }}
+              onCancel={() => setResendConfirmation(null)}
+            />
             {store.actionError !== null && (
               <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
             )}
@@ -1631,6 +1741,7 @@ function useConversationPanel(
                  that thread is where the intent was delivered (#1299) and
                  where the next thing the reader says goes. */
               focusOnMount={composerFocusFor === open.id}
+              draft={{ text: composerDraft, onChange: setComposerDraft }}
               disabled={store.sendBlocked || !store.historyReady}
               onSend={(text) => store.send(open.id, text)}
               /* `stopping` keeps Stop *shown* while the interrupt is in flight;
@@ -1709,7 +1820,8 @@ function useConversationPanel(
               <ChatThread
                 key={open.id}
                 conversation={open}
-                turns={store.turnsOf(open.id)}
+                turns={store.turnsOf(open.id).filter((turn) => store.failedSend?.delivery !== 'refused'
+                  || composerDraft === '' || turn.id !== store.failedSend.echo.id)}
                 pending={store.pending.has(open.id)}
               />
             )}

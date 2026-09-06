@@ -30,7 +30,7 @@
 // The unit is the **exchange** — one thing you said and everything that came
 // back — and the layout groups by it: tight inside, loose between.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type Dispatch, type SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChatComposer as AstryxChatComposer,
@@ -1836,10 +1836,12 @@ function isThenable(value: unknown): value is Promise<SendOutcome> {
  * callback so the kernel path stays a string.
  */
 export function ChatComposer({
-  onSend, onStop, onNewConversation, disabled = false, focusOnMount = false,
+  onSend, onStop, onNewConversation, disabled = false, focusOnMount = false, draft: controlledDraft,
 }: {
   /** See `SendOutcome`. A caller with its own draft persistence returns `void`. */
   onSend: (text: string) => void | Promise<SendOutcome>;
+  /** A route may retain unsent words across its recovery surfaces. */
+  draft?: Readonly<{ text: string; onChange: Dispatch<SetStateAction<string>> }>;
   /**
    * Interrupt the turn in flight. Its presence is what turns Send into Stop.
    *
@@ -1913,7 +1915,9 @@ export function ChatComposer({
    */
   focusOnMount?: boolean;
 }) {
-  const [draft, setDraft] = useState('');
+  const [localDraft, setLocalDraft] = useState('');
+  const draft = controlledDraft?.text ?? localDraft;
+  const setDraft = controlledDraft?.onChange ?? setLocalDraft;
   const stopShown = onStop != null;
 
   /*
@@ -2195,9 +2199,18 @@ export function ChatComposer({
       role="group"
       aria-label="Message composer"
       onKeyDownCapture={(event) => {
-        /* Astryx ChatComposerInput submits on Enter without an IME guard.
-           Enter while composing accepts the candidate, it must not send. */
-        if (event.key === 'Enter' && !event.shiftKey && event.nativeEvent.isComposing) {
+        /* Astryx clears its input after Enter even when its parent refuses
+           submission. Keep unsent words while disabled or showing Stop, and
+           let IME Enter accept its candidate without submitting. */
+        if (event.key !== 'Enter' || event.shiftKey) return;
+        if (event.nativeEvent.isComposing) {
+          event.stopPropagation();
+          return;
+        }
+        const commandIsOpen = event.target instanceof Element
+          && event.target.closest('[role="combobox"][aria-expanded="true"]') !== null;
+        if (disabled || (stopShown && !commandIsOpen)) {
+          event.preventDefault();
           event.stopPropagation();
         }
       }}

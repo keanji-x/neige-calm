@@ -2,7 +2,7 @@ import {
   createContext, useCallback, useContext, useMemo, useRef, type ReactNode,
 } from 'react';
 
-import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
+import type { Conversation, OptimisticConversationTurn, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import { useReducer, useState } from '../../ui/state/public.ts';
 
 /**
@@ -94,6 +94,14 @@ function moveDraft(slots: DraftSlots, move: DraftMove): DraftSlots {
     }
   }
 }
+
+/** A failed request keeps its words and delivery witness across drawer remounts.
+ * It is recovery work, never a confirmed transcript or conversation title. */
+export type FailedConversationSend = Readonly<{
+  echo: OptimisticConversationTurn;
+  message: string;
+  delivery: 'rejected' | 'unknown' | 'refused';
+}>;
 
 export type RememberedConversation = Readonly<{
   conversation: Conversation;
@@ -209,10 +217,11 @@ export type ConversationRegistry = Readonly<{
   finishDraftAdoption: (scopeId: string, conversationId: string) => void;
   /** One in-flight send per conversation across route/store remounts. */
   pendingSendIds: ReadonlySet<string>;
-  /** Send failures keyed by the conversation that owns them. */
-  sendErrors: Readonly<Record<string, string>>;
+  /** Failed attempts keyed by the conversation that owns their recovery. */
+  failedSends: Readonly<Record<string, FailedConversationSend>>;
   tryBeginSend: (conversationId: string) => boolean;
-  finishSend: (conversationId: string, error: string | null) => void;
+  finishSend: (conversationId: string, failure: FailedConversationSend | null) => void;
+  clearFailedSend: (conversationId: string, echoId: string) => void;
   /* There is deliberately no "open the planner conversation of track W" slot here
      (#1211 S2). It was one, and a global slot cannot own that intent: the track
      the reader is leaving is still mounted when a create states it, and every
@@ -249,14 +258,14 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   >(null);
   const pendingSendIdsRef = useRef<ReadonlySet<string>>(new Set());
   const [pendingSendIds, setPendingSendIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [sendErrors, setSendErrors] = useState<Readonly<Record<string, string>>>({});
+  const [failedSends, setFailedSends] = useState<Readonly<Record<string, FailedConversationSend>>>({});
   const tryBeginSend = useCallback((conversationId: string) => {
     if (pendingSendIdsRef.current.has(conversationId)) return false;
     const next = new Set(pendingSendIdsRef.current);
     next.add(conversationId);
     pendingSendIdsRef.current = next;
     setPendingSendIds(next);
-    setSendErrors((current) => {
+    setFailedSends((current) => {
       if (!(conversationId in current)) return current;
       const withoutPrevious = { ...current };
       delete withoutPrevious[conversationId];
@@ -264,15 +273,23 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     });
     return true;
   }, []);
-  const finishSend = useCallback((conversationId: string, error: string | null) => {
+  const finishSend = useCallback((conversationId: string, failure: FailedConversationSend | null) => {
     if (!pendingSendIdsRef.current.has(conversationId)) return;
     const next = new Set(pendingSendIdsRef.current);
     next.delete(conversationId);
     pendingSendIdsRef.current = next;
     setPendingSendIds(next);
-    if (error !== null) {
-      setSendErrors((current) => ({ ...current, [conversationId]: error }));
+    if (failure !== null) {
+      setFailedSends((current) => ({ ...current, [conversationId]: failure }));
     }
+  }, []);
+  const clearFailedSend = useCallback((conversationId: string, echoId: string) => {
+    setFailedSends((current) => {
+      if (current[conversationId]?.echo.id !== echoId) return current;
+      const next = { ...current };
+      delete next[conversationId];
+      return next;
+    });
   }, []);
   const remember = useCallback((conversation: Conversation, turns: readonly TranscriptEntry[]) => {
     setEntries((current) => equalEntry(current[conversation.id], conversation, turns)
@@ -354,12 +371,12 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       requestedOpenId, requestedOpenFocusesComposer, requestOpen, clearOpenRequest,
       draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
-      pendingSendIds, sendErrors, tryBeginSend, finishSend,
+      pendingSendIds, failedSends, tryBeginSend, finishSend, clearFailedSend,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, createEchoOf, discardDraft,
       noteCreateEcho, retireCreateEcho,
       discardUnsentDraft, draftOf, editDraft, finishDraftAdoption, finishSend, pendingSendIds,
-      remember, requestOpen, sendErrors,
+      remember, requestOpen, failedSends, clearFailedSend,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, tryBeginSend, turnsOf,
       updateExisting],
   );
