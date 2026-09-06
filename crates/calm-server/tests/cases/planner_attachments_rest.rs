@@ -932,8 +932,68 @@ async fn the_next_upload_reclaims_an_expired_unbound_one() {
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "an expired attachment's URL stops resolving — S6-PR1 ships no bind path"
+        "an expired attachment's URL stops resolving; binding is what takes one out of the \
+         sweep's reach, and this one was never bound"
     );
+}
+
+/// #1505 S6 review — a card that is over its ceiling must be able to get back
+/// under it.
+///
+/// The budget was a one-way door. The sweep ran only AFTER a successful
+/// upload, and a card at or over its ceiling is refused before it, so the one
+/// thing that could free space never ran: every later upload answered "budget
+/// exhausted" forever, orphan TTL or not.
+///
+/// The over-budget state is reachable without any abuse. `bind` publishes into
+/// `bound/` and then retires the staged original; a process that dies between
+/// those two leaves the same bytes in both counted directories.
+#[tokio::test]
+async fn a_card_over_its_budget_recovers_once_its_staged_bytes_expire() {
+    let b = boot().await;
+    let card = b.planner_card.id.to_string();
+
+    // One real staged upload, so there is a `staging/` to age.
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"stale")).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let stale = body["attachmentId"].as_str().unwrap().to_string();
+
+    // 65 MiB of it: the card is over the 64 MiB ceiling on staged bytes alone.
+    let big = std::fs::File::options()
+        .write(true)
+        .open(b.staging().join(&stale))
+        .unwrap();
+    big.set_len(65 * 1024 * 1024).unwrap();
+    drop(big);
+
+    // Still fresh, so nothing may be reclaimed and the refusal is correct.
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"blocked")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("attachment budget exhausted"),
+        "{body}"
+    );
+
+    // Now expired. The very next upload must sweep BEFORE it measures.
+    let aged = std::fs::File::options()
+        .write(true)
+        .open(b.staging().join(&stale))
+        .unwrap();
+    aged.set_modified(SystemTime::now() - Duration::from_secs(25 * 60 * 60))
+        .unwrap();
+    drop(aged);
+
+    let (status, body) = upload(&b.app, &card, Some("user"), "image/png", png(b"recovered")).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an expired staged file is reclaimed before the ceiling is read: {body}"
+    );
+    let recovered = body["attachmentId"].as_str().unwrap().to_string();
+    assert_eq!(file_names(&b.staging()), vec![recovered]);
 }
 
 /// #1515 review F3. `is_file()` follows symlinks, so a link planted under a

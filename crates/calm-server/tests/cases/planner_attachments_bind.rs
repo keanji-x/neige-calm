@@ -506,7 +506,16 @@ async fn a_bound_directory_symlinked_to_another_card_refuses_before_writing() {
 
     let victim = boot.attachment_root().join("card-victim").join("bound");
     std::fs::create_dir_all(&victim).unwrap();
-    std::os::unix::fs::symlink(&victim, boot.bound_dir()).unwrap();
+    // RELATIVE, and that is the whole point of this case.
+    //
+    // An absolute target is refused by `RESOLVE_BENEATH` on its own, so a test
+    // written that way passes whether or not `RESOLVE_NO_SYMLINKS` is set — it
+    // proves the old unguarded `rename` is gone and nothing about the flag
+    // that makes sibling cards separate trust domains. `../card-victim/bound`
+    // stays beneath the attachment root, so `RESOLVE_BENEATH` is happy with
+    // it and only `RESOLVE_NO_SYMLINKS` refuses. It is also the exact
+    // construction the review gave.
+    std::os::unix::fs::symlink("../card-victim/bound", boot.bound_dir()).unwrap();
 
     let (status, body) = post_input_with_attachments(
         boot.app.clone(),
@@ -552,7 +561,10 @@ async fn a_bound_directory_symlinked_outside_the_root_refuses_before_writing() {
 
     let outside = boot.workspace.join("escaped");
     std::fs::create_dir_all(&outside).unwrap();
-    std::os::unix::fs::symlink(&outside, boot.bound_dir()).unwrap();
+    // Relative here too, so the case is "the target leaves the root" and not
+    // "the target happens to be spelled absolutely" — those are different
+    // facts and `RESOLVE_BENEATH` is what answers this one.
+    std::os::unix::fs::symlink("../../../escaped", boot.bound_dir()).unwrap();
 
     let (status, body) = post_input_with_attachments(
         boot.app.clone(),
@@ -577,6 +589,14 @@ async fn a_bound_directory_symlinked_outside_the_root_refuses_before_writing() {
 
 /// The staging half of the same statement. A planted `staging` link must not
 /// decide where the temporary is written either.
+///
+/// The refusal here is delivered by the READ, not by the bind: `open_attachment`
+/// resolves `<card>/staging/<id>` under the same rule, so a symlinked
+/// `staging` is `ELOOP` there first and the bind is never reached. That makes
+/// this case non-discriminating for the bind's own flag — weakening only
+/// `open_card_dirs` leaves it green — and it is kept anyway, because what it
+/// asserts is the thing that must be true regardless of which layer says no:
+/// refused, and no temporary written through the link.
 #[tokio::test]
 async fn a_staging_directory_symlinked_elsewhere_refuses_before_writing() {
     let boot = boot_with(idle_snapshot(vec![])).await;
@@ -586,9 +606,9 @@ async fn a_staging_directory_symlinked_elsewhere_refuses_before_writing() {
     // Move the real staging aside and put a link in its place, so the
     // attachment still exists to be found and only the directory lies.
     let real = boot.staging_dir();
-    let elsewhere = boot.workspace.join("elsewhere");
+    let elsewhere = real.parent().unwrap().join("elsewhere");
     std::fs::rename(&real, &elsewhere).unwrap();
-    std::os::unix::fs::symlink(&elsewhere, &real).unwrap();
+    std::os::unix::fs::symlink("elsewhere", &real).unwrap();
 
     let (status, body) = post_input_with_attachments(
         boot.app.clone(),
