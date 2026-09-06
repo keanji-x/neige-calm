@@ -22,7 +22,8 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation,
-    PlannerHarness, PlannerHarnessParams, initial_snapshot_with_goal, is_harness_snapshot_value,
+    PlannerHarness, PlannerHarnessParams, QueueEntry, initial_snapshot_with_goal,
+    is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::wiring::{
@@ -861,12 +862,35 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let mut inherited_from: Vec<HarvestedFrom> = Vec::new();
         if let Some(inherited) = inherited_snapshot {
             snapshot.push_watermark = inherited.push_watermark;
-            snapshot.pending_queue = inherited.pending_queue;
-            snapshot.pending_envelope_ids = inherited.pending_envelope_ids;
-            // #1449 — the inherit CARRIES the predecessor's ids; it does not
-            // mint. These are the same instances, moved.
-            snapshot.pending_message_ids = inherited.pending_message_ids;
-            snapshot.align_pending_side_arrays();
+            // #1505 PR1 — inheriting the fused entries (rather than the raw
+            // arrays) is what makes a reset KEEP the queue ids the client has
+            // already been shown. Before this the ids did not exist and the
+            // reset silently re-created every entry as a fresh anonymous one.
+            //
+            // Pinned end to end by
+            // `planner_card_reset::reset_planner_card_preserves_runtime_pending_queue_and_push_watermark`,
+            // which reddens if this line goes back to copying observations
+            // alone.
+            //
+            // An earlier note here claimed no such test could exist, on the
+            // ground that "a user message hard-fires, so the harness this reset
+            // starts drains it inside the same request". That reason was false
+            // about THIS arm, and the correction is the reason the test works:
+            // this branch runs only under `defer_runtime_start`
+            // (`payload.force_new_thread`), which takes
+            // `session_prepare_deferred_planner_tx` and starts NO harness in
+            // this request — it writes a placeholder row. The inherited entries
+            // sit on the successor's persisted snapshot until something later
+            // spawns the harness, and that window is a state, not a race.
+            //
+            // Also pinned, one layer down: that `pending_entries` /
+            // `set_pending_entries` preserve ids across this round trip
+            // (`snapshot::tests::set_pending_entries_writes_every_parallel_array_in_step`,
+            // `planner_pending_queue::a_queue_entry_id_survives_a_snapshot_round_trip`).
+            //
+            // #1449 — the inherit CARRIES the predecessor's message ids too; it
+            // does not mint over them. These are the same instances, moved.
+            let mut inherited_entries = inherited.pending_entries();
             inherited_queue_moved = true;
             if let Some(existing) = existing_active_runtime.as_ref() {
                 // Only the human sentences are journalled, because only they
@@ -875,23 +899,20 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 // #1449 — the same mint-at-the-boundary rule as the harvest:
                 // an inherited entry with no ids gets one, written into the
                 // successor's snapshot AND into the journal, so a failed mint
-                // can give it back.
+                // can give it back. `is_user_authored` is the filter rather
+                // than the observation shape, so it is the SAME predicate
+                // `ensure_message_id` mints under — a filter that admitted an
+                // entry the mint declines would journal an empty id set.
                 let mut messages: Vec<HarvestedMessage> = Vec::new();
-                for (index, observation) in snapshot.pending_queue.iter().enumerate() {
-                    let Observation::UserMessage { text } = observation else {
+                for entry in inherited_entries.iter_mut() {
+                    if !entry.is_user_authored() {
+                        continue;
+                    }
+                    let ids = entry.ensure_message_id().to_vec();
+                    let Observation::UserMessage { text } = entry.observation() else {
                         continue;
                     };
-                    let ids = snapshot
-                        .pending_message_ids
-                        .get_mut(index)
-                        .expect("side arrays were aligned above");
-                    if ids.is_empty() {
-                        ids.push(new_id());
-                    }
-                    messages.push(HarvestedMessage {
-                        text: text.clone(),
-                        ids: ids.clone(),
-                    });
+                    messages.push(HarvestedMessage { text, ids });
                 }
                 if !messages.is_empty() {
                     tracing::info!(
@@ -907,6 +928,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     });
                 }
             }
+            snapshot.set_pending_entries(inherited_entries);
         }
         // One clock for the whole mint: the supersede below, the harvest stamp
         // (passed IN, so the helper does not read a second clock of its own)
@@ -967,8 +989,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // `TrackGoal` renders as bare text and does not hard-fire, while
         // `UserMessage` renders `"User says:\n{text}"`, hard-fires (so the turn
         // issues without waiting out the debounce) and cannot be evicted under
-        // backpressure. `run_loop`'s `UserMessage must not fold into TrackGoal`
-        // assertion is the other end of the same rule.
+        // backpressure. `queue::tests::a_user_entry_never_folds_into_a_system_tail`
+        // is the other end of the same rule.
         //
         // Empty / blank text is refused rather than silently dropped: the only
         // producer validates with `validate_first_message` before anything is
@@ -997,11 +1019,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // with no re-send even in the cases where the user's sentence is
         // correctly re-delivered.
         let mut seeded = false;
+        let mut entries = snapshot.pending_entries();
         if let Some(briefing) = opening_briefing {
-            snapshot
-                .pending_queue
-                .push(Observation::SystemContext { text: briefing });
-            snapshot.pending_message_ids.push(Vec::new());
+            entries.push(QueueEntry::system(
+                Observation::SystemContext { text: briefing },
+                None,
+            )?);
             seeded = true;
         }
         // #1449 — harvested sentences go after the successor's own briefing and
@@ -1021,10 +1044,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             );
         }
         for message in harvested.messages {
-            snapshot
-                .pending_queue
-                .push(Observation::UserMessage { text: message.text });
-            snapshot.pending_message_ids.push(message.ids);
+            entries.push(QueueEntry::user_message_moved(message.text, message.ids));
             seeded = true;
         }
         if let Some(text) = payload.first_message.as_deref() {
@@ -1033,21 +1053,49 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     "first_message must not be empty".into(),
                 ));
             }
-            snapshot.pending_queue.push(Observation::UserMessage {
-                text: text.to_string(),
-            });
-            // #1449 — the `first_message` this mint seeds gets an id here.
-            snapshot.pending_message_ids.push(vec![new_id()]);
+            // #1505 PR1 — the track's first message is minted through the same
+            // constructor as every other user message, so it gets a stable
+            // queue id like the rest. Before this it was the one user entry
+            // that could never be addressed (design D10).
+            //
+            // #1449 — that constructor is also where its message id is minted.
+            //
+            // Pinned by
+            // `track_create_first_message::the_tracks_first_message_is_addressable_in_the_pending_page`,
+            // which reads `GET /planner/run` with the drain held and fails if
+            // this entry is not on the addressable page.
+            //
+            // That test exists because an earlier note here stood IN PLACE of
+            // one, arguing that the type made it unnecessary: "the only
+            // `QueueEntry` this module can build that renders as a
+            // `UserMessage` is `User` … the id-less variant has no constructor
+            // reachable from here". Both halves were wrong, and the second is
+            // the general lesson: `QueueEntry` is a `pub` enum this module
+            // already imports, and a variant is exactly as visible as its enum,
+            // so `QueueEntry::LegacyUser { .. }` can be written on this line
+            // today. `QueueEntry::legacy_user` being `pub(in crate::harness)`
+            // constrains the named constructor and nothing else — **"no
+            // constructor reachable from here" is not a property a `pub`
+            // variant has.** The privacy of `harness::snapshot`'s arrays is
+            // real and still worth having; it does not decide which VARIANT
+            // this line pushes, which is the only thing addressability turns
+            // on.
+            //
+            // What made it look untestable was the drain, and that is a race
+            // rather than an impossibility: a user message hard-fires, so the
+            // harness this request starts drains it almost at once. #1449's
+            // drain hook parks the runtime immediately before the drain, which
+            // turns the window into a held state the endpoint can be read in.
+            entries.push(QueueEntry::user_message(text.to_string(), None));
             seeded = true;
         }
-        // One alignment for whatever the pushes above added — briefing,
-        // harvested sentences, this mint's own `first_message` — and none at
-        // all when they added nothing: envelope ids are assigned by position,
-        // so aligning between them would be the same work repeated, and
-        // aligning after zero pushes would touch a snapshot this branch never
-        // changed.
+        // One write for whatever the pushes above added — briefing, harvested
+        // sentences, this mint's own `first_message` — and none at all when
+        // they added nothing: `set_pending_entries` rebuilds all four stored
+        // arrays together, so writing after zero pushes would only rewrite a
+        // snapshot this branch never changed.
         if seeded {
-            snapshot.align_pending_side_arrays();
+            snapshot.set_pending_entries(entries);
         }
 
         let mut old_worker_session_id = None;
@@ -1093,9 +1141,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 && is_harness_snapshot_value(state)
             {
                 let mut emptied = HarnessSnapshot::from_value_strict(state.clone());
-                emptied.pending_queue.clear();
-                emptied.pending_envelope_ids.clear();
-                emptied.pending_message_ids.clear();
+                emptied.set_pending_entries(Vec::new());
                 session_set_handle_state_tx(
                     tx,
                     &existing.id,
@@ -1551,13 +1597,14 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                                 "planner harness",
                             )?;
                             if !harvested.messages.is_empty() {
+                                let mut entries = runtime_snapshot.pending_entries();
                                 for message in harvested.messages {
-                                    runtime_snapshot
-                                        .pending_queue
-                                        .push(Observation::UserMessage { text: message.text });
-                                    runtime_snapshot.pending_message_ids.push(message.ids);
+                                    entries.push(QueueEntry::user_message_moved(
+                                        message.text,
+                                        message.ids,
+                                    ));
                                 }
-                                runtime_snapshot.align_pending_side_arrays();
+                                runtime_snapshot.set_pending_entries(entries);
                             }
                         }
                         let runtime_init = WorkerSessionInit {
@@ -2092,9 +2139,7 @@ fn adopt_queue_from_row(snapshot: &mut HarnessSnapshot, row_state: Option<Value>
         return;
     }
     let row = HarnessSnapshot::from_value_strict(state);
-    snapshot.pending_queue = row.pending_queue;
-    snapshot.pending_envelope_ids = row.pending_envelope_ids;
-    snapshot.pending_message_ids = row.pending_message_ids;
+    snapshot.set_pending_entries(row.pending_entries());
 }
 
 async fn overwrite_queue_from_the_runtimes_own_row(
@@ -2142,10 +2187,10 @@ async fn return_harvested_queues_and_fail_tx(
         && is_harness_snapshot_value(&state)
     {
         let mut successor = HarnessSnapshot::from_value_strict(state);
-        let held: std::collections::HashSet<&str> = successor
-            .pending_message_ids
+        let successor_entries = successor.pending_entries();
+        let held: std::collections::HashSet<&str> = successor_entries
             .iter()
-            .flat_map(|ids| ids.iter().map(String::as_str))
+            .flat_map(|entry| entry.message_ids().iter().map(String::as_str))
             .collect();
         let mut returned_any_ids: std::collections::HashSet<String> =
             std::collections::HashSet::new();
@@ -2178,10 +2223,10 @@ async fn return_harvested_queues_and_fail_tx(
             // failing runtime still holds those ids so they qualify for return,
             // and pushing them would leave the row carrying the same instance
             // twice — which `restore_old_runtime` revives and delivers twice.
-            let already_on_source: std::collections::HashSet<String> = source
-                .pending_message_ids
+            let mut source_entries = source.pending_entries();
+            let already_on_source: std::collections::HashSet<String> = source_entries
                 .iter()
-                .flat_map(|ids| ids.iter().cloned())
+                .flat_map(|entry| entry.message_ids().iter().cloned())
                 .collect();
             for message in &returning {
                 if message
@@ -2194,14 +2239,18 @@ async fn return_harvested_queues_and_fail_tx(
                     returned_any_ids.extend(message.ids.iter().cloned());
                     continue;
                 }
-                source.pending_queue.push(Observation::UserMessage {
-                    text: message.text.clone(),
-                });
-                source.pending_message_ids.push(message.ids.clone());
-                source.pending_envelope_ids.push(None);
+                // The returned entry takes a FRESH `QueueEntryId` — the one it
+                // had on this row before the harvest did not survive the
+                // journal, which carries text and message ids only. Its
+                // transfer identity is what has to be the same instance, and
+                // that is preserved verbatim.
+                source_entries.push(QueueEntry::user_message_moved(
+                    message.text.clone(),
+                    message.ids.clone(),
+                ));
                 returned_any_ids.extend(message.ids.iter().cloned());
             }
-            source.align_pending_side_arrays();
+            source.set_pending_entries(source_entries);
             session_set_handle_state_of_any_runtime_tx(
                 tx,
                 &entry.worker_session_id,
@@ -2226,7 +2275,7 @@ async fn return_harvested_queues_and_fail_tx(
         if !returned_any_ids.is_empty() {
             // #1449 — SUBTRACT the returned ids; do not delete the entry.
             //
-            // `try_fold_pending_tail` unions two `UserMessage`s into one entry
+            // `queue::try_fold_tail` unions two `UserMessage`s into one entry
             // under backpressure, so an entry can carry a returned id next to a
             // newly enqueued one that was never harvested and sits on no source
             // row. Dropping the entry on an intersection would delete that
@@ -2238,42 +2287,18 @@ async fn return_harvested_queues_and_fail_tx(
             // then sit on the failed runtime as well as on the source row; the
             // harvest never reads a `failed` row, so that is dead text rather
             // than a second delivery.
-            let mut kept_queue = Vec::new();
-            let mut kept_ids = Vec::new();
-            let mut kept_envelopes = Vec::new();
-            for ((observation, ids), envelope) in successor
-                .pending_queue
-                .drain(..)
-                .zip(successor.pending_message_ids.drain(..))
-                .zip(successor.pending_envelope_ids.drain(..))
-            {
-                // Two different things make `remaining` empty, and only one
-                // of them means "returned": the entry had ids and they all
-                // went back, or the entry never had any. An entry with no ids
-                // was enqueued before #1449 shipped, was NOT returned (the
-                // filter above requires an id the failing runtime still
-                // holds), and its source row has already been emptied —
-                // dropping it here would delete it from both sides. It stays,
-                // which is what this field's documentation already promises.
-                let had_ids = !ids.is_empty();
-                let remaining: Vec<String> = ids
-                    .into_iter()
-                    .filter(|id| !returned_any_ids.contains(id))
-                    .collect();
-                if had_ids
-                    && remaining.is_empty()
-                    && matches!(observation, Observation::UserMessage { .. })
-                {
+            let mut kept = Vec::new();
+            for mut entry in successor_entries {
+                // Two different things make an entry hold no ids, and only one
+                // of them means "returned"; `remove_message_ids` answers the
+                // narrower question and says why.
+                let emptied_by_the_return = entry.remove_message_ids(&returned_any_ids);
+                if emptied_by_the_return && entry.is_user_authored() {
                     continue;
                 }
-                kept_queue.push(observation);
-                kept_ids.push(remaining);
-                kept_envelopes.push(envelope);
+                kept.push(entry);
             }
-            successor.pending_queue = kept_queue;
-            successor.pending_message_ids = kept_ids;
-            successor.pending_envelope_ids = kept_envelopes;
-            successor.align_pending_side_arrays();
+            successor.set_pending_entries(kept);
             session_set_handle_state_of_any_runtime_tx(
                 tx,
                 worker_session_id,
@@ -2402,49 +2427,46 @@ fn stranded_user_messages(worker_session_id: &str, handle_state_json: &str) -> H
         return HarvestOutcome::default();
     }
     let snapshot = HarnessSnapshot::from_value_strict(state);
-    // `from_value_strict` has already aligned the side arrays, so the zip is
-    // total: a pre-#1449 snapshot yields an empty id set per entry rather than
-    // a short array that would pair ids with the wrong sentences.
+    // `pending_entries` pads every side array to the queue's length, so this
+    // walk is total: a pre-#1449 snapshot yields an empty id set per entry
+    // rather than a short array that would pair ids with the wrong sentences.
     // #1449 S2 — a MOVE: the row keeps what was not taken and loses what was.
     let mut remaining = snapshot.clone();
-    remaining.pending_queue.clear();
-    remaining.pending_envelope_ids.clear();
-    remaining.pending_message_ids.clear();
+    let mut kept = Vec::new();
     let mut taken = Vec::new();
-    for ((observation, ids), envelope_id) in snapshot
-        .pending_queue
-        .into_iter()
-        .zip(snapshot.pending_message_ids)
-        .zip(snapshot.pending_envelope_ids)
-    {
-        match observation {
-            Observation::UserMessage { text } => {
-                // #1449 — MINT AT THE TRANSFER BOUNDARY.
-                //
-                // An entry enqueued before this field existed has no ids, and
-                // the give-back returns only ids the failing runtime still
-                // holds — so an id-less entry could be moved off its row and
-                // never returned, ending on a `failed` successor that the
-                // harvest does not read and `restore_old_runtime` does not
-                // revive. Every pre-upgrade entry is in that class, and
-                // migration 0095 leaves live rows unstamped precisely so their
-                // queues stay harvestable, which is what puts them there.
-                //
-                // Minting here rather than at load: the same id goes into the
-                // successor's snapshot and into the journal entry, in one
-                // transaction, so the instance is identifiable from the moment
-                // it moves. Minting on load would give the same entry a
-                // different id on every read.
-                let ids = if ids.is_empty() { vec![new_id()] } else { ids };
-                taken.push(HarvestedMessage { text, ids });
-            }
-            other => {
-                remaining.pending_queue.push(other);
-                remaining.pending_message_ids.push(ids);
-                remaining.pending_envelope_ids.push(envelope_id);
-            }
+    for mut entry in snapshot.pending_entries() {
+        // #1505 PR1 — the filter is `is_user_authored`, so a `LegacyUser`
+        // (a user sentence from a row written before PR1) is harvested exactly
+        // like a `User`. Filtering on the addressable variant alone would leave
+        // every pre-PR1 sentence stranded, which is the loss #1449 exists to
+        // stop.
+        if entry.is_user_authored() {
+            // #1449 — MINT AT THE TRANSFER BOUNDARY.
+            //
+            // An entry enqueued before this field existed has no ids, and
+            // the give-back returns only ids the failing runtime still
+            // holds — so an id-less entry could be moved off its row and
+            // never returned, ending on a `failed` successor that the
+            // harvest does not read and `restore_old_runtime` does not
+            // revive. Every pre-upgrade entry is in that class, and
+            // migration 0095 leaves live rows unstamped precisely so their
+            // queues stay harvestable, which is what puts them there.
+            //
+            // Minting here rather than at load: the same id goes into the
+            // successor's snapshot and into the journal entry, in one
+            // transaction, so the instance is identifiable from the moment
+            // it moves. Minting on load would give the same entry a
+            // different id on every read.
+            let ids = entry.ensure_message_id().to_vec();
+            let Observation::UserMessage { text } = entry.observation() else {
+                continue;
+            };
+            taken.push(HarvestedMessage { text, ids });
+        } else {
+            kept.push(entry);
         }
     }
+    remaining.set_pending_entries(kept);
     let Ok(remaining_snapshot) = serde_json::to_value(&remaining) else {
         // `None` has one meaning to the caller — "nothing was taken" — so a
         // remainder that will not serialize takes nothing, rather than turning
@@ -2684,16 +2706,19 @@ mod tests {
         // The one that carries something — and the filter that is the product
         // ruling: the human's sentence travels, the machine's context does not.
         let mut snapshot = crate::harness::initial_snapshot_with_goal(Some("the goal".into()));
-        snapshot.pending_queue.push(Observation::SystemContext {
-            text: "briefing for the old workspace".into(),
-        });
-        snapshot.pending_queue.push(Observation::UserMessage {
-            text: "first thing said".into(),
-        });
-        snapshot.pending_queue.push(Observation::UserMessage {
-            text: "second thing said".into(),
-        });
-        snapshot.align_pending_side_arrays();
+        let mut entries = snapshot.pending_entries();
+        entries.push(
+            QueueEntry::system(
+                Observation::SystemContext {
+                    text: "briefing for the old workspace".into(),
+                },
+                None,
+            )
+            .expect("a system context wraps as a system entry"),
+        );
+        entries.push(QueueEntry::user_message("first thing said".into(), None));
+        entries.push(QueueEntry::user_message("second thing said".into(), None));
+        snapshot.set_pending_entries(entries);
         // #1449 — the ids must travel with the text: the decoder is transport,
         // not a producer.
         let carried = super::stranded_user_messages(
@@ -2709,6 +2734,81 @@ mod tests {
             vec!["first thing said", "second thing said"],
             "only `UserMessage`, in queue order: `TrackGoal` and `SystemContext` are functions \
              of the SUCCESSOR's payload and cwd, which after a re-point is a different directory"
+        );
+    }
+
+    /// #1514 review — the two transfer boundaries do DIFFERENT things to a
+    /// `LegacyUser`, which is why the doc on that variant names them separately
+    /// instead of quantifying over "a transfer boundary".
+    ///
+    /// The sentence it replaced said a legacy entry gaining a message id "does
+    /// not make it addressable — `user_view` still denies it". True of
+    /// `ensure_message_id` and of the reset inherit, and false of the harvest:
+    /// the journal carries text and message ids only, so the successor has to
+    /// rebuild the entry, and the only user-authored thing it can rebuild it as
+    /// is a `User`. Addressability is therefore path-dependent, and a
+    /// universally quantified sentence over "a transfer boundary" is wrong
+    /// whichever way it is pointed.
+    ///
+    /// This test is the carrier for both halves at once, so neither can drift
+    /// back into a single claim.
+    #[test]
+    fn the_harvest_makes_a_legacy_sentence_addressable_and_the_inherit_does_not() {
+        // A row written before #1505 PR1: user text in `pending_queue`, no meta
+        // slot beside it. Reached through JSON because no constructor produces
+        // it, deliberately.
+        let seeded = crate::harness::HarnessSnapshot::initial(
+            0,
+            vec![QueueEntry::user_message(
+                "said before the upgrade".into(),
+                None,
+            )],
+        );
+        let mut row = serde_json::to_value(&seeded).expect("serialize snapshot");
+        row["pending_entry_meta"][0] = Value::Null;
+        row["pending_message_ids"][0] = json!([]);
+        let snapshot = crate::harness::HarnessSnapshot::from_value_strict(row);
+        let legacy = snapshot.pending_entries();
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].id(), None, "premise: it is a LegacyUser");
+        assert!(
+            legacy[0].message_ids().is_empty(),
+            "premise: and has no identity of either kind"
+        );
+
+        // THE INHERIT carries the entry whole, so it stays legacy. This is what
+        // `prepare_tx` does with `inherited.pending_entries()`.
+        let mut inherited = legacy.clone();
+        let minted_in_place = inherited[0].ensure_message_id().to_vec();
+        assert_eq!(minted_in_place.len(), 1, "it does gain a transfer identity");
+        assert_eq!(inherited[0].id(), None, "…and still no queue id");
+        assert!(
+            inherited[0].user_view().is_none(),
+            "the inherit boundary leaves it OFF the addressable page — GAP-B verbatim"
+        );
+
+        // THE HARVEST cannot: it round-trips through a journal that holds text
+        // and message ids only.
+        let taken = super::stranded_user_messages(
+            "r1",
+            &serde_json::to_string(&snapshot).expect("serialize snapshot"),
+        )
+        .taken;
+        assert_eq!(
+            taken.len(),
+            1,
+            "a legacy sentence is harvested like any other"
+        );
+        assert_eq!(taken[0].ids.len(), 1, "with an id minted at the boundary");
+        let rebuilt = QueueEntry::user_message_moved(taken[0].text.clone(), taken[0].ids.clone());
+        assert!(
+            rebuilt.user_view().is_some(),
+            "the harvest boundary DOES make it addressable, and the doc must say so"
+        );
+        assert_eq!(
+            rebuilt.message_ids(),
+            taken[0].ids.as_slice(),
+            "…while carrying the SAME transfer identity, so the give-back still recognises it"
         );
     }
 

@@ -22,3 +22,5 @@ mod planner_harness_reset_clears_items;
 mod planner_harness_token_usage;
 #[path = "cases/planner_harness_track_vcs.rs"]
 mod planner_harness_track_vcs;
+#[path = "cases/planner_pending_queue.rs"]
+mod planner_pending_queue;

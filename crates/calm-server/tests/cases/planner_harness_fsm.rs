@@ -7,7 +7,7 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, IssuingKind, Observation,
-    PlannerHarness, PlannerHarnessParams,
+    PlannerHarness, PlannerHarnessParams, QueueEntry,
 };
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_repo::{
@@ -762,8 +762,12 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
         .await
         .unwrap();
     let runtime_id = new_id();
-    let mut snapshot =
-        HarnessSnapshot::initial(0, vec![Observation::TrackGoal { text: "go".into() }]);
+    let mut snapshot = HarnessSnapshot::initial(
+        0,
+        QueueEntry::entries_from_observations_for_test(vec![Observation::TrackGoal {
+            text: "go".into(),
+        }]),
+    );
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
     let mut tx = repo.pool().begin().await.unwrap();

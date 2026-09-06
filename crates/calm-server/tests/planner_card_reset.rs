@@ -11,9 +11,12 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_projection_by_id_tx, session_start_runtime_tx};
 use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::EventBus;
+use calm_server::harness::run_loop::{
+    ANY_RUNTIME, PlannerHarnessDrainRaceHook, install_planner_harness_drain_race_hook_for_test,
+};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, Observation, PlannerHarness,
-    PlannerHarnessParams,
+    PlannerHarnessParams, QueueEntryId,
 };
 use calm_server::ids::TrackId;
 use calm_server::model::{
@@ -700,7 +703,7 @@ async fn planner_input_accepts_plain_chat_but_rejects_unmarked_pty_codex() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(harness.snapshot().await.pending_queue.len(), 1);
+    assert_eq!(harness.snapshot().await.pending_observations().len(), 1);
     boot.state.harness.remove(&runtime_id);
     harness.shutdown().await.unwrap();
 }
@@ -737,7 +740,7 @@ async fn wait_for_user_message(harness: &PlannerHarness, text: &str) -> HarnessS
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let snapshot = harness.snapshot().await;
-        if snapshot.pending_queue.iter().any(|obs| {
+        if snapshot.pending_observations().iter().any(|obs| {
             matches!(
                 obs,
                 Observation::UserMessage { text: queued } if queued == text
@@ -787,14 +790,14 @@ async fn send_planner_input_happy() {
     assert_eq!(body["worker_session_id"], json!(runtime_id.as_str()));
     let snapshot = wait_for_user_message(&harness, text).await;
     assert!(
-        snapshot.pending_queue.iter().any(|obs| {
+        snapshot.pending_observations().iter().any(|obs| {
             matches!(
                 obs,
                 Observation::UserMessage { text: queued } if queued == text
             )
         }),
         "pending_queue={:?}",
-        snapshot.pending_queue
+        snapshot.pending_observations()
     );
 
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
@@ -2188,9 +2191,9 @@ async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
         "corrupt inherited snapshot must be discarded, not carried over"
     );
     assert!(
-        new_snapshot.pending_queue.is_empty(),
+        new_snapshot.pending_observations().is_empty(),
         "fresh queue must be empty — reset seeds no observation: {:?}",
-        new_snapshot.pending_queue
+        new_snapshot.pending_observations()
     );
     assert!(boot.state.harness.get(&active.id).is_some());
     if let Some(handle) = boot.state.harness.remove(&active.id) {
@@ -2200,6 +2203,7 @@ async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
 
 #[tokio::test]
 async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark() {
+    const SENTENCE_BEFORE_THE_RESET: &str = "a sentence the person typed before the reset";
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_shared().await;
     let card = boot
@@ -2282,6 +2286,44 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
     wait_for_harness_watermark(&harness, 3).await;
     harness.persist_snapshot().await.unwrap();
 
+    // #1514 review — add an ADDRESSABLE user entry to the queue the reset will
+    // inherit, so this test covers the half that ids actually matter for.
+    //
+    // The ORDER here is the whole fixture, and each step is forced:
+    //
+    // * the three `TrackGoal`s go first because they do NOT hard-fire, so with
+    //   the 60s debounce above the run loop never tries to issue and never
+    //   reaches the hook — arming it earlier would park the loop before it had
+    //   drained the observation channel and the watermark would stall at 1
+    //   (measured, not guessed);
+    // * the hook is armed next, while the loop is idle;
+    // * the user message goes last. It DOES hard-fire, so the loop wakes,
+    //   enqueues it, reaches `maybe_issue_turn` on the following tick and parks
+    //   at the hook with the queue still whole. That is what makes "undrained"
+    //   a held state rather than a race: without it the queue is empty a few
+    //   milliseconds later and the reset inherits nothing.
+    let drain_entered = Arc::new(tokio::sync::Notify::new());
+    let drain_release = Arc::new(tokio::sync::Notify::new());
+    install_planner_harness_drain_race_hook_for_test(
+        ANY_RUNTIME,
+        PlannerHarnessDrainRaceHook {
+            entered: drain_entered.clone(),
+            release: drain_release.clone(),
+        },
+    );
+    // `observe_user_message_durable`, not `observe_envelope`: #1505 PR1's
+    // `QueueEntry::system` guard refuses a `UserMessage` on the dispatcher
+    // path, which is the correct fence — user input has exactly one ingress,
+    // and it is the one that mints the id.
+    harness
+        .observe_user_message_durable(SENTENCE_BEFORE_THE_RESET.into())
+        .await
+        .expect("the durable send must be persisted");
+    tokio::time::timeout(Duration::from_secs(10), drain_entered.notified())
+        .await
+        .expect("the run loop must reach the drain hook with the queue still whole");
+    harness.persist_snapshot().await.unwrap();
+
     let old_runtime = boot
         .repo
         .session_projection_by_id(&old_runtime_id)
@@ -2290,7 +2332,32 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
         .unwrap();
     let old_snapshot = HarnessSnapshot::from_value_strict(old_runtime.handle_state_json.unwrap());
     assert_eq!(old_snapshot.push_watermark, 3);
-    assert_eq!(old_snapshot.pending_queue.len(), 3);
+    assert_eq!(
+        old_snapshot.pending_observations().len(),
+        4,
+        "premise: the user entry is still queued and undrained — the hook holds the drain"
+    );
+    let inherited_entry_id = old_snapshot
+        .pending_entries()
+        .into_iter()
+        .find_map(|entry| entry.id().cloned())
+        .expect("premise: and it is addressable on the row the inherit will read");
+
+    // The SUCCESSOR needs the same hold, and for the same reason: it inherits a
+    // hard-firing user entry, so it drains the whole queue — goals included —
+    // within a tick of being spawned, and the read below would then find an
+    // empty snapshot and no ids to compare. The hook entry is one-shot, so
+    // arming it again claims the next runtime to reach a drain, which is the
+    // successor this reset is about to mint.
+    let successor_entered = Arc::new(tokio::sync::Notify::new());
+    let successor_release = Arc::new(tokio::sync::Notify::new());
+    install_planner_harness_drain_race_hook_for_test(
+        ANY_RUNTIME,
+        PlannerHarnessDrainRaceHook {
+            entered: successor_entered.clone(),
+            release: successor_release.clone(),
+        },
+    );
 
     let (status, body) = post_empty(
         boot.app.clone(),
@@ -2299,6 +2366,9 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
     .await;
 
     assert_eq!(status, StatusCode::OK, "body={body}");
+    tokio::time::timeout(Duration::from_secs(10), successor_entered.notified())
+        .await
+        .expect("the successor must reach its drain hook with the inherited queue still whole");
     let active = boot
         .repo
         .session_projection_active_for_card(&card.id.to_string())
@@ -2313,7 +2383,49 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
             .expect("new runtime snapshot"),
     );
     assert_eq!(new_snapshot.push_watermark, 3);
-    assert_eq!(new_snapshot.pending_queue.len(), 3);
+    assert_eq!(new_snapshot.pending_observations().len(), 4);
+    drain_release.notify_one();
+    successor_release.notify_one();
+
+    // #1514 review — the inherited USER entry keeps the id the client was
+    // already shown.
+    //
+    // This is the assertion an earlier note here said the product made
+    // impossible ("the harness the reset starts drains it inside the same
+    // request"). That reason was false: this arm of `prepare_tx` runs only
+    // under `defer_runtime_start`, which takes the
+    // `session_prepare_deferred_planner_tx` path and starts NO harness in this
+    // request — it writes a placeholder row. The entry therefore sits on the
+    // successor's persisted snapshot until something later spawns the harness,
+    // which is exactly the window read below.
+    //
+    // The mutation this reddens is the inherit copying observations alone
+    // (`set_pending_entries(...pending_observations()...)` instead of
+    // `pending_entries()`): the sentence comes back as a `LegacyUser`, loses
+    // its id, and would be withheld from `GET /planner/run`'s `pending` for
+    // the rest of its life.
+    let inherited = new_snapshot
+        .pending_entries()
+        .into_iter()
+        .find(|entry| entry.id() == Some(&inherited_entry_id));
+    let inherited = inherited.unwrap_or_else(|| {
+        panic!(
+            "the reset must carry the user entry across with its id intact; \
+             ids now on the successor: {:?}",
+            new_snapshot
+                .pending_entries()
+                .iter()
+                .map(|e| e.id().map(QueueEntryId::as_str).map(str::to_string))
+                .collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        inherited.observation(),
+        Observation::UserMessage {
+            text: SENTENCE_BEFORE_THE_RESET.into()
+        },
+        "…and the id must still be on the sentence it was minted for"
+    );
     assert!(boot.state.harness.get(&old_runtime_id).is_none());
     if let Some(handle) = boot.state.harness.remove(&active.id) {
         handle.shutdown().await.unwrap();
@@ -2664,9 +2776,9 @@ async fn assert_harness_queue_empty(boot: &Boot, card_id: &str, what: &str) {
             .expect("runtime snapshot json"),
     );
     assert!(
-        snapshot.pending_queue.is_empty(),
+        snapshot.pending_observations().is_empty(),
         "{what}: persisted start snapshot must hold no observation; got {:?}",
-        snapshot.pending_queue
+        snapshot.pending_observations()
     );
     let handle = boot
         .state

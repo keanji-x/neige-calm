@@ -270,7 +270,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let snapshot = harness.snapshot().await;
-        if snapshot.pending_queue.iter().any(|obs| {
+        if snapshot.pending_observations().iter().any(|obs| {
             matches!(
                 obs,
                 Observation::ReportEdited { body, .. } if body == "body after"
@@ -444,7 +444,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
         "full live harness queue must not advance the push cursor before retry"
     );
     assert!(matches!(
-        observations.recv().await.unwrap().observation,
+        observations.recv().await.unwrap().entry.observation(),
         Observation::TrackGoal { .. }
     ));
 

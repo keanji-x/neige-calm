@@ -5,6 +5,7 @@ use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::harness::{
     HarnessConfig, HarnessSnapshot, HookKind, Observation, PlannerHarness, PlannerHarnessParams,
+    QueueEntry,
 };
 use calm_server::ids::{CardId, TrackId};
 use calm_server::model::new_id;
@@ -99,7 +100,11 @@ async fn full_hard_queue_then_incoming_hard_drops_new() {
     let observations = (0..256)
         .map(|i| worker_hook_stop(format!("hook-{i}")))
         .collect();
-    let harness = harness_from_snapshot(HarnessSnapshot::initial(0, observations)).await;
+    let harness = harness_from_snapshot(HarnessSnapshot::initial(
+        0,
+        QueueEntry::entries_from_observations_for_test(observations),
+    ))
+    .await;
 
     harness
         .observe_for_test(worker_hook_stop("hook-new"), Some(256))
@@ -132,7 +137,11 @@ async fn full_soft_queue_incoming_hard_preserves_hard_and_evicts_oldest_soft() {
             text: format!("soft-{i}"),
         })
         .collect();
-    let harness = harness_from_snapshot(HarnessSnapshot::initial(0, observations)).await;
+    let harness = harness_from_snapshot(HarnessSnapshot::initial(
+        0,
+        QueueEntry::entries_from_observations_for_test(observations),
+    ))
+    .await;
 
     harness
         .observe_for_test(worker_hook_stop("hard-after-soft"), Some(256))
@@ -169,7 +178,10 @@ async fn restored_worker_hook_stops_seed_recent_hook_dedupe_cache() {
     let restored_key = "restored-hook";
     let snapshot = HarnessSnapshot::initial(
         0,
-        vec![worker_hook_stop(restored_key), worker_hook_stop("")],
+        QueueEntry::entries_from_observations_for_test(vec![
+            worker_hook_stop(restored_key),
+            worker_hook_stop(""),
+        ]),
     );
     let harness = harness_from_snapshot(snapshot).await;
 
@@ -206,27 +218,42 @@ async fn restored_worker_hook_stops_seed_recent_hook_dedupe_cache() {
 
 #[tokio::test]
 async fn oversized_snapshot_keeps_newest_pending_queue_tail() {
-    let observations = (0..300)
-        .map(|i| Observation::TrackGoal {
-            text: format!("g{i}"),
+    let entries = (0..300)
+        .map(|i| {
+            QueueEntry::system(
+                Observation::TrackGoal {
+                    text: format!("g{i}"),
+                },
+                Some(i),
+            )
+            .expect("a track goal is a system entry")
         })
         .collect::<Vec<_>>();
-    let mut snapshot = HarnessSnapshot::initial(0, observations);
-    snapshot.pending_envelope_ids = (0..300).map(Some).collect();
+    let snapshot = HarnessSnapshot::initial(0, entries);
 
     let harness = harness_from_snapshot(snapshot).await;
     let restored = harness.snapshot().await;
+    let restored_entries = restored.pending_entries();
 
-    assert_eq!(restored.pending_queue.len(), 256);
-    assert_eq!(restored.pending_envelope_ids.len(), 256);
+    // #1505 PR1 — head-side truncation used to drain two arrays separately;
+    // asserting on the fused entries is what makes a one-sided drain visible
+    // (before, a missed second drain was re-padded and only shifted the ids).
+    assert_eq!(restored_entries.len(), 256);
     assert!(matches!(
-        restored.pending_queue.first(),
+        restored.pending_observations().first(),
         Some(Observation::TrackGoal { text }) if text == "g44"
     ));
     assert!(matches!(
-        restored.pending_queue.last(),
+        restored.pending_observations().last(),
         Some(Observation::TrackGoal { text }) if text == "g299"
     ));
-    assert_eq!(restored.pending_envelope_ids.first(), Some(&Some(44)));
-    assert_eq!(restored.pending_envelope_ids.last(), Some(&Some(299)));
+    assert_eq!(
+        restored_entries.first().map(QueueEntry::envelope_id),
+        Some(Some(44)),
+        "envelope ids must be truncated from the SAME end as the observations"
+    );
+    assert_eq!(
+        restored_entries.last().map(QueueEntry::envelope_id),
+        Some(Some(299))
+    );
 }

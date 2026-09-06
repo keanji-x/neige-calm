@@ -5983,11 +5983,26 @@
         "type": "object",
         "description": "Issue #668 fix — current planner-harness run snapshot for a card.\n\n`harness.phase.changed` is the only live phase signal, so a page opened\nmid-turn would otherwise sit on `phase: null` until the next transition.\nThis read endpoint lets the client seed its initial phase. Dormancy (no\nactive runtime row, or no registered harness) is NOT an error here —\nit's the `{worker_session_id: null, phase: null}` answer.",
         "required": [
-          "card_id"
+          "card_id",
+          "pending",
+          "pending_overflow"
         ],
         "properties": {
           "card_id": {
             "type": "string"
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PendingQueueEntry"
+            },
+            "description": "#1505 PR1 — the addressable user entries still waiting for the next\nturn, in queue order. Empty when the harness is dormant.\n\nOnly entries minted at or after PR1 appear here. Dispatcher\nobservations never do (they are not the user's and cannot be edited),\nand neither do user entries from pre-PR1 snapshots, which have no id to\naddress them by; both kinds of omission are counted in\n`pending_overflow` only for the user-authored ones."
+          },
+          "pending_overflow": {
+            "type": "integer",
+            "format": "int32",
+            "description": "User-authored entries that exist in the queue but are NOT in `pending`:\npre-PR1 entries with no id, plus anything past the page budget. The UI\ncan say \"N more not shown\" and be honest about not offering buttons.",
+            "minimum": 0
           },
           "phase": {
             "oneOf": [
@@ -6828,6 +6843,37 @@
           }
         }
       },
+      "PendingQueueEntry": {
+        "type": "object",
+        "description": "#1505 PR1 — one addressable user entry from the harness pending queue.",
+        "required": [
+          "entry_id",
+          "text",
+          "rev",
+          "queued_at_ms"
+        ],
+        "properties": {
+          "entry_id": {
+            "type": "string",
+            "description": "Stable identity. Never empty, and unique within one response."
+          },
+          "queued_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Wall-clock ms at which the entry entered the queue."
+          },
+          "rev": {
+            "type": "integer",
+            "format": "int32",
+            "description": "CAS token for the edit/delete endpoints (#1505 PR2). Bumped whenever\nthe text is rewritten, folding under backpressure included.",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string",
+            "description": "The complete text. Never truncated — an entry that would not fit the\npage budget is left out of the page entirely rather than shown in a\nform the user cannot safely edit."
+          }
+        }
+      },
       "PlannerRunTokenUsage": {
         "type": "object",
         "description": "#1255 S3 — the context-usage half of [`GetPlannerRunResponse`].\n\nA wire type distinct from the stored [`TokenUsage`], and the differences\nare the point rather than an accident of layering:\n\n- **`percent` is computed here, on the server.** One baseline adjustment,\n  one over-window rule, one place they can be got wrong. Shipping a\n  numerator and a denominator instead would invite the client to divide\n  them its own way, and the correct division is not the obvious one.\n- **`total_tokens` is NOT shipped.** The stored value keeps it (it is the\n  honest lifetime cost), but `tokenUsage.total` is a cumulative sum across\n  every response in the thread — unbounded, and measured at 253.8x the\n  window in the captured frame this slice's tests run on — and the single\n  most likely bug in any future UI is a meter\n  drawn from it. Handing the frontend both numbers and trusting it to pick\n  the right one is how that bug gets written. It cannot pick wrong if only\n  one number crosses the wire.",
@@ -7266,6 +7312,13 @@
         "properties": {
           "card_id": {
             "type": "string"
+          },
+          "entry_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "#1505 PR1 — stable id of the queue entry this text landed in, so the\nclient can match its optimistic echo against `GET /planner/run`'s\n`pending` instead of against the text.\n\nNull in exactly one accepted case: the text folded into a queue entry\nwritten before #1505 PR1, which has no id and never gains one. The other\nways a client sees no id are refusals with a non-200 status (dormant\nharness, 503 saturated queue, 409 shutting down), not this field."
           },
           "worker_session_id": {
             "type": "string"

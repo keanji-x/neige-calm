@@ -212,10 +212,13 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
     .fetch_one(boot.repo.pool())
     .await
     .unwrap();
+    // #1505 PR1 — user text goes through the durable route, which is the only
+    // one that mints a queue id. `observe` now refuses a `UserMessage`
+    // outright, so a test that used it was exercising a shape production
+    // never produces.
     harness
-        .observe(Observation::UserMessage {
-            text: "hello without vcs".into(),
-        })
+        .observe_user_message_durable("hello without vcs".into())
+        .await
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     while boot.daemon.turn_start_count_for_test() == 0 && Instant::now() < deadline {
@@ -354,10 +357,13 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
         },
         snapshot,
     });
+    // #1505 PR1 — user text goes through the durable route, which is the only
+    // one that mints a queue id. `observe` now refuses a `UserMessage`
+    // outright, so a test that used it was exercising a shape production
+    // never produces.
     harness
-        .observe(Observation::UserMessage {
-            text: "what changed?".into(),
-        })
+        .observe_user_message_durable("what changed?".into())
+        .await
         .unwrap();
     wait_for_turn_count(&boot.daemon, 1).await;
 

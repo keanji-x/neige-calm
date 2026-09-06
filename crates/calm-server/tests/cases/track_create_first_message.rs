@@ -870,6 +870,27 @@ impl Boot {
         .await
     }
 
+    async fn get_json(&self, uri: &str) -> (StatusCode, Value) {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
     async fn post_json(&self, uri: &str, body: &str) -> (StatusCode, Value) {
         let response = self
             .app
@@ -4252,7 +4273,7 @@ async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
     for attempt in 0..20 {
         let text = format!("after the retirement #{attempt}");
         match handle.observe_user_message_durable(text.clone()).await {
-            Ok(()) => {
+            Ok(_ack) => {
                 accepted += 1;
                 let persisted = b.persisted_queue(&runtime).await;
                 assert!(
@@ -4477,5 +4498,91 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
          is not the fix: the event records an act, and a harvest is movement nobody performed. \
          Rows: {evidence_runtimes:?}, replaced: {runtime}, successor: {successor}"
     );
+    b.shutdown_harnesses().await;
+}
+
+/// #1514 review [MAJOR] — the track's FIRST MESSAGE is addressable in
+/// `GET /planner/run`'s `pending`.
+///
+/// # Why this test exists at all
+///
+/// It exists because the mint site said it could not. The comment there
+/// offered itself explicitly IN PLACE OF a test, on the ground that "the only
+/// `QueueEntry` this module can build that renders as a `UserMessage` is
+/// `User` … the id-less variant has no constructor reachable from here".
+///
+/// That sentence is false, and the construction is two lines: `QueueEntry` is
+/// a `pub` enum re-exported as `crate::harness::QueueEntry`, which the adapter
+/// already imports, and an enum variant is exactly as visible as its enum. So
+/// `entries.push(QueueEntry::LegacyUser { text: text.to_string(), envelope_id:
+/// None, message_ids: Vec::new() })` compiles in that module today.
+/// `set_pending_entries` then writes a `None` meta slot, the first message
+/// reads back as a `LegacyUser` for the rest of its life, and it is withheld
+/// from `pending` and counted only in `pending_overflow` — with nothing red,
+/// because the argument that excused the test was the thing that was wrong.
+///
+/// **"No constructor reachable from here" is not a property a `pub` variant
+/// has.** A privacy argument covers the named constructor
+/// (`QueueEntry::legacy_user` really is `pub(in crate::harness)`) and nothing
+/// else; the variant literal walks around it.
+///
+/// # The drain, which is what made this look untestable
+///
+/// A user message hard-fires, so the harness this request starts drains it
+/// almost immediately and a later read finds an empty queue. That is a race,
+/// not an impossibility: #1449's drain hook parks the runtime immediately
+/// before the drain, which turns the window into a held state and lets the
+/// queue be read at the endpoint the product actually serves. No sleep, no
+/// retry, no settle loop — the hook is a rendezvous.
+#[tokio::test]
+async fn the_tracks_first_message_is_addressable_in_the_pending_page() {
+    const SENTENCE: &str = "the first thing anybody said on this track";
+    let b = boot().await;
+    let (entered, release) = b.hold_the_next_drain();
+
+    let (status, body) = b
+        .create_track(Some("idem-first-addressable"), Some(SENTENCE))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    // `POST /api/tracks` does not name the planner card in its body (only
+    // `/today/launchpad/ensure` does), so it is read from the one runtime row
+    // the create minted — the same route every other test in this file uses.
+    let (_runtime, planner_card_id) = b.only_runtime().await;
+
+    // PREMISE, not a wait: the runtime is parked at the drain hook, so what
+    // follows reads a queue that provably still holds the sentence. Without
+    // this the assertions below could pass on an empty queue by racing.
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the harness must reach the drain hook before it can drain");
+
+    let (status, run) = b
+        .get_json(&format!("/api/cards/{planner_card_id}/planner/run"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "body={run}");
+
+    let pending = run["pending"]
+        .as_array()
+        .expect("planner/run carries a pending page");
+    assert_eq!(
+        pending.len(),
+        1,
+        "the first message must BE on the addressable page, not merely in the queue: run={run}"
+    );
+    assert_eq!(pending[0]["text"], json!(SENTENCE));
+    assert!(
+        pending[0]["entry_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "…carrying a real id, which is the whole of what makes it editable and deletable: run={run}"
+    );
+    assert_eq!(
+        run["pending_overflow"],
+        json!(0),
+        "…and not withheld from the page and counted as overflow instead, which is exactly \
+         where a `LegacyUser` first message would land: run={run}"
+    );
+
+    release.notify_one();
     b.shutdown_harnesses().await;
 }
