@@ -363,6 +363,9 @@ export function logoutOperation(): ApiOperation<undefined> {
 
 export function areaListQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
+    // The shell owns an explicit Retry action; automatic retry backoff would
+    // replace the known read error with an empty pending view on invalidation.
+    retry: false,
     queryKey: queryKeys.areas(),
     queryFn: async (): Promise<Area[]> =>
       sortedAreas(visibleAreas((await runOperation(transport, areaListOperation(), unauthorized)).map(toArea))),
