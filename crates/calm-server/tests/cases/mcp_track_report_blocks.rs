@@ -326,9 +326,40 @@ async fn kinds_returns_all_five_schemas() {
         "usage carries a minimal example"
     );
     let table = &kinds[2];
+    // Two mutually exclusive forms, and the exclusion is the point: a payload
+    // that both named a source and carried rows would have two answers to
+    // what the table shows. Assert each branch's `required` AND its `not`,
+    // because a `oneOf` that only listed the required keys would admit
+    // exactly the payload the kernel's validator rejects — an agent would
+    // then self-correct against a schema that disagrees with the write end.
     assert_eq!(
-        table.pointer("/schema/required").unwrap(),
+        table.pointer("/schema/oneOf/0/required").unwrap(),
         &json!(["columns", "rows"]),
+    );
+    assert_eq!(
+        table.pointer("/schema/oneOf/0/not/required").unwrap(),
+        &json!(["source"]),
+    );
+    assert_eq!(
+        table.pointer("/schema/oneOf/1/required").unwrap(),
+        &json!(["source"]),
+    );
+    assert_eq!(
+        table.pointer("/schema/oneOf/1/not/anyOf").unwrap(),
+        &json!([
+            { "required": ["columns"] },
+            { "required": ["rows"] },
+            { "required": ["highlight"] },
+        ]),
+    );
+    // The live `source` pattern is the schema's copy of
+    // `report_blocks::validate_live_source`; pin it so the two cannot drift
+    // into disagreeing about what an agent may write.
+    assert_eq!(
+        table
+            .pointer("/schema/properties/source/pattern")
+            .and_then(Value::as_str),
+        Some("^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"),
     );
     let app = &kinds[3];
     assert_eq!(app.pointer("/schema/required").unwrap(), &json!(["src"]));
