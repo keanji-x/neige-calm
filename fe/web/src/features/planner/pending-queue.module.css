@@ -49,6 +49,15 @@
     gap: var(--space-1);
   }
 
+  .theirs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-2);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-2, var(--surface-chip));
+  }
+
   .overflow {
     margin: 0;
     font-size: var(--text-xs);

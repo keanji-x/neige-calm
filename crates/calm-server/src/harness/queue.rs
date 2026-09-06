@@ -102,8 +102,7 @@ impl std::fmt::Display for QueueEntryId {
 ///   * The **harvest** boundary does not. `stranded_user_messages` admits a
 ///     `LegacyUser` via `is_user_authored` — it must, or every pre-#1505
 ///     sentence would be stranded on a superseded row, which is the loss #1449
-///     exists to stop — but the journal it writes carries text and message ids
-///     only, so the successor rebuilds the entry through
+///     exists to stop — and the successor rebuilds the entry through
 ///     [`QueueEntry::user_message_moved`], as a `User` with a freshly minted
 ///     `QueueEntryId`. That sentence IS listed in `GET /planner/run`'s
 ///     `pending` afterwards.
@@ -113,10 +112,16 @@ impl std::fmt::Display for QueueEntryId {
 ///   addressed; an id minted once, inside the transaction that moves the
 ///   entry, and persisted with it has neither problem. So the harvest makes a
 ///   pre-#1505 sentence editable where it previously was not, which is
-///   strictly better for the person who typed it, and it does so without ever
-///   re-minting an id for an entry that already has one. What GAP-B still
-///   forbids — and what nothing here does — is repairing a legacy entry IN
-///   PLACE, on a row it is not leaving.
+///   strictly better for the person who typed it. What GAP-B still forbids —
+///   and what nothing here does — is repairing a legacy entry IN PLACE, on a
+///   row it is not leaving.
+///
+///   **A `User` entry keeps its id across the same boundary** (#1505 PR4
+///   review). The journal carries `entry_id`, so only an entry that arrives
+///   without one is minted a new one. The earlier unconditional re-mint was a
+///   bug rather than a policy: a client holding the pre-harvest id saw the
+///   sentence drawn twice and got a 404 — reported in the UI as "already left
+///   the queue" — for a message that was still queued.
 ///
 ///   Two things this variant is NOT:
 ///
@@ -201,10 +206,22 @@ impl QueueEntry {
     /// The [`QueueEntryId`] is FRESH, and deliberately: the predecessor's entry
     /// id does not survive the harvest journal, so a client still holding it
     /// gets a miss rather than somebody else's entry.
-    pub fn user_message_moved(text: String, message_ids: Vec<String>) -> Self {
+    pub fn user_message_moved(
+        text: String,
+        message_ids: Vec<String>,
+        entry_id: Option<QueueEntryId>,
+    ) -> Self {
         let mut entry = Self::user_message(text, None);
         if !message_ids.is_empty() {
             *entry.message_ids_mut() = message_ids;
+        }
+        // #1505 PR4 review — adopt the id the sentence already had, and mint
+        // only for one that never had any. See the `entry_id` field on
+        // `HarvestedMessage` for why a move must not rename.
+        if let Some(id) = entry_id
+            && let Self::User { id: slot, .. } = &mut entry
+        {
+            *slot = id;
         }
         entry
     }

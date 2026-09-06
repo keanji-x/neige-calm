@@ -2755,7 +2755,11 @@ async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
             0,
             vec![
                 QueueEntry::user_message(LEGACY.into(), None),
-                QueueEntry::user_message_moved(RETURNED.into(), vec![RETURNED_ID.to_string()]),
+                QueueEntry::user_message_moved(
+                    RETURNED.into(),
+                    vec![RETURNED_ID.to_string()],
+                    None,
+                ),
             ],
         );
         // The first entry is made into what a row written before #1505 PR1 and

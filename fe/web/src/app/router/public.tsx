@@ -821,8 +821,38 @@ export function useConversationStore(
       turns: knownTurns.filter((turn) => !isRetired(turn)),
     }));
   };
+  /**
+   * Carry an accepted edit onto the echo that is standing in for it.
+   *
+   * The echo is retired by TEXT: `reconcileOptimisticConversationTurns` asks
+   * `userTextMatchesEcho` whether a persisted row is this echo coming back
+   * (`core/domain/conversation.ts`). Rewriting the queue entry and leaving the
+   * echo alone therefore breaks the only retirement route it has — the row
+   * that eventually lands says the NEW text, the echo still says the old one,
+   * they never match, and once the entry drains out of `pending` the `:448`
+   * filter stops hiding it. The reader is then looking at the edited message
+   * AND at a permanent pre-edit ghost captioned "sends when this turn ends",
+   * re-merged from the registry on every remount.
+   *
+   * So this is not cosmetic text-keeping: it is what keeps an edited message
+   * reconcilable at all. `retireQueuedEcho` is the wrong tool here — the
+   * message has not been withdrawn, it is still going to be sent and still
+   * going to come back — which is exactly why the two paths differ.
+   */
+  const rewriteQueuedEcho = (entryId: string, text: string): void => {
+    const rewritten = (turn: TranscriptEntry) =>
+      isOptimisticConversationTurn(turn) && turn.entryId === entryId ? { ...turn, text } : turn;
+    setEchoes((current) => current.map(rewritten) as readonly OptimisticConversationTurn[]);
+    registry.updateExisting(cardId, ({ conversation: known, turns: knownTurns }) => ({
+      conversation: known,
+      turns: knownTurns.map(rewritten),
+    }));
+  };
   const editQueuedEntry = (entry: PendingQueueEntry, text: string) =>
-    mutations.editQueued(entry.entry_id, text, entry.rev);
+    mutations.editQueued(entry.entry_id, text, entry.rev).then((outcome) => {
+      if (outcome.kind === 'done') rewriteQueuedEcho(entry.entry_id, text);
+      return outcome;
+    });
   const deleteQueuedEntry = (entry: PendingQueueEntry) =>
     mutations.deleteQueued(entry.entry_id, entry.rev).then((outcome) => {
       /* `gone` is not a retirement: the entry left the queue because it

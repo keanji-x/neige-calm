@@ -343,14 +343,21 @@ async fn folding_onto_a_pre_1505_tail_answers_with_a_null_entry_id() {
 ///
 /// `truncate_snapshot_pending_queue` drops from the HEAD when a restored
 /// snapshot holds more than `MAX_PENDING_QUEUE_LEN` entries. Those sentences
-/// never reach the model, so they never land in the transcript, so the
-/// frontend's text-reconciliation route can never retire the placeholder the
-/// sender is still looking at. `harness.queue.changed { change: dropped }` is
-/// the only thing that can, which is why the kernel has to say it.
+/// never reach the model, so they never land in the transcript; the only
+/// record they can ever have is `harness.queue.changed { change: dropped }`,
+/// which is why the kernel has to say it.
 ///
 /// The negative half is the point of the mixed queue: a system observation is
 /// discarded by the same `drain` and must NOT produce an event, because there
 /// is no client holding an id for it.
+///
+/// The read HOLDS rather than samples. A DELETE is driven through the run loop
+/// first, and its answer is proof the announcements are complete: the delete
+/// persists, and `persist_snapshot_inner` refuses to write until the drop
+/// announcements have drained. Polling until the first row appeared — the
+/// shape this test used to have — would have passed against an implementation
+/// that announced every entry in the queue, because the poller can return
+/// between two writes.
 #[tokio::test]
 async fn truncating_a_restored_queue_announces_each_dropped_user_entry() {
     let addressable = QueueEntry::user_message("the oldest thing a person typed".into(), None);
@@ -383,14 +390,32 @@ async fn truncating_a_restored_queue_announces_each_dropped_user_entry() {
 
     let boot = boot_with(idle_snapshot(entries)).await;
 
-    let payloads = boot.await_event_payloads("harness.queue.changed", 1).await;
+    // One command through the run loop. Its 200 is the synchronisation point:
+    // it could not have been answered without a persist, and a persist could
+    // not have happened with an un-announced drop outstanding.
+    let (status, _) = send_json(
+        boot.app.clone(),
+        "DELETE",
+        format!(
+            "/api/cards/{}/planner/input/{}",
+            boot.planner_card.id.as_str(),
+            survivor_ids[0]
+        ),
+        "user",
+        json!({"if_entry_rev": 0}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let payloads = boot.event_payloads("harness.queue.changed").await;
+    let changes: Vec<&Value> = payloads.iter().map(|payload| &payload["change"]).collect();
     assert_eq!(
-        payloads.len(),
-        1,
-        "exactly one of the two discarded entries was addressable; payloads={payloads:?}"
+        changes,
+        vec![&json!("dropped"), &json!("deleted")],
+        "exactly one of the two discarded entries was addressable, and the only other row \
+         is the delete that was driven to get here; payloads={payloads:?}"
     );
     let dropped = &payloads[0];
-    assert_eq!(dropped["change"], json!("dropped"));
     assert_eq!(dropped["entry_id"], json!(dropped_id));
     assert_eq!(
         dropped["actor"],
@@ -403,16 +428,92 @@ async fn truncating_a_restored_queue_announces_each_dropped_user_entry() {
     // And the queue itself: the head is gone, the cap holds, and every
     // surviving id is the id it was minted with.
     let remaining = boot.harness.snapshot().await.pending_entries();
-    assert_eq!(remaining.len(), MAX_PENDING_QUEUE_LEN);
+    assert_eq!(
+        remaining.len(),
+        MAX_PENDING_QUEUE_LEN - 1,
+        "less the delete"
+    );
     let remaining_ids: Vec<String> = remaining
         .iter()
         .map(|entry| entry.id().expect("minted").as_str().to_string())
         .collect();
-    assert_eq!(remaining_ids, survivor_ids);
+    assert_eq!(remaining_ids, survivor_ids[1..]);
     assert!(
         !remaining_ids.contains(&dropped_id),
         "the announced entry is the one that actually left"
     );
+}
+
+/// #1505 PR4 review — the loss and its announcement share a fate.
+///
+/// The truncation happens in memory while `Inner` is being built; what makes
+/// it durable is a `persist_snapshot`, and the first one is not the run loop's:
+/// `planner_harness_start_adapter` calls `handle.persist_snapshot()` on its own
+/// task the moment `PlannerHarness::run` returns, which can be before the
+/// spawned loop is ever polled. So "the run loop announces before it serves a
+/// command" was never the guarantee it looked like — the guarantee has to sit
+/// on the write itself.
+///
+/// It does: `persist_snapshot_inner` drains the outstanding announcements first
+/// and propagates a failure, so a truncated queue reaches the row only after
+/// the record of what it discarded is committed. Failing costs a retry and
+/// nothing else, because the untruncated row is still on disk.
+///
+/// The failure is injected by renaming `events` out from under the insert —
+/// a real write failure through the real code path, not a stub that re-states
+/// the rule.
+#[tokio::test]
+async fn a_truncation_whose_announcement_fails_is_not_persisted() {
+    let addressable = QueueEntry::user_message("the oldest thing a person typed".into(), None);
+    let mut entries = vec![addressable];
+    entries.extend(
+        (0..MAX_PENDING_QUEUE_LEN)
+            .map(|i| QueueEntry::user_message(format!("survivor #{i}"), None)),
+    );
+    let boot = boot_with(idle_snapshot(entries)).await;
+
+    sqlx::query("ALTER TABLE events RENAME TO events_hidden")
+        .execute(boot.repo.pool())
+        .await
+        .expect("hide the events table");
+
+    let refused = boot.harness.persist_snapshot().await;
+    assert!(
+        refused.is_err(),
+        "a persist that cannot record the drop must not report success"
+    );
+
+    // What the row still holds is the whole point: nothing was lost.
+    let stored: (String,) =
+        sqlx::query_as("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&boot.worker_session_id)
+            .fetch_one(boot.repo.pool())
+            .await
+            .expect("the runtime row");
+    let snapshot: Value = serde_json::from_str(&stored.0).expect("snapshot json");
+    assert_eq!(
+        snapshot["pending_queue"].as_array().expect("queue").len(),
+        MAX_PENDING_QUEUE_LEN + 1,
+        "the untruncated queue is still on disk, so the next boot can try again"
+    );
+
+    // And once the write can land, the same persist goes through and takes the
+    // announcement with it.
+    sqlx::query("ALTER TABLE events_hidden RENAME TO events")
+        .execute(boot.repo.pool())
+        .await
+        .expect("restore the events table");
+    boot.harness
+        .persist_snapshot()
+        .await
+        .expect("the persist succeeds once the announcement can be written");
+    let changes: Vec<Value> = boot.event_payloads("harness.queue.changed").await;
+    assert_eq!(
+        changes.len(),
+        1,
+        "the retry announced the drop exactly once; payloads={changes:?}"
+    );
+    assert_eq!(changes[0]["change"], json!("dropped"));
 }
 
 /// The green half of the same rule: a queue that fits under the cap discards

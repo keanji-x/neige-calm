@@ -72,31 +72,6 @@ impl Boot {
             .map(|(payload,)| serde_json::from_str(&payload).expect("event payload json"))
             .collect()
     }
-
-    /// Wait until at least `count` events of `kind` are committed, then return
-    /// every one of them.
-    ///
-    /// For the events the kernel emits off the request path (#1505 PR2b's
-    /// load-time `dropped`, announced from a task spawned by
-    /// `PlannerHarness::run`). This waits for a CONDITION, never for a
-    /// duration: the assertions on the returned rows are what the test is
-    /// about, and the deadline exists only so a regression fails instead of
-    /// hanging.
-    pub async fn await_event_payloads(&self, kind: &str, count: usize) -> Vec<Value> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            let payloads = self.event_payloads(kind).await;
-            if payloads.len() >= count {
-                return payloads;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "waited 10s for {count} `{kind}` events, saw {}",
-                payloads.len()
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
 }
 
 /// A planner card with a live, registered harness seeded from `snapshot`.

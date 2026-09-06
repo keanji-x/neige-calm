@@ -43,11 +43,22 @@ type RowState = Readonly<{
   /** The draft being edited, or `null` while the row is just being read. */
   draft: string | null;
   notice: PlannerQueueWriteOutcome | null;
+  /**
+   * The revision the next Save must be written against.
+   *
+   * `null` until something tells us better, in which case the entry's own
+   * `rev` from the queue page is used. After a 409 it holds the revision the
+   * server just reported, which is NOT the same thing: the page in the cache
+   * is by definition behind at that moment, and the refresh that fixes it may
+   * still be in flight or may fail. Saving `entry.rev` again would 409 again.
+   */
+  rev: number | null;
 }>;
 
 function noticeText(outcome: PlannerQueueWriteOutcome): string | null {
   if (outcome.kind === 'stale') {
-    return 'This message changed while you were editing it. Your version was not saved.';
+    return 'This message changed while you were editing it, so your version was not saved. '
+      + 'Your text is still below — save it again to overwrite theirs, or use theirs instead.';
   }
   if (outcome.kind === 'gone') {
     return 'This message already left the queue, so it could not be changed.';
@@ -63,25 +74,36 @@ export function PendingQueue({ entries, overflow, busy, onEdit, onDelete }: Pend
 
   const settle = (entryId: string, outcome: PlannerQueueWriteOutcome): void => {
     setRow((current) => {
-      // A lost race keeps the row open and swaps in the server's text: the
-      // reader is looking at what the entry actually says, on the revision
-      // they would now be writing against. Anything else either discards
-      // their edit without showing them what beat it, or offers a Save that
-      // is guaranteed to lose again.
-      if (outcome.kind === 'stale') return { entryId, draft: outcome.text, notice: outcome };
-      if (outcome.kind === 'done') return current?.entryId === entryId ? null : current;
+      const open = current?.entryId === entryId ? current : null;
+      /*
+       * A lost race KEEPS the reader's draft.
+       *
+       * The first version of this replaced the draft with the server's text,
+       * which meant the sentence the reader had just typed existed nowhere —
+       * not in state, not in the notice, with no undo — and the notice saying
+       * "your version was not saved" was true and useless. Their words are the
+       * one thing here that cannot be fetched again.
+       *
+       * What the 409 does change is the revision the next Save carries: the
+       * one the server just reported, not the one on the cached page. The
+       * winning text is offered beside the notice, so choosing it is a
+       * deliberate act rather than something that happens to them.
+       */
+      if (outcome.kind === 'stale') {
+        return { entryId, draft: open?.draft ?? null, notice: outcome, rev: outcome.rev };
+      }
+      if (outcome.kind === 'done') return open === null ? current : null;
       /* A refusal is reported even when no editor was open — a delete is a
          write too, and a delete that did not happen is exactly the thing this
          surface must not let pass silently. */
-      const draft = current?.entryId === entryId ? current.draft : null;
-      return { entryId, draft, notice: outcome };
+      return { entryId, draft: open?.draft ?? null, notice: outcome, rev: open?.rev ?? null };
     });
   };
 
   return (
     <section className={styles.queue} data-nc-pending-queue="" aria-label="Queued messages">
       <p className={styles.caption} data-nc-pending-queue-caption="">
-        {entries.length === 1 && overflow === 0
+        {entries.length + overflow === 1
           ? 'One message is waiting to send when this turn ends.'
           : `${entries.length + overflow} messages are waiting to send when this turn ends.`}
       </p>
@@ -90,6 +112,11 @@ export function PendingQueue({ entries, overflow, busy, onEdit, onDelete }: Pend
           const open = row?.entryId === entry.entry_id ? row : null;
           const draft = open?.draft ?? null;
           const notice = open?.notice == null ? null : noticeText(open.notice);
+          const lostRace = open?.notice?.kind === 'stale' ? open.notice : null;
+          /* The revision a Save would be written against: the one the server
+             reported if it has spoken, otherwise the one this page was read
+             at. Never `entry.rev` after a 409 — that value is known stale. */
+          const saveRev = open?.rev ?? entry.rev;
           return (
             <li key={entry.entry_id} className={styles.item} data-nc-pending-entry={entry.entry_id}>
               {draft === null
@@ -110,6 +137,21 @@ export function PendingQueue({ entries, overflow, busy, onEdit, onDelete }: Pend
               {notice !== null && (
                 <p className={styles.notice} role="status" data-nc-pending-entry-notice="">{notice}</p>
               )}
+              {lostRace !== null && (
+                <div className={styles.theirs} data-nc-pending-entry-theirs="">
+                  <p className={styles.text}>{lostRace.text}</p>
+                  <Button
+                    label="Use their version"
+                    variant="ghost"
+                    size="sm"
+                    isDisabled={busy}
+                    onClick={() => {
+                      setRow((current) => current?.entryId === entry.entry_id
+                        ? { ...current, draft: lostRace.text } : current);
+                    }}
+                  />
+                </div>
+              )}
               <div className={styles.actions}>
                 {draft === null
                   ? (
@@ -125,7 +167,9 @@ export function PendingQueue({ entries, overflow, busy, onEdit, onDelete }: Pend
                            settles, which is a lie about a synchronous
                            toggle. The two writes below do use it. */
                         onClick={() => {
-                          setRow({ entryId: entry.entry_id, draft: entry.text, notice: null });
+                          setRow({
+                            entryId: entry.entry_id, draft: entry.text, notice: null, rev: null,
+                          });
                         }}
                       />
                       <Button
@@ -134,7 +178,7 @@ export function PendingQueue({ entries, overflow, busy, onEdit, onDelete }: Pend
                         size="sm"
                         isDisabled={busy}
                         clickAction={async () => {
-                          settle(entry.entry_id, await onDelete(entry));
+                          settle(entry.entry_id, await onDelete({ ...entry, rev: saveRev }));
                         }}
                       />
                     </>
@@ -147,7 +191,7 @@ export function PendingQueue({ entries, overflow, busy, onEdit, onDelete }: Pend
                         size="sm"
                         isDisabled={busy || draft.trim() === ''}
                         clickAction={async () => {
-                          settle(entry.entry_id, await onEdit(entry, draft));
+                          settle(entry.entry_id, await onEdit({ ...entry, rev: saveRev }, draft));
                         }}
                       />
                       <Button

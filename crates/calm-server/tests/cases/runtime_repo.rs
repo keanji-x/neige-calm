@@ -2930,6 +2930,10 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
                     .map(|text| HarvestedMessage {
                         text: text.to_owned(),
                         ids: vec![format!("id-of-{text}")],
+                        // This fixture predates the queue having an
+                        // addressable id; `None` is what a pre-#1505 entry
+                        // carries, which is the case it is standing in for.
+                        entry_id: None,
                     })
             })
             .collect();

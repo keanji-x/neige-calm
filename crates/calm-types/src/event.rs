@@ -284,7 +284,10 @@ pub enum HarnessQueueChange {
     ///
     /// It is the only announcement such an entry ever gets: the sentence is
     /// never delivered, so it never reaches the transcript, so a client that
-    /// is still showing it has nothing else to learn from.
+    /// is still showing it has nothing else to learn from. No frontend reads
+    /// this variant yet — `harness.queue.changed` drives query invalidation
+    /// and nothing per-entry — so the row is an audit record and an input for
+    /// a later slice, not a placeholder fix.
     Dropped,
 }
 
