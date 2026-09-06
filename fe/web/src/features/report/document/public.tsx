@@ -71,6 +71,13 @@ export type ReportDocumentProps = Readonly<{
   taskRows?: readonly ReportTaskRow[];
   /** App-owned current/history query and recovery action, scoped to a task. */
   renderTaskExecution?: (task: ReportTaskRow, expanded: boolean) => ReactNode;
+  /**
+   * Resolves a live `table` block's `source` to the payload a plugin last
+   * pushed there. Absent ⇒ live tables say so instead of rendering; a surface
+   * that does not load overlays (Today, the file viewer) is not lying about
+   * live data, it just does not have it.
+   */
+  resolveLiveTable?: (source: string) => unknown;
 }>;
 
 /**
@@ -82,6 +89,7 @@ export type ReportDocumentProps = Readonly<{
  */
 export function ReportDocument({
   report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, fileRoot, fileBasePath,
+  resolveLiveTable,
   arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
   useEffect(() => {
@@ -153,6 +161,7 @@ export function ReportDocument({
                   onOpenFileLink={onOpenFileLink}
                   fileRoot={fileRoot}
                   fileBasePath={fileBasePath}
+                  resolveLiveTable={resolveLiveTable}
                 />
               ))}
               {/* §6.1 — a section with zero rows is not rendered. A report that
@@ -275,13 +284,16 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
  * kind lands on the same left edge and every kind can be cited by id without
  * each renderer having to remember to carry one.
  */
-function BlockSlot({ block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fileBasePath }: {
+function BlockSlot({
+  block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fileBasePath, resolveLiveTable,
+}: {
   block: ReportBlock;
   backlinks: number;
   onOpenLink?: (target: ReportLinkTarget) => void;
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
   fileRoot?: string;
   fileBasePath?: string;
+  resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
 }) {
   return (
     <div className={styles.row}>
@@ -295,7 +307,7 @@ function BlockSlot({ block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fil
               fileRoot={fileRoot}
               fileBasePath={fileBasePath}
             />
-          : <BlockBody block={block} />}
+          : <BlockBody block={block} resolveLiveTable={resolveLiveTable} />}
       </div>
       {backlinks > 0 && (
         // In the trailing gutter, aligned to the block's first line. Inside the
@@ -311,11 +323,12 @@ function BlockSlot({ block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fil
 
 /** One bad block may not cost the page: an unknown kind, or a known kind whose
  *  payload did not parse, degrades to one line and the document goes on. */
-function BlockBody({ block, task, renderTaskExecution }: {
+function BlockBody({ block, task, renderTaskExecution, resolveLiveTable }: {
   block: ReportBlock; task?: ReportTaskRow; renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
+  resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
 }): ReactNode {
   switch (block.kind) {
-    case 'table': return <ReportTableBlock payload={block.payload} />;
+    case 'table': return <ReportTableBlock payload={block.payload} resolveLive={resolveLiveTable} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
     case 'task': return <ReportTaskBlock payload={block.payload} blockId={block.id} task={task} renderExecution={renderTaskExecution} />;
     case 'app': return <ReportAppBlock payload={block.payload} />;

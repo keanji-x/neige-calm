@@ -101,9 +101,30 @@ pub(super) fn kinds_table() -> Value {
                 "kind": "table",
                 "schema": {
                     "type": "object",
-                    "required": ["columns", "rows"],
                     "additionalProperties": false,
+                    "oneOf": [
+                        {
+                            "description": "Inline table — the rows live in the block.",
+                            "required": ["columns", "rows"],
+                            "not": { "required": ["source"] }
+                        },
+                        {
+                            "description": "Live table — the rows come from a plugin-written overlay named by `source`, and the block re-renders whenever that overlay changes. Nothing else may be set: a live table that also carried columns/rows would have two answers to what it shows.",
+                            "required": ["source"],
+                            "not": { "anyOf": [
+                                { "required": ["columns"] },
+                                { "required": ["rows"] },
+                                { "required": ["highlight"] }
+                            ] }
+                        }
+                    ],
                     "properties": {
+                        "source": {
+                            "type": "string",
+                            "maxLength": report_blocks::MAX_STRING_CHARS,
+                            "pattern": "^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+                            "description": "`neige://plugin/<plugin_id>/<overlay_kind>` — the overlay whose payload (itself a `{columns, rows, caption?, highlight?}` document) is rendered here. The plugin need not be installed when the block is written."
+                        },
                         "columns": {
                             "type": "array",
                             "minItems": 1,
@@ -140,7 +161,13 @@ pub(super) fn kinds_table() -> Value {
                      keys must be declared column keys — { \"columns\": \
                      [{\"key\": \"pe\", …}], \"rows\": [{ \"PE\": 1 }] } is \
                      rejected. Limits: 32 columns, 500 rows, 2048 chars per \
-                     string, 256KB of JSON per block."
+                     string, 256KB of JSON per block. A LIVE table names its \
+                     data instead of carrying it — { \"kind\": \"table\", \
+                     \"payload\": { \"source\": \
+                     \"neige://plugin/dev-neige-binance/portfolio.holdings\" } } \
+                     — and then re-renders on its own as the plugin pushes; \
+                     `columns`, `rows` and `highlight` are rejected alongside \
+                     `source`."
             },
             {
                 "kind": "app",

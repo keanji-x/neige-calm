@@ -9,12 +9,21 @@
 //! | kind | payload |
 //! |---|---|
 //! | `chart.candles` | `{ symbol, period?, candles: [[ts_ms,o,h,l,c,v?];2..], overlays?, caption? }` |
-//! | `table` | `{ columns: [{key,label,align?};1..], rows: [{<key>: string\|number\|null}], caption?, highlight? }` |
+//! | `table` | inline: `{ columns: [{key,label,align?};1..], rows: [{<key>: string\|number\|null}], caption?, highlight? }`; live: `{ source: "neige://plugin/<id>/<overlay-kind>", caption? }` |
 //! | `app` | `{ src: same-origin path, title?, height? (120..2000 px) }` |
 //!
 //! Candle data is inlined by design: the kernel has no market-data
 //! source — the agent fetches its own data and writes it in; range
 //! switching is client-side filtering.
+//!
+//! A `table` is the one kind that may instead *name* its data: the live
+//! form carries a `source` pointing at a plugin-written overlay, and the
+//! renderer reads whatever that overlay currently holds. The document keeps
+//! the reference; the value moves underneath it. This is what makes a
+//! pushing plugin — one that re-prices on its own clock — visible in a
+//! report without rewriting (and re-revisioning) the report on every tick.
+//! The two forms are mutually exclusive: a payload either carries rows or
+//! names where rows come from, never both.
 
 use serde_json::{Map, Value};
 
@@ -114,6 +123,57 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
     } else {
         Err(errors.join("; "))
     }
+}
+
+/// URI prefix of a live `table`'s [`source`](validate_payload): the overlay
+/// written by plugin `<id>` under overlay kind `<kind>`.
+///
+/// Deliberately *not* the report-link scheme parsed by
+/// [`crate::report_links`]: that one
+/// addresses a block inside another report and is scanned for backlinks, and
+/// a live source is neither. Keeping them apart means
+/// `report_links::visit_links` never has to decide which of two meanings a
+/// `neige://` destination carries.
+pub const LIVE_SOURCE_PREFIX: &str = "neige://plugin/";
+
+/// Shape check for a live `table`'s `source`.
+///
+/// `neige://plugin/<plugin_id>/<overlay_kind>` — exactly two non-empty
+/// segments after the prefix, each drawn from the same characters plugin ids
+/// and overlay kinds already use. Existence is deliberately NOT checked here:
+/// this crate has no registry, and a report that names a plugin which is not
+/// installed *yet* is a normal state (install order is the operator's), one
+/// the renderer reports as an empty table rather than the writer refusing the
+/// block.
+pub fn validate_live_source(source: &str) -> Result<(), String> {
+    let Some(rest) = source.strip_prefix(LIVE_SOURCE_PREFIX) else {
+        return Err(format!(
+            "source: must start with `{LIVE_SOURCE_PREFIX}`, got `{source}`"
+        ));
+    };
+    let mut segments = rest.split('/');
+    let (Some(plugin_id), Some(kind), None) = (segments.next(), segments.next(), segments.next())
+    else {
+        return Err(format!(
+            "source: expected `{LIVE_SOURCE_PREFIX}<plugin_id>/<overlay_kind>` \
+             (exactly two segments), got `{source}`"
+        ));
+    };
+    for (label, segment) in [("plugin_id", plugin_id), ("overlay_kind", kind)] {
+        if segment.is_empty() {
+            return Err(format!("source: {label} segment is empty in `{source}`"));
+        }
+        if !segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        {
+            return Err(format!(
+                "source: {label} segment `{segment}` may only contain \
+                 ASCII letters, digits, `.`, `_` and `-`"
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub const TASK_FIELDS: &[&str] = &[
@@ -470,7 +530,36 @@ fn validate_chart(map: &Map<String, Value>, errors: &mut Vec<String>) {
     optional_string(map, "caption", errors);
 }
 
+/// The live `table` form: `{ source, caption? }`.
+///
+/// `columns` / `rows` / `highlight` are rejected rather than ignored. A
+/// payload carrying both a source and rows has two answers to "what does this
+/// table show", and whichever the renderer picked would make the other one a
+/// lie that survives review because it still renders.
+fn validate_live_table(map: &Map<String, Value>, errors: &mut Vec<String>) {
+    reject_unknown(map, &["source", "caption"], errors);
+    match map.get("source") {
+        Some(Value::String(source)) => {
+            check_string_cap("source", source, errors);
+            if let Err(e) = validate_live_source(source) {
+                errors.push(e);
+            }
+        }
+        Some(_) | None => errors.push(format!(
+            "source: required string of the form `{LIVE_SOURCE_PREFIX}<plugin_id>/<overlay_kind>`"
+        )),
+    }
+    optional_string(map, "caption", errors);
+}
+
 fn validate_table(map: &Map<String, Value>, errors: &mut Vec<String>) {
+    // The live form is selected by the *presence* of `source`, not by its
+    // validity: a malformed `source` must be reported as a bad source, never
+    // silently re-read as an inline table missing its columns.
+    if map.contains_key("source") {
+        validate_live_table(map, errors);
+        return;
+    }
     reject_unknown(map, &["columns", "rows", "caption", "highlight"], errors);
     let mut column_keys: Vec<&str> = Vec::new();
     match map.get("columns") {

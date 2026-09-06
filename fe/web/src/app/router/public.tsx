@@ -10,14 +10,14 @@
 import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
 } from '@tanstack/react-router';
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { onlineManager, useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { hasUnseenMatchingConversationMessage, failedConversationDelivery } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  toTrack, trackActivityFrom, trackDisplayTitle,
+  liveTableOverlayPayload, toTrack, trackActivityFrom, trackDisplayTitle,
   type Track, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
 import type {
@@ -2680,6 +2680,12 @@ function TrackRouteBody({
     () => cardInputNotifications(cards, overlays),
     [cards, overlays],
   );
+  /* Stable across renders that do not change the overlays, so a live table is
+     not handed a new resolver identity on every keystroke elsewhere. */
+  const resolveLiveTable = useCallback(
+    (source: string) => liveTableOverlayPayload(track.id, overlays, source),
+    [track.id, overlays],
+  );
   const conversationNotificationCardIds = useMemo(
     () => new Set(cards
       .filter((card) => card.kind === 'codex'
@@ -3021,6 +3027,10 @@ function TrackRouteBody({
       }}
       report={<ReportDocument
         report={report}
+        /* Live tables read the track's own overlays. `overlay.set` already
+           invalidates this track's detail, so a plugin push re-renders the
+           block without the report being rewritten. */
+        resolveLiveTable={resolveLiveTable}
         taskVerdicts={verdicts}
         taskRows={tasks}
         renderTaskExecution={(task, expanded) => <TaskRecovery

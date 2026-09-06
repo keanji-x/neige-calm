@@ -380,3 +380,91 @@ fn task_tombstone_is_a_closed_shape() {
             .contains("must be absent")
     );
 }
+
+#[test]
+fn live_table_accepts_a_source_and_caption() {
+    assert_eq!(
+        validate_payload(
+            KIND_TABLE,
+            &json!({ "source": "neige://plugin/dev-neige-binance/portfolio.holdings" }),
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        validate_payload(
+            KIND_TABLE,
+            &json!({
+                "source": "neige://plugin/dev-neige-binance/portfolio.history",
+                "caption": "Pushed by the Binance plugin"
+            }),
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn live_table_rejects_inline_data_alongside_its_source() {
+    // The whole point of the exclusion: a payload that both names a source
+    // and carries rows renders one of them and makes the other a lie.
+    for extra in ["columns", "rows", "highlight"] {
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "source".into(),
+            json!("neige://plugin/p/portfolio.holdings"),
+        );
+        payload.insert(extra.into(), json!([]));
+        let err = validate_payload(KIND_TABLE, &Value::Object(payload)).unwrap_err();
+        assert!(
+            err.contains(&format!("{extra}: unknown field")),
+            "`{extra}` alongside `source` must be rejected, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn live_table_source_shape_is_enforced() {
+    let cases = [
+        // wrong scheme — the report-link scheme is a different vocabulary
+        ("neige://track/t1/portfolio.holdings", "must start with"),
+        ("https://example.com/x", "must start with"),
+        // one segment, three segments, empty segments
+        ("neige://plugin/only-one", "exactly two segments"),
+        ("neige://plugin/a/b/c", "exactly two segments"),
+        ("neige://plugin//kind", "plugin_id segment is empty"),
+        ("neige://plugin/id/", "overlay_kind segment is empty"),
+        // character set
+        ("neige://plugin/id x/kind", "may only contain"),
+        ("neige://plugin/id/kind:1", "may only contain"),
+    ];
+    for (source, needle) in cases {
+        let err = validate_payload(KIND_TABLE, &json!({ "source": source })).unwrap_err();
+        assert!(
+            err.contains(needle),
+            "`{source}` should fail with `{needle}`, got: {err}"
+        );
+    }
+    // A non-string source is a source error, not a missing-columns error:
+    // presence selects the form, validity is reported inside it.
+    let err = validate_payload(KIND_TABLE, &json!({ "source": 7 })).unwrap_err();
+    assert!(err.contains("source: required string"), "{err}");
+    assert!(
+        !err.contains("columns:"),
+        "must not fall back to inline: {err}"
+    );
+}
+
+#[test]
+fn inline_table_still_rejects_an_unknown_field() {
+    // Guards the split itself: adding the live form must not have turned
+    // `additionalProperties: false` off for the inline form.
+    let err = validate_payload(
+        KIND_TABLE,
+        &json!({
+            "columns": [{ "key": "a", "label": "A" }],
+            "rows": [],
+            "srcs": "typo"
+        }),
+    )
+    .unwrap_err();
+    assert!(err.contains("srcs: unknown field"), "{err}");
+}
