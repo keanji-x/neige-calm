@@ -238,6 +238,20 @@ type ResponderMap = Arc<Mutex<HashMap<RequestId, oneshot::Sender<Result<Value, R
 /// gating logic.
 pub const KERNEL_CALLBACKS_CAPABILITY: &str = "dev.neige/kernel-callbacks";
 
+/// `_meta` namespace naming the Track a `tools/call` was made from.
+///
+/// Carried as `{"id": "<track_id>"}` — the same one-level wrapper
+/// `dev.neige/config` uses, and for the same reason: a bare string could
+/// never grow a sibling field without ambiguity.
+///
+/// **The kernel fills this; the caller never does.** A plugin that keeps
+/// per-Track state has to know which Track it is acting for, and the only
+/// trustworthy answer is the one the kernel resolved for the calling
+/// identity — an agent that could name the Track in its own arguments could
+/// name someone else's, which is the same reasoning that makes
+/// `callbacks::dispatch` inject `plugin_id` rather than read it from params.
+pub const TRACK_META_KEY: &str = "dev.neige/track";
+
 /// Version of the `dev.neige/kernel-callbacks` capability the kernel supports.
 /// Plugins advertise `experimental[KERNEL_CALLBACKS_CAPABILITY].version` in
 /// their `initialize` response; only an **exact** match here counts as
@@ -579,15 +593,25 @@ impl McpClient {
     /// We keep the result type loose: `_meta` is `serde_json::Value` so the
     /// host route can pluck `_meta.ui.resourceUri` (the M2 use case) without
     /// us pinning every reserved sub-key.
+    /// MCP `tools/call`. `track_id` — when the caller has one — rides in
+    /// `params._meta` under [`TRACK_META_KEY`] rather than in `arguments`:
+    /// the arguments belong to the tool's own `input_schema`, which is
+    /// authored by the plugin and frequently `additionalProperties: false`,
+    /// and a kernel-injected key there would either be rejected or collide
+    /// with a parameter of the same name.
     pub async fn tools_call(
         &self,
         name: &str,
         arguments: Value,
+        track_id: Option<&str>,
     ) -> Result<CallToolResult, RpcError> {
-        let params = json!({
+        let mut params = json!({
             "name": name,
             "arguments": arguments,
         });
+        if let Some(track_id) = track_id {
+            params["_meta"] = json!({ TRACK_META_KEY: { "id": track_id } });
+        }
         let raw = self.call("tools/call", params).await?;
         serde_json::from_value::<CallToolResult>(raw).map_err(|e| {
             RpcError::internal(format!(

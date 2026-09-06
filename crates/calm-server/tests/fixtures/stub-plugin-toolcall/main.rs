@@ -22,6 +22,10 @@
 //!       - `"is_error"` — returns `isError: true` with the configured content.
 //!         Used by the 502 test.
 //!
+//! In `"card"` mode the reply's `_meta.seen_call` reports the received
+//! `params._meta` and `params.arguments` verbatim, so a test can distinguish
+//! what the KERNEL put on the call from what the caller put in `arguments`.
+//!
 //! Anything else (e.g. another method) replies with a generic `{"echo": method}`
 //! so the test can still smoke the wire.
 
@@ -137,7 +141,15 @@ fn main() {
                         "isError": false,
                         "_meta": {
                             "ui": { "resourceUri": resource_uri },
-                            "requested_name": requested_name
+                            "requested_name": requested_name,
+                            // What the KERNEL put on the call, reported back
+                            // so a test can tell it apart from anything the
+                            // caller put in `arguments`. Additive: the card
+                            // mode's other `_meta` keys are unchanged.
+                            "seen_call": {
+                                "meta": v.pointer("/params/_meta").cloned().unwrap_or(serde_json::Value::Null),
+                                "arguments": v.pointer("/params/arguments").cloned().unwrap_or(serde_json::Value::Null),
+                            }
                         },
                         "structuredContent": structured
                     })

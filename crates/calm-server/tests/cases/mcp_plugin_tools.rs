@@ -51,6 +51,12 @@ struct Fixture {
     socket_path: PathBuf,
     raw_token: String,
     thread_id: String,
+    /// The unbound track `thread_id`'s card lives in — the Track a call made
+    /// with that thread must be attributed to.
+    track_id: String,
+    /// The template-bound track, used to prove attribution follows the
+    /// caller's identity rather than anything in the request.
+    bound_track_id: String,
     /// Plugin id from `NEIGE_TRUSTED_FORGE_PLUGINS` (default
     /// `dev.neige.git-forge`) — the running trusted stub that owns
     /// [`TEMPLATE_ID`].
@@ -564,6 +570,88 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
 
 /// `tools/call` that must fail: returns the complete `error` object.
 /// `thread_id: None` sends an empty `_meta` (no threadId key).
+
+/// A plugin must be told which Track a `tools/call` came from — and must be
+/// told it by the KERNEL.
+///
+/// A plugin that keeps per-Track state (holdings, a watch list, anything the
+/// reader thinks of as belonging to this page) has no other trustworthy
+/// source for that: the calling agent can write whatever it likes into
+/// `arguments`, and an agent acting on a poisoned instruction would name
+/// someone else's Track. Same reasoning as `callbacks::dispatch` injecting
+/// `plugin_id` instead of reading it from params.
+#[tokio::test]
+async fn a_plugin_tool_call_carries_the_callers_track_injected_by_the_kernel() {
+    let fx = boot_fixture().await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &fx.raw_token).await;
+
+    // The caller tries to name a DIFFERENT track in its own arguments. It is
+    // a real track id, so nothing downstream can reject it as malformed —
+    // the only thing standing between it and the plugin is that the kernel
+    // does not read it.
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            7,
+            EXPOSED_NAME,
+            &fx.thread_id,
+            json!({ "track_id": fx.bound_track_id, "payload": "from-worker" }),
+        ),
+    )
+    .await;
+    let routed = recv_frame(&mut rd).await;
+    assert!(
+        routed.get("error").is_none(),
+        "plugin tool call errored: {routed:#?}"
+    );
+    let seen = &routed["result"]["_meta"]["seen_call"];
+    assert_eq!(
+        seen["meta"]["dev.neige/track"]["id"], fx.track_id,
+        "the plugin must see the caller's own track: {routed:#?}"
+    );
+    assert_ne!(
+        fx.track_id, fx.bound_track_id,
+        "the fixture's two tracks must differ or this test proves nothing"
+    );
+    // The forged value is still visible where the caller put it — the kernel
+    // does not sanitize `arguments`, it just never sources identity from it.
+    assert_eq!(seen["arguments"]["track_id"], fx.bound_track_id);
+    assert_eq!(
+        seen["meta"]["dev.neige/track"]["id"], fx.track_id,
+        "and the injected namespace is unaffected by it"
+    );
+}
+
+/// The same call made from the OTHER track carries that track instead —
+/// otherwise the assertion above would pass against a hard-coded value.
+#[tokio::test]
+async fn the_injected_track_follows_the_caller_not_the_tool() {
+    let fx = boot_fixture().await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &fx.bound_raw_token).await;
+
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            8,
+            &fx.trusted_exposed_name,
+            &fx.bound_thread_id,
+            json!({ "payload": "from-bound" }),
+        ),
+    )
+    .await;
+    let routed = recv_frame(&mut rd).await;
+    assert!(
+        routed.get("error").is_none(),
+        "bound-track plugin tool call errored: {routed:#?}"
+    );
+    assert_eq!(
+        routed["result"]["_meta"]["seen_call"]["meta"]["dev.neige/track"]["id"], fx.bound_track_id,
+        "{routed:#?}"
+    );
+}
+
 async fn call_expect_error(
     rd: &mut tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
     wr: &mut tokio::net::unix::OwnedWriteHalf,
@@ -758,6 +846,8 @@ async fn boot_fixture() -> Fixture {
         socket_path,
         raw_token,
         thread_id,
+        track_id: track.id.to_string(),
+        bound_track_id: bound_track.id.to_string(),
         trusted_plugin_id,
         trusted_exposed_name,
         bound_raw_token,
