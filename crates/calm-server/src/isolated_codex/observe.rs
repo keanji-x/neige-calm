@@ -1,6 +1,6 @@
 //! Lifetime observer of one parked Operation, reusing its lease and task writers.
 use super::{adapter::IsolatedCodexAdapter, config::provider_error, record::RunRecord};
-use crate::db::{write_in_tx_typed, write_with_actor_events_typed};
+use crate::db::write_in_tx_typed;
 use crate::dedicated_codex::{RequestPhase, Session};
 use crate::error::{CalmError, Result};
 use crate::model::{Task, TaskStatus};
@@ -17,7 +17,7 @@ fn terminal(task: &Task) -> bool {
     )
 }
 
-async fn fail(
+pub(super) async fn fail(
     adapter: &IsolatedCodexAdapter,
     op: &Operation,
     ctx: &SpawnCtx,
@@ -25,39 +25,45 @@ async fn fail(
 ) -> Result<()> {
     let op = op.clone();
     let reason = reason.to_string();
-    write_with_actor_events_typed(
-        adapter.repo.as_ref(),
-        None,
-        &ctx.events,
-        &adapter.write,
-        move |tx| {
-            Box::pin(async move {
-                super::journal::require_owner_tx(tx, &op).await?;
-                let record = super::journal::load_tx(tx, &op.id).await?;
-                let Some(task) =
-                    crate::db::sqlite::task_get_tx(tx, &record.request.identity.attempt_id).await?
-                else {
-                    return Ok(((), vec![]));
-                };
-                if terminal(&task) {
-                    return Ok(((), vec![]));
-                }
-                let track =
-                    crate::track_lifecycle::track_get_tx(tx, &task.track_id.clone().into()).await?;
-                let events = crate::scheduler::fail_worker_task_tx(
-                    tx,
-                    &task,
-                    &track,
-                    "worker-exit",
-                    &reason,
+    let committed = write_in_tx_typed(adapter.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            super::journal::require_owner_tx(tx, &op).await?;
+            let record = super::journal::load_tx(tx, &op.id).await?;
+            let Some(task) =
+                crate::db::sqlite::task_get_tx(tx, &record.request.identity.attempt_id).await?
+            else {
+                return Ok(Vec::new());
+            };
+            if terminal(&task) {
+                return Ok(Vec::new());
+            }
+            let track =
+                crate::track_lifecycle::track_get_tx(tx, &task.track_id.clone().into()).await?;
+            let events =
+                crate::scheduler::fail_worker_task_tx(tx, &task, &track, "worker-exit", &reason)
+                    .await?;
+            let mut committed = Vec::new();
+            for (actor, scope, event) in events {
+                let id = crate::db::sqlite::append_decision_event_in_tx(
+                    tx, &actor, &scope, None, &event,
                 )
                 .await?;
-                Ok(((), events))
-            })
-        },
-    )
-    .await
-    .map(|_| ())
+                committed.push(crate::event::BroadcastEnvelope {
+                    id,
+                    event_version: crate::event::SYNC_EVENT_VERSION,
+                    actor,
+                    scope,
+                    event,
+                });
+            }
+            Ok(committed)
+        })
+    })
+    .await?;
+    for event in committed {
+        ctx.events.emit_envelope(event);
+    }
+    Ok(())
 }
 
 pub(crate) async fn stop(
@@ -87,28 +93,54 @@ pub(crate) async fn stop(
         ));
     }
     let owned = op.clone();
-    write_in_tx_typed(adapter.repo.as_ref(), move |tx| {
+    let committed = write_in_tx_typed(adapter.repo.as_ref(), move |tx| {
         Box::pin(async move {
             super::journal::require_owner_tx(tx, &owned).await?;
             let record = super::journal::load_tx(tx, &owned.id).await?;
-            if let Some(session) = crate::db::sqlite::session_projection_by_id_tx(
+            let Some(session) = crate::db::sqlite::session_projection_by_id_tx(
                 tx,
                 &record.request.identity.session_id,
             )
             .await?
-                && !session.status.is_terminal()
-            {
-                crate::db::sqlite::session_set_status_tx(
-                    tx,
-                    &session.id,
-                    crate::session_projection_repo::WorkerSessionState::Exited,
-                )
-                .await?;
+            else {
+                return Ok(None);
+            };
+            if session.status.is_terminal() {
+                return Ok(None);
             }
-            Ok(())
+            let track =
+                crate::track_lifecycle::track_get_tx(tx, &record.track_id.clone().into()).await?;
+            let status = crate::session_projection_repo::WorkerSessionState::Exited;
+            crate::db::sqlite::session_set_status_tx(tx, &session.id, status).await?;
+            let actor = crate::ids::ActorId::KernelDispatcher;
+            let scope = crate::event::EventScope::Card {
+                card: record.request.identity.card_id.clone().into(),
+                track: track.id,
+                area: track.area_id,
+            };
+            let event = crate::event::Event::WorkerSessionStatusChanged {
+                worker_session_id: session.id,
+                card_id: record.request.identity.card_id,
+                old_status: session.status,
+                new_status: status,
+            };
+            let id =
+                crate::db::sqlite::append_decision_event_in_tx(tx, &actor, &scope, None, &event)
+                    .await?;
+            Ok(Some(crate::event::BroadcastEnvelope {
+                id,
+                event_version: crate::event::SYNC_EVENT_VERSION,
+                actor,
+                scope,
+                event,
+            }))
         })
     })
-    .await
+    .await?;
+    if let Some(event) = committed {
+        ctx.events.emit_envelope(event);
+    }
+    Ok(())
 }
 
 async fn task(adapter: &IsolatedCodexAdapter, record: &RunRecord) -> Result<Option<Task>> {

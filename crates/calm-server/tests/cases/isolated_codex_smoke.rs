@@ -76,6 +76,7 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
         .unwrap(),
     );
     let events = boot.ctx.events.clone();
+    let mut published = events.subscribe();
     let areas = calm_server::track_area_cache::TrackAreaCache::new();
     boot.repo.seed_track_area_cache(&areas).await.unwrap();
     let write = WriteContext::new(boot.card_role_cache.clone(), areas.clone());
@@ -159,15 +160,9 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
             if phase == "succeeded" {
                 break;
             }
-            assert_ne!(
-                phase,
-                "failed",
-                "{}",
-                current(&boot, "pilot")
-                    .await
-                    .status_detail
-                    .unwrap_or_default()
-            );
+            assert_ne!(phase, "failed", "{}; provider stderr: {}",
+                current(&boot, "pilot").await.status_detail.unwrap_or_default(),
+                std::fs::read_to_string(root.path().join("runtime").join(&op_id).join("provider.stderr")).unwrap_or_default());
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
@@ -217,6 +212,14 @@ async fn isolated_codex_scheduler_native_report_retains_files_and_recording() {
         .unwrap();
     assert_eq!(public["tasks"][0]["status"], "done");
     assert!(!public.to_string().contains("FAKE"));
+    tokio::time::timeout(Duration::from_secs(3),async {
+        loop {
+            let envelope=published.recv().await.unwrap();
+            if matches!(envelope.event,calm_server::event::Event::WorkerSessionStatusChanged {
+                card_id, new_status:calm_server::session_projection_repo::WorkerSessionState::Exited,..}
+                if card_id==card) {break;}
+        }
+    }).await.expect("actual stopped session status must be published");
     let calls = std::fs::read_to_string(
         private["provider"]["record"]["endpoint"]["home"]["home"]
             .as_str()

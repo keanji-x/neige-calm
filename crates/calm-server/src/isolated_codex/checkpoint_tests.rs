@@ -201,3 +201,35 @@ async fn isolated_checkpoint_late_ack_without_live_session_keeps_closed_admissio
         "stale ACK still fails exact CAS"
     );
 }
+
+#[tokio::test]
+async fn isolated_missing_task_failure_observation_is_a_noop() {
+    let f = Fixture::new().await;
+    let adapter = adapter::IsolatedCodexAdapter::new(
+        None,
+        f.repo.clone(),
+        None,
+        crate::state::WriteContext::new(Default::default(), Default::default()),
+    );
+    let ctx = crate::operation::SpawnCtx::new(
+        f.repo.clone(),
+        Arc::new(SqlxOperationRepo::new(f.repo.pool().clone())),
+        Arc::new(crate::state::DaemonClient::new_stub()),
+        crate::terminal_renderer::TerminalRendererRegistry::new_with_repo(f.repo.clone()),
+        f.checkpoint.events.clone(),
+        crate::operation::OperationCompletionBus::new(),
+    );
+    observe::fail(
+        &adapter,
+        &f.checkpoint.operation,
+        &ctx,
+        "late turn completion",
+    )
+    .await
+    .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+        .fetch_one(f.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
