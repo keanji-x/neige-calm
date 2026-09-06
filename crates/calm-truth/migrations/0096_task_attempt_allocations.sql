@@ -82,7 +82,9 @@ INSERT INTO tasks_next(id,track_id,key,kind,goal,context_json,acceptance_criteri
 DROP TABLE tasks;
 ALTER TABLE tasks_next RENAME TO tasks;
 CREATE INDEX tasks_track_status_idx ON tasks(track_id,status,priority DESC,created_at_ms);
-CREATE INDEX idx_tasks_liveness_deadlines ON tasks(running_deadline_ms) WHERE status='running';
+CREATE INDEX idx_tasks_liveness_deadlines
+  ON tasks (running_deadline_ms)
+  WHERE status = 'running';
 CREATE UNIQUE INDEX idx_tasks_child_track_id ON tasks(child_track_id) WHERE child_track_id IS NOT NULL;
 CREATE INDEX task_attempt_history_idx ON tasks(track_id,key);
 CREATE TABLE task_ref_index (

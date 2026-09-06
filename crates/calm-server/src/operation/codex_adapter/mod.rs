@@ -980,7 +980,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             mcp_server: self.mcp_server.as_deref(),
             card: &card,
             term: &term,
-            runtime_id: &runtime_id,
+            worker_session_id: &runtime_id,
             track_id: &track_id,
             mcp_token: Some(mcp_token.as_str()),
             rendered_prompt: &rendered_prompt,
@@ -1161,7 +1161,7 @@ pub(crate) struct CodexWorkerSpawnCtx<'a> {
     pub(crate) mcp_server: Option<&'a McpServer>,
     pub(crate) card: &'a Card,
     pub(crate) term: &'a crate::model::Terminal,
-    pub(crate) runtime_id: &'a str,
+    pub(crate) worker_session_id: &'a str,
     pub(crate) track_id: &'a TrackId,
     pub(crate) mcp_token: Option<&'a str>,
     pub(crate) rendered_prompt: &'a str,
@@ -1175,7 +1175,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
     let mut notifications = ctx.shared_codex_appserver.subscribe_notifications();
     let remote_uri = ctx.shared_codex_appserver.remote_uri();
     let card_id = ctx.card.id.as_str();
-    let runtime_id = ctx.runtime_id.to_string();
+    let runtime_id = ctx.worker_session_id.to_string();
     let runtime = ctx
         .spawn_ctx
         .repo
@@ -1242,7 +1242,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
     persist_shared_worker_runtime_fields(
         ctx.spawn_ctx,
         ctx.card,
-        ctx.runtime_id,
+        ctx.worker_session_id,
         &thread_id,
         &remote_uri,
         persisted_turn_id.as_deref(),
@@ -1265,7 +1265,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                 Ok(turn_id) => turn_id,
                 Err(failure) => {
                     if let Some(turn_id) = failure.observed
-                        && let Err(error) = persist_shared_worker_runtime_fields(ctx.spawn_ctx, ctx.card, ctx.runtime_id, &thread_id, &remote_uri, Some(&turn_id)).await {
+                        && let Err(error) = persist_shared_worker_runtime_fields(ctx.spawn_ctx, ctx.card, ctx.worker_session_id, &thread_id, &remote_uri, Some(&turn_id)).await {
                         tracing::warn!(card_id, thread_id=%thread_id, turn_id=%turn_id, %error, "launch commit failed; prepared operation retains business ownership");
                     }
                     return Err(failure.error);
@@ -1274,7 +1274,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             persist_shared_worker_runtime_fields(
                 ctx.spawn_ctx,
                 ctx.card,
-                ctx.runtime_id,
+                ctx.worker_session_id,
                 &thread_id,
                 &remote_uri,
                 Some(&turn_id),
