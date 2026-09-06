@@ -81,7 +81,7 @@ const EXIT_PERSIST_GRACE: Duration = Duration::from_millis(1000);
 ///
 ///   `PTY_DRAIN_GRACE` (supervisor holds `Exited` back)
 /// + reap → seal → broadcast → UDS write → attach-reader wakeup
-/// + `terminal_set_exit` + `session_projection_complete_for_terminal`
+/// + `terminal_set_exit` + session lifecycle observation
 /// + the plan-task completion hook (one more DB transaction).
 ///
 /// Only the first term is a compile-time constant; everything after it is
@@ -264,6 +264,12 @@ impl RendererEntry {
         tokio::time::timeout(budget, wait)
             .await
             .unwrap_or(ExitPersistWait::Timeout)
+    }
+
+    /// Observe the existing end-of-exit-callback signal without stopping a reader.
+    #[cfg(feature = "fixtures")]
+    pub async fn wait_exit_persisted_for_test(&self, budget: Duration) -> bool {
+        self.await_exit_persisted(budget).await == ExitPersistWait::Persisted
     }
 
     fn abort_tasks(&self) {

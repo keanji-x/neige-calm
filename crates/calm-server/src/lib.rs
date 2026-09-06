@@ -96,9 +96,10 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
                          terminal row left running against a dead PTY"
                     );
                 }
-                // Synthetic -1 means the process outcome is unknown at boot, so treat it as Exited.
+                // Synthetic -1 is terminal evidence, not resumable thread death.
                 if let Err(e) = retry_on_sqlite_busy(|| {
-                    state.repo.session_projection_complete_for_terminal(
+                    terminal_sweeper::complete_ephemeral_session_from_terminal_exit(
+                        state.repo.as_ref(),
                         &term.id,
                         WorkerSessionState::Exited,
                     )
@@ -177,6 +178,21 @@ impl SqliteBusyClass for calm_truth::TruthError {
     }
 }
 
+impl SqliteBusyClass for crate::error::CalmError {
+    fn is_sqlite_busy(&self) -> bool {
+        match self {
+            Self::Db(db) => calm_truth::db::sqlite::is_sqlite_busy(db),
+            // Projection helpers stringify driver errors at their boundary.
+            Self::Internal(message) => sqlite_busy_message(message),
+            _ => false,
+        }
+    }
+}
+
+fn sqlite_busy_message(message: &str) -> bool {
+    message.contains("database is locked") || message.contains("database table is locked")
+}
+
 impl SqliteBusyClass for crate::session_projection_repo::WorkerSessionProjectionRepoError {
     // This error type stringifies driver errors at the repo boundary, so
     // the result code is gone by the time it reaches us: most paths fold
@@ -193,8 +209,7 @@ impl SqliteBusyClass for crate::session_projection_repo::WorkerSessionProjection
         matches!(
             self,
             Self::Message { message }
-                if message.contains("database is locked")
-                    || message.contains("database table is locked")
+                if sqlite_busy_message(message)
         )
     }
 }
@@ -920,6 +935,27 @@ mod boot_reconcile_retry_tests {
         fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
             self
         }
+    }
+
+    #[tokio::test]
+    async fn observation_helper_retries_wrapped_projection_busy() {
+        let calls = AtomicUsize::new(0);
+        let out: Result<(), crate::error::CalmError> = retry_on_sqlite_busy(|| {
+            let call = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if call == 0 {
+                    Err(WorkerSessionProjectionRepoError::Message {
+                        message: "database table is locked".into(),
+                    }
+                    .into())
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await;
+        assert!(out.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     fn busy_error() -> TruthError {

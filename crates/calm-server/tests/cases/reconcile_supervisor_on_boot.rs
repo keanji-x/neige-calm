@@ -80,6 +80,120 @@ async fn probe_error_leaves_row_unchanged() {
     assert_eq!(got.exit_code, None);
 }
 
+#[tokio::test]
+async fn missing_viewer_preserves_resumable_session_but_explicit_completion_still_works() {
+    use calm_server::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
+    let fixture = TestFixture::boot_with_supervisor().await;
+    let term = fixture.seed_terminal_card("codex").await;
+    let session_id = fixture
+        .seed_session(&term, WorkerSessionKind::CodexCard)
+        .await;
+    calm_server::reconcile_supervisor_on_boot(&fixture.state).await;
+    assert_eq!(
+        fixture
+            .repo
+            .terminal_get(&term.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .exit_code,
+        Some(-1)
+    );
+    let session = fixture
+        .repo
+        .session_projection_active_for_card(&term.card_id.to_string())
+        .await
+        .unwrap()
+        .expect("missing viewer cannot terminate a resumable business session");
+    assert_eq!(session.id, session_id);
+    assert_eq!(session.status, WorkerSessionState::Running);
+    assert_eq!(session.active_turn_id.as_deref(), Some("owned-turn"));
+    // Explicit business/session completion keeps its existing authority.
+    fixture
+        .repo
+        .session_projection_complete_for_terminal(&term.id, WorkerSessionState::Exited)
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .repo
+            .session_projection_by_id(&session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkerSessionState::Exited
+    );
+}
+
+#[tokio::test]
+async fn missing_ephemeral_terminal_still_completes_its_session() {
+    use calm_server::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
+    let fixture = TestFixture::boot_with_supervisor().await;
+    let term = fixture.seed_terminal().await;
+    let session_id = fixture
+        .seed_session(&term, WorkerSessionKind::Terminal)
+        .await;
+    calm_server::reconcile_supervisor_on_boot(&fixture.state).await;
+    assert_eq!(
+        fixture
+            .repo
+            .terminal_get(&term.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .exit_code,
+        Some(-1)
+    );
+    assert_eq!(
+        fixture
+            .repo
+            .session_projection_by_id(&session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkerSessionState::Exited
+    );
+}
+
+#[tokio::test]
+async fn live_ephemeral_terminal_exit_still_completes_its_session() {
+    use calm_server::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
+    let fixture = TestFixture::boot_with_supervisor().await;
+    let mut term = fixture.seed_terminal().await;
+    term.program = "exit 23".into();
+    let session_id = fixture
+        .seed_session(&term, WorkerSessionKind::Terminal)
+        .await;
+    let entry = fixture.ensure_live_renderer(&term).await;
+    assert!(
+        entry
+            .wait_exit_persisted_for_test(Duration::from_secs(3))
+            .await
+    );
+    assert_eq!(
+        fixture
+            .repo
+            .terminal_get(&term.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .exit_code,
+        Some(23)
+    );
+    assert_eq!(
+        fixture
+            .repo
+            .session_projection_by_id(&session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        WorkerSessionState::Exited
+    );
+}
+
 struct TestFixture {
     _tmp: TempDir,
     repo: Arc<dyn Repo>,
@@ -144,6 +258,10 @@ impl TestFixture {
     }
 
     async fn seed_terminal(&self) -> Terminal {
+        self.seed_terminal_card("terminal").await
+    }
+
+    async fn seed_terminal_card(&self, card_kind: &str) -> Terminal {
         let area = self
             .repo
             .area_create(NewArea {
@@ -173,7 +291,7 @@ impl TestFixture {
             .card_create(NewCard {
                 track_id: track.id,
                 title: None,
-                kind: "terminal".into(),
+                kind: card_kind.into(),
                 sort: None,
                 payload: json!({}),
             })
@@ -189,6 +307,43 @@ impl TestFixture {
             })
             .await
             .expect("create terminal")
+    }
+
+    async fn seed_session(
+        &self,
+        term: &Terminal,
+        kind: calm_server::session_projection_repo::WorkerSessionKind,
+    ) -> String {
+        use calm_server::session_projection_repo::{
+            AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+        };
+        let id = calm_server::model::new_id();
+        let resumable = kind == WorkerSessionKind::CodexCard;
+        let pool = self.repo.sqlite_pool().unwrap();
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .unwrap();
+        calm_server::db::sqlite::session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: id.clone(),
+                card_id: term.card_id.to_string(),
+                kind,
+                agent_provider: resumable.then_some(AgentProvider::Codex),
+                status: WorkerSessionState::Running,
+                terminal_run_id: Some(term.id.clone()),
+                thread_id: resumable.then(|| "owned-thread".into()),
+                session_id: None,
+                active_turn_id: resumable.then(|| "owned-turn".into()),
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: calm_server::model::now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        id
     }
 
     async fn ensure_live_renderer(
@@ -211,7 +366,7 @@ impl TestFixture {
                 terminal_fg: (216, 219, 226),
                 terminal_bg: (15, 20, 24),
                 program: "/bin/sh".into(),
-                args: vec!["-c".into(), "echo ready; sleep 30".into()],
+                args: vec!["-c".into(), format!("echo ready; {}", term.program)],
                 envs: std::env::vars().collect(),
                 cwd: workspace_root().display().to_string(),
                 supervisor_sock,

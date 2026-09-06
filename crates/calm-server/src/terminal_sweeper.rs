@@ -72,6 +72,41 @@ use crate::state::AppState;
 use crate::terminal_renderer::{RendererDropOutcome, TerminalRendererRegistry};
 use calm_session::control::ProcSignal;
 
+/// A PTY exit ends an ephemeral session. For a resumable session it is only
+/// viewer/liveness evidence: the existing provider death arbiter and explicit
+/// business/session completion retain authority over the durable session.
+/// Keep this check atomic with the current terminal/session lookup; a late exit
+/// must not complete a replacement. Explicit truth completion APIs are unchanged.
+pub(crate) async fn complete_ephemeral_session_from_terminal_exit(
+    repo: &dyn crate::db::RouteRepo,
+    terminal_id: &str,
+    terminal_status: crate::session_projection_repo::WorkerSessionState,
+) -> Result<()> {
+    use crate::db::sqlite::{
+        session_complete_tx, session_get_tx, session_projection_active_for_terminal_tx,
+    };
+    use calm_types::worker::{SessionMode, WorkerSessionId};
+    let terminal_id = terminal_id.to_owned();
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let Some(active) = session_projection_active_for_terminal_tx(tx, &terminal_id).await?
+            else {
+                return Ok(());
+            };
+            let session = session_get_tx(tx, &WorkerSessionId(active.id.clone()))
+                .await?
+                .ok_or_else(|| {
+                    crate::error::CalmError::NotFound(format!("worker session {}", active.id))
+                })?;
+            if session.mode == SessionMode::Ephemeral {
+                session_complete_tx(tx, &active.id, terminal_status).await?;
+            }
+            Ok(())
+        })
+    })
+    .await
+}
+
 /// Actor stamped on every event the sweeper produces. Distinct from
 /// [`ActorId::User`] (REST) and [`ActorId::Plugin`]; matches the convention
 /// used by `card_fsm` for kernel-internal projectors. PR2 of #136 typed

@@ -1360,9 +1360,8 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
     assert_eq!(card.payload["codex_thread_id"], "fake-thread-0001");
     assert_eq!(card.payload["appserver_sock"], boot.shared.remote_uri());
     assert!(card.payload.get("appserver_pgid").is_none());
-    // Use projectable (broadened to include terminal-status rows) so the
-    // assertion is robust to CI-only timing where the codex TUI fixture
-    // exits quickly → attach_reader marks runtime Exited before this read.
+    // Inspect the session projection used by the card payload. The viewer's
+    // own exit is independent of the resumable business session.
     let runtime = boot
         .repo
         .session_projection_projectable_for_card(&card.id.to_string())
@@ -1593,9 +1592,38 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
     unsafe {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
+    // The business provider is the explicit fake app-server binary. Pin the
+    // independently launched `codex resume` viewer to an owned exiting script,
+    // so this test never invokes a host Codex CLI through PATH.
+    use std::os::unix::fs::PermissionsExt;
+    let viewer_bin = capture.path().join("viewer-bin");
+    std::fs::create_dir(&viewer_bin).unwrap();
+    let viewer = viewer_bin.join("codex");
+    std::fs::write(&viewer, "#!/bin/sh\nexit 23\n").unwrap();
+    std::fs::set_permissions(&viewer, std::fs::Permissions::from_mode(0o755)).unwrap();
+    struct RestorePath(Option<std::ffi::OsString>);
+    impl Drop for RestorePath {
+        fn drop(&mut self) {
+            unsafe {
+                match self.0.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+    }
+    let saved_path = std::env::var_os("PATH");
+    let _restore_path = RestorePath(saved_path.clone());
+    let mut paths = vec![viewer_bin];
+    if let Some(path) = saved_path {
+        paths.extend(std::env::split_paths(&path));
+    }
+    unsafe {
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+    }
     let boot = boot(true).await;
-    // The real optional-viewer route has no supervisor endpoint in this fixture.
-    // Its failure follows a successfully acknowledged shared business turn.
+    // Fixtures resolve None to an actual in-process supervisor. Its viewer
+    // exits after the separate shared daemon acknowledged the business turn.
     assert!(boot.daemon.proc_supervisor_sock.is_none());
     let _dispatcher = spawn_dispatcher(&boot);
     let key = "pty-fail-1";
@@ -1612,6 +1640,27 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
     let output: TxOutput = serde_json::from_str(&record).unwrap();
     let card_id = output.data["card_id"].as_str().unwrap().to_owned();
     let terminal_id = output.data["terminal_id"].as_str().unwrap().to_owned();
+    let entry = wait_for(Duration::from_secs(3), || async {
+        boot.renderer.get(&terminal_id)
+    })
+    .await
+    .expect("real viewer renderer");
+    assert!(
+        entry
+            .wait_exit_persisted_for_test(Duration::from_secs(3))
+            .await,
+        "must observe the complete real PTY exit callback before checking business state"
+    );
+    assert_eq!(
+        boot.repo
+            .terminal_get(&terminal_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .exit_code,
+        Some(23)
+    );
+
     let card = boot.repo.card_get(&card_id).await.unwrap().unwrap();
     assert_eq!(card.payload["idempotency_key"], attempt_id);
     let task = wait_for(Duration::from_secs(3), || async {
