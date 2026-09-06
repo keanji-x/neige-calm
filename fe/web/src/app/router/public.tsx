@@ -39,6 +39,7 @@ import {
 } from '../../features/chat/thread/public.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
+import { useIndependentTaskLaunch } from './independent-task.tsx';
 import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { ReportFileViewer } from '../../features/report/file-viewer/public.tsx';
@@ -2957,8 +2958,11 @@ function TrackRouteBody({
     go({ name: 'track', trackId: track.id, blockId, from: routeFrom });
   };
 
+  const independentTask = useIndependentTaskLaunch({ trackId: track.id, cards, lifecycle: track.lifecycle, transport, unauthorized, onCreated: openReportAnchor });
+
   return (
     <>
+    {independentTask.form}
     <TrackStage>
     <TrackPage
       track={track}
@@ -2972,6 +2976,7 @@ function TrackRouteBody({
          it too, so the reader can hand the destination to somebody else. */
       onOpenTask={openReportAnchor}
       onOpenOutline={openReportAnchor}
+      onCreateTask={independentTask.open}
       cardsAction={<AddCardMenu entries={addMenuEntries} onSelect={pickCardKind} />}
       recentFiles={<RecentFiles
         paths={recentFilePaths}

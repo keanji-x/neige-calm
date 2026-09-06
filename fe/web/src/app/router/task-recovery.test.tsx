@@ -80,6 +80,9 @@ function setup(mode: 'success' | 'lost' | 'conflict' | 'blocked' | 'awaiting' | 
       if ((mode === 'lost' || mode === 'lost-ahead') && writes === 1) throw new Error('response lost after commit');
       return ok({ key: taskKey, previous_attempt_id: old.attempt_id, attempt_id: next.attempt_id, generation: 2 });
     }
+    if (/\/attempts\/[^/]+\/report$/.test(request.path)) return ok({
+      attemptId: decodeURIComponent(request.path.split('/').at(-2)!), report: null,
+    });
     if (request.path === '/api/settings') return ok({});
     return ok([]);
     });

@@ -154,6 +154,8 @@
     font-size: var(--text-base);
   }
 
+  .result { white-space: pre-wrap; overflow-wrap: anywhere; }
+
   .current { color: var(--text); }
 
   .detail { overflow-wrap: anywhere; }

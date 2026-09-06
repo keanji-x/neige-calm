@@ -4,6 +4,7 @@ import { attemptStatusLabel, type TaskAttempt, type TaskRecoveryView } from '../
 import styles from './task.module.css';
 
 export type TaskRecoveryProps = Readonly<{
+  renderReport?: (attemptId: string) => ReactNode;
   view: TaskRecoveryView | undefined;
   current: CurrentTaskExecution | undefined;
   loading: boolean;
@@ -20,7 +21,7 @@ export type TaskRecoveryProps = Readonly<{
 
 /** Rendering only: capability and request ownership belong to app/core. */
 export function TaskRecoveryDetails({ view, current, loading, loadError, busy, error, accepted, retryUncertain,
-  onRefresh, onRecover, openWorker, openableWorkerIds }: TaskRecoveryProps) {
+  onRefresh, onRecover, openWorker, openableWorkerIds, renderReport }: TaskRecoveryProps) {
   return <section className={styles.recovery} aria-label="Task execution">
     {loading && view === undefined && <p role="status">Loading execution history…</p>}
     {loadError !== null && <p role="alert">Could not refresh execution history: {loadError}</p>}
@@ -40,6 +41,7 @@ export function TaskRecoveryDetails({ view, current, loading, loadError, busy, e
         onClick={onRecover}>{retryUncertain ? 'Retry recovery request' : 'Recover task'}</button>}
       {!loading && <button type="button" className={styles.action} onClick={onRefresh}>Refresh execution history</button>}
     </div>
+    {current?.attemptId !== undefined && current.attemptId !== null && renderReport?.(current.attemptId)}
     {view !== undefined && <details className={styles.history}>
       <summary>Attempt history ({view.attempts.length})</summary>
       <ol className={styles.attempts}>
@@ -48,6 +50,7 @@ export function TaskRecoveryDetails({ view, current, loading, loadError, busy, e
             <summary>Attempt {attempt.generation} · {attemptStatusLabel(attempt.status)}
               {attempt.attempt_id === current?.attemptId ? ' · Current' : ''}</summary>
             <AttemptEvidence attempt={attempt}>
+              {attempt.attempt_id !== current?.attemptId && renderReport?.(attempt.attempt_id)}
               {attempt.worker_card_id !== null && openWorker !== undefined
                 && openableWorkerIds.has(attempt.worker_card_id)
                 && <button type="button" className={styles.action} onClick={() => { openWorker(attempt.worker_card_id!); }}>
