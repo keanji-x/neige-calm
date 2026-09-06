@@ -100,11 +100,12 @@ pub struct TaskRecoveryCapability {
     pub reason: String,
 }
 
+/// Execution history. `current` is null only when the live declaration has never
+/// received an allocation.
 #[derive(Debug, Clone, Serialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TaskRecoveryView {
     pub key: String,
-    /// Null only when the live declaration has never received an allocation.
     #[schema(required = true)]
     pub current: Option<TaskAttemptView>,
     pub attempts: Vec<TaskAttemptView>,

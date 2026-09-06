@@ -2754,9 +2754,13 @@ export interface components {
             idempotency_key: string;
             reason: string;
         };
+        /**
+         * @description Execution history. `current` is null only when the live declaration has never
+         *     received an allocation.
+         */
         TaskRecoveryView: {
             attempts: components["schemas"]["TaskAttemptView"][];
-            current: components["schemas"]["TaskAttemptView"];
+            current: null | components["schemas"]["TaskAttemptView"];
             key: string;
             recovery: components["schemas"]["TaskRecoveryCapability"];
         };

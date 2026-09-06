@@ -7907,6 +7907,7 @@
       },
       "TaskRecoveryView": {
         "type": "object",
+        "description": "Execution history. `current` is null only when the live declaration has never\nreceived an allocation.",
         "required": [
           "key",
           "current",
@@ -7921,7 +7922,14 @@
             }
           },
           "current": {
-            "$ref": "#/components/schemas/TaskAttemptView"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TaskAttemptView"
+              }
+            ]
           },
           "key": {
             "type": "string"

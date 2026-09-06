@@ -403,7 +403,11 @@ export type TaskRecoveryReceipt = { key: string, previous_attempt_id: string, at
 
 export type TaskRecoveryRequest = { expected_attempt_id: string, idempotency_key: string, reason: string, };
 
-export type TaskRecoveryView = { key: string, current: TaskAttemptView, attempts: Array<TaskAttemptView>, recovery: TaskRecoveryCapability, };
+/**
+ * Execution history. `current` is null only when the live declaration has never
+ * received an allocation.
+ */
+export type TaskRecoveryView = { key: string, current: TaskAttemptView | null, attempts: Array<TaskAttemptView>, recovery: TaskRecoveryCapability, };
 
 export type Track = { id: TrackId, area_id: AreaId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: TrackLifecycle, 
 /**
