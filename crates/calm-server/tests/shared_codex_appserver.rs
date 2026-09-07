@@ -844,6 +844,41 @@ async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
     panic!("timed out waiting for captured fake app-server requests");
 }
 
+/// #1444 R2 — how many `thread/resume` RPCs the capture holds for one thread.
+fn resume_count(rows: &[Value], thread_id: &str) -> usize {
+    rows.iter()
+        .filter(|row| {
+            row.get("method").and_then(Value::as_str) == Some("thread/resume")
+                && row.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id)
+        })
+        .count()
+}
+
+/// #1444 R2 — wait for a fixture sidecar file and return its contents.
+async fn wait_for_file(path: &Path) -> String {
+    for _ in 0..500 {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            return text;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("timed out waiting for {}", path.display());
+}
+
+/// #1444 R2 — is there still an active shared-Codex session row owning this
+/// Card? `None` is exactly the condition the cold-respawn resume treats as
+/// "no database owner" and answers with a plain, config-less resume.
+async fn session_projection_active_for_card(repo: &SqlxRepo, card_id: &str) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT id FROM worker_sessions \
+         WHERE card_id = ?1 AND state IN ('starting','running','idle','turn_pending')",
+    )
+    .bind(card_id)
+    .fetch_optional(repo.pool())
+    .await
+    .unwrap()
+}
+
 async fn card_mcp_hash(repo: &SqlxRepo, card_id: &str) -> Option<String> {
     sqlx::query_scalar("SELECT hashed_token FROM card_mcp_tokens WHERE card_id = ?1")
         .bind(card_id)
@@ -1662,6 +1697,162 @@ async fn cold_respawn_plain_resumes_stale_cache_entry_without_rotating_active_to
     assert_eq!(
         session_mcp_hash(&repo, &runtime_id).await.as_deref(),
         Some(respawn_hash.as_str())
+    );
+}
+
+/// #1444 R2 — the resume loop takes a SNAPSHOT of the candidate list. A
+/// Track/Area delete that commits (and runs its cache cleanup) while that
+/// loop is parked mid-iteration must still not produce a `thread/resume`
+/// for the deleted Card's thread.
+///
+/// The race is held open on the REAL primitive: the fixture app-server
+/// parks the first `thread/resume` of the respawn and answers it only once
+/// the test releases it, so the kernel's loop is genuinely suspended
+/// *inside* one iteration with the victim still in its snapshot — asserted
+/// below, not assumed. `<sock>.held-resume` appearing is that proof.
+///
+/// The replay is driven through `transition_replace` — the crash-restart /
+/// self-heal shape — deliberately: `ensure_respawn_for_current_settings` and
+/// `thread_start_mint_*` hold `kernel_thread_start_serial` across the respawn
+/// they trigger, which already excludes the cleanup for that path's whole
+/// duration. `transition_replace` holds no such guard, so it is the path where
+/// a delete's cleanup can genuinely complete mid-replay.
+#[tokio::test]
+async fn cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop() {
+    let _guard = ENV_LOCK.lock().await;
+
+    let root = tempfile::tempdir().unwrap();
+    let capture = root.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture);
+    }
+    let _env = EnvGuard("FAKE_CODEX_CAPTURE_REQUESTS");
+
+    let repo = repo().await;
+    let mut cards = Vec::new();
+    for (i, thread_id) in ["thread-one", "thread-two"].into_iter().enumerate() {
+        let card_id = seed_card(&repo, i).await;
+        seed_runtime_thread_with_kind(&repo, &card_id, thread_id, WorkerSessionKind::SharedPlanner)
+            .await;
+        cards.push((thread_id.to_string(), card_id));
+    }
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let rows = wait_for_requests(&capture, 3).await;
+    assert_eq!(
+        resume_count(&rows, "thread-one") + resume_count(&rows, "thread-two"),
+        2,
+        "premise: the first connect resumes both cached threads"
+    );
+
+    // Arm the one-shot park, then drive the cold respawn.
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::write(sock.with_extension("hold-first-resume"), "1").unwrap();
+    let respawn = tokio::spawn({
+        let daemon = daemon.clone();
+        async move {
+            daemon
+                .transition_replace_for_test("crash restart", ReplacePrecondition::Always)
+                .await
+        }
+    });
+
+    // The loop is now parked INSIDE an iteration, on the fixture's unanswered
+    // `thread/resume`. Whichever thread it parked on, the OTHER one is the
+    // victim — still unresumed, and still in the snapshot the loop will walk.
+    let parked = wait_for_file(&sock.with_extension("held-resume")).await;
+    let (victim_thread, victim_card) = cards
+        .iter()
+        .find(|(thread_id, _)| *thread_id != parked)
+        .cloned()
+        .expect("the parked resume must be one of the two seeded threads");
+    assert!(
+        daemon
+            .resume_candidates_for_test()
+            .contains(&(victim_thread.clone(), victim_card.clone())),
+        "race premise: the parked loop still holds the victim in its snapshot"
+    );
+    let before = wait_for_requests(&capture, 0).await;
+    let victim_resumes_before = resume_count(&before, &victim_thread);
+    assert_eq!(
+        victim_resumes_before, 1,
+        "race premise: the victim has NOT been resumed by this respawn yet \
+         (only the pre-delete connect resumed it)"
+    );
+
+    // The Track/Area delete COMMITS, then its cache cleanup runs — both while
+    // the replay is parked. The cleanup is spawned because a correct kernel
+    // makes it wait on the very boundary this test is about.
+    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
+        .bind(&victim_card)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM cards WHERE id = ?1")
+        .bind(&victim_card)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    assert!(
+        session_projection_active_for_card(&repo, &victim_card)
+            .await
+            .is_none(),
+        "the deleted Card must have no database owner left — this is the \
+         cold-respawn branch that resumes WITHOUT MCP configuration"
+    );
+    let cleanup = tokio::spawn({
+        let daemon = daemon.clone();
+        let victim_card = victim_card.clone();
+        async move {
+            daemon
+                .forget_threads_for_deleted_cards(&std::collections::HashSet::from([victim_card]))
+                .await
+        }
+    });
+    // Either the cleanup lands while the replay is parked (nothing fences it),
+    // or it queues behind the parked iteration (the fence). Which one happened
+    // is reported, because it changes what the release below proves — but the
+    // final assertion is decisive in both.
+    let mut cleanup_landed_while_parked = false;
+    for _ in 0..25 {
+        if daemon.cached_card_for_thread(&victim_thread).is_none() {
+            cleanup_landed_while_parked = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    eprintln!(
+        "#1444 R2: cleanup landed while the replay was parked: \
+         {cleanup_landed_while_parked}"
+    );
+
+    std::fs::write(sock.with_extension("release-resume"), "1").unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(30), cleanup)
+            .await
+            .expect("the delete's cache cleanup must not be blocked forever")
+            .unwrap(),
+        1,
+        "the cleanup must drop exactly the victim's mapping"
+    );
+    tokio::time::timeout(Duration::from_secs(30), respawn)
+        .await
+        .expect("the parked respawn must finish once the resume is answered")
+        .unwrap()
+        .unwrap();
+
+    let rows = wait_for_requests(&capture, 0).await;
+    assert_eq!(
+        resume_count(&rows, &victim_thread),
+        victim_resumes_before,
+        "a candidate whose Card's delete has committed must not be resumed \
+         from the pre-delete snapshot; requests: {rows:#?}"
+    );
+    assert_eq!(
+        resume_count(&rows, &parked),
+        2,
+        "the surviving thread must still be resumed by the respawn"
     );
 }
 

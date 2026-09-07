@@ -658,6 +658,27 @@ pub struct SharedCodexAppServer {
     /// forgot; see [`ForgottenThreads`].
     forgotten_threads: Arc<Mutex<ForgottenThreads>>,
     kernel_thread_start_serial: Arc<Mutex<()>>,
+    /// #1444 R2 — the boundary that fences the resume replay against a
+    /// committed delete's cache cleanup. `resume_cached_threads` holds it
+    /// across each candidate's re-validation AND its resume RPC;
+    /// [`SharedCodexAppServer::forget_threads_for_deleted_cards`] takes it
+    /// too, so a mapping it drops cannot afterwards be resumed from the
+    /// snapshot the replay copied before the delete.
+    ///
+    /// Why not `kernel_thread_start_serial`, which the cleanup already takes:
+    /// `ensure_respawn_for_current_settings` and `thread_start_mint_*` hold
+    /// THAT guard across the respawn they trigger, and the respawn's resume
+    /// loop runs inside it — re-acquiring it per candidate self-deadlocks
+    /// (tokio mutexes are not reentrant). The proof is executed, not
+    /// asserted: that shape hung
+    /// `cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop`.
+    ///
+    /// Lock order is `kernel_thread_start_serial` → `resume_replay_serial`,
+    /// and never the reverse: the cleanup takes them in that order, and the
+    /// replay takes only this one (its caller may already hold the start
+    /// serial). Nothing acquired inside a replay iteration needs the start
+    /// serial, so the cleanup's wait is bounded by one resume RPC.
+    resume_replay_serial: Arc<Mutex<()>>,
     codex_bin: String,
     log_dir: PathBuf,
     restart_count: std::sync::atomic::AtomicU64,
@@ -980,6 +1001,7 @@ impl SharedCodexAppServer {
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
             forgotten_threads: Arc::new(Mutex::new(ForgottenThreads::default())),
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
+            resume_replay_serial: Arc::new(Mutex::new(())),
             codex_bin: "codex".into(),
             log_dir: root.join("logs/shared-codex-appserver"),
             restart_count: std::sync::atomic::AtomicU64::new(0),
@@ -1041,6 +1063,7 @@ impl SharedCodexAppServer {
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
             forgotten_threads: Arc::new(Mutex::new(ForgottenThreads::default())),
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
+            resume_replay_serial: Arc::new(Mutex::new(())),
             codex_bin: cfg.codex_bin.clone(),
             log_dir: cfg.shared_codex_appserver_log_dir_resolved(),
             restart_count: std::sync::atomic::AtomicU64::new(0),
@@ -1539,6 +1562,11 @@ impl SharedCodexAppServer {
     /// here), or it runs after and finds no database owner to resolve, so it
     /// inserts nothing.
     ///
+    /// It also takes `resume_replay_serial`, which `resume_cached_threads`
+    /// holds across each candidate's re-validation and resume RPC, so a
+    /// candidate this call removes cannot afterwards issue a resume — the
+    /// in-flight snapshot the replay copied is not what decides.
+    ///
     /// **Only after the commit.** Callers invoke this on the committed path
     /// only. A failed transaction, or the workspace-compensation path, leaves
     /// the mappings alone — the Cards still exist.
@@ -1552,6 +1580,11 @@ impl SharedCodexAppServer {
             return 0;
         }
         let _start_guard = self.kernel_thread_start_serial.lock().await;
+        // #1444 R2 — and the replay boundary, in this order (see
+        // `resume_replay_serial`). An in-flight `resume_cached_threads` may
+        // hold a pre-delete snapshot; taking this makes the removal below
+        // strictly ordered against every remaining candidate's resume RPC.
+        let _replay_guard = self.resume_replay_serial.lock().await;
         let mut dropped: Vec<(String, String)> = Vec::new();
         self.thread_cache.retain(|thread_id, card_id| {
             if card_ids.contains(card_id) {
@@ -1578,8 +1611,13 @@ impl SharedCodexAppServer {
         dropped.len()
     }
 
-    /// The exact `(thread_id, card_id)` pairs `resume_cached_threads` will
-    /// iterate on the next daemon (re)connect.
+    /// The `(thread_id, card_id)` pairs `resume_cached_threads` will iterate
+    /// on the next daemon (re)connect. It is a snapshot, so it is what the
+    /// loop CONSIDERS, not what it necessarily resumes: since #1444 R2 each
+    /// pair is re-validated against the live cache, under
+    /// `resume_replay_serial`, immediately before its resume RPC, and a
+    /// pair dropped by `forget_threads_for_deleted_cards` in the meantime is
+    /// skipped.
     fn resume_candidates(&self) -> Vec<(String, String)> {
         self.thread_cache
             .iter()
@@ -3654,6 +3692,36 @@ impl SharedCodexAppServer {
             return;
         };
         for (thread_id, card_id) in self.resume_candidates() {
+            // #1444 R2 — the candidate list above is a SNAPSHOT. A Track/Area
+            // delete can commit, and `forget_threads_for_deleted_cards` can
+            // drop the victim's mapping, while this loop is parked awaiting an
+            // earlier candidate's resume RPC. Removing the mapping cannot
+            // invalidate a vector already copied, so every candidate is
+            // re-validated against the live cache HERE, under
+            // `resume_replay_serial` — the boundary the cleanup takes too (see
+            // that field for why it is not `kernel_thread_start_serial`).
+            //
+            // The guard is held across the whole iteration, RPC included, not
+            // just across the read: a check-then-act that released it first
+            // would leave exactly the window this fixes, one iteration
+            // narrower. Cost: a delete's cleanup waits for at most ONE
+            // in-flight resume (tokio's mutex is fair, so the queued cleanup
+            // wins the guard before this loop's next iteration takes it), and
+            // an RPC is bounded by the client's request timeout. Ordering is
+            // then linearizable in both outcomes: a resume that beat the
+            // cleanup was issued while the Card still had a mapping; every
+            // candidate after it observes the removal and is skipped.
+            let _replay_guard = self.resume_replay_serial.lock().await;
+            if self.cached_card_for_thread(&thread_id).as_deref() != Some(card_id.as_str()) {
+                tracing::info!(
+                    target = "shared_codex_daemon::resume",
+                    %thread_id,
+                    %card_id,
+                    "skipping shared codex thread whose attribution was dropped \
+                     while the resume replay was in flight"
+                );
+                continue;
+            }
             tracing::info!(
                 target = "shared_codex_daemon::resume",
                 %thread_id,
@@ -3757,8 +3825,12 @@ impl SharedCodexAppServer {
             .await
     }
 
-    /// #1444 — what a reconnect would resume, read through the same accessor
-    /// `resume_cached_threads` uses, sorted for a stable assertion.
+    /// #1444 — what a reconnect would CONSIDER resuming, read through the
+    /// same accessor `resume_cached_threads` uses, sorted for a stable
+    /// assertion. Post-#1444-R2 the loop re-validates each pair before its
+    /// RPC, so a fresh read here cannot by itself answer what an in-flight
+    /// replay will do — see
+    /// `cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop`.
     #[cfg(feature = "fixtures")]
     pub fn resume_candidates_for_test(&self) -> Vec<(String, String)> {
         let mut candidates = self.resume_candidates();

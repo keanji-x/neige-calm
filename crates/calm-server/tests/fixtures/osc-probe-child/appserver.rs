@@ -287,6 +287,26 @@ impl ReadFixtures {
         }
     }
 
+    /// #1444 — park the FIRST `thread/resume` this fixture sees (one-shot,
+    /// armed by creating `<sock>.hold-first-resume`) so a test can hold the
+    /// kernel's resume loop *inside* one iteration, on the real RPC await,
+    /// instead of sleeping and hoping. The parked request's `threadId` is
+    /// written to `<sock>.held-resume` (that file appearing IS the proof the
+    /// loop is parked mid-replay); the answer is sent only once
+    /// `<sock>.release-resume` exists. Socket-keyed like `record_method`, so
+    /// it needs no process-global env and cannot bleed between tests.
+    async fn park_first_resume(&self, thread_id: &str) {
+        let arm = self.sock.with_extension("hold-first-resume");
+        if std::fs::remove_file(&arm).is_err() {
+            return;
+        }
+        let _ = std::fs::write(self.sock.with_extension("held-resume"), thread_id);
+        let release = self.sock.with_extension("release-resume");
+        while !release.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     /// The page a `model/list` with this cursor should be answered with.
     /// `None` (no cursor) is the first page.
     fn model_list_page(&self, cursor: Option<&str>) -> PathBuf {
@@ -369,6 +389,13 @@ async fn serve_conn(
                 .await?;
             }
             "thread/start" | "thread/resume" => {
+                if method == "thread/resume" {
+                    let requested = req
+                        .pointer("/params/threadId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    reads.park_first_resume(requested).await;
+                }
                 send_result(
                     &mut write,
                     &id,
