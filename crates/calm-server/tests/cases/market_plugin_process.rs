@@ -397,8 +397,40 @@ fn setting_a_holding_prices_it_now_and_publishes_to_the_callers_track() {
     assert_eq!(total, Some(10.0), "4 BTC at 2.5 is 10");
     assert_eq!(
         kernel.kv.get("holdings/trk_caller"),
-        Some(&json!([{ "asset": "BTC", "quantity": 4.0 }])),
-        "the holding is stored under the caller's Track"
+        Some(&json!([{ "asset": "CRYPTO:BTC", "quantity": 4.0 }])),
+        "the holding is stored under the caller's Track, spelled as the \
+         canonical identity a bare crypto name normalises to"
+    );
+}
+
+/// A holding stored before venues existed and a write that names the same
+/// asset with its venue are ONE holding, and the write leaves ONE row.
+///
+/// Driven through the real binary and the real KV because the collapse
+/// happens across the whole `set` path — load (which normalises), `retain`,
+/// then a whole-array overwrite. Without read-side normalisation the retain
+/// compares `CRYPTO:BTC` against the legacy `BTC`, keeps it, and the KV ends
+/// up with two rows summing to 160 that the tables would price as one
+/// position of 160 BTC.
+///
+/// It also pins the migration's shape: nothing scans the KV, so the legacy
+/// spelling survives until this Track's first write and is rewritten by it.
+#[test]
+fn a_legacy_bare_holding_is_replaced_not_doubled_by_a_qualified_write() {
+    let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
+    // Seeded directly, as a pre-venues install would have left it. The plugin
+    // has never seen this Track and runs no migration over it.
+    kernel.kv.insert(
+        "holdings/trk_caller".to_string(),
+        json!([{ "asset": "BTC", "quantity": 100.0 }]),
+    );
+
+    kernel.set_holding(2, "crypto:BTC", 60.0, TRACK);
+
+    assert_eq!(
+        kernel.kv.get("holdings/trk_caller"),
+        Some(&json!([{ "asset": "CRYPTO:BTC", "quantity": 60.0 }])),
+        "one row at the written quantity — two rows here would be 160 BTC"
     );
 }
 
@@ -434,11 +466,11 @@ fn holdings_are_per_track() {
 
     assert_eq!(
         kernel.kv.get("holdings/trk_caller"),
-        Some(&json!([{ "asset": "BTC", "quantity": 1.0 }]))
+        Some(&json!([{ "asset": "CRYPTO:BTC", "quantity": 1.0 }]))
     );
     assert_eq!(
         kernel.kv.get("holdings/trk_someone_else"),
-        Some(&json!([{ "asset": "BTC", "quantity": 5.0 }])),
+        Some(&json!([{ "asset": "CRYPTO:BTC", "quantity": 5.0 }])),
         "the second call must not overwrite the first Track's portfolio"
     );
     // Priced against its own holdings, not against a shared document. Read

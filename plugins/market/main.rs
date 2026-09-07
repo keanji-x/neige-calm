@@ -142,22 +142,152 @@ impl Rpc {
 }
 
 // ---------------------------------------------------------------------------
+// Asset identity
+// ---------------------------------------------------------------------------
+
+/// Where an asset trades. A name alone does not identify a security: `W` is
+/// Wayfair on the NYSE and Wormhole on a crypto exchange, and a plugin that
+/// guesses between them prices one as the other by a factor of thousands.
+///
+/// There is deliberately no rule that infers a venue from the SHAPE of a name
+/// — no "six digits means Shanghai", no "four digits means Hong Kong". Every
+/// such rule has counterexamples on real tickers, and a wrong guess here is a
+/// silently wrong number in a total, not a visible failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Venue {
+    Crypto,
+    Us,
+    Hk,
+    Cn,
+}
+
+impl Venue {
+    /// The prefix a caller writes, and the one a canonical identity carries.
+    fn prefix(self) -> &'static str {
+        match self {
+            Venue::Crypto => "CRYPTO",
+            Venue::Us => "US",
+            Venue::Hk => "HK",
+            Venue::Cn => "CN",
+        }
+    }
+
+    fn from_prefix(prefix: &str) -> Option<Self> {
+        match prefix {
+            "CRYPTO" => Some(Venue::Crypto),
+            "US" => Some(Venue::Us),
+            "HK" => Some(Venue::Hk),
+            "CN" => Some(Venue::Cn),
+            _ => None,
+        }
+    }
+}
+
+/// A venue plus the symbol that venue itself uses (`NVDA`, `1810`, `600519`).
+///
+/// The canonical spelling is `<VENUE>:<SYMBOL>`, upper-case, and it is what
+/// gets stored, compared and cached. Everything downstream of
+/// [`parse_asset`] lives in that one space: `holdings.retain`, the price
+/// cache key and the priced rows all compare identities, never raw input.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct AssetId {
+    venue: Venue,
+    /// The symbol AS THE VENUE SPELLS IT — never prefixed. This is what a
+    /// provider URL is built from; the canonical string is what a reader and
+    /// the KV see.
+    symbol: String,
+}
+
+impl AssetId {
+    fn canonical(&self) -> String {
+        format!("{}:{}", self.venue.prefix(), self.symbol)
+    }
+}
+
+/// What a caller is told when [`parse_asset`] refuses. One string, shared by
+/// both tools, so the two cannot describe two different grammars.
+const ASSET_SYNTAX_ERROR: &str = "`asset` must be a name like \"BTC\", or a \
+    venue-qualified one like \"US:NVDA\", \"HK:1810\" or \"CN:600519\". A name \
+    with no venue is a crypto asset.";
+
+/// The one place an asset name becomes an identity.
+///
+/// All three entry points call THIS — `Holding::from_json` (which is both the
+/// KV read path and the write-back path), `market.holdings.set`'s argument
+/// check, and `market.quote`'s argument check. They used to carry three
+/// different rules (the third checked only for emptiness), and a second copy
+/// of this grammar written next to any of them would drift from it.
+///
+/// The grammar, whole:
+///
+/// - Upper-cased and trimmed first, so `crypto:btc` and `CRYPTO:BTC` are one
+///   identity. The canonical form is upper-case because that is what the
+///   entry points already stored.
+/// - `<VENUE>:<SYMBOL>` with a KNOWN venue prefix, symbol `[A-Z0-9]+`.
+///   An unknown prefix is rejected outright rather than treated as a bare
+///   name: `FOO:BAR` is a typo, and pricing it as crypto `FOO:BAR` — or
+///   worse, as something else — is how a wrong number gets published.
+/// - A name with NO `:` is crypto. **This is frozen and not configurable.**
+///   Every holding stored before venues existed is a bare name, and a
+///   configuration knob that reinterpreted them would silently reprice an
+///   existing portfolio when an operator flipped it.
+/// - Because the split is on `:` and nothing else, `USNVDA`, `HK1810` and
+///   `CRYPTOBTC` stay bare crypto names. A prefix is only a prefix when the
+///   colon is there.
+fn parse_asset(raw: &str) -> Option<AssetId> {
+    let raw = raw.trim().to_ascii_uppercase();
+    let (venue, symbol) = match raw.split_once(':') {
+        Some((prefix, symbol)) => (Venue::from_prefix(prefix)?, symbol),
+        None => (Venue::Crypto, raw.as_str()),
+    };
+    if symbol.is_empty() || !symbol.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(AssetId {
+        venue,
+        symbol: symbol.to_string(),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
 struct Holding {
-    asset: String,
+    /// The canonical identity, parsed. Stored parsed rather than as a string
+    /// so that no consumer re-splits it — a second copy of the venue rule
+    /// downstream is exactly what [`parse_asset`] exists to prevent.
+    asset: AssetId,
     quantity: f64,
 }
 
 impl Holding {
+    /// Parse one stored row, NORMALISING its asset to the canonical identity
+    /// on the way in.
+    ///
+    /// This is the read side, and normalising here is what keeps every
+    /// downstream comparison in one space: `holdings.retain`
+    /// (`market.holdings.set`), the per-pass price cache key and the priced
+    /// rows all see `CRYPTO:BTC` whether the KV said `BTC`, `btc` or
+    /// `CRYPTO:BTC`.
+    ///
+    /// **This is a write-triggered gradual migration, not the absence of
+    /// one.** There is no batch scan: a scan would have to read the whole
+    /// array and write it back, and `neige.kv.set` (`store_holdings`) is a
+    /// whole-array overwrite with no CAS — a scan racing a concurrent `set`
+    /// would silently drop the `set`. Instead each Track migrates on its own
+    /// first write: `market.holdings.set` does load (normalised here) →
+    /// `retain` → `store_holdings`, and that overwrite lands the canonical
+    /// spelling. So a Track that is never written again keeps its legacy
+    /// spelling in the KV indefinitely, and **the KV stays a mixed space for
+    /// as long as that is true**. Nothing reads the KV without coming
+    /// through here, so the mixture is invisible above this function — but it
+    /// is real, and anything that inspects the stored JSON directly must
+    /// expect both spellings.
     fn from_json(value: &Value) -> Option<Self> {
-        let asset = value.get("asset")?.as_str()?.trim().to_ascii_uppercase();
+        let asset = parse_asset(value.get("asset")?.as_str()?)?;
         let quantity = value.get("quantity")?.as_f64()?;
-        if asset.is_empty() || !asset.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return None;
-        }
         if !quantity.is_finite() || quantity <= 0.0 {
             return None;
         }
@@ -165,7 +295,7 @@ impl Holding {
     }
 
     fn to_json(&self) -> Value {
-        json!({ "asset": self.asset, "quantity": self.quantity })
+        json!({ "asset": self.asset.canonical(), "quantity": self.quantity })
     }
 }
 
@@ -264,11 +394,16 @@ fn load_holdings(rpc: &Rpc, track_id: &str) -> Result<Vec<Holding>, String> {
     Ok(holdings_from_value(result.get("value"), track_id))
 }
 
+/// The exact JSON `store_holdings` writes. Split out so what lands in the KV
+/// can be asserted on without a fake kernel.
+fn store_value(holdings: &[Holding]) -> Value {
+    Value::Array(holdings.iter().map(Holding::to_json).collect())
+}
+
 fn store_holdings(rpc: &Rpc, track_id: &str, holdings: &[Holding]) -> Result<(), String> {
-    let value: Vec<Value> = holdings.iter().map(Holding::to_json).collect();
     rpc.call(
         "neige.kv.set",
-        json!({ "key": holdings_key(track_id), "value": value }),
+        json!({ "key": holdings_key(track_id), "value": store_value(holdings) }),
     )?;
     Ok(())
 }
@@ -298,17 +433,26 @@ fn portfolios(rpc: &Rpc) -> Result<Vec<String>, String> {
 // Providers
 // ---------------------------------------------------------------------------
 //
-// A caller names an ASSET (`BTC`). Which venue answers, at which URL, in which
-// response shape, is this plugin's business and never the caller's. That is
-// the whole point of the indirection: the day this grows a second provider for
-// US equities, no agent, no report and no stored holding changes — a name that
-// used to resolve nowhere starts resolving.
+// A caller names an ASSET IDENTITY (`CRYPTO:BTC`, `US:NVDA`). At which URL and
+// in which response shape a venue answers is this plugin's business and never
+// the caller's — the day a US-equity provider lands, no agent, no report and
+// no stored holding changes: a name that used to resolve nowhere starts
+// resolving.
 //
-// Only one provider exists today, and the resolution rule is one line:
-// `<ASSET><QUOTE>` is a Binance spot symbol. Deliberately no namespace syntax
-// (`crypto:BTC`), no per-provider priority list, no configuration surface for
-// routing. There is nothing yet for such a scheme to disambiguate, and a
-// guess made now would be a guess we would have to keep.
+// What the caller DOES say is the venue, because a name alone does not
+// identify a security (see [`parse_asset`]). Still no per-provider priority
+// list and no configuration surface for routing: one identity has one venue,
+// and the venue is written down rather than guessed.
+//
+// Only one provider exists today. It serves the crypto venue, and its
+// resolution rule is one line: `<SYMBOL><QUOTE>` is a Binance spot symbol,
+// built from the venue-local symbol. Identities on the OTHER venues are not
+// sent to it — they answer `Unknown`, which renders as a null row a reader
+// can see. Routing them to Binance would be worse than useless: `US:BTC`
+// would come back with bitcoin's price attached to a US-listing identity,
+// and a fabricated number in a total is the failure this whole identity
+// layer exists to prevent. `Unknown` is also exactly the answer a later
+// provider turns into a price without anything else changing.
 
 /// What a provider answered, or why it could not.
 #[derive(Clone)]
@@ -325,11 +469,32 @@ enum Quote {
 
 /// Price one asset. `1.0` for the quote asset itself, which needs no venue and
 /// no network.
-fn quote_asset(cfg: &Config, asset: &str) -> Quote {
-    if asset == cfg.quote {
-        return Quote::Price(1.0);
+///
+/// The "is this the quote asset" test compares the CRYPTO venue-local symbol
+/// against `cfg.quote`, not the canonical identity: `cfg.quote` is a bare
+/// venue-local name (`USDT`) that no entry point parses or validates, so
+/// comparing it against `CRYPTO:USDT` would never match and a stablecoin
+/// holding would go to the venue and be looked up as `USDTUSDT`.
+///
+/// Only a crypto identity can match. A holding of `US:USDT` is a different
+/// asset that happens to share a symbol, and answering `1.0` for it would be
+/// a fabricated price.
+fn quote_asset(cfg: &Config, asset: &AssetId) -> Quote {
+    if let Some(price) = quote_asset_shortcut(cfg, asset) {
+        return Quote::Price(price);
     }
-    binance_spot(cfg, asset)
+    match asset.venue {
+        Venue::Crypto => binance_spot(cfg, asset),
+        // No source serves these venues yet. Saying so is the whole answer:
+        // `Unknown` is the one a provider added later turns into a price.
+        Venue::Us | Venue::Hk | Venue::Cn => Quote::Unknown,
+    }
+}
+
+/// The half of [`quote_asset`] that needs neither venue nor network, split out
+/// so it can be asserted on directly.
+fn quote_asset_shortcut(cfg: &Config, asset: &AssetId) -> Option<f64> {
+    (asset.venue == Venue::Crypto && asset.symbol == cfg.quote).then_some(1.0)
 }
 
 /// One asset is priced once per pass, however many Tracks hold it.
@@ -338,15 +503,23 @@ fn quote_asset(cfg: &Config, asset: &str) -> Quote {
 /// watching BTC would ask three times for the same number within the same
 /// second, and the pass would take three times as long to finish. The cache
 /// lives for exactly one pass so a later pass always re-reads the market.
-type PriceCache = HashMap<String, Quote>;
+type PriceCache = HashMap<AssetId, Quote>;
 
-fn quote_cached(cfg: &Config, asset: &str, cache: &mut PriceCache) -> Quote {
+fn quote_cached(cfg: &Config, asset: &AssetId, cache: &mut PriceCache) -> Quote {
     if let Some(hit) = cache.get(asset) {
         return hit.clone();
     }
     let quote = quote_asset(cfg, asset);
-    cache.insert(asset.to_string(), quote.clone());
+    cache.insert(asset.clone(), quote.clone());
     quote
+}
+
+/// The spot symbol Binance is asked about.
+///
+/// Built from the VENUE-LOCAL symbol, never from the canonical identity: a
+/// Binance spot symbol is `<ASSET><QUOTE>`, and `CRYPTO:BTCUSDT` is not one.
+fn binance_symbol(cfg: &Config, asset: &AssetId) -> String {
+    format!("{}{}", asset.symbol, cfg.quote)
 }
 
 /// Binance spot, via `/api/v3/ticker/price`.
@@ -354,8 +527,8 @@ fn quote_cached(cfg: &Config, asset: &str, cache: &mut PriceCache) -> Quote {
 /// The endpoint answers `200` with a `{"code":…,"msg":…}` body for an unknown
 /// symbol *and* for a geo-blocked caller, so the status code says nothing and
 /// the absence of `price` is the real check.
-fn binance_spot(cfg: &Config, asset: &str) -> Quote {
-    let symbol = format!("{asset}{}", cfg.quote);
+fn binance_spot(cfg: &Config, asset: &AssetId) -> Quote {
+    let symbol = binance_symbol(cfg, asset);
     let url = format!(
         "{}/api/v3/ticker/price?symbol={symbol}",
         cfg.binance_endpoint
@@ -421,13 +594,14 @@ fn price_holdings(
                 } else {
                     Err(format!(
                         "{} × {} is not a finite value",
-                        holding.asset, holding.quantity
+                        holding.asset.canonical(),
+                        holding.quantity
                     ))
                 }
             }
             Quote::Unknown => Err(format!(
                 "{} is not an asset any configured source knows",
-                holding.asset
+                holding.asset.canonical()
             )),
             Quote::Failed(why) => Err(why),
         };
@@ -435,7 +609,8 @@ fn price_holdings(
             Ok((price, value)) => {
                 total += value;
                 rows.push(json!({
-                    "asset": holding.asset,
+                    "asset": holding.asset.symbol,
+                    "venue": holding.asset.venue.prefix(),
                     "qty": round_to(holding.quantity, 8),
                     "price": round_to(price, 2),
                     "value": round_to(value, 2),
@@ -445,7 +620,8 @@ fn price_holdings(
                 complete = false;
                 eprintln!("market: {e}");
                 rows.push(json!({
-                    "asset": holding.asset,
+                    "asset": holding.asset.symbol,
+                    "venue": holding.asset.venue.prefix(),
                     "qty": round_to(holding.quantity, 8),
                     "price": Value::Null,
                     "value": Value::Null,
@@ -494,6 +670,7 @@ fn holdings_table(
     let mut rows = rows;
     rows.push(json!({
         "asset": "Total",
+        "venue": Value::Null,
         "qty": Value::Null,
         "price": Value::Null,
         "value": total.map(|total| round_to(total, 2)),
@@ -512,6 +689,10 @@ fn holdings_table(
     json!({
         "columns": [
             { "key": "asset", "label": "Asset" },
+            // The venue is its own column rather than a prefix glued onto the
+            // name: `W` on two venues is two different companies, and a
+            // reader has to be able to tell which row is which.
+            { "key": "venue", "label": "Venue" },
             { "key": "qty", "label": "Quantity", "align": "right" },
             { "key": "price", "label": format!("Price ({})", cfg.quote), "align": "right" },
             { "key": "value", "label": format!("Value ({})", cfg.quote), "align": "right" },
@@ -835,24 +1016,31 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
         .unwrap_or_else(|| json!({}));
 
     if name == "market.quote" {
-        let asset = args
+        let raw = args
             .get("asset")
             .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_uppercase();
-        if asset.is_empty() {
-            return tool_error("`asset` is required, e.g. \"BTC\".");
-        }
+            .unwrap_or_default();
+        // Same parse as the KV read path and as `market.holdings.set`. This
+        // entry point used to check only for emptiness, so
+        // `market.quote{asset:"1810.HK"}` went straight into a Binance symbol.
+        let Some(asset) = parse_asset(raw) else {
+            return tool_error(ASSET_SYNTAX_ERROR);
+        };
+        let canonical = asset.canonical();
         return match quote_asset(cfg, &asset) {
             Quote::Price(price) => text_result(
-                format!("{asset} = {price} {}", cfg.quote),
-                json!({ "asset": asset, "price": price, "quote": cfg.quote }),
+                format!("{canonical} = {price} {}", cfg.quote),
+                json!({
+                    "asset": asset.symbol,
+                    "venue": asset.venue.prefix(),
+                    "price": price,
+                    "quote": cfg.quote,
+                }),
             ),
             Quote::Unknown => tool_error(format!(
-                "`{asset}` is not an asset any configured source knows."
+                "`{canonical}` is not an asset any configured source knows."
             )),
-            Quote::Failed(why) => tool_error(format!("Could not price {asset} — {why}.")),
+            Quote::Failed(why) => tool_error(format!("Could not price {canonical} — {why}.")),
         };
     }
 
@@ -864,16 +1052,16 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
 
     match name {
         "market.holdings.set" => {
-            let asset = args
+            let raw = args
                 .get("asset")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_uppercase();
+                .unwrap_or_default();
             let quantity = args.get("quantity").and_then(Value::as_f64);
-            if asset.is_empty() || !asset.chars().all(|c| c.is_ascii_alphanumeric()) {
-                return tool_error("`asset` must be an alphanumeric name, e.g. \"BTC\".");
-            }
+            // The same parse the KV read path uses, so what this tool accepts
+            // and what a stored row can spell cannot drift apart.
+            let Some(asset) = parse_asset(raw) else {
+                return tool_error(ASSET_SYNTAX_ERROR);
+            };
             let Some(quantity) = quantity.filter(|q| q.is_finite() && *q >= 0.0) else {
                 return tool_error("`quantity` must be a finite number of zero or more.");
             };
@@ -883,6 +1071,10 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
                     return tool_error(format!("Could not read this Track's holdings — {e}."));
                 }
             };
+            // Both sides are canonical identities: `holdings` came through
+            // `Holding::from_json`, which normalises, and `asset` came
+            // through the same parse. A legacy `BTC` row and an incoming
+            // `crypto:BTC` are therefore one holding, not two summed rows.
             holdings.retain(|h| h.asset != asset);
             // Zero is the spelling of "no longer held": one tool, and no way
             // to be left holding a position of nothing.
@@ -892,7 +1084,7 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
                     quantity,
                 });
             }
-            holdings.sort_by(|a, b| a.asset.cmp(&b.asset));
+            holdings.sort_by_key(|h| h.asset.canonical());
             if let Err(e) = store_holdings(rpc, &track_id, &holdings) {
                 return tool_error(format!("Could not save this Track's holdings — {e}."));
             }
@@ -911,10 +1103,11 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
             // within a second or two, and nothing has to lie about what it
             // touches.
             let _ = wake.send(());
+            let canonical = asset.canonical();
             let summary = if quantity > 0.0 {
-                format!("Holding {quantity} {asset}")
+                format!("Holding {quantity} {canonical}")
             } else {
-                format!("No longer holding {asset}")
+                format!("No longer holding {canonical}")
             };
             text_result(
                 format!(
@@ -987,11 +1180,12 @@ fn main() {
     // issues `neige.*` callbacks whose replies arrive on the very stdin this
     // loop is reading — handling one inline makes the plugin wait out its own
     // 15s timeout for a reply it is preventing itself from reading. Not a
-    // thread each, because tool calls serialize on `REFRESH_LOCK` anyway
-    // (each holding it across network calls), so a caller sending faster than
-    // a refresh completes would accumulate blocked threads without bound, and
-    // a `thread::spawn` that then failed would panic on the reader and take
-    // the plugin down silently.
+    // thread each, because a tool call can take as long as a network round
+    // trip and a caller sending faster than that would accumulate threads
+    // without bound, and a `thread::spawn` that then failed would panic on
+    // the reader and take the plugin down silently. The single worker below
+    // is therefore also what serialises tool calls against each other: they
+    // are handled one at a time because one thread drains `tool_queue`.
     let (tool_calls, tool_queue) = mpsc::channel::<Value>();
     // Recording a holding wakes the poll thread instead of pricing inline, so
     // the write tool never touches the network — see the note at the
@@ -1109,14 +1303,25 @@ mod tests {
         Config::default()
     }
 
+    /// The identity a bare name gets. Written through `parse_asset` on
+    /// purpose: a hand-built `AssetId` in a test would stop proving that the
+    /// parser agrees with it.
+    fn id(raw: &str) -> AssetId {
+        parse_asset(raw).unwrap_or_else(|| panic!("`{raw}` must parse"))
+    }
+
+    fn holding(raw: &str, quantity: f64) -> Holding {
+        Holding {
+            asset: id(raw),
+            quantity,
+        }
+    }
+
     #[test]
     fn a_holding_must_be_a_named_asset_and_a_positive_finite_quantity() {
         assert_eq!(
             Holding::from_json(&json!({ "asset": " btc ", "quantity": 100.0 })),
-            Some(Holding {
-                asset: "BTC".into(),
-                quantity: 100.0
-            }),
+            Some(holding("BTC", 100.0)),
             "names are trimmed and upper-cased so `btc` and `BTC` are one holding"
         );
         for bad in [
@@ -1132,6 +1337,254 @@ mod tests {
         }
     }
 
+    /// **I1 — the parser is a superset of what could already be stored.**
+    ///
+    /// Before venues existed, a stored asset was `[A-Z0-9]+` (trimmed and
+    /// upper-cased at the entry point, then required to be entirely
+    /// alphanumeric). Every such name must still parse, or read-side
+    /// normalisation would DROP the row — `holdings_from_value` discards what
+    /// does not parse and the next `set` overwrites the whole array, so a
+    /// gap here is permanent data loss, not a read error.
+    ///
+    /// Exhaustive over the shapes plus a bounded sweep over the alphabet, so
+    /// a rule accidentally keyed on "starts with a letter", "has no digits"
+    /// or "is at most N characters" cannot survive.
+    #[test]
+    fn i1_every_name_todays_storage_could_hold_still_parses() {
+        // Real names that have each broken a naive rule at some point:
+        // leading digit, all digits, digits-then-letters, a bare quote asset.
+        for name in [
+            "BTC",
+            "ETH",
+            "USDT",
+            "1INCH",
+            "600519",
+            "0700",
+            "W",
+            "X",
+            "0",
+            "9",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        ] {
+            let parsed = parse_asset(name).unwrap_or_else(|| panic!("`{name}` must parse"));
+            assert_eq!(parsed.venue, Venue::Crypto, "`{name}` is a bare name");
+            assert_eq!(parsed.symbol, name, "`{name}` keeps its symbol verbatim");
+        }
+        // The sweep: every one- and two-character name over the legal
+        // alphabet, and every legal character in third position after `A`.
+        let alphabet: Vec<char> = ('A'..='Z').chain('0'..='9').collect();
+        for &a in &alphabet {
+            let one = a.to_string();
+            assert_eq!(parse_asset(&one), Some(id(&one)), "{one}");
+            for &b in &alphabet {
+                let two = format!("{a}{b}");
+                assert!(parse_asset(&two).is_some(), "{two}");
+                let three = format!("A{a}{b}");
+                assert!(parse_asset(&three).is_some(), "{three}");
+            }
+        }
+        // Lower case is accepted and folded, because the entry points folded
+        // it before this function existed.
+        assert_eq!(parse_asset(" btc "), Some(id("BTC")));
+    }
+
+    /// **I2 — pricing takes the same path it took before, WHILE
+    /// `cfg.quote` is its default `USDT` and while Binance's quote leg is
+    /// still `cfg.quote`.**
+    ///
+    /// This equivalence is scoped to THIS slice and to that configuration. It
+    /// is NOT an unconditional property, and it must not be used as a gate on
+    /// the slice that decouples the Binance quote leg from the settlement
+    /// currency: once the leg is pinned to `USDT` independently, `quote=CNY`
+    /// turns a `BTCCNY` lookup (which the venue answers with an empty body ⇒
+    /// `Failed`) into a `BTCUSDT` one (⇒ `Price`), and the variants differ by
+    /// design.
+    ///
+    /// What is compared is the decision the old code made, reconstructed from
+    /// its two branches: `asset == cfg.quote` ⇒ `Price(1.0)`, otherwise the
+    /// spot symbol `<ASSET><QUOTE>`. Both halves are checked without a
+    /// network: the shortcut by its result, the venue path by the symbol the
+    /// URL would carry.
+    #[test]
+    fn i2_todays_names_keep_their_pricing_path_while_quote_is_usdt() {
+        let cfg = cfg();
+        assert_eq!(
+            cfg.quote, "USDT",
+            "this equivalence is scoped to the default"
+        );
+        for name in ["BTC", "ETH", "USDT", "1INCH", "600519", "0700", "W"] {
+            let parsed = id(name);
+            // The old shortcut condition, spelled as the old code spelled it.
+            let was_the_quote_asset = name == cfg.quote;
+            let takes_the_shortcut =
+                matches!(quote_asset_shortcut(&cfg, &parsed), Some(price) if price == 1.0);
+            assert_eq!(
+                takes_the_shortcut, was_the_quote_asset,
+                "`{name}` must reach the same branch it used to"
+            );
+            if !was_the_quote_asset {
+                assert_eq!(
+                    binance_symbol(&cfg, &parsed),
+                    format!("{name}{}", cfg.quote),
+                    "`{name}` must be looked up under the same spot symbol as before"
+                );
+            }
+        }
+    }
+
+    /// A venue prefix is a prefix only when the colon is there. Without this
+    /// the parser would have to guess, and every guessing rule proposed for
+    /// this (digit counts, lengths, known-ticker lists) has counterexamples
+    /// among real names.
+    #[test]
+    fn a_name_without_a_colon_is_never_read_as_a_prefix() {
+        for name in ["USNVDA", "HK1810", "CRYPTOBTC", "CNW", "US", "HK", "CRYPTO"] {
+            let parsed = id(name);
+            assert_eq!(parsed.venue, Venue::Crypto, "`{name}`");
+            assert_eq!(parsed.symbol, name);
+            assert_eq!(parsed.canonical(), format!("CRYPTO:{name}"));
+        }
+    }
+
+    #[test]
+    fn a_qualified_name_names_a_venue_and_folds_to_one_canonical_form() {
+        assert_eq!(id("us:nvda").canonical(), "US:NVDA");
+        assert_eq!(id("HK:1810").canonical(), "HK:1810");
+        assert_eq!(id("cn:600519").canonical(), "CN:600519");
+        assert_eq!(id(" CRYPTO:btc ").canonical(), "CRYPTO:BTC");
+        // A prefix that names no venue is refused rather than swallowed as
+        // part of a bare name: pricing `SH:600519` as crypto `SH:600519`, or
+        // as anything else, would be a number nobody asked for.
+        for bad in [
+            "SH:600519",
+            "JP:7203",
+            ":BTC",
+            "BTC:",
+            "US:",
+            "US::NVDA",
+            "US:NV DA",
+            "US:1810.HK",
+            "",
+            "   ",
+            "BT C",
+            "BTC.US",
+            "1810.HK",
+        ] {
+            assert_eq!(parse_asset(bad), None, "`{bad}` must not parse");
+        }
+    }
+
+    /// A venue with no source answers `Unknown`, and is NOT handed to the
+    /// crypto provider. Routing it there would price `US:BTC` at bitcoin's
+    /// price — a number for an identity nobody quoted.
+    #[test]
+    fn a_venue_with_no_source_says_unknown_rather_than_borrowing_the_crypto_price() {
+        // The endpoint is dead, so anything that DID reach the provider would
+        // come back `Failed`, not `Unknown` — the two are distinguishable
+        // here on purpose.
+        let cfg = Config {
+            binance_endpoint: "http://127.0.0.1:1".into(),
+            ..cfg()
+        };
+        for name in ["US:BTC", "US:NVDA", "HK:1810", "CN:600519", "US:USDT"] {
+            assert!(
+                matches!(quote_asset(&cfg, &id(name)), Quote::Unknown),
+                "`{name}` must not be looked up as a crypto symbol"
+            );
+        }
+        assert!(
+            matches!(quote_asset(&cfg, &id("BTC")), Quote::Failed(_)),
+            "a crypto identity still goes to the provider"
+        );
+    }
+
+    /// The three names that made venues necessary. `W` is Wayfair on a US
+    /// exchange and Wormhole in crypto, and the bare form is frozen as the
+    /// crypto one — so a bare `W` and a `CRYPTO:W` are ONE holding, while a
+    /// `US:W` is a different one that must not be merged with either.
+    #[test]
+    fn bare_w_is_the_crypto_w_and_us_w_is_a_third_string_but_a_second_identity() {
+        assert_eq!(id("W"), id("CRYPTO:W"), "the bare form is frozen as crypto");
+        assert_eq!(id("W").canonical(), "CRYPTO:W");
+        assert_ne!(id("US:W"), id("W"), "two venues, two assets");
+        assert_eq!(id("US:W").canonical(), "US:W");
+        // Two identities ⇒ two rows that a `set` on one does not touch. This
+        // is the registered gap: a holding mis-recorded as bare `W` and then
+        // re-recorded as `US:W` leaves both rows standing.
+        let mut holdings = vec![holding("W", 10.0), holding("US:W", 5.0)];
+        let target = id("US:W");
+        holdings.retain(|h| h.asset != target);
+        assert_eq!(
+            holdings
+                .iter()
+                .map(|h| h.asset.canonical())
+                .collect::<Vec<_>>(),
+            vec!["CRYPTO:W"],
+        );
+    }
+
+    /// Read-side normalisation, at the seam a `set` actually goes through:
+    /// a legacy row spelled `BTC` and an incoming `crypto:BTC` must collapse
+    /// to ONE holding. Without normalisation the retain compares
+    /// `CRYPTO:BTC` against the un-normalised `BTC`, keeps both, and
+    /// `price_holdings` sums them.
+    #[test]
+    fn a_legacy_row_and_a_qualified_write_are_one_holding_not_two() {
+        let stored = json!([{ "asset": "BTC", "quantity": 100.0 }]);
+        let mut holdings = holdings_from_value(Some(&stored), "trk");
+        let incoming = id("crypto:BTC");
+        holdings.retain(|h| h.asset != incoming);
+        holdings.push(Holding {
+            asset: incoming,
+            quantity: 60.0,
+        });
+        assert_eq!(holdings.len(), 1, "one asset, one row: {holdings:?}");
+        assert_eq!(
+            holdings[0].quantity, 60.0,
+            "the write replaces, it does not add"
+        );
+        assert_eq!(
+            store_value(&holdings),
+            json!([{ "asset": "CRYPTO:BTC", "quantity": 60.0 }]),
+            "and the write-back is canonical — this is the gradual migration"
+        );
+    }
+
+    /// The venue reaches the reader at all three exits. It is a column of its
+    /// own rather than a prefix on the name, so a table holding `US:W` and
+    /// `CRYPTO:W` shows two distinguishable rows.
+    #[test]
+    fn every_exit_echoes_the_venue() {
+        let cfg = Config {
+            binance_endpoint: "http://127.0.0.1:1".into(),
+            ..cfg()
+        };
+        let (rows, total, complete) = price_holdings(
+            &cfg,
+            &[holding("USDT", 3.0), holding("US:W", 1.0)],
+            &mut PriceCache::new(),
+        );
+        assert_eq!(rows[0]["asset"], json!("USDT"));
+        assert_eq!(rows[0]["venue"], json!("CRYPTO"));
+        assert_eq!(rows[1]["asset"], json!("W"));
+        assert_eq!(rows[1]["venue"], json!("US"));
+        // `market.holdings.list` hands these same rows out as its
+        // structuredContent, so the venue reaches that exit with them.
+        let table = holdings_table(&cfg, rows, Some(total), complete, "2026-09-06T12:00:00Z");
+        let columns: Vec<&str> = table["columns"]
+            .as_array()
+            .expect("columns")
+            .iter()
+            .filter_map(|c| c["key"].as_str())
+            .collect();
+        assert!(columns.contains(&"venue"), "{columns:?}");
+        assert!(
+            columns.len() <= calm_types::report_blocks::kinds::MAX_TABLE_COLUMNS,
+            "{columns:?}"
+        );
+        assert_eq!(validate_payload(KIND_TABLE, &table), Ok(()));
+    }
+
     #[test]
     fn one_unreadable_row_costs_only_itself() {
         let stored = json!([
@@ -1143,9 +1596,9 @@ mod tests {
         assert_eq!(
             holdings
                 .iter()
-                .map(|h| h.asset.as_str())
+                .map(|h| h.asset.canonical())
                 .collect::<Vec<_>>(),
-            vec!["BTC", "ETH"],
+            vec!["CRYPTO:BTC", "CRYPTO:ETH"],
             "a bad row must not make the whole portfolio unreadable"
         );
         assert!(holdings_from_value(None, "trk").is_empty());
@@ -1177,7 +1630,7 @@ mod tests {
     fn the_quote_asset_prices_itself_without_a_venue() {
         // Also the reason the pricing tests below need no network: a portfolio
         // of the quote asset exercises every path except the HTTP call.
-        assert!(matches!(quote_asset(&cfg(), "USDT"), Quote::Price(p) if p == 1.0));
+        assert!(matches!(quote_asset(&cfg(), &id("USDT")), Quote::Price(p) if p == 1.0));
     }
 
     #[test]
@@ -1187,14 +1640,8 @@ mod tests {
         // not a second opinion written here, which could agree with the
         // plugin and disagree with the renderer.
         let cfg = cfg();
-        let (rows, total, complete) = price_holdings(
-            &cfg,
-            &[Holding {
-                asset: "USDT".into(),
-                quantity: 3.0,
-            }],
-            &mut PriceCache::new(),
-        );
+        let (rows, total, complete) =
+            price_holdings(&cfg, &[holding("USDT", 3.0)], &mut PriceCache::new());
         assert!(complete && total == 3.0);
         let holdings = holdings_table(&cfg, rows, Some(total), complete, "2026-09-06T12:00:00Z");
         assert_eq!(validate_payload(KIND_TABLE, &holdings), Ok(()));
@@ -1220,16 +1667,7 @@ mod tests {
         };
         let (rows, total, complete) = price_holdings(
             &cfg,
-            &[
-                Holding {
-                    asset: "USDT".into(),
-                    quantity: 3.0,
-                },
-                Holding {
-                    asset: "ZZZZ".into(),
-                    quantity: 1.0,
-                },
-            ],
+            &[holding("USDT", 3.0), holding("ZZZZ", 1.0)],
             &mut PriceCache::new(),
         );
         assert!(!complete);
@@ -1269,16 +1707,7 @@ mod tests {
         // per-row check alone would pass this straight into the history.
         let (rows, total, complete) = price_holdings(
             &cfg(),
-            &[
-                Holding {
-                    asset: "USDT".into(),
-                    quantity: 1e308,
-                },
-                Holding {
-                    asset: "USDT".into(),
-                    quantity: 1e308,
-                },
-            ],
+            &[holding("USDT", 1e308), holding("USDT", 1e308)],
             &mut PriceCache::new(),
         );
         assert!(complete, "both rows price fine on their own");
