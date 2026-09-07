@@ -61,6 +61,37 @@ arrows and other supported keys are explicit actions. Application mouse input
 requires reported SGR mouse mode and in-range cell coordinates. Local history
 scrolling uses `observe.scroll_offset`; application paging uses explicit keys.
 
+## Provider approval entry point (#1578)
+
+Terminal writes retain truthful `readOnlyHint: false`, `destructiveHint: true`
+and `openWorldHint: true` annotations. The Planner's `approvalPolicy: never`
+otherwise rejects them before the MCP server sees the call. The application
+therefore explicitly sets `mcp_servers.calm.tools.<tool>.approval_mode = "approve"`
+for exactly `calm.terminal.open`, `calm.terminal.control` and
+`calm.terminal.input` on Planner threads. This uses the provider's
+[per-tool configuration](https://learn.chatgpt.com/docs/config-file/config-reference),
+not a server-wide approval default or an annotation shortcut.
+
+This delegates the provider prompt decision to the kernel's existing authenticated
+Planner authority, which already includes same-Track terminal task execution.
+The live role, Track, task/session, observation and human-control checks still
+apply, including at the queued write boundary. It does not authorize actions
+outside that contract, or certify that a TUI completed an operation.
+
+The required card role is carried through typed thread configuration. Fresh
+Planner starts and valid cold resumes use the same producer; cold resume reads
+the current persisted card role. Assistant, Worker and plain-chat threads gain
+no tool approval override. Unknown card roles do not receive a policy. Global
+approval/sandbox settings and daemon-wide MCP configuration remain unchanged.
+A hot takeover retains its already-loaded provider thread configuration, so a
+new Planner thread or a proper cold daemon restart is needed to adopt the policy.
+
+A model-free probe with the actual Codex 0.153.4 app-server reproduced the exact
+`MCP tool call requires approval, but approval policy is never` error, then
+confirmed the named tool enters MCP with this override while an unrelated write
+still gets refused. A local synthetic Responses endpoint emitted the tool calls;
+this is provider-policy evidence, not an actual astry autonomous acceptance run.
+
 ## Task and Worker targeting
 
 Resolve, observe, control and input accept exactly one of `terminal_id` or

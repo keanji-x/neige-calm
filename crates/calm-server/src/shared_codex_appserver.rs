@@ -498,6 +498,7 @@ pub enum ThreadConfig {
     NoMcp,
     /// Per-card MCP shell env injected through `shell_environment_policy.set`.
     McpShell {
+        role: CardRole,
         socket_path: PathBuf,
         raw_token: String,
     },
@@ -508,9 +509,10 @@ impl ThreadConfig {
         match self {
             Self::NoMcp => None,
             Self::McpShell {
+                role,
                 socket_path,
                 raw_token,
-            } => Some(card_mcp_thread_start_config(socket_path, raw_token)),
+            } => Some(card_mcp_thread_start_config(socket_path, raw_token, *role)),
         }
     }
 }
@@ -1266,7 +1268,7 @@ impl SharedCodexAppServer {
         self.thread_start_mint_inner(card_id, params).await
     }
 
-    /// Worker/planner mint that can only inject per-card MCP shell credentials.
+    /// Worker mint: inject per-card MCP shell credentials without Planner tool delegation.
     pub async fn thread_start_mint_mcp_shell(
         self: &Arc<Self>,
         card_id: &str,
@@ -1281,6 +1283,7 @@ impl SharedCodexAppServer {
             sandbox_mode: "workspace-write".into(),
             developer_instructions,
             config: ThreadConfig::McpShell {
+                role: CardRole::Worker,
                 socket_path,
                 raw_token,
             },
@@ -3844,6 +3847,16 @@ impl SharedCodexAppServer {
                 continue;
             }
 
+            // Reconstruct policy from persisted authority, not the cached thread's
+            // name or session kind. Unknown roles must never receive a grant.
+            let role = match self.repo.card_role_get(&card_id).await {
+                Ok(Some(role)) => role,
+                result => {
+                    tracing::warn!(%card_id, ?result, "cannot restore MCP policy without card role");
+                    continue;
+                }
+            };
+
             let raw_token = match write_in_tx_typed(self.repo.as_ref(), {
                 let thread_id = thread_id.clone();
                 let card_id = card_id.clone();
@@ -3893,6 +3906,7 @@ impl SharedCodexAppServer {
                 &thread_id,
                 &card_id,
                 ThreadConfig::McpShell {
+                    role,
                     socket_path: self.kernel_mcp_socket_path.clone(),
                     raw_token,
                 },
@@ -5305,6 +5319,7 @@ mod tests {
             sandbox_mode: "workspace-write".into(),
             developer_instructions: None,
             config: ThreadConfig::McpShell {
+                role: CardRole::Planner,
                 socket_path: PathBuf::from("/tmp/x.sock"),
                 raw_token: "secret-abcdef".into(),
             },

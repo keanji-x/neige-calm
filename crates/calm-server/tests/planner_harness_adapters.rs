@@ -698,22 +698,13 @@ async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
     let card_id = new_id();
     seed_planner_card(&repo, &role_cache, &track, &card_id).await;
 
-    let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-        actor: calm_server::ids::ActorId::User,
-        track_id: track.id.to_string(),
-        planner_card_id: CardId::from(card_id.clone()),
-        report_card_id: None,
-        sort: None,
-        cwd: track.workspace.path.clone(),
-        goal: Some("planner channel-3 point-of-use".into()),
-        reset_harness_items: false,
-        force_new_thread: false,
-        profile: Default::default(),
-        create_card: None,
-        opening_briefing: None,
-        first_message: None,
-        create_request_sha256: None,
-    })
+    let payload = serde_json::to_value(terminal_approval::start_payload(
+        &track,
+        &card_id,
+        HarnessProfile::Planner,
+        false,
+        Some("planner channel-3 point-of-use".into()),
+    ))
     .unwrap();
     let op_id = state
         .operation_runtime
@@ -736,6 +727,27 @@ async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
         "planner spawn must send exactly one thread/start"
     );
     let thread_start = starts[0];
+
+    // #1578: this is the actual operation's provider request. Truthful write
+    // annotations plus approvalPolicy=never otherwise stop before tools/call.
+    assert_eq!(
+        thread_start.pointer("/params/approvalPolicy"),
+        Some(&json!("never"))
+    );
+    assert_eq!(
+        thread_start.pointer("/params/config/mcp_servers/calm/tools"),
+        Some(&json!({
+            "calm.terminal.open": {"approval_mode":"approve"},
+            "calm.terminal.control": {"approval_mode":"approve"},
+            "calm.terminal.input": {"approval_mode":"approve"}
+        })),
+        "Planner must explicitly delegate only Terminal writes to the kernel's live authority checks"
+    );
+    assert!(
+        thread_start
+            .pointer("/params/config/mcp_servers/calm/default_tools_approval_mode")
+            .is_none()
+    );
 
     // The #838 planner-path channel-3 assertions: the planner thread/start must
     // carry the MCP exec-shell env in shell_environment_policy.set so the
@@ -2214,3 +2226,6 @@ async fn lazy_mint_refuses_to_mint_while_the_app_server_is_down() {
         .expect_err("a down app-server must be refused before anything is minted");
     assert!(repo.card_get("conv-daemon-down").await.unwrap().is_none());
 }
+
+#[path = "cases/planner_terminal_approval.rs"]
+mod terminal_approval;

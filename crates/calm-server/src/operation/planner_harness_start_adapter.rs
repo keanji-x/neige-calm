@@ -1443,6 +1443,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 // variant would carry nothing the kernel actually reads.
                 config: match profile {
                     HarnessProfile::Planner | HarnessProfile::Assistant => ThreadConfig::McpShell {
+                        role: card_role,
                         socket_path: PathBuf::from(&socket_path),
                         raw_token: raw,
                     },
