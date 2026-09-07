@@ -16,6 +16,9 @@ use uuid::Uuid;
 
 const TID: &str = "terminal-fixture";
 
+#[path = "cases/owner_leases.rs"]
+mod owner_leases;
+
 fn ctx<'a>(broadcaster: &PtyBroadcaster, session_id: Uuid) -> SessionContext<'a> {
     ctx_with_colors(broadcaster, session_id, None, None)
 }

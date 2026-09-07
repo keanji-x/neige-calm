@@ -46,6 +46,9 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
+use crate::terminal_owner::OwnerLease;
+pub use crate::terminal_owner::OwnerRegistry;
+
 use crate::terminal_model::{ScrollbackLimit, TerminalModel};
 use crate::{
     ClientCapabilities, ClientMsg, DaemonMsg, PROTOCOL_VERSION, ProtocolErrorCode, PtySize,
@@ -180,74 +183,6 @@ impl ByteRing {
     }
 }
 
-/// Daemon-level owner tracking. Single instance per daemon process.
-///
-/// All clients start as `Observer` unless they're the very first one to
-/// attach with no current owner — in that case the first attach is
-/// implicitly promoted to `Owner`. `OwnerClaim` is a hostile takeover and
-/// always succeeds (transfers ownership unconditionally to the claimant).
-pub struct OwnerRegistry {
-    owner: Option<Uuid>,
-}
-
-impl OwnerRegistry {
-    pub fn new() -> Self {
-        Self { owner: None }
-    }
-
-    /// Called when a new client completes its handshake. Returns the role
-    /// the client should be assigned. Honors `role_hint = Some(Owner)`
-    /// only when no current owner exists; otherwise the request implicitly
-    /// degrades to Observer (the client can still claim via
-    /// `ClientMsg::OwnerClaim`).
-    pub fn on_attach(&mut self, client_id: Uuid, role_hint: Option<Role>) -> Role {
-        if self.owner.is_none() {
-            // First attach (or first after a release): become Owner unless
-            // the client explicitly asked to stay an Observer.
-            let want_observer = matches!(role_hint, Some(Role::Observer));
-            if want_observer {
-                Role::Observer
-            } else {
-                self.owner = Some(client_id);
-                Role::Owner
-            }
-        } else {
-            // Already an owner; new client is an observer.
-            Role::Observer
-        }
-    }
-
-    /// Observer (or anyone) sent `OwnerClaim`. Always transfers ownership.
-    /// Returns `true` if ownership actually changed (used by the shell to
-    /// decide whether to broadcast `OwnerChanged`).
-    pub fn on_claim(&mut self, client_id: Uuid) -> bool {
-        let changed = self.owner != Some(client_id);
-        self.owner = Some(client_id);
-        changed
-    }
-
-    /// Owner sent `OwnerRelease` (or disconnected). Returns `true` if it
-    /// actually held ownership.
-    pub fn on_release(&mut self, client_id: Uuid) -> bool {
-        if self.owner == Some(client_id) {
-            self.owner = None;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn current_owner(&self) -> Option<Uuid> {
-        self.owner
-    }
-}
-
-impl Default for OwnerRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Context the shell threads through `on_client_frame`. Keeping this in one
 /// struct (rather than a long function-argument list) means new daemon
 /// metadata doesn't bloat every call site.
@@ -310,6 +245,7 @@ pub struct TerminalSessionState {
     /// Role assigned by the `OwnerRegistry` at handshake time, mutated on
     /// successful `OwnerClaim` / `OwnerRelease` from this connection.
     role: Option<Role>,
+    owner_lease: Option<OwnerLease>,
     /// Latest accepted resize epoch from the owner. Frames with `epoch <=
     /// resize_epoch` are stale and silently dropped.
     resize_epoch: u32,
@@ -330,6 +266,7 @@ impl TerminalSessionState {
             attached: false,
             client_id: None,
             role: None,
+            owner_lease: None,
             resize_epoch: 0,
             last_render_acked_rev: None,
             capabilities: None,
@@ -355,6 +292,19 @@ impl TerminalSessionState {
 
     pub fn last_render_acked_rev(&self) -> Option<u32> {
         self.last_render_acked_rev
+    }
+
+    /// Release only this connection's lease, including on transport teardown.
+    /// A stale connection cannot release a subsequent same-ID reconnect.
+    pub fn release_owner(&mut self, registry: &mut OwnerRegistry) -> bool {
+        let released = self
+            .owner_lease
+            .take()
+            .is_some_and(|lease| registry.release(lease));
+        if self.attached {
+            self.role = Some(Role::Observer);
+        }
+        released
     }
 
     /// Translate one incoming client frame into a list of side-effects.
@@ -387,7 +337,7 @@ impl TerminalSessionState {
     /// - `ResizeCommit{epoch,..}` → owner: bump epoch if `>` current,
     ///   emit `ResizePty` + broadcast `ResizeApplied`; stale epoch is a
     ///   silent no-op. Observer → `NotOwner`.
-    /// - `OwnerClaim` → registry takeover; on actual change emit
+    /// - `OwnerClaim` → fresh connection lease; acknowledge every claim with
     ///   `AssignOwner` + `BroadcastOwnerChanged` and bump this state's
     ///   role to `Owner`.
     /// - `OwnerRelease` → registry clear; mirror role to Observer.
@@ -403,6 +353,13 @@ impl TerminalSessionState {
     ) -> Vec<Effect> {
         if !self.attached {
             return self.process_hello(msg, buffer, registry, ctx);
+        }
+
+        // Role is a cached UI value; only the current server-issued lease
+        // authorizes owner effects. Client IDs may be reused on reconnect.
+        if self.owner_lease.is_some() && self.owner_lease != registry.lease() {
+            self.owner_lease = None;
+            self.role = Some(Role::Observer);
         }
 
         match msg {
@@ -459,30 +416,27 @@ impl TerminalSessionState {
                     // Shouldn't happen post-handshake, but bail cleanly.
                     return vec![];
                 };
-                let changed = registry.on_claim(cid);
+                let Some(lease) = registry.claim(cid) else {
+                    return vec![Effect::SendProtocolError {
+                        code: ProtocolErrorCode::BadSequence,
+                        message: "terminal owner lease generation exhausted".into(),
+                        expected_version: None,
+                    }];
+                };
+                self.owner_lease = Some(lease);
                 self.role = Some(Role::Owner);
-                if changed {
-                    vec![
-                        Effect::AssignOwner(Some(cid)),
-                        Effect::BroadcastOwnerChanged(Some(cid)),
-                    ]
-                } else {
-                    vec![]
-                }
+                vec![
+                    Effect::AssignOwner(Some(cid)),
+                    Effect::BroadcastOwnerChanged(Some(cid)),
+                ]
             }
             ClientMsg::OwnerRelease => {
-                let Some(cid) = self.client_id else {
-                    return vec![];
-                };
-                let changed = registry.on_release(cid);
-                if changed {
-                    self.role = Some(Role::Observer);
+                if self.release_owner(registry) {
                     vec![
                         Effect::AssignOwner(None),
                         Effect::BroadcastOwnerChanged(None),
                     ]
                 } else {
-                    // Wasn't the owner; ignore.
                     vec![]
                 }
             }
@@ -634,6 +588,11 @@ impl TerminalSessionState {
                 self.attached = true;
                 self.client_id = Some(client_id);
                 self.role = Some(role);
+                self.owner_lease = if role == Role::Owner {
+                    registry.lease()
+                } else {
+                    None
+                };
                 // Cache capabilities for post-handshake gating
                 // (kernel_originated_input on Input frames, etc.).
                 self.capabilities = Some(capabilities.clone());

@@ -30,6 +30,7 @@
 
 pub mod control;
 pub mod terminal_model;
+mod terminal_owner;
 pub mod terminal_session;
 
 use std::collections::HashMap;

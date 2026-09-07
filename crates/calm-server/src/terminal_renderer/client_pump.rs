@@ -20,6 +20,34 @@ pub struct ClientPumpContext {
     pub terminal_id: String,
 }
 
+// Connection lifetime owns the exact lease and its downstream task. This also
+// runs on failed hello delivery and cancellation of the outer async future.
+struct ClientLifetime {
+    state: TerminalSessionState,
+    owner_registry: SharedOwnerRegistry,
+    event_tx: broadcast::Sender<DaemonMsg>,
+    downstream: Option<tokio::task::AbortHandle>,
+}
+
+impl Drop for ClientLifetime {
+    fn drop(&mut self) {
+        if let Some(task) = &self.downstream {
+            task.abort();
+        }
+        let changed = self.state.release_owner(
+            &mut self
+                .owner_registry
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()),
+        );
+        if changed {
+            let _ = self.event_tx.send(DaemonMsg::OwnerChanged {
+                owner_client_id: None,
+            });
+        }
+    }
+}
+
 pub async fn run_client_pump(
     mut incoming_rx: mpsc::Receiver<ClientMsg>,
     outgoing_tx: mpsc::Sender<DaemonMsg>,
@@ -35,7 +63,12 @@ pub async fn run_client_pump(
         session_id,
         terminal_id,
     } = ctx;
-    let mut state = TerminalSessionState::new();
+    let mut connection = ClientLifetime {
+        state: TerminalSessionState::new(),
+        owner_registry: owner_registry.clone(),
+        event_tx: event_tx.clone(),
+        downstream: None,
+    };
     let (per_client_tx, mut per_client_rx) = mpsc::unbounded_channel::<DaemonMsg>();
 
     let first = match incoming_rx.recv().await {
@@ -63,7 +96,9 @@ pub async fn run_client_pump(
             current_default_fg: guard.default_fg(),
             current_default_bg: guard.default_bg(),
         };
-        state.on_client_frame(first, guard.transcript(), &mut reg, &ctx)
+        connection
+            .state
+            .on_client_frame(first, guard.transcript(), &mut reg, &ctx)
     };
 
     let mut handshake_failed = false;
@@ -189,7 +224,7 @@ pub async fn run_client_pump(
         }
     });
 
-    let client_id_for_disconnect = state.client_id();
+    connection.downstream = Some(down_task.abort_handle());
     loop {
         let Some(msg) = incoming_rx.recv().await else {
             break;
@@ -208,7 +243,9 @@ pub async fn run_client_pump(
                 current_default_fg: guard.default_fg(),
                 current_default_bg: guard.default_bg(),
             };
-            state.on_client_frame(msg, guard.transcript(), &mut reg, &ctx)
+            connection
+                .state
+                .on_client_frame(msg, guard.transcript(), &mut reg, &ctx)
         };
 
         let mut closed = false;
@@ -305,18 +342,6 @@ pub async fn run_client_pump(
         }
         if closed {
             break;
-        }
-    }
-
-    if let Some(cid) = client_id_for_disconnect {
-        let changed = {
-            let mut reg = owner_registry.lock().unwrap();
-            reg.on_release(cid)
-        };
-        if changed {
-            let _ = event_tx.send(DaemonMsg::OwnerChanged {
-                owner_client_id: None,
-            });
         }
     }
 
