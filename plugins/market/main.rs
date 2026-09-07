@@ -588,7 +588,7 @@ fn portfolios(rpc: &Rpc) -> Result<Vec<String>, String> {
 // | --- | --- | --- |
 // | `CRYPTO` | Binance spot | `<SYMBOL>USDT` |
 // | `US` | Sina `hq.sinajs.cn` | `gb_<symbol>` |
-// | `HK` | Sina `hq.sinajs.cn` | `hk<symbol zero-padded to 5>` |
+// | `HK` | Sina `hq.sinajs.cn` | `hk<symbol>`, five digits by [`canonical_symbol`] |
 // | `SH` | Sina `hq.sinajs.cn` | `sh<symbol>` |
 // | `SZ` | Sina `hq.sinajs.cn` | `sz<symbol>` |
 //
@@ -2650,7 +2650,7 @@ mod tests {
         assert_eq!(
             targets.recv_timeout(Duration::from_secs(5)).as_deref(),
             Ok("/list=hk00001"),
-            "one digit is padded to five, not refused",
+            "`HK:1` is the identity `HK:00001`, and it is asked for, not refused",
         );
         // `TENCENT` is a legal identity — the grammar takes any `[A-Z0-9]+` —
         // and this source has no way to spell it. It answers `Unknown`

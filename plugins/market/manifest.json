@@ -100,7 +100,7 @@
       "sina_endpoint": {
         "type": "string",
         "default": "https://hq.sinajs.cn",
-        "description": "Base URL of the Sina quote list, the US, HK, SH and SZ source. Its /list= path is asked for one symbol at a time: gb_<symbol>, hk<code padded to 5>, sh<code> or sz<code>."
+        "description": "Base URL of the Sina quote list, the US, HK, SH and SZ source. Its /list= path is asked for one symbol at a time: gb_<symbol>, hk<5-digit code>, sh<code> or sz<code>."
       }
     },
     "additionalProperties": false
