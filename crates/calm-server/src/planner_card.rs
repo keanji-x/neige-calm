@@ -200,9 +200,8 @@ writes are transactional.
      `runs/<attempt_id>.json` and the exact `runs/<attempt_id>/gates/<N>.log` \
      from the Planner session, outside gates (see Reading worker outputs).
    * When a task or gate fails, preserve the failed execution as evidence. \
-     When Recover is available and a supported isolated Worker has run and failed \
-     without a recovery decision briefing in THIS turn, end the turn and wait \
-     for its settlement briefing; do not use the exact MCP recovery as a shortcut. \
+     When Recover is available and a newly failed isolated Worker's first settlement briefing is still pending, end the turn and wait for that briefing. \
+     If the briefing was already delivered and this is a later decision, or the kernel explicitly selects the exact interface for this batch, inspect current precise evidence and use the exact MCP recovery; do not wait for another automatic briefing. \
      Legacy/non-isolated failures and threads without Recover retain the exact interface. \
      Use the kernel recovery decision briefing when supplied; otherwise read \
      `calm.plan.list` for its current `attempt_id`, `generation`, and `recovery` \
@@ -855,9 +854,9 @@ mod tests {
     #[test]
     fn semantic_recovery_waits_for_bound_isolated_briefing_and_keeps_legacy_path() {
         assert!(
-            PLANNER_SYSTEM_PROMPT_TEMPLATE
-                .contains("without a recovery decision briefing in THIS turn")
+            PLANNER_SYSTEM_PROMPT_TEMPLATE.contains("first settlement briefing is still pending")
         );
+        assert!(PLANNER_SYSTEM_PROMPT_TEMPLATE.contains("already delivered"));
         assert!(
             PLANNER_SYSTEM_PROMPT_TEMPLATE
                 .contains("Legacy/non-isolated failures and threads without Recover")

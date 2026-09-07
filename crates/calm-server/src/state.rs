@@ -1361,7 +1361,9 @@ impl AppState {
             repo.clone(),
             Some(pending_codex_threads.clone()),
             Some(crate::semantic_recovery::RecoveryService {
-                repo: repo.clone(), events: events.clone(), write: write.clone(),
+                repo: repo.clone(),
+                events: events.clone(),
+                write: write.clone(),
             }),
         );
         let plugin = Arc::new(PluginHost::new_full(

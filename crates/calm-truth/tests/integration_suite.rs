@@ -39,4 +39,5 @@ fn assert_suite_complete(source: &str) {
     );
 }
 
+#[path = "planner_recovery_binding_migration.rs"]
 mod planner_recovery_binding_migration;

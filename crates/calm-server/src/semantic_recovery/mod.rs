@@ -2,7 +2,7 @@
 //! Registration is capability discovery; only the recovery transaction grants authority.
 mod store;
 pub(crate) use store::{
-    Action, BoundTurn, authenticate_tx, bind_turn, prepare, register, registered,
+    Action, BoundTurn, authenticate_tx, bind_turn, binding_problem, prepare, register, registered,
 };
 
 use crate::codex_appserver::{

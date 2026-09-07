@@ -212,3 +212,106 @@ async fn semantic_recovery_refuses_user_owned_and_superseded_attempt_without_ret
         );
     }
 }
+
+async fn issued_text_or_fail(handle: &PlannerHarness, daemon: &SharedCodexAppServer) -> String {
+    handle
+        .force_phase_for_dev(calm_server::harness::HarnessPhaseTag::Idle)
+        .await
+        .unwrap();
+    let issued = tokio::time::timeout(Duration::from_secs(5), async {
+        while daemon.turn_start_count_for_test() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    handle.shutdown().await.unwrap();
+    assert!(
+        issued.is_ok(),
+        "deterministic binding limit must not indefinitely rebuffer the batch"
+    );
+    daemon.started_turns_for_test()[0]
+        .1
+        .iter()
+        .filter_map(|item| match item {
+            InputItem::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn assert_exact_fallback(fx: &Fixture, text: &str) {
+    assert!(text.contains("No semantic actions are bound for this batch"));
+    assert!(text.contains("calm.plan.recover"));
+    assert!(!text.contains("Prefer Recover over"));
+    assert!(!text.contains("This turn has a bound Recover tool"));
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM planner_recovery_issuances")
+        .fetch_one(&fx.boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "unsupported batch must carry no semantic authority"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn semantic_recovery_oversized_legal_user_batch_issues_exact_briefs_without_losing_input() {
+    let (fx, first) = planner_failure().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(fx.boot.repo.clone(), None);
+    let handle = planner_with_daemon(&fx, daemon.clone()).await;
+    test_support::register_thread(
+        fx.boot.repo.as_ref(),
+        fx.boot.planner_card_id.as_str(),
+        "planner-observer",
+    )
+    .await
+    .unwrap();
+    queued_settlement(&fx, &handle).await;
+    let messages: Vec<_> = (0..129)
+        .map(|i| format!("message-{i:03}:{}", "x".repeat(32740)))
+        .collect();
+    for message in &messages {
+        handle
+            .observe_user_message_durable(message.clone(), vec![])
+            .await
+            .unwrap();
+    }
+    let text = issued_text_or_fail(&handle, &daemon).await;
+    assert!(text.len() > 4 * 1024 * 1024);
+    assert_exact_fallback(&fx, &text).await;
+    assert!(text.contains(&first.id));
+    let mut last = 0;
+    for message in &messages {
+        let position = text
+            .find(message)
+            .expect("complete user input must remain in delivered order");
+        assert!(position >= last);
+        last = position + message.len();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn semantic_recovery_ambiguous_same_key_keeps_both_original_attempts_in_exact_mode() {
+    let (fx, first) = planner_failure().await;
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(fx.boot.repo.clone(), None);
+    let handle = planner_with_daemon(&fx, daemon.clone()).await;
+    test_support::register_thread(
+        fx.boot.repo.as_ref(),
+        fx.boot.planner_card_id.as_str(),
+        "planner-observer",
+    )
+    .await
+    .unwrap();
+    queued_settlement(&fx, &handle).await;
+    let (status, receipt) = rest(&fx, "POST", &route(&fx, "recover"), recovery(&first)).await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    let (second, workspace) = launch(&fx).await;
+    finish(&fx, &second, &workspace, false).await;
+    queued_settlement(&fx, &handle).await;
+    let text = issued_text_or_fail(&handle, &daemon).await;
+    assert!(text.contains(&first.id));
+    assert!(text.contains(&second.id));
+    assert_exact_fallback(&fx, &text).await;
+    assert_eq!(current(&fx.boot, "retry").await.id, second.id);
+}

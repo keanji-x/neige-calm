@@ -54,6 +54,22 @@ pub(crate) async fn registered(repo: &dyn Repo, card_id: &str, thread_id: &str) 
         == 1)
 }
 
+/// Deterministic representability limits only. Storage/identity failures are
+/// errors, not invitations to silently weaken semantic recovery.
+pub(crate) fn binding_problem(input: &str, actions: &[Action]) -> Option<&'static str> {
+    if input.len() > 4 * 1024 * 1024 {
+        return Some("input exceeds the 4 MiB semantic binding limit");
+    }
+    if actions.len() > 128 {
+        return Some("batch exceeds the 128 semantic action limit");
+    }
+    let mut keys = std::collections::HashSet::new();
+    if actions.iter().any(|action| !keys.insert(&action.key)) {
+        return Some("multiple original recovery facts name the same task key");
+    }
+    None
+}
+
 pub(crate) async fn prepare(
     repo: &dyn Repo,
     session: &str,
@@ -63,22 +79,19 @@ pub(crate) async fn prepare(
     actions: Vec<Action>,
 ) -> Result<String> {
     let input = serde_json::to_string(input)?;
-    let mut keys = std::collections::HashSet::new();
-    if input.len() > 4 * 1024 * 1024
-        || actions.is_empty()
-        || actions.len() > 128
+    if let Some(problem) = binding_problem(&input, &actions) {
+        return Err(CalmError::BadRequest(problem.into()));
+    }
+    if actions.is_empty()
         || actions.iter().any(|a| {
-            !keys.insert(a.key.clone())
-                || !calm_types::report_blocks::tasks::key_is_valid(&a.key)
+            !calm_types::report_blocks::tasks::key_is_valid(&a.key)
                 || a.expected_attempt_id.is_empty()
                 || a.event_id <= 0
                 || a.request_key.is_empty()
                 || a.request_key.len() > 200
         })
     {
-        return Err(CalmError::BadRequest(
-            "invalid or oversized recovery issuance".into(),
-        ));
+        return Err(CalmError::BadRequest("invalid recovery issuance".into()));
     }
     let actions = serde_json::to_string(&actions)?;
     let id = uuid::Uuid::new_v4().to_string();

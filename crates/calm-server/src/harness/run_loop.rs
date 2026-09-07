@@ -2922,8 +2922,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         }
     };
 
-    let input_segments = prepared.segments;
-    let joined_observation_text = input_segments
+    let mut prepared = prepared;
+    let joined_observation_text = prepared
+        .segments
         .iter()
         .map(|segment| segment.text.as_str())
         .collect::<Vec<_>>()
@@ -2936,7 +2937,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     };
     let drained_count = drained.len();
-    let text = prepend_diff_block(diff.block, joined_observation_text);
+    let text = prepend_diff_block(diff.block.clone(), joined_observation_text);
     tracing::debug!(
         target: "calm_server::planner_harness_issue",
         runtime_id = %inner.worker_session_id,
@@ -3031,6 +3032,23 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             .map(|attachment| InputItem::local_image(attachment.path.clone())),
     );
     let issued = async {
+        if !prepared.actions.is_empty()
+            && let Some(problem) = crate::semantic_recovery::binding_problem(
+                &serde_json::to_string(&items)?,
+                &prepared.actions,
+            )
+        {
+            prepared.use_exact_interface(problem);
+            items[0] = InputItem::text(prepend_diff_block(
+                diff.block.clone(),
+                prepared
+                    .segments
+                    .iter()
+                    .map(|segment| segment.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ));
+        }
         let issuance = if prepared.actions.is_empty() {
             None
         } else {
@@ -3041,7 +3059,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                     inner.track_id.as_str(),
                     &thread_id,
                     &items,
-                    prepared.actions,
+                    std::mem::take(&mut prepared.actions),
                 )
                 .await?,
             )
@@ -3075,7 +3093,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             *inner.issued_turn_head.lock().await = diff.current_head.clone();
             *inner.issued_input_segments.lock().await = Some(IssuedInputSegments {
                 turn_id,
-                segments: input_segments,
+                segments: prepared.segments,
             });
             persist_issuance_outcome(inner).await?;
         }
