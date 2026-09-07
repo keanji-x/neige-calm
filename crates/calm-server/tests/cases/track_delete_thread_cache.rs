@@ -723,3 +723,132 @@ async fn a_late_thread_started_after_cleanup_does_not_bind_an_unrelated_pending_
     );
     assert_eq!(b.pending.pending_count().await, 0);
 }
+
+// ---------------------------------------------------------------------------
+// #1553 — the two sibling maps the #1444 cleanup does NOT touch.
+//
+// These tests are the executed form of #1553's "proven by reading every
+// writer/remover" claim: after a COMMITTED Track/Area delete, the deleted
+// Cards' thread ids are still present in `sealed_turn_threads` (read by
+// `turn_thread_is_sealed`) and in `active_turns` (read by
+// `active_turn_id_for_thread`). They assert the current behaviour, i.e. they
+// are red the day someone extends the cleanup — which is the point: the leak
+// is documented as executed fact, not as a source reading.
+// ---------------------------------------------------------------------------
+
+/// Give the track's live planner worker session a codex thread id, the shape
+/// `quiesce_shared_card_active_turn` reads to decide what to seal, and return
+/// that thread id.
+async fn seal_bait_thread(b: &Boot, track_id: &str, thread_id: &str) {
+    let session_id: String = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE track_id=?1 \
+         AND state IN ('starting','running','idle','turn_pending') ORDER BY id LIMIT 1",
+    )
+    .bind(track_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    let updated =
+        sqlx::query("UPDATE worker_sessions SET provider='codex', thread_id=?1 WHERE id=?2")
+            .bind(thread_id)
+            .bind(&session_id)
+            .execute(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(updated.rows_affected(), 1);
+}
+
+/// A committed Track delete leaves the sealed-thread verdict and the active
+/// turn id of its Cards behind.
+#[tokio::test]
+async fn a_committed_track_delete_leaks_sealed_and_active_turn_entries() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let track_id = managed_track(&b, &area_id, "leaks its turn maps").await;
+    let sealed_thread = "T-sealed-1553";
+    seal_bait_thread(&b, &track_id, sealed_thread).await;
+
+    // A kernel-minted thread with a live turn, i.e. the window between the
+    // mint and the database attribution write. Quiesce does not see it (no
+    // `thread_id` row for this Card), so nothing interrupts or removes it.
+    let card = card_ids(&b, &track_id).await[0].clone();
+    let turn_thread = mint_thread(&b, &card).await;
+    let turn_id = b
+        .shared_codex
+        .turn_start(
+            &turn_thread,
+            vec![calm_server::codex_appserver::InputItem::text("seed")],
+            &calm_server::planner_model::TurnModelSelection::inherit(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        b.shared_codex.active_turn_for_test(&turn_thread).as_deref(),
+        Some(turn_id.as_str()),
+        "premise: the turn is active before the delete"
+    );
+
+    let (status, body) = request(
+        b.app.clone(),
+        "DELETE",
+        &format!("/api/tracks/{track_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
+    assert!(b.repo.track_get(&track_id).await.unwrap().is_none());
+    // #1444's half did converge.
+    assert_eq!(b.shared_codex.cached_card_for_thread(&turn_thread), None);
+
+    assert!(
+        b.shared_codex.turn_thread_is_sealed_for_test(sealed_thread),
+        "#1553: sealed_turn_threads is expected to still hold the deleted card's thread"
+    );
+    assert_eq!(
+        b.shared_codex.active_turn_id_for_thread(&turn_thread),
+        Some(turn_id),
+        "#1553: active_turns is expected to still hold the deleted card's turn"
+    );
+}
+
+/// The Area twin: the same two entries survive a committed Area delete.
+#[tokio::test]
+async fn a_committed_area_delete_leaks_sealed_and_active_turn_entries() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let track_id = managed_track(&b, &area_id, "area leaks its turn maps").await;
+    let sealed_thread = "T-sealed-area-1553";
+    seal_bait_thread(&b, &track_id, sealed_thread).await;
+    let card = card_ids(&b, &track_id).await[0].clone();
+    let turn_thread = mint_thread(&b, &card).await;
+    let turn_id = b
+        .shared_codex
+        .turn_start(
+            &turn_thread,
+            vec![calm_server::codex_appserver::InputItem::text("seed")],
+            &calm_server::planner_model::TurnModelSelection::inherit(),
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = request(
+        b.app.clone(),
+        "DELETE",
+        &format!("/api/areas/{area_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
+    assert!(b.repo.area_get(&area_id).await.unwrap().is_none());
+    assert_eq!(b.shared_codex.cached_card_for_thread(&turn_thread), None);
+
+    assert!(
+        b.shared_codex.turn_thread_is_sealed_for_test(sealed_thread),
+        "#1553: sealed_turn_threads is expected to still hold the deleted card's thread"
+    );
+    assert_eq!(
+        b.shared_codex.active_turn_id_for_thread(&turn_thread),
+        Some(turn_id),
+        "#1553: active_turns is expected to still hold the deleted card's turn"
+    );
+}
