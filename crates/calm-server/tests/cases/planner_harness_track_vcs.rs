@@ -217,7 +217,7 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
     // outright, so a test that used it was exercising a shape production
     // never produces.
     harness
-        .observe_user_message_durable("hello without vcs".into())
+        .observe_user_message_durable("hello without vcs".into(), Vec::new())
         .await
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -362,7 +362,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
     // outright, so a test that used it was exercising a shape production
     // never produces.
     harness
-        .observe_user_message_durable("what changed?".into())
+        .observe_user_message_durable("what changed?".into(), Vec::new())
         .await
         .unwrap();
     wait_for_turn_count(&boot.daemon, 1).await;
@@ -898,6 +898,11 @@ fn turn_text(daemon: &SharedCodexAppServer, idx: usize) -> String {
     assert_eq!(items.len(), 1);
     match &items[0] {
         InputItem::Text { text } => text.clone(),
+        // #1505 S6. These cases issue text only; a `localImage` reaching here
+        // would mean the diff-block path started carrying attachments, and
+        // returning its path as "the turn text" would make every assertion
+        // below read a different thing than it names.
+        other => panic!("expected one text item, got {other:?}"),
     }
 }
 

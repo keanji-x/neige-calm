@@ -40,3 +40,41 @@ describe('fetch transport cancellation', () => {
     expect(fetchSignal?.aborted).toBe(true);
   });
 });
+
+describe('fetch transport bodies', () => {
+  function capture() {
+    const seen: { body?: BodyInit | null } = {};
+    vi.stubGlobal('fetch', vi.fn((_path: string, init?: RequestInit) => {
+      seen.body = init?.body ?? null;
+      return Promise.resolve(new Response('{}', { status: 200, statusText: 'OK' }));
+    }));
+    return seen;
+  }
+
+  /*
+   * #1505 S6 — `POST /planner/attachments` takes the image itself.
+   *
+   * `JSON.stringify` of a typed array is `{"0":137,"1":80,…}`: not the file,
+   * not an error, and nothing in the type system objects. The server would
+   * answer "not one of PNG/JPEG/GIF/WebP" and the reason would be a transport
+   * detail three layers away, so the bytes are asserted here.
+   */
+  it('sends a Uint8Array body as the bytes themselves', async () => {
+    const seen = capture();
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    await createFetchTransport().send({
+      method: 'POST', path: '/api/cards/c/planner/attachments', credentials: 'include',
+      headers: { 'content-type': 'image/png' }, body: bytes,
+    });
+    expect(seen.body).toBe(bytes);
+  });
+
+  it('still serializes an ordinary object body as JSON', async () => {
+    const seen = capture();
+    await createFetchTransport().send({
+      method: 'POST', path: '/api/cards/c/planner/input', credentials: 'include',
+      body: { text: 'hello' },
+    });
+    expect(seen.body).toBe('{"text":"hello"}');
+  });
+});

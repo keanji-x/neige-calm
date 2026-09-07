@@ -48,6 +48,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use calm_types::planner_attachment::{AttachmentId, PlannerAttachment};
 use calm_types::worker::WorkerSessionId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -345,10 +346,22 @@ pub(crate) async fn get_harness_items(
     // displace a real transcript row behind "Load earlier". The narrowing is in
     // the SQL — see `RepoRead::harness_item_list_transcript_by_card`, including
     // the note for the UI slice that will want to read plan rows.
-    let items = s
+    let mut items = s
         .repo
         .harness_item_list_transcript_by_card(card.id.as_str(), after_id, limit, descending)
         .await?;
+    // #1505 S6 review — the stored blob keeps the path, the wire does not.
+    //
+    // Redacted at the serialization boundary rather than at the write, because
+    // the stored blob is a verbatim record of what codex sent and is read for
+    // replay and diagnosis; rewriting it on the way IN would make the stored
+    // row a second, quieter truth. The frontend never reads a path from
+    // here — attachments reach the transcript through
+    // `HarnessInputSegment.attachments`, as an id and a server-built url — so
+    // nothing downstream loses anything.
+    for item in &mut items {
+        item.params = crate::planner_attachments::redact_local_image_paths(&item.params);
+    }
     Ok(Json(items))
 }
 
@@ -752,6 +765,18 @@ pub struct ResetPlannerCardResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SendPlannerInputRequest {
     pub text: String,
+    /// #1505 S6 — ids returned by `POST /api/cards/{id}/planner/attachments`.
+    ///
+    /// Naming an attachment here is what BINDS it: the bytes move out of the
+    /// server's sweepable staging area before this request writes anything to
+    /// the queue. So a message that reaches the queue always names files that
+    /// are already permanent, and an upload that is never named expires.
+    ///
+    /// `#[serde(default)]` so every existing client keeps working unchanged.
+    /// An id belonging to another card is a 400, as is naming the same one
+    /// twice or naming more than eight.
+    #[serde(default)]
+    pub attachments: Vec<AttachmentId>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -903,6 +928,20 @@ pub struct GetPlannerRunResponse {
     /// pre-PR1 entries with no id, plus anything past the page budget. The UI
     /// can say "N more not shown" and be honest about not offering buttons.
     pub pending_overflow: u32,
+    /// #1505 S6 — whether this card can take image attachments at all.
+    ///
+    /// It cannot when the track's workspace is a directory the person already
+    /// owns: attachments are written under `<workspace>/.neige/`, and neige
+    /// never writes into an attached workspace, so the upload endpoint answers
+    /// 400 there.
+    ///
+    /// Answered here rather than left for the client to work out, and answered
+    /// before the attempt rather than by the attempt. Half the tracks in
+    /// production were created with a `cwd` and are attached, so a paperclip
+    /// that looks available and then refuses would be the common case rather
+    /// than the edge. The criterion is the same function the upload runs
+    /// (`planner_attachments::attachment_root`), called rather than restated.
+    pub attachments_supported: bool,
 }
 
 /// #1505 PR1 — one addressable user entry from the harness pending queue.
@@ -925,6 +964,13 @@ pub struct PendingQueueEntry {
     pub rev: u32,
     /// Wall-clock ms at which the entry entered the queue.
     pub queued_at_ms: i64,
+    /// #1505 S6 — the images this queued message carries.
+    ///
+    /// Each is already bound, so its read-back url resolves now and will keep
+    /// resolving. The absolute host path the server holds beside each of these
+    /// is deliberately not here: the client addresses an attachment by id and
+    /// reads it back through `GET /planner/attachments/{id}`.
+    pub attachments: Vec<PlannerAttachment>,
 }
 
 /// Hard cap on entries in one `pending` page.
@@ -955,7 +1001,7 @@ const PENDING_PAGE_BYTES: usize = 1_536 * 1_024;
 /// unpageable, so the user could not even delete the thing that was blocking
 /// it, and the "the user can just delete it" answer that justifies the budget
 /// would be false.
-fn page_pending_entries(entries: &[QueueEntry]) -> (Vec<PendingQueueEntry>, u32) {
+fn page_pending_entries(card_id: &CardId, entries: &[QueueEntry]) -> (Vec<PendingQueueEntry>, u32) {
     let mut page = Vec::new();
     let mut used_bytes = 0usize;
     let mut overflow = 0u32;
@@ -987,6 +1033,11 @@ fn page_pending_entries(entries: &[QueueEntry]) -> (Vec<PendingQueueEntry>, u32)
             text: view.text.to_string(),
             rev: view.rev,
             queued_at_ms: view.queued_at_ms,
+            attachments: view
+                .attachments
+                .iter()
+                .map(|attachment| attachment.wire(card_id))
+                .collect(),
         });
     }
     (page, overflow)
@@ -1058,7 +1109,24 @@ pub(crate) const MAX_PLANNER_INPUT_CHARS: usize = 32_768;
 /// a second copy of "not empty, at most N characters" is a copy that can
 /// disagree.
 pub(crate) fn validate_planner_input_text(text: &str) -> Result<usize> {
-    if text.trim().is_empty() {
+    validate_planner_input(text, false)
+}
+
+/// The same check, told whether the message carries an image.
+///
+/// #1505 S6. Pasting a screenshot and pressing enter is the single most common
+/// thing this feature is for, so an empty text beside an attachment has to be
+/// a message rather than a refusal. The length limit is unchanged and still
+/// applies to whatever text there is: an attachment does not buy room, it
+/// buys the right to send none.
+///
+/// The edit route keeps calling [`validate_planner_input_text`], i.e. keeps
+/// requiring text. `PATCH` cannot change an entry's attachments in this slice,
+/// so it has no way to tell "this message is its picture" from "this message
+/// is now empty", and clearing the text of an image message is the second of
+/// those.
+pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Result<usize> {
+    if text.trim().is_empty() && !has_attachments {
         return Err(CalmError::BadRequest("text must not be empty".into()));
     }
     let char_count = text.chars().count();
@@ -1106,8 +1174,9 @@ pub(crate) async fn send_planner_input(
     Path(id): Path<String>,
     Json(body): Json<SendPlannerInputRequest>,
 ) -> Result<Json<SendPlannerInputResponse>> {
-    let (s, w, cs, id, text) = (s, w, cs, id, body.text);
-    let char_count = validate_planner_input_text(&text)?;
+    let SendPlannerInputRequest { text, attachments } = body;
+    let (s, w, cs, id) = (s, w, cs, id);
+    let char_count = validate_planner_input(&text, !attachments.is_empty())?;
 
     let card = s
         .repo
@@ -1140,6 +1209,38 @@ pub(crate) async fn send_planner_input(
         track: track.id.clone(),
         area: track.area_id.clone(),
     };
+    // #1505 S6 — bind BEFORE the entry exists.
+    //
+    // The order is the whole of the durability argument: the bytes leave the
+    // sweepable staging directory first, so an entry that reaches the queue
+    // always names files nothing will reclaim. The reverse order would leave a
+    // window in which a queued message points at a file the orphan sweep is
+    // still entitled to remove, and codex answers an unreadable image with
+    // placeholder text and no error.
+    //
+    // The failure direction this buys is a leak: a bind that succeeds and is
+    // followed by a failed enqueue leaves bytes in `bound/` that no message
+    // names. They cost the card's budget and nothing reclaims them (#1505
+    // GAP-A12). A dangling reference would cost a silently degraded turn,
+    // which is worse and is unobservable.
+    //
+    // `attachment_root` refuses an attached workspace, so a card on a track
+    // pointed at a directory the user owns gets a 400 here — and only when it
+    // actually names an attachment. A text-only message on such a track is
+    // untouched by any of this.
+    let attachments = if attachments.is_empty() {
+        Vec::new()
+    } else {
+        let root =
+            crate::planner_attachments::attachment_root(&track.workspace, &s.workspace_root)?;
+        crate::planner_attachments::bind::bind_attachments(
+            &root,
+            &card.id,
+            &attachments,
+            &s.planner_attachment_locks,
+        )
+        .await?
+    };
     // Migrate ONLY the AI-header path (empty placeholder card) to the live planner
     // session actor; the human web-UI path (`actor` == User) and any other actor
     // MUST stay unchanged so the audit log keeps distinguishing human input from
@@ -1154,13 +1255,17 @@ pub(crate) async fn send_planner_input(
         _ => planner_input_audit_actor(&actor, &card.id),
     };
 
-    let ack = harness.observe_user_message_durable(text).await?;
+    let attachment_count = attachments.len();
+    let ack = harness
+        .observe_user_message_durable(text, attachments)
+        .await?;
 
     tracing::info!(
         actor = %actor.as_str(),
         card_id = %card.id,
         runtime_id = %runtime.id,
         char_count,
+        attachment_count,
         "planner harness user message enqueued"
     );
 
@@ -1456,6 +1561,17 @@ pub(crate) async fn get_planner_run(
     // to show why.
     let selection =
         crate::planner_model::CardModelSelection::from_payload(&card.payload).unwrap_or_default();
+    // The same predicate the upload endpoint enforces, asked of the same
+    // function, so the answer cannot drift from the refusal.
+    let attachments_supported = match s.repo.track_get(card.track_id.as_str()).await? {
+        Some(track) => {
+            crate::planner_attachments::attachment_root(&track.workspace, &s.workspace_root).is_ok()
+        }
+        // No track means no workspace to write into. A missing track is
+        // already fatal for everything else on this card, but this field is
+        // not the place to raise it, and "supported" would be the wrong guess.
+        None => false,
+    };
     let dormant = GetPlannerRunResponse {
         card_id: card.id.clone(),
         worker_session_id: None,
@@ -1468,6 +1584,7 @@ pub(crate) async fn get_planner_run(
         token_usage: None,
         pending: Vec::new(),
         pending_overflow: 0,
+        attachments_supported,
     };
     let Some(runtime) = s
         .repo
@@ -1484,8 +1601,9 @@ pub(crate) async fn get_planner_run(
     // `snapshot_for` acquires a fistful of mutexes, so it is also the cheaper
     // way round.
     let snapshot = harness.snapshot().await;
-    let (pending, pending_overflow) = page_pending_entries(&snapshot.pending_entries());
+    let (pending, pending_overflow) = page_pending_entries(&card.id, &snapshot.pending_entries());
     Ok(Json(GetPlannerRunResponse {
+        attachments_supported,
         card_id: card.id,
         worker_session_id: Some(runtime.id.clone()),
         phase: Some(snapshot.phase),
@@ -1971,7 +2089,14 @@ pub(crate) async fn delete_card(
 mod pending_page_tests {
     use super::{PENDING_PAGE_BYTES, PENDING_PAGE_MAX, page_pending_entries};
     use crate::harness::{HARNESS_MODE, HarnessSnapshot, Observation, QueueEntry};
+    use crate::ids::CardId;
     use serde_json::json;
+
+    /// Any card. These cases are about which entries reach the page, not about
+    /// which card they belong to; the id only reaches the read-back urls.
+    fn test_card_id() -> CardId {
+        CardId::from("card-paging")
+    }
 
     /// A legacy entry built the ONLY way production can produce one: by
     /// deserializing a row whose `pending_entry_meta` slot is absent.
@@ -1988,7 +2113,7 @@ mod pending_page_tests {
     }
 
     fn user(text: &str) -> QueueEntry {
-        QueueEntry::user_message(text.to_string(), None)
+        QueueEntry::user_message(text.to_string(), None, Vec::new())
     }
 
     fn system() -> QueueEntry {
@@ -2004,7 +2129,7 @@ mod pending_page_tests {
     #[test]
     fn only_addressable_user_entries_reach_the_page() {
         let entries = vec![system(), user("mine"), legacy("older")];
-        let (page, overflow) = page_pending_entries(&entries);
+        let (page, overflow) = page_pending_entries(&test_card_id(), &entries);
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].text, "mine");
         assert_eq!(
@@ -2018,7 +2143,7 @@ mod pending_page_tests {
         let entries = (0..PENDING_PAGE_MAX + 5)
             .map(|i| user(&format!("m{i}")))
             .collect::<Vec<_>>();
-        let (page, overflow) = page_pending_entries(&entries);
+        let (page, overflow) = page_pending_entries(&test_card_id(), &entries);
         assert_eq!(page.len(), PENDING_PAGE_MAX);
         assert_eq!(overflow, 5);
         assert_eq!(page[0].text, "m0", "the page starts at the queue head");
@@ -2028,7 +2153,7 @@ mod pending_page_tests {
     fn the_page_is_capped_by_byte_budget_and_entries_stay_whole() {
         let big = "x".repeat(PENDING_PAGE_BYTES / 2 + 1);
         let entries = vec![user(&big), user(&big), user("tiny")];
-        let (page, overflow) = page_pending_entries(&entries);
+        let (page, overflow) = page_pending_entries(&test_card_id(), &entries);
         assert_eq!(page.len(), 1, "the second entry would cross the budget");
         assert_eq!(
             page[0].text.len(),
@@ -2054,7 +2179,7 @@ mod pending_page_tests {
     fn an_over_budget_head_entry_is_still_returned_whole() {
         let huge = "y".repeat(PENDING_PAGE_BYTES + 4_096);
         let entries = vec![user(&huge), user("behind it")];
-        let (page, overflow) = page_pending_entries(&entries);
+        let (page, overflow) = page_pending_entries(&test_card_id(), &entries);
         assert_eq!(page.len(), 1, "the budget never returns an empty page");
         assert_eq!(page[0].text.len(), huge.len());
         assert_eq!(overflow, 1);
@@ -2062,7 +2187,7 @@ mod pending_page_tests {
 
     #[test]
     fn an_empty_queue_pages_to_nothing() {
-        let (page, overflow) = page_pending_entries(&[]);
+        let (page, overflow) = page_pending_entries(&test_card_id(), &[]);
         assert!(page.is_empty());
         assert_eq!(overflow, 0);
     }

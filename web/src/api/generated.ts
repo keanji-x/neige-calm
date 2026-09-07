@@ -2034,6 +2034,22 @@ export interface components {
          */
         GetPlannerRunResponse: {
             /**
+             * @description #1505 S6 — whether this card can take image attachments at all.
+             *
+             *     It cannot when the track's workspace is a directory the person already
+             *     owns: attachments are written under `<workspace>/.neige/`, and neige
+             *     never writes into an attached workspace, so the upload endpoint answers
+             *     400 there.
+             *
+             *     Answered here rather than left for the client to work out, and answered
+             *     before the attempt rather than by the attempt. Half the tracks in
+             *     production were created with a `cwd` and are attached, so a paperclip
+             *     that looks available and then refuses would be the common case rather
+             *     than the edge. The criterion is the same function the upload runs
+             *     (`planner_attachments::attachment_root`), called rather than restated.
+             */
+            attachments_supported: boolean;
+            /**
              * @description #1505 S4 — why this conversation's queue is not draining, or `null`
              *     when there is nothing worth saying. `null` almost always.
              *
@@ -2135,6 +2151,24 @@ export interface components {
          *     reversible without teaching a reader how Rust joined or phrased it.
          */
         HarnessInputSegment: {
+            /**
+             * @description #1505 S6 — the images this segment carried into `turn/start`.
+             *
+             *     Carried here rather than left for the client to dig out of the
+             *     transcript row's own `params`. Two reasons, and the second one is why
+             *     the first is not merely tidier: that blob is codex's own item, and a
+             *     transcript rendering from it would have to turn the server's private
+             *     naming of the bytes back into a REST url — a second, guessable naming
+             *     of the same thing. The id is the naming; the read-back url is built
+             *     from it by the same server function the upload response used. Because
+             *     nothing reads a path from that blob, the transcript route redacts the
+             *     one this slice put there (#1505 S6 review).
+             *
+             *     `#[serde(default)]` because every segment persisted before this slice
+             *     has no such key, and an old transcript is a transcript with no
+             *     attachments rather than an unreadable one.
+             */
+            attachments?: components["schemas"]["PlannerAttachment"][];
             presentation: components["schemas"]["HarnessInputPresentation"];
             text: string;
         };
@@ -2503,6 +2537,15 @@ export interface components {
         };
         /** @description #1505 PR1 — one addressable user entry from the harness pending queue. */
         PendingQueueEntry: {
+            /**
+             * @description #1505 S6 — the images this queued message carries.
+             *
+             *     Each is already bound, so its read-back url resolves now and will keep
+             *     resolving. The absolute host path the server holds beside each of these
+             *     is deliberately not here: the client addresses an attachment by id and
+             *     reads it back through `GET /planner/attachments/{id}`.
+             */
+            attachments: components["schemas"]["PlannerAttachment"][];
             /** @description Stable identity. Never empty, and unique within one response. */
             entry_id: string;
             /**
@@ -2536,6 +2579,17 @@ export interface components {
             id: components["schemas"]["AttachmentId"];
             /** Format: int64 */
             size: number;
+            /**
+             * @description Where to read the bytes. Also derived, by [`attachment_url`].
+             *
+             *     #1505 S6. Carried rather than left for the client to build: the
+             *     transcript and the pending-queue read both need a way to reach these
+             *     bytes, and a client that assembles `/api/cards/{card}/planner/
+             *     attachments/{id}` for itself is a second spelling of a route only the
+             *     router should own. The host path the server holds beside this is NOT
+             *     here and must not be.
+             */
+            url: string;
         };
         PlannerInputMutationResponse: {
             card_id: string;
@@ -2855,6 +2909,19 @@ export interface components {
             path: string;
         };
         SendPlannerInputRequest: {
+            /**
+             * @description #1505 S6 — ids returned by `POST /api/cards/{id}/planner/attachments`.
+             *
+             *     Naming an attachment here is what BINDS it: the bytes move out of the
+             *     server's sweepable staging area before this request writes anything to
+             *     the queue. So a message that reaches the queue always names files that
+             *     are already permanent, and an upload that is never named expires.
+             *
+             *     `#[serde(default)]` so every existing client keeps working unchanged.
+             *     An id belonging to another card is a 400, as is naming the same one
+             *     twice or naming more than eight.
+             */
+            attachments?: components["schemas"]["AttachmentId"][];
             text: string;
         };
         SendPlannerInputResponse: {
@@ -3877,11 +3944,13 @@ export interface components {
              * @description Absolute REST path the browser reads the bytes back from. Server-built:
              *     the client never composes a path of its own.
              *
-             *     Not a durable link yet. As of S6-PR1 nothing binds an attachment to a
-             *     queue entry, so every upload stays in the server's `staging/` directory
-             *     and is swept once it is older than the 24h orphan TTL; after that this
-             *     path answers 400. S6-PR2 adds the bind that makes an attachment
-             *     permanent.
+             *     Durable only once the attachment is bound. An upload lands in the
+             *     server's `staging/` directory, and a staged attachment is swept once it
+             *     is older than the 24h orphan TTL, after which this path answers 400.
+             *     Sending or queueing a message that names the id binds it — the bytes
+             *     move into `bound/`, which nothing sweeps — and from that moment this
+             *     path is stable for the life of the card. So the window in which this
+             *     url can stop working is exactly "uploaded, never sent, 24 hours".
              */
             url: string;
         };

@@ -14,6 +14,7 @@ use crate::harness::queue::{QueueEntry, QueueEntryId};
 use crate::harness::state::{HarnessState, IssuingKind};
 use crate::harness::token_usage::TokenUsage;
 use crate::model::HarnessInputSegment;
+use crate::planner_attachments::bind::BoundAttachment;
 
 // #679 PR1 — `HarnessPhaseTag` moved to `calm_types::harness` (TS-exported,
 // referenced by `Event::HarnessPhaseChanged`). Re-exported so the
@@ -48,7 +49,8 @@ pub struct IssuedInputSegments {
 ///
 /// # Adding a field here (read this first)
 ///
-/// The three fields are **required**, with no `#[serde(default)]`, and that is
+/// The three identity fields are **required**, with no `#[serde(default)]`,
+/// and that is
 /// safe only because of [`deserialize_pending_entry_meta`]: a slot this type
 /// cannot parse degrades to `None` instead of failing the whole snapshot. The
 /// alternative — defaulting each field — was considered and rejected: it turns
@@ -57,7 +59,18 @@ pub struct IssuedInputSegments {
 /// happily match. Degrading the slot lands on `LegacyUser`, a state that is
 /// already designed, already bounded (one drain) and already tested.
 ///
-/// So a later slice MAY add a required field here. What it must NOT do is
+/// #1505 S6 added `attachments`, and added it **defaulted** rather than
+/// required, which is the opposite of the three above. The reason is that the
+/// degrade is only the right answer when there is no true reading of an old
+/// row. For an id there is none — a row with no id names no entry. For
+/// attachments there is one, and it is exact: a row written before this slice
+/// belongs to a message that could not have carried an image, so "no
+/// attachments" is not a fallback, it is the fact. Requiring the key would
+/// demote every entry queued across the upgrade to `LegacyUser` — losing the
+/// addressability PR1 exists to provide — in exchange for nothing.
+///
+/// So a later slice MAY add a required field here; whether it should turns on
+/// that same question. What it must NOT do is
 /// remove the lenient decoder, because `from_value_strict` panics on failure
 /// and runs on the boot path: a strict decode of a field that PR1-era rows do
 /// not carry is a permanently dead harness for every live card, and no test in
@@ -69,6 +82,18 @@ pub struct QueueEntryMeta {
     pub id: QueueEntryId,
     pub rev: u32,
     pub queued_at_ms: i64,
+    /// #1505 S6 — the images this entry carries, with the absolute path each
+    /// was bound to.
+    ///
+    /// The path is persisted rather than recomputed. A harness knows its card
+    /// and its runtime; it does not know its workspace directory, and giving
+    /// it one so it could rebuild a path it was already told would add a
+    /// second derivation of the same name — the kind that agrees until it
+    /// does not. Recording the path the bind verified is also the literal
+    /// promise the design makes: the path is decided once, before the entry
+    /// exists, and nothing later recomputes it.
+    #[serde(default)]
+    pub attachments: Vec<BoundAttachment>,
 }
 
 /// Decode one of the queue's parallel arrays ELEMENT BY ELEMENT, so a single
@@ -423,6 +448,7 @@ impl HarnessSnapshot {
                         queued_at_ms: meta.queued_at_ms,
                         envelope_id,
                         message_ids,
+                        attachments: meta.attachments.clone(),
                     },
                     (Observation::UserMessage { text }, None) => {
                         QueueEntry::legacy_user(text.clone(), envelope_id, message_ids)
@@ -453,11 +479,13 @@ impl HarnessSnapshot {
                     id,
                     rev,
                     queued_at_ms,
+                    attachments,
                     ..
                 } => Some(QueueEntryMeta {
                     id: id.clone(),
                     rev: *rev,
                     queued_at_ms: *queued_at_ms,
+                    attachments: attachments.clone(),
                 }),
                 // A legacy entry is written back exactly as it was read: text
                 // present, meta slot empty. That is what keeps it legacy across
@@ -507,7 +535,7 @@ mod pending_side_array_tests {
     fn queued(texts: &[&str]) -> Vec<QueueEntry> {
         texts
             .iter()
-            .map(|text| QueueEntry::user_message((*text).to_string(), None))
+            .map(|text| QueueEntry::user_message((*text).to_string(), None, Vec::new()))
             .collect()
     }
 
@@ -791,7 +819,7 @@ mod tests {
     /// entries and the #1449 message ids riding the same index.
     #[test]
     fn set_pending_entries_writes_every_parallel_array_in_step() {
-        let user = QueueEntry::user_message("hello".into(), Some(9));
+        let user = QueueEntry::user_message("hello".into(), Some(9), Vec::new());
         let user_id = user.id().cloned().expect("a fresh user entry has an id");
         let system = QueueEntry::system(
             Observation::TrackGoal {
@@ -874,6 +902,7 @@ mod tests {
         let segments = vec![HarnessInputSegment {
             presentation: HarnessInputPresentation::SystemReportEdited,
             text: "report changed".into(),
+            attachments: Vec::new(),
         }];
         snapshot.issued_input_segments = Some(IssuedInputSegments {
             turn_id: "turn-structured".into(),
@@ -904,7 +933,7 @@ mod tests {
     fn an_unknown_key_from_a_future_binary_is_ignored_not_rejected() {
         let mut row = serde_json::to_value(HarnessSnapshot::initial(
             0,
-            vec![QueueEntry::user_message("hello".into(), None)],
+            vec![QueueEntry::user_message("hello".into(), None, Vec::new())],
         ))
         .expect("serialize snapshot");
         row["pending_entry_meta_v2"] = json!([{"steer_state": "queued"}]);

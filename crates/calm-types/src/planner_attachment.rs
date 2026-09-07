@@ -16,6 +16,8 @@
 //! direct child of the directory the server chose.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::ids::CardId;
 use ts_rs::TS;
 use utoipa::ToSchema;
 
@@ -178,6 +180,20 @@ impl<'de> Deserialize<'de> for AttachmentId {
     }
 }
 
+/// The REST path an attachment's bytes are read back from.
+///
+/// The single builder. Every place a client is handed a way to reach these
+/// bytes — the upload response, a queued message, a transcript segment — goes
+/// through this function, so no client has to compose a path of its own and
+/// there is no second spelling of the route to keep in step with the router.
+pub fn attachment_url(card_id: &CardId, id: &AttachmentId) -> String {
+    format!(
+        "/api/cards/{}/planner/attachments/{}",
+        card_id.as_str(),
+        id.as_str()
+    )
+}
+
 /// One attachment as the frontend sees it in a queue entry or a transcript
 /// segment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
@@ -189,17 +205,29 @@ pub struct PlannerAttachment {
     /// [`PlannerAttachment::new`].
     pub content_type: String,
     pub size: u64,
+    /// Where to read the bytes. Also derived, by [`attachment_url`].
+    ///
+    /// #1505 S6. Carried rather than left for the client to build: the
+    /// transcript and the pending-queue read both need a way to reach these
+    /// bytes, and a client that assembles `/api/cards/{card}/planner/
+    /// attachments/{id}` for itself is a second spelling of a route only the
+    /// router should own. The host path the server holds beside this is NOT
+    /// here and must not be.
+    pub url: String,
 }
 
 impl PlannerAttachment {
-    /// `content_type` is computed here rather than accepted, so the only way to
-    /// build one is with a `Content-Type` that agrees with the id.
-    pub fn new(id: AttachmentId, size: u64) -> Self {
+    /// `content_type` and `url` are computed here rather than accepted, so the
+    /// only way to build one is with a `Content-Type` and a path that agree
+    /// with the id.
+    pub fn new(card_id: &CardId, id: AttachmentId, size: u64) -> Self {
         let content_type = id.format().mime().to_string();
+        let url = attachment_url(card_id, &id);
         PlannerAttachment {
             id,
             content_type,
             size,
+            url,
         }
     }
 }
@@ -215,11 +243,13 @@ pub struct UploadAttachmentResponse {
     /// Absolute REST path the browser reads the bytes back from. Server-built:
     /// the client never composes a path of its own.
     ///
-    /// Not a durable link yet. As of S6-PR1 nothing binds an attachment to a
-    /// queue entry, so every upload stays in the server's `staging/` directory
-    /// and is swept once it is older than the 24h orphan TTL; after that this
-    /// path answers 400. S6-PR2 adds the bind that makes an attachment
-    /// permanent.
+    /// Durable only once the attachment is bound. An upload lands in the
+    /// server's `staging/` directory, and a staged attachment is swept once it
+    /// is older than the 24h orphan TTL, after which this path answers 400.
+    /// Sending or queueing a message that names the id binds it — the bytes
+    /// move into `bound/`, which nothing sweeps — and from that moment this
+    /// path is stable for the life of the card. So the window in which this
+    /// url can stop working is exactly "uploaded, never sent, 24 hours".
     pub url: String,
 }
 
@@ -282,12 +312,35 @@ mod tests {
     }
 
     #[test]
-    fn attachment_content_type_is_derived_from_the_id() {
+    fn attachment_content_type_and_url_are_derived_from_the_id() {
         let id = AttachmentId::parse("0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.webp").unwrap();
+        let card = CardId::from("card-9");
+        let attachment = PlannerAttachment::new(&card, id, 7);
         assert_eq!(
-            PlannerAttachment::new(id, 7).content_type,
-            "image/webp",
+            attachment.content_type, "image/webp",
             "content type must come from the id, never from a caller header"
         );
+        assert_eq!(
+            attachment.url,
+            "/api/cards/card-9/planner/attachments/0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.webp",
+            "the url must come from the same builder the upload response uses"
+        );
+    }
+
+    /// The host path is the one thing about an attachment that must never
+    /// reach a browser, and this type is the shape that reaches one.
+    #[test]
+    fn the_wire_shape_has_exactly_four_keys_and_no_path() {
+        let id = AttachmentId::parse("0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png").unwrap();
+        let json =
+            serde_json::to_value(PlannerAttachment::new(&CardId::from("card-9"), id, 7)).unwrap();
+        let mut keys = json
+            .as_object()
+            .expect("an attachment is an object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(keys, ["contentType", "id", "size", "url"]);
     }
 }

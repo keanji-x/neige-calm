@@ -1095,7 +1095,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // harness this request starts drains it almost at once. #1449's
             // drain hook parks the runtime immediately before the drain, which
             // turns the window into a held state the endpoint can be read in.
-            entries.push(QueueEntry::user_message(text.to_string(), None));
+            // No attachments: this is the card's seeded first message, minted
+            // by the kernel from a title or a briefing. Nothing on this path
+            // has ever seen an upload.
+            entries.push(QueueEntry::user_message(text.to_string(), None, Vec::new()));
             seeded = true;
         }
         // One write for whatever the pushes above added — briefing, harvested
@@ -2737,8 +2740,16 @@ mod tests {
             )
             .expect("a system context wraps as a system entry"),
         );
-        entries.push(QueueEntry::user_message("first thing said".into(), None));
-        entries.push(QueueEntry::user_message("second thing said".into(), None));
+        entries.push(QueueEntry::user_message(
+            "first thing said".into(),
+            None,
+            Vec::new(),
+        ));
+        entries.push(QueueEntry::user_message(
+            "second thing said".into(),
+            None,
+            Vec::new(),
+        ));
         snapshot.set_pending_entries(entries);
         // #1449 — the ids must travel with the text: the decoder is transport,
         // not a producer.
@@ -2783,6 +2794,7 @@ mod tests {
             vec![QueueEntry::user_message(
                 "said before the upgrade".into(),
                 None,
+                Vec::new(),
             )],
         );
         let mut row = serde_json::to_value(&seeded).expect("serialize snapshot");
@@ -2857,7 +2869,8 @@ mod tests {
     /// of the move and not something this fix may take away.
     #[test]
     fn a_harvest_carries_an_addressable_id_and_mints_only_for_one_without() {
-        let addressable = QueueEntry::user_message("please look at the report".into(), None);
+        let addressable =
+            QueueEntry::user_message("please look at the report".into(), None, Vec::new());
         let claimed = addressable
             .id()
             .expect("a minted user entry is addressable")

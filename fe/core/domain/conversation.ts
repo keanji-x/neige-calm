@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type {
   HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
-  TrackConversationSummary,
+  PlannerAttachment, TrackConversationSummary, UploadAttachmentResponse,
 } from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
@@ -177,6 +177,15 @@ export type ConversationTurn = Readonly<{
   /** Verbatim. Line breaks are the author's and are preserved on render. */
   text: string;
   atMs: number;
+  /**
+   * #1505 S6 — images this turn carried, each with the server-built url its
+   * bytes are read back from.
+   *
+   * Optional because most turns have none and because every entry minted
+   * before this slice has none; absent and empty mean the same thing here,
+   * which is why nothing branches on which one it is.
+   */
+  attachments?: readonly PlannerAttachment[];
 }>;
 
 /** A user turn accepted optimistically, carrying the newest persisted item the
@@ -247,9 +256,18 @@ const harnessInputPresentationSchema: z.ZodType<HarnessInputPresentation> = z.en
   'system_task_failed',
 ]);
 
+const plannerAttachmentSchema: z.ZodType<PlannerAttachment> = z.object({
+  id: z.string(), contentType: z.string(), size: z.number(), url: z.string(),
+});
+
 const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.object({
   presentation: harnessInputPresentationSchema,
   text: z.string(),
+  /* Defaulted rather than required: every segment persisted before #1505 S6
+     has no such key, and a transcript row that fails to decode is a row that
+     disappears from the conversation. An old segment has no attachments, which
+     is a fact rather than a fallback. */
+  attachments: z.array(plannerAttachmentSchema).optional().default([]),
 });
 
 const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
@@ -360,6 +378,16 @@ export type PlannerRun = Readonly<{
    * It does not diagnose a turn that failed mid-flight.
    */
   blocked_reason: string | null;
+  /**
+   * #1505 S6 — whether this card can take image attachments.
+   *
+   * False on a track whose workspace is a folder the person owns, where the
+   * server refuses uploads. Defaulted to false rather than true: an
+   * unavailable control with a reason is a smaller wrong than a control that
+   * looks live and then refuses, and this field is absent exactly when the
+   * server is older than the feature.
+   */
+  attachments_supported: boolean;
 }>;
 
 export const HARNESS_ITEMS_PAGE_LIMIT = 300;
@@ -390,6 +418,9 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
          absence would only hide the day one of them stopped being sent. */
       model: z.string().nullable(), reasoning_effort: z.string().nullable(),
       blocked_reason: z.string().nullable(),
+      /* Absent on a server older than #1505 S6, and false is the safe read:
+         a control that looks live and then refuses is the worse wrong. */
+      attachments_supported: z.boolean().optional().default(false),
     }),
   };
 }
@@ -643,13 +674,60 @@ export type SentPlannerInput = Readonly<{
   entry_id: string | null;
 }>;
 
-export function sendPlannerInputOperation(cardId: string, text: string): ApiOperation<SentPlannerInput> {
+export function sendPlannerInputOperation(
+  cardId: string, text: string, attachments: readonly string[] = [],
+): ApiOperation<SentPlannerInput> {
   return {
-    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input`, body: { text },
+    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/planner/input`,
+    /* The key is omitted when there is nothing in it rather than sent empty.
+       The field is `#[serde(default)]` on the server, so both spellings are
+       accepted; sending the empty array would change the bytes of every
+       text-only send this app has ever made, for no gain, and the tests that
+       pin those bodies would then be asserting this slice rather than the
+       thing they were written for. */
+    body: attachments.length === 0 ? { text } : { text, attachments },
     responseSchema: z.object({
       card_id: z.string(),
       worker_session_id: z.string(),
       entry_id: z.string().nullable().optional().transform((value) => value ?? null),
+    }),
+  };
+}
+
+/**
+ * The four image formats the upload endpoint accepts.
+ *
+ * A strict subset of what codex can decode, chosen server-side: these are the
+ * ones whose source bytes it keeps. It is restated here only to fill the file
+ * picker's `accept` and to refuse a wrong pick before a round trip — the
+ * server's magic-number sniff is the judgement, and a file that lies about its
+ * type is refused there, not here.
+ */
+export const ATTACHABLE_IMAGE_TYPES = Object.freeze(
+  ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const,
+);
+
+/** Mirrors `MAX_ATTACHMENTS_PER_MESSAGE` in `planner_attachments::bind`. */
+export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
+
+/**
+ * Upload one image and get back the id a message names it by.
+ *
+ * The body is raw bytes, not multipart and not base64: the endpoint takes the
+ * file itself and decides its format from the magic number. `content-type` is
+ * declared here because the operation's own headers are merged *over* the
+ * `application/json` the client adds for any body.
+ */
+export function uploadPlannerAttachmentOperation(
+  cardId: string, bytes: Uint8Array, contentType: string,
+): ApiOperation<UploadAttachmentResponse> {
+  return {
+    method: 'POST',
+    path: `/api/cards/${encodeURIComponent(cardId)}/planner/attachments`,
+    body: bytes,
+    headers: { 'content-type': contentType },
+    responseSchema: z.object({
+      attachmentId: z.string(), contentType: z.string(), size: z.number(), url: z.string(),
     }),
   };
 }
@@ -1041,11 +1119,16 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
         text = text.slice(USER_SAYS.length);
       }
       text = text.trim();
-      if (text === '') return [];
+      const attachments = segment.attachments;
+      /* #1505 S6 — an image with no words is a message. Dropping on empty text
+         alone would make the most common thing this feature is for — paste a
+         screenshot, press enter — vanish from the transcript it was just added
+         to, while the agent had in fact received it. */
+      if (text === '' && attachments.length === 0) return [];
       const id = segments.length === 1
         ? String(item.id) : `${item.id}:${index}`;
       if (segment.presentation === 'user') {
-        return [{ id, author: 'you' as const, text, atMs }];
+        return [{ id, author: 'you' as const, text, atMs, attachments }];
       }
       return [{
         id, author: 'system' as const,
@@ -1510,17 +1593,41 @@ function userTextMatchesEcho(userText: string, echoText: string): boolean {
   return user !== '' && echo !== '' && (user === echo || user.startsWith(`${echo}\n`));
 }
 
+/**
+ * Whether a persisted row is the same send as an echo that had no words.
+ *
+ * #1505 S6. `userTextMatchesEcho` requires both sides to be non-empty, and it
+ * is right to: two blank strings are not evidence of anything. But an
+ * image-only message is exactly that — a blank string — so without a second
+ * criterion its echo can never be reconciled, and an echo that is never
+ * reconciled is counted as an unresolved send forever, which is the dead
+ * composer this slice must not reintroduce.
+ *
+ * The criterion is the attachment ids, and they are the right one because they
+ * are minted by the server, one per upload: two sends cannot share one, and a
+ * row carrying the id IS the row that carried that image.
+ */
+function userAttachmentsMatchEcho(
+  turn: ConversationTurn, echo: ConversationTurn,
+): boolean {
+  const echoIds = echo.attachments ?? [];
+  if (echo.text.trim() !== '' || echoIds.length === 0) return false;
+  const rowIds = new Set((turn.attachments ?? []).map((attachment) => attachment.id));
+  return echoIds.every((attachment) => rowIds.has(attachment.id));
+}
+
 /** Reconcile recent persisted user rows with optimistic echoes one-to-one. */
 export function reconcileUserEchoes(
   serverTurns: readonly ConversationMessage[],
   echoes: readonly ConversationTurn[],
 ): readonly ConversationTurn[] {
-  const userTexts = serverTurns.filter((turn) => turn.author === 'you')
-    .slice(-ECHO_RECONCILIATION_LOOKBACK).map((turn) => turn.text);
+  const userTurns = serverTurns.filter((turn): turn is ConversationTurn => turn.author === 'you')
+    .slice(-ECHO_RECONCILIATION_LOOKBACK);
   const matchedUserIndexes = new Set<number>();
   return echoes.filter((echo) => {
-    const match = userTexts.findIndex((text, index) =>
-      !matchedUserIndexes.has(index) && userTextMatchesEcho(text, echo.text));
+    const match = userTurns.findIndex((turn, index) =>
+      !matchedUserIndexes.has(index)
+      && (userTextMatchesEcho(turn.text, echo.text) || userAttachmentsMatchEcho(turn, echo)));
     if (match < 0) return true;
     matchedUserIndexes.add(match);
     return false;

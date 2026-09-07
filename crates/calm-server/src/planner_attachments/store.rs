@@ -10,14 +10,17 @@
 //! 1. `.neige/` is in `.git/info/exclude` — **before** any byte is written, so
 //!    a worker running `git add -A` in the same workspace can never see the
 //!    file at all;
-//! 2. the card's byte budget is measured once, and every frame is checked
+//! 2. the staging sweep runs, so the measurement below is taken against what
+//!    the card actually still holds rather than against bytes that have
+//!    already expired;
+//! 3. the card's byte budget is measured once, and every frame is checked
 //!    against that number plus the bytes read so far — the card's turn, taken
 //!    just before the measurement, is what keeps the number true for the whole
 //!    stream;
-//! 3. the bytes go to `<id>.part`;
-//! 4. `sync_all`;
-//! 5. `rename(<id>.part -> <id>)`;
-//! 6. only now is the id returned.
+//! 4. the bytes go to `<id>.part`;
+//! 5. `sync_all`;
+//! 6. `rename(<id>.part -> <id>)`;
+//! 7. only now is the id returned.
 //!
 //! A client therefore cannot reference an attachment that is not yet durable
 //! under its final name, and a crash between 4 and 5 leaves a `.part` that the
@@ -31,11 +34,11 @@
 //! * the budget is a read-then-write. Without the lock, N concurrent uploads on
 //!   a fresh card all measure `used_bytes == 0` before any of them renames, and
 //!   N * [`MAX_ATTACHMENT_BYTES`] lands however small the budget is;
-//! * the staging sweep at the end of an upload deletes by age, and an upload
-//!   still streaming has a `.part` whose mtime stopped advancing when its last
-//!   frame arrived. A stalled client's `.part` would age past
-//!   [`super::gc::ORPHAN_TTL`], a second upload's sweep would unlink it, and
-//!   the first upload's `rename` would then fail on a file it still holds open.
+//! * the staging sweep deletes by age, and an upload still streaming has a
+//!   `.part` whose mtime stopped advancing when its last frame arrived. A
+//!   stalled client's `.part` would age past [`super::gc::ORPHAN_TTL`], a
+//!   second upload's sweep would unlink it, and the first upload's `rename`
+//!   would then fail on a file it still holds open.
 //!
 //! The cost is that one card's uploads are serial, and the lane has to have an
 //! end: a client that opens a POST and stalls would otherwise hold it for as
@@ -67,10 +70,10 @@ use crate::ids::CardId;
 use crate::operation::workspace_lease::ensure_git_exclude_entry;
 use crate::per_card_lock::{PerCardLocks, lock_card};
 
+use super::dir;
 use super::sniff::{SNIFF_PREFIX_BYTES, sniff};
 use super::{
-    MAX_ATTACHMENT_BYTES, NEIGE_GIT_EXCLUDE_ENTRY, PER_CARD_ATTACHMENT_BUDGET, StagingDir,
-    staging_dir, used_bytes,
+    MAX_ATTACHMENT_BYTES, NEIGE_GIT_EXCLUDE_ENTRY, PER_CARD_ATTACHMENT_BUDGET, used_bytes,
 };
 
 /// What an accepted upload became.
@@ -121,38 +124,46 @@ pub async fn store_upload(
     // the module docs: the budget and the sweep both need it.
     let _turn = lock_card(locks, card_id.as_str()).await;
 
-    // (2) Cheap refusal before a single byte is read off the socket.
-    let measured_root = root.to_path_buf();
-    let measured_card = card_id.clone();
-    let already_used = blocking(move || used_bytes(&measured_root, &measured_card)).await?;
+    // Both directories, resolved through the `openat2` primitive, before any
+    // byte is written. `staging/` is created here because the upload is the one
+    // caller that can arrive before the card has any directories at all.
+    let dirs = std::sync::Arc::new(dir::create_card_dirs(repo_root, root, card_id).await?);
+
+    // (2) Reclaim before measuring.
+    //
+    // #1505 S6 review. This used to run only AFTER a successful upload, which
+    // made the budget a one-way door: a card at or over its ceiling refuses
+    // every upload at the check below, so the sweep that would free space
+    // never ran, so the card stayed over its ceiling forever. The orphan TTL
+    // was supposed to be the way out and structurally could not be.
+    //
+    // The over-budget state is reachable without any abuse: a bind that dies
+    // between its rename and its unlink leaves the same bytes in both counted
+    // directories. Sweeping first means an expired staged file is gone before
+    // the number that gates this request is taken.
+    //
+    // Reachability changed with the reordering — the sweep used to run only
+    // after a successful upload, and now runs on every request before the
+    // refusal. That is safe for one reason and it is not the ordering: the
+    // sweep is handed a descriptor for THIS card's `staging/`, so there is no
+    // path for it to walk out of. Before the descriptors, this reordering was
+    // the difference between a deletion primitive an attacker had to get past
+    // sniff, size and budget to reach, and one every POST reached.
+    let swept = std::sync::Arc::clone(&dirs);
+    blocking(move || {
+        super::gc::sweep_staging(swept.staging());
+        Ok(())
+    })
+    .await?;
+
+    // (3) Cheap refusal before a single byte is read off the socket.
+    let measured = std::sync::Arc::clone(&dirs);
+    let already_used = blocking(move || used_bytes(&measured)).await?;
     if already_used >= PER_CARD_ATTACHMENT_BUDGET {
         return Err(budget_exhausted());
     }
 
-    let staging = staging_dir(root, card_id);
-    let staging = staging_dir_or_refuse(staging).await?;
-
-    let stored = write_body(&staging, already_used, deadline, body).await;
-    if stored.is_ok() {
-        // The sweep is here rather than on a timer: this is the only moment the
-        // directory is known to have changed, and its cardinality is tiny.
-        //
-        // It is dispatched while this upload still holds the card's turn. That
-        // is not a guarantee about when the blocking task RUNS: dropping a
-        // `spawn_blocking` handle does not cancel the closure, so if the client
-        // disconnects here the handler future — and with it `_turn` — is
-        // dropped while the sweep may still be queued or running. What keeps
-        // that harmless is not the lock but the sweep's own rule: it only
-        // removes entries older than `ORPHAN_TTL`, and a `.part` another
-        // upload opened moments ago is not one of them.
-        let swept = staging.clone();
-        blocking(move || {
-            super::gc::sweep_staging(&swept);
-            Ok(())
-        })
-        .await?;
-    }
-    stored
+    write_body(&dirs, already_used, deadline, body).await
 }
 
 /// Run one synchronous step off the runtime.
@@ -180,24 +191,6 @@ fn budget_exhausted() -> CalmError {
          space.",
         PER_CARD_ATTACHMENT_BUDGET / (1024 * 1024)
     ))
-}
-
-/// `mkdir -p staging/`, refusing without naming the host path.
-async fn staging_dir_or_refuse(staging: StagingDir) -> Result<StagingDir> {
-    match tokio::fs::create_dir_all(staging.path()).await {
-        Ok(()) => Ok(staging),
-        Err(error) => {
-            tracing::warn!(
-                target: "planner_attachments::store",
-                dir = %staging.path().display(),
-                %error,
-                "could not create a card's attachment staging directory"
-            );
-            Err(CalmError::Internal(format!(
-                "planner attachment upload: the staging directory could not be created: {error}"
-            )))
-        }
-    }
 }
 
 /// Stream the body into `staging/`, sniffing the format from the leading bytes.
@@ -239,7 +232,7 @@ async fn staging_dir_or_refuse(staging: StagingDir) -> Result<StagingDir> {
 /// told, where the orphan sweep collects it after
 /// [`super::gc::ORPHAN_TTL`].
 async fn write_body(
-    staging: &StagingDir,
+    dirs: &std::sync::Arc<dir::CardDirs>,
     already_used: u64,
     deadline: std::time::Duration,
     body: Body,
@@ -249,7 +242,7 @@ async fn write_body(
     // survives the cancellation and is unlinked by its destructor.
     let written = match tokio::time::timeout(
         deadline,
-        stream_into(&mut open, staging, already_used, body),
+        stream_into(&mut open, dirs, already_used, body),
     )
     .await
     {
@@ -259,7 +252,7 @@ async fn write_body(
     let mut part = open
         .take()
         .expect("a successful stream leaves an open part");
-    let id = part.finish(staging).await?;
+    let id = part.finish().await?;
     Ok(StoredAttachment { id, size: written })
 }
 
@@ -277,7 +270,7 @@ fn upload_timed_out(deadline: std::time::Duration) -> CalmError {
 /// holds the `.part` still awaiting its fsync and rename.
 async fn stream_into(
     open: &mut Option<OpenPart>,
-    staging: &StagingDir,
+    dirs: &std::sync::Arc<dir::CardDirs>,
     already_used: u64,
     body: Body,
 ) -> Result<u64> {
@@ -322,14 +315,14 @@ async fn stream_into(
             // SNIFF_PREFIX_BYTES frames can be this small.
             continue;
         }
-        flush_pending(open, staging, &prefix, &mut pending).await?;
+        flush_pending(open, dirs, &prefix, &mut pending).await?;
     }
 
     if open.is_none() {
         // Fewer than SNIFF_PREFIX_BYTES bytes arrived. PNG, JPEG and GIF are
         // still recognisable from a short prefix; a WebP header cannot fit in
         // fewer than 12 bytes, so it correctly is not.
-        flush_pending(open, staging, &prefix, &mut pending).await?;
+        flush_pending(open, dirs, &prefix, &mut pending).await?;
     }
     Ok(written)
 }
@@ -341,12 +334,12 @@ async fn stream_into(
 /// way, so there is no arm here to forget.
 async fn flush_pending(
     open: &mut Option<OpenPart>,
-    staging: &StagingDir,
+    dirs: &std::sync::Arc<dir::CardDirs>,
     prefix: &[u8],
     pending: &mut Vec<Bytes>,
 ) -> Result<()> {
     let format = sniff(prefix).ok_or_else(unsupported_format)?;
-    *open = Some(OpenPart::create(staging, format).await?);
+    *open = Some(OpenPart::create(dirs, format).await?);
     let part = open.as_mut().expect("just assigned");
     for buffered in pending.drain(..) {
         part.write(&buffered).await?;
@@ -389,12 +382,12 @@ fn map_body_error(error: &(dyn std::error::Error + 'static)) -> CalmError {
 ///
 /// Two consequences, both deliberate:
 ///
-/// * `Drop` cannot await, so the unlink is a blocking `std::fs::remove_file`.
-///   A guarded `tokio::runtime::Handle::try_current()` + `spawn_blocking` would
-///   also work whenever a runtime exists, so this is a choice and not a
-///   constraint: one `unlink(2)` on a local file is cheaper than a task, and it
-///   is exactly what the `abandon` method it replaced already did on the same
-///   threads.
+/// * `Drop` cannot await, so the unlink is blocking: a direct
+///   [`dir::unlink_staged`], which is `unlinkat` against `staging/`'s own
+///   descriptor. A guarded `tokio::runtime::Handle::try_current()` +
+///   `spawn_blocking` would also work whenever a runtime exists, so this is a
+///   choice and not a constraint: one `unlinkat(2)` on a local file is cheaper
+///   than a task.
 /// * once [`OpenPart::finish`] has renamed the file, `published` is set and the
 ///   destructor does nothing. Without it a late destructor would unlink a name
 ///   that a later upload could legitimately have recreated.
@@ -405,8 +398,13 @@ fn map_body_error(error: &(dyn std::error::Error + 'static)) -> CalmError {
 struct OpenPart {
     id: AttachmentId,
     file: Option<tokio::fs::File>,
-    /// The `<id>.part` path, kept whole so the destructor needs no arguments.
-    part_path: std::path::PathBuf,
+    /// The directories this part lives in, so the destructor can unlink
+    /// through a descriptor rather than reconstructing a path.
+    dirs: std::sync::Arc<dir::CardDirs>,
+    /// This attempt's own temporary name. Unique per attempt — see
+    /// [`dir::Name::temporary`] for why a shared `<id>.part` was a
+    /// corruption channel rather than merely a collision.
+    temporary: dir::Name,
     published: bool,
 }
 
@@ -416,47 +414,51 @@ impl Drop for OpenPart {
             return;
         }
         drop(self.file.take());
-        match std::fs::remove_file(&self.part_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => tracing::warn!(
+        if let Err(error) = dir::unlink_staged(self.dirs.staging(), &self.temporary) {
+            tracing::warn!(
                 target: "planner_attachments::store",
                 attachment = %self.id,
                 %error,
                 "could not remove an abandoned attachment part"
-            ),
+            );
         }
     }
 }
 
 impl OpenPart {
-    async fn create(staging: &StagingDir, format: AttachmentFormat) -> Result<Self> {
+    async fn create(
+        dirs: &std::sync::Arc<dir::CardDirs>,
+        format: AttachmentFormat,
+    ) -> Result<Self> {
         let raw = format!("{}.{}", uuid::Uuid::new_v4(), format.ext());
         let id = AttachmentId::parse(&raw).map_err(|error| {
             CalmError::Internal(format!(
                 "planner attachment upload: minted a bad id: {error}"
             ))
         })?;
-        let path = staging.path().join(part_name(&id));
-        // `create_new` is `O_CREAT | O_EXCL`, which refuses to open an existing
-        // name *and* refuses to follow a symlink sitting on it. Nothing here
-        // creates symlinks, so the name is either free or was planted by
-        // something else with workspace write access; in both cases the answer
-        // is to fail rather than to write through it.
-        let file = tokio::fs::File::options()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .await
-            .map_err(|error| {
-                CalmError::Internal(format!(
-                    "planner attachment upload: cannot create the staged file for `{id}`: {error}"
-                ))
-            })?;
+        let temporary = dir::Name::part_of(&id);
+        // `O_CREAT | O_EXCL | O_NOFOLLOW` relative to `staging/`'s descriptor:
+        // it refuses an existing name, refuses to follow a symlink sitting on
+        // it, and has no other component to resolve.
+        let opened = {
+            let dirs = std::sync::Arc::clone(dirs);
+            let temporary = temporary.clone();
+            let id = id.clone();
+            blocking(move || {
+                dir::create_new(dirs.staging(), &temporary).map_err(|error| {
+                    CalmError::Internal(format!(
+                        "planner attachment upload: cannot create the staged file for `{id}`: \
+                         {error}"
+                    ))
+                })
+            })
+            .await?
+        };
         Ok(OpenPart {
             id,
-            file: Some(file),
-            part_path: path,
+            file: Some(tokio::fs::File::from_std(opened)),
+            dirs: std::sync::Arc::clone(dirs),
+            temporary,
             published: false,
         })
     }
@@ -478,7 +480,7 @@ impl OpenPart {
     /// still owned by its destructor. `published` is set only after the rename
     /// has returned `Ok`, which is what stops the destructor from unlinking a
     /// name that is now a real attachment.
-    async fn finish(&mut self, staging: &StagingDir) -> Result<AttachmentId> {
+    async fn finish(&mut self) -> Result<AttachmentId> {
         let mut file = self
             .file
             .take()
@@ -490,24 +492,29 @@ impl OpenPart {
             CalmError::Internal(format!("planner attachment upload: fsync: {error}"))
         })?;
         drop(file);
-        let to = staging.path().join(self.id.as_str());
+        let dirs = std::sync::Arc::clone(&self.dirs);
+        let temporary = self.temporary.clone();
+        let final_name = dir::Name::of(&self.id);
         let id = self.id.clone();
-        tokio::fs::rename(&self.part_path, &to)
-            .await
-            .map_err(move |error| {
-                // Names the attachment, not the two absolute host paths: this
-                // string reaches the client, and the workspace layout is not
-                // the client's business.
-                CalmError::Internal(format!(
-                    "planner attachment upload: `{id}` could not be published under its final \
-                     name: {error}"
-                ))
-            })?;
+        blocking(move || {
+            dir::rename_within_staging(dirs.staging(), &temporary, &final_name).map_err(
+                move |error| {
+                    // Names the attachment, not the host paths: this string
+                    // reaches the client, and the workspace layout is not the
+                    // client's business.
+                    CalmError::Internal(format!(
+                        "planner attachment upload: `{id}` could not be published under its \
+                         final name: {error}"
+                    ))
+                },
+            )?;
+            // The rename created a directory ENTRY, and the file's own
+            // `sync_all` says nothing about that.
+            let _ = dir::sync_staging(dirs.staging());
+            Ok(())
+        })
+        .await?;
         self.published = true;
         Ok(self.id.clone())
     }
-}
-
-fn part_name(id: &AttachmentId) -> String {
-    format!("{}.part", id.as_str())
 }

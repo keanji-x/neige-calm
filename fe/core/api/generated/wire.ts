@@ -292,7 +292,25 @@ export type HarnessInputPresentation = "user" | "system" | "system_worker_turn_f
  * Keeping the rendered text beside its typed presentation makes a mixed batch
  * reversible without teaching a reader how Rust joined or phrased it.
  */
-export type HarnessInputSegment = { presentation: HarnessInputPresentation, text: string, };
+export type HarnessInputSegment = { presentation: HarnessInputPresentation, text: string, 
+/**
+ * #1505 S6 — the images this segment carried into `turn/start`.
+ *
+ * Carried here rather than left for the client to dig out of the
+ * transcript row's own `params`. Two reasons, and the second one is why
+ * the first is not merely tidier: that blob is codex's own item, and a
+ * transcript rendering from it would have to turn the server's private
+ * naming of the bytes back into a REST url — a second, guessable naming
+ * of the same thing. The id is the naming; the read-back url is built
+ * from it by the same server function the upload response used. Because
+ * nothing reads a path from that blob, the transcript route redacts the
+ * one this slice put there (#1505 S6 review).
+ *
+ * `#[serde(default)]` because every segment persisted before this slice
+ * has no such key, and an old transcript is a transcript with no
+ * attachments rather than an unreadable one.
+ */
+attachments: Array<PlannerAttachment>, };
 
 export type HarnessItem = { id: number, worker_session_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, input_segments?: Array<HarnessInputSegment>, created_at_ms: number, };
 
@@ -333,7 +351,18 @@ export type PlannerAttachment = { id: AttachmentId,
  * Derived from `id`, never stored separately — see
  * [`PlannerAttachment::new`].
  */
-contentType: string, size: number, };
+contentType: string, size: number, 
+/**
+ * Where to read the bytes. Also derived, by [`attachment_url`].
+ *
+ * #1505 S6. Carried rather than left for the client to build: the
+ * transcript and the pending-queue read both need a way to reach these
+ * bytes, and a client that assembles `/api/cards/{card}/planner/
+ * attachments/{id}` for itself is a second spelling of a route only the
+ * router should own. The host path the server holds beside this is NOT
+ * here and must not be.
+ */
+url: string, };
 
 /**
  * Position anchor for proposed block creation / moves (design §5.2.1).
@@ -847,11 +876,13 @@ export type UploadAttachmentResponse = { attachmentId: AttachmentId, contentType
  * Absolute REST path the browser reads the bytes back from. Server-built:
  * the client never composes a path of its own.
  *
- * Not a durable link yet. As of S6-PR1 nothing binds an attachment to a
- * queue entry, so every upload stays in the server's `staging/` directory
- * and is swept once it is older than the 24h orphan TTL; after that this
- * path answers 400. S6-PR2 adds the bind that makes an attachment
- * permanent.
+ * Durable only once the attachment is bound. An upload lands in the
+ * server's `staging/` directory, and a staged attachment is swept once it
+ * is older than the 24h orphan TTL, after which this path answers 400.
+ * Sending or queueing a message that names the id binds it — the bytes
+ * move into `bound/`, which nothing sweeps — and from that moment this
+ * path is stable for the life of the card. So the window in which this
+ * url can stop working is exactly "uploaded, never sent, 24 hours".
  */
 url: string, };
 

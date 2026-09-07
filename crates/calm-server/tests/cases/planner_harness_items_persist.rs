@@ -572,7 +572,7 @@ async fn phase_log_failure_does_not_reject_or_erase_durable_input() {
         .await
         .unwrap();
     harness
-        .observe_user_message_durable("survive audit outage".into())
+        .observe_user_message_durable("survive audit outage".into(), Vec::new())
         .await
         .expect("the snapshot commit accepts input even when its follow-up phase audit fails");
     let stored: Value = sqlx::query_scalar(

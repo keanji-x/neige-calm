@@ -361,7 +361,8 @@ async fn folding_onto_a_pre_1505_tail_answers_with_a_null_entry_id() {
 /// between two writes.
 #[tokio::test]
 async fn truncating_a_restored_queue_announces_each_dropped_user_entry() {
-    let addressable = QueueEntry::user_message("the oldest thing a person typed".into(), None);
+    let addressable =
+        QueueEntry::user_message("the oldest thing a person typed".into(), None, Vec::new());
     let dropped_id = addressable
         .id()
         .expect("a freshly minted user entry is addressable")
@@ -382,7 +383,7 @@ async fn truncating_a_restored_queue_announces_each_dropped_user_entry() {
     ];
     entries.extend(
         (0..MAX_PENDING_QUEUE_LEN)
-            .map(|i| QueueEntry::user_message(format!("survivor #{i}"), None)),
+            .map(|i| QueueEntry::user_message(format!("survivor #{i}"), None, Vec::new())),
     );
     let survivor_ids: Vec<String> = entries[2..]
         .iter()
@@ -470,11 +471,12 @@ async fn truncating_a_restored_queue_announces_each_dropped_user_entry() {
 /// this test passed alone and failed in the full run.)
 #[tokio::test]
 async fn a_truncation_whose_announcement_fails_is_not_persisted() {
-    let addressable = QueueEntry::user_message("the oldest thing a person typed".into(), None);
+    let addressable =
+        QueueEntry::user_message("the oldest thing a person typed".into(), None, Vec::new());
     let mut entries = vec![addressable];
     entries.extend(
         (0..MAX_PENDING_QUEUE_LEN)
-            .map(|i| QueueEntry::user_message(format!("survivor #{i}"), None)),
+            .map(|i| QueueEntry::user_message(format!("survivor #{i}"), None, Vec::new())),
     );
     let boot = boot_with_broken_event_writes(idle_snapshot(entries)).await;
 
@@ -537,7 +539,7 @@ async fn a_truncation_whose_announcement_fails_is_not_persisted() {
 async fn a_dropped_entry_is_announced_once_under_concurrent_persists() {
     const DROPPED: usize = 3;
     let head: Vec<QueueEntry> = (0..DROPPED)
-        .map(|i| QueueEntry::user_message(format!("dropped #{i}"), None))
+        .map(|i| QueueEntry::user_message(format!("dropped #{i}"), None, Vec::new()))
         .collect();
     let dropped_ids: Vec<String> = head
         .iter()
@@ -546,7 +548,7 @@ async fn a_dropped_entry_is_announced_once_under_concurrent_persists() {
     let mut entries = head;
     entries.extend(
         (0..MAX_PENDING_QUEUE_LEN)
-            .map(|i| QueueEntry::user_message(format!("survivor #{i}"), None)),
+            .map(|i| QueueEntry::user_message(format!("survivor #{i}"), None, Vec::new())),
     );
     let boot = boot_with(idle_snapshot(entries)).await;
 
@@ -599,7 +601,7 @@ async fn a_dropped_entry_is_announced_once_under_concurrent_persists() {
 #[tokio::test]
 async fn a_queue_within_the_cap_announces_no_drop() {
     let entries = (0..MAX_PENDING_QUEUE_LEN)
-        .map(|i| QueueEntry::user_message(format!("kept #{i}"), None))
+        .map(|i| QueueEntry::user_message(format!("kept #{i}"), None, Vec::new()))
         .collect::<Vec<_>>();
     let ids: Vec<String> = entries
         .iter()

@@ -172,6 +172,15 @@ impl Observation {
             .map(|observation| HarnessInputSegment {
                 presentation: observation.input_presentation(),
                 text: observation.to_turn_text(),
+                // An `Observation` has nowhere to put an attachment. #1505 S6
+                // hangs attachments on the queue entry, not on the
+                // observation, so the batch path builds its segments from
+                // `&[QueueEntry]` instead — see
+                // `calm_server::harness::queue::input_segments_for_entries`.
+                // This constructor stays for the callers that genuinely have
+                // only observations, and it is honest for them: they have no
+                // attachments.
+                attachments: Vec::new(),
             })
             .collect()
     }

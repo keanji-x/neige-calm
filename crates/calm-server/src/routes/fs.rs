@@ -485,9 +485,45 @@ pub(crate) enum WorkspaceSymlinks {
     Refused,
 }
 
-/// Open one workspace file with the root directory descriptor as the
-/// authority. `openat2` resolves and opens atomically, so a concurrent worker
-/// cannot swap a checked parent for an escaping symlink before the read.
+/// The resolve flags, stated once.
+///
+/// #1505 S6 review. Two openers share them — [`open_workspace_regular_file`]
+/// and [`open_workspace_directory`] — and a second copy of this expression is
+/// a second place `RESOLVE_NO_SYMLINKS` could be forgotten. The write path the
+/// directory opener exists for was shipped once WITHOUT that flag, which is
+/// precisely the drift a duplicated flag set produces.
+#[cfg(target_os = "linux")]
+fn workspace_resolve_flags(symlinks: WorkspaceSymlinks) -> nix::fcntl::ResolveFlag {
+    use nix::fcntl::ResolveFlag;
+    let mut resolve = ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_MAGICLINKS;
+    if symlinks == WorkspaceSymlinks::Refused {
+        resolve |= ResolveFlag::RESOLVE_NO_SYMLINKS;
+    }
+    resolve
+}
+
+/// Open the root itself, checking it really is a directory.
+#[cfg(target_os = "linux")]
+async fn open_workspace_root(workspace_root: &Path) -> Result<std::fs::File> {
+    let root = tokio::fs::File::open(workspace_root)
+        .await
+        .map_err(|error| map_io_err(workspace_root, error))?;
+    let root_meta = root
+        .metadata()
+        .await
+        .map_err(|error| map_io_err(workspace_root, error))?;
+    if !root_meta.is_dir() {
+        return Err(CalmError::BadRequest(format!(
+            "track workspace {} is not a directory",
+            workspace_root.display()
+        )));
+    }
+    Ok(root.into_std().await)
+}
+
+/// Open one regular file beneath `workspace_root`, with the root's descriptor
+/// as the authority. `openat2` resolves and opens atomically, so a concurrent
+/// worker cannot swap a checked parent for an escaping symlink before the read.
 ///
 /// # What this establishes, and what it does not
 ///
@@ -509,8 +545,11 @@ pub(crate) enum WorkspaceSymlinks {
 ///   directory, socket or device is refused after the open, with no window
 ///   between the check and the handle.
 ///
-/// Callers outside `routes::fs` must treat the returned `CalmError` as
-/// internal: its messages carry the requested host path.
+/// **Callers outside `routes::fs` must treat the returned [`CalmError`] as
+/// internal: its messages carry the requested host path.** That sentence
+/// belongs here, on the function that returns the error — a review round put
+/// it on the private flag helper, which returns neither an error nor a path,
+/// where the caller who needs it would never look.
 #[cfg(target_os = "linux")]
 pub(crate) async fn open_workspace_regular_file(
     workspace_root: &Path,
@@ -518,26 +557,117 @@ pub(crate) async fn open_workspace_regular_file(
     symlinks: WorkspaceSymlinks,
 ) -> Result<OpenWorkspaceFile> {
     let relative = workspace_relative_path(relative_path)?;
-    let root = tokio::fs::File::open(workspace_root)
+    let root = open_workspace_root(workspace_root).await?;
+    open_workspace_regular_file_from_fd(root, workspace_root.to_path_buf(), relative, symlinks)
         .await
-        .map_err(|error| map_io_err(workspace_root, error))?;
-    let root_meta = root
+}
+
+/// Open the root itself as a directory descriptor.
+///
+/// The anchor everything else resolves against. `open_workspace_directory`
+/// cannot express it — a relative path of `"."` is refused by
+/// `workspace_relative_path`, correctly, since `.` and `..` are exactly what a
+/// relative path must not contain — and a caller that needs to create the
+/// first level under the root has nothing else to hold.
+///
+/// The root is the trust base rather than something derived from workspace
+/// contents: `planner_attachments::attachment_root` builds it from the track's
+/// stored workspace path and refuses one that is not absolute or not under the
+/// server's workspace root.
+///
+/// **Callers outside `routes::fs` must treat the returned [`CalmError`] as
+/// internal: its messages carry the requested host path.**
+#[cfg(target_os = "linux")]
+pub(crate) async fn open_workspace_root_directory(
+    workspace_root: &Path,
+) -> Result<std::os::fd::OwnedFd> {
+    Ok(std::os::fd::OwnedFd::from(
+        open_workspace_root(workspace_root).await?,
+    ))
+}
+
+/// Non-Linux placeholder, fail-closed for the same reason as the others.
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn open_workspace_root_directory(
+    _workspace_root: &Path,
+) -> Result<std::os::fd::OwnedFd> {
+    Err(CalmError::Internal(
+        "secure workspace writes require Linux openat2 support".into(),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+/// Open one directory beneath `workspace_root`, under the same resolution
+/// rules [`open_workspace_regular_file`] uses.
+///
+/// # Why a caller wants a directory descriptor and not a path
+///
+/// #1505 S6 review, and it is the whole reason this exists. A guarded *read*
+/// establishes nothing about a *write*: `create_dir_all`, `rename` and
+/// `remove_file` all take paths, and a path is resolved again, by the kernel,
+/// with no `RESOLVE_*` flags at all. So a component somebody replaced with a
+/// symlink between the check and the write decides where the bytes land — and
+/// the planner attachment store shipped exactly that, verifying its
+/// destination only AFTER renaming into it.
+///
+/// A descriptor cannot be re-pointed. Syscalls that take one plus a single
+/// NAME component (`mkdirat`, `openat` with `O_EXCL`, `renameat`, `unlinkat`)
+/// therefore perform no path resolution the caller has to defend: there is no
+/// intermediate component left to swap. That — not this function alone — is
+/// what makes a write safe, so a caller must keep the descriptor and never
+/// rebuild a path from it.
+///
+/// `O_DIRECTORY` is passed and the `is_dir` check is kept anyway: the flag is
+/// the atomic guarantee, the check is what turns a kernel that ignored it into
+/// a refusal rather than a surprise.
+///
+/// **Callers outside `routes::fs` must treat the returned [`CalmError`] as
+/// internal: its messages carry the requested host path.**
+#[cfg(target_os = "linux")]
+pub(crate) async fn open_workspace_directory(
+    workspace_root: &Path,
+    relative_path: &str,
+    symlinks: WorkspaceSymlinks,
+) -> Result<std::os::fd::OwnedFd> {
+    use nix::fcntl::{OFlag, OpenHow, openat2};
+    use nix::sys::stat::Mode;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    let relative = workspace_relative_path(relative_path)?;
+    let root = open_workspace_root(workspace_root).await?;
+    let requested = workspace_root.join(&relative);
+    let workspace_root = workspace_root.to_path_buf();
+    let resolve = workspace_resolve_flags(symlinks);
+    tokio::task::spawn_blocking(move || {
+        let raw_fd = openat2(
+            root.as_raw_fd(),
+            &relative,
+            OpenHow::new()
+                .flags(OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY | OFlag::O_NONBLOCK)
+                .mode(Mode::empty())
+                .resolve(resolve),
+        )
+        .map_err(|error| map_workspace_open_err(&requested, &workspace_root, error))?;
+        // SAFETY: `openat2` returned a new owned descriptor and this is its
+        // only conversion into an owning Rust value.
+        let owned = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+        let meta = std::fs::File::from(
+            owned
+                .try_clone()
+                .map_err(|error| map_io_err(&requested, error))?,
+        )
         .metadata()
-        .await
-        .map_err(|error| map_io_err(workspace_root, error))?;
-    if !root_meta.is_dir() {
-        return Err(CalmError::BadRequest(format!(
-            "track workspace {} is not a directory",
-            workspace_root.display()
-        )));
-    }
-    open_workspace_regular_file_from_fd(
-        root.into_std().await,
-        workspace_root.to_path_buf(),
-        relative,
-        symlinks,
-    )
+        .map_err(|error| map_io_err(&requested, error))?;
+        if !meta.is_dir() {
+            return Err(CalmError::BadRequest(format!(
+                "path {} is not a directory",
+                requested.display()
+            )));
+        }
+        Ok(owned)
+    })
     .await
+    .map_err(|error| CalmError::Internal(format!("workspace open task failed: {error}")))?
 }
 
 /// Keep a caller-validated directory descriptor as authority through final open.
@@ -558,14 +688,11 @@ async fn open_workspace_regular_file_from_fd(
     relative: PathBuf,
     symlinks: WorkspaceSymlinks,
 ) -> Result<OpenWorkspaceFile> {
-    use nix::fcntl::{OFlag, OpenHow, ResolveFlag, openat2};
+    use nix::fcntl::{OFlag, OpenHow, openat2};
     use nix::sys::stat::Mode;
     use std::os::fd::{AsRawFd, FromRawFd};
     let requested = workspace_root.join(&relative);
-    let mut resolve = ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_MAGICLINKS;
-    if symlinks == WorkspaceSymlinks::Refused {
-        resolve |= ResolveFlag::RESOLVE_NO_SYMLINKS;
-    }
+    let resolve = workspace_resolve_flags(symlinks);
     tokio::task::spawn_blocking(move || {
         let raw_fd = openat2(
             root.as_raw_fd(),
@@ -657,6 +784,21 @@ pub(crate) async fn open_workspace_regular_file_at(
 ) -> Result<OpenWorkspaceFile> {
     Err(CalmError::Internal(
         "secure workspace reads require Linux openat2 support".into(),
+    ))
+}
+
+/// Same placeholder for the directory opener. Fail-closed: a platform without
+/// `openat2` cannot make the guarantee this function's callers rely on, and a
+/// caller must not fall back to an unguarded path.
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn open_workspace_directory(
+    _workspace_root: &Path,
+    relative_path: &str,
+    _symlinks: WorkspaceSymlinks,
+) -> Result<std::os::fd::OwnedFd> {
+    workspace_relative_path(relative_path)?;
+    Err(CalmError::Internal(
+        "secure workspace writes require Linux openat2 support".into(),
     ))
 }
 

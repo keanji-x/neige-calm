@@ -537,6 +537,29 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
                     data-nc-turn="you"
                     {...(isQueuedConversationTurn(turn) ? { 'data-nc-queued': '' } : {})}
                   >{turn.text}</p>
+                  {/*
+                    * #1505 S6 — the images that went with what was said.
+                    *
+                    * Rendered here rather than by `features/planner`, which
+                    * this module may not import (`features-no-cross-domain`),
+                    * and rendered from the url the server built rather than
+                    * from a path assembled here.
+                    *
+                    * `alt=""` and `aria-hidden` on the list: the image is the
+                    * message's own content and the transcript has no
+                    * description of it to offer, so announcing "image" once
+                    * per thumbnail would add noise without adding a fact. The
+                    * count is said once, in text, above them.
+                    */}
+                  {(turn.attachments ?? []).length > 0 && (
+                    <ul className={styles.attachments} data-nc-turn-attachments="">
+                      {(turn.attachments ?? []).map((attachment) => (
+                        <li key={attachment.id} className={styles.attachment}>
+                          <img src={attachment.url} alt="" />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   {isQueuedConversationTurn(turn) && (
                     /*
                      * What separates "the agent is working on this" from "the
@@ -1838,6 +1861,7 @@ function isThenable(value: unknown): value is Promise<SendOutcome> {
 export function ChatComposer({
   onSend, onStop, onNewConversation, disabled = false, focusOnMount = false, draft: controlledDraft,
   footerActions,
+  drawer, headerActions, allowEmptyText = false,
 }: {
   /** See `SendOutcome`. A caller with its own draft persistence returns `void`. */
   onSend: (text: string) => void | Promise<SendOutcome>;
@@ -1927,6 +1951,27 @@ export function ChatComposer({
    * edge where it is.
    */
   footerActions?: ReactNode;
+  /**
+   * #1505 S6 — the composer's two vendor slots, passed as nodes rather than as
+   * attachment state.
+   *
+   * `features-no-cross-domain` forbids this module from importing
+   * `features/planner`, and it should: what goes above the input is not this
+   * component's business. It renders whatever it is handed into the slots
+   * Astryx documents for it and knows nothing about images.
+   */
+  drawer?: ReactNode;
+  headerActions?: ReactNode;
+  /**
+   * Whether a send with no words is a real send.
+   *
+   * True exactly when the message carries something other than text — today,
+   * an attached image. It is a prop and not an inference because this
+   * component cannot see what is in the drawer: the drawer is an opaque node
+   * (above), and the caller that filled it is the one that knows whether it is
+   * empty.
+   */
+  allowEmptyText?: boolean;
 }) {
   const [localDraft, setLocalDraft] = useState('');
   const draft = controlledDraft?.text ?? localDraft;
@@ -2139,7 +2184,9 @@ export function ChatComposer({
    */
   const submit = (value: string) => {
     const text = value.trim();
-    if (text === '' || disabled) return;
+    /* #1505 S6 — `allowEmptyText` is the caller saying the message carries an
+       image. Without it an empty draft is still nothing to send. */
+    if ((text === '' && !allowEmptyText) || disabled) return;
     const outcome = onSend(text);
     setDraft('');
     /*
@@ -2223,6 +2270,20 @@ export function ChatComposer({
         if (disabled) {
           event.preventDefault();
           event.stopPropagation();
+          return;
+        }
+        /*
+         * #1505 S6 — Astryx's own `handleSubmit` refuses an empty draft, and
+         * an image-only message IS an empty draft. Measured, not assumed: the
+         * vendor guard is `if (!value.trim()) return;` before it calls
+         * `onSubmit`, so Enter over a picked image would do nothing at all.
+         * Submitting here and stopping the event is the same door the
+         * `sendActions` button below uses, for the same reason.
+         */
+        if (allowEmptyText && draft.trim() === '') {
+          event.preventDefault();
+          event.stopPropagation();
+          submit(draft);
         }
       }}
     >
@@ -2270,14 +2331,40 @@ export function ChatComposer({
          * `draft` this component owns and hands Astryx as `value`, so there is
          * no second source of truth for it to drift from.
          */
+        {...(drawer === undefined ? {} : { drawer })}
+        {...(headerActions === undefined ? {} : { headerActions })}
         sendActions={stopShown ? (
           <button
             type="button"
             className={styles.queueSend}
             data-nc-send-queued=""
-            disabled={disabled || draft.trim() === ''}
+            disabled={disabled || (draft.trim() === '' && !allowEmptyText)}
             onClick={() => { submit(draft); }}
           >Queue message</button>
+        ) : allowEmptyText && draft.trim() === '' ? (
+          /*
+           * ── The third door, and it exists for the same measured reason ────
+           *
+           * `ChatSendButton` takes its availability from the composer
+           * context's `canSend`, which is false on an empty draft. An
+           * image-only message is an empty draft, so with only the vendor
+           * button on screen a person who has picked an image and typed
+           * nothing has no control to press. This is that control, and it is
+           * shown only while the vendor's own is unavailable, so the two are
+           * never both live.
+           *
+           * Named `Send image` rather than `Send`: while it is on screen the
+           * vendor button is also on screen saying `Send`, and two controls
+           * with one name is the ambiguity the `Queue message` note above
+           * refuses for the same reason.
+           */
+          <button
+            type="button"
+            className={styles.queueSend}
+            data-nc-send-attachment=""
+            disabled={disabled}
+            onClick={() => { submit(draft); }}
+          >Send image</button>
         ) : undefined}
         input={(
           <ChatComposerInput

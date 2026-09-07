@@ -9,6 +9,7 @@ use ts_rs::TS;
 use utoipa::ToSchema;
 
 pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
+use crate::planner_attachment::PlannerAttachment;
 use crate::runtime::{AgentProvider, WorkerSessionKind};
 use crate::worker::WorkerSessionState;
 
@@ -632,6 +633,23 @@ pub enum HarnessInputPresentation {
 pub struct HarnessInputSegment {
     pub presentation: HarnessInputPresentation,
     pub text: String,
+    /// #1505 S6 — the images this segment carried into `turn/start`.
+    ///
+    /// Carried here rather than left for the client to dig out of the
+    /// transcript row's own `params`. Two reasons, and the second one is why
+    /// the first is not merely tidier: that blob is codex's own item, and a
+    /// transcript rendering from it would have to turn the server's private
+    /// naming of the bytes back into a REST url — a second, guessable naming
+    /// of the same thing. The id is the naming; the read-back url is built
+    /// from it by the same server function the upload response used. Because
+    /// nothing reads a path from that blob, the transcript route redacts the
+    /// one this slice put there (#1505 S6 review).
+    ///
+    /// `#[serde(default)]` because every segment persisted before this slice
+    /// has no such key, and an old transcript is a transcript with no
+    /// attachments rather than an unreadable one.
+    #[serde(default)]
+    pub attachments: Vec<PlannerAttachment>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]

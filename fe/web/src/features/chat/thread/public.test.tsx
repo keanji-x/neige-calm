@@ -1023,6 +1023,60 @@ describe('ChatComposer', () => {
     expect(onNewConversation).toHaveBeenCalledOnce();
   });
 
+  /*
+   * #1505 S6 — an image with no words.
+   *
+   * Two separate refusals stand in the way and both had to be lifted: this
+   * component's own `if (text === '' ...) return`, and Astryx's, which is
+   * inside the vendor's `onSubmit` handler and cannot be reached from a prop.
+   * The wrapper's `keyDownCapture` is what answers the second one, so Enter is
+   * the gesture under test rather than the button.
+   */
+  it('sends a wordless message when the caller says it carries something else', () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} allowEmptyText />);
+    fireEvent.keyDown(messageField(), { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('');
+  });
+
+  it('still refuses a wordless message that carries nothing', () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} />);
+    fireEvent.keyDown(messageField(), { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  /*
+   * The vendor send button takes its availability from the composer context's
+   * `canSend`, which is false on an empty draft — so with only that control on
+   * screen there is nothing to press. This is the control that fills the gap,
+   * and it appears only while the vendor's own is unavailable.
+   */
+  it('offers a send control while the draft is empty and an image is picked', async () => {
+    const onSend = vi.fn();
+    const { rerender } = render(<ChatComposer onSend={onSend} />);
+    expect(document.querySelector('[data-nc-send-attachment]')).toBeNull();
+
+    rerender(<ChatComposer onSend={onSend} allowEmptyText />);
+    const button = document.querySelector('[data-nc-send-attachment]');
+    expect(button).toBeTruthy();
+    fireEvent.click(button as HTMLElement);
+    expect(onSend).toHaveBeenCalledWith('');
+
+    await userEvent.type(messageField(), 'and some words');
+    expect(document.querySelector('[data-nc-send-attachment]')).toBeNull();
+  });
+
+  it('renders whatever it is handed in the drawer and header slots', () => {
+    render(<ChatComposer
+      onSend={vi.fn()}
+      drawer={<p>two images</p>}
+      headerActions={<button type="button">Attach</button>}
+    />);
+    expect(screen.getByText('two images')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Attach' })).toBeTruthy();
+  });
+
   it('sends on Enter and clears the field', async () => {
     const onSend = vi.fn();
     render(<ChatComposer onSend={onSend} />);

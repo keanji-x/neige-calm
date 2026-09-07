@@ -1,4 +1,4 @@
-//! Sweeping `staging/`. Nothing here can reach `bound/`.
+//! Sweeping `staging/`.
 //!
 //! # Why the sweep needs no knowledge of the queue
 //!
@@ -9,130 +9,89 @@
 //! a structural exclusion, not a probability argument about how long a bind
 //! takes.
 //!
+//! # Where the "it cannot reach `bound/`" claim went
+//!
+//! This file used to open with "Nothing here can reach `bound/`", and that was
+//! false. The sweep walked `<root>/<card>/staging` with `std::fs::read_dir` and
+//! unlinked `<root>/<card>/staging/<name>` with `std::fs::remove_file` —
+//! neither resolving under any `RESOLVE_*` flag. A relative link
+//! (`ln -s ../card-b/bound <root>/card-a/staging`, which `RESOLVE_BENEATH`
+//! would not have caught either) made every upload on card A walk into card
+//! B's `bound/` and unlink everything older than [`ORPHAN_TTL`], taking card
+//! B's already-issued `localImage` paths with it — and codex answers a missing
+//! one with placeholder text and no error.
+//!
+//! There is no replacement sentence here about what this file can and cannot
+//! reach. The sweep takes a [`dir::StagingFd`], every operation it performs is
+//! a descriptor plus one component, and the reason that is enough is stated
+//! once, in [`super::dir`], where the mechanism lives.
+//!
 //! # Fail-closed means "delete nothing", for a broken filesystem
 //!
-//! A sweep that cannot enumerate the directory, or hits an entry that cannot be
-//! stat'd for any reason other than having vanished, deletes **nothing at all**
-//! — not "skips that one and carries on". The `?`-propagating shape of
-//! `collect_expired` is load-bearing there: a filesystem that will not answer
-//! means the ages here are unknown, and the safe answer to an unknown age is to
-//! keep the bytes.
+//! A sweep that cannot enumerate the directory deletes **nothing at all** —
+//! not "skips that one and carries on". [`dir::regular_entries`] aborts with
+//! `Err` on any read failure that is not "this entry vanished", and this file
+//! turns that into zero deletions: a filesystem that will not answer means the
+//! ages here are unknown, and the safe answer to an unknown age is to keep the
+//! bytes.
 //!
 //! An entry that is simply *not one of ours* is the other case and must not
-//! abort: a symlink, a socket, a subdirectory. The stat is `symlink_metadata`,
-//! so a dangling link is described rather than followed, and such an entry is
-//! stepped over with nothing deleted from it. Aborting on one instead would let
-//! anything with write access to the workspace park a dangling link in
-//! `staging/` and permanently disable the sweep for that card — which, paired
-//! with the same latch in `used_bytes`, is how one planted entry used to wedge
-//! both halves of the channel at once.
+//! abort — a symlink, a socket, a subdirectory. `regular_entries` steps over
+//! those, because aborting on one instead would let anything with write access
+//! to the workspace park a dangling link in `staging/` and permanently disable
+//! the sweep for that card.
 
-use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use super::StagingDir;
+use super::dir::{self, Name, StagingFd};
 
 /// How long an unbound upload survives. Long enough that a person who uploads
 /// an image, gets distracted and comes back keeps it; short enough that a
 /// browser tab closed mid-compose does not cost the card's budget forever.
 pub const ORPHAN_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Remove one file from `staging/`.
-///
-/// The parameter is a [`StagingDir`], and there is no conversion from
-/// [`super::BoundDir`] into one — `tests/ui/bound_dir_cannot_be_deleted.rs`
-/// fails to compile if one is ever added. That fence proves the absence of the
-/// conversion and nothing wider; see the module docs on
-/// [`super`] for what it does not prove.
-///
-/// `remove_file` unlinks the name, never a symlink's target, so an entry
-/// planted as a link to somewhere outside this subtree loses only the link.
-pub fn remove_staged_file(dir: &StagingDir, file_name: &str) -> std::io::Result<()> {
-    match std::fs::remove_file(dir.path().join(file_name)) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
 /// Delete every `staging/` entry older than [`ORPHAN_TTL`].
 ///
-/// Never fails the caller: it runs beside an upload that already succeeded, and
-/// a stale file is not a reason to refuse a fresh one. It warns and gives up
-/// instead — see the module docs for why "gives up" means zero deletions.
-pub fn sweep_staging(dir: &StagingDir) {
-    sweep_staging_at(dir, SystemTime::now(), ORPHAN_TTL);
+/// Never fails the caller: a stale file is not a reason to refuse a fresh
+/// upload. It warns and gives up instead — see the module docs for why "gives
+/// up" means zero deletions.
+pub fn sweep_staging(staging: &StagingFd) {
+    sweep_staging_at(staging, SystemTime::now(), ORPHAN_TTL);
 }
 
 /// The testable core. Returns the names it removed.
-pub fn sweep_staging_at(dir: &StagingDir, now: SystemTime, ttl: Duration) -> Vec<String> {
-    match collect_expired(dir.path(), now, ttl) {
-        Ok(expired) => {
-            let mut removed = Vec::new();
-            for name in expired {
-                match remove_staged_file(dir, &name) {
-                    Ok(()) => removed.push(name),
-                    Err(error) => tracing::warn!(
-                        target: "planner_attachments::gc",
-                        file = %name,
-                        %error,
-                        "could not remove an expired staged attachment"
-                    ),
-                }
-            }
-            removed
-        }
+pub fn sweep_staging_at(staging: &StagingFd, now: SystemTime, ttl: Duration) -> Vec<Name> {
+    let entries = match dir::regular_entries(staging) {
+        Ok(entries) => entries,
         Err(error) => {
             tracing::warn!(
                 target: "planner_attachments::gc",
-                dir = %dir.path().display(),
                 %error,
                 "staging sweep could not enumerate the directory; removed nothing"
             );
-            Vec::new()
+            return Vec::new();
         }
-    }
-}
-
-/// Enumerate first, delete second. Any read failure aborts the whole
-/// enumeration with `Err`, so the caller deletes nothing.
-fn collect_expired(dir: &Path, now: SystemTime, ttl: Duration) -> std::io::Result<Vec<String>> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
     };
-    let mut expired = Vec::new();
+    let mut removed = Vec::new();
     for entry in entries {
-        let entry = entry?;
-        let meta = match std::fs::symlink_metadata(entry.path()) {
-            Ok(meta) => meta,
-            // Gone already. Nothing to expire, and nothing broken.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            // Anything else is the filesystem refusing to answer: abandon the
-            // whole sweep, deleting nothing.
-            Err(error) => return Err(error),
-        };
-        // `is_file()` on a `symlink_metadata` file type is true only for a
-        // regular file. A symlink, a socket or a directory is not ours to age
-        // out; step over it.
-        if !meta.file_type().is_file() {
-            continue;
-        }
-        let modified = meta.modified()?;
-        let age = match now.duration_since(modified) {
+        let age = match now.duration_since(entry.modified) {
             Ok(age) => age,
             // Clock skew, or a file stamped in the future. Unknown age keeps
             // the bytes.
             Err(_) => continue,
         };
-        if age > ttl {
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-                // A non-UTF-8 name cannot have been minted here. Leave it.
-                continue;
-            };
-            expired.push(name);
+        if age <= ttl {
+            continue;
+        }
+        match dir::unlink_staged(staging, &entry.name) {
+            Ok(()) => removed.push(entry.name),
+            Err(error) => tracing::warn!(
+                target: "planner_attachments::gc",
+                file = %entry.name,
+                %error,
+                "could not remove an expired staged attachment"
+            ),
         }
     }
-    Ok(expired)
+    removed
 }

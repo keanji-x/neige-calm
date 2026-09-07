@@ -832,6 +832,107 @@ describe('track conversations', () => {
       .toEqual([{ text }, { text }]);
   });
 
+  /*
+   * #1505 S6 review — a retry must carry the images the failed message was
+   * shown with.
+   *
+   * Two constructions, and the second is a dead end rather than a surprise.
+   * Both are driven through the real composer, the real upload endpoint and
+   * the real failure banner, because the defect was in what the retry PUT ON
+   * THE WIRE and nothing below that level would have seen it.
+   */
+  const ATTACHMENT_ID = '0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png';
+
+  function withAttachments(onInput: (attempt: number) => ApiTransportResponse | undefined) {
+    let attempts = 0;
+    return setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({
+          card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle',
+          attachments_supported: true,
+        });
+      }
+      if (request.path.endsWith('/planner/attachments')) {
+        return ok({
+          attachmentId: ATTACHMENT_ID, contentType: 'image/png', size: 4,
+          url: `/api/cards/${pathCardId(request.path)}/planner/attachments/${ATTACHMENT_ID}`,
+        });
+      }
+      if (request.path.endsWith('/planner/input')) {
+        attempts += 1;
+        return onInput(attempts);
+      }
+      return undefined;
+    });
+  }
+
+  async function attachAnImage() {
+    const picker = screen.getByLabelText('Attach an image');
+    const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'shot.png', { type: 'image/png' });
+    await act(async () => {
+      fireEvent.change(picker, { target: { files: [file] } });
+      await Promise.resolve();
+    });
+  }
+
+  function inputBodies(requests: readonly ApiRequest[]) {
+    return requests.filter((request) => request.path.endsWith('/planner/input'))
+      .map((request) => request.body);
+  }
+
+  it('[#1505] re-sends the image the failed message was shown with, not just its words', async () => {
+    const text = 'look at this';
+    const { requests } = withAttachments((attempt) => attempt === 1
+      ? ({ status: 400, statusText: 'Bad Request', body: { error: 'nope', code: 'bad_request' } })
+      : ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await attachAnImage();
+    await write(text);
+
+    // The failure is shown WITH the thumbnail, which is what makes sending it
+    // back without the image a lie rather than an omission.
+    await screen.findByRole('alert');
+    expect(drawerElement().querySelector('[data-nc-turn-attachments] img')?.getAttribute('src'))
+      .toBe(`/api/cards/${ASSISTANT_CARD.id}/planner/attachments/${ATTACHMENT_ID}`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(2));
+    expect(inputBodies(requests)).toEqual([
+      { text, attachments: [ATTACHMENT_ID] },
+      { text, attachments: [ATTACHMENT_ID] },
+    ]);
+  });
+
+  it('[#1505] retrying an image-only message does not post the one body the server refuses', async () => {
+    const { requests } = withAttachments((attempt) => attempt === 1
+      ? ({ status: 400, statusText: 'Bad Request', body: { error: 'nope', code: 'bad_request' } })
+      : ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await attachAnImage();
+
+    // No words: the vendor send button is unavailable on an empty draft, so
+    // this is the control the composer grows for exactly this case.
+    const send = drawerElement().querySelector('[data-nc-send-attachment]');
+    expect(send).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(send as HTMLElement);
+      await Promise.resolve();
+    });
+    await screen.findByRole('alert');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(2));
+    /*
+     * `{ text: '' }` alone is the body `validate_planner_input` refuses with
+     * "text must not be empty", and `sendBlocked` stays true while a failure
+     * is outstanding — so posting it would make the only recovery the UI
+     * offers the one that cannot succeed.
+     */
+    expect(inputBodies(requests)[1]).toEqual({ text: '', attachments: [ATTACHMENT_ID] });
+  });
+
   it('[F6] replaces stale Working with a stuck explanation and preserves the unsent draft', async () => {
     let phase = 'turn_running';
     const { client, requests } = setup((request) => {

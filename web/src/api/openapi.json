@@ -6987,9 +6987,14 @@
         "required": [
           "card_id",
           "pending",
-          "pending_overflow"
+          "pending_overflow",
+          "attachments_supported"
         ],
         "properties": {
+          "attachments_supported": {
+            "type": "boolean",
+            "description": "#1505 S6 — whether this card can take image attachments at all.\n\nIt cannot when the track's workspace is a directory the person already\nowns: attachments are written under `<workspace>/.neige/`, and neige\nnever writes into an attached workspace, so the upload endpoint answers\n400 there.\n\nAnswered here rather than left for the client to work out, and answered\nbefore the attempt rather than by the attempt. Half the tracks in\nproduction were created with a `cwd` and are attached, so a paperclip\nthat looks available and then refuses would be the common case rather\nthan the edge. The criterion is the same function the upload runs\n(`planner_attachments::attachment_root`), called rather than restated."
+          },
           "blocked_reason": {
             "type": [
               "string",
@@ -7153,6 +7158,13 @@
           "text"
         ],
         "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannerAttachment"
+            },
+            "description": "#1505 S6 — the images this segment carried into `turn/start`.\n\nCarried here rather than left for the client to dig out of the\ntranscript row's own `params`. Two reasons, and the second one is why\nthe first is not merely tidier: that blob is codex's own item, and a\ntranscript rendering from it would have to turn the server's private\nnaming of the bytes back into a REST url — a second, guessable naming\nof the same thing. The id is the naming; the read-back url is built\nfrom it by the same server function the upload response used. Because\nnothing reads a path from that blob, the transcript route redacts the\none this slice put there (#1505 S6 review).\n\n`#[serde(default)]` because every segment persisted before this slice\nhas no such key, and an old transcript is a transcript with no\nattachments rather than an unreadable one."
+          },
           "presentation": {
             "$ref": "#/components/schemas/HarnessInputPresentation"
           },
@@ -7873,9 +7885,17 @@
           "entry_id",
           "text",
           "rev",
-          "queued_at_ms"
+          "queued_at_ms",
+          "attachments"
         ],
         "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannerAttachment"
+            },
+            "description": "#1505 S6 — the images this queued message carries.\n\nEach is already bound, so its read-back url resolves now and will keep\nresolving. The absolute host path the server holds beside each of these\nis deliberately not here: the client addresses an attachment by id and\nreads it back through `GET /planner/attachments/{id}`."
+          },
           "entry_id": {
             "type": "string",
             "description": "Stable identity. Never empty, and unique within one response."
@@ -7903,7 +7923,8 @@
         "required": [
           "id",
           "contentType",
-          "size"
+          "size",
+          "url"
         ],
         "properties": {
           "contentType": {
@@ -7917,6 +7938,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "url": {
+            "type": "string",
+            "description": "Where to read the bytes. Also derived, by [`attachment_url`].\n\n#1505 S6. Carried rather than left for the client to build: the\ntranscript and the pending-queue read both need a way to reach these\nbytes, and a client that assembles `/api/cards/{card}/planner/\nattachments/{id}` for itself is a second spelling of a route only the\nrouter should own. The host path the server holds beside this is NOT\nhere and must not be."
           }
         }
       },
@@ -8410,6 +8435,13 @@
           "text"
         ],
         "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentId"
+            },
+            "description": "#1505 S6 — ids returned by `POST /api/cards/{id}/planner/attachments`.\n\nNaming an attachment here is what BINDS it: the bytes move out of the\nserver's sweepable staging area before this request writes anything to\nthe queue. So a message that reaches the queue always names files that\nare already permanent, and an upload that is never named expires.\n\n`#[serde(default)]` so every existing client keeps working unchanged.\nAn id belonging to another card is a 400, as is naming the same one\ntwice or naming more than eight."
+          },
           "text": {
             "type": "string"
           }
@@ -10143,7 +10175,7 @@
           },
           "url": {
             "type": "string",
-            "description": "Absolute REST path the browser reads the bytes back from. Server-built:\nthe client never composes a path of its own.\n\nNot a durable link yet. As of S6-PR1 nothing binds an attachment to a\nqueue entry, so every upload stays in the server's `staging/` directory\nand is swept once it is older than the 24h orphan TTL; after that this\npath answers 400. S6-PR2 adds the bind that makes an attachment\npermanent."
+            "description": "Absolute REST path the browser reads the bytes back from. Server-built:\nthe client never composes a path of its own.\n\nDurable only once the attachment is bound. An upload lands in the\nserver's `staging/` directory, and a staged attachment is swept once it\nis older than the 24h orphan TTL, after which this path answers 400.\nSending or queueing a message that names the id binds it — the bytes\nmove into `bound/`, which nothing sweeps — and from that moment this\npath is stable for the life of the card. So the window in which this\nurl can stop working is exactly \"uploaded, never sent, 24 hours\"."
           }
         }
       },

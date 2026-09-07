@@ -12,34 +12,40 @@
 //! path is final from that instant — nothing in the harness run loop ever
 //! touches the disk, so a re-queued message's attachment cannot go missing.
 //!
-//! # This slice ships no bind path — uploads expire
+//! # Binding, and what still expires
 //!
-//! S6-PR1 is the disk half only. Nothing in this slice writes into `bound/`:
-//! the bind path (a queue entry taking a reference, and the `staging/ ->
-//! bound/` move) arrives in S6-PR2. Until it lands, every uploaded attachment
-//! stays in `staging/`, so [`gc::sweep_staging`] removes it once it is older
-//! than [`gc::ORPHAN_TTL`] and the URL in the upload response then answers
-//! `400`. That is a declared boundary of the slice, restated on
-//! [`calm_types::planner_attachment::UploadAttachmentResponse::url`], not a
-//! retention guarantee.
+//! [`bind::bind_attachments`] is the one writer of `bound/`. It runs on the
+//! REST side, before a queue entry that names the attachment is written, so an
+//! entry in the queue always refers to a file that is already out of the
+//! sweep's reach. Nothing in the harness run loop touches the disk: the drain
+//! path builds `{"type":"localImage","path":...}` from a path recorded at bind
+//! time, so a re-buffered batch cannot find its attachment gone.
+//!
+//! What still expires is an attachment that is uploaded and never sent:
+//! [`gc::sweep_staging`] removes it once it is older than [`gc::ORPHAN_TTL`]
+//! and the upload response's url then answers `400`. That window is stated on
+//! [`calm_types::planner_attachment::UploadAttachmentResponse::url`].
 //!
 //! # The two directories are different types on purpose
 //!
 //! `bound/` is not swept: once codex may have been handed a path, that path has
 //! to keep resolving, and there is no reader anywhere that could tell us it is
-//! safe to remove. [`StagingDir`] and [`BoundDir`] are separate newtypes, and
-//! [`gc::remove_staged_file`] — the only `remove_file` in this module, called
-//! by [`gc::sweep_staging_at`] and by the upload's abandon path — takes only
-//! the former.
+//! safe to remove. [`dir::StagingFd`] and [`dir::BoundFd`] are separate
+//! newtypes over open descriptors, and [`dir::unlink_staged`] — the only
+//! deletion this module can express at all — takes only the former.
 //!
-//! What the trybuild fence in `tests/ui/bound_dir_cannot_be_deleted.rs` proves
-//! is exactly one statement and no more: **there is no conversion from
-//! [`BoundDir`] into [`StagingDir`]**, so the fence turns red the moment an
-//! `impl From<BoundDir> for StagingDir` is added. It does not prove that a
-//! `BoundDir`'s path never reaches a delete — [`BoundDir::path`] is `pub`, so
-//! `std::fs::remove_dir_all(bound_dir(root, &card).path())` compiles anywhere,
-//! and the fence would stay green. Keeping `bound/` undeleted is a property of
-//! the call sites in this module, not of the type system.
+//! The trybuild fence in `tests/ui/bound_fd_cannot_be_deleted.rs` proves one
+//! statement: **there is no conversion from [`dir::BoundFd`] into
+//! [`dir::StagingFd`]**, so it turns red the moment an
+//! `impl From<BoundFd> for StagingFd` is added.
+//!
+//! What used to stand here was a paragraph explaining that the fence proved
+//! much less than it looked like — because `BoundDir::path` was `pub`, so
+//! `std::fs::remove_dir_all(bound_dir(root, &card).path())` compiled anywhere.
+//! That escape hatch is gone: [`dir::BoundFd`] exposes no path, no descriptor
+//! and no conversion, so there is nothing to hand to a path-based delete, and
+//! [`dir`]'s own module docs carry the mechanism and the audit that keeps it
+//! true.
 
 use std::path::{Path, PathBuf};
 
@@ -49,6 +55,8 @@ use crate::error::{CalmError, Result};
 use crate::ids::CardId;
 use crate::model::{TrackWorkspace, TrackWorkspaceKind};
 
+pub mod bind;
+pub mod dir;
 pub mod gc;
 pub mod routes;
 pub mod sniff;
@@ -64,21 +72,37 @@ pub const NEIGE_GIT_EXCLUDE_ENTRY: &str = ".neige/";
 
 /// The most [`used_bytes`] may report before an upload is refused.
 ///
-/// An instantaneous ceiling, not a lifetime quota. [`gc::sweep_staging`]
-/// reclaims staged files older than [`gc::ORPHAN_TTL`], so a card that fills
-/// the budget and then goes quiet for a day can fill it again — which, since
-/// this slice writes nothing into `bound/`, is the only behaviour it actually
-/// has today.
+/// Part ceiling, part lifetime quota, and which part depends on where the
+/// bytes are. [`gc::sweep_staging`] reclaims *staged* files older than
+/// [`gc::ORPHAN_TTL`], so budget spent on uploads that were never sent comes
+/// back after a day. Budget spent on **bound** bytes never comes back: nothing
+/// deletes from `bound/`, so for a card whose attachments were all actually
+/// sent this constant is a lifetime total, not a ceiling. Binding does not
+/// change the number in the ordinary case — [`used_bytes`] counts both
+/// directories, and a bind moves bytes between them — it changes whether that
+/// number can ever go down again.
+///
+/// "In the ordinary case" is doing real work in that sentence and is not a
+/// hedge. A bind that publishes into `bound/` and then fails, or is killed,
+/// before retiring the staged original leaves the same bytes in both
+/// directories, and this counts them twice until either the next bind of that
+/// id retires the twin or [`gc::sweep_staging`] reaches it. [`bind`] logs that
+/// branch rather than hiding it, and [`store::store_upload`] sweeps BEFORE it
+/// measures so a card double-charged past the ceiling can still recover.
+///
+/// The residual gap (an attachment removed from a message before it was sent,
+/// or a deleted queue entry, still costs its bytes forever) is #1505 GAP-A12,
+/// and this refusal is its only backstop.
 ///
 /// Nor is it a bound on the subtree's size: [`used_bytes`] counts the regular
 /// files directly in the two directories, so bytes parked in a subdirectory, or
 /// behind a symlink, by anything else with write access to the workspace are
 /// invisible to it and keep being invisible however many there are.
 ///
-/// Once the bind path lands (S6-PR2), bound bytes are not reclaimed by
-/// anything, which is why exceeding the ceiling has to be a refusal the user
-/// can see rather than a silent eviction of bytes codex may still be asked to
-/// read. It is enforced under the card's upload lock (see
+/// Bound bytes are not reclaimed by anything, which is why exceeding the
+/// ceiling has to be a refusal the user can see rather than a silent eviction
+/// of bytes codex may still be asked to read. It is enforced under the card's
+/// upload lock (see
 /// [`store::store_upload`]), so concurrent uploads cannot each measure the same
 /// "before" and both fit.
 pub const PER_CARD_ATTACHMENT_BUDGET: u64 = 64 * 1024 * 1024;
@@ -102,7 +126,7 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 /// wider than the code and is corrected here. The turn is taken before the
 /// budget measurement and released after the staging sweep, and the clock
 /// covers only `stream_into` — the client-controlled step — between them. The
-/// filesystem work on either side (`used_bytes`, `create_dir_all`, `finish`,
+/// filesystem work on either side (`used_bytes`, the directory opens, `finish`,
 /// the sweep) is outside it, so a workspace on a wedged mount can hold the turn
 /// past this deadline with it never firing. Bounding that would mean bounding
 /// local filesystem calls, which this server does nowhere; it is recorded as a
@@ -125,6 +149,19 @@ pub const UPLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(
 /// and 2 each fixed one message and left the rest of the class. There is now
 /// exactly one constructor that takes paths, it puts them in the log, and the
 /// returned sentence carries none of them.
+///
+/// # The scope of this rule, said explicitly because it has been over-read
+///
+/// #1505 S6 review. This is a rule about **error bodies built by this
+/// module**. It is NOT the sentence "no host path reaches a client", and that
+/// wider sentence is false in this repository: a track's `cwd` is on the wire
+/// by design, and `GET /api/cards/{id}/harness/items` returns each stored
+/// `params` blob verbatim — including, once this slice landed, codex's own
+/// `{"type":"localImage","path":…}` item. That surface is reduced by
+/// [`redact_local_image_paths`], which is a reduction and not a guarantee; the
+/// route still carries whatever else codex put in a notification. Anyone
+/// citing the rule below for a claim about a route rather than about an error
+/// message is citing it for something it never said.
 ///
 /// The class-level check is a grep, and it is the reason this is stated as a
 /// rule rather than as a claim about particular messages: **every `.display()`
@@ -181,41 +218,19 @@ pub fn attachment_root(workspace: &TrackWorkspace, workspace_root: &Path) -> Res
     Ok(path.join(NEIGE_DIR).join("attachments"))
 }
 
-/// Uploaded, not yet referenced by any queue entry. The only directory anything
-/// is ever deleted from.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StagingDir(PathBuf);
-
-/// Referenced by a queue entry at least once. Nothing deletes from here.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BoundDir(PathBuf);
-
-impl StagingDir {
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl BoundDir {
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-/// The two directory names, single-sourced: [`staging_dir`] joins this one and
-/// [`open_attachment`] spells the same segment into the relative path it hands
-/// the workspace opener.
+/// The two directory names, single-sourced: [`dir::open_card_dirs`] resolves
+/// these components relative to a descriptor and [`open_attachment`] spells
+/// the same ones into the relative path it hands the workspace opener.
 const STAGING: &str = "staging";
 const BOUND: &str = "bound";
 
-/// `<root>/<card_id>/staging`.
-pub fn staging_dir(root: &Path, card_id: &CardId) -> StagingDir {
-    StagingDir(root.join(card_id.as_str()).join(STAGING))
-}
-
-/// `<root>/<card_id>/bound`.
-pub fn bound_dir(root: &Path, card_id: &CardId) -> BoundDir {
-    BoundDir(root.join(card_id.as_str()).join(BOUND))
+/// Which of a card's two directories an attachment was found in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentLocation {
+    /// Uploaded, never named by a queue entry. Reclaimable by the sweep.
+    Staging,
+    /// Named by a queue entry at least once. Permanent.
+    Bound,
 }
 
 /// An attachment the server has already opened.
@@ -227,6 +242,20 @@ pub struct OpenAttachment {
     pub file: tokio::fs::File,
     pub size: u64,
     pub format: AttachmentFormat,
+    /// Where it was found. [`bind::bind_attachments`] needs this to tell an
+    /// already-bound attachment (nothing to do) from a staged one (copy it
+    /// across); it is not otherwise read.
+    pub location: AttachmentLocation,
+}
+
+/// `<root>/<card_id>/bound/<id>` — the path handed to codex, and the path an
+/// attachment keeps for the life of the card.
+///
+/// Pure string work. It is not evidence that anything exists there; the only
+/// thing that establishes that is [`open_attachment`], which is what
+/// [`bind::bind_attachments`] runs before it records this path.
+pub fn bound_file_path(root: &Path, card_id: &CardId, id: &AttachmentId) -> PathBuf {
+    root.join(card_id.as_str()).join(BOUND).join(id.as_str())
 }
 
 /// The one place an [`AttachmentId`] becomes bytes.
@@ -262,7 +291,10 @@ pub async fn open_attachment(
     card_id: &CardId,
     id: &AttachmentId,
 ) -> Result<OpenAttachment> {
-    for dir in [BOUND, STAGING] {
+    for (dir, location) in [
+        (BOUND, AttachmentLocation::Bound),
+        (STAGING, AttachmentLocation::Staging),
+    ] {
         let relative = format!("{}/{dir}/{}", card_id.as_str(), id.as_str());
         match crate::routes::fs::open_workspace_regular_file(
             root,
@@ -282,6 +314,7 @@ pub async fn open_attachment(
                     file: opened.file,
                     size: opened.size,
                     format: id.format(),
+                    location,
                 });
             }
             // The platform cannot do a bounded, root-anchored open at all
@@ -328,40 +361,20 @@ pub async fn open_attachment(
 /// over. Anything with write access to the workspace can create one, and if a
 /// single planted entry made this function `Err`, every later upload on that
 /// card would be refused forever — a latch, not a budget. The stat is
-/// `symlink_metadata`, which describes a dangling link instead of failing on
-/// it, so that classification is available at all.
-pub fn used_bytes(root: &Path, card_id: &CardId) -> Result<u64> {
-    let staging = staging_dir(root, card_id);
-    let bound = bound_dir(root, card_id);
-    Ok(directory_bytes(staging.path())? + directory_bytes(bound.path())?)
+/// [`dir::regular_entries`]' `fstatat` with `AT_SYMLINK_NOFOLLOW`, which
+/// describes a link rather than following it — and describes a DANGLING one
+/// instead of failing on it, so that classification is available at all.
+pub fn used_bytes(dirs: &dir::CardDirs) -> Result<u64> {
+    Ok(directory_bytes(dirs.staging())? + directory_bytes(dirs.bound())?)
 }
 
-fn directory_bytes(dir: &Path) -> Result<u64> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(unmeasurable(dir, &error)),
-    };
-    let mut total = 0u64;
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => return Err(unmeasurable(dir, &error)),
-        };
-        let meta = match std::fs::symlink_metadata(entry.path()) {
-            Ok(meta) => meta,
-            // Gone between `read_dir` and the stat — a concurrent sweep, or a
-            // hand deleting a file. Absent bytes are zero bytes.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(unmeasurable(dir, &error)),
-        };
-        // `file_type()` from `symlink_metadata` is `is_file()` only for a
-        // regular file: a symlink is a symlink here, whatever it points at.
-        if meta.file_type().is_file() {
-            total = total.saturating_add(meta.len());
-        }
+fn directory_bytes<D: dir::DirFd>(directory: &D) -> Result<u64> {
+    match dir::regular_entries(directory) {
+        Ok(entries) => Ok(entries
+            .iter()
+            .fold(0u64, |total, entry| total.saturating_add(entry.len))),
+        Err(error) => Err(unmeasurable(&error)),
     }
-    Ok(total)
 }
 
 /// The one refusal this measurement produces.
@@ -371,30 +384,95 @@ fn directory_bytes(dir: &Path) -> Result<u64> {
 /// error body, and the workspace's layout on the server's disk is not something
 /// a client asked for or can act on. The same rule holds for
 /// [`store::store_upload`]'s failures and for the read-back's.
-fn unmeasurable(dir: &Path, error: &std::io::Error) -> CalmError {
+fn unmeasurable(error: &std::io::Error) -> CalmError {
     tracing::warn!(
         target: "planner_attachments",
-        dir = %dir.display(),
         %error,
         "could not measure a card's attachment budget"
     );
     // `BadRequest`, not [`server_side_fault`]: the caller can act on it (free
     // space, remove the planted entry), so it is a refusal rather than a fault.
-    // The path rule is the same and is why `dir` appears only above.
     CalmError::BadRequest(format!(
         "cannot measure this card's attachment budget: {error}"
     ))
 }
 
-/// REST path the browser reads an attachment back from. Built here so no client
-/// ever composes one.
-pub fn attachment_url(card_id: &CardId, id: &AttachmentId) -> String {
-    format!(
-        "/api/cards/{}/planner/attachments/{}",
-        card_id.as_str(),
-        id.as_str()
-    )
+/// The placeholder a redacted `localImage` path is replaced with.
+pub const REDACTED_LOCAL_IMAGE_PATH: &str = "[redacted]";
+
+/// Strip absolute host paths out of a stored harness-item `params` blob before
+/// it is put on the wire.
+///
+/// # Why this exists, and what it is NOT claiming
+///
+/// #1505 S6 review. `GET /api/cards/{id}/harness/items` returns each row's
+/// `params` verbatim, and this slice made codex put
+/// `{"type":"localImage","path":"/abs/host/path"}` in there — the very item it
+/// is handed. That path is not something a browser asked for, can act on, or
+/// needs: the transcript renders attachments from
+/// [`calm_types::model::HarnessInputSegment`], which carries an id and a REST
+/// url and no path at all.
+///
+/// **This does not establish "no host path reaches a client".** That sentence
+/// is false in this repository and was false before this slice: the same route
+/// ships whatever else codex put in a notification, and a track's `cwd` is on
+/// the wire by design. What #1515 established is narrower and is restated on
+/// [`server_side_fault`]: no path this MODULE builds reaches an error body.
+/// This function removes one path this slice would otherwise have added to a
+/// different surface; it is a reduction, not an invariant.
+///
+/// Total over shape rather than over spelling: it walks the whole document and
+/// rewrites `path` on every object whose `type` is `localImage`, wherever it
+/// sits, because codex decides that nesting and we do not.
+pub fn redact_local_image_paths(params: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(params) else {
+        // Not JSON we can walk. It is stored opaque and goes out opaque; a
+        // blob this cannot parse is also one no `localImage` item came from,
+        // since we only ever store what serde produced.
+        return params.to_string();
+    };
+    if !redact_in_place(&mut value) {
+        return params.to_string();
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| params.to_string())
 }
+
+/// Returns whether anything was rewritten, so an untouched document keeps its
+/// exact original bytes rather than being re-serialized.
+fn redact_in_place(value: &mut serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut changed = false;
+            if map.get("type").and_then(serde_json::Value::as_str) == Some("localImage")
+                && let Some(path) = map.get_mut("path")
+                && path.is_string()
+            {
+                *path = serde_json::Value::String(REDACTED_LOCAL_IMAGE_PATH.to_string());
+                changed = true;
+            }
+            for nested in map.values_mut() {
+                changed |= redact_in_place(nested);
+            }
+            changed
+        }
+        serde_json::Value::Array(items) => {
+            let mut changed = false;
+            for nested in items.iter_mut() {
+                changed |= redact_in_place(nested);
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+/// REST path the browser reads an attachment back from.
+///
+/// Re-exported rather than re-derived: the same path has to appear in the
+/// upload response, in every queued message and in every transcript segment,
+/// and two of those three are built inside `calm-types`. One builder, in the
+/// crate both sides can reach.
+pub use calm_types::planner_attachment::attachment_url;
 
 #[cfg(test)]
 mod tests;
