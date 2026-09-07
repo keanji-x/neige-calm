@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::worker_flow::cursor::CODEX_ROLLOUT_SOURCE_KIND;
 use serde_json::Value;
 
 use support::worker_flow as wf;
@@ -29,12 +28,8 @@ async fn codex_rollout_position_survives_idle_poll_before_append() {
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, "card-position").await == 100 }
-    })
-    .await;
-    assert_cursor(&repo, "card-position", 101).await;
+    wf::wait_for_codex_cursor(&repo, "card-position", 101).await;
+    assert_eq!(item_count(&repo, "card-position").await, 100);
     tokio::time::sleep(Duration::from_millis(80)).await;
 
     let prior_max_seq = max_seq(&repo, "card-position").await;
@@ -74,13 +69,4 @@ async fn max_seq(repo: &SqlxRepo, card_id: &str) -> u64 {
         })
         .max()
         .unwrap()
-}
-
-async fn assert_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
-    let cursor = repo
-        .worker_flow_cursor_get(card_id, CODEX_ROLLOUT_SOURCE_KIND)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(cursor.record_index, record_index);
 }

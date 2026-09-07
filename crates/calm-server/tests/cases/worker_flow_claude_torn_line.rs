@@ -33,16 +33,8 @@ async fn claude_transcript_preserves_unterminated_final_line_until_complete() {
 
     let (token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move {
-            // Recording and its checkpoint are separate asynchronous writes.
-            item_count(&repo, "card-claude-torn").await == 2
-                && cursor_index(&repo, "card-claude-torn").await == Some(2)
-        }
-    })
-    .await;
-    assert_cursor(&repo, "card-claude-torn", 2, first_len).await;
+    wait_for_cursor(&repo, "card-claude-torn", 2, first_len).await;
+    assert_eq!(item_count(&repo, "card-claude-torn").await, 2);
 
     let next = serde_json::to_string(&wf::claude_assistant(
         "assistant-1",
@@ -58,16 +50,8 @@ async fn claude_transcript_preserves_unterminated_final_line_until_complete() {
 
     append_raw(&path, &format!("{}\n", &next[split_at..]));
     let second_len = file_len(&path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move {
-            // Recording and its checkpoint are separate asynchronous writes.
-            item_count(&repo, "card-claude-torn").await == 3
-                && cursor_index(&repo, "card-claude-torn").await == Some(3)
-        }
-    })
-    .await;
-    assert_cursor(&repo, "card-claude-torn", 3, second_len).await;
+    wait_for_cursor(&repo, "card-claude-torn", 3, second_len).await;
+    assert_eq!(item_count(&repo, "card-claude-torn").await, 3);
 
     token.cancel();
     handle.await.unwrap().unwrap();
@@ -89,11 +73,32 @@ async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {
         .len()
 }
 
-async fn cursor_index(repo: &SqlxRepo, card_id: &str) -> Option<i64> {
+/// Wait until the Claude transcript cursor for `card_id` reaches
+/// `record_index`/`byte_offset`.
+///
+/// Recorded items and the cursor checkpoint are two separate asynchronous
+/// writes, and the checkpoint is the later one, so waiting on the item count
+/// and then asserting the cursor can read the checkpoint one record behind.
+/// Wait on the cursor and assert the item count afterwards instead.
+async fn wait_for_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64, byte_offset: i64) {
+    wf::wait_until(wf::LIVENESS_BUDGET, || async {
+        cursor_matches(repo, card_id, record_index, byte_offset).await
+    })
+    .await;
+}
+
+async fn cursor_matches(
+    repo: &SqlxRepo,
+    card_id: &str,
+    record_index: i64,
+    byte_offset: i64,
+) -> bool {
     repo.worker_flow_cursor_get(card_id, CLAUDE_TRANSCRIPT_SOURCE_KIND)
         .await
         .unwrap()
-        .map(|cursor| cursor.record_index)
+        .is_some_and(|cursor| {
+            cursor.record_index == record_index && cursor.byte_offset == byte_offset
+        })
 }
 
 async fn assert_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64, byte_offset: i64) {

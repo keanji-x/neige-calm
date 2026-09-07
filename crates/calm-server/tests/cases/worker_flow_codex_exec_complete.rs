@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::worker_flow::cursor::CODEX_ROLLOUT_SOURCE_KIND;
 use calm_types::worker_flow::{ExecStatus, WorkerFlowItem};
 
 use support::worker_flow as wf;
@@ -35,7 +34,7 @@ async fn codex_rollout_records_exec_command_end_and_suppresses_begin() {
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wait_for_cursor(&repo, "card-exec-complete", 4).await;
+    wf::wait_for_codex_cursor(&repo, "card-exec-complete", 4).await;
     token.cancel();
     handle.await.unwrap().unwrap();
 
@@ -76,23 +75,13 @@ async fn codex_rollout_records_failed_exec_command_end() {
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wait_for_cursor(&repo, "card-exec-failed", 3).await;
+    wf::wait_for_codex_cursor(&repo, "card-exec-failed", 3).await;
     token.cancel();
     handle.await.unwrap().unwrap();
 
     let rows = command_items(&repo, "card-exec-failed").await;
     assert_eq!(rows.len(), 2);
     assert_command(&rows[1], ExecStatus::Failed, Some(1), Some("boom"), Some(7));
-}
-
-async fn wait_for_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
-    wf::wait_until(wf::LIVENESS_BUDGET, || async {
-        repo.worker_flow_cursor_get(card_id, CODEX_ROLLOUT_SOURCE_KIND)
-            .await
-            .unwrap()
-            .is_some_and(|cursor| cursor.record_index == record_index)
-    })
-    .await;
 }
 
 async fn command_items(repo: &SqlxRepo, card_id: &str) -> Vec<WorkerFlowItem> {

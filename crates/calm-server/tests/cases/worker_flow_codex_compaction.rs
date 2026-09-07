@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::worker_flow::cursor::CODEX_ROLLOUT_SOURCE_KIND;
 
 use support::worker_flow as wf;
 
@@ -29,12 +28,8 @@ async fn codex_rollout_rewrite_resets_cursor_and_reingests_shorter_history() {
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo).await == 5 }
-    })
-    .await;
-    assert_cursor(&repo, 6).await;
+    wf::wait_for_codex_cursor(&repo, "card-compact", 6).await;
+    assert_eq!(item_count(&repo).await, 5);
     token.cancel();
     handle.await.unwrap().unwrap();
 
@@ -51,12 +46,8 @@ async fn codex_rollout_rewrite_resets_cursor_and_reingests_shorter_history() {
     );
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo).await == 7 }
-    })
-    .await;
-    assert_cursor(&repo, 3).await;
+    wf::wait_for_codex_cursor(&repo, "card-compact", 3).await;
+    assert_eq!(item_count(&repo).await, 7);
     token.cancel();
     handle.await.unwrap().unwrap();
 }
@@ -66,13 +57,4 @@ async fn item_count(repo: &SqlxRepo) -> usize {
         .await
         .unwrap()
         .len()
-}
-
-async fn assert_cursor(repo: &SqlxRepo, record_index: i64) {
-    let cursor = repo
-        .worker_flow_cursor_get("card-compact", CODEX_ROLLOUT_SOURCE_KIND)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(cursor.record_index, record_index);
 }

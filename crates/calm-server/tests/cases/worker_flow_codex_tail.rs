@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::worker_flow::cursor::CODEX_ROLLOUT_SOURCE_KIND;
 
 use support::worker_flow as wf;
 
@@ -27,12 +26,8 @@ async fn codex_rollout_tail_records_and_resumes_from_cursor() {
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, "card-tail").await == 3 }
-    })
-    .await;
-    assert_cursor(&repo, "card-tail", 4).await;
+    wf::wait_for_codex_cursor(&repo, "card-tail", 4).await;
+    assert_eq!(item_count(&repo, "card-tail").await, 3);
 
     wf::append_rollout(
         &path,
@@ -41,12 +36,8 @@ async fn codex_rollout_tail_records_and_resumes_from_cursor() {
             wf::function_output("call-1", "/tmp"),
         ],
     );
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, "card-tail").await == 5 }
-    })
-    .await;
-    assert_cursor(&repo, "card-tail", 6).await;
+    wf::wait_for_codex_cursor(&repo, "card-tail", 6).await;
+    assert_eq!(item_count(&repo, "card-tail").await, 5);
 
     token.cancel();
     handle.await.unwrap().unwrap();
@@ -54,12 +45,8 @@ async fn codex_rollout_tail_records_and_resumes_from_cursor() {
     wf::append_rollout(&path, &[wf::assistant_message("a2", "after restart")]);
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, "card-tail").await == 6 }
-    })
-    .await;
-    wait_for_cursor(&repo, "card-tail", 7).await;
+    wf::wait_for_codex_cursor(&repo, "card-tail", 7).await;
+    assert_eq!(item_count(&repo, "card-tail").await, 6);
     token.cancel();
     handle.await.unwrap().unwrap();
 }
@@ -69,23 +56,4 @@ async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {
         .await
         .unwrap()
         .len()
-}
-
-async fn assert_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
-    let cursor = repo
-        .worker_flow_cursor_get(card_id, CODEX_ROLLOUT_SOURCE_KIND)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(cursor.record_index, record_index);
-}
-
-async fn wait_for_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
-    wf::wait_until(wf::LIVENESS_BUDGET, || async {
-        repo.worker_flow_cursor_get(card_id, CODEX_ROLLOUT_SOURCE_KIND)
-            .await
-            .unwrap()
-            .is_some_and(|cursor| cursor.record_index == record_index)
-    })
-    .await;
 }
