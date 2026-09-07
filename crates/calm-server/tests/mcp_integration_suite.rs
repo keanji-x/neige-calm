@@ -44,3 +44,6 @@ mod isolated_codex_selection;
 mod isolated_codex_retry;
 #[path = "cases/isolated_codex_smoke.rs"]
 mod isolated_codex_smoke;
+
+#[path = "cases/isolated_activity.rs"]
+mod isolated_activity;

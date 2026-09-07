@@ -796,6 +796,7 @@ async fn plan_list(
     let task_budget_default = ctx.task_budget_default;
     crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         Box::pin(async move {
+            let as_of_ms = now_ms();
             let mut tasks_json = Vec::new();
             let mut after_key = None;
             loop {
@@ -825,6 +826,16 @@ async fn plan_list(
                             "allocated task has no current execution history".into(),
                         )
                     })?;
+                    entry["activity"] = serde_json::to_value(
+                        crate::isolated_codex::activity::read_tx(
+                            tx,
+                            task.as_ref(),
+                            &current.attempt_id,
+                            track.id.as_str(),
+                            as_of_ms,
+                        )
+                        .await?,
+                    )?;
                     entry["attempt_id"] = json!(current.attempt_id);
                     entry["generation"] = json!(current.generation);
                     entry["status"] = json!(current.status);

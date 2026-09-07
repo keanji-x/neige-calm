@@ -1,4 +1,5 @@
 //! One explicitly selected task, one private controller, one existing Operation.
+pub(crate) mod activity;
 pub mod adapter;
 mod admission;
 pub mod config;
