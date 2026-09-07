@@ -1197,7 +1197,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 51] = [
+const ALL_KIND_TAGS: [&str; 52] = [
     "area.updated",
     "area.deleted",
     "track.updated",
