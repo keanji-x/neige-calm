@@ -698,22 +698,13 @@ async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
     let card_id = new_id();
     seed_planner_card(&repo, &role_cache, &track, &card_id).await;
 
-    let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-        actor: calm_server::ids::ActorId::User,
-        track_id: track.id.to_string(),
-        planner_card_id: CardId::from(card_id.clone()),
-        report_card_id: None,
-        sort: None,
-        cwd: track.workspace.path.clone(),
-        goal: Some("planner channel-3 point-of-use".into()),
-        reset_harness_items: false,
-        force_new_thread: false,
-        profile: Default::default(),
-        create_card: None,
-        opening_briefing: None,
-        first_message: None,
-        create_request_sha256: None,
-    })
+    let payload = serde_json::to_value(terminal_approval::start_payload(
+        &track,
+        &card_id,
+        HarnessProfile::Planner,
+        false,
+        Some("planner channel-3 point-of-use".into()),
+    ))
     .unwrap();
     let op_id = state
         .operation_runtime
