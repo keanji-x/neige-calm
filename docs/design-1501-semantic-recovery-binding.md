@@ -1,6 +1,7 @@
 # F2：语义恢复的简报与调用绑定
 
-状态：实施设计，F2 尚未交付。基线 `bd45581b`。
+状态：F2 初版实现与验收见 [#1573](https://github.com/keanji-x/neige-calm/pull/1573)，
+本交付记录随该实现 PR 合入生效。初始设计基线 `bd45581b`。
 承接 [Planner 功能实施计划](design-1501-planner-contract-roadmap.md)。
 
 ## 目标和范围
@@ -157,4 +158,10 @@ F2-B 的真实产品演练必须观察到：Planner 收到恢复简报后直接�
 - [x] F2-A 双向传输前置：实现与验收跟踪
   [#1571](https://github.com/keanji-x/neige-calm/pull/1571)。该项仅提供底层
   动态请求接收/响应入口，尚不注册 Planner 业务工具；F2-B 再接入。
-- [ ] F2-B 持久化与语义恢复：按上述具体契约实现及产品验收。
+- [x] F2-B 持久化与语义恢复初版：[#1573](https://github.com/keanji-x/neige-calm/pull/1573)。
+  真实共享 Planner 使用仅含 key/reason 的 Recover，内核绑定原执行并只分配一个
+  successor；本次演练没有旧恢复 MCP 调用或 plan.list 查询。两个受控失败保留为
+  失败，不代表业务产物成功或继承旧文件。冷重启后绑定记录摘要与对话轮次不变，
+  原 Provider 线程重新加载且会话元数据保留工具声明；未在冷重启后再发起业务恢复。
+  权限、过期 turn、提前调用、回执重试和显式超限模式的回归及 mutation 证据见 PR。
+  旧线程、后续无本轮绑定的决定与超限/歧义批次继续使用文中明确的精确接口。
