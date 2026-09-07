@@ -139,7 +139,7 @@ pub(crate) async fn accepted_report_tx(
     attempt_id: &str,
 ) -> Result<Option<AcceptedTaskReport>> {
     let track = crate::track_lifecycle::track_get_tx(tx, &track_id.into()).await?;
-    task_attempt_get_tx(tx, &attempt_id)
+    task_attempt_get_tx(tx, attempt_id)
         .await?
         .filter(|allocation| allocation.track_id == track_id && allocation.key == key)
         .ok_or_else(|| CalmError::NotFound("Task attempt".into()))?;

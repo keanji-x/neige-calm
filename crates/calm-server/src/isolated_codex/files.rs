@@ -38,7 +38,8 @@ pub(crate) async fn snapshot_tx(
     {
         return Err(stop_unavailable());
     }
-    let operations: Vec<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+    type FileOperationRow = (String, String, String, Option<String>, Option<String>);
+    let operations: Vec<FileOperationRow> = sqlx::query_as(
         "SELECT id,kind,phase,spawn_artifacts_json,compensation_state FROM operations \
          WHERE idempotency_key=?1 OR (kind='task-verify' AND json_extract(payload_json,'$.task_id')=?1)")
         .bind(attempt_id).fetch_all(&mut **tx).await?;
