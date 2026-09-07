@@ -244,4 +244,5 @@ async fn lost_acknowledgement_blocks_new_control_and_queued_writes() {
     assert!(barrier.grant().await.is_none());
 }
 
-mod task_scope;
+#[cfg(test)]
+mod task_scope_tests;
