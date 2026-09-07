@@ -3,18 +3,30 @@
     display: contents;
   }
 
+  /*
+   * Both triggers, smaller and quieter than the field above them.
+   *
+   * These name a *setting* — what the next message will run with — and a
+   * setting is something you check, not something you read. At body size in
+   * full-strength text they were the loudest thing in the footer, on a row
+   * whose actual subject is the send button. Size and colour are the two
+   * properties overridden on the vendor button; both are tokens, and neither
+   * re-implements anything the button does.
+   *
+   * `--text-3` is the app's secondary text, which `check-contrast.mjs` already
+   * holds to AA on every surface in the stylesheet.
+   */
+  .trigger,
+  .effort {
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+
   /* A ceiling, not a clip: the label inside truncates with an ellipsis and
      offers the full name on hover (`Text maxLines`), so this only decides how
      much of the footer one control may take. */
   .trigger {
     max-inline-size: 14rem;
-  }
-
-  /* Secondary text, so the effort reads as belonging to the model beside it
-     rather than as its equal. The one property overridden on a vendor button,
-     and it is a token, not a re-implementation of the button. */
-  .effort {
-    color: var(--text-3);
   }
 
   /* A standing explanation, not a menu row: it must not look pressable. The

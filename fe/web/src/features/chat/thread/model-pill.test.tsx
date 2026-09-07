@@ -55,11 +55,65 @@ function openMenu(name: RegExp): HTMLElement {
 }
 
 describe('ModelPill', () => {
-  it('names the default it is actually following, not just the word', () => {
+  /*
+   * The trigger names the model and not the route to it: `gpt-5-codex`, never
+   * `Default (gpt-5-codex)`. "Default" is a fact about how the answer was
+   * arrived at, and the pill's job is the answer.
+   */
+  it('names the default it is actually following, and only the name', () => {
     render(
       <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
-    expect(trigger(/^Model:/).textContent).toBe('Default (gpt-5-codex)');
+    expect(trigger(/^Model:/).textContent).toBe('gpt-5-codex');
+  });
+
+  /*
+   * What the visible label dropped, the accessible one keeps: whether this
+   * conversation has PINNED that model or is following whatever the
+   * installation uses is a real difference, and a person reading the pill can
+   * open the menu to see which row is ticked. A person hearing it cannot.
+   */
+  it('still says, to a screen reader, that it is following the default', () => {
+    const { rerender } = render(
+      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+    );
+    expect(trigger(/^Model:/).getAttribute('aria-label'))
+      .toBe("Model: gpt-5-codex (this installation's default)");
+
+    rerender(
+      <ModelPill
+        catalog={catalog()}
+        selection={{ model: 'gpt-5', reasoning_effort: null }}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(trigger(/^Model:/).getAttribute('aria-label')).toBe('Model: GPT-5');
+  });
+
+  /*
+   * And the menu keeps the word, because there it IS the distinction: its
+   * first row is "follow whatever this installation uses", the rows under it
+   * are that same model pinned by name, and without the word they would read
+   * as the same choice twice.
+   */
+  it('keeps the word in the menu, where it is the choice being offered', () => {
+    render(
+      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+    );
+    const menu = openMenu(/^Model:/);
+    expect(within(menu).getByText('Default (gpt-5-codex)')).toBeTruthy();
+  });
+
+  /*
+   * No chevron on either trigger (owner's call). Pinned because the control
+   * then has no visual affordance at rest at all — if this ever comes back it
+   * should be a decision, not a regression.
+   */
+  it('draws no chevron on the trigger', () => {
+    render(
+      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+    );
+    expect(trigger(/^Model:/).querySelector('svg')).toBeNull();
   });
 
   /*
@@ -180,9 +234,9 @@ describe('ModelPill', () => {
         />,
       );
       const effort = trigger(/^Reasoning effort:/);
-      /* Named, not just "Default": the word alone says you have not chosen,
-         never what you are getting. */
-      expect(effort.textContent).toBe('Default (low)');
+      /* The effort, not the route to it — same rule as the model trigger. */
+      expect(effort.textContent).toBe('low');
+      expect(effort.getAttribute('aria-label')).toBe('Reasoning effort: low (the default)');
       const menu = openMenu(/^Reasoning effort:/);
       expect(within(menu).getByText('Thinks longer.')).toBeTruthy();
     });

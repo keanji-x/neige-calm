@@ -94,11 +94,33 @@ export function ModelPill({
   const chosen = selection.model === null
     ? followed
     : models.find((model) => model.model === selection.model);
-  // A slug we hold that the catalog does not list still names the model this
-  // conversation runs; showing the slug is more use than showing nothing.
+  /*
+   * The trigger says the MODEL, not how it was arrived at.
+   *
+   * It used to read `Default (gpt-6-astra)`, and the first word was noise on
+   * every conversation nobody has touched: what a person wants off that pill
+   * is which model is running, and "Default" is a fact about the *route* to
+   * that answer, not the answer. The route still has a place — the menu's
+   * first row is still `Default (gpt-6-astra)`, where the word is what
+   * distinguishes "follow whatever this installation uses" from pinning that
+   * same model by name, and the tick says which of the two is in force.
+   *
+   * The one case where the word survives here is the one where dropping it
+   * would leave nothing true to say: no catalog, or a default this
+   * installation cannot resolve. Then `Default` alone IS the whole of what is
+   * known.
+   *
+   * A slug we hold that the catalog does not list still names the model this
+   * conversation runs; showing the slug is more use than showing nothing.
+   */
   const label = selection.model === null
-    ? (defaultName === null ? FOLLOW_DEFAULT_LABEL : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`)
+    ? (defaultName ?? FOLLOW_DEFAULT_LABEL)
     : (chosen?.display_name ?? selection.model);
+  /* The accessible name keeps what the visible one dropped. A person reading
+     the pill has the menu one press away; a person hearing it does not. */
+  const spokenLabel = selection.model === null && defaultName !== null
+    ? `Model: ${label} (this installation's default)`
+    : `Model: ${label}`;
 
   const efforts = chosen?.supported_reasoning_efforts ?? [];
   const closeOnEscape = (event: KeyboardEvent<HTMLSpanElement>) => {
@@ -119,21 +141,43 @@ export function ModelPill({
           placement={placement}
           isMenuOpen={open}
           onOpenChange={setOpen}
+          /*
+           * No chevron, at the owner's call. Worth naming what that spends:
+           * with no fill, no border and now no glyph, nothing about this
+           * control announces itself as one until the pointer is over it —
+           * hover and focus are the whole of the affordance. It keeps its
+           * button role and its name, so nothing is lost to a screen reader or
+           * to the keyboard; what a mouse loses is the hint that there is
+           * something here to press.
+           */
+          hasChevron={false}
           button={{
             id: triggerId,
-            label: `Model: ${label}`,
+            label: spokenLabel,
             /* Model names run long — `gpt-5.1-codex-max` and worse — and the
                trigger cannot have the whole footer. `maxLines` ends it in an
                ellipsis and `hasTruncateTooltip` offers the full name on hover
                ONLY when it was actually shortened, which is the difference
                between this and the `max-inline-size` that used to just cut it
                off with no way to read the rest. */
-            children: <Text maxLines={1} hasTruncateTooltip>{label}</Text>,
+            /* `type`/`color` inherit, and that is load-bearing: `Text`
+               defaults to body size in primary text and would re-assert both
+               over the trigger's own — measured, the model name stayed large
+               and black while the effort beside it (a plain string, so it
+               inherits) went small and grey. Same shape as the tooltip bug in
+               `context-ring.tsx`: `Text` on somebody else's surface has to be
+               told to inherit. */
+            children: (
+              <Text type="inherit" color="inherit" maxLines={1} hasTruncateTooltip>
+                {label}
+              </Text>
+            ),
             /* `ghost`: no fill, no border. The composer footer is a quiet row
                under the field, and a filled pill there was the heaviest thing
                in it — heavier than Send, which is the control anyone looking
-               at that row is actually aiming for. What says "this is
-               pressable" is the chevron and the hover, which ghost keeps. */
+               at that row is actually aiming for. With the chevron gone too
+               (see `hasChevron` above), hover and focus are all that is left
+               to say it is pressable. */
             variant: 'ghost',
             size: 'sm',
             isDisabled: isDisabled || unreachable,
@@ -204,8 +248,11 @@ function EffortPill({
 }>) {
   const [open, setOpen] = useState(false);
   const hostRef = useRef<HTMLSpanElement | null>(null);
-  const label = value
-    ?? (defaultName === null ? FOLLOW_DEFAULT_LABEL : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`);
+  /* Same rule as the model trigger: the effort, not the route to it. */
+  const label = value ?? defaultName ?? FOLLOW_DEFAULT_LABEL;
+  const spokenLabel = value === null && defaultName !== null
+    ? `Reasoning effort: ${label} (the default)`
+    : `Reasoning effort: ${label}`;
   const closeOnEscape = (event: KeyboardEvent<HTMLSpanElement>) => {
     if (event.key !== 'Escape' || !open) return;
     event.preventDefault();
@@ -219,8 +266,9 @@ function EffortPill({
         placement={placement}
         isMenuOpen={open}
         onOpenChange={setOpen}
+        hasChevron={false}
         button={{
-          label: `Reasoning effort: ${label}`,
+          label: spokenLabel,
           children: label,
           /* Both triggers are ghost now that neither is filled, so the
              subordination that used to come from `secondary` vs `ghost` comes
