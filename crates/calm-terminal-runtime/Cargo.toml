@@ -1,0 +1,24 @@
+[package]
+name = "calm-terminal-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "neige-terminal-runtime"
+path = "src/main.rs"
+
+[[bin]]
+name = "terminal-runtime-parent-probe"
+path = "tests/fixtures/parent_probe.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rmux-sdk = { version = "=0.10.0", default-features = false }
+rmux-server = { version = "=0.10.0", default-features = false }
+rmux-client = "=0.10.0"
+rmux-proto = "=0.10.0"
+rustix = { version = "1.1", features = ["fs", "process"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process", "sync"] }
+tempfile = "3"
+thiserror = "2"

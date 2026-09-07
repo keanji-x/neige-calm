@@ -107,6 +107,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
+name = "async-recursion"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b43422f69d8ff38f95f1b2bb76517c91589a924d1559a0e935d7c8ce0274c11"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -269,6 +280,15 @@ name = "basic-toml"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2db21524cad41c5591204d22d75e1970a2d1f71060214ca931dc7d5afe2c14e5"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
 dependencies = [
  "serde",
 ]
@@ -509,7 +529,7 @@ dependencies = [
 name = "calm-session"
 version = "0.1.0"
 dependencies = [
- "bincode",
+ "bincode 2.0.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -531,6 +551,22 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "calm-terminal-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rmux-client",
+ "rmux-proto",
+ "rmux-sdk",
+ "rmux-server",
+ "rustix",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -613,6 +649,15 @@ name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
+
+[[package]]
+name = "castaway"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dec551ab6e7578819132c713a93c022a05d60159dc86e7a7050223577484c55a"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "cc"
@@ -739,6 +784,20 @@ name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
+
+[[package]]
+name = "compact_str"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fd622ebbb56a5b2ccb651b32b911cdeb2a9b4b11776b2473bf26a26a286244e"
+dependencies = [
+ "castaway",
+ "cfg-if",
+ "itoa",
+ "rustversion",
+ "ryu",
+ "static_assertions",
+]
 
 [[package]]
 name = "concurrent-queue"
@@ -1245,7 +1304,7 @@ version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe4fbac503b8d1f88e6676011885f34b7174f46e59956bba534ba83abded4df"
 dependencies = [
- "unicode-width",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -2382,6 +2441,142 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmux-client"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1b5d2ed91385f2ae22380599fc6332c5bbfb444ba88fdb379cd213017d4c03f"
+dependencies = [
+ "libc",
+ "rmux-core",
+ "rmux-ipc",
+ "rmux-os",
+ "rmux-proto",
+ "rmux-sdk",
+ "rustix",
+ "signal-hook",
+ "tokio",
+ "tracing",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rmux-core"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85219ce309af47c2e2812cf8b87274914303d5ea28fbf05340079cc68b89db50"
+dependencies = [
+ "chrono",
+ "compact_str",
+ "regex",
+ "rmux-proto",
+ "unicode-width 0.1.14",
+]
+
+[[package]]
+name = "rmux-ipc"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31f63795a405962308478f28ae2551d8e3f73ac8827c6f838f7b8083085ba2a6"
+dependencies = [
+ "getrandom 0.3.4",
+ "libc",
+ "rmux-os",
+ "rustix",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rmux-os"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d7017db3e6cfb59857df098ece53d22e31bdf8cd10c63dadb50ae1a140e1ce2"
+dependencies = [
+ "libc",
+ "rmux-types",
+ "rustix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rmux-proto"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf07fafa60cc2b10f6630d400acb85b472dc1d981866c5396d21cc03f6176489"
+dependencies = [
+ "bincode 1.3.3",
+ "rmux-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rmux-pty"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "181760f14a947932b57e1cfa317d6181b7930c43d8f8b2c6ef5363ccd15d4e3e"
+dependencies = [
+ "getrandom 0.3.4",
+ "libc",
+ "rmux-os",
+ "rmux-types",
+ "rustix",
+ "tracing",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rmux-sdk"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0684ac39de5e707a3dfe6e21ef14299e9540097ed27d5de33300ab8eca50df3"
+dependencies = [
+ "libc",
+ "rmux-ipc",
+ "rmux-os",
+ "rmux-proto",
+ "rustix",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rmux-server"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2802885d5aa5fb7ff927072103fcaecd458180065892879802df20420ca5204e"
+dependencies = [
+ "async-recursion",
+ "bincode 1.3.3",
+ "chrono",
+ "glob",
+ "regex",
+ "rmux-core",
+ "rmux-ipc",
+ "rmux-os",
+ "rmux-proto",
+ "rmux-pty",
+ "rustix",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rmux-types"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c591db0342827ab26e271262d3ecad75c72b6299e865ee45b2a15d9db85f3db"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2649,6 +2844,16 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "signal-hook"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
 
 [[package]]
 name = "signal-hook-registry"
@@ -2935,6 +3140,12 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stringprep"
@@ -3479,6 +3690,12 @@ name = "unicode-segmentation"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
+
+[[package]]
+name = "unicode-width"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
 
 [[package]]
 name = "unicode-width"
