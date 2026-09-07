@@ -27,13 +27,26 @@ test('retains a rejected conversation message and retries it once', async ({ pag
     const composer = page.getByRole('combobox', { name: 'Message' });
     await expect(composer).toHaveAttribute('contenteditable', 'true');
     const message = 'Retain this recovery check';
+    /*
+     * #1552 — the same words can render in two places: the transcript bubble
+     * and the "Queued messages" list. Every assertion below names the carrier
+     * it is actually claiming something about, so a match can never stand in
+     * for the other one. `data-nc-thread` / `data-nc-turn` are attributes the
+     * transcript sets on purpose (`features/chat/thread/public.tsx`), unlike
+     * the hashed CSS-module classes, which change on every build.
+     *
+     * Here the send was REFUSED (429), so the kernel never accepted it and no
+     * queue entry exists — the transcript is the only carrier, and it is the
+     * one the claim ("the words are retained") is about.
+     */
+    const transcript = page.locator('[data-nc-thread]');
     await composer.fill(message);
     await composer.press('Enter');
     await expect(page.getByRole('alert')).toContainText('Please try again');
-    await expect(page.getByText(message, { exact: true })).toBeVisible();
+    await expect(transcript.getByText(message, { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Close conversation' }).click();
     await page.getByRole('button', { name: 'Conversation Planner' }).click();
-    await expect(page.getByText(message, { exact: true })).toBeVisible();
+    await expect(transcript.getByText(message, { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('rejected-desktop.png'), fullPage: true, animations: 'disabled' });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
@@ -102,7 +115,19 @@ test('keeps a lost acknowledgement uncertain and asks before resending', async (
     await composer.press('Enter');
     await expect(page.getByRole('alert')).toContainText('Delivery is unconfirmed');
     expect(accepted).toBe(true);
-    await expect(page.getByText('Keep this uncertain message', { exact: true })).toBeVisible();
+    /*
+     * #1552 — scoped to the transcript, which is the carrier this line is about:
+     * the words the reader typed are still on screen after the transport lost
+     * the acknowledgement. The kernel DID accept this input, so the same words
+     * also appear for a while in the "Queued messages" list below — a second,
+     * transient carrier whose lifetime is the kernel's drain, not this test's.
+     * An unscoped `getByText` matched both and randomly tripped strict mode.
+     * It is deliberately not asserted here: its presence at this instant is not
+     * something the test controls. `.first()` is not the fix — it would hide
+     * which carrier matched.
+     */
+    const transcript = page.locator('[data-nc-thread]');
+    await expect(transcript.getByText('Keep this uncertain message', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Check delivery' }).click();
     // The fixture app-server emits no userMessage rows, so even a successful
     // read cannot prove delivery. Checking must not replay the accepted input.
