@@ -63,22 +63,21 @@ async fn schedule(fx: &Fixture) {
         .await
         .unwrap()
     {
-        if task.status == TaskStatus::Failed {
-            if let Some(op) = fx
+        if task.status == TaskStatus::Failed
+            && let Some(op) = fx
                 .state
                 .operation_runtime
                 .find_by_kind_and_idempotency("codex-isolated-worker", &task.id)
                 .await
                 .unwrap()
-            {
-                tokio::time::timeout(
-                    Duration::from_secs(20),
-                    fx.state.operation_runtime.wait(&op.id),
-                )
-                .await
-                .unwrap()
-                .unwrap();
-            }
+        {
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                fx.state.operation_runtime.wait(&op.id),
+            )
+            .await
+            .unwrap()
+            .unwrap();
         }
     }
 }

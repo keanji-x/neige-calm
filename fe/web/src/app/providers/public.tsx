@@ -23,7 +23,7 @@ import styles from './preflight-status.module.css';
  * 22 -> 23: #1456 replaces terminal task `goal` with `command`; cached bundles
  * must refresh before parsing the new block shape.
  */
-export const WEB_COMPAT_VERSION = 24;
+export const WEB_COMPAT_VERSION = 25;
 export type ServerVersionInfo = Readonly<{ webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;

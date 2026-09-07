@@ -619,6 +619,13 @@ describe('EventBridge', () => {
         },
         queryKey: ['track-files'],
       },
+      {
+        ev: {
+          ev: 'task.file_publication_settled',
+          data: { task_id: 'producer-attempt', operation_id: 'publication-operation' },
+        },
+        queryKey: ['track-files'],
+      },
     ];
 
     for (const { ev, queryKey } of cases) {

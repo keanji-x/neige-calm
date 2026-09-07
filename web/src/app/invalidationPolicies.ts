@@ -79,6 +79,7 @@ type TrackFilesDerivedEvent =
   | EventOf<'task.completed'>
   | EventOf<'task.failed'>
   | EventOf<'task.execution_settled'>
+  | EventOf<'task.file_publication_settled'>
   | EventOf<'task.gate_result'>
   | EventOf<'terminal.deleted'>;
 
@@ -242,6 +243,10 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'task.execution_settled': {
     requiresContext: trackFilesDerivedEventKeys,
     reason: 'Failed execution cleanup changes the current recovery capability.',
+  },
+  'task.file_publication_settled': {
+    requiresContext: trackFilesDerivedEventKeys,
+    reason: 'Sealed file qualification changes the evidence available to the Planner.',
   },
   'plan.updated': noop(
     'No task-plan query exists yet; the PR-B scheduler consumes plan revisions server-side.',

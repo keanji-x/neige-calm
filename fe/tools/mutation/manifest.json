@@ -1037,7 +1037,7 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -61,7 +61,7 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([\n   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.execution_settled', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.execution_settled', 'task.dispatched',\n ] as const);\n \n /**\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -61,7 +61,7 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([\n   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.execution_settled', 'task.file_publication_settled', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.execution_settled', 'task.file_publication_settled', 'task.dispatched',\n ] as const);\n \n /**\n",
     "expected_red": [
       "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
     ],
