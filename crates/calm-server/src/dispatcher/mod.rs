@@ -1374,17 +1374,21 @@ impl Inner {
             );
             return;
         };
+        // Recovery may have already accepted this prefix while the Dispatcher
+        // cache is cold. Share that trusted floor with every mapped observation,
+        // including a failure arriving before or after its settlement replay.
+        let cursor = self.push_cursor.bump(
+            planner_card_id.clone(),
+            cursor.max(harness.snapshot().await.push_watermark),
+        );
+        if envelope_id <= cursor {
+            return;
+        }
         if matches!(event, Event::TaskExecutionSettled { .. }) {
-            // A recovered harness may already have persisted a newer watermark
-            // while this dispatcher's in-memory cursor is still cold.
-            let preceding_cursor = cursor.max(harness.snapshot().await.push_watermark);
-            if envelope_id <= preceding_cursor {
-                return;
-            }
             let preceding = match crate::harness::catch_up::observations_since(
                 self.repo.as_ref(),
                 &track_id,
-                preceding_cursor,
+                cursor,
                 Some(envelope_id - 1),
             )
             .await

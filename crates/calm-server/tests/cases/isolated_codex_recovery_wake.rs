@@ -649,27 +649,64 @@ async fn settlement_catch_up_respects_recovered_harness_watermark() {
     let events = fx
         .boot
         .repo
-        .events_for_track(fx.boot.track_id.as_str(), &["task.execution_settled"], None)
+        .events_for_track(
+            fx.boot.track_id.as_str(),
+            &["task.failed", "task.execution_settled"],
+            None,
+        )
         .await
         .unwrap();
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.len(), 2);
+    assert!(matches!(
+        events[0].event,
+        calm_server::event::Event::TaskFailed { .. }
+    ));
+    assert!(matches!(
+        events[1].event,
+        calm_server::event::Event::TaskExecutionSettled { .. }
+    ));
     let before = recovered.snapshot().await;
-    for _ in 0..2 {
+    // Redeliver the persisted settlement, then let its delayed actual failure
+    // through the same production observer used by the native failure handler.
+    for index in [1, 1, 0] {
         fx.state
             .dispatcher
             .catch_up_push(
                 fx.boot.track_id.clone(),
-                events[0].event.clone(),
-                events[0].id,
+                events[index].event.clone(),
+                events[index].id,
             )
             .await;
     }
+    // A refused no-op queue command acknowledges all prior Delivery commands;
+    // snapshot() alone does not drain the asynchronous observation ingress.
+    use calm_server::harness::queue::{MutationRefused, QueueEntryId, QueueMutation};
+    assert_eq!(
+        recovered
+            .mutate_pending_entry(
+                QueueMutation::Delete {
+                    entry_id: QueueEntryId::from_wire("absent-observation-barrier".into()),
+                    if_entry_rev: 1,
+                },
+                calm_server::ids::ActorId::User
+            )
+            .await
+            .unwrap(),
+        Err(MutationRefused::NotFound)
+    );
+    recovered.persist_snapshot().await.unwrap();
     let after = recovered.snapshot().await;
     recovered.shutdown().await.unwrap();
+    let rebooted = restore_planner(&fx).await;
+    let after_boot = rebooted.snapshot().await;
+    rebooted.shutdown().await.unwrap();
     assert_eq!(hints(&before, &first.id), 1);
     assert_eq!(
-        after.pending_observations(),
-        before.pending_observations(),
-        "a cold Dispatcher cursor must not replay a prefix already retained by the recovered harness"
+        (
+            after.pending_observations(),
+            after_boot.pending_observations()
+        ),
+        (before.pending_observations(), before.pending_observations()),
+        "settlement must synchronize the recovered prefix so a delayed failure is not duplicated live or after persistence/replay"
     );
 }
