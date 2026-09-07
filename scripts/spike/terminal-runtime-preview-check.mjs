@@ -50,6 +50,8 @@ const driver = spawn(resolve(values.driver), ['--runtime-executable', resolve(va
 });
 let stderr = '';
 driver.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
+// Individual writes reject through their callback; prevent an unhandled stream error.
+driver.stdin.on('error', () => {});
 const lines = createInterface({ input: driver.stdout })[Symbol.asyncIterator]();
 const ended = once(driver, 'exit');
 void ended.catch(() => {});
@@ -64,8 +66,10 @@ const inputs = [];
 let closing = false;
 function request(action) {
   const result = pending.then(async () => {
+    assert.ok(!closing, 'preview is closing');
     if (action.action === 'text' || action.action === 'key') inputs.push(action);
-    driver.stdin.write(JSON.stringify(action) + '\n');
+    await new Promise((resolve, reject) => driver.stdin.write(JSON.stringify(action) + '\n',
+      error => error ? reject(error) : resolve()));
     const response = await receive();
     assert.ok(!response.error, response.error);
     return response.result;
