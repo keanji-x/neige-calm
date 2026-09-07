@@ -6,6 +6,11 @@ in the delivery ledger at the end. Baseline: `4360896b`.
 
 ## Outcome
 
+Planner-facing functionality and the ordered implementation backlog are tracked
+in [Planner decision contract implementation plan](../design-1501-planner-contract-roadmap.md).
+That plan consumes the identities and authorities defined here; it does not
+replace this document's task continuity or exact-delivery requirements.
+
 ### Delivery principles agreed with the user
 
 Build a usable Planner workflow on the existing framework, one complete scenario
