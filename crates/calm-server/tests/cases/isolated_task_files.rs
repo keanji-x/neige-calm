@@ -417,3 +417,73 @@ async fn file_retry_history_keeps_exact_attempt_bytes() {
     assert_eq!(history["attempts"][0]["status"], "failed");
     assert_eq!(history["attempts"][1]["status"], "done");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reported_file_whitespace_names_are_exact() {
+    let references = [
+        "result.txt",
+        " result.txt",
+        "result.txt ",
+        "\u{2003}result.txt",
+        "result.txt\u{2003}",
+    ];
+    let (fx, task, _, _) = completed_files(&references).await;
+    for (index, expected) in [
+        "42\n",
+        "leading-space",
+        "trailing-space",
+        "leading-unicode-space",
+        "trailing-unicode-space",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let response = file(&fx, &task, index, StatusCode::OK).await;
+        assert_eq!(response["name"], references[index]);
+        let bytes = STANDARD
+            .decode(response["contentBase64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            bytes,
+            expected.as_bytes(),
+            "declared reference {:?} must select its exact filename",
+            references[index]
+        );
+        assert_eq!(response["size"], expected.len());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reported_file_whitespace_cannot_alias_reserved_directory() {
+    let references = [
+        " .codex/config.toml",
+        "\u{2003}.codex/config.toml",
+        "./ .codex/config.toml",
+    ];
+    let (fx, task, workspace, _) = completed_files(&references).await;
+    // Owned fixture data, not provider credentials. A spaced component must
+    // never be rewritten to the actual reserved directory after validation.
+    std::fs::write(
+        workspace.join(".codex/config.toml"),
+        b"owned-private-sentinel",
+    )
+    .unwrap();
+    for index in 0..references.len() {
+        file(&fx, &task, index, StatusCode::NOT_FOUND).await;
+    }
+    std::fs::create_dir(workspace.join(" .codex")).unwrap();
+    std::fs::write(
+        workspace.join(" .codex/config.toml"),
+        b"public-spaced-directory",
+    )
+    .unwrap();
+    for index in [0, 2] {
+        let response = file(&fx, &task, index, StatusCode::OK).await;
+        assert_eq!(
+            STANDARD
+                .decode(response["contentBase64"].as_str().unwrap())
+                .unwrap(),
+            b"public-spaced-directory"
+        );
+    }
+}

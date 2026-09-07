@@ -124,6 +124,14 @@ fn create_files() {
     .unwrap();
     std::fs::write("/workspace/blob.bin", [0, 255, 128, 1]).unwrap();
     std::fs::write("/workspace/empty.txt", []).unwrap();
+    for (name, contents) in [
+        (" result.txt", "leading-space"),
+        ("result.txt ", "trailing-space"),
+        ("\u{2003}result.txt", "leading-unicode-space"),
+        ("result.txt\u{2003}", "trailing-unicode-space"),
+    ] {
+        std::fs::write(format!("/workspace/{name}"), contents).unwrap();
+    }
     for (name, size) in [
         ("limit.bin", 8 * 1024 * 1024),
         ("large.bin", 8 * 1024 * 1024 + 1),
