@@ -219,7 +219,14 @@ Provider 内部推理来实现工作笔记。该项单独设计存储/访问契�
   呈现额度限制，没有旧恢复 MCP 或 plan.list 调用。后续无绑定决定、旧线程和
   超限/歧义批次保留明确的精确接口，不宣称所有恢复操作都已隐藏协议字段。
   [具体绑定契约与验收边界](design-1501-semantic-recovery-binding.md)继续适用。
-- [ ] F3 长任务近况：待实现。
+- [x] F3 长任务近况首版：[#1576](https://github.com/keanji-x/neige-calm/pull/1576)
+  （本条随实现 PR 合入生效）。已有 plan.list 返回隔离 Codex 当前 attempt 的
+  有界活动证据，分开源/采集/查询时间及任务结果，明确采集健康未知。
+  实际进度询问中，Planner 通过 state 和 plan.list 得到开始输出和等待证据，
+  没有再遍历 conversation/events/runtime 或误用 Terminal；随后任务完成、
+  停止证明与结果文件核对通过。90 秒为受控测试等待，不是业务性能基准。
+  默认 turn 简报、主动监督、更多 Provider 和采集尾部排空仍为后续；
+  [首版范围及验收限制](design-1501-current-activity.md)继续适用。
 - [ ] F4 单文件准确交接：待补内核接线。
 - [ ] F5 失败候选修复：待 F4 共用机制及修复用途授权。
 - [ ] F6 语义计划编辑：后续。
