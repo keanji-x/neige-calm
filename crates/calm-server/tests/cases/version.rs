@@ -157,12 +157,13 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     // #1316 S4b: 23 -> 24 so a cached bundle reading `runtime_id` off the
     // planner REST responses and the rewritten event payloads gets the refresh
     // curtain instead of rendering an undefined-shaped conversation.
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 24);
+    // #1501 F4: 25 excludes bundles that cannot classify file publication.
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 25);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 24);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 25);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
