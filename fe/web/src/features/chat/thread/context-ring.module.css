@@ -1,0 +1,53 @@
+/* #1255 S3 — the context meter beside the send button. */
+
+@layer features {
+  .ring {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-1);
+    border-radius: var(--radius-pill);
+    cursor: default;
+  }
+
+  .ring:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  /* The unfilled remainder. Faint on purpose: the ring is a glance, and at
+     16px beside a send button a full-strength circle would read as a control. */
+  .track {
+    stroke: var(--hairline-strong);
+  }
+
+  .fill {
+    stroke: var(--text-3);
+    transition: stroke-dasharray 240ms ease;
+  }
+
+  /* Over its window: the one state that is a malfunction rather than a
+     measurement, so it is the one state that is not grey. */
+  .over .fill {
+    stroke: var(--warn);
+  }
+
+  /* Inside Astryx's inverted tooltip surface. Size and weight only — the
+     colour is the tooltip's, and anything set here would be the bug this
+     replaced. */
+  .tip {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-inline-size: 15rem;
+  }
+
+  .tipLead {
+    font-weight: var(--weight-medium);
+  }
+
+  .tipNote {
+    font-size: var(--text-xs);
+    opacity: 0.8;
+  }
+}

@@ -122,10 +122,12 @@ function noticeText(outcome: PlannerQueueWriteOutcome, editing: boolean): string
  *
  * Split out because a refusal now renders as a `Banner`, and a Banner is a
  * heading plus a body plus a status — where the previous version was one grey
- * paragraph in `--text-warning, var(--text-3)`, a fallback that resolved to
- * ordinary secondary text on every theme that does not define the first token.
- * "Your change was not saved" then looked exactly like the message it was
- * about, which is the one thing it must not look like.
+ * paragraph in `var(--text-warning, var(--text-3))`. `--text-warning` is not
+ * defined in `tokens.css` at all (the warning family is `--warn`, `--warn-text`,
+ * `--warn-border`, `--warn-soft`), so that fallback was not a fallback: the
+ * notice rendered as ordinary secondary text in every theme, always.
+ * "Your change was not saved" looked exactly like the message it was about,
+ * which is the one thing it must not look like.
  *
  * The three statuses are not decoration: `stale` is a race the reader can
  * still win by trying again (warning), `gone` is the queue having moved on

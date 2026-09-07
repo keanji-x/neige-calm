@@ -11,6 +11,7 @@ import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
 } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { HStack } from '@astryxdesign/core/HStack';
 import { onlineManager, useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -43,6 +44,7 @@ import {
   ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
 } from '../../features/chat/thread/public.tsx';
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
+import { ContextRing } from '../../features/chat/thread/context-ring.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { useIndependentTaskLaunch } from './independent-task.tsx';
@@ -68,7 +70,7 @@ import {
   FOLLOW_INSTALLATION_DEFAULT,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
   type ConversationTurn, type ModelCatalog, type ModelSelection,
-  type OptimisticConversationTurn, type PendingQueueEntry,
+  type OptimisticConversationTurn, type PendingQueueEntry, type PlannerRunTokenUsage,
   type PlannerQueueWriteOutcome, type SendOutcome, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
@@ -152,6 +154,9 @@ type ConversationStore = Readonly<{
   send: (conversationId: string, text: string, attachments?: readonly PlannerAttachment[]) => Promise<SendOutcome>;
   /** Whether this card's track can take image attachments at all. */
   attachmentsSupported: boolean;
+  /** #1255 S3 — how full this conversation's context is; `null` when the
+   *  harness has never said. */
+  contextUsage: PlannerRunTokenUsage | null;
   /** Upload one image for this card. See `UploadAttachment`. */
   uploadAttachment: UploadAttachment;
   interrupt: () => void;
@@ -1001,6 +1006,7 @@ export function useConversationStore(
     send: (conversationId, text, attachments) => failedSend === null || failedSend.delivery === 'refused'
       ? send(conversationId, text, attachments) : Promise.resolve('not-sent'),
     attachmentsSupported: run.data?.attachments_supported ?? false,
+    contextUsage: run.data?.token_usage ?? null,
     uploadAttachment: mutations.uploadAttachment,
     interrupt,
     retryHistory: () => { void history.refetch().catch(() => undefined); },
@@ -2010,16 +2016,12 @@ function useConversationPanel(
               }}
               allowEmptyText={attachments.items.length > 0}
               drawer={<PlannerAttachmentDrawer attachments={attachments} />}
-              headerActions={(
-                <PlannerAttachButton
-                  attachments={attachments}
-                  support={{
-                    available: store.attachmentsSupported,
-                    reason: ATTACHED_WORKSPACE_REASON,
-                  }}
-                  disabled={store.sendBlocked || !store.historyReady}
-                />
-              )}
+              /* #1255 S3 — the ring stands immediately before Send, where the
+                 question it answers ("is there room for what I am about to
+                 say?") is being asked. It renders nothing at all until the
+                 harness has reported a usage frame, so a dormant card's
+                 composer is unchanged. */
+              sendAdornment={<ContextRing usage={store.contextUsage} />}
               /* `stopping` keeps Stop *shown* while the interrupt is in flight;
                  it is not passed down as a prop of its own, because the composer
                  cannot make Astryx's Stop unavailable and `interrupt()` above
@@ -2043,13 +2045,32 @@ function useConversationPanel(
                  The control stays available throughout, because choosing what
                  the next message runs with is a reasonable thing to do while
                  waiting. */
+              /*
+               * The footer row holds every per-conversation control, in one
+               * line with Send. The attach button used to have the composer's
+               * header row to itself — one control, its own row, above the
+               * field — which spent a whole band of a 364px drawer on a
+               * paperclip. With `headerActions` unset that row does not render
+               * at all (Astryx draws it only when one of its two slots is
+               * filled), so this is a row removed, not a row moved.
+               */
               footerActions={(
-                <ModelPill
-                  catalog={store.modelCatalog}
-                  selection={store.model}
-                  onChange={store.setModel}
-                  isDisabled={!store.historyReady}
-                />
+                <HStack gap={1} align="center">
+                  <PlannerAttachButton
+                    attachments={attachments}
+                    support={{
+                      available: store.attachmentsSupported,
+                      reason: ATTACHED_WORKSPACE_REASON,
+                    }}
+                    disabled={store.sendBlocked || !store.historyReady}
+                  />
+                  <ModelPill
+                    catalog={store.modelCatalog}
+                    selection={store.model}
+                    onChange={store.setModel}
+                    isDisabled={!store.historyReady}
+                  />
+                </HStack>
               )}
             />
           </>
