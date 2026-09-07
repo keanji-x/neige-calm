@@ -419,10 +419,49 @@ if (typeof document !== 'undefined') {
       return error;
     };
 
+    /**
+     * Is this call a `waitFor` poll?
+     *
+     * `wait-for.js` `checkCallback` — the only caller of
+     * `runWithExpensiveErrorDiagnosticsDisabled` in the installed
+     * `@testing-library/dom` (checked: `config.js` defines it, `wait-for.js`
+     * line 124 is the sole call site) — sets this flag for the synchronous
+     * extent of the callback and clears it in a `finally`. So it is true on a
+     * failing poll and false everywhere else: a bare `getBy*` in test code, and
+     * the timeout re-wrap in `onTimeout`, which runs after `onDone` and outside
+     * that scope. Measured on both paths rather than reasoned about, in
+     * `reports the DOM eagerly when a synchronous query fails`.
+     *
+     * It is a private field, hence the cast; it is also the same flag
+     * `queries/role.js` already branches on to drop the roles list, so a
+     * `@testing-library/dom` that removed it would break its own short-error
+     * branch first. If it ever did disappear, `undefined` reads as falsy and
+     * every call becomes eager — the slow answer, not the wrong one.
+     *
+     * The one case it gets wrong is an *async* `waitFor` callback: the flag is
+     * already restored by the time a promise rejects, so a query failing after
+     * an `await` inside the callback is treated as synchronous and built
+     * eagerly. That costs time on those polls; it does not lose evidence.
+     */
+    const polling = (): boolean =>
+      (getConfig() as unknown as { _disableExpensiveErrorDiagnostics?: boolean })
+        ._disableExpensiveErrorDiagnostics === true;
+
     /*
      * The error handed back on a *failing poll* carries the short message and
      * nothing else; the dump and the report are built on the first read of
      * `.message`, once, memoised — #1538.
+     *
+     * A failure that is **not** a poll is built eagerly, and that asymmetry is
+     * the whole point. A synchronous `getBy*` throws straight out of the test
+     * body, and the common shape in this repo is
+     * `try { screen.getByRole(…) } finally { app.dispose() }` — see
+     * `web/src/app/router/task-artifact-files.test.tsx`. `dispose()` unmounts
+     * before Vitest ever reads `.message`, so a deferred build runs against a
+     * torn-down body and reports `<body />`, zero children and no hidden
+     * subtrees: the deferral would have destroyed exactly the evidence this
+     * file exists to capture. Reproduced through the real query path before it
+     * was fixed, and pinned by the regression test named above.
      *
      * Only the last error of a `waitFor` is ever read: `wait-for.js`
      * `checkCallback` stores each throw in `lastError` and drops the previous
@@ -448,6 +487,7 @@ if (typeof document !== 'undefined') {
      */
     const withReport = (message: string | null, container: Container) => {
       if (typeof message !== 'string') return enrich(message, container);
+      if (!polling()) return enrich(message, container);
       let built: Error | undefined;
       const resolved = (): Error => {
         if (built === undefined) {

@@ -451,4 +451,74 @@ describe('the a11y failure report (#1161)', () => {
     expect(report).toContain('(9, by inert/');
     expect(report).toContain('… and 1 more, not shown');
   });
+
+  /*
+   * The two halves of #1538's deferral, pinned from opposite directions.
+   *
+   * Deferring *every* build — the shape this file shipped first — reported
+   * `<body />`, `document.body children (0)` and `subtrees … (0)` for a
+   * synchronous `getBy*` in the shape that is all over this repo:
+   * `try { screen.getByRole(…) } finally { app.dispose() }`
+   * (`web/src/app/router/task-artifact-files.test.tsx`). The teardown ran before
+   * Vitest read `.message`, so the diagnostic described the empty page instead
+   * of the UI that failed. Both tests here go through the real query path; the
+   * discriminator is `_disableExpensiveErrorDiagnostics`, which `wait-for.js`
+   * sets around a poll and nothing else does.
+   */
+  it('reports the DOM eagerly when a synchronous query fails', () => {
+    const host = mount('<div class="unmounted-before-read" aria-hidden="true"><button>Save</button></div>');
+    let caught: Error | undefined;
+    try {
+      screen.getByRole('button', { name: 'Save' });
+    } catch (error) {
+      caught = error as Error;
+    } finally {
+      // Stands in for `app.dispose()`: the failure's evidence is gone from the
+      // document by the time anything reads the message.
+      host.remove();
+    }
+    // `toBeDefined` first, so a query that stopped failing cannot reach the
+    // assertions below as an optional-chained `undefined`.
+    expect(caught).toBeDefined();
+    const message = caught!.message;
+
+    // Testing Library's own dump, and this file's report, both describing the
+    // UI as it was at the throw rather than the torn-down body.
+    expect(message).toContain('<button>');
+    expect(reportOf(message)).toContain('<div class="unmounted-before-read"> — aria-hidden');
+    expect(reportOf(message)).not.toContain('document.body children (0)');
+  });
+
+  it('still defers the report on a waitFor poll', async () => {
+    const host = mount('<div class="polled-then-unmounted" aria-hidden="true"><button>Save</button></div>');
+    /*
+     * The error from a *poll* — not the timeout re-wrap. `wait-for.js` drops
+     * every poll error but the last, so this one is exactly the build #1538 is
+     * about: nobody reads it, and it must therefore cost nothing. Capturing and
+     * rethrowing keeps the poll a normal failing poll; `.message` is
+     * deliberately not read inside the callback, which would force the build.
+     */
+    let polled: Error | undefined;
+    try {
+      await waitFor(() => {
+        try {
+          screen.getByRole('button', { name: 'Save' });
+        } catch (error) {
+          polled ??= error as Error;
+          throw error;
+        }
+      }, { timeout: 60, interval: 20 });
+    } catch { /* the timeout is expected; this test is about `polled`. */ }
+    expect(polled).toBeDefined();
+
+    host.remove();
+    /*
+     * Reading only now. A deferred build runs against the page as it is *here*,
+     * so the fixture is absent — that lost evidence is the price of the
+     * deferral, and it is the only observable that distinguishes deferred from
+     * eager without instrumenting the module. If this ever reads back the
+     * fixture, the poll path went eager again and #1538's cost is back.
+     */
+    expect(polled!.message).not.toContain('<div class="polled-then-unmounted">');
+  });
 });
