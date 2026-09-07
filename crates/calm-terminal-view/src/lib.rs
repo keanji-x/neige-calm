@@ -44,6 +44,26 @@ pub struct Frame {
     pub background: [u8; 3],
 }
 
+/// Only the facts needed to encode an action; cached observations need not
+/// retain rendered cells or terminal text after the image response is sent.
+#[derive(Clone, Copy, Debug)]
+pub struct InputSurface {
+    pub cols: u16,
+    pub rows: u16,
+    pub modes: u32,
+    pub scroll_offset: usize,
+}
+impl Frame {
+    pub fn input_surface(&self) -> InputSurface {
+        InputSurface {
+            cols: self.cols,
+            rows: self.rows,
+            modes: self.modes,
+            scroll_offset: self.scroll_offset,
+        }
+    }
+}
+
 pub struct TerminalView {
     terminal: TerminalScreen,
     foreground: [u8; 3],
@@ -181,7 +201,7 @@ pub fn key_bytes(key: &str, modes: u32) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub fn click_bytes(column: u16, row: u16, frame: &Frame) -> Result<Vec<u8>> {
+pub fn click_bytes(column: u16, row: u16, frame: &InputSurface) -> Result<Vec<u8>> {
     ensure!(
         frame.scroll_offset == 0 && column < frame.cols && row < frame.rows,
         "click outside live viewport"

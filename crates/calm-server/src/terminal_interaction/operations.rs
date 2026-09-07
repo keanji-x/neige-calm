@@ -70,10 +70,10 @@ impl TerminalInteraction {
                 "terminal changed since observation; observe again"
             );
             ensure!(
-                saved.frame.scroll_offset == 0,
+                saved.surface.scroll_offset == 0,
                 "return to live viewport before input"
             );
-            encode(&action, &saved.frame)?
+            encode(&action, &saved.surface)?
         };
         // Reserve before enqueue. Cancellation preserves Unknown and blocks all
         // subsequent writes until the matching ack/refusal is observed.
@@ -126,7 +126,7 @@ impl TerminalInteraction {
         Ok(result)
     }
 }
-fn encode(action: &Value, frame: &Frame) -> Result<Vec<u8>> {
+fn encode(action: &Value, frame: &InputSurface) -> Result<Vec<u8>> {
     let object = action
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("terminal action must be an object"))?;

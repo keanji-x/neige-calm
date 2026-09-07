@@ -5,7 +5,7 @@ use crate::model::CardRole;
 use crate::terminal_renderer::{ClientInputScope, TerminalRendererRegistry};
 use anyhow::{Result, ensure};
 use calm_session::ClientMsg;
-use calm_terminal_view::{Frame, Rasterizer};
+use calm_terminal_view::{InputSurface, Rasterizer};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -29,7 +29,7 @@ struct Observation {
     connection: Uuid,
     revision: u64,
     control: Option<Uuid>,
-    frame: Frame,
+    surface: InputSurface,
     created: Instant,
 }
 impl TerminalInteraction {
@@ -191,7 +191,7 @@ impl TerminalInteraction {
                 connection: client.connection,
                 revision,
                 control,
-                frame,
+                surface: frame.input_surface(),
                 created: Instant::now(),
             },
         );

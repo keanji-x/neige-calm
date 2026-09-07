@@ -12,10 +12,10 @@ fn cjk_highlight_and_key_modes_share_one_projection() {
     assert_eq!(frame.cells[9].width, 0);
     assert_ne!(frame.cells[0].attributes & 16, 0);
     assert_eq!(key_bytes("Up", frame.modes).unwrap(), b"\x1bOA");
-    assert!(click_bytes(1, 1, &frame).is_err());
+    assert!(click_bytes(1, 1, &frame.input_surface()).is_err());
     view.feed(b"\x1b[?1000h\x1b[?1006h");
     assert_eq!(
-        click_bytes(1, 1, &view.frame(0).unwrap()).unwrap(),
+        click_bytes(1, 1, &view.frame(0).unwrap().input_surface()).unwrap(),
         b"\x1b[<0;2;2M\x1b[<0;2;2m"
     );
 }

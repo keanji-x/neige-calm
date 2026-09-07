@@ -50,7 +50,8 @@ A dropped/detached connection drops its receipts; old observation IDs cannot
 address the new connection. Client watchdogs stop idle or no-longer-authorized
 clients, and admission prunes their handles. No timer automatically retries input.
 The global observation registry expires captures after 120 seconds and has a
-fixed limit. Each capture contains the exact control identity it observed; a
+fixed limit; it retains only input geometry/modes and identities, not screen
+cells, text or image bytes. Each capture contains the exact control identity it observed; a
 human takeover invalidates it. Output changes also require a new observation.
 
 A successful input reply says `written`, not that the TUI completed an action.
