@@ -23,13 +23,11 @@ pub struct TerminalInteraction {
     clients: Mutex<HashMap<String, Arc<Client>>>,
     raster: OnceCell<Arc<Rasterizer>>,
     observations: StdMutex<HashMap<Uuid, Observation>>,
-    requests: Mutex<HashMap<(Uuid, String), (Value, Value)>>,
 }
 struct Observation {
     binding: String,
     connection: Uuid,
-    revision: u32,
-    output_sequence: u32,
+    revision: u64,
     control: Option<Uuid>,
     frame: Frame,
     created: Instant,
@@ -42,7 +40,6 @@ impl TerminalInteraction {
             clients: Mutex::new(HashMap::new()),
             raster: OnceCell::new(),
             observations: StdMutex::new(HashMap::new()),
-            requests: Mutex::new(HashMap::new()),
         }
     }
     fn binding(identity: &ToolCallIdentity, terminal: &str) -> String {
@@ -99,7 +96,15 @@ impl TerminalInteraction {
         })?;
         let binding = Self::binding(identity, terminal);
         let mut clients = self.clients.lock().await;
+        clients.retain(|_, client| {
+            client.screen.lock().is_ok_and(|state| state.available)
+                && self
+                    .renderer
+                    .get(&client.entry.terminal_id)
+                    .is_some_and(|entry| Arc::ptr_eq(&entry, &client.entry))
+        });
         if let Some(client) = clients.get(&binding) {
+            *client.last_used.lock().unwrap() = Instant::now();
             ensure!(
                 Arc::ptr_eq(&client.entry, &entry),
                 "terminal generation changed; open a new terminal"
@@ -137,19 +142,21 @@ impl TerminalInteraction {
             tokio::time::sleep(Duration::from_millis(wait_ms)).await;
         }
         Self::authorize(self.repo.as_ref(), identity, Some(terminal)).await?;
-        let (frame, revision, output_sequence, control, exited) = {
+        let (control, exited) = {
             let state = client
                 .screen
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
-            (
-                state.frame(offset)?,
-                state.revision,
-                state.output_sequence,
-                state.control,
-                state.exited,
-            )
+            ensure!(state.available, "terminal observation disconnected");
+            (state.control, state.exited)
         };
+        let (frame, revision) = client
+            .entry
+            .handle
+            .model_view
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
+            .capture(offset)?;
         let raster = self
             .raster
             .get_or_try_init(|| async {
@@ -165,7 +172,7 @@ impl TerminalInteraction {
         let observation_id = Uuid::new_v4();
         let metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
             "terminal_session_id":client.entry.handle.session_id,"control_id":control,"role":if control.is_some(){"owner"}else{"observer"},
-            "render_revision":revision,"output_sequence":output_sequence,"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
+            "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
             "text":frame.text,"exited":exited,"image_source":"rmux_client_projection"});
         let mut observations = self
@@ -183,7 +190,6 @@ impl TerminalInteraction {
                 binding: Self::binding(identity, terminal),
                 connection: client.connection,
                 revision,
-                output_sequence,
                 control,
                 frame,
                 created: Instant::now(),
@@ -198,7 +204,7 @@ impl TerminalInteraction {
         action: &str,
     ) -> Result<Value> {
         if action == "detach" {
-            Self::authorize(self.repo.as_ref(), identity, Some(terminal)).await?;
+            Self::authorize(self.repo.as_ref(), identity, None).await?;
             let removed = self
                 .clients
                 .lock()

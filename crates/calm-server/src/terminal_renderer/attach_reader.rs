@@ -12,6 +12,20 @@ use crate::terminal_renderer::client_pump::apply_broadcaster_effects;
 use crate::terminal_renderer::output_capture::SharedTerminalOutputCapture;
 use std::sync::Arc;
 
+struct ObservationSource {
+    plane: SharedRenderPlane,
+    exited: bool,
+}
+impl Drop for ObservationSource {
+    fn drop(&mut self) {
+        if !self.exited
+            && let Ok(mut plane) = self.plane.lock()
+        {
+            plane.invalidate_observation("terminal output source disconnected");
+        }
+    }
+}
+
 // Copied from crates/calm-session/src/bin/daemon.rs::spawn_supervisor_attach_reader as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_supervisor_attach_reader(
@@ -33,6 +47,10 @@ pub fn spawn_supervisor_attach_reader(
     output_capture: SharedTerminalOutputCapture,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut source = ObservationSource {
+            plane: render_plane.clone(),
+            exited: false,
+        };
         let mut exited_tx = Some(exited_tx);
         loop {
             match read_frame::<ControlReply, _>(&mut attach_conn).await {
@@ -49,6 +67,7 @@ pub fn spawn_supervisor_attach_reader(
                 Ok(ControlReply::Exited {
                     status, signalled, ..
                 }) => {
+                    source.exited = true;
                     let effects = match render_plane.lock() {
                         Ok(mut rp) => {
                             let effects = rp.on_child_exit(status);
@@ -156,6 +175,9 @@ pub fn spawn_supervisor_attach_reader(
                     earliest_cursor,
                     requested_cursor,
                 }) => {
+                    if let Ok(mut plane) = render_plane.lock() {
+                        plane.invalidate_observation("terminal output gap");
+                    }
                     if let Ok(mut capture) = output_capture.lock() {
                         capture.mark_gap();
                     }

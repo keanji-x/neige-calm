@@ -4,9 +4,9 @@ use crate::terminal_renderer::{
 use anyhow::{Result, ensure};
 use calm_session::{
     ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
-    RenderEncoding, RenderSnapshot, Role,
+    RenderEncoding, Role,
 };
-use calm_terminal_view::{Frame, TerminalView};
+
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, watch};
@@ -14,9 +14,6 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 pub struct ScreenState {
-    view: TerminalView,
-    pub revision: u32,
-    pub output_sequence: u32,
     pub owner: Option<Uuid>,
     pub control: Option<Uuid>,
     pub available: bool,
@@ -26,45 +23,8 @@ pub struct ScreenState {
     pub pending: Option<u64>,
 }
 impl ScreenState {
-    pub fn frame(&self, offset: usize) -> Result<Frame> {
-        ensure!(
-            self.available,
-            "terminal observation unavailable; reconnect explicitly"
-        );
-        self.view.frame(offset)
-    }
-    fn snapshot(&mut self, snapshot: RenderSnapshot, fg: [u8; 3], bg: [u8; 3]) -> Result<()> {
-        ensure!(
-            snapshot.encoding == RenderEncoding::Vt,
-            "unsupported terminal encoding"
-        );
-        self.view = TerminalView::new(snapshot.cols, snapshot.rows, fg, bg)?;
-        if let Some(history) = snapshot.scrollback {
-            self.view.feed(&history);
-        }
-        self.view.feed(&snapshot.data);
-        self.revision = snapshot.render_rev;
-        self.output_sequence = snapshot.pty_seq;
-        self.available = true;
-        Ok(())
-    }
-    fn apply(&mut self, message: DaemonMsg, id: Uuid, fg: [u8; 3], bg: [u8; 3]) -> Result<()> {
+    fn apply(&mut self, message: DaemonMsg, id: Uuid) -> Result<()> {
         match message {
-            DaemonMsg::RenderPatch(patch) => {
-                if patch.pty_seq <= self.output_sequence {
-                    return Ok(());
-                }
-                ensure!(
-                    patch.prev_render_rev == self.revision
-                        && patch.encoding == RenderEncoding::Vt
-                        && self.output_sequence.checked_add(1) == Some(patch.pty_seq),
-                    "terminal output gap"
-                );
-                self.view.feed(&patch.data);
-                self.revision = patch.render_rev;
-                self.output_sequence = patch.pty_seq;
-            }
-            DaemonMsg::RenderSnapshot(snapshot) => self.snapshot(snapshot, fg, bg)?,
             DaemonMsg::OwnerChanged { owner_client_id } => {
                 self.owner = owner_client_id;
                 self.control = if self.owner == Some(id) {
@@ -82,7 +42,7 @@ impl ScreenState {
                     self.refused = pending;
                 }
             }
-            DaemonMsg::SnapshotRequired { .. } => self.available = false,
+
             DaemonMsg::TerminalExited { .. } => self.exited = true,
             _ => {}
         }
@@ -96,6 +56,8 @@ pub struct Client {
     pub entry: Arc<RendererEntry>,
     pub screen: Arc<StdMutex<ScreenState>>,
     pub serial: Mutex<()>,
+    pub requests: Mutex<std::collections::HashMap<String, (String, serde_json::Value)>>,
+    pub last_used: Arc<StdMutex<std::time::Instant>>,
     incoming: mpsc::Sender<ClientMsg>,
     changed: watch::Receiver<u64>,
     pump: JoinHandle<anyhow::Result<()>>,
@@ -110,17 +72,6 @@ impl Drop for Client {
 impl Client {
     pub async fn attach(entry: Arc<RendererEntry>, scope: ClientInputScope) -> Result<Self> {
         let id = Uuid::new_v4();
-        let config = entry.config();
-        let fg = [
-            config.terminal_fg.0,
-            config.terminal_fg.1,
-            config.terminal_fg.2,
-        ];
-        let bg = [
-            config.terminal_bg.0,
-            config.terminal_bg.1,
-            config.terminal_bg.2,
-        ];
         let size = entry
             .handle
             .render_plane
@@ -134,7 +85,7 @@ impl Client {
             outgoing_tx,
             ClientPumpContext {
                 input_barrier: entry.handle.input_barrier.clone(),
-                input_scope: scope,
+                input_scope: scope.clone(),
                 event_rx: entry.subscribe(),
                 event_tx: entry.handle.event_tx.clone(),
                 render_plane: entry.handle.render_plane.clone(),
@@ -183,39 +134,43 @@ impl Client {
             .await?
             .ok_or_else(|| anyhow::anyhow!("terminal handshake closed"))?;
         let DaemonMsg::ServerHello {
-            snapshot,
-            owner_client_id,
-            ..
+            owner_client_id, ..
         } = hello
         else {
             anyhow::bail!("terminal handshake refused");
         };
-        let mut state = ScreenState {
-            view: TerminalView::new(size.cols, size.rows, fg, bg)?,
-            revision: 0,
-            output_sequence: 0,
+        let state = ScreenState {
             owner: owner_client_id,
             control: None,
-            available: false,
+            available: true,
             exited: false,
             ack: 0,
             refused: 0,
             pending: None,
         };
-        state.snapshot(snapshot, fg, bg)?;
         let screen = Arc::new(StdMutex::new(state));
         let (notify, changed) = watch::channel(0u64);
         let reader_screen = screen.clone();
+        let last_used = Arc::new(StdMutex::new(std::time::Instant::now()));
+        let reader_last_used = last_used.clone();
+        let pump_abort = pump.abort_handle();
         let reader = tokio::spawn(async move {
-            while let Some(message) = outgoing.recv().await {
-                let Ok(mut state) = reader_screen.lock() else {
-                    break;
-                };
-                if state.apply(message, id, fg, bg).is_err() {
-                    state.available = false;
+            let mut check = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    message = outgoing.recv() => {
+                        let Some(message) = message else { break; };
+                        let Ok(mut state) = reader_screen.lock() else { break; };
+                        if state.apply(message,id).is_err() { state.available=false; }
+                        notify.send_modify(|sequence| *sequence=sequence.wrapping_add(1));
+                    }
+                    _ = check.tick() => {
+                        let idle = reader_last_used.lock().map(|last|last.elapsed()>Duration::from_secs(600)).unwrap_or(true);
+                        if idle || !scope.allowed().await { break; }
+                    }
                 }
-                notify.send_modify(|sequence| *sequence = sequence.wrapping_add(1));
             }
+            pump_abort.abort();
             if let Ok(mut state) = reader_screen.lock() {
                 state.available = false;
                 state.control = None;
@@ -229,6 +184,8 @@ impl Client {
             entry,
             screen,
             serial: Mutex::new(()),
+            requests: Mutex::new(std::collections::HashMap::new()),
+            last_used,
             incoming,
             changed,
             pump,

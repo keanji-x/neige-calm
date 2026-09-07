@@ -808,7 +808,17 @@ impl PtyBroadcaster {
 ///
 /// Each emitted `RenderPatch` carries both cursors; clients can resync
 /// against whichever is more useful.
+/// An optional read-only client projection installed before output is ingested.
+/// The render plane remains the sole source of terminal protocol replies.
+pub trait RenderObserver: Send + Sync {
+    fn unavailable(&mut self, reason: &str);
+    fn output(&mut self, bytes: &[u8]);
+    fn resize(&mut self, cols: u16, rows: u16);
+    fn colors(&mut self, fg: Option<(u8, u8, u8)>, bg: Option<(u8, u8, u8)>);
+}
+
 pub struct RenderPlane {
+    observer: Option<Box<dyn RenderObserver>>,
     model: TerminalModel,
     transcript: ByteRing,
     pty_seq: u32,
@@ -844,6 +854,20 @@ pub struct RenderPlane {
 }
 
 impl RenderPlane {
+    pub fn invalidate_observation(&mut self, reason: &str) {
+        if let Some(observer) = &mut self.observer {
+            observer.unavailable(reason);
+        }
+    }
+    /// Install only on a fresh plane; an observer cannot reconstruct missed bytes.
+    pub fn install_observer(&mut self, observer: Box<dyn RenderObserver>) {
+        assert!(
+            self.pty_seq == 0 && self.observer.is_none(),
+            "observer must be installed before output"
+        );
+        self.observer = Some(observer);
+    }
+
     /// Production constructor: wires the clock to [`Instant::now`].
     pub fn new(
         cols: u16,
@@ -883,6 +907,9 @@ impl RenderPlane {
     /// session-frame handler updates the model, then writes a synthetic
     /// OSC reply to the PTY master.
     pub fn set_default_colors(&mut self, fg: Option<(u8, u8, u8)>, bg: Option<(u8, u8, u8)>) {
+        if let Some(observer) = &mut self.observer {
+            observer.colors(fg, bg);
+        }
         self.model.set_default_colors(fg, bg);
     }
 
@@ -942,6 +969,7 @@ impl RenderPlane {
         now: Box<dyn Fn() -> Instant + Send + Sync>,
     ) -> Self {
         Self {
+            observer: None,
             model: TerminalModel::new(cols, rows, scrollback_max_lines),
             transcript: ByteRing::new(transcript_max_bytes),
             pty_seq: 0,
@@ -969,6 +997,9 @@ impl RenderPlane {
         let prev_rev = self.model.rev();
 
         // 1. Feed model. `rev()` may or may not bump.
+        if let Some(observer) = &mut self.observer {
+            observer.output(&bytes);
+        }
         self.model.feed(&bytes);
 
         // 2. Transcript bookkeeping (mirrors v1 `ByteRing::append`).
@@ -1071,6 +1102,9 @@ impl RenderPlane {
     pub fn on_resize(&mut self, cols: u16, rows: u16) -> Vec<Effect> {
         self.cols = cols;
         self.rows = rows;
+        if let Some(observer) = &mut self.observer {
+            observer.resize(cols, rows);
+        }
         self.model.resize(cols, rows);
         let snap = self.build_snapshot(cols, rows, ScrollbackLimit::None);
         self.last_emitted_render_rev = snap.render_rev;

@@ -16,10 +16,12 @@ impl TerminalInteraction {
         );
         let client = self.client(identity, terminal).await?;
         let _serial = client.serial.lock().await;
-        let key = (client.connection, request_key.to_owned());
-        let fingerprint = json!({"observation_id":observation,"action":action});
+        let key = request_key.to_owned();
+        let fingerprint = crate::routes::terminal_cards::stable_payload_hash(
+            &json!({"observation_id":observation,"action":action}),
+        )?;
         {
-            let requests = self.requests.lock().await;
+            let requests = client.requests.lock().await;
             if let Some((prior, result)) = requests.get(&key) {
                 ensure!(
                     prior == &fingerprint,
@@ -28,8 +30,8 @@ impl TerminalInteraction {
                 return Ok(result.clone());
             }
             ensure!(
-                requests.len() < 8192,
-                "terminal input receipt limit reached; open a new session"
+                requests.len() < 4096,
+                "terminal connection receipt limit reached; detach and observe a fresh connection"
             );
         }
         let bytes = {
@@ -56,7 +58,15 @@ impl TerminalInteraction {
                 "terminal control changed; observe before input"
             );
             ensure!(
-                saved.revision == state.revision && saved.output_sequence == state.output_sequence,
+                saved.revision
+                    == client
+                        .entry
+                        .handle
+                        .model_view
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
+                        .capture(0)?
+                        .1,
                 "terminal changed since observation; observe again"
             );
             ensure!(
@@ -78,7 +88,8 @@ impl TerminalInteraction {
             sequence
         };
         let unknown = json!({"terminal_id":terminal,"request_id":request_key,"outcome":"unknown","repeat_input":false});
-        self.requests
+        client
+            .requests
             .lock()
             .await
             .insert(key.clone(), (fingerprint.clone(), unknown.clone()));
@@ -107,7 +118,8 @@ impl TerminalInteraction {
                 Err(_) => unknown,
             }
         };
-        self.requests
+        client
+            .requests
             .lock()
             .await
             .insert(key, (fingerprint, result.clone()));

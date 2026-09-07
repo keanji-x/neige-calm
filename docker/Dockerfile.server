@@ -20,5 +20,5 @@ ARG http_proxy=
 ARG https_proxy=
 ARG no_proxy=
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates python3 bubblewrap \
+ && apt-get install -y --no-install-recommends fonts-dejavu-core fonts-noto-cjk git ca-certificates python3 bubblewrap \
  && rm -rf /var/lib/apt/lists/*

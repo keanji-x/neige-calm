@@ -179,3 +179,51 @@ async fn takeover_waits_for_the_in_flight_physical_write_acknowledgement() {
     assert_eq!(held_owner, Some(old.id));
     assert_eq!(registry.lock().unwrap().current_owner(), Some(next.id));
 }
+
+#[tokio::test]
+async fn lost_acknowledgement_blocks_new_control_and_queued_writes() {
+    let barrier = Arc::new(crate::terminal_renderer::InputBarrier::default());
+    let registry = Arc::new(Mutex::new(OwnerRegistry::new()));
+    let (events, _) = broadcast::channel(32);
+    let (control, queue) = mpsc::unbounded_channel();
+    let old = client(
+        barrier.clone(),
+        registry.clone(),
+        control.clone(),
+        events.clone(),
+    )
+    .await;
+    let mut next = client(barrier.clone(), registry.clone(), control.clone(), events).await;
+    let (writer, mut peer) = UnixStream::pair().unwrap();
+    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    old.input
+        .send(ClientMsg::Input {
+            data: b"uncertain".to_vec(),
+            input_seq: 1,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        read_frame::<ControlMsg, _>(&mut peer).await.unwrap(),
+        ControlMsg::WriteStdin(_)
+    ));
+    // A dropped writer future has not cancelled the supervisor's physical write.
+    task.abort();
+    let _ = task.await;
+    next.input.send(ClientMsg::OwnerClaim).await.unwrap();
+    let refusal = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(DaemonMsg::ProtocolError {
+                code: calm_session::ProtocolErrorCode::NotOwner,
+                ..
+            }) = next.output.recv().await
+            {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(refusal.is_ok());
+    assert_eq!(registry.lock().unwrap().current_owner(), Some(old.id));
+    assert!(barrier.grant().await.is_none());
+}

@@ -65,6 +65,15 @@ impl TerminalView {
         })
     }
 
+    pub fn colors(&mut self, foreground: Option<[u8; 3]>, background: Option<[u8; 3]>) {
+        if let Some(color) = foreground {
+            self.foreground = color;
+        }
+        if let Some(color) = background {
+            self.background = color;
+        }
+    }
+
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
         ensure!(
             (1..=MAX_COLS).contains(&cols) && (1..=MAX_ROWS).contains(&rows),

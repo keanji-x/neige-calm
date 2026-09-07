@@ -23,7 +23,9 @@ mod child_ready;
 mod client_pump;
 mod control_writer;
 mod input_authority;
+mod model_view;
 pub use input_authority::{ClientInputScope, InputBarrier, WriteAuthority};
+pub use model_view::{ModelView, SharedModelView};
 #[cfg(test)]
 pub(crate) mod establishment_test_hook;
 mod output_capture;
@@ -141,6 +143,7 @@ pub struct RendererConfig {
 }
 
 pub struct RendererHandle {
+    pub model_view: SharedModelView,
     pub input_barrier: Arc<InputBarrier>,
     pub session_id: Uuid,
     pub event_rx: broadcast::Receiver<DaemonMsg>,
@@ -427,6 +430,11 @@ impl TerminalRendererRegistry {
             Some(cfg.terminal_fg),
             Some(cfg.terminal_bg),
         )));
+        let model_view = ModelView::new(cfg.cols, cfg.rows, cfg.terminal_fg, cfg.terminal_bg);
+        render_plane
+            .lock()
+            .unwrap()
+            .install_observer(Box::new(model_view::Observer(model_view.clone())));
         let owner_registry: SharedOwnerRegistry = Arc::new(StdMutex::new(OwnerRegistry::new()));
         let exit = Arc::new(StdMutex::new(None));
         let session_id = Uuid::new_v4();
@@ -443,6 +451,7 @@ impl TerminalRendererRegistry {
             proc_id: format!("term:{}", cfg.terminal_id),
             supervisor_sock: cfg.supervisor_sock.clone(),
             handle: RendererHandle {
+                model_view,
                 input_barrier: Arc::new(InputBarrier::default()),
                 session_id,
                 event_rx,
@@ -607,6 +616,17 @@ async fn ensure_entry(
             (None, true)
         }
     };
+    // A replay alone cannot reconstruct geometry changes from an earlier
+    // server lifetime. Human reattachment remains available; model observation
+    // refuses that unproven projection instead of inventing a fresh screen.
+    let observation_replay_proven = !attach_only
+        && match repo.as_deref() {
+            Some(repo) => repo
+                .terminal_get(&cfg.terminal_id)
+                .await?
+                .is_some_and(|terminal| terminal.pid.is_none()),
+            None => true,
+        };
     let mut handoff = None;
     let proc_id = format!("term:{}", cfg.terminal_id);
     let mut control_conn = match UnixStream::connect(&cfg.supervisor_sock).await {
@@ -712,6 +732,18 @@ async fn ensure_entry(
         Some(cfg.terminal_fg),
         Some(cfg.terminal_bg),
     )));
+    let model_view = ModelView::new(cfg.cols, cfg.rows, cfg.terminal_fg, cfg.terminal_bg);
+    if !observation_replay_proven {
+        model_view
+            .lock()
+            .unwrap()
+            .invalidate("terminal renderer reattached without complete geometry history");
+    }
+
+    render_plane
+        .lock()
+        .unwrap()
+        .install_observer(Box::new(model_view::Observer(model_view.clone())));
     let owner_registry: SharedOwnerRegistry = Arc::new(StdMutex::new(OwnerRegistry::new()));
     let exit = Arc::new(StdMutex::new(None));
     let session_id = Uuid::new_v4();
@@ -751,6 +783,12 @@ async fn ensure_entry(
             }) => {
                 let output_capture =
                     output_capture::TerminalOutputCapture::shared(cursor_head, &replay);
+                if cursor_head != 0 {
+                    model_view
+                        .lock()
+                        .unwrap()
+                        .invalidate("supervisor history gap before renderer attach");
+                }
                 if !replay.is_empty() {
                     let effects = match render_plane.lock() {
                         Ok(mut rp) => rp.on_pty_chunk(replay),
@@ -792,6 +830,7 @@ async fn ensure_entry(
             proc_id,
             supervisor_sock: cfg.supervisor_sock.clone(),
             handle: RendererHandle {
+                model_view,
                 input_barrier: Arc::new(InputBarrier::default()),
                 session_id,
                 event_rx,
