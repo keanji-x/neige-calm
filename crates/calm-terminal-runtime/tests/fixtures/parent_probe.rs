@@ -5,6 +5,15 @@ use std::path::PathBuf;
 #[tokio::main(worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(unix)]
+    if args.get(1).is_some_and(|arg| arg == "--descendant-client") {
+        use std::io::Read;
+        // The parent starts this through a shell with HUP/TERM ignored.
+        // Keep this connection open until killed or the test releases us.
+        let mut socket = std::os::unix::net::UnixStream::connect(&args[2])?;
+        let _ = socket.read(&mut [0u8; 1]);
+        return Ok(());
+    }
     if args.get(1).is_some_and(|arg| arg == "--pane-probe") {
         return pane_probe(PathBuf::from(&args[2]), PathBuf::from(&args[3])).await;
     }

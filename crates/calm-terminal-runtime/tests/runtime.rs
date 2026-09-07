@@ -51,10 +51,18 @@ fn terminal_spec(root: &std::path::Path, name: &str, script: &str) -> TerminalSp
 
 impl Host {
     async fn start(root: TempDir) -> anyhow::Result<(Self, RuntimeClient)> {
+        Self::start_command(root, false).await
+    }
+
+    async fn start_command(root: TempDir, isolated: bool) -> anyhow::Result<(Self, RuntimeClient)> {
         let config = launch(&root);
         let log = std::fs::File::create(root.path().join("runtime.log"))?;
-        let child = config
-            .command()?
+        let mut command = if isolated {
+            config.isolated_command(std::path::Path::new("/usr/bin/unshare"))?
+        } else {
+            config.command()?
+        };
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)
@@ -100,6 +108,51 @@ impl Host {
         );
         Ok(())
     }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn isolated_runtime_shutdown_stops_hup_ignoring_descendants() -> anyhow::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut host, client) = Host::start_command(private_root()?, true).await?;
+    let witness = host.root.path().join("witness.sock");
+    let listener = tokio::net::UnixListener::bind(&witness)?;
+    let mut spec = terminal_spec(
+        host.root.path(),
+        "descendants",
+        "trap 'exit 0' HUP; /bin/sh -c 'trap \"\" HUP TERM; exec \"$1\" --descendant-client \"$2\"' child \"$1\" \"$2\" & printf 'ready\\n'; wait",
+    );
+    spec.argv.extend([
+        "leader".into(),
+        env!("CARGO_BIN_EXE_terminal-runtime-parent-probe").into(),
+        witness.to_str().unwrap().into(),
+    ]);
+    let pane = client.create(spec).await?;
+    let (mut peer, _) = tokio::time::timeout(BUDGET, listener.accept()).await??;
+    pane.wait_for_text("ready").await?;
+    // An upstream pane-close reply is asynchronous. Stop the whole namespace
+    // and observe the owned launcher exit before claiming process quiescence.
+    pane.close().await?;
+    host.shutdown(client).await?;
+    let mut byte = [0u8; 1];
+    let stopped = matches!(
+        tokio::time::timeout(Duration::from_millis(500), peer.read(&mut byte)).await,
+        Ok(Ok(0))
+    );
+    if !stopped {
+        // Mutation cleanup: release the known descendant through its own
+        // socket, never by signaling a potentially recycled numeric PID.
+        peer.write_all(b"x").await?;
+        assert_eq!(
+            tokio::time::timeout(BUDGET, peer.read(&mut byte)).await??,
+            0
+        );
+    }
+    assert!(
+        stopped,
+        "descendant connection remained alive after runtime exit"
+    );
+    Ok(())
 }
 
 impl Drop for Host {

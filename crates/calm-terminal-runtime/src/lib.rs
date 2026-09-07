@@ -27,6 +27,55 @@ pub struct RuntimeLaunch {
 }
 
 impl RuntimeLaunch {
+    /// Linux process containment for one Neige terminal runtime. When the
+    /// namespace's init exits, the kernel terminates its remaining processes.
+    /// This intentionally does not promise filesystem or network isolation.
+    /// No unshare-try fallback: inability to create the namespace is a failure.
+    #[cfg(target_os = "linux")]
+    pub fn isolated_command(&self, unshare: &Path) -> io::Result<Command> {
+        if !unshare.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unshare executable must be absolute",
+            ));
+        }
+        let inner = self.command()?;
+        let mut command = Command::new(unshare);
+        command
+            .args([
+                "--user",
+                "--map-root-user",
+                "--pid",
+                "--fork",
+                "--kill-child=SIGKILL",
+                "--mount-proc",
+                "--",
+            ])
+            .arg(inner.get_program())
+            .args(inner.get_args())
+            .current_dir(&self.cwd)
+            .env_clear();
+        for (name, value) in inner.get_envs() {
+            match value {
+                Some(value) => {
+                    command.env(name, value);
+                }
+                None => {
+                    command.env_remove(name);
+                }
+            }
+        }
+        Ok(command)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn isolated_command(&self, _unshare: &Path) -> io::Result<Command> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "terminal process containment currently requires Linux",
+        ))
+    }
+
     /// Build the actual child command with an explicit environment allowlist.
     /// The owner decides when to spawn, supervise, and reap this process.
     pub fn command(&self) -> io::Result<Command> {
