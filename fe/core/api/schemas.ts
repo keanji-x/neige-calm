@@ -702,6 +702,15 @@ export const taskFailedSchema = z.object({
   }),
 });
 
+/** Failed execution cleanup settled; this does not grant recovery authority. */
+export const taskExecutionSettledSchema = z.object({
+  ev: z.literal('task.execution_settled'),
+  data: z.object({
+    task_id: z.string(),
+    operation_id: z.string(),
+  }),
+});
+
 /**
  * `Event::PlanUpdated` — issue #644: the planner revised the track's task
  * plan via `calm.plan.upsert` / `calm.plan.cancel`. Track-scoped audit
@@ -1120,6 +1129,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   terminalWorkerRequestedSchema,
   taskCompletedSchema,
   taskFailedSchema,
+  taskExecutionSettledSchema,
   planUpdatedSchema,
   taskDispatchedSchema,
   taskContextFrozenSchema,

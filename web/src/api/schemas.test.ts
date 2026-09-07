@@ -417,6 +417,21 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
     expect(result.success).toBe(false);
   });
 
+  it('parses task.execution_settled with exact execution identities', () => {
+    const event = {
+      ev: 'task.execution_settled',
+      data: { task_id: 'attempt-1', operation_id: 'operation-1' },
+    };
+    expect(wireEventSchema.parse(event)).toEqual(event);
+  });
+
+  it.each([
+    { operation_id: 'operation-1' },
+    { task_id: 'attempt-1' },
+  ])('rejects task.execution_settled missing an execution identity: %j', (data) => {
+    expect(wireEventSchema.safeParse({ ev: 'task.execution_settled', data }).success).toBe(false);
+  });
+
   it('parses a valid task.failed', () => {
     const parsed = wireEventSchema.parse({
       ev: 'task.failed',

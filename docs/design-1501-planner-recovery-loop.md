@@ -112,3 +112,13 @@ bindings for this scene. Run the real frontend generators and include all affect
 artifacts. Generic frontend transport, styles and unrelated interfaces retain their
 current contracts. Any modified frozen generated file receives its exact
 `OWNERSHIP-CHANGE` trailer in the commit, PR body and squash body.
+
+The schema parity build caught the required runtime-decoder update after actual
+wire generation. Both existing FE and legacy web discriminated unions accept the
+new event with required task and Operation identities; focused decode regressions
+reject missing identities. This extends their existing mirrored contract only.
+The orchestrator approves these exact frozen core changes:
+
+OWNERSHIP-CHANGE: fe/core/api/schemas.ts — decode approved isolated execution settlement event (#1501)
+OWNERSHIP-CHANGE: fe/core/api/schemas.contract.test.ts — verify approved settlement event contract (#1501)
+OWNERSHIP-CHANGE: fe/core/api/generated/wire.ts — add approved isolated execution settlement event (#1501)
