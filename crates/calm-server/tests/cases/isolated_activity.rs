@@ -76,12 +76,26 @@ async fn bound() -> (Boot, Task, String) {
         .unwrap();
     sqlx::query("UPDATE worker_sessions SET spawn_op_id=?1,thread_id='activity-thread',active_turn_id='activity-turn' WHERE id=?2")
         .bind(&op).bind(WORKER_SESSION_ID).execute(&pool).await.unwrap();
-    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.idempotency_key',?1) WHERE id=?2")
-        .bind(&task.id)
-        .bind(boot.worker_card_id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+    // Run discovery includes the scheduler's persisted claim, before any terminal result.
+    // The generic MCP boot card has a null payload, so it cannot stand in for that event.
+    let mut tx = pool.begin().await.unwrap();
+    calm_server::db::sqlite::append_decision_event_in_tx(
+        &mut tx,
+        &calm_server::ids::ActorId::KernelDispatcher,
+        &calm_server::event::EventScope::Track {
+            track: boot.track_id.clone(),
+            area: boot.area_id.clone(),
+        },
+        None,
+        &calm_server::event::Event::TaskDispatched {
+            idempotency_key: task.id.clone(),
+            kind: "codex".into(),
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
     (boot, task, op)
 }
 async fn listed(boot: &Boot) -> Value {
@@ -337,8 +351,8 @@ async fn isolated_activity_replacement_does_not_inherit_predecessor_rows() {
         actor: calm_server::ids::ActorId::User,
         constraint: calm_types::task_recovery::TaskRecoveryConstraint::V1 {
             refs: closure.refs,
-            spawn: "in-wave".into(),
-            declared_by: "spec".into(),
+            spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
+            declared_by: calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR.into(),
         },
     };
     sqlx::query("INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,created_at_ms) VALUES('replacement',?1,'activity',2,?2,2)")
