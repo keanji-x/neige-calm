@@ -32,16 +32,18 @@
    * clipped away entirely. `min-inline-size: 0` on the item alone did not fix
    * it; the track has to be the thing that refuses.
    *
-   * `inline-grid` + `max-inline-size: 100%` is what makes it a bubble rather
-   * than a bar: a short message gets a short chip, a long one runs to the edge
-   * and ellipses there.
+   * Full width, matched to the field below it. A bubble that hugged its text
+   * gave every queued message a different length, so a stack of them was a
+   * ragged edge over a straight one — and the two icons landed in a different
+   * place on every row, which is the half that costs something: they are the
+   * controls, and a control that moves has to be looked for. Same width as the
+   * composer, icons in one column, text ellipsing where the field ends.
    */
   .bubble {
-    display: inline-grid;
+    display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: var(--space-1);
-    max-inline-size: 100%;
     min-inline-size: 0;
     /* Asymmetric on purpose: the text needs an inset from the bubble's edge,
        the icon buttons carry their own. */
