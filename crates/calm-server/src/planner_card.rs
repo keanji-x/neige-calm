@@ -1113,7 +1113,11 @@ mod tests {
     #[test]
     fn planner_prompt_mandates_an_unconditional_first_read() {
         let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
-        let step1 = p.find("1. Run `neige state`").expect("step 1 is present");
+        let step1 = p
+            .find("1. A kernel recovery decision briefing")
+            .expect("step 1 permits deciding from the kernel recovery snapshot");
+        assert!(p.contains("When that is sufficient for the recovery decision, act on it without a preliminary state or plan-list read"));
+        assert!(p.contains("Run `neige state` for other decisions"));
         let read = p
             .find("Before you write anything to the report in a session, call `calm.report.read` once")
             .expect("unconditional first-read sentence is present");
@@ -1122,7 +1126,7 @@ mod tests {
             .expect("step 2 is present");
         assert!(
             step1 < read && read < step2,
-            "the first-read sentence must sit after neige state and before step 2"
+            "the report first-read contract must remain in step 1 despite the recovery briefing exception"
         );
         assert!(
             !p.contains("If `report_startup_read_required` is true, first call"),
