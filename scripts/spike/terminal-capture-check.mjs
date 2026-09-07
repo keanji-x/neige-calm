@@ -55,6 +55,9 @@ try {
     const { default: { createElement } } = await import(react);
     const { default: { createRoot } } = await import(reactDom);
     const { TerminalCardView } = await import('/next/src/systems/cards/builtins/terminal-card.tsx');
+    // The API is intentionally stubbed, so establish the theme that the
+    // authenticated app shell normally supplies to both CSS and xterm.
+    document.documentElement.dataset.theme = 'dark';
     const host = document.createElement('div');
     host.className = 'track-card';
     host.style.cssText = 'position:fixed;left:20px;top:20px;width:700px;height:420px;z-index:10000;background:#0f1418';
@@ -74,6 +77,18 @@ try {
   const capture = await captureTerminal(page, 'capture-terminal');
   assert.equal(capture.png.subarray(1, 4).toString(), 'PNG');
   assert.ok(capture.png.length > 1000, 'capture contains rendered terminal pixels');
+  const darkBackground = await page.evaluate(async (bytes) => {
+    const image = await createImageBitmap(new Blob([Uint8Array.from(bytes)], { type: 'image/png' }));
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0);
+    const pixel = context.getImageData(image.width - 10, image.height - 10, 1, 1).data;
+    image.close();
+    return pixel[0] < 80 && pixel[1] < 80 && pixel[2] < 80;
+  }, Array.from(capture.png));
+  assert.ok(darkBackground, 'PNG must capture the dark terminal background, not a white page');
   await writeFile(resolve(output, 'terminal.png'), capture.png, { mode: 0o600 });
   await writeFile(resolve(output, 'capture.json'), JSON.stringify(capture.manifest, null, 2), { mode: 0o600 });
   assert.ok(terminalSocket);
