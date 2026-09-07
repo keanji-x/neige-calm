@@ -34,6 +34,9 @@ mod task_recovery_preparation;
 #[path = "cases/task_recovery_reads.rs"]
 mod task_recovery_reads;
 
+#[path = "cases/planner_result_loop.rs"]
+mod planner_result_loop;
+
 #[path = "cases/isolated_codex_selection.rs"]
 mod isolated_codex_selection;
 
