@@ -413,13 +413,13 @@ fn setting_a_holding_prices_it_now_and_publishes_to_the_callers_track() {
 /// up with two rows summing to 160 that the tables would price as one
 /// position of 160 BTC.
 ///
-/// It also pins the migration's shape: nothing scans the KV, so the legacy
-/// spelling survives until this Track's first write and is rewritten by it.
+/// It also pins what the first write leaves behind: the canonical spelling,
+/// in place of the legacy one.
 #[test]
 fn a_legacy_bare_holding_is_replaced_not_doubled_by_a_qualified_write() {
     let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
     // Seeded directly, as a pre-venues install would have left it. The plugin
-    // has never seen this Track and runs no migration over it.
+    // has never seen this Track.
     kernel.kv.insert(
         "holdings/trk_caller".to_string(),
         json!([{ "asset": "BTC", "quantity": 100.0 }]),

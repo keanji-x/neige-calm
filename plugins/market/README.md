@@ -16,6 +16,11 @@ holding is stored against **that Track**, priced immediately, and published.
 Say "I sold 40" and it calls the same tool with `60`; say "I sold it all" and
 it calls it with `0`, which removes the holding.
 
+An asset may also be named with its venue — `CRYPTO:BTC`, `US:NVDA`,
+`HK:1810`, `CN:600519` — which is what makes `W` on two venues two holdings
+rather than one. Only the crypto venue has a price source today; see
+[Assets and sources](#assets-and-sources).
+
 | tool | what it does |
 | --- | --- |
 | `market.holdings.set` | record a quantity for one asset (`0` removes it) and wake a refresh |
@@ -78,19 +83,43 @@ for …" rather than an error.
 
 ## Assets and sources
 
-Callers name an **asset** (`BTC`). Which venue answers, at which URL, in which
-response shape, is this plugin's business — that indirection is the whole
-point. Today there is one source, Binance spot, and one resolution rule:
-`<ASSET><QUOTE>` is a spot symbol. An asset no source knows is reported as
-unknown, distinctly from a lookup that failed.
+An asset is named either bare (`BTC`) or **venue-qualified**,
+`<VENUE>:<SYMBOL>`, over four venues: `CRYPTO`, `US`, `HK`, `CN`. Names are
+trimmed and upper-cased, so `crypto:btc` and `CRYPTO:BTC` are one identity, and
+a prefix counts as a prefix only when the colon is there — `USNVDA` is a crypto
+name, not NVDA.
 
-Adding a source later (Google Finance for US equities, say) changes nothing
-outside this plugin: no agent, no report, and no stored holding. A name that
-used to resolve nowhere starts resolving.
+A bare name is the crypto venue, and that is frozen rather than configurable:
+every row a pre-venues `market.holdings.set` wrote is a bare name, so a knob
+that reinterpreted them would silently reprice an existing portfolio the moment
+an operator flipped it.
 
-There is deliberately **no namespace syntax** (`crypto:BTC`), no per-source
-priority list, and no routing configuration. Nothing exists yet for such a
-scheme to disambiguate, and a guess made now is a guess we would have to keep.
+The venue is written down rather than guessed, because a name alone does not
+identify a security — `W` is Wayfair on the NYSE and Wormhole in crypto — and
+every rule proposed for inferring one from a name's shape ("six digits means
+Shanghai") has counterexamples among real tickers. A wrong guess here is a
+silently wrong number in a total, not a visible failure.
+
+Which source answers a venue, at which URL, in which response shape, is this
+plugin's business. Today there is **one source, Binance spot, serving `CRYPTO`
+only**, with one resolution rule: `<SYMBOL><QUOTE>` is a spot symbol.
+
+> **`US`, `HK` and `CN` names can be recorded, but nothing prices them yet.**
+> An identity on one of those venues is reported as unknown — distinctly from a
+> lookup that failed — so it keeps a row with a null price, and, because only a
+> fully-priced tick contributes a history point (see *Limits* below), a Track
+> holding one adds no history points for as long as it holds it. That is a
+> stall this slice makes reachable, not one it invents: a crypto name the venue
+> does not list has always come back the same way.
+
+Adding a source for those venues later changes nothing outside this plugin: an
+identity already qualified with its venue does not have to be renamed. A name
+that used to resolve nowhere starts resolving.
+
+The holdings table carries the venue as its own column rather than glued onto
+the name, so `US:W` and `CRYPTO:W` read as two distinguishable rows;
+`market.holdings.list`'s one-line prose, which has no columns, writes them out
+as `US:W` and `CRYPTO:W`.
 
 ### Why `data-api.binance.vision`
 
