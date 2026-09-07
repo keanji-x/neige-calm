@@ -36,10 +36,18 @@ at a time. These principles govern the remaining #1501 slices:
   scope, integration, experiments and durable context. Finish the focused tests,
   independent reviews and required CI before the authorized squash merge.
 
-The current slice is authorized declaration → automatic preparation/start →
-Planner confirmation from the actual attempt. Clarify existing startup ownership
-before adding new machinery: Track Working or a scheduler claim alone does not
-prove Worker execution. Keep readiness, release and User authority effective.
+The authorized-startup slice shipped in #1561: declaration → automatic
+preparation/start → Planner confirmation from execution evidence. Track Working,
+a scheduler claim, or a Running projection alone does not prove Worker execution.
+Readiness, release and User authority remain effective.
+
+The current slice is quiet completion: a successful `worktree.committed`
+notification queued before completion must not start a redundant Planner turn
+after the Track is Done. Decide at the existing turn-issuance boundary, retain
+the source event, and consume the redundant queue entry durably so recovery does
+not repeat it. Preserve active-work notifications, actionable observations and
+user input. This does not define a general policy for every terminal state or
+every workspace notification.
 
 The approved follow-up queue in #1501 is: remove one class of wake with no new
 decision; make existing long-task activity useful for deciding whether to wait or

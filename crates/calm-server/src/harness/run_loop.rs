@@ -2465,6 +2465,53 @@ async fn catalog_default_effort(
     }
 }
 
+/// Consume only successful bookkeeping for a Done Track. Both live delivery
+/// and persisted replay reach this boundary. The event log and already accepted
+/// push watermark stay intact; failures, user intent and other observations
+/// retain their queue order and normal delivery semantics.
+async fn consume_completed_worktree_commits(inner: &Arc<Inner>) -> Result<()> {
+    let is_commit = |entry: &QueueEntry| {
+        matches!(entry, QueueEntry::System {
+            observation: Observation::WorktreeCommitted { track_id, .. }, ..
+        } if track_id == &inner.track_id)
+    };
+    if !inner.pending_queue.lock().await.iter().any(is_commit) {
+        return Ok(());
+    }
+    if !inner
+        .repo
+        .track_get(inner.track_id.as_str())
+        .await?
+        .is_some_and(|track| track.lifecycle == crate::model::TrackLifecycle::Done)
+    {
+        return Ok(());
+    }
+    let checkpoint = checkpoint_durable_user_message(inner).await;
+    let consumed = {
+        let mut queue = inner.pending_queue.lock().await;
+        let before = queue.len();
+        queue.retain(|entry| !is_commit(entry));
+        let mut debounce = inner.debounce.lock().await;
+        debounce.hard_fire = queue.iter().any(QueueEntry::is_hard_fire);
+        if queue.is_empty() {
+            *debounce = DebounceState::default();
+        }
+        before - queue.len()
+    };
+    // Persist consumption even when no turn remains to write a later snapshot.
+    // A failed write must leave the original queue available for retry.
+    if let Err(error) = persist_snapshot(inner).await {
+        restore_durable_user_message(inner, checkpoint).await;
+        return Err(error);
+    }
+    tracing::debug!(
+        track_id = %inner.track_id,
+        consumed,
+        "consumed successful worktree commit observations for a Done Track"
+    );
+    Ok(())
+}
+
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Issue #682 review — dev-forced harnesses run against the replay
     // binary's stub app-server; see `PlannerHarness::pause_issuance_for_dev`.
@@ -2768,6 +2815,21 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         current_head = ?diff.current_head.as_deref(),
         "since-last-turn diff resolved"
     );
+
+    // A successful commit may have queued while the preceding Planner turn
+    // was still accepting results. Re-evaluate at delivery, after that turn
+    // can have marked Done; enqueue-time filtering would miss this case.
+    consume_completed_worktree_commits(inner).await?;
+    if inner.pending_queue.lock().await.is_empty() {
+        return Ok(());
+    }
+
+    // The removed commit may have been the only hard-fire entry. Let the
+    // next tick apply the existing debounce to any remaining soft entries;
+    // this invocation was admitted using the queue's pre-consumption state.
+    if hard_fire && !inner.debounce.lock().await.hard_fire {
+        return Ok(());
+    }
 
     let prior_turn = {
         let mut state = inner.state.lock().await;
@@ -3838,3 +3900,6 @@ mod tests {
         assert_eq!(queue[0].envelope_id(), Some(1));
     }
 }
+
+#[cfg(test)]
+mod completed_commit_tests;
