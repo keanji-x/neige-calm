@@ -16,7 +16,7 @@
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK, SH (Shanghai) and SZ (Shenzhen) — `CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `SH:600519`, `SZ:000001`. A prefix counts only with the colon, so `USNVDA` is a crypto name."
+            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK, SH (Shanghai) and SZ (Shenzhen) — `CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `SH:600519`, `SZ:000001`. A prefix counts only with the colon, so `USNVDA` is a crypto name. `CN:` is accepted only so holdings stored under the retired mainland venue still read back; it is never priced, and has to be re-recorded as `SH:<code>` or `SZ:<code>`."
           }
         },
         "required": [
@@ -38,7 +38,7 @@
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK, SH (Shanghai) and SZ (Shenzhen) — `CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `SH:600519`, `SZ:000001`. A prefix counts only with the colon, so `USNVDA` is a crypto name."
+            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK, SH (Shanghai) and SZ (Shenzhen) — `CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `SH:600519`, `SZ:000001`. A prefix counts only with the colon, so `USNVDA` is a crypto name. `CN:` is accepted only so holdings stored under the retired mainland venue still read back; it is never priced, and has to be re-recorded as `SH:<code>` or `SZ:<code>`."
           },
           "quantity": {
             "type": "number",

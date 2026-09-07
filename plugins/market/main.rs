@@ -169,6 +169,8 @@ impl Rpc {
 /// one of the two is halted and returns the source's `0.0000` row, the
 /// positive-price filter leaves exactly one answer and the wrong security is
 /// accepted in silence. The caller names the exchange instead.
+///
+/// [`Venue::Cn`] is still in this list, and it is NOT a sixth place to trade.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Venue {
     Crypto,
@@ -178,6 +180,21 @@ enum Venue {
     Sh,
     /// Shenzhen Stock Exchange.
     Sz,
+    /// **A migration path, not a place.** `CN:` was the mainland venue in the
+    /// slice that shipped before the Shanghai/Shenzhen split, so a KV document
+    /// written by that version can hold `CN:600519` today. It is never priced:
+    /// [`quote_asset`] answers it [`Quote::Failed`] with a message naming the
+    /// two spellings that would work, and no request goes out.
+    ///
+    /// It stays in the grammar because of what removing it would do to those
+    /// stored rows, which is worse than an unpriceable holding. `CN:600519`
+    /// would stop parsing; [`holdings_from_value`] drops a row it cannot parse
+    /// WITHOUT saying so; and the next `market.holdings.set` writes the whole
+    /// array back, so the dropped row is gone from the store for good. The
+    /// user is never told, and there is nothing left to tell them from. One
+    /// holding that visibly cannot be priced replaces one that silently
+    /// disappears.
+    Cn,
 }
 
 impl Venue {
@@ -189,6 +206,7 @@ impl Venue {
             Venue::Hk => "HK",
             Venue::Sh => "SH",
             Venue::Sz => "SZ",
+            Venue::Cn => "CN",
         }
     }
 
@@ -199,6 +217,7 @@ impl Venue {
             "HK" => Some(Venue::Hk),
             "SH" => Some(Venue::Sh),
             "SZ" => Some(Venue::Sz),
+            "CN" => Some(Venue::Cn),
             _ => None,
         }
     }
@@ -231,8 +250,11 @@ const ASSET_SYNTAX_ERROR: &str = "`asset` must be a name like \"BTC\", or a \
     venue-qualified \"<VENUE>:<SYMBOL>\" over the venues CRYPTO, US, HK, SH \
     (Shanghai) and SZ (Shenzhen) — for example \"CRYPTO:BTC\", \"US:NVDA\", \
     \"HK:1810\", \"SH:600519\", \"SZ:000001\". A name with no venue is a \
-    crypto asset. Every venue has a price source, each quoting in its own \
-    currency, and nothing is converted between them.";
+    crypto asset. Each of those five venues has its own price source, quoting \
+    in its own currency, with nothing converted between them. \"CN:\" also \
+    parses, but only so that a holding stored under the retired mainland \
+    venue can still be read back — it is never priced, and has to be recorded \
+    again as \"SH:<code>\" or \"SZ:<code>\".";
 
 /// The one place an asset name becomes an identity.
 ///
@@ -258,6 +280,9 @@ const ASSET_SYNTAX_ERROR: &str = "`asset` must be a name like \"BTC\", or a \
 /// - Because the split is on `:` and nothing else, `USNVDA`, `HK1810` and
 ///   `CRYPTOBTC` stay bare crypto names. A prefix is only a prefix when the
 ///   colon is there.
+/// - `CN:` is a KNOWN prefix here, so `CN:600519` parses, round-trips and can
+///   be read back out of the store. It is refused at PRICING time instead —
+///   see [`Venue::Cn`] for why the refusal is placed there and not here.
 fn parse_asset(raw: &str) -> Option<AssetId> {
     let raw = raw.trim().to_ascii_uppercase();
     let (venue, symbol) = match raw.split_once(':') {
@@ -552,6 +577,18 @@ fn quote_asset(cfg: &Config, asset: &AssetId) -> Quote {
     match asset.venue {
         Venue::Crypto => binance_spot(cfg, asset),
         Venue::Us | Venue::Hk | Venue::Sh | Venue::Sz => sina_quote(cfg, asset),
+        // `CN` names no exchange, so there is no source to route it to and
+        // nothing to ask. The answer is a visible `Failed` carrying the two
+        // spellings that would work — see [`Venue::Cn`] for what this refusal
+        // replaced.
+        Venue::Cn => Quote::Failed(format!(
+            "{} names no exchange: `CN` was the mainland venue before this plugin \
+             split it into `SH` (Shanghai) and `SZ` (Shenzhen), and the code itself \
+             does not say which exchange lists it. Record this holding again as \
+             `SH:{symbol}` or `SZ:{symbol}`.",
+            asset.canonical(),
+            symbol = asset.symbol,
+        )),
     }
 }
 
@@ -752,7 +789,8 @@ enum SinaTarget {
 /// itself fixes the currency. Everything else is
 /// [`SinaTarget::UndeterminedCurrency`] — visible, not guessed. What that
 /// excludes is a registered gap: B shares, Hong Kong's renminbi and
-/// US-dollar counters, and the mainland fund, bond and index code ranges.
+/// US-dollar counters, and every mainland range outside the A-share, ChiNext
+/// and fund ranges spelled out below.
 fn sina_target(asset: &AssetId) -> SinaTarget {
     let undetermined = |asset: &AssetId, why: &str| {
         SinaTarget::UndeterminedCurrency(format!(
@@ -767,6 +805,10 @@ fn sina_target(asset: &AssetId) -> SinaTarget {
         // Binance. Spelled out rather than left to a catch-all so that adding
         // a venue is a compile error here.
         Venue::Crypto => SinaTarget::Unspellable,
+        // `CN` never reaches this source either; `quote_asset` answers it
+        // `Failed` before any routing. Spelled out for the same reason as
+        // `Crypto`: adding a venue must be a compile error here.
+        Venue::Cn => SinaTarget::Unspellable,
         // Sina's `gb_` list is US-listed securities, and a US listing is
         // quoted in US dollars.
         Venue::Us => SinaTarget::Ask(SinaLookup {
@@ -783,10 +825,16 @@ fn sina_target(asset: &AssetId) -> SinaTarget {
         // renminbi counter — live at 94.45 CNY while `hk09988` trades at
         // 111.00 HKD, both verified — and the row gives no way to tell which
         // currency it is in. What is established here is only that: 8xxxx is
-        // not reliably HKD. 9xxxx is refused on no evidence of its own, as the
-        // conservative side of a boundary that had to be drawn somewhere; if a
-        // 9xxxx code turns out to be an ordinary HKD listing this refuses a
-        // holding it could have priced, which is the failure worth having.
+        // not reliably HKD.
+        //
+        // 9xxxx is refused too, and what that costs was measured rather than
+        // reasoned about: `hk90988` and `hk96618` both answer with an EMPTY
+        // row on 2026-09-07, i.e. this source lists neither. Every 9xxxx code
+        // sampled is one the source has no price for, so refusing the range
+        // gives up no coverage that could have been priced — it turns an
+        // `Unknown` into a `Failed`. Nothing here is a claim about how HKEX
+        // assigns codes; that is not known. Note what is NOT in this range:
+        // `HK:9988` pads to `09988`, is below 80000, and is priced normally.
         Venue::Hk => {
             if asset.symbol.is_empty()
                 || asset.symbol.len() > 5
@@ -809,18 +857,28 @@ fn sina_target(asset: &AssetId) -> SinaTarget {
             })
         }
         // Shanghai: `6xxxxx` is the A-share main board and the STAR market,
-        // both renminbi. `9xxxxx` is the B-share board, quoted in US DOLLARS
-        // (`sh900932`, 陆家Ｂ股, 0.385 USD). The remaining ranges are funds,
-        // bonds and indices, which this slice does not price.
+        // and `5xxxxx` is the exchange-traded fund range; both are renminbi.
+        // `9xxxxx` is the B-share board, quoted in US DOLLARS (`sh900932`,
+        // 陆家Ｂ股, 0.385 USD), and stays refused. Bond and index ranges are
+        // still not priced.
+        //
+        // What fixes the currency for the fund range is that the only
+        // non-renminbi board found on this exchange is the B-share one, and
+        // `5xxxxx` is not it. That the source carries these codes at all was
+        // read off the live endpoint on 2026-09-07: `sh510300` (沪深300ETF
+        // 华泰柏瑞) 4.635, `sh563210` (专精特新ETF富国) 1.949, and `sh511990`
+        // (华宝添益) 99.999 — a money-market fund, whose ~100 quote is its
+        // unit price and not a stray scale.
         Venue::Sh => {
             if !six_digits(&asset.symbol) {
                 return SinaTarget::Unspellable;
             }
-            if !asset.symbol.starts_with('6') {
+            if !(asset.symbol.starts_with('6') || asset.symbol.starts_with('5')) {
                 return undetermined(
                     asset,
-                    "only Shanghai's 6xxxxx A-share and STAR codes are renminbi here; \
-                     9xxxxx is the B-share board, which quotes in US dollars",
+                    "on Shanghai this plugin prices the 6xxxxx A-share and STAR codes \
+                     and the 5xxxxx fund codes, which are renminbi; 9xxxxx is the \
+                     B-share board, which quotes in US dollars",
                 );
             }
             SinaTarget::Ask(SinaLookup {
@@ -829,19 +887,32 @@ fn sina_target(asset: &AssetId) -> SinaTarget {
                 currency: "CNY",
             })
         }
-        // Shenzhen: `00xxxx` main board and `30xxxx` ChiNext, both renminbi.
-        // `2xxxxx` is the B-share board, quoted in HONG KONG DOLLARS
-        // (`sz200725`, 京东方Ｂ, 4.770 HKD, against `sz000725`'s 5.680 CNY).
+        // Shenzhen: `00xxxx` main board, `30xxxx` ChiNext and the `15xxxx` /
+        // `16xxxx` fund ranges, all renminbi. `2xxxxx` is the B-share board,
+        // quoted in HONG KONG DOLLARS (`sz200725`, 京东方Ｂ, 4.770 HKD,
+        // against `sz000725`'s 5.680 CNY), and stays refused.
+        //
+        // Same basis as Shanghai's fund range: the only non-renminbi board
+        // found on this exchange is the B-share one, and neither fund range is
+        // it. `sz159915` (创业板ETF) answered 3.338 on the live endpoint on
+        // 2026-09-07. Being in range is not a promise the source has the code:
+        // `sz162201` (宏利成长混合, a LOF) answers with an empty row, which
+        // comes back `Unknown` — the source does not list it — rather than as
+        // a currency refusal, and that is the honest distinction between the
+        // two answers.
         Venue::Sz => {
             if !six_digits(&asset.symbol) {
                 return SinaTarget::Unspellable;
             }
-            if !(asset.symbol.starts_with("00") || asset.symbol.starts_with("30")) {
+            let sz_renminbi = ["00", "30", "15", "16"]
+                .iter()
+                .any(|prefix| asset.symbol.starts_with(prefix));
+            if !sz_renminbi {
                 return undetermined(
                     asset,
-                    "only Shenzhen's 00xxxx main-board and 30xxxx ChiNext codes are \
-                     renminbi here; 2xxxxx is the B-share board, which quotes in Hong \
-                     Kong dollars",
+                    "on Shenzhen this plugin prices the 00xxxx main-board, 30xxxx \
+                     ChiNext and 15xxxx/16xxxx fund codes, which are renminbi; 2xxxxx \
+                     is the B-share board, which quotes in Hong Kong dollars",
                 );
             }
             SinaTarget::Ask(SinaLookup {
@@ -2263,6 +2334,117 @@ mod tests {
         );
     }
 
+    /// **`CN:` parses so that a row written under it cannot vanish.**
+    ///
+    /// The slice before the Shanghai/Shenzhen split published `CN:` and stored
+    /// it, so `CN:600519` exists in KV documents now. Both halves below are
+    /// the point, and the first is the one that made this venue stay:
+    ///
+    /// 1. It still parses, so [`holdings_from_value`] keeps the row. Were it
+    ///    to stop parsing, that function would drop it WITHOUT a word and the
+    ///    next `market.holdings.set` — which writes the whole array back —
+    ///    would erase it from the store permanently, with no message anywhere.
+    /// 2. It is never priced. `CN` is not an exchange, so the answer is a
+    ///    `Failed` naming the two spellings that would work, and no request
+    ///    goes out to guess between them.
+    #[test]
+    fn a_stored_cn_holding_reads_back_and_is_refused_out_loud() {
+        assert_eq!(id("cn:600519").canonical(), "CN:600519");
+        let stored = json!([
+            { "asset": "CN:600519", "quantity": 2.0 },
+            { "asset": "BTC", "quantity": 1.0 },
+        ]);
+        assert_eq!(
+            holdings_from_value(Some(&stored), "trk"),
+            vec![holding("CN:600519", 2.0), holding("CRYPTO:BTC", 1.0)],
+            "a CN row must survive the read path that rewrites the store",
+        );
+
+        // The fixture answers `600519` on BOTH exchanges, with different
+        // numbers: anything that picked an exchange would come back `Price`
+        // here rather than `Failed`.
+        let (endpoint, targets) = sina_server(|target| {
+            sina_fixture_body(
+                target,
+                &[
+                    ("sh600519", "<NAME>,1324.000,1330.000,1316.940"),
+                    ("sz600519", "<NAME>,1.000,1.000,1.000"),
+                ],
+            )
+        });
+        let cfg = sina_cfg(endpoint);
+        let answered = quote_asset(&cfg, &id("CN:600519"));
+        assert!(
+            matches!(
+                &answered,
+                Quote::Failed(why)
+                    if why.contains("CN:600519")
+                        && why.contains("SH:600519")
+                        && why.contains("SZ:600519")
+            ),
+            "a CN holding must fail visibly and name both spellings that work: \
+             {answered:?}",
+        );
+        assert!(
+            targets.try_recv().is_err(),
+            "`CN` names no exchange, so there is nothing to ask",
+        );
+    }
+
+    /// The mainland fund ranges are priced, in renminbi, alongside the shares.
+    ///
+    /// These are not B shares and share none of their currency problem: the
+    /// four codes below were read off the live endpoint on 2026-09-07 and are
+    /// renminbi like the A-share boards they sit on. Refusing them would cost
+    /// the most commonly held mainland instruments for nothing.
+    ///
+    /// The last assertion is the other half: being inside an allowed range is
+    /// not a promise the source lists the code. `sz162201` is a LOF the source
+    /// answers with an empty row, and the honest answer to that is `Unknown`
+    /// after a real request — not the currency refusal, which would say
+    /// something false about why.
+    #[test]
+    fn the_mainland_fund_ranges_price_in_renminbi() {
+        let (endpoint, targets) = sina_server(|target| {
+            sina_fixture_body(
+                target,
+                &[
+                    // Shanghai `5xxxxx`: a broad-market ETF, a themed ETF, and
+                    // a money-market fund whose ~100 unit price is real.
+                    ("sh510300", "<NAME>,4.620,4.630,4.635,4.640,4.610"),
+                    ("sh563210", "<NAME>,1.940,1.945,1.949,1.955,1.938"),
+                    ("sh511990", "<NAME>,99.990,99.995,99.999,100.000,99.980"),
+                    // Shenzhen `15xxxx`: ChiNext ETF.
+                    ("sz159915", "<NAME>,3.330,3.335,3.338,3.350,3.320"),
+                ],
+            )
+        });
+        let cfg = sina_cfg(endpoint);
+        for (name, target, price) in [
+            ("SH:510300", "/list=sh510300", 4.635),
+            ("SH:563210", "/list=sh563210", 1.949),
+            ("SH:511990", "/list=sh511990", 99.999),
+            ("SZ:159915", "/list=sz159915", 3.338),
+        ] {
+            assert_eq!(
+                quote_asset(&cfg, &id(name)),
+                Quote::Price(price, "CNY"),
+                "{name} is a renminbi fund and must be priced",
+            );
+            assert_eq!(
+                targets.recv_timeout(Duration::from_secs(5)).as_deref(),
+                Ok(target),
+            );
+        }
+        // `16xxxx` is an allowed range too, and this one is simply not listed.
+        assert_eq!(quote_asset(&cfg, &id("SZ:162201")), Quote::Unknown);
+        assert_eq!(
+            targets.recv_timeout(Duration::from_secs(5)).as_deref(),
+            Ok("/list=sz162201"),
+            "an allowed range is asked about; only the answer is empty",
+        );
+    }
+
     /// The mainland A-share ranges each resolve against their OWN exchange,
     /// and the exchange comes from the identity rather than from the digits.
     ///
@@ -2571,11 +2753,9 @@ mod tests {
         // A prefix that names no venue is refused rather than swallowed as
         // part of a bare name: pricing `SH:600519` as crypto `SH:600519`, or
         // as anything else, would be a number nobody asked for.
+        // `CN:600519` is deliberately NOT in this list — see
+        // [`a_stored_cn_holding_reads_back_and_is_refused_out_loud`].
         for bad in [
-            // `CN:` was a venue until the Shanghai/Shenzhen split; a stored
-            // `CN:600519` no longer parses, which is the registered
-            // silent-deletion gap, not an accident.
-            "CN:600519",
             "JP:7203",
             ":BTC",
             "BTC:",

@@ -87,7 +87,8 @@ for …" rather than an error.
 
 An asset is named either bare (`BTC`) or **venue-qualified**,
 `<VENUE>:<SYMBOL>`, over five venues: `CRYPTO`, `US`, `HK`, `SH` (Shanghai) and
-`SZ` (Shenzhen). Names are
+`SZ` (Shenzhen). (`CN:` parses too, but it names no exchange and is never
+priced — see *Known limits* below.) Names are
 trimmed and upper-cased, so `crypto:btc` and `CRYPTO:BTC` are one identity, and
 a prefix counts as a prefix only when the colon is there — `USNVDA` is a crypto
 name, not NVDA.
@@ -153,9 +154,17 @@ range itself fixes the currency — and everything else is refused out loud:
 | venue | priced | refused, with the reason said out loud |
 | --- | --- | --- |
 | `US` | any `gb_` symbol, in USD | — |
-| `HK` | one to five digits, padded to five, below `80000`, in HKD | `8xxxx` (renminbi counters, verified on `hk89988`) and `9xxxx` (refused as the conservative side of the same boundary) |
-| `SH` | `6xxxxx` (A shares and STAR), in CNY | `9xxxxx` B shares, and the fund, bond and index ranges |
-| `SZ` | `00xxxx` (main board) and `30xxxx` (ChiNext), in CNY | `2xxxxx` B shares, and the fund, bond and index ranges |
+| `HK` | one to five digits, padded to five, below `80000`, in HKD | `8xxxx` (renminbi counters, verified on `hk89988`) and `9xxxx` (every code sampled there — `hk90988`, `hk96618` — is one this source does not list, so refusing the range gives up no price it could have published) |
+| `SH` | `6xxxxx` (A shares and STAR) and `5xxxxx` (funds), in CNY | `9xxxxx` B shares, and the bond and index ranges |
+| `SZ` | `00xxxx` (main board), `30xxxx` (ChiNext) and `15xxxx` / `16xxxx` (funds), in CNY | `2xxxxx` B shares, and the bond and index ranges |
+
+The fund ranges are renminbi like the boards they sit on — the only
+non-renminbi board found on either exchange is the B-share one — and were read
+off the live endpoint on 2026-09-07: `SH:510300` (沪深300ETF华泰柏瑞) 4.635,
+`SH:563210` (专精特新ETF富国) 1.949, `SH:511990` (华宝添益) 99.999 and
+`SZ:159915` (创业板ETF) 3.338. Being in an allowed range is not a promise the
+source lists the code: `SZ:162201`, a LOF, answers with an empty row and comes
+back as *unknown* rather than as a currency refusal.
 
 The holdings table carries the venue as its own column rather than glued onto
 the name, so `US:W` and `CRYPTO:W` read as two distinguishable rows;
@@ -241,14 +250,18 @@ affected by this.
   a tick without a total contributes no history point. See *Currencies* above.
 * **A code whose quote currency the code does not fix is refused, not priced.**
   Shanghai and Shenzhen B shares, and Hong Kong's renminbi and US-dollar
-  counters, cannot be held here yet; nor can the mainland fund, bond and index
+  counters, cannot be held here yet; nor can the mainland bond and index
   ranges. The refusal names the reason. Reading the counter currency off the
   source is not possible — it does not publish one — so closing this means a
   second source or a checked-in table, which is not done.
-* **`CN:` is no longer a venue.** A holding recorded as `CN:600519` before the
-  Shanghai/Shenzhen split no longer parses, and the read path drops rows it
-  cannot parse and rewrites the document without them on the next `set`. Such a
-  holding has to be recorded again as `SH:600519` or `SZ:000001`.
+* **`CN:` is a migration path, not a venue.** A holding recorded as `CN:600519`
+  before the Shanghai/Shenzhen split still parses, still reads back and is
+  never priced: it comes back as a failure naming `SH:600519` and `SZ:600519`,
+  and the holding has to be recorded again as one of them. The prefix is kept
+  for what deleting it would do instead — the row would stop parsing, the read
+  path drops a row it cannot parse without saying so, and the next `set`
+  rewrites the whole document without it. A holding that visibly cannot be
+  priced is better than one that silently disappears.
 * **Stored history points do not record their currency**, so the history
   table's total column carries no unit. A series written before and after a
   portfolio changed the currency it totals in is two series plotted as one;
