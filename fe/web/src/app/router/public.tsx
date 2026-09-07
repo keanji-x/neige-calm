@@ -335,6 +335,18 @@ export function useConversationStore(
    * refresh took, or forever if it failed.
    */
   const [forgotten, setForgotten] = useState<ReadonlySet<string>>(() => new Set());
+  /*
+   * Emptied on every card change, because entry ids are unique per CARD and
+   * this hook serves whichever card `scope` currently names.
+   *
+   * Without it the set is a mask over the wrong queue: take back A/x, open B
+   * whose queue also holds an id x, and B's message is invisible; and B's page
+   * not listing x clears A's tombstone, so returning to A on a cached page
+   * resurrects a bubble the server has already deleted. Both were found by
+   * review, and both are the same mistake — a per-card fact stored where the
+   * card is a variable.
+   */
+  useEffect(() => { setForgotten(new Set()); }, [cardId]);
   const servedQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
   const pendingQueue = useMemo(
     () => (forgotten.size === 0
@@ -948,7 +960,14 @@ export function useConversationStore(
       /* `gone` is not a retirement: the entry left the queue because it
          drained, and the transcript row for it is on its way. Only a delete
          that actually happened means nothing more is coming. */
-      if (outcome.kind === 'done') retireQueuedEcho(entry.entry_id);
+      if (outcome.kind === 'done') {
+        retireQueuedEcho(entry.entry_id);
+        /* The same catch-up the take-back needs, for the same reason: until
+           the refetch lands, the cached page still lists an entry the server
+           has agreed is gone — so a confirmed delete left its bubble on
+           screen, still offering a pencil and a cross. */
+        forgetQueuedEntry(entry.entry_id);
+      }
       return outcome;
     });
 
@@ -1371,7 +1390,6 @@ function useConversationPanel(
   const [composerFocusFor, setComposerFocusFor] = useState<string | null>(null);
   const [resendConfirmation, setResendConfirmation] = useState<string | null>(null);
   const [composerDraft, setComposerDraft] = useState('');
-
   const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
   useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
   const scope: PlannerConversationScope | null = openRowId !== null
@@ -1394,6 +1412,11 @@ function useConversationPanel(
   const registry = useConversationRegistry();
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
+  /* Which conversation the composer on screen belongs to, readable from inside
+     a promise that started in a different one. See `onEcho` below. */
+  const openConversationId = useRef<string | null>(null);
+  openConversationId.current = open?.id ?? null;
+
 
   /*
    * The provider keeps independent drafts for other Tracks, but only this
@@ -2075,20 +2098,31 @@ function useConversationPanel(
                     onTakeBack={store.takeBackQueuedEntry}
                     onDelete={store.deleteQueuedEntry}
                     /*
-                     * The words go back to the conversation they came from, or
+                     * The words go into the conversation they came from, or
                      * nowhere.
                      *
-                     * This drawer is reused across conversations — same route,
-                     * same `<Drawer>` — so a DELETE issued in A can answer
-                     * while B is open, and `setComposerDraft` is B's. Without
-                     * this check A's message landed on top of whatever B's
-                     * reader had typed. The reader of A has lost the recovery,
-                     * which is the smaller wrong: they left, and nothing they
-                     * can see says otherwise.
+                     * `openConversationId` is a REF, and that is the whole
+                     * correctness of it: comparing against the `open.id` this
+                     * callback closed over compares A's id with A's id and
+                     * passes every time, which is what the first version of
+                     * this guard did — it read like a check and was one only
+                     * for a reader who did not ask what both sides were.
+                     *
+                     * In practice the echo now happens before any `await`, so
+                     * the ids agree by construction; this is the belt to that
+                     * bracing, and it is cheap.
                      */
                     onEcho={(from, text) => {
-                      if (from !== open.id) return;
+                      if (from !== openConversationId.current) return;
                       setComposerDraft(text);
+                    }}
+                    /* Only if the box still holds exactly what was put there.
+                       A reader who has typed since owns it, and clearing their
+                       words to tidy up after a refused delete would be the
+                       loss this ordering exists to avoid. */
+                    onWithdraw={(from, text) => {
+                      if (from !== openConversationId.current) return;
+                      setComposerDraft((current) => (current === text ? '' : current));
                     }}
                   />
                   <PlannerAttachmentDrawer attachments={attachments} />

@@ -27,6 +27,7 @@ function renderQueue(props: Partial<PendingQueueProps> = {}) {
   const onTakeBack = vi.fn<PendingQueueProps['onTakeBack']>(() => done);
   const onDelete = vi.fn<PendingQueueProps['onDelete']>(() => done);
   const onEcho = vi.fn<PendingQueueProps['onEcho']>();
+  const onWithdraw = vi.fn<PendingQueueProps['onWithdraw']>();
   const view = render(<PendingQueue
     entries={[entry()]}
     overflow={0}
@@ -36,9 +37,10 @@ function renderQueue(props: Partial<PendingQueueProps> = {}) {
     onTakeBack={onTakeBack}
     onDelete={onDelete}
     onEcho={onEcho}
+    onWithdraw={onWithdraw}
     {...props}
   />);
-  return { onTakeBack, onDelete, onEcho, ...view };
+  return { onTakeBack, onDelete, onEcho, onWithdraw, ...view };
 }
 
 function rows(): HTMLElement[] {
@@ -85,11 +87,25 @@ describe('PendingQueue', () => {
    * the queue and its words go to the composer, in that order, so the message
    * is never in both places at once.
    */
-  it('takes the message back and hands its words to the composer', async () => {
-    const { onTakeBack, onEcho, onDelete } = renderQueue();
+  it('hands the words over BEFORE it deletes, not after', async () => {
+    /*
+     * The ordering is the design. Delete-then-echo leaves an asynchronous gap
+     * in which the reader can type (the echo then overwrites it or is dropped)
+     * or leave for another conversation (the echo arrives in the wrong
+     * composer). Echo-first has no gap: the composer is empty when the pencil
+     * is offered, so the write is immediate and destroys nothing.
+     */
+    const order: string[] = [];
+    const onEcho = vi.fn<PendingQueueProps['onEcho']>(() => { order.push('echo'); });
+    const onTakeBack = vi.fn<PendingQueueProps['onTakeBack']>(() => {
+      order.push('delete');
+      return done;
+    });
+    const { onDelete } = renderQueue({ onEcho, onTakeBack });
     await userEvent.click(editButtons()[0]);
-    await waitFor(() => expect(onEcho).toHaveBeenCalledWith('card-1', 'look at the report'));
-    expect(onTakeBack).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onTakeBack).toHaveBeenCalledTimes(1));
+    expect(order).toEqual(['echo', 'delete']);
+    expect(onEcho).toHaveBeenCalledWith('card-1', 'look at the report');
     expect(onTakeBack.mock.calls[0]?.[0]?.entry_id).toBe('e1');
     /* A take-back is a delete of its own; it must not ALSO go through the
        delete button's path, which would be two writes for one press. */
@@ -101,24 +117,30 @@ describe('PendingQueue', () => {
    * wrong silently: echo the words after a REFUSED take-back and the message
    * is in the queue and in the composer, so sending it posts it twice.
    */
-  it('does not hand the words over when the take-back was refused', async () => {
-    const { onEcho } = renderQueue({
+  it('takes the words back out again when the message is still queued', async () => {
+    const { onWithdraw } = renderQueue({
       onTakeBack: vi.fn<PendingQueueProps['onTakeBack']>(
         () => Promise.resolve({ kind: 'stale', text: 'somebody else wrote this', rev: 7 }),
       ),
     });
     await userEvent.click(editButtons()[0]);
     await screen.findByText(/Nothing happened/);
-    expect(onEcho).not.toHaveBeenCalled();
+    /* Nothing happened to the entry, so a copy in the composer would be a
+       second copy of a message that is still going to be sent. */
+    await waitFor(() => expect(onWithdraw)
+      .toHaveBeenCalledWith('card-1', 'look at the report'));
   });
 
-  it('does not hand the words over when the message already left the queue', async () => {
-    const { onEcho } = renderQueue({
+  it('takes the words back out again when the message already left the queue', async () => {
+    const { onWithdraw } = renderQueue({
       onTakeBack: vi.fn<PendingQueueProps['onTakeBack']>(() => Promise.resolve({ kind: 'gone' })),
     });
     await userEvent.click(editButtons()[0]);
-    await screen.findByText(/Already sent/);
-    expect(onEcho).not.toHaveBeenCalled();
+    /* NOT "already sent": the same answer comes back when another actor
+       removed it, and the server does not say which happened. */
+    await screen.findByText(/no longer in the queue/);
+    await waitFor(() => expect(onWithdraw)
+      .toHaveBeenCalledWith('card-1', 'look at the report'));
   });
 
   /*
@@ -156,12 +178,12 @@ describe('PendingQueue', () => {
    * button was drawn. Start over an empty composer, type while the DELETE is
    * in flight, and the answer used to land on top of what had just been typed.
    */
-  it('does not overwrite words typed while the take-back was in flight', async () => {
+  it('cannot be overtaken by words typed while the take-back is in flight', async () => {
     let settle!: (outcome: PlannerQueueWriteOutcome) => void;
     const onTakeBack = vi.fn<PendingQueueProps['onTakeBack']>(
       () => new Promise((resolve) => { settle = resolve; }),
     );
-    const { onEcho, rerender } = renderQueue({ onTakeBack });
+    const { onEcho, onWithdraw, rerender } = renderQueue({ onTakeBack });
     await userEvent.click(editButtons()[0]);
     await waitFor(() => expect(onTakeBack).toHaveBeenCalledTimes(1));
 
@@ -169,11 +191,19 @@ describe('PendingQueue', () => {
     rerender(<PendingQueue
       entries={[entry()]} overflow={0} busy={false} composerBusy
       cardId="card-1" onTakeBack={onTakeBack} onDelete={vi.fn()} onEcho={onEcho}
+      onWithdraw={onWithdraw}
     />);
     settle({ kind: 'done' });
     await Promise.resolve();
     await Promise.resolve();
-    expect(onEcho).not.toHaveBeenCalled();
+    /*
+     * The words went in before the request did, so typing afterwards cannot
+     * race them — and nothing is withdrawn on `done`, so the message is in the
+     * box and out of the queue. The version this replaced discarded the words
+     * here and claimed a notice it never rendered.
+     */
+    expect(onEcho).toHaveBeenCalledTimes(1);
+    expect(onWithdraw).not.toHaveBeenCalled();
   });
 
   /*
@@ -269,16 +299,31 @@ describe('PendingQueue', () => {
    * the first and loses the message for the second, so it resolves toward the
    * recoverable error: hand them over, and say the queue may still hold it.
    */
-  it('hands the words back on an ambiguous failure, and says the queue may still hold it', async () => {
-    const { onEcho } = renderQueue({
+  it('keeps the words on an ambiguous failure, and says the queue may still hold it', async () => {
+    const { onEcho, onWithdraw } = renderQueue({
       onTakeBack: vi.fn<PendingQueueProps['onTakeBack']>(
         () => Promise.resolve({ kind: 'failed', message: 'the connection dropped.' }),
       ),
     });
     await userEvent.click(editButtons()[0]);
     await waitFor(() => expect(onEcho).toHaveBeenCalledWith('card-1', 'look at the report'));
+    expect(onWithdraw).not.toHaveBeenCalled();
     expect(await screen.findByText(/check the queue above before sending them again/))
       .toBeTruthy();
+  });
+
+  /* The cross hands nothing back, so its failure notice may not say it did.
+     One `noticeText` served both, and told the reader of a delete that their
+     words were "in the box" — a claim about a screen they are not looking at. */
+  it('does not tell a failed delete that its words are in the box', async () => {
+    renderQueue({
+      onDelete: vi.fn<PendingQueueProps['onDelete']>(
+        () => Promise.resolve({ kind: 'failed', message: 'the connection dropped.' }),
+      ),
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
+    expect(await screen.findByText(/the connection dropped/)).toBeTruthy();
+    expect(screen.queryByText(/in the box/)).toBeNull();
   });
 
   it('deletes without echoing anything', async () => {

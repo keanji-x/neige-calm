@@ -24,10 +24,23 @@
 //
 // ── Edit takes the message BACK; it does not edit it in place ─────────────
 //
-// The pencil deletes the entry and puts its words in the composer. That is the
-// whole of it, and the reason is that it leaves no state that has to be
-// explained: a message you are working on is in your composer, a message that
-// is waiting is in this strip, and nothing is ever in both. The version this
+// The pencil puts the words in the composer and THEN deletes the entry, and
+// that order is the whole design rather than an implementation detail.
+//
+// Delete-then-echo has an asynchronous gap between "the message is gone" and
+// "the words are back", and everything a person can do inside that gap is a
+// way to lose them: type something (the echo would overwrite it, or be
+// dropped, and either way one of the two texts is destroyed), or leave for
+// another conversation (the echo arrives in a composer that is no longer the
+// one it came from). Two review rounds found five distinct cells of that
+// matrix; the second round found them in the *fixes* for the first.
+//
+// Echo-first has no gap. The composer is empty when the pencil is offered —
+// that is enforced — so putting the words there is immediate and destroys
+// nothing, and it happens in the conversation the reader is looking at because
+// it happens before any `await`. If the delete is then refused, the words are
+// taken back out again (below), and the worst case is that a message is
+// briefly visible in two places, which the reader can see and undo. The version this
 // replaced edited in place through a compare-and-swap, which meant an open
 // editor, a revision to carry, a conflict to narrate when somebody else won
 // the race, and a "use their version" affordance to resolve it — five states
@@ -112,6 +125,17 @@ export type PendingQueueProps = Readonly<{
    * rule the attachment strip already runs on `generation`.
    */
   onEcho: (cardId: string, text: string) => void;
+  /**
+   * Take those words back out again, if they are still exactly the ones that
+   * were put in.
+   *
+   * Called when the delete was refused, so the message is still queued and the
+   * composer must not keep a second copy of it. "Still exactly the ones" is
+   * the caller's job: a reader who has typed since owns that box, and silently
+   * clearing what they wrote would be the loss this whole ordering exists to
+   * avoid.
+   */
+  onWithdraw: (cardId: string, text: string) => void;
   /** The conversation these entries belong to. See {@link onEcho}. */
   cardId: string;
 }>;
@@ -124,7 +148,13 @@ export type PendingQueueProps = Readonly<{
  * at that moment, and the refresh that would fix it is fire-and-forget and may
  * fail, so a retry that re-sends `entry.rev` is guaranteed to lose again.
  */
-type Refusal = Readonly<{ entryId: string; outcome: PlannerQueueWriteOutcome }>;
+type Refusal = Readonly<{
+  entryId: string;
+  outcome: PlannerQueueWriteOutcome;
+  /** Whether the refused write was the pencil, which leaves words in the box.
+   *  The cross leaves none, and its notice may not say otherwise. */
+  wordsKept: boolean;
+}>;
 
 /**
  * What a refusal says.
@@ -133,49 +163,57 @@ type Refusal = Readonly<{ entryId: string; outcome: PlannerQueueWriteOutcome }>;
  * sitting in the strip — there is no open editor left for a refusal to be
  * about, so there is no second wording and no "your text is still below".
  */
-function noticeText(outcome: PlannerQueueWriteOutcome): string | null {
+/**
+ * What the answer says about the words already sitting in the composer.
+ *
+ * `keep` — the entry is gone (`done`), or may be (`failed`: a transport
+ * failure cannot tell "the server refused" from "the server deleted it and the
+ * answer was lost coming back"). Keeping them is wrong for a refusal only in
+ * that the message is briefly in two places, which is visible and undoable;
+ * withdrawing them is wrong for a deletion in that the message is gone. **A
+ * duplicate you can see beats a message you cannot get back.**
+ *
+ * `withdraw` — the entry is definitely still going to be sent: `stale` means
+ * nothing happened to it, `gone` means it has already left the queue. Leaving
+ * the words in the box would invite sending the same message twice.
+ */
+function wordsAfter(outcome: PlannerQueueWriteOutcome): 'keep' | 'withdraw' {
+  return outcome.kind === 'done' || outcome.kind === 'failed' ? 'keep' : 'withdraw';
+}
+
+const IMAGES_REASON =
+  'This message carries images, and taking it back would return only the words. '
+  + 'Delete it and say it again, or leave it to send.';
+
+function noticeText(outcome: PlannerQueueWriteOutcome, wordsKept: boolean): string | null {
   if (outcome.kind === 'stale') {
     /* "as shown" is a promise about the bubble above this notice, and it is
        kept: a stale refusal carries the winner's text and the row renders THAT
-       from then on (`shownText`). It used to keep rendering the text this page
+       from then on (`text` below). It used to keep rendering the text this page
        was read at, so the sentence pointed at words the server had already
        replaced — and a retry then deleted the new message while handing back
        the old one. */
     return 'This message changed before your change could be applied, so nothing '
       + 'happened to it. It now reads as shown; try again if you still want to.';
   }
-  if (outcome.kind === 'gone') return 'This message already left the queue.';
+  if (outcome.kind === 'gone') {
+    /* NOT "already sent": another actor deleting it produces this same answer,
+       and the server does not say which happened. All that is known is that
+       the queue no longer has it. */
+    return 'This message is no longer in the queue — it has either been sent or '
+      + 'been removed somewhere else.';
+  }
   if (outcome.kind === 'failed') {
-    /* The ambiguous one — see `echoOn`. Say what is uncertain rather than
-       implying the message is safely where it was. */
-    return `${outcome.message} Your words are back in the box; check the queue `
-      + 'above before sending them again.';
+    /* Only the pencil leaves words behind, and only it may say so. The cross
+       hands nothing back, and telling its reader their words are "in the box"
+       would be describing a screen they are not looking at. */
+    return wordsKept
+      ? `${outcome.message} Your words are in the box; check the queue above `
+        + 'before sending them again, in case the message is still there.'
+      : outcome.message;
   }
   return null;
 }
-
-/**
- * Whether a take-back's outcome licenses handing the words to the composer.
- *
- * `done` obviously. `failed` too, and that is the decision worth writing down:
- * a transport failure cannot distinguish "the server refused" from "the server
- * deleted it and the answer was lost on the way back". Withholding the words
- * is right for the first and loses the message outright for the second.
- * Handing them over is wrong for the first only in that the message is briefly
- * in two places — which the reader can see, and fix with the cross. **A
- * duplicate you can see beats a message you cannot get back**, so the
- * ambiguous outcome resolves toward the recoverable error.
- *
- * `stale` and `gone` are not ambiguous: the entry is definitely still queued,
- * or definitely already sent. Echoing either would duplicate a live message.
- */
-function echoOn(outcome: PlannerQueueWriteOutcome): boolean {
-  return outcome.kind === 'done' || outcome.kind === 'failed';
-}
-
-const IMAGES_REASON =
-  'This message carries images, and taking it back would return only the words. '
-  + 'Delete it and say it again, or leave it to send.';
 
 function noticeHeading(outcome: PlannerQueueWriteOutcome): string {
   if (outcome.kind === 'stale') return 'Nothing happened';
@@ -198,7 +236,8 @@ const COMPOSER_BUSY_REASON =
   'Send or clear what you are writing first — taking this back would replace it.';
 
 export function PendingQueue({
-  entries, overflow, busy, composerBusy, cardId, onTakeBack, onDelete, onEcho,
+  entries, overflow, busy, composerBusy, cardId,
+  onTakeBack, onDelete, onEcho, onWithdraw,
 }: PendingQueueProps) {
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   /*
@@ -234,8 +273,10 @@ export function PendingQueue({
 
   if (entries.length === 0 && overflow === 0) return null;
 
-  const settle = (entryId: string, outcome: PlannerQueueWriteOutcome): void => {
-    setRefusal(outcome.kind === 'done' ? null : { entryId, outcome });
+  const settle = (
+    entryId: string, outcome: PlannerQueueWriteOutcome, wordsKept: boolean,
+  ): void => {
+    setRefusal(outcome.kind === 'done' ? null : { entryId, outcome, wordsKept });
   };
 
   const blocked = busy || writing;
@@ -244,19 +285,22 @@ export function PendingQueue({
       <VStack gap={1}>
         <List className={styles.list}>
           {entries.map((entry) => {
-            const shown = refusal?.entryId === entry.entry_id ? refusal.outcome : null;
-            const noticeLine = shown === null ? null : noticeText(shown);
+            const shown = refusal?.entryId === entry.entry_id ? refusal : null;
+            const noticeLine = shown === null
+              ? null
+              : noticeText(shown.outcome, shown.wordsKept);
             /* The revision the next write carries: the one the server reported
                if it has spoken about this entry, otherwise the one this page
                was read at. Without this a refused write retried against a
                revision it already knew was stale, forever. */
-            const rev = shown?.kind === 'stale' ? shown.rev : entry.rev;
+            const refused = shown?.outcome ?? null;
+            const rev = refused?.kind === 'stale' ? refused.rev : entry.rev;
             /* And the TEXT that goes with that revision. A stale refusal is
                the server telling us what the entry says now; from that moment
                the row shows the winner's words and a retry hands those back.
                Reading `entry.text` here is how a retry deleted the new message
                and returned the old one. */
-            const text = shown?.kind === 'stale' ? shown.text : entry.text;
+            const text = refused?.kind === 'stale' ? refused.text : entry.text;
             const hasImages = entry.attachments.length > 0;
             /* Only the two refusals a reader can act on get a tooltip; the
                button's own label already says what it does. */
@@ -288,19 +332,16 @@ export function PendingQueue({
                     onClick={() => { setWriting(true); }}
                     clickAction={async () => {
                       try {
-                        /* Re-asked here, not read off the render that drew the
-                           button: the composer may have gained words since. */
+                        /* Re-asked rather than read off the render that drew
+                           the button — but asked BEFORE anything is awaited, so
+                           the answer cannot go stale between the check and the
+                           write. That ordering is the point; see the note at
+                           the top of this file. */
                         if (composerHasWords.current || hasImages) return;
-                        const outcome = await onTakeBack({ ...entry, text, rev });
-                        settle(entry.entry_id, outcome);
-                        if (!echoOn(outcome)) return;
-                        /* Asked a second time, for the window the request was
-                           open. Refusing here leaves the words unrecovered
-                           rather than destroying what was typed instead — and
-                           the entry is gone, so the reader is told by the
-                           notice rather than silently. */
-                        if (composerHasWords.current) return;
                         onEcho(cardId, text);
+                        const outcome = await onTakeBack({ ...entry, text, rev });
+                        settle(entry.entry_id, outcome, wordsAfter(outcome) === 'keep');
+                        if (wordsAfter(outcome) === 'withdraw') onWithdraw(cardId, text);
                       } finally {
                         setWriting(false);
                       }
@@ -315,18 +356,18 @@ export function PendingQueue({
                     onClick={() => { setWriting(true); }}
                     clickAction={async () => {
                       try {
-                        settle(entry.entry_id, await onDelete({ ...entry, text, rev }));
+                        settle(entry.entry_id, await onDelete({ ...entry, text, rev }), false);
                       } finally {
                         setWriting(false);
                       }
                     }}
                   />
                 </div>
-                {noticeLine !== null && shown !== null && (
+                {noticeLine !== null && refused !== null && (
                   <div className={styles.notice} data-nc-pending-entry-notice="">
                     <Banner
-                      status={noticeStatus(shown)}
-                      title={noticeHeading(shown)}
+                      status={noticeStatus(refused)}
+                      title={noticeHeading(refused)}
                       description={noticeLine}
                     />
                   </div>

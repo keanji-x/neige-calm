@@ -4935,7 +4935,7 @@
     remains recovery evidence rather than an acknowledged queue entry.
     The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
     stays `migration: pending` against `web/e2e`.
-  source: fe/web/src/app/router/public.tsx:519-542,684-686,745-752,948-957
+  source: fe/web/src/app/router/public.tsx:531-554,696-698,757-764,960-972
   # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
   # the composer stays open, and whether a second message can be sent. The predicate itself is
   # tabulated a second time at the platform-independent tier
