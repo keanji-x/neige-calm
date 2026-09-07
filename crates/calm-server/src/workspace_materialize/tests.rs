@@ -1573,3 +1573,157 @@ fn a_concurrent_claim_cannot_make_its_peer_publish_an_unmarked_workspace() {
         "and the published workspace materializes into a real repository"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1387 — attached admission refuses a repository whose `neige/` branch
+// namespace is already occupied by a branch literally named `neige`.
+// ---------------------------------------------------------------------------
+
+/// A repository shaped like a user's own: `main`, one commit. `git worktree
+/// add` on an unborn HEAD fails for a *different* reason, so the commit is load
+/// bearing wherever these repositories are provisioned into.
+fn user_repo(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec![
+            "-c",
+            "user.name=neige-test",
+            "-c",
+            "user.email=neige-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "seed",
+        ],
+    ] {
+        let out = super::neige_git_command()
+            .arg("-C")
+            .arg(dir)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+fn git_in(dir: &Path, args: &[&str]) {
+    let out = super::neige_git_command()
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The mechanical tie between the constant the check reads and the branch name
+/// production actually creates. Renaming one side without the other reddens
+/// here instead of silently disarming the check.
+#[test]
+fn attached_admission_names_the_ref_the_slice_branch_lives_under() {
+    let branch = crate::operation::workspace_lease::workspace_slice_branch_for(
+        "track0000000000000000000000000001",
+        "card0000000000000000000000000001",
+    )
+    .unwrap();
+    let slice_ref = format!("refs/heads/{branch}");
+    assert!(
+        slice_ref.starts_with(&format!("{}/", super::SLICE_BRANCH_NAMESPACE_REF)),
+        "the admission check guards `{}`, but a worker's slice branch resolves \
+         to `{slice_ref}` — the check is watching a ref the slice branch does \
+         not live under, so it can never prevent the conflict it exists for",
+        super::SLICE_BRANCH_NAMESPACE_REF
+    );
+}
+
+/// The refusal, and what it has to say. Asserting on the error rather than on
+/// "an error": a 400 that does not name the ref leaves the user with nothing to
+/// act on, which is most of what #1387 is about.
+#[test]
+fn attaching_a_repo_holding_refs_heads_neige_is_refused_by_name() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path().join("users-own-repo");
+    user_repo(&repo);
+    git_in(&repo, &["branch", "neige"]);
+
+    let err = super::validate_attached_workspace(&repo)
+        .expect_err("a repository holding `refs/heads/neige` must be refused");
+    assert!(
+        matches!(err, crate::error::CalmError::BadRequest(_)),
+        "naming a directory that cannot host slice branches is the caller's \
+         mistake, not a server failure: {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains(super::SLICE_BRANCH_NAMESPACE_REF),
+        "the refusal must name the offending ref: {msg}"
+    );
+    assert!(
+        msg.contains("neige/<track>/<card>"),
+        "the refusal must name what the ref collides with: {msg}"
+    );
+}
+
+/// The other direction, and the reason the check is the *exact* ref rather than
+/// the whole prefix: a repository Neige has already worked in carries
+/// `neige/<track>/<card>` branches, and refusing to re-attach it would reject a
+/// directory nothing can actually go wrong with.
+#[test]
+fn a_repo_carrying_old_slice_branches_is_still_attachable() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path().join("users-own-repo");
+    user_repo(&repo);
+    git_in(
+        &repo,
+        &[
+            "branch",
+            "neige/track0000000000000000000000000009/card0000000000000000000000000009",
+        ],
+    );
+
+    super::validate_attached_workspace(&repo).expect(
+        "leftover slice branches occupy `refs/heads/neige/…` as a directory, \
+         which is what a new slice branch needs — refusing them would reject \
+         every repository a worker has already run in",
+    );
+}
+
+/// Fail-closed: `show-ref` answering neither 0 nor 1 is an unanswered question,
+/// and an unanswered question is refused.
+///
+/// Reached directly rather than through [`super::validate_attached_workspace`],
+/// whose `rev-parse` gate rejects a non-repository first. That ordering is why
+/// this arm is defensive in production (a repository would have to vanish
+/// between the two commands) — which is exactly why it needs a test of its own
+/// rather than an argument.
+#[test]
+fn an_unanswerable_show_ref_is_refused() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let not_a_repo = tmp.path().join("plain-directory");
+    std::fs::create_dir_all(&not_a_repo).unwrap();
+
+    let err = super::ensure_slice_branch_namespace_is_free(&not_a_repo)
+        .expect_err("an unanswered `show-ref` must not be read as `absent`");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("cannot tell whether"),
+        "the refusal must say the question went unanswered, not claim a \
+         conflict that was never observed: {msg}"
+    );
+}

@@ -608,3 +608,172 @@ async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
     // it inside the bar is the same repair a second worker would drive.
     assert_workspace_is_usable_by_the_first_worker(&b, &track_id).await;
 }
+
+// ---------------------------------------------------------------------------
+// #1387 — the *attached* twin of the `refs/heads/neige` conflict above.
+//
+// `a_materialized_workspace_can_pass_the_git_and_head_checks_and_still_fail_the_first_worker`
+// pins the managed shape, whose `refs/heads/neige` is production-unreachable:
+// materialization runs `git init -c init.defaultBranch=main` and the only
+// thing the server ever creates under `neige/` is a slice branch. An
+// **attached** workspace is the user's own repository, where a branch named
+// `neige` is an ordinary thing to have — and the derivation that trips over it
+// (`workspace_slice_branch_for`) is shared: `prepare_workspace_lease_target_tx`
+// skips materialization for attached tracks but derives the same
+// `neige/<track>/<card>`.
+// ---------------------------------------------------------------------------
+
+/// Build a repository shaped like a user's own — a `main` branch with one
+/// commit — in a directory the server neither creates nor owns.
+///
+/// A commit is required, not decoration: `git worktree add` on a repository
+/// with an unborn HEAD fails with `not a valid object name: 'HEAD'`, which is a
+/// *different* failure from the ref conflict these cases are about and would
+/// let them pass vacuously.
+fn init_user_repo(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    run_git(dir, &["init", "-b", "main"]);
+    run_git(
+        dir,
+        &[
+            "-c",
+            "user.name=neige-test",
+            "-c",
+            "user.email=neige-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "seed",
+        ],
+    );
+}
+
+fn run_git(dir: &std::path::Path, args: &[&str]) {
+    let output = calm_server::test_seams::neige_git_command_for_test()
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("run git {args:?} in {dir:?}: {e}"));
+    assert!(
+        output.status.success(),
+        "git {args:?} in {dir:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// #1387 — the admission check. An attached directory whose repository already
+/// holds a branch named `neige` is refused at the moment the user names it,
+/// with an error that says which ref is in the way.
+///
+/// Before `ensure_slice_branch_namespace_is_free` this create returned 201 and
+/// the failure surfaced only when the first worker ran — measured on this exact
+/// fixture, as `internal: git worktree add failed …: cannot lock ref
+/// 'refs/heads/neige/<track>/<card>': 'refs/heads/neige' exists`.
+///
+/// The assertions name the ref rather than the prose: git's wording is
+/// localized, `refs/heads/neige` is not.
+#[tokio::test]
+async fn attaching_a_repo_that_already_has_a_neige_branch_is_refused() {
+    let b = boot().await;
+    let tmp = TempDir::new().unwrap();
+    let user_repo = tmp.path().join("users-own-repo");
+    init_user_repo(&user_repo);
+    run_git(&user_repo, &["branch", "neige"]);
+
+    let (status, body) = post(
+        b.app.clone(),
+        "/api/tracks",
+        json!({
+            "area_id": b.area_id,
+            "title": "attached-neige",
+            "cwd": user_repo.to_string_lossy(),
+            "attach_folder": true,
+            "theme": theme(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a repository holding `refs/heads/neige` can never host a \
+         `neige/<track>/<card>` slice branch, so accepting it only defers the \
+         failure to the first worker (#1387); body={body}"
+    );
+    assert!(
+        body.contains("refs/heads/neige"),
+        "the refusal must name the offending ref, or the user cannot act on \
+         it: {body}"
+    );
+    assert!(
+        body.contains("neige/<track>/<card>"),
+        "the refusal must say what the ref collides with: {body}"
+    );
+}
+
+/// #1387 — a repository that grows a `neige` branch *after* it was attached
+/// still kills the first worker. This is the mechanism the admission check
+/// above exists to move earlier, pinned on its own so that weakening the check
+/// cannot quietly take the evidence with it.
+///
+/// It is also the honest statement of what the check does *not* cover: the
+/// repository is the user's, and nothing stops them creating that branch a
+/// minute after attaching. Admission is a point-in-time answer.
+#[tokio::test]
+async fn a_neige_branch_created_after_attach_still_blocks_the_first_worker() {
+    let b = boot().await;
+    let tmp = TempDir::new().unwrap();
+    let user_repo = tmp.path().join("users-own-repo");
+    init_user_repo(&user_repo);
+
+    let (status, body) = post(
+        b.app.clone(),
+        "/api/tracks",
+        json!({
+            "area_id": b.area_id,
+            "title": "attached-clean",
+            "cwd": user_repo.to_string_lossy(),
+            "attach_folder": true,
+            "theme": theme(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "a repository with no `neige` branch must still be attachable — if \
+         this is a 400 the admission check rejects the ordinary case; body={body}"
+    );
+    let track: Value = serde_json::from_str(&body).unwrap();
+    let track_id = track["id"].as_str().unwrap().to_string();
+
+    // The construction, after admission has already answered.
+    run_git(&user_repo, &["branch", "neige"]);
+
+    let err = calm_server::test_seams::provision_workspace_lease_for_test(
+        b.repo.pool(),
+        &track_id,
+        CARD_ID,
+        &b.workspace_root,
+    )
+    .await
+    .expect_err(
+        "an attached repository whose refs include `refs/heads/neige` must not \
+         provision a `neige/<track>/<card>` worktree — if this now succeeds, \
+         git changed its ref-namespace rules and #1387's premise is stale",
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("git worktree add") && msg.contains("refs/heads/neige'"),
+        "the failure must be the `refs/heads/neige` file/directory conflict, \
+         not some other error that would make this case pass vacuously: {msg}"
+    );
+    assert!(
+        msg.contains(&format!("refs/heads/neige/{track_id}/{CARD_ID}")),
+        "the blocked ref must be this worker's slice branch: {msg}"
+    );
+}
