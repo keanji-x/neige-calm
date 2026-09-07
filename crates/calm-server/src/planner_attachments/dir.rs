@@ -1,5 +1,15 @@
-//! The only place in this module that touches a filesystem, and the reason it
-//! exists is that three review rounds of fixing call sites did not work.
+//! Where this module's own filesystem calls live, and the reason it exists is
+//! that three review rounds of fixing call sites did not work.
+//!
+//! "Its own" is the exact claim, and the exception is named rather than left
+//! for the next auditor to find: [`super::store::store_upload`] calls
+//! `operation::workspace_lease::ensure_git_exclude_entry`, which resolves
+//! `<repo_root>/.git/info/exclude` with `read_to_string`, `create_dir_all` and
+//! `OpenOptions::open` under no `RESOLVE_*` flags at all. It is shared with
+//! the worktree provisioner, it predates this module, and it writes outside
+//! the attachment subtree — so it is not changed here — but "`dir` is the only
+//! file that touches a filesystem" would be false, and false in the direction
+//! that stops somebody looking.
 //!
 //! # What kept going wrong
 //!
@@ -31,8 +41,10 @@
 //! It makes the unguarded operation unexpressable rather than merely absent.
 //!
 //! * A caller gets [`CardDirs`], which holds two open directory descriptors.
-//!   There is no accessor that yields a `Path`, a `PathBuf` or a `RawFd`, so a
-//!   caller cannot join anything onto them or hand them to `std::fs`.
+//!   Nothing it exposes yields a `Path` or a `PathBuf`, so a caller cannot
+//!   join anything onto them. The one accessor that yields a descriptor at all
+//!   — [`DirFd::borrow`] — is `pub(crate)`, so the reach of a `BorrowedFd`
+//!   (and of the `as_raw_fd` one call past it) stops at this crate.
 //! * Every operation takes a descriptor plus a [`Name`] — a validated single
 //!   component with no `/`, no `.`, no `..` and no interior NUL. The syscalls
 //!   underneath (`openat` with `O_EXCL | O_NOFOLLOW`, `renameat`, `unlinkat`,
@@ -58,9 +70,11 @@
 //! checked every call site", which has now been wrong three times.
 //!
 //! **What the grep cannot see**, said plainly rather than left to be
-//! discovered: it matches names. Code that reached the same syscalls through
-//! an alias, a re-export under another name, or raw `libc` would not be
-//! matched. The banned list therefore includes the module prefixes
+//! discovered: it matches names, in THIS module's files. Code that reached the
+//! same syscalls through an alias, a re-export under another name, or raw
+//! `libc` would not be matched — and neither is a call to a helper in another
+//! module that resolves a path itself, which is exactly what
+//! `ensure_git_exclude_entry` above is. The banned list therefore includes the module prefixes
 //! (`std::fs`, `tokio::fs`, `libc::`) and the `use` forms that would bring
 //! them in unqualified, which is what closes the ordinary ways of writing it;
 //! a deliberate rename is out of its reach and is not something it claims to
@@ -196,12 +210,16 @@ mod sealed {
 /// Read-only operations are the same for either directory; the write and
 /// delete ones are not, and name the concrete type instead.
 ///
-/// **Sealed.** The supertrait is private, so the only implementors are the two
-/// in this file. That is what stops a later slice adding a third directory
-/// type that the read side would accept — and, more to the point, keeps the
-/// set of things a descriptor can be closed over.
-pub trait DirFd: sealed::Sealed {
-    #[doc(hidden)]
+/// **Sealed, and `pub(crate)`.** Two separate restrictions, closing two
+/// separate holes. The private supertrait stops a later slice adding a third
+/// directory type the read side would accept. The crate-private visibility is
+/// what stops [`borrow`](DirFd::borrow) being an accessor that hands a
+/// descriptor to anybody: it returns a `BorrowedFd`, and `as_raw_fd` on that
+/// is one call from a `RawFd` that `std::fs` will take. `#[doc(hidden)]` was
+/// what stood here, and hiding a method from rustdoc is not privacy — an
+/// external crate compiled `bound.borrow().as_raw_fd()`, which is the same
+/// escape hatch `BoundDir::path()` was, one call further away.
+pub(crate) trait DirFd: sealed::Sealed {
     fn borrow(&self) -> BorrowedFd<'_>;
 }
 
@@ -458,7 +476,7 @@ pub fn sync_bound(bound: &BoundFd) -> std::io::Result<()> {
 /// caller gets nothing: a filesystem that will not answer means the sizes and
 /// ages here are unknown, and both callers must treat an unknown as a reason
 /// to keep bytes rather than to spend or delete them.
-pub fn regular_entries<D: DirFd>(dir: &D) -> std::io::Result<Vec<Entry>> {
+pub(crate) fn regular_entries<D: DirFd>(dir: &D) -> std::io::Result<Vec<Entry>> {
     use nix::fcntl::AtFlags;
     use nix::sys::stat::fstatat;
 

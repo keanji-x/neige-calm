@@ -382,12 +382,12 @@ fn map_body_error(error: &(dyn std::error::Error + 'static)) -> CalmError {
 ///
 /// Two consequences, both deliberate:
 ///
-/// * `Drop` cannot await, so the unlink is a blocking `std::fs::remove_file`.
-///   A guarded `tokio::runtime::Handle::try_current()` + `spawn_blocking` would
-///   also work whenever a runtime exists, so this is a choice and not a
-///   constraint: one `unlink(2)` on a local file is cheaper than a task, and it
-///   is exactly what the `abandon` method it replaced already did on the same
-///   threads.
+/// * `Drop` cannot await, so the unlink is blocking: a direct
+///   [`dir::unlink_staged`], which is `unlinkat` against `staging/`'s own
+///   descriptor. A guarded `tokio::runtime::Handle::try_current()` +
+///   `spawn_blocking` would also work whenever a runtime exists, so this is a
+///   choice and not a constraint: one `unlinkat(2)` on a local file is cheaper
+///   than a task.
 /// * once [`OpenPart::finish`] has renamed the file, `published` is set and the
 ///   destructor does nothing. Without it a late destructor would unlink a name
 ///   that a later upload could legitimately have recreated.

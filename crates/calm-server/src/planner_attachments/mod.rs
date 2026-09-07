@@ -361,8 +361,9 @@ pub async fn open_attachment(
 /// over. Anything with write access to the workspace can create one, and if a
 /// single planted entry made this function `Err`, every later upload on that
 /// card would be refused forever — a latch, not a budget. The stat is
-/// `symlink_metadata`, which describes a dangling link instead of failing on
-/// it, so that classification is available at all.
+/// [`dir::regular_entries`]' `fstatat` with `AT_SYMLINK_NOFOLLOW`, which
+/// describes a link rather than following it — and describes a DANGLING one
+/// instead of failing on it, so that classification is available at all.
 pub fn used_bytes(dirs: &dir::CardDirs) -> Result<u64> {
     Ok(directory_bytes(dirs.staging())? + directory_bytes(dirs.bound())?)
 }
