@@ -78,6 +78,9 @@ async fn completed_file_exact_bytes_scope_and_card_deletion() {
         "empty.txt",
         "limit.bin",
         "large.bin",
+        "./result.txt",
+        "nested/./报告 🧊.txt",
+        "/workspace/./blob.bin",
     ];
     let (mut fx, task, _, output) = completed_files(&refs).await;
     for (index, name, expected) in [
@@ -85,6 +88,9 @@ async fn completed_file_exact_bytes_scope_and_card_deletion() {
         (1, "报告 🧊.txt", "<script>hello</script> 雪\n".as_bytes()),
         (2, "blob.bin", [0, 255, 128, 1].as_slice()),
         (3, "empty.txt", b"".as_slice()),
+        (6, "result.txt", b"42\n".as_slice()),
+        (7, "报告 🧊.txt", "<script>hello</script> 雪\n".as_bytes()),
+        (8, "blob.bin", [0, 255, 128, 1].as_slice()),
     ] {
         let value = file(&fx, &task, index, StatusCode::OK).await;
         assert_eq!(
@@ -108,7 +114,7 @@ async fn completed_file_exact_bytes_scope_and_card_deletion() {
         8 * 1024 * 1024
     );
     file(&fx, &task, 5, StatusCode::PAYLOAD_TOO_LARGE).await;
-    file(&fx, &task, 6, StatusCode::NOT_FOUND).await;
+    file(&fx, &task, 9, StatusCode::NOT_FOUND).await;
     let path = artifact_route(&fx, &task, 0);
     assert_eq!(
         get(&fx, &path, "user", false).await.0,
@@ -160,7 +166,7 @@ async fn completed_file_exact_bytes_scope_and_card_deletion() {
 async fn file_reference_and_filesystem_escape_refused() {
     let refs = [
         "../result.txt",
-        "./result.txt",
+        "./.codex/secret",
         "nested//x",
         "/etc/passwd",
         "https://example.test/a",

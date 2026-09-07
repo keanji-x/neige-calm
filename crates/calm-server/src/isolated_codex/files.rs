@@ -62,6 +62,7 @@ pub(crate) async fn snapshot_tx(
 }
 
 pub(crate) fn relative_reference(reference: &str) -> Result<String> {
+    let invalid = || CalmError::BadRequest("Unsupported reported task file reference.".into());
     let relative = reference.strip_prefix("/workspace/").unwrap_or(reference);
     if relative.is_empty()
         || relative.starts_with('/')
@@ -69,13 +70,19 @@ pub(crate) fn relative_reference(reference: &str) -> Result<String> {
         || relative.chars().any(char::is_control)
         || relative
             .split('/')
-            .any(|segment| segment.is_empty() || matches!(segment, "." | ".." | ".codex"))
+            .any(|segment| segment.is_empty() || segment == "..")
     {
-        return Err(CalmError::BadRequest(
-            "Unsupported reported task file reference.".into(),
-        ));
+        return Err(invalid());
     }
-    Ok(relative.to_string())
+    let normalized = relative
+        .split('/')
+        .filter(|segment| *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    if normalized.is_empty() || normalized.split('/').any(|segment| segment == ".codex") {
+        return Err(invalid());
+    }
+    Ok(normalized)
 }
 
 impl FileSnapshot {
