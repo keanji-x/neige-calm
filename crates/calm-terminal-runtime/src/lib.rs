@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+mod client;
 mod readiness;
+pub use client::{CreateError, RuntimeClient, TerminalSession, TerminalSpec};
 
 /// Configuration supplied by the owning application, never by a model tool.
 /// The socket's parent must already be a private directory owned by this user.
@@ -54,7 +56,7 @@ impl RuntimeLaunch {
 }
 
 /// Connect to exactly this runtime. Never discovers or starts a global daemon.
-pub async fn connect(socket: &Path, timeout: Duration) -> anyhow::Result<rmux_sdk::Rmux> {
+pub async fn connect(socket: &Path, timeout: Duration) -> anyhow::Result<RuntimeClient> {
     validate_socket_parent(socket)?;
     tokio::time::timeout(timeout, async {
         let endpoint = socket.to_owned();
@@ -62,11 +64,12 @@ pub async fn connect(socket: &Path, timeout: Duration) -> anyhow::Result<rmux_sd
         // Use the upstream typed client to observe readiness without invoking
         // SDK connect_or_start(), which could create a replacement process.
         tokio::task::spawn_blocking(move || readiness::wait(&endpoint, timeout)).await??;
-        Ok(rmux_sdk::Rmux::builder()
+        let sdk = rmux_sdk::Rmux::builder()
             .unix_socket(socket)
             .default_timeout(timeout)
             .connect()
-            .await?)
+            .await?;
+        Ok(RuntimeClient::new(socket.to_owned(), timeout, sdk))
     })
     .await?
 }

@@ -8,6 +8,13 @@ carry its selected license notices when this binary is added to the release.
 `RuntimeLaunch::command` is the application launch boundary: explicit executable,
 socket, working directory, HOME, PATH and locale; no inherited credentials or
 implicit rmux configuration. `connect` only connects to the supplied socket.
+It returns a constrained `RuntimeClient`, not the raw SDK create/respawn surface.
+`TerminalSpec.environment` supplies the complete invoking-client environment
+through RMUX's typed request. Unix SDK creation otherwise reads the requester's
+`/proc` environment, even when the daemon itself was launched with `env_clear`.
+Creation timeouts have an explicit `OutcomeUnknown` result: an already queued
+blocking request may still create the pane and must be reconciled by its name.
+The owning application must not blindly retry or dispose of its workspace.
 The socket parent must be an existing private owned directory. The host leases
 a lock file and refuses existing socket paths; stale endpoint recovery requires
 an explicit future ownership/recovery protocol, never an automatic unlink.
@@ -29,3 +36,5 @@ Acceptance exercises the built host and real shell through public SDK calls:
 create, input, observe, reconnect without replacement, retained exit information,
 shutdown, private endpoint ownership and launch-environment isolation. No real
 model is used. Next slices must cover Neige's operation and persistence fences.
+The runtime client does not yet certify persisted handles across daemon restarts;
+Neige's backend identity and generation checks belong to the next slice.

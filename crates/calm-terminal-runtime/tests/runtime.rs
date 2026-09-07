@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::time::Duration;
 
-use calm_terminal_runtime::{RuntimeLaunch, connect};
-use rmux_sdk::{EnsureSession, PaneRecoveryEvent, Rmux, SessionName, TerminalSizeSpec};
+use calm_terminal_runtime::{RuntimeClient, RuntimeLaunch, TerminalSpec, connect};
+use rmux_sdk::PaneRecoveryEvent;
 use tempfile::TempDir;
 
 const BUDGET: Duration = Duration::from_secs(5);
@@ -34,8 +34,23 @@ fn launch(root: &TempDir) -> RuntimeLaunch {
     }
 }
 
+fn terminal_spec(root: &std::path::Path, name: &str, script: &str) -> TerminalSpec {
+    TerminalSpec {
+        name: name.into(),
+        argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
+        cwd: root.to_owned(),
+        cols: 80,
+        rows: 24,
+        environment: std::collections::BTreeMap::from([
+            ("HOME".into(), root.to_str().unwrap().into()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("LANG".into(), "C.UTF-8".into()),
+        ]),
+    }
+}
+
 impl Host {
-    async fn start(root: TempDir) -> anyhow::Result<(Self, Rmux)> {
+    async fn start(root: TempDir) -> anyhow::Result<(Self, RuntimeClient)> {
         let config = launch(&root);
         let log = std::fs::File::create(root.path().join("runtime.log"))?;
         let child = config
@@ -67,7 +82,7 @@ impl Host {
         Ok((host, client))
     }
 
-    async fn shutdown(&mut self, client: Rmux) -> anyhow::Result<()> {
+    async fn shutdown(&mut self, client: RuntimeClient) -> anyhow::Result<()> {
         tokio::time::timeout(BUDGET, client.shutdown()).await??;
         let status = tokio::time::timeout(BUDGET, async {
             loop {
@@ -102,22 +117,19 @@ impl Drop for Host {
 async fn runtime_shell_round_trip_reconnect_and_exit() -> anyhow::Result<()> {
     let (mut host, client) = Host::start(private_root()?).await?;
     let create = || {
-        EnsureSession::try_named("terminal-1").unwrap().create_only().detached(true)
-        .size(TerminalSizeSpec::new(80, 24)).argv([
-            "/bin/sh", "-c",
+        terminal_spec(
+            host.root.path(),
+            "terminal-1",
             "printf 'ready\\n'; IFS= read -r line; printf 'received:%s\\n' \"$line\"; IFS= read -r finish; printf 'last-line\\n'; exit 7",
-        ])
+        )
     };
-    let session = client.ensure_session(create()).await?;
+    let pane = client.create(create()).await?;
     assert!(
-        client.ensure_session(create()).await.is_err(),
+        client.create(create()).await.is_err(),
         "create-only must not reuse a session"
     );
-    let pane = session.pane(0, 0);
     pane.wait_for_text("ready").await?;
-    let mut info = pane.info().await?;
-    assert_eq!(info.panes.len(), 1);
-    let identity = info.panes.remove(0);
+    let identity = pane.info().await?;
     pane.send_text("中文\n").await?;
     pane.wait_for_text("received:中文").await?;
     let mut recovery = pane.recover_output().await?;
@@ -127,15 +139,11 @@ async fn runtime_shell_round_trip_reconnect_and_exit() -> anyhow::Result<()> {
     );
     drop(recovery);
     drop(pane);
-    drop(session);
     drop(client);
 
     let client = connect(&host.socket, BUDGET).await?;
-    let session = client.session(SessionName::new("terminal-1")?).await?;
-    let pane = session.pane_by_id(identity.id).await?;
-    let mut info = pane.info().await?;
-    assert_eq!(info.panes.len(), 1);
-    let reconnected = info.panes.remove(0);
+    let pane = client.attach_existing("terminal-1").await?;
+    let reconnected = pane.info().await?;
     assert_eq!(reconnected.id, identity.id);
     assert_eq!(reconnected.generation, identity.generation);
     assert!(
@@ -158,8 +166,8 @@ async fn runtime_shell_round_trip_reconnect_and_exit() -> anyhow::Result<()> {
             .join("\n")
             .contains("last-line")
     );
-    session.kill().await?;
-    assert!(!client.has_session(SessionName::new("terminal-1")?).await?);
+    pane.close().await?;
+    assert!(!client.has_session("terminal-1").await?);
     host.shutdown(client).await
 }
 
@@ -173,15 +181,14 @@ async fn runtime_does_not_load_user_configuration() -> anyhow::Result<()> {
     let (mut host, client) = Host::start(root).await?;
     // A real create/read round trip gives startup configuration a chance to
     // finish. Configuration is disabled at the production host constructor.
-    let session = client
-        .ensure_session(
-            EnsureSession::try_named("config-probe")?
-                .create_only()
-                .detached(true)
-                .argv(["/bin/sh", "-c", "printf 'ready\\n'; read line"]),
-        )
+    let pane = client
+        .create(terminal_spec(
+            host.root.path(),
+            "config-probe",
+            "printf 'ready\\n'; read line",
+        ))
         .await?;
-    session.pane(0, 0).wait_for_text("ready").await?;
+    pane.wait_for_text("ready").await?;
     assert!(!host.root.path().join("configuration-ran").exists());
     host.shutdown(client).await
 }
@@ -228,6 +235,23 @@ fn runtime_launch_uses_explicit_environment() -> anyhow::Result<()> {
 }
 
 #[test]
+fn runtime_shell_does_not_inherit_calling_application_environment() -> anyhow::Result<()> {
+    let root = private_root()?;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_terminal-runtime-parent-probe"))
+        .arg("--pane-probe")
+        .arg(root.path())
+        .arg(env!("CARGO_BIN_EXE_neige-terminal-runtime"))
+        .env("NEIGE_TEST_PARENT_SENTINEL", "must-not-leak")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+#[test]
 fn runtime_refuses_public_socket_directory() -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let root = private_root()?;
@@ -246,4 +270,98 @@ fn runtime_refuses_existing_endpoint_without_unlinking_it() -> anyhow::Result<()
     assert!(!output.status.success());
     assert_eq!(std::fs::read(&config.socket)?, b"owned by someone else");
     Ok(())
+}
+
+#[tokio::test]
+async fn runtime_create_preserves_literal_cwd_argv_and_explicit_environment() -> anyhow::Result<()>
+{
+    let (mut host, client) = Host::start(private_root()?).await?;
+    let cwd = host.root.path().join("work #{session_name}");
+    std::fs::create_dir(&cwd)?;
+    let mut spec = terminal_spec(
+        &cwd,
+        "literal-probe",
+        "printf 'cwd:%s\\narg:%s\\nexplicit:%s\\n' \"$PWD\" \"$1\" \"$NEIGE_EXPLICIT\"; read line",
+    );
+    let argument = "spaces ; $(not-a-command)";
+    spec.argv.extend(["probe-shell".into(), argument.into()]);
+    spec.environment
+        .insert("NEIGE_EXPLICIT".into(), "intentional".into());
+    let pane = client.create(spec).await?;
+    pane.wait_for_text("explicit:intentional").await?;
+    let text = pane.snapshot().await?.visible_lines().join("\n");
+    assert!(
+        text.contains(cwd.to_str().unwrap()),
+        "literal working directory must survive tmux format expansion"
+    );
+    assert!(
+        text.contains(argument),
+        "argv must not be reinterpreted as shell text"
+    );
+    host.shutdown(client).await
+}
+
+#[tokio::test]
+async fn runtime_invalid_creation_is_rejected_without_side_effects() -> anyhow::Result<()> {
+    use calm_terminal_runtime::CreateError;
+    let (mut host, client) = Host::start(private_root()?).await?;
+    let mut spec = terminal_spec(host.root.path(), "bad-geometry", "read line");
+    spec.cols = 0;
+    assert!(matches!(
+        client.create(spec).await,
+        Err(CreateError::Invalid(_))
+    ));
+    let mut spec = terminal_spec(host.root.path(), "bad-environment", "read line");
+    spec.environment.insert("BAD=KEY".into(), "value".into());
+    assert!(matches!(
+        client.create(spec).await,
+        Err(CreateError::Invalid(_))
+    ));
+    assert!(client.list_sessions().await?.is_empty());
+    host.shutdown(client).await
+}
+
+#[test]
+fn runtime_creation_timeout_is_unknown_and_late_creation_is_reconcilable() -> anyhow::Result<()> {
+    use calm_terminal_runtime::CreateError;
+    // Saturate one blocking-worker slot after connecting. The actual create
+    // request is queued until its caller times out, then allowed to execute.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()?;
+    runtime.block_on(async {
+        let (mut host, client) = Host::start(private_root()?).await?;
+        let (release, held) = std::sync::mpsc::channel();
+        let (armed, ready) = tokio::sync::oneshot::channel();
+        let holder = tokio::task::spawn_blocking(move || {
+            let _ = armed.send(());
+            let _ = held.recv();
+        });
+        ready.await?;
+        let result = client
+            .create(terminal_spec(
+                host.root.path(),
+                "late-create",
+                "printf 'ready\\n'; read line",
+            ))
+            .await;
+        release.send(())?;
+        holder.await?;
+        assert!(
+            matches!(result, Err(CreateError::OutcomeUnknown { ref name }) if name == "late-create")
+        );
+        let pane = tokio::time::timeout(BUDGET, async {
+            loop {
+                if let Ok(pane) = client.attach_existing("late-create").await {
+                    return pane;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
+        pane.wait_for_text("ready").await?;
+        assert_eq!(client.list_sessions().await?, vec!["late-create"]);
+        host.shutdown(client).await
+    })
 }

@@ -19,5 +19,6 @@ rmux-server = { version = "=0.10.0", default-features = false }
 rmux-client = "=0.10.0"
 rmux-proto = "=0.10.0"
 rustix = { version = "1.1", features = ["fs", "process"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process", "sync"] }
 tempfile = "3"
+thiserror = "2"
