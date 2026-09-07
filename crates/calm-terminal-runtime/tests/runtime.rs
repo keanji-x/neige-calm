@@ -481,10 +481,7 @@ async fn runtime_observation_includes_a_coherent_grid_and_recovery_boundary() ->
         .await?;
     pane.wait_for_text("/status 中文").await?;
     let observation = pane.observe().await?;
-    let grid = observation
-        .snapshot
-        .as_ref()
-        .expect("typed grid is mandatory");
+    let grid = &observation.snapshot;
     assert_eq!(observation.generation, pane.info().await?.generation);
     assert!(grid.visible_lines()[0].contains("/status 中文"));
     assert!(grid.visible_lines()[1].starts_with("> /"));

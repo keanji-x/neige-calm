@@ -36,6 +36,8 @@ impl Drop for OwnedHost {
 #[tokio::main(worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     anyhow::ensure!(args.program.is_absolute(), "absolute program required");
     let root = tempfile::tempdir()?;
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
@@ -91,16 +93,34 @@ async fn main() -> anyhow::Result<()> {
     std::io::stdout().flush()?;
     // This executable has no UI/reactor input of its own. Only its trusted
     // developer harness supplies lines; do not expose this pipe to an app user.
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
-    loop {
-        let mut line = String::new();
-        if (&mut input).take(65537).read_line(&mut line)? == 0 {
-            break;
+    let (sender, mut incoming) = tokio::sync::mpsc::channel(1);
+    // A native reader thread allows the async control loop to process parent
+    // cancellation while stdin remains open. Process exit owns this thread.
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut input = stdin.lock();
+        loop {
+            let mut line = String::new();
+            let result = match (&mut input).take(65537).read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) if line.len() <= 65536 => Ok(line),
+                Ok(_) => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "preview request too large",
+                )),
+                Err(error) => Err(error),
+            };
+            let failed = result.is_err();
+            if sender.blocking_send(result).is_err() || failed {
+                break;
+            }
         }
-        anyhow::ensure!(line.len() <= 65536, "preview request too large");
-        let request: Value = serde_json::from_str(&line)?;
-        let result: anyhow::Result<Value> = async {
+    });
+    let interaction = async {
+        while let Some(line) = incoming.recv().await {
+            let line = line?;
+            let request: Value = serde_json::from_str(&line)?;
+            let result: anyhow::Result<Value> = async {
             match request["action"].as_str() {
                 Some("observe") => {
                     let capture = pane.observe().await?;
@@ -115,16 +135,25 @@ async fn main() -> anyhow::Result<()> {
                 _ => anyhow::bail!("unknown preview action"),
             }
         }.await;
-        println!(
-            "{}",
-            match result {
-                Ok(value) => json!({"result":value}),
-                Err(error) => json!({"error":error.to_string()}),
-            }
-        );
-        std::io::stdout().flush()?;
-    }
-    client.shutdown().await?;
+            println!(
+                "{}",
+                match result {
+                    Ok(value) => json!({"result":value}),
+                    Err(error) => json!({"error":error.to_string()}),
+                }
+            );
+            std::io::stdout().flush()?;
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    let interaction = tokio::select! {
+        result = interaction => result,
+        _ = terminate.recv() => Err(anyhow::anyhow!("preview parent terminated")),
+        _ = interrupt.recv() => Err(anyhow::anyhow!("preview parent interrupted")),
+    };
+    // Cancellation and malformed input still pass through owned host cleanup.
+    tokio::time::timeout(budget, client.shutdown()).await??;
+
     let status = tokio::time::timeout(budget, async {
         loop {
             if let Some(status) = host.0.try_wait()? {
@@ -135,5 +164,5 @@ async fn main() -> anyhow::Result<()> {
     })
     .await??;
     anyhow::ensure!(status.success(), "runtime shutdown failed");
-    Ok(())
+    interaction
 }

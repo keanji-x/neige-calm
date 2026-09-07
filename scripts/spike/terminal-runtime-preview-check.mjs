@@ -10,6 +10,7 @@ import { once } from 'node:events';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { closePreview, deadline } from './terminal-preview-cleanup.mjs';
 
 const require = createRequire(new URL('../../fe/package.json', import.meta.url));
 const { chromium } = require('playwright');
@@ -39,6 +40,7 @@ const server = createServer((req, res) => {
 server.listen(0, '127.0.0.1');
 await once(server, 'listening');
 const program = `i=1; while [ "$i" -le 80 ]; do printf 'history %02d\\r\\n' "$i"; i=$((i+1)); done
+printf '\\033[38;5;1mPALETTE\\033[38;2;0;0;1mRGB\\033[0m\\r\\n'
 choice=$({ printf '/help 帮助\\n/status 状态\\n/settings 设置\\n'; i=1; while [ "$i" -le 40 ]; do printf '/command-%02d\\n' "$i"; i=$((i+1)); done; } | /usr/bin/fzf --reverse --no-sort --no-info --prompt='> ')
 printf '\\r\\nRESULT:%s\\r\\n' "$choice"
 read hold`;
@@ -52,18 +54,17 @@ const lines = createInterface({ input: driver.stdout })[Symbol.asyncIterator]();
 const ended = once(driver, 'exit');
 void ended.catch(() => {});
 let browser;
-const deadline = (promise, message, ms = 8000) => new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(message)), ms);
-  promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
-});
 async function receive() {
   const next = await deadline(lines.next(), 'driver reply timeout');
   assert.ok(!next.done, `driver closed: ${stderr}`);
   return JSON.parse(next.value);
 }
 let pending = Promise.resolve();
+const inputs = [];
+let closing = false;
 function request(action) {
   const result = pending.then(async () => {
+    if (action.action === 'text' || action.action === 'key') inputs.push(action);
     driver.stdin.write(JSON.stringify(action) + '\n');
     const response = await receive();
     assert.ok(!response.error, response.error);
@@ -96,7 +97,7 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
-  await page.exposeFunction('previewInput', data => request({ action: 'text', text: data }));
+  await page.exposeFunction('previewInput', data => closing ? undefined : request({ action: 'text', text: data }));
   await page.evaluate(() => term.onData(data => { void window.previewInput(data); }));
   async function render(capture, name) {
     await page.evaluate(async frame => {
@@ -110,8 +111,8 @@ try {
         const cell = term.buffer.active.getLine(term.buffer.active.baseY + row).getCell(col);
         return { text: cell.getChars(), width: cell.getWidth(),
           bold: !!cell.isBold(), inverse: !!cell.isInverse(),
-          foreground: cell.isFgDefault() ? null : cell.getFgColor(),
-          background: cell.isBgDefault() ? null : cell.getBgColor() };
+          foreground: { mode: cell.isFgDefault() ? 'default' : cell.isFgRGB() ? 'rgb' : 'palette', value: cell.isFgDefault() ? null : cell.getFgColor() },
+          background: { mode: cell.isBgDefault() ? 'default' : cell.isBgRGB() ? 'rgb' : 'palette', value: cell.isBgDefault() ? null : cell.getBgColor() } };
       })).flat(),
     }));
     assert.deepEqual(actual.cursor, { row: capture.snapshot.cursor.row, col: capture.snapshot.cursor.col });
@@ -122,15 +123,15 @@ try {
       assert.equal(actual.cells[index].bold, !!(cell.attributes.bits & 1), `cell ${index} bold`);
       assert.equal(actual.cells[index].inverse, !!(cell.attributes.bits & 16), `cell ${index} inverse`);
       const color = value => {
-        if (value === 'Default') return null;
-        if (value.Indexed) return value.Indexed.index;
-        if (value.Ansi) return value.Ansi.index;
-        if (value.BrightAnsi) return value.BrightAnsi.index + 8;
-        if (value.Rgb) return (value.Rgb.red << 16) | (value.Rgb.green << 8) | value.Rgb.blue;
+        if (value === 'Default') return { mode: 'default', value: null };
+        if (value.Indexed) return { mode: 'palette', value: value.Indexed.index };
+        if (value.Ansi) return { mode: 'palette', value: value.Ansi.index };
+        if (value.BrightAnsi) return { mode: 'palette', value: value.BrightAnsi.index + 8 };
+        if (value.Rgb) return { mode: 'rgb', value: (value.Rgb.red << 16) | (value.Rgb.green << 8) | value.Rgb.blue };
         throw new Error(`unhandled fixture color ${JSON.stringify(value)}`);
       };
-      assert.equal(actual.cells[index].foreground, color(cell.foreground), `cell ${index} foreground`);
-      assert.equal(actual.cells[index].background, color(cell.background), `cell ${index} background`);
+      assert.deepEqual(actual.cells[index].foreground, color(cell.foreground), `cell ${index} foreground`);
+      assert.deepEqual(actual.cells[index].background, color(cell.background), `cell ${index} background`);
     });
     await page.locator('#terminal').screenshot({ path: resolve(output, `${name}.png`) });
     await writeFile(resolve(output, `${name}.json`), JSON.stringify(capture, null, 2));
@@ -160,6 +161,8 @@ try {
   await request({ action: 'key', key: 'Enter' });
   const selected = await until(capture => !capture.alternate && text(capture).includes('RESULT:/status 状态'));
   await render(selected, '03-selected');
+  await pending;
+  const inputsBeforeScroll = inputs.length;
   const before = await page.evaluate(() => term.buffer.active.viewportY);
   await page.evaluate(() => term.scrollLines(-10));
   const after = await page.evaluate(() => term.buffer.active.viewportY);
@@ -172,23 +175,19 @@ try {
     view: { viewport_top: after, source_history_start: selected.history_rows_total - selected.history_rows_included,
       visible_text: visibleText },
   }, null, 2));
-  assert.equal((await request({ action: 'observe' })).next_sequence, selected.next_sequence,
-    'viewport-only scroll must not inject terminal input');
+  await pending;
+  assert.equal(inputs.length, inputsBeforeScroll, 'viewport scroll must send no text/key request');
   assert.deepEqual(errors, []);
   await writeFile(resolve(output, 'result.json'), JSON.stringify({
     backend: 'rmux-0.10.0', real_tui: 'fzf', model_used: false,
     checks: ['atomic recovery grid/cursor equals xterm', 'application PageDown/PageUp', 'mouse selection through xterm input', 'slash filtering', 'arrow selection', 'enter result', 'viewport history scroll'],
-    viewport_before: before, viewport_after: after,
+    viewport_before: before, viewport_after: after, input_requests: inputs,
   }, null, 2));
   console.log(`PASS: real RMUX/fzf observation and interaction; evidence ${output}`);
 } finally {
-  try {
-    if (browser) await browser.close();
-    await pending;
-    driver.stdin.end();
-    const [code] = await deadline(ended, 'driver shutdown timeout', 12000);
-    assert.equal(code, 0, stderr);
-  } finally {
+  closing = true;
+  try { await closePreview({ browser, driver, exited: ended, pending, stderr: () => stderr }); }
+  finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   }

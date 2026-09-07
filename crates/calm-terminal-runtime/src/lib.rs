@@ -15,6 +15,18 @@ mod client;
 mod readiness;
 pub use client::{CreateError, RuntimeClient, TerminalLaunchConfig, TerminalSession};
 
+/// One validated read boundary; viewport presence is required in the type.
+/// Its sequence describes output, not action authorization or an input fence.
+#[derive(Debug)]
+pub struct TerminalObservation {
+    pub snapshot: rmux_sdk::PaneSnapshot,
+    pub keyframe: Vec<u8>,
+    pub generation: u64,
+    pub next_sequence: u64,
+    pub alternate: bool,
+    pub coverage: rmux_sdk::events::PaneRecoveryCoverage,
+}
+
 /// Configuration supplied by the owning application, never by a model tool.
 /// The socket's parent must already be a private directory owned by this user.
 pub struct RuntimeLaunch {

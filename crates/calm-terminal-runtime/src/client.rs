@@ -132,7 +132,7 @@ impl TerminalSession {
     /// recovery boundary. Never substitute an empty screen for a vanished pane.
     /// The returned generation/sequence describe this observation, not an input
     /// compare-and-swap fence. The application still owns action authorization.
-    pub async fn observe(&self) -> anyhow::Result<rmux_sdk::PaneRecoveryRebase> {
+    pub async fn observe(&self) -> anyhow::Result<crate::TerminalObservation> {
         tokio::time::timeout(self.timeout, async {
             let mut options = rmux_sdk::PaneRecoveryOptions::default();
             options.include_snapshot = true;
@@ -142,7 +142,6 @@ impl TerminalSession {
             };
             let snapshot = capture
                 .snapshot
-                .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("terminal observation missing viewport"))?;
             snapshot.validate_shape()?;
             anyhow::ensure!(
@@ -152,7 +151,14 @@ impl TerminalSession {
                     && snapshot.rows == capture.rows,
                 "terminal observation has invalid viewport geometry"
             );
-            Ok(capture)
+            Ok(crate::TerminalObservation {
+                snapshot,
+                keyframe: capture.keyframe,
+                generation: capture.generation,
+                next_sequence: capture.next_sequence,
+                alternate: capture.alternate,
+                coverage: capture.coverage,
+            })
         })
         .await?
     }
