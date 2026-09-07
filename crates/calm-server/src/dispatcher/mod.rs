@@ -388,6 +388,15 @@ fn dispatcher_operation_runtime(
     ))
 }
 
+/// Suspend one real failure handler before its push lock, without delaying cleanup.
+#[cfg(any(test, feature = "fixtures"))]
+pub struct TaskFailurePushTestHook {
+    pub task_id: String,
+    pub entered: Arc<tokio::sync::Notify>,
+    pub resume: Arc<tokio::sync::Notify>,
+    pub finished: Arc<tokio::sync::Notify>,
+}
+
 /// Subscribed handle. Holding the [`Dispatcher`] keeps the spawned
 /// task alive; dropping it closes the broadcast receiver's end (the
 /// task exits cleanly on the next `Closed` recv).
@@ -462,6 +471,15 @@ impl Dispatcher {
     /// Configured permit count. Exposed for assertions in tests.
     pub fn permits(&self) -> usize {
         self.permits
+    }
+
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn set_task_failure_push_hook_for_test(&self, hook: TaskFailurePushTestHook) {
+        *self
+            .inner
+            .failure_push_hook
+            .lock()
+            .expect("failure push hook") = Some(hook);
     }
 
     /// Test-only — read the current in-memory push cursor for a card.
@@ -803,6 +821,8 @@ impl Dispatcher {
             push_cursor: EventCursorCache::new(),
             // #293 PR3b (S1) — per-track push serialization lock-map.
             push_locks: DashMap::new(),
+            #[cfg(any(test, feature = "fixtures"))]
+            failure_push_hook: std::sync::Mutex::new(None),
             semaphore: Arc::clone(&semaphore),
         });
 
@@ -997,18 +1017,12 @@ struct Inner {
     /// this makes pushes idempotent under at-least-once broadcast delivery
     /// and survives a re-delivered envelope without double-pushing.
     push_cursor: EventCursorCache,
-    /// #293 PR3b (S1) — per-track serialization lock for the push path. The
-    /// dispatcher runs `push_to_planner` concurrently (one `tokio::spawn` per
-    /// envelope), so without serialization the watermark
-    /// `(get → compare → bump → push_observation)` is a non-atomic
-    /// read-modify-write: if envelope id 11 bumps the cursor before id 10 is
-    /// checked, id 10 (a DISTINCT real event — e.g. a `task.failed` carrying
-    /// a `reason`) is wrongly deduped and silently dropped. Holding this
-    /// per-track async `Mutex` across the whole dedup-check-and-deliver makes
-    /// same-track pushes process in id order, so the monotonic watermark only
-    /// dedups TRUE redeliveries. Keyed by `TrackId` (one planner card per track).
-    /// Pushes are low-frequency, so per-track serialization is cheap.
+    /// Serialize cursor/enqueue updates. Lock acquisition does not order
+    /// separately spawned handlers by event ID. Settlement catches up its
+    /// persisted prefix before advancing past a delayed failure handler.
     push_locks: DashMap<TrackId, Arc<tokio::sync::Mutex<()>>>,
+    #[cfg(any(test, feature = "fixtures"))]
+    failure_push_hook: std::sync::Mutex<Option<TaskFailurePushTestHook>>,
     semaphore: Arc<Semaphore>,
 }
 
@@ -1035,6 +1049,23 @@ impl Inner {
                 return;
             }
         };
+
+        #[cfg(any(test, feature = "fixtures"))]
+        let failure_push_hook = {
+            let mut pending = self.failure_push_hook.lock().expect("failure push hook");
+            if matches!(&envelope.event, Event::TaskFailed { idempotency_key, .. }
+                if pending.as_ref().is_some_and(|hook| &hook.task_id == idempotency_key))
+            {
+                pending.take()
+            } else {
+                None
+            }
+        };
+        #[cfg(any(test, feature = "fixtures"))]
+        if let Some(hook) = &failure_push_hook {
+            hook.entered.notify_one();
+            hook.resume.notified().await;
+        }
 
         // #293 — push branch. The track-event kinds the filter matches route
         // HERE. For `track.report_edited` we act ONLY on a User- or
@@ -1234,6 +1265,10 @@ impl Inner {
                 );
             }
         }
+        #[cfg(any(test, feature = "fixtures"))]
+        if let Some(hook) = failure_push_hook {
+            hook.finished.notify_one();
+        }
     }
 
     async fn observe_harness(self: &Arc<Self>, track_id: TrackId, event: &Event, envelope_id: i64) {
@@ -1339,6 +1374,35 @@ impl Inner {
             );
             return;
         };
+        if matches!(event, Event::TaskExecutionSettled { .. }) {
+            // A recovered harness may already have persisted a newer watermark
+            // while this dispatcher's in-memory cursor is still cold.
+            let preceding_cursor = cursor.max(harness.snapshot().await.push_watermark);
+            if envelope_id <= preceding_cursor {
+                return;
+            }
+            let preceding = match crate::harness::catch_up::observations_since(
+                self.repo.as_ref(),
+                &track_id,
+                preceding_cursor,
+                Some(envelope_id - 1),
+            )
+            .await
+            {
+                Ok(observations) => observations,
+                Err(error) => {
+                    tracing::warn!(%track_id, %error, "settlement prefix lookup failed; preserving cursor for replay");
+                    return;
+                }
+            };
+            for (id, observation) in preceding {
+                if let Err(error) = harness.observe_envelope(observation, id) {
+                    tracing::warn!(%track_id, %error, "settlement prefix enqueue failed; preserving cursor for replay");
+                    return;
+                }
+                self.push_cursor.bump(planner_card_id.clone(), id);
+            }
+        }
         tracing::info!(
             track_id = %track_id,
             planner_card_id = %planner_card_id,

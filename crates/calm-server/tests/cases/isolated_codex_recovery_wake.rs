@@ -7,7 +7,7 @@ use calm_server::harness::{
 use calm_server::operation::{OperationRepo, SqlxOperationRepo};
 
 async fn planner(fx: &Fixture) -> PlannerHarness {
-    let runtime_id = planner_identity(&fx.boot).session_id;
+    let worker_session_id = planner_identity(&fx.boot).session_id;
     let areas = calm_server::track_area_cache::TrackAreaCache::new();
     fx.boot.repo.seed_track_area_cache(&areas).await.unwrap();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
@@ -21,7 +21,7 @@ async fn planner(fx: &Fixture) -> PlannerHarness {
     calm_server::db::sqlite::session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: fx.boot.planner_card_id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -39,7 +39,7 @@ async fn planner(fx: &Fixture) -> PlannerHarness {
     .unwrap();
     tx.commit().await.unwrap();
     let handle = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id.clone(),
+        worker_session_id: worker_session_id.clone(),
         track_id: fx.boot.track_id.clone(),
         card_id: fx.boot.planner_card_id.clone(),
         thread_id: Some("planner-observer".into()),
@@ -58,7 +58,7 @@ async fn planner(fx: &Fixture) -> PlannerHarness {
         .force_phase_for_dev(calm_server::harness::HarnessPhaseTag::TurnRunning)
         .await
         .unwrap();
-    fx.state.harness.insert(runtime_id, handle.clone());
+    fx.state.harness.insert(worker_session_id, handle.clone());
     handle
 }
 
@@ -546,4 +546,130 @@ async fn planner_settled_hint_ignores_withdrawn_declaration() {
         .await;
     assert_eq!(hints(&handle.snapshot().await, &first.id), 0);
     handle.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settlement_overtaking_failure_preserves_live_and_persisted_observations() {
+    use calm_server::dispatcher::TaskFailurePushTestHook;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+    let fx = fixture("controlled").await;
+    let handle = planner(&fx).await;
+    start_task(&fx).await;
+    let (first, workspace) = launch(&fx).await;
+    let entered = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let finished = Arc::new(Notify::new());
+    fx.state
+        .dispatcher
+        .set_task_failure_push_hook_for_test(TaskFailurePushTestHook {
+            task_id: first.id.clone(),
+            entered: entered.clone(),
+            resume: resume.clone(),
+            finished: finished.clone(),
+        });
+    std::fs::write(workspace.join("report-failure"), b"").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    // The actual isolated observer may finish while the native failure handler waits.
+    finish(&fx, &first, &workspace, false).await;
+    let saw_hint = wait_observation(&handle, &first.id, true).await;
+    let overtaken = handle.snapshot().await;
+    resume.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), finished.notified())
+        .await
+        .unwrap();
+    handle.persist_snapshot().await.unwrap();
+    let before_boot = handle.snapshot().await;
+    fx.state.dispatcher.abort_event_listener_for_test();
+    handle.shutdown().await.unwrap();
+    let recovered = restore_planner(&fx).await;
+    let after_boot = recovered.snapshot().await;
+    recovered.shutdown().await.unwrap();
+    assert!(
+        saw_hint,
+        "settlement must pass the suspended failure handler"
+    );
+    let pair = |snapshot: &HarnessSnapshot| {
+        snapshot
+            .pending_observations()
+            .iter()
+            .filter_map(|observation| match observation {
+                Observation::TaskFailed {
+                    idempotency_key, ..
+                } if idempotency_key == &first.id => Some("failure"),
+                Observation::SystemContext { text }
+                    if text.contains(&first.id) && text.contains("calm.plan.list") =>
+                {
+                    Some("settled")
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let persisted = fx
+        .boot
+        .repo
+        .events_for_track(
+            fx.boot.track_id.as_str(),
+            &["task.failed", "task.execution_settled"],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(persisted.len(), 2);
+    assert!(persisted[0].id < persisted[1].id);
+    assert!(before_boot.push_watermark >= persisted[1].id);
+    assert_eq!(
+        (pair(&overtaken), pair(&before_boot), pair(&after_boot)),
+        (
+            vec!["failure", "settled"],
+            vec!["failure", "settled"],
+            vec!["failure", "settled"]
+        ),
+        "settlement must not advance either watermark past its undispatched failure, including boot replay"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settlement_catch_up_respects_recovered_harness_watermark() {
+    let (fx, first, _) = stopped_failure().await;
+    fx.state.dispatcher.abort_event_listener_for_test();
+    // No live Planner existed when the two actual events were published.
+    assert_eq!(
+        fx.state
+            .dispatcher
+            .push_cursor_for_test(&fx.boot.planner_card_id),
+        0
+    );
+    let initial = planner(&fx).await;
+    initial.shutdown().await.unwrap();
+    let recovered = restore_planner(&fx).await;
+    let events = fx
+        .boot
+        .repo
+        .events_for_track(fx.boot.track_id.as_str(), &["task.execution_settled"], None)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    let before = recovered.snapshot().await;
+    for _ in 0..2 {
+        fx.state
+            .dispatcher
+            .catch_up_push(
+                fx.boot.track_id.clone(),
+                events[0].event.clone(),
+                events[0].id,
+            )
+            .await;
+    }
+    let after = recovered.snapshot().await;
+    recovered.shutdown().await.unwrap();
+    assert_eq!(hints(&before, &first.id), 1);
+    assert_eq!(
+        after.pending_observations(),
+        before.pending_observations(),
+        "a cold Dispatcher cursor must not replay a prefix already retained by the recovered harness"
+    );
 }
