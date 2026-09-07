@@ -2936,7 +2936,6 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             // a supported way for a person to make every `turn/start` fail.
             // Pacing it is part of shipping that picker, not a drive-by.
             //
-            *inner.issuance_block.lock().await = transient_notice(inner).await;
             // Codex refusing this input and codex being unreachable are
             // opposite facts, and the reader is owed opposite sentences, so the
             // split is made on the TYPED error rather than on its text:
@@ -2952,15 +2951,18 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             // "will be sent when it answers" about a turn that will never go
             // out. Naming the real cause of a failed turn is still #1507's;
             // this only stops promising delivery that cannot happen.
-            // Same split as `codex_read_refusal`, kept spelled out here
-            // because this one maps to `Rejected`: no choice the reader can
-            // make is KNOWN to remove the need for `turn/start`, so its
-            // sentence must not name a certain remedy the way the other two do.
-            let refusal = if matches!(e, CalmError::CodexRefused(_)) {
-                IssuanceRefusal::rejected(format!("turn/start refused by codex: {e}"))
-            } else {
-                IssuanceRefusal::retryable(format!("turn/start could not be delivered: {e}"))
-            };
+            // Through the same classifier as `config/read` and `model/list`,
+            // so "every codex call on this path goes through it" is a fact
+            // rather than a wish — it was written as one while this site still
+            // re-implemented the check inline. `Rejected` rather than
+            // `NeedsAChoice`: no choice the reader can make is KNOWN to remove
+            // the need for `turn/start`, so its sentence names no certain
+            // remedy the way the other two do.
+            let refusal = classify_codex_failure(
+                &e,
+                format!("turn/start failed: {e}"),
+                IssuanceRefusal::rejected,
+            );
             apply_refusal(inner, &refusal).await;
             #[cfg(feature = "fixtures")]
             inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
