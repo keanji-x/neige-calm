@@ -73,6 +73,15 @@ Operation。该 Operation 在停止凭据及冻结输出契约下捕获单文件
 完成后重新 poke scheduler；丢通知及重启由已有操作恢复/调度 sweep 处理。
 不新增业务完成事件，不用一次新的 TaskCompleted 伪装文件已验收。
 
+publication 是“已结束执行的产物动作”，不是新的 Worker 启动。注册时必须显式
+列入这种任务绑定类别，校验当前 producer、接受的完成报告、停止凭据与冻结的
+claim 契约/ready/release；不能把它伪装为非任务操作，也不能修改既有启动守卫
+允许 terminal task 启动。共用契约比对可从现有校验中抽取，启动状态判定仍保留。
+
+来源已有 TaskDone 但文件缺失或格式无效时，publication 失败并说明输出尚不具备
+消费资格；B 保持未启动。首版不会偷偷修改/重跑 A，或把这样的失败伪装为业务
+重试成功。修复用途及新的源执行决策仍属于后续明确的恢复能力。
+
 新增迁移保存两类记录：
 
 - publication 记录绑定 Track、producer attempt、源 Operation、publication
