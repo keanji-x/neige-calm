@@ -1102,9 +1102,15 @@ async fn a_track_deleted_between_the_card_read_and_the_workspace_read_refuses() 
         "a workspace that cannot be read must refuse, not fall back to the global config layers; \
          sent {sent:?}"
     );
+    // A weak corroboration, and labelled as one: `track_delete_tx` cascades
+    // the card away, so the next tick also refuses at the card-existence check
+    // and bumps this same counter. It does NOT pin the `Ok(None)` track arm.
+    // The discriminator is `sent.is_empty()` above — flattening that arm
+    // resolves `gpt-5-from-the-wrong-scope` and reaches `IssueTurnHandle::issue`
+    // before anything card-dependent, which is why the mutation reddens.
     assert!(
         boot.harness.refused_issuances_for_test() >= 1,
-        "and it must actually have refused, or this proves nothing"
+        "the loop must have refused at least once"
     );
 }
 
@@ -1118,9 +1124,11 @@ async fn a_track_deleted_between_the_card_read_and_the_workspace_read_refuses() 
 /// and will be sent when it answers" about a turn that could not go out until
 /// a person acted. That is the exact sentence `CodexRefused` exists to end.
 ///
-/// It maps to `NeedsAChoice` rather than `Rejected` because a choice genuinely
-/// removes the need for the read: a card carrying an explicit model never
-/// calls `config/read` at all.
+/// It maps to `NeedsAChoice` rather than `Rejected` because a choice can
+/// genuinely remove the need for the read. Note "can": the read is entered by
+/// a disjunction, so an explicit model does not by itself skip it — a card
+/// with an explicit model whose EFFORT follows the default still enters it,
+/// which is the construction the round-5 test below is about.
 #[tokio::test]
 async fn a_refused_config_read_is_not_sold_as_a_wait() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
@@ -1267,4 +1275,110 @@ async fn a_refused_model_list_is_not_sold_as_a_wait() {
     let seen = selections_after(&boot, 1).await;
     assert_eq!(seen[0].effort.as_deref(), Some("high"));
     assert_eq!(boot.harness.issuance_block().await, None);
+}
+
+/// #1505 S4 review r5 (MAJOR) — the remedy must name the choice that is
+/// actually missing.
+///
+/// `config/read` is entered by a disjunction: the model follows the default,
+/// or the effort does, or both. The sentence shown on a refusal was a fixed
+/// string naming the model, which is right for one of those and actively
+/// stuck-making for another — a reader whose model is already explicit was
+/// told to pick one, re-picked what they had, and the next tick refused
+/// identically because the disjunct that was true was the effort's.
+///
+/// This is the fourth time this PR shipped reader-facing text naming an action
+/// that could not work, so the assertion is on WHICH word appears, per
+/// construction, not merely that some text does.
+#[tokio::test]
+async fn the_remedy_names_the_half_that_actually_follows_the_default() {
+    // (a) the model follows the default, the effort is explicit.
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": "gpt-5", "reasoning_effort": "high"}),
+    )
+    .await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": null, "reasoning_effort": "high"}),
+    )
+    .await;
+    boot.daemon.reject_config_read_for_test();
+    post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;
+    let reason = block_reason_within(&boot, Duration::from_secs(8)).await;
+    assert!(
+        reason.contains("Pick a model explicitly"),
+        "the model is what follows the default here: {reason}"
+    );
+    assert!(
+        !reason.contains("reasoning effort"),
+        "and the effort is explicit, so naming it would send the reader to re-pick what they \
+         already have: {reason}"
+    );
+
+    // (b) the mirror image — the model is explicit, the EFFORT follows the
+    // default. This is the payload that was told to "Pick a model".
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": "gpt-5", "reasoning_effort": "high"}),
+    )
+    .await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": "gpt-5", "reasoning_effort": null}),
+    )
+    .await;
+    boot.daemon.reject_config_read_for_test();
+    post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;
+    let reason = block_reason_within(&boot, Duration::from_secs(8)).await;
+    assert!(
+        reason.contains("Pick a reasoning effort explicitly"),
+        "the effort is what follows the default here; naming the model would leave the reader \
+         re-picking a model they already have while the disjunct stays true: {reason}"
+    );
+
+    // (c) both — fixing one still leaves the other entering the same branch, so
+    // both are named.
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": "gpt-5", "reasoning_effort": "high"}),
+    )
+    .await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": null, "reasoning_effort": null}),
+    )
+    .await;
+    boot.daemon.reject_config_read_for_test();
+    post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;
+    let reason = block_reason_within(&boot, Duration::from_secs(8)).await;
+    assert!(
+        reason.contains("Pick a model and a reasoning effort explicitly"),
+        "both halves follow the default, so naming one leaves the reader stuck after doing what \
+         they were told: {reason}"
+    );
+}
+
+/// Wait for a reader-visible block and return it.
+async fn block_reason_within(boot: &Boot, budget: Duration) -> String {
+    let deadline = Instant::now() + budget;
+    loop {
+        if let Some(reason) = boot.harness.issuance_block().await {
+            return reason;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a refusal codex answered must reach the reader"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

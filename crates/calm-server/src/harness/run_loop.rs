@@ -2079,40 +2079,49 @@ struct IssuanceRefusal {
     /// and [`Inner::issuance_block`].
     ///
     /// It said "only `NeedsAChoice`" until `Rejected` was added and read it
-    /// too, 145 lines below the sentence. Empty for `Retryable`, and
-    /// `apply_refusal` is the only reader of that emptiness.
+    /// too, 145 lines below the sentence. Left empty for `Retryable`, whose
+    /// `apply_refusal` arm calls `transient_notice` instead and never looks at
+    /// this field — so nothing reads that emptiness and it carries no meaning.
     reader: String,
 }
 
-/// Classify a codex read that failed.
+/// Classify a codex call that failed: codex ANSWERING with a refusal becomes
+/// `refused(log)`, and every other failure is retryable.
 ///
-/// **Every consumer of a codex call on the issuance path goes through this.**
-/// `CodexRefused` was minted so `turn/start` could stop promising delivery it
-/// could not make, and then only `turn/start` consulted it — so a refused
-/// `config/read` or `model/list` still produced "your message is still queued
-/// and will be sent when it answers" about a turn that could not go out until
-/// a person acted. That is the same falsehood, one and two calls above the
-/// site that fixed it.
+/// **Every codex call on the issuance path goes through this** — `config/read`,
+/// `model/list` and `turn/start`. It is written as a universal because it was
+/// briefly false: `CodexRefused` was minted so `turn/start` could stop
+/// promising delivery it could not make, and then only `turn/start` consulted
+/// it, so a refused `config/read` or `model/list` still produced "your message
+/// is still queued and will be sent when it answers" about a turn that could
+/// not go out. Routing all three here is what stops the next call site
+/// forgetting.
 ///
-/// The consumers, and what each does with a refusal:
+/// What each passes as `refused`:
 ///
-/// | read | refused (`CodexRefused`) | could not ask |
+/// | call | refused (`CodexRefused`) | could not ask |
 /// |---|---|---|
-/// | `config/read` | `NeedsAChoice` — an explicit model skips this read | `Retryable` |
-/// | `model/list` | `NeedsAChoice` — an explicit effort skips this read | `Retryable` |
-/// | `turn/start` | `Rejected` — nothing the reader picks is known to help | `Retryable` |
+/// | `config/read` | `NeedsAChoice`, naming the half that forced the read | `Retryable` |
+/// | `model/list` | `NeedsAChoice` — only the effort can want the catalog | `Retryable` |
+/// | `turn/start` | `Rejected` — no choice is KNOWN to remove the need | `Retryable` |
 ///
-/// The first two are `NeedsAChoice` rather than `Rejected` because a choice
-/// genuinely removes the need for the read: a card carrying an explicit model
-/// never calls `config/read`, and one carrying an explicit effort never calls
-/// `model/list`. `turn/start` has no such escape, so its message names no
-/// certain remedy.
+/// The first two are `NeedsAChoice` because a choice can genuinely remove the
+/// need for the read — but WHICH choice depends on why the read happened, so
+/// `config/read`'s sentence is derived from
+/// [`CardModelSelection::defaults_needed_for`] rather than fixed. An explicit
+/// model does NOT by itself skip `config/read`: the read is entered by a
+/// disjunction, and a card with an explicit model and an effort following the
+/// default still enters it.
 ///
 /// Non-codex reads on this path (`card_get`, `track_get`) cannot be refused —
 /// they have no peer to refuse them — and are `Retryable` on any failure.
-fn codex_read_refusal(e: &CalmError, log: String, reader: &str) -> IssuanceRefusal {
+fn classify_codex_failure(
+    e: &CalmError,
+    log: String,
+    refused: impl FnOnce(String) -> IssuanceRefusal,
+) -> IssuanceRefusal {
     if matches!(e, CalmError::CodexRefused(_)) {
-        IssuanceRefusal::needs_a_choice(log, reader.to_string())
+        refused(log)
     } else {
         IssuanceRefusal::retryable(log)
     }
@@ -2192,14 +2201,30 @@ async fn resolve_model_selection(
         .config_read(Some(cwd.as_str()), deadline)
         .await
         .map_err(|e| {
-            codex_read_refusal(
-                &e,
-                format!(
-                    "config/read failed while resolving this conversation's default model: {e}"
+            // The sentence is DERIVED. This branch is entered by a disjunction
+            // — the model follows the default, or the effort does, or both —
+            // and a fixed string is right for at most one of them. It said
+            // "Pick a model explicitly" for a card whose model was already
+            // explicit and whose EFFORT followed the default: the reader
+            // re-picked what they already had, the disjunct stayed true, and
+            // the next tick refused identically.
+            let needed = card.defaults_needed_for();
+            let reader = match (needed.subject(), needed.choice_to_make()) {
+                (Some(subject), Some(choice)) => format!(
+                    "codex will not report this conversation's configuration, so the default \
+                     {subject} cannot be resolved and your message has not been sent. Pick \
+                     {choice} explicitly to send it."
                 ),
-                "codex will not report this conversation's configuration, so the default model \
-                 cannot be resolved and your message has not been sent. Pick a model explicitly \
-                 to send it.",
+                // Unreachable: this read only happens when something is
+                // needed. Fail closed with no advice rather than invent some.
+                _ => "codex will not report this conversation's configuration, so your message \
+                      has not been sent."
+                    .to_string(),
+            };
+            classify_codex_failure(
+                &e,
+                format!("config/read failed while resolving this conversation's defaults: {e}"),
+                |log| IssuanceRefusal::needs_a_choice(log, reader),
             )
         })?;
     let defaults = Some(InstallationDefaults {
@@ -2414,11 +2439,21 @@ async fn catalog_default_effort(
             .into_iter()
             .find(|m| m.model == slug)
             .map(|m| m.default_reasoning_effort)),
-        Err(e) => Err(codex_read_refusal(
+        // Only the effort can want the catalog (`needs_catalog`), so unlike
+        // `config/read` this one has a single reason and a fixed sentence is
+        // honest.
+        Err(e) => Err(classify_codex_failure(
             &e,
             format!("model/list failed while resolving this conversation's default effort: {e}"),
-            "codex will not list its models, so the default reasoning effort cannot be resolved \
-             and your message has not been sent. Pick a reasoning effort explicitly to send it.",
+            |log| {
+                IssuanceRefusal::needs_a_choice(
+                    log,
+                    "codex will not list its models, so the default reasoning effort cannot be \
+                     resolved and your message has not been sent. Pick a reasoning effort \
+                     explicitly to send it."
+                        .to_string(),
+                )
+            },
         )),
     }
 }

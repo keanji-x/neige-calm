@@ -188,14 +188,30 @@ impl CardModelSelection {
     }
 
     /// Whether resolving this selection needs the installation's defaults read
+    /// from codex, and — separately for each — WHICH of the two forced it.
+    ///
+    /// The two are separate because the read is entered by a disjunction, and
+    /// a person can only unstick it by fixing the disjunct that is actually
+    /// true. Telling someone to pick a model when the model is already
+    /// explicit and it is the EFFORT that follows the default leaves them
+    /// re-picking what they already have while nothing changes.
+    pub fn defaults_needed_for(&self) -> DefaultsNeededFor {
+        DefaultsNeededFor {
+            model: self.model.is_none() && self.model_ever_set,
+            effort: self.reasoning_effort.is_none() && self.reasoning_effort_ever_set,
+        }
+    }
+
+    /// Whether resolving this selection needs the installation's defaults read
     /// from codex.
     ///
     /// True only in the "chose something once, then chose the default again"
-    /// case. Every other card resolves from the payload alone, which is why
-    /// the common path costs no extra RPC.
+    /// case, and true if EITHER the model or the effort is in it. Every other
+    /// card resolves from the payload alone, which is why the common path
+    /// costs no extra RPC.
     pub fn needs_installation_defaults(&self) -> bool {
-        (self.model.is_none() && self.model_ever_set)
-            || (self.reasoning_effort.is_none() && self.reasoning_effort_ever_set)
+        let needed = self.defaults_needed_for();
+        needed.model || needed.effort
     }
 
     /// Whether resolving this selection needs the model catalog.
@@ -204,6 +220,46 @@ impl CardModelSelection {
     /// see [`resolve_turn_selection`].
     pub fn needs_catalog(&self) -> bool {
         self.reasoning_effort.is_none() && self.reasoning_effort_ever_set
+    }
+}
+
+/// Which halves of a card's selection follow the installation default having
+/// once been chosen explicitly — i.e. which disjunct(s) of
+/// [`CardModelSelection::needs_installation_defaults`] are true.
+///
+/// Exists so that a message to the reader is DERIVED from the reason the read
+/// happened rather than written once and hoped over both. Four separate rounds
+/// of #1505 S4 shipped reader-facing text naming an action that could not
+/// work, and the last of them was exactly this: one branch entered for two
+/// reasons, carrying a sentence right for only one of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DefaultsNeededFor {
+    pub model: bool,
+    pub effort: bool,
+}
+
+impl DefaultsNeededFor {
+    /// What the reader must choose, named. `None` when nothing is needed.
+    ///
+    /// Both, when both are — because fixing one still leaves the other
+    /// entering the same branch on the next tick.
+    pub fn choice_to_make(self) -> Option<&'static str> {
+        match (self.model, self.effort) {
+            (true, true) => Some("a model and a reasoning effort"),
+            (true, false) => Some("a model"),
+            (false, true) => Some("a reasoning effort"),
+            (false, false) => None,
+        }
+    }
+
+    /// The same, as the subject of "the default … cannot be resolved".
+    pub fn subject(self) -> Option<&'static str> {
+        match (self.model, self.effort) {
+            (true, true) => Some("model and reasoning effort"),
+            (true, false) => Some("model"),
+            (false, true) => Some("reasoning effort"),
+            (false, false) => None,
+        }
     }
 }
 
