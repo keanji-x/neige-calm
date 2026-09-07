@@ -41,6 +41,7 @@ import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { useIndependentTaskLaunch } from './independent-task.tsx';
+import { useTaskArtifactFiles } from './task-artifact-files.tsx';
 import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { ReportFileViewer } from '../../features/report/file-viewer/public.tsx';
@@ -3179,11 +3180,13 @@ function TrackRouteBody({
     go({ name: 'track', trackId: track.id, blockId, from: routeFrom });
   };
 
+  const taskFiles = useTaskArtifactFiles({ trackId: track.id, transport, unauthorized });
   const independentTask = useIndependentTaskLaunch({ trackId: track.id, cards, lifecycle: track.lifecycle, transport, unauthorized, onCreated: openReportAnchor });
 
   return (
     <>
     {independentTask.form}
+    {taskFiles.dialog}
     <TrackStage>
     <TrackPage
       track={track}
@@ -3255,7 +3258,7 @@ function TrackRouteBody({
         taskRows={tasks}
         renderTaskExecution={(task, expanded) => <TaskRecovery
           key={`${track.id}:${task.key}`} trackId={track.id} taskKey={task.key} expanded={expanded}
-          transport={transport} unauthorized={unauthorized}
+          transport={transport} unauthorized={unauthorized} onViewArtifact={taskFiles.open}
           openableWorkerIds={new Set(gridItems.map((item) => item.card.id))}
           openWorker={(cardId) => { go({ name: 'track', trackId: track.id, cardId, from: routeFrom }); }}
         />}
