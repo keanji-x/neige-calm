@@ -182,6 +182,13 @@ pub fn materialize_workspace(
 /// actually happen in. Refusing it would reject a legitimate cwd for a reason
 /// nothing downstream cares about.
 ///
+/// # The fourth check (#1387)
+///
+/// D3's list is three items long — absolute, exists, is a Git work tree — and
+/// a repository can satisfy all three while still being unable to host a single
+/// worker: see [`ensure_slice_branch_namespace_is_free`], which this function
+/// ends with.
+///
 /// Returns `BadRequest`: every one of these is the caller naming the wrong
 /// directory, not the server failing.
 pub fn validate_attached_workspace(path: &Path) -> Result<()> {
@@ -232,7 +239,111 @@ pub fn validate_attached_workspace(path: &Path) -> Result<()> {
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
+    ensure_slice_branch_namespace_is_free(path)?;
     Ok(())
+}
+
+/// The ref every worker's slice branch has to live *under*. See
+/// [`ensure_slice_branch_namespace_is_free`].
+///
+/// Kept next to the check rather than shared with
+/// `operation::workspace_lease::workspace_slice_branch_for`: that function
+/// formats a whole branch name (`neige/<track>/<card>`) from ids that do not
+/// exist yet when a directory is admitted, so there is nothing there to call.
+/// The tie between the two is mechanical instead —
+/// `attached_admission_names_the_ref_the_slice_branch_lives_under` derives a
+/// slice branch through the production function and asserts this constant is
+/// its ref prefix, so renaming the namespace on one side reddens a test rather
+/// than silently disarming this one.
+const SLICE_BRANCH_NAMESPACE_REF: &str = "refs/heads/neige";
+
+/// #1387 — refuse an attached directory whose repository already holds a
+/// branch named `neige`.
+///
+/// Git's ref store cannot hold `refs/heads/neige` (a file) and
+/// `refs/heads/neige/<track>/<card>` (a directory) at once. Every worker's
+/// worktree is created with `git worktree add -b neige/<track>/<card>`
+/// (`operation::workspace_lease::workspace_slice_branch_for`), and
+/// `prepare_workspace_lease_target_tx` derives that name for attached tracks
+/// too — it only skips *materialization* for them. So a user repository with a
+/// `neige` branch admits fine and then fails on its very first worker with
+///
+/// ```text
+/// cannot lock ref 'refs/heads/neige/<track>/<card>': 'refs/heads/neige' exists
+/// ```
+///
+/// which reaches the user as nothing but `spawn-failed` — #1147's shape all
+/// over again. Measured, not reasoned about: see
+/// `a_neige_branch_created_after_attach_still_blocks_the_first_worker`.
+///
+/// # Why only the exact ref, and not everything under `neige/`
+///
+/// `refs/heads/neige` is the one ref that blocks the *whole* namespace. A
+/// two-segment `refs/heads/neige/<x>` blocks only a track whose id is literally
+/// `<x>`, and track ids are minted randomly — while `neige/<old-track>/<card>`
+/// branches left behind by earlier tracks on the same repository are the normal
+/// state of a repository Neige has already worked in. Rejecting those would
+/// refuse re-attaching a directory for a conflict that cannot happen.
+///
+/// # Fail-closed
+///
+/// `git show-ref --verify --quiet` answers 0 for present and 1 for absent.
+/// Anything else (128 for "not a repository", a signal, a failure to spawn)
+/// means the question was not answered, and an unanswered question is refused —
+/// admitting it would put the failure back where this check exists to move it
+/// from.
+///
+/// # Point-in-time, and knowingly so
+///
+/// Nothing stops the user creating a `neige` branch *after* attaching; the
+/// repository is theirs. This moves the common case (a branch that is already
+/// there) from the first worker's mysterious spawn failure to a 400 at the
+/// moment the directory is named. The residual case stays pinned by
+/// `a_neige_branch_created_after_attach_still_blocks_the_first_worker`.
+fn ensure_slice_branch_namespace_is_free(path: &Path) -> Result<()> {
+    let output = neige_git_command()
+        .arg("-C")
+        .arg(path)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            SLICE_BRANCH_NAMESPACE_REF,
+        ])
+        .output()
+        .map_err(|error| {
+            CalmError::BadRequest(format!(
+                "attached workspace: cannot run git in `{}`: {error}",
+                path.display()
+            ))
+        })?;
+    match output.status.code() {
+        // Absent: the namespace is free.
+        Some(1) => Ok(()),
+        // Present.
+        Some(0) => Err(CalmError::BadRequest(format!(
+            "attached workspace: `{}` has a branch named `neige`, and \
+             `{SLICE_BRANCH_NAMESPACE_REF}` collides with the branch namespace \
+             every worker gets its own slice branch under \
+             (`neige/<track>/<card>`). Git cannot hold both, so the first \
+             worker on this track would die in `git worktree add`. Rename or \
+             delete that branch (`git branch -m neige <another-name>`), then \
+             attach again.",
+            path.display()
+        ))),
+        // Fail closed: the question was not answered.
+        other => Err(CalmError::BadRequest(format!(
+            "attached workspace: cannot tell whether `{}` already holds \
+             `{SLICE_BRANCH_NAMESPACE_REF}` (git show-ref exited with {}); \
+             refusing rather than letting the first worker find out. git said: \
+             {}",
+            path.display(),
+            other
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "a signal".to_string()),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))),
+    }
 }
 
 /// Create (or re-adopt) the managed git repository at `path`. Idempotent, and
