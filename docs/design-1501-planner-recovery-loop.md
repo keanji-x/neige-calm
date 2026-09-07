@@ -122,3 +122,10 @@ The orchestrator approves these exact frozen core changes:
 OWNERSHIP-CHANGE: fe/core/api/schemas.ts — decode approved isolated execution settlement event (#1501)
 OWNERSHIP-CHANGE: fe/core/api/schemas.contract.test.ts — verify approved settlement event contract (#1501)
 OWNERSHIP-CHANGE: fe/core/api/generated/wire.ts — add approved isolated execution settlement event (#1501)
+
+Settlement also changes the derived recovery capability. The existing event
+invalidation policies therefore refresh task evidence with the same scope rules
+as failure, without parsing opaque attempt IDs or adding a new UI flow.
+
+OWNERSHIP-CHANGE: fe/core/events/invalidation-plan.ts — refresh evidence for approved settlement event (#1501)
+OWNERSHIP-CHANGE: fe/core/events/invalidation-plan.test.ts — verify approved settlement invalidation (#1501)
