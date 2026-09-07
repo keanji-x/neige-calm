@@ -45,15 +45,26 @@
  *    ~1.03ms — 25% on top of what `prettyDOM` already spends. Nearly all of it
  *    is the CSS scan's `getComputedStyle` per queryable element.
  *
- *    25% sounds worse than it is, and the absolute number is the one that
- *    decides: only *failing* DTL queries reach here, and the worst case is a
- *    `findBy*` that times out — 1000ms at a 50ms interval is 20 polls, so
- *    ~20ms added to a 1000ms budget. A `waitFor` over a plain `expect` never
- *    calls `getElementError` at all. This is a bound, not an impossibility: a
- *    `findBy*` whose element appears in the last ~20ms before its deadline
- *    could be pushed over by exactly this. Nothing cheaper was available that
- *    still answers the CSS question, and a query that close to its deadline is
- *    already a flake.
+ *    The bound this paragraph used to quote — "1000ms at a 50ms interval is 20
+ *    polls, so ~20ms added to a 1000ms budget" — was wrong, and #1538 is what
+ *    it cost. `waitFor` re-runs its callback on its interval **and** on every
+ *    MutationObserver notification, so a `findBy*` over a rendering shell polls
+ *    far more often than the interval implies; and the 200-node fixture the
+ *    1.03ms above was measured on is nothing like the app shell, where
+ *    `prettyDOM` alone runs tens of milliseconds. Counted on
+ *    `web/src/app/router/independent-task.test.tsx`: 63 `getElementError` calls
+ *    per run, of which **0** were ever read — every failing poll's error is
+ *    dropped by `wait-for.js` when the next one arrives, and only the last one
+ *    survives to be reported.
+ *
+ *    So both halves are deferred: see `withReport`, which hands back an error
+ *    carrying only the short message and builds the dump and the report on the
+ *    first read of `.message`, once. Measured on that file (Node 22.22.2,
+ *    `--project web-dom`, three interleaved rounds): test time 8.47/8.64/8.66s
+ *    → 4.94/5.00/4.94s, and event-loop delay max 290/332/313ms → 249/241/218ms,
+ *    p99 106/97/114ms → 46/48/57ms. Suite-wide, `--project web-dom` under a
+ *    load average of 42–117: eager was red in 5 of 5 interleaved rounds,
+ *    lazy in 1 of 5.
  *
  * What it *would* break is a test asserting the exact text of a query failure
  * — `toThrow(exactMessage)` or a snapshot, not `toThrow('Unable to find')`,
@@ -342,7 +353,14 @@ if (typeof document !== 'undefined') {
     );
     const withoutReport = (text: string): string => text.replace(REPORT_TAIL, '');
 
-    const withReport = (message: string | null, container: Container) => {
+    /*
+     * The expensive half, split out so `withReport` below can defer it — #1538.
+     *
+     * Everything in here reads the DOM: `inherited` is Testing Library's own
+     * `getElementError`, whose entire body is a `prettyDOM(container)`, and
+     * `report` adds a `getComputedStyle` per queryable element on top.
+     */
+    const enrich = (message: string | null, container: Container) => {
       /*
        * `message === null` is Testing Library rendering *one element* on its way
        * to a larger error — `query-helpers.js` calls
@@ -398,6 +416,104 @@ if (typeof document !== 'undefined') {
         // Single-line for the same reason `identify` collapses whitespace.
         append(error, `${MARKER} unavailable: ${described.replace(/\s+/g, ' ')}`);
       }
+      return error;
+    };
+
+    /**
+     * Is this call a `waitFor` poll?
+     *
+     * `wait-for.js` `checkCallback` — the only caller of
+     * `runWithExpensiveErrorDiagnosticsDisabled` in the installed
+     * `@testing-library/dom` (checked: `config.js` defines it, `wait-for.js`
+     * line 124 is the sole call site) — sets this flag for the synchronous
+     * extent of the callback and clears it in a `finally`. So it is true on a
+     * failing poll and false everywhere else: a bare `getBy*` in test code, and
+     * the timeout re-wrap in `onTimeout`, which runs after `onDone` and outside
+     * that scope. Measured on both paths rather than reasoned about, in
+     * `reports the DOM eagerly when a synchronous query fails`.
+     *
+     * It is a private field, hence the cast; it is also the same flag
+     * `queries/role.js` already branches on to drop the roles list, so a
+     * `@testing-library/dom` that removed it would break its own short-error
+     * branch first. If it ever did disappear, `undefined` reads as falsy and
+     * every call becomes eager — the slow answer, not the wrong one.
+     *
+     * The one case it gets wrong is an *async* `waitFor` callback: the flag is
+     * already restored by the time a promise rejects, so a query failing after
+     * an `await` inside the callback is treated as synchronous and built
+     * eagerly. That costs time on those polls; it does not lose evidence.
+     */
+    const polling = (): boolean =>
+      (getConfig() as unknown as { _disableExpensiveErrorDiagnostics?: boolean })
+        ._disableExpensiveErrorDiagnostics === true;
+
+    /*
+     * The error handed back on a *failing poll* carries the short message and
+     * nothing else; the dump and the report are built on the first read of
+     * `.message`, once, memoised — #1538.
+     *
+     * A failure that is **not** a poll is built eagerly, and that asymmetry is
+     * the whole point. A synchronous `getBy*` throws straight out of the test
+     * body, and the common shape in this repo is
+     * `try { screen.getByRole(…) } finally { app.dispose() }` — see
+     * `web/src/app/router/task-artifact-files.test.tsx`. `dispose()` unmounts
+     * before Vitest ever reads `.message`, so a deferred build runs against a
+     * torn-down body and reports `<body />`, zero children and no hidden
+     * subtrees: the deferral would have destroyed exactly the evidence this
+     * file exists to capture. Reproduced through the real query path before it
+     * was fixed, and pinned by the regression test named above.
+     *
+     * Only the last error of a `waitFor` is ever read: `wait-for.js`
+     * `checkCallback` stores each throw in `lastError` and drops the previous
+     * one, and `message`/`name` are touched only from `handleTimeout` and
+     * `onTimeout`, i.e. after the deadline (read off the installed
+     * `@testing-library/dom`, not assumed). `query-helpers.js` does read
+     * `.message` eagerly, but only on the `message === null` branch, which is
+     * returned above without ever reaching here. So every deferred build that
+     * is never forced is one nobody would have read.
+     *
+     * `name` is deferred alongside `message` rather than hard-coded to
+     * `TestingLibraryElementError`, because a differently-named error from a
+     * non-default `getElementError` installed underneath must still come back
+     * under its own name — `handleTimeout` branches on exactly that.
+     *
+     * **What this shape does not preserve**, stated rather than discovered
+     * later: the object returned is no longer the one `inherited` produced. Its
+     * identity, its frozen-ness, and any own property other than `message` and
+     * `name` that a custom producer underneath set on it are gone; the message
+     * survives byte for byte, which is what every consumer here reads. The
+     * `.stack` header is captured from the short message too — the frames are
+     * unaffected, and the timeout path overwrites the whole stack anyway.
+     */
+    const withReport = (message: string | null, container: Container) => {
+      if (typeof message !== 'string') return enrich(message, container);
+      if (!polling()) return enrich(message, container);
+      let built: Error | undefined;
+      const resolved = (): Error => {
+        if (built === undefined) {
+          try {
+            built = enrich(message, container);
+          } catch {
+            // A producer underneath that throws must not convert a query
+            // failure into a failure *inside* somebody's `.message` read, which
+            // is a far worse place for it than the throw site it used to have.
+            built = new Error(message);
+          }
+        }
+        return built;
+      };
+      const error = new Error(message);
+      const defer = (key: 'message' | 'name'): void => {
+        let override: string | undefined;
+        Object.defineProperty(error, key, {
+          configurable: true,
+          enumerable: false,
+          get: () => override ?? resolved()[key],
+          set: (next: string) => { override = next; },
+        });
+      };
+      defer('message');
+      defer('name');
       return error;
     };
     Object.defineProperty(withReport, INSTALLED, { value: true });
