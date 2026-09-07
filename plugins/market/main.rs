@@ -3655,6 +3655,11 @@ mod tests {
     /// last rate anywhere outside the per-pass cache would still value the
     /// second portfolio, at the earlier number, with nothing on the table
     /// saying so.
+    ///
+    /// **The second pass still prices the holding.** Only the rate row goes
+    /// missing, which is the whole point: if the price failed too, the row
+    /// would be `null` before any rate was looked for, and this test would
+    /// pass without the fallback path ever being reached.
     #[test]
     fn a_rate_from_an_earlier_pass_is_never_reused() {
         let (working, _targets) = converting_cfg("CNY");
@@ -3662,15 +3667,31 @@ mod tests {
         assert_eq!(first.rows[0]["rate"].as_f64(), Some(6.7111));
         assert_eq!(first.rows[0]["value"].as_f64(), Some(1545.97));
 
-        // Same asset, same pair, a pass later, with the rate source refusing.
-        let (dead_sina, _dead_targets) = sina_forbidden_server();
+        // Same asset, same pair, a pass later. The endpoint still answers the
+        // stock row and no longer lists any `fx_` row.
+        let (stocks_only, _stock_targets) =
+            sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
         let broken = Config {
-            sina_endpoint: dead_sina,
+            sina_endpoint: stocks_only,
             ..working
         };
         let second = price_holdings(&broken, &[holding("US:NVDA", 1.0)], &mut PassCache::new());
-        assert!(second.rows[0]["value"].is_null(), "{:?}", second.rows[0]);
-        assert!(second.rows[0]["rate"].is_null(), "{:?}", second.rows[0]);
+        assert_eq!(
+            second.rows[0]["price"].as_f64(),
+            Some(230.36),
+            "the price came back, so what follows is about the rate alone: {:?}",
+            second.rows[0],
+        );
+        assert!(
+            second.rows[0]["rate"].is_null(),
+            "6.7111 here would be last pass's number: {:?}",
+            second.rows[0],
+        );
+        assert!(
+            second.rows[0]["value"].is_null(),
+            "1545.97 here would be this pass's price at last pass's rate: {:?}",
+            second.rows[0],
+        );
         assert_eq!(second.total, PortfolioTotal::Nothing);
         assert!(!second.complete);
     }
@@ -4271,6 +4292,65 @@ mod tests {
             Value::Null,
             "the first point has nothing to change from"
         );
+    }
+
+    /// **The change column is blank wherever two adjacent points are in
+    /// different currencies**, and only there.
+    ///
+    /// Two units in one series is not hypothetical: an operator who changes
+    /// `quote` from `USD` to `CNY` writes exactly this document. Subtracting
+    /// across the boundary would draw a jump of about six times the
+    /// portfolio's value — a move it never made — and the same reasoning
+    /// applies to a point that records no unit at all, which is every point
+    /// written before this slice.
+    #[test]
+    fn the_change_column_breaks_wherever_two_points_are_in_different_units() {
+        let points = vec![
+            // Written before this slice: unit not recorded, not recoverable.
+            json!({ "at": "t1", "total": 100.0 }),
+            json!({ "at": "t2", "total": 110.0 }),
+            // The install starts settling in USD.
+            json!({ "at": "t3", "total": 120.0, "currency": "USD" }),
+            json!({ "at": "t4", "total": 130.0, "currency": "USD" }),
+            // …and is reconfigured to CNY.
+            json!({ "at": "t5", "total": 900.0, "currency": "CNY" }),
+            json!({ "at": "t6", "total": 910.0, "currency": "CNY" }),
+        ];
+        let table = history_table(&points);
+        let rows = table["rows"].as_array().expect("rows");
+        // Newest first, so this is t6 … t1.
+        let changes: Vec<&Value> = rows.iter().map(|row| &row["change"]).collect();
+        assert_eq!(
+            changes,
+            vec![
+                &json!(10.0), // t6 − t5, both CNY
+                &Value::Null, // t5 against a USD point: not a move
+                &json!(10.0), // t4 − t3, both USD
+                &Value::Null, // t3 against a point with no unit
+                &Value::Null, // t2 against another point with no unit
+                &Value::Null, // t1 has nothing before it
+            ],
+            "{rows:?}",
+        );
+        let currencies: Vec<&Value> = rows.iter().map(|row| &row["currency"]).collect();
+        assert_eq!(
+            currencies,
+            vec![
+                &json!("CNY"),
+                &json!("CNY"),
+                &json!("USD"),
+                &json!("USD"),
+                &Value::Null,
+                &Value::Null,
+            ],
+            "an unrecorded unit is stated as unrecorded, not as today's: {rows:?}",
+        );
+        let caption = table["caption"].as_str().expect("caption");
+        assert!(
+            caption.contains("2 points were recorded before this plugin stored a currency"),
+            "{caption}"
+        );
+        assert_eq!(validate_payload(KIND_TABLE, &table), Ok(()));
     }
 
     #[test]
