@@ -14,6 +14,8 @@ async fn failed_hello_delivery_releases_owner_lease() {
         incoming_rx,
         outgoing_tx,
         ClientPumpContext {
+            input_barrier: Arc::new(calm_server::terminal_renderer::InputBarrier::default()),
+            input_scope: calm_server::terminal_renderer::ClientInputScope::InteractiveUser,
             event_tx,
             event_rx,
             render_plane: Arc::new(StdMutex::new(RenderPlane::new(80, 24, 1024, 20))),
@@ -52,6 +54,8 @@ async fn cancelled_client_pump_releases_owner_lease() {
         incoming_rx,
         outgoing_tx,
         ClientPumpContext {
+            input_barrier: Arc::new(calm_server::terminal_renderer::InputBarrier::default()),
+            input_scope: calm_server::terminal_renderer::ClientInputScope::InteractiveUser,
             event_tx,
             event_rx,
             render_plane: Arc::new(StdMutex::new(RenderPlane::new(80, 24, 1024, 20))),

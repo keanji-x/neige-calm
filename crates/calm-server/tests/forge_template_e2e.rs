@@ -1633,6 +1633,7 @@ async fn boot_fixture() -> Fixture {
     assert!(operation_runtime_cell.set(runtime.clone()).is_ok());
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
     let review_ctx = Arc::new(AppContext {
+        terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: sqlx_repo
             .sqlite_pool()

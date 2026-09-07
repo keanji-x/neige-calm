@@ -1,0 +1,11 @@
+[package]
+name = "calm-terminal-view"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+rmux-core = "=0.10.0"
+rmux-proto = "=0.10.0"
+resvg = { version = "=0.48.1", default-features = false, features = ["text", "system-fonts"] }
+serde = { version = "1", features = ["derive"] }

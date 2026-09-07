@@ -135,6 +135,14 @@ pub enum Effect {
     TerminalThemeUpdate { fg: (u8, u8, u8), bg: (u8, u8, u8) },
 }
 
+/// Captured protocol admission, rechecked by the IO shell at physical write.
+#[derive(Clone, Copy, Debug)]
+pub enum InputPermission {
+    Owner(OwnerLease),
+    Kernel,
+    Denied,
+}
+
 /// Chunk-granular byte ring used to seed a fresh client's render snapshot.
 ///
 /// Each `append` pushes one whole chunk (typically one PTY read). When the
@@ -292,6 +300,20 @@ impl TerminalSessionState {
 
     pub fn last_render_acked_rev(&self) -> Option<u32> {
         self.last_render_acked_rev
+    }
+
+    pub fn input_permission(&self) -> InputPermission {
+        if let Some(lease) = self.owner_lease {
+            InputPermission::Owner(lease)
+        } else if self
+            .capabilities
+            .as_ref()
+            .is_some_and(|cap| cap.kernel_originated_input)
+        {
+            InputPermission::Kernel
+        } else {
+            InputPermission::Denied
+        }
     }
 
     /// Release only this connection's lease, including on transport teardown.

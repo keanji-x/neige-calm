@@ -203,6 +203,7 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let ctx = Arc::new(AppContext {
+        terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: repo
             .sqlite_pool()

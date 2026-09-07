@@ -15,6 +15,7 @@ pub fn spawn_supervisor_control_writer(
     mut rx: mpsc::UnboundedReceiver<SupervisorControl>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut physical_sequence = 0u64;
         while let Some(item) = rx.recv().await {
             match item {
                 SupervisorControl::Write(write) => {
@@ -22,37 +23,57 @@ pub fn spawn_supervisor_control_writer(
                         data,
                         input_seq,
                         ack,
+                        authority,
                     } = write;
-                    let write_seq = (input_seq > 0).then_some(input_seq);
-                    if let Err(e) = write_frame(
-                        &mut control_conn,
-                        &ControlMsg::WriteStdin(WriteStdinRequest {
-                            proc_id: proc_id.clone(),
-                            bytes: data,
-                            write_seq,
-                        }),
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %e, "failed to send supervisor WriteStdin");
+                    let Some(mut guard) = authority.admit().await else {
+                        if let Some(ack) = ack {
+                            let _ = ack.send(DaemonMsg::ProtocolError {
+                                code: calm_session::ProtocolErrorCode::NotOwner,
+                                message: "terminal input control or scope was revoked before write"
+                                    .into(),
+                                expected_version: None,
+                            });
+                        }
+                        continue;
+                    };
+                    let Some(next) = physical_sequence.checked_add(1) else {
                         break;
-                    }
-                    if let Some(expected) = write_seq {
-                        match read_frame::<ControlReply, _>(&mut control_conn).await {
-                            Ok(ControlReply::WriteAck { write_seq }) if write_seq == expected => {
-                                if let Some(ack) = ack {
-                                    let _ = ack.send(DaemonMsg::InputAck {
-                                        input_seq: write_seq,
-                                    });
-                                }
+                    };
+                    physical_sequence = next;
+                    guard.started();
+                    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        write_frame(
+                            &mut control_conn,
+                            &ControlMsg::WriteStdin(WriteStdinRequest {
+                                proc_id: proc_id.clone(),
+                                bytes: data,
+                                write_seq: Some(next),
+                            }),
+                        )
+                        .await?;
+                        match read_frame::<ControlReply, _>(&mut control_conn).await? {
+                            ControlReply::WriteAck { write_seq } if write_seq == next => {
+                                Ok::<_, anyhow::Error>(())
                             }
-                            Ok(other) => {
-                                tracing::warn!(reply = ?other, "unexpected supervisor write reply");
+                            _ => anyhow::bail!("supervisor did not acknowledge terminal write"),
+                        }
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(())) => {
+                            guard.completed();
+                            if input_seq > 0
+                                && let Some(ack) = ack
+                            {
+                                let _ = ack.send(DaemonMsg::InputAck { input_seq });
                             }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to read supervisor WriteAck");
-                                break;
-                            }
+                        }
+                        error => {
+                            tracing::warn!(
+                                ?error,
+                                "terminal write outcome unknown; closing writer"
+                            );
+                            break;
                         }
                     }
                 }
@@ -114,3 +135,6 @@ pub fn spawn_supervisor_control_writer(
         }
     })
 }
+
+#[cfg(test)]
+mod tests;

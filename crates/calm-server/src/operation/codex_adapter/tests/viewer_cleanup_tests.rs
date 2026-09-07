@@ -186,6 +186,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
         thread_id: session.thread_id.unwrap(),
     };
     let context = Arc::new(AppContext {
+        terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: harness.repo.clone(),
         track_vcs: None,
         events: harness.events.clone(),

@@ -372,6 +372,8 @@ async fn lag_recovery_snapshot_respects_initial_scrollback_all() {
                 incoming_rx,
                 outgoing_tx,
                 ClientPumpContext {
+                    input_barrier: Arc::new(calm_server::terminal_renderer::InputBarrier::default()),
+                    input_scope: calm_server::terminal_renderer::ClientInputScope::InteractiveUser,
                     event_rx,
                     event_tx: event_tx_for_pump,
                     render_plane,

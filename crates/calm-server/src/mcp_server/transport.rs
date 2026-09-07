@@ -104,6 +104,8 @@ pub struct McpShimConfig {
 /// can `take()` and `abort()` it), plus the shim config the planner_card
 /// helper reads to build per-card config.toml blocks.
 pub struct McpServer {
+    pub terminal_interaction:
+        Arc<tokio::sync::OnceCell<Arc<crate::terminal_interaction::TerminalInteraction>>>,
     pub shim_config: McpShimConfig,
     #[allow(dead_code)]
     listener_task: std::sync::Mutex<Option<JoinHandle<()>>>,
@@ -113,6 +115,7 @@ impl McpServer {
     #[cfg(test)]
     pub(crate) fn new_for_test(shim_config: McpShimConfig) -> Arc<Self> {
         Arc::new(Self {
+            terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
             shim_config,
             listener_task: std::sync::Mutex::new(None),
         })
@@ -194,6 +197,7 @@ impl McpServer {
         let track_vcs = repo.sqlite_pool().map(SqlxTrackVcsRepo::shared);
         let route_repo: Arc<dyn RouteRepo> = repo;
         let ctx = Arc::new(AppContext {
+            terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
             repo: route_repo,
             track_vcs,
             events,
@@ -205,6 +209,7 @@ impl McpServer {
             operation_runtime,
         });
 
+        let terminal_interaction = ctx.terminal_interaction.clone();
         let socket_for_handle = socket_path.clone();
         let task = tokio::spawn(accept_loop(listener, ctx, registry, socket_for_handle));
 
@@ -214,6 +219,7 @@ impl McpServer {
         );
 
         Ok(Arc::new(Self {
+            terminal_interaction,
             shim_config: McpShimConfig {
                 shim_bin,
                 socket_path,

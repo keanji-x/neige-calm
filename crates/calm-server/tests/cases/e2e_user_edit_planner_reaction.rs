@@ -260,6 +260,7 @@ async fn boot() -> Boot {
     // plus the shared role/area caches.
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
+        terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: repo
             .sqlite_pool()

@@ -224,6 +224,8 @@ async fn handle_renderer(socket: WebSocket, entry: Arc<RendererEntry>, terminal_
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<DaemonMsg>(256);
     let event_rx = entry.subscribe();
     let ctx = ClientPumpContext {
+        input_barrier: entry.handle.input_barrier.clone(),
+        input_scope: crate::terminal_renderer::ClientInputScope::InteractiveUser,
         event_rx,
         event_tx: entry.handle.event_tx.clone(),
         render_plane: entry.handle.render_plane.clone(),

@@ -139,6 +139,7 @@ name = "cooked-shell-child"
 path = "tests/fixtures/cooked-shell-child/main.rs"
 
 [dependencies]
+calm-terminal-view = { path = "../calm-terminal-view" }
 base64 = "=0.22.1"
 # HTTP / WS
 axum = { version = "0.8", features = ["ws", "macros"] }

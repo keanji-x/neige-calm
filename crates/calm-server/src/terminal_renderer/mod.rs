@@ -22,6 +22,8 @@ mod attach_reader;
 mod child_ready;
 mod client_pump;
 mod control_writer;
+mod input_authority;
+pub use input_authority::{ClientInputScope, InputBarrier, WriteAuthority};
 #[cfg(test)]
 pub(crate) mod establishment_test_hook;
 mod output_capture;
@@ -111,6 +113,7 @@ const _: () = assert!(
 /// write completes.
 #[derive(Clone)]
 pub struct PtyWrite {
+    pub authority: WriteAuthority,
     pub data: Vec<u8>,
     pub input_seq: u64,
     pub ack: Option<mpsc::UnboundedSender<DaemonMsg>>,
@@ -138,6 +141,7 @@ pub struct RendererConfig {
 }
 
 pub struct RendererHandle {
+    pub input_barrier: Arc<InputBarrier>,
     pub session_id: Uuid,
     pub event_rx: broadcast::Receiver<DaemonMsg>,
     pub event_tx: broadcast::Sender<DaemonMsg>,
@@ -439,6 +443,7 @@ impl TerminalRendererRegistry {
             proc_id: format!("term:{}", cfg.terminal_id),
             supervisor_sock: cfg.supervisor_sock.clone(),
             handle: RendererHandle {
+                input_barrier: Arc::new(InputBarrier::default()),
                 session_id,
                 event_rx,
                 event_tx,
@@ -787,6 +792,7 @@ async fn ensure_entry(
             proc_id,
             supervisor_sock: cfg.supervisor_sock.clone(),
             handle: RendererHandle {
+                input_barrier: Arc::new(InputBarrier::default()),
                 session_id,
                 event_rx,
                 event_tx,

@@ -221,6 +221,7 @@ async fn boot() -> Boot {
         now_ms()
     ));
     let ctx = Arc::new(AppContext {
+        terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: Some(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared(
             sqlx_repo.pool().clone(),

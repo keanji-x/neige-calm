@@ -199,6 +199,8 @@ pub fn require_role_any(identity: &ToolCallIdentity, allowed: &[CardRole]) -> Re
 /// without forcing each handler to clone every field individually.
 #[derive(Clone)]
 pub struct AppContext {
+    pub terminal_interaction:
+        Arc<tokio::sync::OnceCell<Arc<crate::terminal_interaction::TerminalInteraction>>>,
     /// Eventized writes route through this. Same `RouteRepo` upcast as
     /// `AppState::repo`, so the dyn-trait gate is preserved (no
     /// sync-domain raw writes reachable from a tool handler).
@@ -533,6 +535,7 @@ mod tests {
         );
         let route_repo: Arc<dyn RouteRepo> = repo;
         Arc::new(AppContext {
+            terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
             repo: route_repo,
             track_vcs: None,
             events: EventBus::new(),
