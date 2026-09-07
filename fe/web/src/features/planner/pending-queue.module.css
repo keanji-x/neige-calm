@@ -4,8 +4,23 @@
    from the next is a hairline. */
 
 @layer features {
+  /*
+   * `min-inline-size: 0` all the way down to the text.
+   *
+   * The drawer this sits in is a flex column with `overflow: hidden`, and a
+   * flex item's default `min-width: auto` is its CONTENT's width — so one long
+   * queued message made the row wider than the drawer, pushed the two icon
+   * buttons past its right edge, and the overflow rule clipped them off the
+   * screen entirely. Every box between the drawer and `.text` has to give way
+   * or none of them do; measured, not guessed — the buttons were gone.
+   */
   .queue {
-    margin-block: var(--space-2) var(--space-1);
+    min-inline-size: 0;
+  }
+
+  .queue ul,
+  .queue li {
+    min-inline-size: 0;
   }
 
   .caption {
@@ -17,8 +32,13 @@
     gap: 0;
   }
 
+  /* Text, pencil, cross. The first track is `minmax(0, 1fr)` so the message
+     gets whatever is left and never more — see the note in the component. */
   .row {
-    /* The two icon buttons are 24px; the row is theirs, not the text's. */
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: var(--space-1);
     min-block-size: var(--row-h-sm);
     padding-inline: var(--space-1);
     border-radius: var(--radius-sm);
@@ -32,7 +52,6 @@
      0` is what lets a flex child shrink below its content and therefore what
      makes the ellipsis possible at all. */
   .text {
-    flex: 1;
     min-inline-size: 0;
   }
 

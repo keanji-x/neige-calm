@@ -32,7 +32,7 @@
 // `POST /planner/reset` was left standing when #1139 removed its last caller.
 
 import { Banner } from '@astryxdesign/core/Banner';
-import { HStack } from '@astryxdesign/core/HStack';
+import { ChatComposerDrawer } from '@astryxdesign/core/Chat';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { List } from '@astryxdesign/core/List';
 import { Text } from '@astryxdesign/core/Text';
@@ -141,7 +141,17 @@ export function PendingQueue({
 
   const total = entries.length + overflow;
   return (
-    <section className={styles.queue} data-nc-pending-queue="" aria-label="Queued messages">
+    /*
+     * `ChatComposerDrawer` and not a bare block: this renders in the
+     * composer's `drawer` slot, and the drawer is the thing that carries the
+     * surface — the tint, the top radius matched to the composer's, and the
+     * negative margin that tucks it behind the field. Without it the strip
+     * floated on the page ground above a composer it was supposed to be part
+     * of. The badge and the collapse handle come with it, which is what a
+     * queue that has grown to nine entries needs anyway.
+     */
+    <ChatComposerDrawer count={total} label="Queued">
+      <section className={styles.queue} data-nc-pending-queue="" aria-label="Queued messages">
       <VStack gap={1}>
         <Text as="p" type="supporting" className={styles.caption} data-nc-pending-queue-caption="">
           {total === 1
@@ -159,7 +169,17 @@ export function PendingQueue({
             const rev = shown?.kind === 'stale' ? shown.rev : entry.rev;
             return (
               <li key={entry.entry_id} data-nc-pending-entry={entry.entry_id}>
-                <HStack gap={1} align="center" className={styles.row}>
+                {/* A grid and not an `HStack`, and this is the reason rather
+                    than a preference: `Text maxLines={1}` truncates by going
+                    `white-space: nowrap`, so its min-content is the WHOLE
+                    message. In a flex row that minimum propagates up through
+                    the drawer's grid item — measured at 712px inside a 290px
+                    drawer — and the two icon buttons ended up past the right
+                    edge, where the drawer's `overflow: hidden` cut them off
+                    the screen. `minmax(0, 1fr)` is a track that content cannot
+                    blow out; `min-inline-size: 0` on the item alone did not
+                    fix it. */}
+                <div className={styles.row}>
                   {/* One line and an ellipsis. `hasTruncateTooltip` gives the
                       whole message back on hover, and only when it was
                       actually shortened — so a short one gets no hover that
@@ -198,7 +218,7 @@ export function PendingQueue({
                       settle(entry.entry_id, await onDelete({ ...entry, rev }));
                     }}
                   />
-                </HStack>
+                </div>
                 {noticeLine !== null && shown !== null && (
                   <div className={styles.notice} data-nc-pending-entry-notice="">
                     <Banner
@@ -220,6 +240,7 @@ export function PendingQueue({
           </Text>
         )}
       </VStack>
-    </section>
+      </section>
+    </ChatComposerDrawer>
   );
 }

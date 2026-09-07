@@ -68,8 +68,31 @@ export function ModelPill({
   const defaultName = catalog?.default_source === 'config_read' || catalog?.default_source === 'config_toml'
     ? catalog.default.model
     : null;
-  const chosen = selection.model === null
+  /*
+   * Which catalog entry the effort control is about.
+   *
+   * Following the installation default is still running a MODEL, and that
+   * model's efforts are sitting right there in the catalog — so the control
+   * belongs here too. This used to resolve to `undefined` whenever
+   * `selection.model` was null, which is every conversation that has not
+   * overridden anything, i.e. all of them until someone touches the pill: the
+   * effort menu simply did not exist for the common case. Verified against the
+   * kernel rather than assumed — `catalog_advice` (`routes/planner_model.rs`)
+   * takes `{model: null, reasoning_effort: "high"}` and stores it unjudged,
+   * with an explicit note that with no model chosen there is no catalog entry
+   * to judge the effort against.
+   *
+   * That note is also the honest limit on what this list means while the
+   * default is being followed: these are the efforts of whatever the default
+   * resolves to NOW. If the installation's default model changes under a
+   * conversation, the stored effort travels with it and the kernel decides at
+   * turn time. We are not promising otherwise.
+   */
+  const followed = catalog?.default.model == null
     ? undefined
+    : models.find((model) => model.model === catalog.default.model);
+  const chosen = selection.model === null
+    ? followed
     : models.find((model) => model.model === selection.model);
   // A slug we hold that the catalog does not list still names the model this
   // conversation runs; showing the slug is more use than showing nothing.
@@ -150,6 +173,15 @@ export function ModelPill({
         <EffortPill
           efforts={efforts}
           value={selection.reasoning_effort}
+          /* The name behind the word "Default", when there is one to give —
+             the same treatment the model trigger gets, and for the same
+             reason: "Default" alone tells you that you have not chosen, not
+             what you are getting. While a model IS chosen the entry's own
+             `default_reasoning_effort` is the one that applies; while the
+             installation default is followed it is the catalog's. */
+          defaultName={selection.model === null
+            ? catalog?.default.reasoning_effort ?? null
+            : chosen?.default_reasoning_effort ?? null}
           isDisabled={isDisabled}
           placement={placement}
           onChange={(effort) => onChange({ model: selection.model, reasoning_effort: effort })}
@@ -160,17 +192,20 @@ export function ModelPill({
 }
 
 function EffortPill({
-  efforts, value, onChange, placement, isDisabled,
+  efforts, value, defaultName, onChange, placement, isDisabled,
 }: Readonly<{
   efforts: ModelCatalog['models'][number]['supported_reasoning_efforts'];
   value: string | null;
+  /** What "Default" resolves to, or `null` when nothing has said. */
+  defaultName: string | null;
   onChange: (value: string | null) => void;
   placement: 'above' | 'below';
   isDisabled: boolean;
 }>) {
   const [open, setOpen] = useState(false);
   const hostRef = useRef<HTMLSpanElement | null>(null);
-  const label = value ?? FOLLOW_DEFAULT_LABEL;
+  const label = value
+    ?? (defaultName === null ? FOLLOW_DEFAULT_LABEL : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`);
   const closeOnEscape = (event: KeyboardEvent<HTMLSpanElement>) => {
     if (event.key !== 'Escape' || !open) return;
     event.preventDefault();
@@ -200,7 +235,8 @@ function EffortPill({
         }}
       >
         <Choice
-          label={FOLLOW_DEFAULT_LABEL}
+          label={defaultName === null
+            ? FOLLOW_DEFAULT_LABEL : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`}
           isSelected={value === null}
           onSelect={() => onChange(null)}
         />

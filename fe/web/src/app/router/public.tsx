@@ -1997,7 +1997,42 @@ function useConversationPanel(
                 });
               }}
               allowEmptyText={attachments.items.length > 0}
-              drawer={<PlannerAttachmentDrawer attachments={attachments} />}
+              /*
+               * #1505 PR4 — the queue lives INSIDE the composer, above the
+               * field, and not at the foot of the transcript.
+               *
+               * It was under the transcript, which put it in the column that
+               * says "this is what was said in this conversation". These
+               * messages were not said in it: they have not reached the model,
+               * they have no transcript row, and half of them may be taken
+               * back before they ever do. Rendering them there answered a
+               * question nobody asked — "did I say this?" — with a yes.
+               *
+               * Above the field is where they belong, and it is what Astryx's
+               * `drawer` slot is documented for ("attachments, context chips,
+               * etc."): things that are attached to the message you are about
+               * to send rather than part of the conversation behind it. The
+               * two occupants are ordered by how close they are to that
+               * message — the queue is what is already committed and waiting,
+               * the attachment strip is what the sentence you are typing right
+               * now will carry, so the strip sits nearer the field.
+               */
+              drawer={(
+                <>
+                  <PendingQueue
+                    entries={store.pendingQueue}
+                    overflow={store.pendingQueueOverflow}
+                    busy={store.sending}
+                    /* Taking a message back replaces the composer's contents,
+                       so it is offered only when there is nothing to destroy. */
+                    composerBusy={composerDraft.trim() !== ''}
+                    onTakeBack={store.takeBackQueuedEntry}
+                    onDelete={store.deleteQueuedEntry}
+                    onEcho={setComposerDraft}
+                  />
+                  <PlannerAttachmentDrawer attachments={attachments} />
+                </>
+              )}
               /* #1255 S3 — the ring stands immediately before Send, where the
                  question it answers ("is there room for what I am about to
                  say?") is being asked. It renders nothing at all until the
@@ -2129,20 +2164,6 @@ function useConversationPanel(
                 pending={store.pending.has(open.id)}
               />
             )}
-            {/* #1505 PR4 — the queue region, directly under the transcript and
-              * above the composer, because that is where the messages it holds
-              * were typed and where they will appear once they send. */}
-            <PendingQueue
-              entries={store.pendingQueue}
-              overflow={store.pendingQueueOverflow}
-              busy={store.sending}
-              /* Taking a message back replaces the composer's contents, so it
-                 is offered only when there is nothing there to destroy. */
-              composerBusy={composerDraft.trim() !== ''}
-              onTakeBack={store.takeBackQueuedEntry}
-              onDelete={store.deleteQueuedEntry}
-              onEcho={setComposerDraft}
-            />
             {/*
               * Nothing else follows the transcript.
               *

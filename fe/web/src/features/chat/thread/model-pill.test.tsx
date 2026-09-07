@@ -161,7 +161,55 @@ describe('ModelPill', () => {
    * decided per model and never assumed.
    */
   describe('the effort control', () => {
-    it('is absent while no model is chosen', () => {
+    /*
+     * Following the installation default is still running a model, and this is
+     * the case that used to have no effort control at all — which is every
+     * conversation nobody has touched the pill on, i.e. the common one.
+     *
+     * The kernel takes it: `catalog_advice` (`routes/planner_model.rs`) stores
+     * `{model: null, reasoning_effort: "high"}` unjudged, and says why in as
+     * many words — with no model chosen there is no catalog entry to judge the
+     * effort against.
+     */
+    it('offers the followed model’s efforts while no model is chosen', () => {
+      render(
+        <ModelPill
+          catalog={catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } })}
+          selection={FOLLOW_INSTALLATION_DEFAULT}
+          onChange={vi.fn()}
+        />,
+      );
+      const effort = trigger(/^Reasoning effort:/);
+      /* Named, not just "Default": the word alone says you have not chosen,
+         never what you are getting. */
+      expect(effort.textContent).toBe('Default (low)');
+      const menu = openMenu(/^Reasoning effort:/);
+      expect(within(menu).getByText('Thinks longer.')).toBeTruthy();
+    });
+
+    it('sends the effort with a null model when the default is being followed', () => {
+      const onChange = vi.fn();
+      render(
+        <ModelPill
+          catalog={catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } })}
+          selection={FOLLOW_INSTALLATION_DEFAULT}
+          onChange={onChange}
+        />,
+      );
+      const menu = openMenu(/^Reasoning effort:/);
+      fireEvent.click(within(menu).getByText('high'));
+      /* `model: null` survives — choosing an effort must not silently pin the
+         conversation to whatever the default happens to be today. */
+      expect(onChange).toHaveBeenCalledWith({ model: null, reasoning_effort: 'high' });
+    });
+
+    /*
+     * And the limit of the above, which is the honest one: the control can
+     * only list efforts it has an entry for. A default this catalog does not
+     * carry gives it nothing to offer, and offering the *other* models' efforts
+     * would be a list about a model this conversation is not running.
+     */
+    it('is absent when the followed model is not in the catalog', () => {
       render(
         <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
       );
