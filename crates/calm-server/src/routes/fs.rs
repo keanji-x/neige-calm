@@ -512,10 +512,6 @@ pub(crate) async fn open_workspace_regular_file(
     relative_path: &str,
     symlinks: WorkspaceSymlinks,
 ) -> Result<OpenWorkspaceFile> {
-    use nix::fcntl::{OFlag, OpenHow, ResolveFlag, openat2};
-    use nix::sys::stat::Mode;
-    use std::os::fd::{AsRawFd, FromRawFd};
-
     let relative = workspace_relative_path(relative_path)?;
     let root = tokio::fs::File::open(workspace_root)
         .await
@@ -530,13 +526,41 @@ pub(crate) async fn open_workspace_regular_file(
             workspace_root.display()
         )));
     }
+    open_workspace_regular_file_from_fd(
+        root.into_std().await,
+        workspace_root.to_path_buf(),
+        relative,
+        symlinks,
+    )
+    .await
+}
+
+/// Keep a caller-validated directory descriptor as authority through final open.
+#[cfg(target_os = "linux")]
+pub(crate) async fn open_workspace_regular_file_at(
+    root: std::fs::File,
+    relative_path: &str,
+    symlinks: WorkspaceSymlinks,
+) -> Result<OpenWorkspaceFile> {
+    let relative = workspace_relative_path(relative_path)?;
+    open_workspace_regular_file_from_fd(root, PathBuf::from("workspace"), relative, symlinks).await
+}
+
+#[cfg(target_os = "linux")]
+async fn open_workspace_regular_file_from_fd(
+    root: std::fs::File,
+    workspace_root: PathBuf,
+    relative: PathBuf,
+    symlinks: WorkspaceSymlinks,
+) -> Result<OpenWorkspaceFile> {
+    use nix::fcntl::{OFlag, OpenHow, ResolveFlag, openat2};
+    use nix::sys::stat::Mode;
+    use std::os::fd::{AsRawFd, FromRawFd};
     let requested = workspace_root.join(&relative);
-    let workspace_root = workspace_root.to_path_buf();
     let mut resolve = ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_MAGICLINKS;
     if symlinks == WorkspaceSymlinks::Refused {
         resolve |= ResolveFlag::RESOLVE_NO_SYMLINKS;
     }
-    let root = root.into_std().await;
     tokio::task::spawn_blocking(move || {
         let raw_fd = openat2(
             root.as_raw_fd(),
@@ -615,6 +639,17 @@ pub(crate) async fn open_workspace_regular_file(
     _symlinks: WorkspaceSymlinks,
 ) -> Result<OpenWorkspaceFile> {
     workspace_relative_path(relative_path)?;
+    Err(CalmError::Internal(
+        "secure workspace reads require Linux openat2 support".into(),
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn open_workspace_regular_file_at(
+    _root: std::fs::File,
+    _relative_path: &str,
+    _symlinks: WorkspaceSymlinks,
+) -> Result<OpenWorkspaceFile> {
     Err(CalmError::Internal(
         "secure workspace reads require Linux openat2 support".into(),
     ))

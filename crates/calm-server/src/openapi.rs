@@ -85,6 +85,7 @@ use utoipa::OpenApi;
         crate::routes::task_recovery::get_attempts,
         crate::routes::isolated_tasks::start,
         crate::routes::isolated_tasks::report,
+        crate::routes::task_artifacts::get_file,
         crate::routes::task_recovery::recover,
         // ---- tracks ----
         crate::routes::track_templates::list_track_templates,

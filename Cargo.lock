@@ -455,6 +455,7 @@ dependencies = [
  "automerge",
  "axum",
  "axum-extra",
+ "base64",
  "blake3",
  "calm-exec",
  "calm-proc-supervisor",
