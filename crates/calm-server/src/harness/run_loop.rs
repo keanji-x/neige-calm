@@ -214,8 +214,7 @@ pub(super) struct Inner {
     interrupt_deadline: Mutex<Option<(String, Instant)>>,
     /// #1505 S4 review — do not re-attempt turn issuance before this instant.
     ///
-    /// Set by BOTH refusal arms: the model could not be resolved, or
-    /// `turn/start` itself failed.
+    /// Set when model selection, briefing preparation or `turn/start` fails.
     ///
     /// A resolution failure re-buffers, which arms `hard_fire`, which means
     /// the very next 50 ms tick would try again — and each attempt costs a
@@ -236,9 +235,10 @@ pub(super) struct Inner {
     /// to be kept in step by hand forever, for a value whose whole lifetime is
     /// one retry interval.
     ///
-    /// Three things fill it, and the wording differs because the reader's
+    /// These failures fill it, and the wording differs because the reader's
     /// situation does:
     ///
+    ///  * a briefing read failed — says input is retained and preparation will retry;
     ///  * a selection nobody can determine — names the choice that fixes it;
     ///  * a turn codex refused — says the message was NOT sent;
     ///  * a run of retryable failures that has lasted past
@@ -733,7 +733,7 @@ impl PlannerHarness {
     /// `None` does NOT mean "waiting is the right answer": a long-running
     /// outage is exactly the case where waiting is right and the reader is
     /// told anyway, because silence and a hang are indistinguishable from
-    /// their side. See [`Inner::issuance_block`] for the three producers, and
+    /// their side. See [`Inner::issuance_block`] for the producers, and
     /// for why this is live-only rather than a snapshot field.
     pub async fn issuance_block(&self) -> Option<String> {
         self.inner.issuance_block.lock().await.clone()
@@ -2020,7 +2020,7 @@ const SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT: Duration = Duration::from_secs(1);
 const MODEL_RESOLUTION_BUDGET: Duration = Duration::from_secs(15);
 
 /// How long to leave a card alone after an attempt that could still succeed on
-/// its own — codex unreachable, or `turn/start` refused.
+/// its own — briefing read failure, codex unreachable, or `turn/start` refused.
 ///
 /// See [`Inner::issuance_retry_after`]. Short enough that a codex restart costs
 /// the reader a pause rather than a stall, long enough that an outage does not
@@ -2891,11 +2891,17 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         Ok(segments) => segments,
         Err(error) => {
             // Briefing reads must not lose the drained notifications or leave
-            // the harness stuck Issuing. Retry from the original durable queue.
+            // the harness stuck Issuing. Rebuffering arms hard_fire, so use the
+            // existing pacing guard before another tick repeats reads and writes.
             rebuffer_head(inner, drained).await;
             *inner.state.lock().await = prior_turn
                 .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
                 .unwrap_or(HarnessState::Idle);
+            *inner.issuance_retry_after.lock().await = Some(Instant::now() + TRANSIENT_RETRY_DELAY);
+            *inner.issuance_block.lock().await = Some(
+                "Could not prepare the recovery decision briefing. Your messages remain queued; the system will retry."
+                    .into(),
+            );
             persist_snapshot(inner).await?;
             return Err(error);
         }
@@ -3925,3 +3931,6 @@ mod tests {
 
 #[cfg(test)]
 mod completed_commit_tests;
+
+#[cfg(test)]
+mod recovery_briefing_tests;

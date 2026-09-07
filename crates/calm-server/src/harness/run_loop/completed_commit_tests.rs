@@ -13,14 +13,14 @@ use crate::session_projection_repo::{
 };
 use serde_json::json;
 
-struct Fixture {
-    repo: Arc<SqlxRepo>,
-    harness: PlannerHarness,
+pub(super) struct Fixture {
+    pub(super) repo: Arc<SqlxRepo>,
+    pub(super) harness: PlannerHarness,
     _ingress: mpsc::Receiver<HarnessObservationDelivery>,
 }
 
 impl Fixture {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let area = repo
             .area_create(NewArea {
@@ -155,11 +155,11 @@ impl Fixture {
         (id, QueueEntry::system(observation, Some(id)).unwrap())
     }
 
-    async fn enqueue(&self, entries: Vec<QueueEntry>) {
+    pub(super) async fn enqueue(&self, entries: Vec<QueueEntry>) {
         self.harness.observe_durable_entries(entries).await.unwrap();
     }
 
-    async fn stored(&self) -> HarnessSnapshot {
+    pub(super) async fn stored(&self) -> HarnessSnapshot {
         let row = self
             .repo
             .session_projection_by_id(&self.harness.inner.worker_session_id)
