@@ -9,31 +9,36 @@ import { parseArgs } from 'node:util';
 
 const require = createRequire(new URL('../../fe/package.json', import.meta.url));
 
-/** Capture pixels only. This does NOT claim atomic screen-state observation. */
-export async function captureTerminal(page, terminalId) {
-  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(terminalId)) throw new Error('Invalid terminal ID');
-  const terminal = page.locator(`[data-nc-terminal-id="${terminalId}"]`);
-  if (await terminal.count() !== 1) throw new Error('Expected exactly one bound terminal');
-  // Reject offscreen targets before screenshot() can auto-scroll the page.
-  const before = await terminal.evaluate((element) => {
+async function inspectSurface(terminal) {
+  const state = await terminal.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     const visible = document.visibilityState === 'visible'
       && rect.width > 0 && rect.height > 0
       && rect.top >= 0 && rect.left >= 0
       && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
     const screen = element.querySelector('.xterm-screen');
-    const status = element.querySelector('.xterm-status');
+    const status = element.querySelector('.xterm-status, [data-nc-error-box]');
     return { visible, mounted: screen !== null, status: status?.textContent ?? null,
       bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
   });
-  if (!before.visible || !before.mounted || before.status !== null) {
+  if (!state.visible || !state.mounted || state.status !== null) {
     throw new Error('Terminal surface unavailable or not fully visible');
   }
+  return state;
+}
+
+/** Capture pixels only. This does NOT claim atomic screen-state observation. */
+export async function captureTerminal(page, terminalId) {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(terminalId)) throw new Error('Invalid terminal ID');
+  const terminal = page.locator(`.xterm-view[data-nc-terminal-id="${terminalId}"]`);
+  if (await terminal.count() !== 1) throw new Error('Expected exactly one bound terminal');
+  // Reject offscreen targets before capturing; never auto-scroll the page.
+  const before = await inspectSurface(terminal);
   // Browser-native clipping also captures the canvas/WebGL renderer. It does
   // not read canvas.toDataURL or recreate terminal glyphs from a text dump.
   const png = await page.screenshot({ type: 'png', clip: before.bounds, timeout: 5000 });
-  const after = await terminal.boundingBox();
-  if (JSON.stringify(after) !== JSON.stringify(before.bounds)) {
+  const after = await inspectSurface(terminal);
+  if (JSON.stringify(after.bounds) !== JSON.stringify(before.bounds)) {
     throw new Error('Terminal moved during capture; discard the image');
   }
   return { png, manifest: {

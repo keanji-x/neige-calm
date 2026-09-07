@@ -70,3 +70,52 @@ data, release paths, supervisor socket, and model runtime.
 
 Record actual commands/results per PR, plus preview URL, build SHA, runtime and
 model ID, before/after images, and action results for each completed slice.
+
+## Reproducible S0 screenshot probe
+
+`scripts/spike/terminal-capture.mjs` is developer tooling, not a Planner tool or
+the production observation service. It captures a terminal rectangle in an
+already open managed browser without navigation, resizing, scrolling or input.
+Its manifest deliberately says `pixels_only_unverified`: it has no atomic
+text/state snapshot, output cursor, scope enforcement or model receipt proof.
+Overlays within that rectangle are pixels too; this is not a production
+redaction or content-isolation boundary.
+
+Prepare `fe` dependencies with `npm ci` and install Playwright Chromium with
+`npx playwright install chromium` from `fe`. Start this checkout's Vite server
+on an unused port, for example:
+
+```bash
+cd fe
+npm run dev -- --host 127.0.0.1 --port 5198 --strictPort
+```
+
+From the repository root, exercise the real `TerminalCardView` and xterm with
+controlled WS output (no PTY or model is launched):
+
+```bash
+node scripts/spike/terminal-capture-check.mjs \
+  --base-url http://127.0.0.1:5198 \
+  --output-dir /tmp/terminal-capture-check-unique
+```
+
+The check saves a PNG with Chinese text and reverse-video menu highlighting,
+rejects disconnects before and during capture, and asserts no terminal input.
+It covers the actual nested card/surface DOM, not a hand-written replacement.
+Inspect the PNG as part of the probe; these checks do not prove visual fidelity
+for arbitrary TUI programs or genuine astry image input.
+
+For a deliberately configured preview browser with a private CDP endpoint:
+
+```bash
+node scripts/spike/terminal-capture.mjs \
+  --browser-url http://127.0.0.1:9222 \
+  --page-url http://127.0.0.1:5198/next/track/TRACK_ID \
+  --terminal-id TERMINAL_ID \
+  --output-dir /tmp/terminal-capture-live-unique
+```
+
+The page URL must match exactly, the actual surface must be unique and fully
+visible, and the output directory must not exist. A disconnected or moved
+surface is rejected. The developer retains browser ownership; no CDP endpoint
+is exposed to the Planner. This example does not set up a preview deployment.
