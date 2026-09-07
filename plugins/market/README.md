@@ -17,9 +17,11 @@ Say "I sold 40" and it calls the same tool with `60`; say "I sold it all" and
 it calls it with `0`, which removes the holding.
 
 An asset may also be named with its venue — `CRYPTO:BTC`, `US:NVDA`,
-`HK:1810`, `CN:600519` — which is what makes `W` on two venues two holdings
-rather than one. All four venues are priced, each in its own currency; see
-[Assets and sources](#assets-and-sources).
+`HK:1810`, `SH:600519`, `SZ:000001` — which is what makes `W` on two venues two
+holdings rather than one. Every venue has a price source, and each source
+quotes in its own currency. Not every symbol on a venue is priced: a code whose
+quote currency the code itself does not fix is refused rather than guessed at.
+See [Assets and sources](#assets-and-sources).
 
 | tool | what it does |
 | --- | --- |
@@ -84,7 +86,8 @@ for …" rather than an error.
 ## Assets and sources
 
 An asset is named either bare (`BTC`) or **venue-qualified**,
-`<VENUE>:<SYMBOL>`, over four venues: `CRYPTO`, `US`, `HK`, `CN`. Names are
+`<VENUE>:<SYMBOL>`, over five venues: `CRYPTO`, `US`, `HK`, `SH` (Shanghai) and
+`SZ` (Shenzhen). Names are
 trimmed and upper-cased, so `crypto:btc` and `CRYPTO:BTC` are one identity, and
 a prefix counts as a prefix only when the colon is there — `USNVDA` is a crypto
 name, not NVDA.
@@ -108,18 +111,51 @@ plugin's business. There are two:
 | `CRYPTO` | Binance spot | `<SYMBOL>USDT` | USDT |
 | `US` | Sina `hq.sinajs.cn` | `gb_<symbol>` | USD |
 | `HK` | Sina `hq.sinajs.cn` | `hk<code padded to 5 digits>` | HKD |
-| `CN` | Sina `hq.sinajs.cn` | `sh<code>` **and** `sz<code>` | CNY |
+| `SH` | Sina `hq.sinajs.cn` | `sh<6-digit code>` | CNY |
+| `SZ` | Sina `hq.sinajs.cn` | `sz<6-digit code>` | CNY |
 
 An identity is never handed to the other venue's source: routing `US:BTC` to
 Binance would answer with bitcoin's price attached to a US listing, which is
 the fabricated number this whole identity layer exists to prevent.
 
-A `CN` code does not say which exchange lists it, and no rule keyed on the
-digits survives contact with real tickers, so both candidates go out in one
-request and the one that answers is the one taken. A code **both** exchanges
-answer is refused rather than picked between — `CN:000001` is the Shanghai
-Composite index on `sh` and Ping An Bank on `sz`, a factor-of-300 apart. Such
-a code cannot be priced until the grammar grows separate `SH` and `SZ` venues.
+Shanghai and Shenzhen are two venues rather than one `CN`, because a six-digit
+code does not say which exchange lists it and no rule keyed on the digits
+survives contact with real tickers. A single `CN` venue had to ask both and
+take whichever answered, and that is unsound the moment only one of them
+answers: `000001` is the Shanghai Composite index at 3933 on `sh` and Ping An
+Bank at 11.87 on `sz`, so a day when either is halted — this source answers a
+halted security with a row of zeros, which is filtered out — leaves exactly one
+answer and the wrong security accepted in silence. The caller names the
+exchange instead.
+
+#### Which currency a stock price is in
+
+**Neither source states one.** A Sina row is a comma-separated list of numbers
+with no unit anywhere on it, and Binance's `/ticker/price` answers a bare
+number for a pair whose quote leg this plugin pinned itself. So the currency
+attached to every published price is this plugin's own determination.
+
+Venue alone is not enough to make it, and getting it wrong is invisible to the
+cross-currency check below, because it happens *inside* one venue — every row
+still says `CNY`, so a total is stated and written to history. Three real
+counterexamples, read off the live endpoint on 2026-09-07, each listed on
+exactly one exchange:
+
+| code | what it is | quoted in |
+| --- | --- | --- |
+| `SH:900932` | 陆家Ｂ股 0.385, a Shanghai B share | **USD**, not CNY |
+| `SZ:200725` | 京东方Ｂ 4.770, a Shenzhen B share | **HKD**, not CNY |
+| `HK:89988` | 阿里巴巴－ＷＲ 94.45, a renminbi counter | **CNY**, not HKD |
+
+So the code ranges below are an allowlist — a code is priced only where the
+range itself fixes the currency — and everything else is refused out loud:
+
+| venue | priced | refused, with the reason said out loud |
+| --- | --- | --- |
+| `US` | any `gb_` symbol, in USD | — |
+| `HK` | one to five digits, padded to five, below `80000`, in HKD | `8xxxx` (renminbi counters, verified on `hk89988`) and `9xxxx` (refused as the conservative side of the same boundary) |
+| `SH` | `6xxxxx` (A shares and STAR), in CNY | `9xxxxx` B shares, and the fund, bond and index ranges |
+| `SZ` | `00xxxx` (main board) and `30xxxx` (ChiNext), in CNY | `2xxxxx` B shares, and the fund, bond and index ranges |
 
 The holdings table carries the venue as its own column rather than glued onto
 the name, so `US:W` and `CRYPTO:W` read as two distinguishable rows;
@@ -128,10 +164,11 @@ as `US:W` and `CRYPTO:W`.
 
 ### Currencies, and why a total sometimes goes missing
 
-**Every price carries the currency its own market quotes in**, and that
-currency travels with the number to the table, to the history and to
-`market.holdings.list`. Nothing is converted: this plugin holds no exchange
-rates.
+**Every price carries the currency this plugin determined it is in**, and that
+currency travels with the number to `market.quote`, to the holdings table and
+to `market.holdings.list`. It stops there: a stored history point is
+`{at, total}` and records no unit, so the history table's total column carries
+none. Nothing is converted either: this plugin holds no exchange rates.
 
 So a portfolio whose priced holdings are all in one currency gets a total in
 that currency, as it always did — but one holding `BTC` (USDT) alongside
@@ -143,7 +180,9 @@ reader can actually use.
 The consequence worth knowing: such a portfolio also contributes **no history
 points** for as long as it spans currencies, because a history point is a total.
 Its series stands still, exactly as a portfolio with an unpriceable holding
-does, until it is back in one currency or currency conversion lands.
+does. It resumes as soon as the priced holdings are back in one currency — by
+selling or by removing the odd holding — and would resume for a mixed portfolio
+too once currency conversion lands.
 
 ### Why the `Referer` header
 
@@ -171,7 +210,7 @@ is a working install.
 | `quote` | `USDT` | the settlement currency a total is meant to be stated in |
 | `poll_seconds` | `30` | seconds between refreshes (floored at 5) |
 | `binance_endpoint` | `https://data-api.binance.vision` | the Binance market-data base URL |
-| `sina_endpoint` | `https://hq.sinajs.cn` | the US/HK/CN quote-list base URL |
+| `sina_endpoint` | `https://hq.sinajs.cn` | the US/HK/SH/SZ quote-list base URL |
 
 `quote` is **not** a pricing input. Each market is quoted in its own currency
 and nothing converts between them yet, so today this key changes none of the
@@ -179,8 +218,9 @@ published numbers; it is what a later slice will convert totals into. It used
 to do three jobs at once — display unit, Binance's quote leg, and "this asset
 is the unit, worth 1" — and the last two now live inside the Binance source
 where they belong. Setting `quote` to `CNY` no longer sends `BTCCNY` to
-Binance, a pair that does not exist and that used to leave every crypto row
-unpriced.
+Binance: that pair does not exist (`{"code":-1121,"msg":"Invalid symbol."}`),
+so a `BTC` holding on a CNY-settling install used to go unpriced — and with it
+the whole Track's history series.
 
 Configuration is read at handshake, so a change takes effect when the plugin is
 restarted; a re-handshake replaces it for the running poll thread too, rather
@@ -199,6 +239,16 @@ affected by this.
   prices row by row, which is the honest form of the same information.
 * **A total is only stated when the priced holdings share one currency**, and
   a tick without a total contributes no history point. See *Currencies* above.
+* **A code whose quote currency the code does not fix is refused, not priced.**
+  Shanghai and Shenzhen B shares, and Hong Kong's renminbi and US-dollar
+  counters, cannot be held here yet; nor can the mainland fund, bond and index
+  ranges. The refusal names the reason. Reading the counter currency off the
+  source is not possible — it does not publish one — so closing this means a
+  second source or a checked-in table, which is not done.
+* **`CN:` is no longer a venue.** A holding recorded as `CN:600519` before the
+  Shanghai/Shenzhen split no longer parses, and the read path drops rows it
+  cannot parse and rewrites the document without them on the next `set`. Such a
+  holding has to be recorded again as `SH:600519` or `SZ:000001`.
 * **Stored history points do not record their currency**, so the history
   table's total column carries no unit. A series written before and after a
   portfolio changed the currency it totals in is two series plotted as one;

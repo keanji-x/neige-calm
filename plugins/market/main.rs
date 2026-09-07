@@ -1,4 +1,4 @@
-//! Binance portfolio plugin — the kernel's first *pushing* plugin.
+//! Market portfolio plugin — the kernel's first *pushing* plugin.
 //!
 //! It owns no UI and writes no report. Every refresh it prices the holdings
 //! named in its configuration and pushes two overlays at the configured
@@ -16,12 +16,19 @@
 //! without the document being rewritten — the body keeps the reference, the
 //! value moves underneath it.
 //!
-//! **Endpoint.** The default is `data-api.binance.vision`, not
-//! `api.binance.com`. The latter answers `HTTP 451`-style
+//! **Endpoints.** Two sources answer here, one per family of venues.
+//!
+//! *Binance* (the `CRYPTO` venue). The default is `data-api.binance.vision`,
+//! not `api.binance.com`. The latter answers `HTTP 451`-style
 //! `"Service unavailable from a restricted location"` from many hosts
 //! (verified from this project's own deploy host), while the former serves the
-//! identical `/api/v3` market-data paths with no key and no geo gate. Both are
-//! configurable; nothing here assumes either.
+//! identical `/api/v3` market-data paths with no key and no geo gate.
+//!
+//! *Sina* (`hq.sinajs.cn`, the `US`/`HK`/`SH`/`SZ` venues). Its `/list=` path
+//! serves nothing without a `Referer` header and answers in GBK; see
+//! [`sina_quote`].
+//!
+//! Both are configurable; nothing here assumes either.
 //!
 //! **History is forward-only.** The series starts empty and grows one point
 //! per successful refresh; the plugin never back-fills from klines. That is
@@ -153,12 +160,24 @@ impl Rpc {
 /// — no "six digits means Shanghai", no "four digits means Hong Kong". Every
 /// such rule has counterexamples on real tickers, and a wrong guess here is a
 /// silently wrong number in a total, not a visible failure.
+///
+/// Mainland China is TWO venues, `SH` and `SZ`, not one `CN`. A single `CN`
+/// venue could not say which exchange lists a code, so it had to ask both and
+/// take whichever answered — and that is unsound whenever only one of them
+/// answers with a price for a code both list. `CN:000001` is the Shanghai
+/// Composite index at 3933 on `sh` and Ping An Bank at 11.87 on `sz`; the day
+/// one of the two is halted and returns the source's `0.0000` row, the
+/// positive-price filter leaves exactly one answer and the wrong security is
+/// accepted in silence. The caller names the exchange instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Venue {
     Crypto,
     Us,
     Hk,
-    Cn,
+    /// Shanghai Stock Exchange.
+    Sh,
+    /// Shenzhen Stock Exchange.
+    Sz,
 }
 
 impl Venue {
@@ -168,7 +187,8 @@ impl Venue {
             Venue::Crypto => "CRYPTO",
             Venue::Us => "US",
             Venue::Hk => "HK",
-            Venue::Cn => "CN",
+            Venue::Sh => "SH",
+            Venue::Sz => "SZ",
         }
     }
 
@@ -177,7 +197,8 @@ impl Venue {
             "CRYPTO" => Some(Venue::Crypto),
             "US" => Some(Venue::Us),
             "HK" => Some(Venue::Hk),
-            "CN" => Some(Venue::Cn),
+            "SH" => Some(Venue::Sh),
+            "SZ" => Some(Venue::Sz),
             _ => None,
         }
     }
@@ -207,9 +228,11 @@ impl AssetId {
 /// What a caller is told when [`parse_asset`] refuses. One string, shared by
 /// both tools, so the two cannot describe two different grammars.
 const ASSET_SYNTAX_ERROR: &str = "`asset` must be a name like \"BTC\", or a \
-    venue-qualified \"<VENUE>:<SYMBOL>\" over the venues CRYPTO, US, HK and CN. \
-    A name with no venue is a crypto asset. Only CRYPTO has a price source \
-    today: a name on US, HK or CN can be recorded, but nothing prices it yet.";
+    venue-qualified \"<VENUE>:<SYMBOL>\" over the venues CRYPTO, US, HK, SH \
+    (Shanghai) and SZ (Shenzhen) — for example \"CRYPTO:BTC\", \"US:NVDA\", \
+    \"HK:1810\", \"SH:600519\", \"SZ:000001\". A name with no venue is a \
+    crypto asset. Every venue has a price source, each quoting in its own \
+    currency, and nothing is converted between them.";
 
 /// The one place an asset name becomes an identity.
 ///
@@ -472,7 +495,8 @@ fn portfolios(rpc: &Rpc) -> Result<Vec<String>, String> {
 // | `CRYPTO` | Binance spot | `<SYMBOL>USDT` |
 // | `US` | Sina `hq.sinajs.cn` | `gb_<symbol>` |
 // | `HK` | Sina `hq.sinajs.cn` | `hk<symbol zero-padded to 5>` |
-// | `CN` | Sina `hq.sinajs.cn` | `sh<symbol>` and `sz<symbol>` |
+// | `SH` | Sina `hq.sinajs.cn` | `sh<symbol>` |
+// | `SZ` | Sina `hq.sinajs.cn` | `sz<symbol>` |
 //
 // An identity is never handed to the other venue's source. Routing `US:BTC` to
 // Binance would come back with bitcoin's price attached to a US-listing
@@ -480,22 +504,36 @@ fn portfolios(rpc: &Rpc) -> Result<Vec<String>, String> {
 // identity layer exists to prevent.
 //
 // **The prices are in different currencies, and nothing here converts them.**
-// A [`Quote::Price`] carries the currency the SOURCE quoted it in — USDT off
-// Binance, USD/HKD/CNY off Sina — and that currency travels with the number to
-// every exit. Summing across two of them is the one thing this slice must not
-// do; see [`PortfolioTotal`].
+// A [`Quote::Price`] carries the currency this plugin determined the number is
+// in, and that currency travels with the number to every exit. Summing across
+// two of them is the one thing this slice must not do; see [`PortfolioTotal`].
+//
+// **Neither source states a currency.** Binance's `/ticker/price` answers a
+// bare number for a pair whose quote leg this plugin pinned itself (`USDT`),
+// and Sina's `/list=` rows carry no unit at all. So the currency of a stock
+// price is DECIDED HERE, from the venue and the code range — and where that
+// decision cannot be made the quote is refused rather than labelled with a
+// guess. See [`sina_target`] for which ranges are priced and why.
 
 /// What a provider answered, or why it could not.
 #[derive(Clone, Debug, PartialEq)]
 enum Quote {
-    /// A positive, finite price, and the currency THAT SOURCE quoted it in —
-    /// never the configured settlement currency. The two are the same only by
+    /// A positive, finite price, and the currency the number is in — never the
+    /// configured settlement currency. The two are the same only by
     /// coincidence, and labelling an HKD price `USDT` because that is what the
     /// operator configured is the defect this payload exists to prevent.
+    ///
+    /// Neither source states its currency, so this string is this plugin's own
+    /// determination — Binance's pinned quote leg for crypto, the venue and
+    /// code range for a stock. A code whose currency cannot be determined that
+    /// way is [`Quote::Failed`], not a `Price` with a guessed unit.
     Price(f64, &'static str),
-    /// The provider does not know this asset. Distinct from a failure: it is
-    /// the answer that a future provider would turn into a price, and the
-    /// answer a caller can act on by checking the name.
+    /// No valid quote came back, and nothing went wrong to explain it. That
+    /// covers a name the source does not list, a name this plugin has no way
+    /// to spell for the source, and a listed name answering the row of zeros
+    /// this source serves for a halted or delisted security. Distinct from a
+    /// failure: the lookup worked, so a caller acts on the name rather than on
+    /// the transport.
     Unknown,
     /// The lookup itself failed — network, malformed response, a venue error.
     Failed(String),
@@ -513,7 +551,7 @@ enum Quote {
 fn quote_asset(cfg: &Config, asset: &AssetId) -> Quote {
     match asset.venue {
         Venue::Crypto => binance_spot(cfg, asset),
-        Venue::Us | Venue::Hk | Venue::Cn => sina_quote(cfg, asset),
+        Venue::Us | Venue::Hk | Venue::Sh | Venue::Sz => sina_quote(cfg, asset),
     }
 }
 
@@ -555,9 +593,10 @@ fn quote_cached(cfg: &Config, asset: &AssetId, cache: &mut PriceCache) -> Quote 
 /// `<BASE><QUOTE>` over the legs Binance itself lists, which is a fact about
 /// that exchange and not a preference an operator holds. Wiring the settlement
 /// currency into it meant an install settling in `CNY` asked for `BTCCNY` — a
-/// pair that does not exist, verified: the endpoint answers an empty body, so
-/// every crypto row went `Failed`, `complete` never held, and the Track's whole
-/// history series stood still.
+/// pair that does not exist, verified: the endpoint answers
+/// `{"code":-1121,"msg":"Invalid symbol."}`, so every crypto row went
+/// unpriced, `complete` never held, and the Track's whole history series stood
+/// still.
 const BINANCE_QUOTE_LEG: &str = "USDT";
 
 /// The spot symbol Binance is asked about.
@@ -622,7 +661,7 @@ fn binance_spot(cfg: &Config, asset: &AssetId) -> Quote {
 }
 
 // ---------------------------------------------------------------------------
-// Sina — the US, HK and CN source
+// Sina — the US, HK, SH and SZ source
 // ---------------------------------------------------------------------------
 
 /// `hq.sinajs.cn` serves nothing without this header: the response to a
@@ -631,9 +670,9 @@ fn binance_spot(cfg: &Config, asset: &AssetId) -> Quote {
 const SINA_REFERER: &str = "https://finance.sina.com.cn";
 
 /// A ceiling on how much of a Sina response is read. One row is a few hundred
-/// bytes and at most two are asked for; anything past this is a wedged or
-/// hostile endpoint, and reading it into memory unbounded is the only way this
-/// function could hurt the process.
+/// bytes and exactly one is asked for, so anything past this is a wedged or
+/// hostile endpoint. What the ceiling buys is bounded memory for one response;
+/// it says nothing about the rest of the process.
 const SINA_MAX_BODY_BYTES: u64 = 64 * 1024;
 
 /// Which field of a Sina row is the last traded price, PER MARKET. The field
@@ -657,61 +696,157 @@ const SINA_MAX_BODY_BYTES: u64 = 64 * 1024;
 const SINA_LAST_PRICE_FIELD_US: usize = 1;
 const SINA_LAST_PRICE_FIELD_HK: usize = 6;
 /// Shanghai and Shenzhen share one row layout.
-const SINA_LAST_PRICE_FIELD_CN: usize = 3;
+const SINA_LAST_PRICE_FIELD_SH_SZ: usize = 3;
 
-/// How one identity is asked for: which `list=` symbols, which field of the
-/// answer is the price, and what currency that price is in.
+/// How one identity is asked for: which `list=` symbol, which field of the
+/// answer is the price, and what currency this plugin has determined that
+/// price to be in.
 struct SinaLookup {
-    /// Every `list=` symbol to ask about, sent as ONE request.
-    ///
-    /// More than one only for `CN`, where the venue does not say which of the
-    /// two exchanges lists the code and there is no rule keyed on the digits
-    /// that survives contact with real tickers. Asking both and taking the one
-    /// that answers is cheaper than a rule and cannot be wrong about a code
-    /// only one of them lists; a code BOTH list is refused rather than picked
-    /// between (see [`sina_quote`]).
-    symbols: Vec<String>,
+    /// The single `list=` symbol to ask about.
+    symbol: String,
     price_field: usize,
+    /// **Not read off the wire.** The source states no unit anywhere in its
+    /// response; this is the plugin's own determination from the venue and the
+    /// code range, and [`sina_target`] refuses every code it cannot make that
+    /// determination for.
     currency: &'static str,
 }
 
-/// Build the request for one identity, or `None` when this source has no way
-/// to spell it.
-fn sina_lookup(asset: &AssetId) -> Option<SinaLookup> {
-    let digits = |symbol: &str, len: usize| {
-        (symbol.len() == len && symbol.chars().all(|c| c.is_ascii_digit()))
-            .then(|| symbol.to_string())
+/// What this source can do with one identity.
+enum SinaTarget {
+    /// It can be asked for, and its quote currency is determined.
+    Ask(SinaLookup),
+    /// This source has no way to spell the identity at all — `HK:TENCENT` is a
+    /// legal identity and not a Hong Kong stock code. No request goes out and
+    /// the answer is [`Quote::Unknown`]: nothing was asked, so nothing is
+    /// known.
+    Unspellable,
+    /// The identity is spellable, but which currency the exchange quotes that
+    /// code in is not determined by the code. Refused out loud rather than
+    /// priced under a guessed unit; the string says why.
+    UndeterminedCurrency(String),
+}
+
+/// Build the request for one identity, and decide what currency its price
+/// would be in.
+///
+/// **The source does not say.** A `hq.sinajs.cn` row is a comma-separated list
+/// of numbers with no unit on any of them, so every currency this plugin
+/// publishes for a stock is decided right here. Venue alone is not enough to
+/// decide it — all three of these are counterexamples, read off the live
+/// endpoint on 2026-09-07:
+///
+/// | code | what it is | quoted in |
+/// | --- | --- | --- |
+/// | `sh900932` | 陆家Ｂ股, a Shanghai B share | **USD**, not CNY |
+/// | `sz200725` | 京东方Ｂ, a Shenzhen B share | **HKD**, not CNY |
+/// | `hk89988` | 阿里巴巴－ＷＲ, a renminbi counter | **CNY**, not HKD |
+///
+/// None of the three is caught by asking a second exchange: each is listed
+/// once, answers once, and would be published as a number in the wrong
+/// currency — and then summed into a total in that wrong currency, which is
+/// precisely the defect [`PortfolioTotal`] exists to prevent, occurring
+/// *inside* one venue where no cross-currency check can see it.
+///
+/// So the ranges below are an ALLOWLIST: a code is priced only where the range
+/// itself fixes the currency. Everything else is
+/// [`SinaTarget::UndeterminedCurrency`] — visible, not guessed. What that
+/// excludes is a registered gap: B shares, Hong Kong's renminbi and
+/// US-dollar counters, and the mainland fund, bond and index code ranges.
+fn sina_target(asset: &AssetId) -> SinaTarget {
+    let undetermined = |asset: &AssetId, why: &str| {
+        SinaTarget::UndeterminedCurrency(format!(
+            "this plugin cannot determine what currency {} is quoted in ({why}), and \
+             will not publish a price under a guessed one",
+            asset.canonical(),
+        ))
     };
+    let six_digits = |symbol: &str| symbol.len() == 6 && symbol.chars().all(|c| c.is_ascii_digit());
     match asset.venue {
         // Crypto never reaches this source; `quote_asset` routes it to
         // Binance. Spelled out rather than left to a catch-all so that adding
         // a venue is a compile error here.
-        Venue::Crypto => None,
-        Venue::Us => Some(SinaLookup {
-            symbols: vec![format!("gb_{}", asset.symbol.to_ascii_lowercase())],
+        Venue::Crypto => SinaTarget::Unspellable,
+        // Sina's `gb_` list is US-listed securities, and a US listing is
+        // quoted in US dollars.
+        Venue::Us => SinaTarget::Ask(SinaLookup {
+            symbol: format!("gb_{}", asset.symbol.to_ascii_lowercase()),
             price_field: SINA_LAST_PRICE_FIELD_US,
             currency: "USD",
         }),
         // Hong Kong codes are zero-padded to five digits in this list: `1810`
-        // is `hk01810`. A shorter code is padded; a code that is not four or
-        // five digits is not a Hong Kong stock code at all and gets no
-        // request rather than a padded guess.
+        // is `hk01810`, and `1` is `hk00001` (Cheung Kong, which answers). A
+        // symbol that is not one to five digits is not a Hong Kong stock code
+        // at all and gets no request rather than a padded guess.
+        //
+        // The padded code must be below `80000`. `hk89988` is Alibaba's
+        // renminbi counter — live at 94.45 CNY while `hk09988` trades at
+        // 111.00 HKD, both verified — and the row gives no way to tell which
+        // currency it is in. What is established here is only that: 8xxxx is
+        // not reliably HKD. 9xxxx is refused on no evidence of its own, as the
+        // conservative side of a boundary that had to be drawn somewhere; if a
+        // 9xxxx code turns out to be an ordinary HKD listing this refuses a
+        // holding it could have priced, which is the failure worth having.
         Venue::Hk => {
-            let code = (asset.symbol.len() <= 5
-                && !asset.symbol.is_empty()
-                && asset.symbol.chars().all(|c| c.is_ascii_digit()))
-            .then(|| format!("{:0>5}", asset.symbol))?;
-            Some(SinaLookup {
-                symbols: vec![format!("hk{code}")],
+            if asset.symbol.is_empty()
+                || asset.symbol.len() > 5
+                || !asset.symbol.chars().all(|c| c.is_ascii_digit())
+            {
+                return SinaTarget::Unspellable;
+            }
+            let code = format!("{:0>5}", asset.symbol);
+            if code.starts_with('8') || code.starts_with('9') {
+                return undetermined(
+                    asset,
+                    "Hong Kong codes from 80000 up include renminbi and US-dollar \
+                     counters, and the row does not say which currency it is in",
+                );
+            }
+            SinaTarget::Ask(SinaLookup {
+                symbol: format!("hk{code}"),
                 price_field: SINA_LAST_PRICE_FIELD_HK,
                 currency: "HKD",
             })
         }
-        Venue::Cn => {
-            let code = digits(&asset.symbol, 6)?;
-            Some(SinaLookup {
-                symbols: vec![format!("sh{code}"), format!("sz{code}")],
-                price_field: SINA_LAST_PRICE_FIELD_CN,
+        // Shanghai: `6xxxxx` is the A-share main board and the STAR market,
+        // both renminbi. `9xxxxx` is the B-share board, quoted in US DOLLARS
+        // (`sh900932`, 陆家Ｂ股, 0.385 USD). The remaining ranges are funds,
+        // bonds and indices, which this slice does not price.
+        Venue::Sh => {
+            if !six_digits(&asset.symbol) {
+                return SinaTarget::Unspellable;
+            }
+            if !asset.symbol.starts_with('6') {
+                return undetermined(
+                    asset,
+                    "only Shanghai's 6xxxxx A-share and STAR codes are renminbi here; \
+                     9xxxxx is the B-share board, which quotes in US dollars",
+                );
+            }
+            SinaTarget::Ask(SinaLookup {
+                symbol: format!("sh{}", asset.symbol),
+                price_field: SINA_LAST_PRICE_FIELD_SH_SZ,
+                currency: "CNY",
+            })
+        }
+        // Shenzhen: `00xxxx` main board and `30xxxx` ChiNext, both renminbi.
+        // `2xxxxx` is the B-share board, quoted in HONG KONG DOLLARS
+        // (`sz200725`, 京东方Ｂ, 4.770 HKD, against `sz000725`'s 5.680 CNY).
+        Venue::Sz => {
+            if !six_digits(&asset.symbol) {
+                return SinaTarget::Unspellable;
+            }
+            if !(asset.symbol.starts_with("00") || asset.symbol.starts_with("30")) {
+                return undetermined(
+                    asset,
+                    "only Shenzhen's 00xxxx main-board and 30xxxx ChiNext codes are \
+                     renminbi here; 2xxxxx is the B-share board, which quotes in Hong \
+                     Kong dollars",
+                );
+            }
+            SinaTarget::Ask(SinaLookup {
+                symbol: format!("sz{}", asset.symbol),
+                price_field: SINA_LAST_PRICE_FIELD_SH_SZ,
                 currency: "CNY",
             })
         }
@@ -733,30 +868,33 @@ fn sina_payload<'a>(body: &'a str, symbol: &str) -> Option<&'a str> {
     Some(&rest[..rest.find('"')?])
 }
 
-/// Sina's quote list, `https://hq.sinajs.cn/list=<symbols>`.
+/// Sina's quote list, `https://hq.sinajs.cn/list=<symbol>`.
 ///
-/// **Batching.** The endpoint takes any number of comma-separated symbols and
-/// answers one row each; this function uses that only to send a `CN` code's
-/// two candidate exchanges together. It does NOT batch across the holdings of
-/// a pass: that would mean draining the per-pass [`PriceCache`] into a
-/// two-phase "collect the misses, fetch, fill" pass over every Track, and the
-/// cache already collapses the repeat this plugin actually makes (the same
-/// asset held by several Tracks). One request per distinct asset per pass is
-/// the cost, and it is bounded by how many assets are held, not by how many
-/// Tracks hold them.
+/// **One symbol per request.** The endpoint takes any number of
+/// comma-separated symbols and answers one row each, and this function uses
+/// none of that: an identity names its exchange, so there is exactly one
+/// symbol to ask about. Batching across the holdings of a pass would mean
+/// draining the per-pass [`PriceCache`] into a two-phase "collect the misses,
+/// fetch, fill" pass over every Track, and the cache already collapses the
+/// repeat this plugin actually makes (the same asset held by several Tracks).
+/// One request per distinct asset per pass is the cost, and it is bounded by
+/// how many assets are held, not by how many Tracks hold them.
 ///
 /// **The response is GBK**, and it is read with `from_utf8_lossy` rather than
 /// transcoded. Every byte this function looks at is ASCII — the digits of a
-/// price, `"` and `,` — and `from_utf8_lossy` leaves ASCII bytes exactly where
-/// they were, replacing only the invalid sequences (the Chinese names, which
-/// nothing here reads). `"` (0x22) and `,` (0x2C) are also outside GBK's
-/// trailing-byte range (0x40–0xFE), so no name can smuggle a delimiter into
-/// the split.
+/// price, `"` and `,` — and `from_utf8_lossy` preserves the ASCII content and
+/// the order of the delimiters, replacing each invalid sequence (the Chinese
+/// names, which nothing here reads) with U+FFFD. Byte OFFSETS do move, since
+/// the replacement is three bytes wide; nothing here indexes by offset. `"`
+/// (0x22) and `,` (0x2C) are also outside GBK's trailing-byte range
+/// (0x40–0xFE), so no name can smuggle a delimiter into the split.
 fn sina_quote(cfg: &Config, asset: &AssetId) -> Quote {
-    let Some(lookup) = sina_lookup(asset) else {
-        return Quote::Unknown;
+    let lookup = match sina_target(asset) {
+        SinaTarget::Ask(lookup) => lookup,
+        SinaTarget::Unspellable => return Quote::Unknown,
+        SinaTarget::UndeterminedCurrency(why) => return Quote::Failed(why),
     };
-    let url = format!("{}/list={}", cfg.sina_endpoint, lookup.symbols.join(","));
+    let url = format!("{}/list={}", cfg.sina_endpoint, lookup.symbol);
     let response = match ureq::get(&url)
         .set("Referer", SINA_REFERER)
         .timeout(Duration::from_secs(10))
@@ -781,47 +919,27 @@ fn sina_quote(cfg: &Config, asset: &AssetId) -> Quote {
     }
     let body = String::from_utf8_lossy(&bytes);
 
-    let mut priced: Vec<(&str, f64)> = Vec::new();
-    for symbol in &lookup.symbols {
-        let Some(payload) = sina_payload(&body, symbol) else {
-            return Quote::Failed(format!("{url}: the response carried no `{symbol}` row"));
-        };
-        if payload.is_empty() {
-            // "We do not list this." Not an error, and not a price.
-            continue;
-        }
-        let fields: Vec<&str> = payload.split(',').collect();
-        let Some(raw) = fields.get(lookup.price_field) else {
-            return Quote::Failed(format!(
-                "{symbol}: the row has {} fields, so it has no field {}",
-                fields.len(),
-                lookup.price_field,
-            ));
-        };
-        // A row of zeros is how this source spells a halted or unlisted
-        // symbol, so a non-price here is `Unknown`-shaped, not a failure: it
-        // simply does not join `priced`.
-        if let Some(price) = positive_price(raw) {
-            priced.push((symbol.as_str(), price));
-        }
+    let symbol = &lookup.symbol;
+    let Some(payload) = sina_payload(&body, symbol) else {
+        return Quote::Failed(format!("{url}: the response carried no `{symbol}` row"));
+    };
+    if payload.is_empty() {
+        // "We do not list this." Not an error, and not a price.
+        return Quote::Unknown;
     }
-    match priced.as_slice() {
-        [] => Quote::Unknown,
-        [(_, price)] => Quote::Price(*price, lookup.currency),
-        // KNOWN GAP. A `CN` code both exchanges list cannot be resolved from
-        // the identity alone — `CN:000001` is the Shanghai Composite index on
-        // `sh` and Ping An Bank on `sz`, both live, and picking either would
-        // be a number nobody asked for. It is refused, visibly, rather than
-        // guessed. Splitting `CN` into `SH`/`SZ` venues would close it, and
-        // that is a change to the identity grammar, not to this source.
-        many => Quote::Failed(format!(
-            "{} is listed on more than one exchange ({}); this plugin will not choose between them",
-            asset.canonical(),
-            many.iter()
-                .map(|(symbol, _)| *symbol)
-                .collect::<Vec<_>>()
-                .join(", "),
-        )),
+    let fields: Vec<&str> = payload.split(',').collect();
+    let Some(raw) = fields.get(lookup.price_field) else {
+        return Quote::Failed(format!(
+            "{symbol}: the row has {} fields, so it has no field {}",
+            fields.len(),
+            lookup.price_field,
+        ));
+    };
+    // A row of zeros is how this source spells a halted or unlisted symbol, so
+    // a non-price here is `Unknown`-shaped, not a failure.
+    match positive_price(raw) {
+        Some(price) => Quote::Price(price, lookup.currency),
+        None => Quote::Unknown,
     }
 }
 
@@ -871,9 +989,19 @@ impl PortfolioTotal {
         }
     }
 
-    /// The `value` cell of the `Total` row. Zero for an empty portfolio —
-    /// which is a true total, not a missing one — and `null` for every case
-    /// where a number would be a claim this plugin cannot make.
+    /// The `value` cell of the `Total` row. `null` wherever a number would be
+    /// a claim this plugin cannot make.
+    ///
+    /// [`Self::Nothing`] is the exception, and it is not a clean one. It
+    /// covers an EMPTY portfolio, whose total really is zero, and equally a
+    /// non-empty portfolio not one row of which could be priced, whose total
+    /// is unknown — the two are one variant because `currencies` is empty
+    /// either way. The cell says `0.0` for both, while
+    /// [`Self::no_total_reason`] says "nothing could be priced" for both, so a
+    /// non-empty unpriced portfolio publishes a `0.0` under a caption denying
+    /// there is a total. That predates this slice; what is new is that the
+    /// caption is now printed next to the number. Splitting the variant is
+    /// left undone rather than papered over.
     fn value_cell(&self) -> Value {
         match self {
             Self::Priced { amount, .. } => json!(round_to(*amount, 2)),
@@ -929,7 +1057,7 @@ fn price_holdings(
                 }
             }
             Quote::Unknown => Err(format!(
-                "no configured source prices {}",
+                "no valid quote came back for {} this pass",
                 holding.asset.canonical()
             )),
             Quote::Failed(why) => Err(why),
@@ -1255,6 +1383,11 @@ fn refresh(rpc: &Rpc, cfg: &Config, track_id: &str, cache: &mut PriceCache) -> R
             return Refreshed::Partially("the history could not be read".into());
         }
     };
+    // The currency is dropped here, deliberately and visibly: a stored point
+    // is `{at, total}` and records no unit. So the currency a price carries
+    // reaches the quote, the rows and the tables, and stops at this line — a
+    // Track that switches the currency it totals in writes two series into one
+    // document. Recording the unit per point is the next slice's work.
     points.push(json!({ "at": at, "total": round_to(total, 2) }));
     if points.len() > MAX_HISTORY_POINTS {
         let drop = points.len() - MAX_HISTORY_POINTS;
@@ -1435,8 +1568,9 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
                 }),
             ),
             Quote::Unknown => tool_error(format!(
-                "No configured source prices `{canonical}` — either its venue has no \
-                 source yet, or the source it has does not list this symbol."
+                "No valid quote came back for `{canonical}` — the source may not list \
+                 this symbol, may have no way to spell it, or may be answering a row \
+                 of zeros for a halted or delisted one."
             )),
             Quote::Failed(why) => tool_error(format!("Could not price {canonical} — {why}.")),
         };
@@ -1806,16 +1940,18 @@ mod tests {
     /// This replaces S1's I2 equivalence, which was scoped to `quote = "USDT"`
     /// and is false here by design: the leg no longer moves with the
     /// configuration. What is asserted is the property that replaced it — the
-    /// request target is `<SYMBOL>USDT` under EVERY settlement currency —
-    /// and it is read off the wire from the shipping lookup rather than
-    /// re-derived from `binance_symbol` next to `binance_symbol`.
+    /// request target is `<SYMBOL>USDT` — and it is read off the wire from the
+    /// shipping lookup rather than re-derived from `binance_symbol` next to
+    /// `binance_symbol`. Four settlement values are exercised, not every
+    /// possible one; they are chosen so that a leg still built from `cfg.quote`
+    /// would produce a different target for three of them.
     ///
     /// This is registered gap 4 of the design, verified rather than assumed:
     /// an install settling in `CNY` used to build `BTCCNY`, a pair Binance
-    /// does not list (the endpoint answers an empty body), so every crypto row
-    /// came back `Failed` and the Track's history stood still.
+    /// does not list (`{"code":-1121,"msg":"Invalid symbol."}`), so every
+    /// crypto row went unpriced and the Track's history stood still.
     #[test]
-    fn binance_is_asked_for_the_usdt_leg_under_every_settlement_currency() {
+    fn binance_is_asked_for_the_usdt_leg_under_four_settlement_currencies() {
         for settlement in ["USDT", "CNY", "USD", "BUSD"] {
             let (endpoint, targets) = recording_endpoint("2.5");
             let cfg = Config {
@@ -1839,8 +1975,10 @@ mod tests {
     ///
     /// This is where `quote_asset_shortcut`'s `1.0` went. It has to keep
     /// working under a settlement currency that is NOT `USDT`: under the old
-    /// shortcut, `quote = "CNY"` sent a `USDT` holding to the venue as
-    /// `USDTUSDT` (a pair that does not exist), the row went unpriced,
+    /// shortcut, `quote = "CNY"` no longer matched the `USDT` symbol, so the
+    /// holding fell through to `binance_symbol`, which concatenated it into
+    /// `USDTCNY` — a pair that does not exist
+    /// (`{"code":-1121,"msg":"Invalid symbol."}`). The row went unpriced,
     /// `complete` never held, and one stablecoin position froze the whole
     /// Track's history series.
     #[test]
@@ -1953,63 +2091,11 @@ mod tests {
         sina_server_with(|_, _| ("403 Forbidden", b"Forbidden".to_vec()))
     }
 
-    /// The GBK bytes a fixture row's `<NAME>` placeholder stands for: 贵州癨,
-    /// whose last character is `B0 5C` — a GBK character whose trailing byte
-    /// is the ASCII backslash.
-    const GBK_NAME: &[u8] = &[0xb9, 0xf3, 0xd6, 0xdd, 0xb0, 0x5c];
-
-    /// Build a Sina response for `target` out of a table of known rows,
-    /// answering every symbol the request asked for and no others.
-    ///
-    /// A symbol the table does not know gets `""`, which is what the real
-    /// endpoint answers for a name it does not list (`gb_doge`, verified).
-    fn sina_body(target: &str, known: &[(&str, &str)]) -> Vec<u8> {
-        let list = target.split("list=").nth(1).unwrap_or_default();
-        let mut body = Vec::new();
-        for symbol in list.split(',').filter(|s| !s.is_empty()) {
-            let payload = known
-                .iter()
-                .find(|(name, _)| *name == symbol)
-                .map(|(_, payload)| *payload)
-                .unwrap_or("");
-            body.extend_from_slice(format!("var hq_str_{symbol}=\"").as_bytes());
-            for (index, chunk) in payload.split("<NAME>").enumerate() {
-                if index > 0 {
-                    body.extend_from_slice(GBK_NAME);
-                }
-                body.extend_from_slice(chunk.as_bytes());
-            }
-            body.extend_from_slice(b"\";\n");
-        }
-        body
-    }
-
-    /// One live row per market, truncated after the fields this parser reads,
-    /// copied from a real `hq.sinajs.cn` response (2026-09-07).
-    ///
-    /// The three field orders are genuinely different, and the values are such
-    /// that reading another market's index out of one of these rows gives a
-    /// DIFFERENT answer rather than a coincidentally equal one: `gb_nvda`'s
-    /// field 6 is 234.76, `hk01810`'s field 3 is 28.440, and `sh600519` has no
-    /// field 6 at all.
-    const SINA_LIVE_ROWS: &[(&str, &str)] = &[
-        (
-            "gb_nvda",
-            "<NAME>,230.3600,0.84,2026-09-05 09:46:13,1.9100,231.0900,234.7600,229.6300",
-        ),
-        (
-            "hk01810",
-            "XIAOMI-W,<NAME>,28.220,28.440,28.400,27.120,27.480,-0.960,-3.376",
-        ),
-        (
-            "sh600519",
-            "<NAME>,1324.000,1330.000,1316.940,1333.600,1312.660",
-        ),
-        (
-            "sz000001",
-            "<NAME>,11.870,11.890,11.700,11.880,11.650,11.690,11.700",
-        ),
-    ];
+    // The fixture rows, the GBK name bytes and the response builder live in
+    // ONE file, shared with the process suite in
+    // `crates/calm-server/tests/cases/market_plugin_process.rs`. Two copies of
+    // a wire-format fixture drift apart one edit at a time.
+    include!("sina_fixture.rs");
 
     fn sina_cfg(endpoint: String) -> Config {
         Config {
@@ -2022,26 +2108,24 @@ mod tests {
 
     /// **Each market's last price is read from that market's own field.**
     ///
-    /// The three orders are not interchangeable — US is field 1, HK is field 6
-    /// (after two name fields), CN is field 3 — and the rows above are real,
-    /// so a parser that used one index everywhere reads a previous close, a
-    /// company name, or nothing at all and calls it a price.
+    /// The orders are not interchangeable — US is field 1, HK is field 6
+    /// (after two name fields), Shanghai and Shenzhen are field 3 — and the
+    /// rows above are real, so a parser that used one index everywhere reads a
+    /// previous close, a company name, or nothing at all and calls it a price.
     ///
     /// The currency is asserted with the number, because it is what the rest
     /// of the plugin now carries around: a right price under `USDT` is still
     /// a wrong number in a total.
     #[test]
     fn each_market_is_priced_from_its_own_field_in_its_own_currency() {
-        let (endpoint, targets) = sina_server(|target| sina_body(target, SINA_LIVE_ROWS));
+        let (endpoint, targets) =
+            sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
         let cfg = sina_cfg(endpoint);
         for (name, expected, target) in [
             ("US:NVDA", Quote::Price(230.36, "USD"), "/list=gb_nvda"),
             ("HK:1810", Quote::Price(27.48, "HKD"), "/list=hk01810"),
-            (
-                "CN:600519",
-                Quote::Price(1316.94, "CNY"),
-                "/list=sh600519,sz600519",
-            ),
+            ("SH:600519", Quote::Price(1316.94, "CNY"), "/list=sh600519"),
+            ("SZ:000001", Quote::Price(11.70, "CNY"), "/list=sz000001"),
         ] {
             assert_eq!(quote_asset(&cfg, &id(name)), expected, "{name}");
             assert_eq!(
@@ -2063,7 +2147,8 @@ mod tests {
     /// which would tell a reader the name does not exist.
     #[test]
     fn a_forbidden_response_is_a_failed_lookup_and_the_referer_is_what_avoids_it() {
-        let (endpoint, _targets) = sina_server(|target| sina_body(target, SINA_LIVE_ROWS));
+        let (endpoint, _targets) =
+            sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
         assert_eq!(
             quote_asset(&sina_cfg(endpoint), &id("US:NVDA")),
             Quote::Price(230.36, "USD"),
@@ -2096,7 +2181,7 @@ mod tests {
     #[test]
     fn an_empty_row_a_zero_row_and_a_missing_row_are_three_different_answers() {
         let (endpoint, _targets) = sina_server(|target| {
-            sina_body(
+            sina_fixture_body(
                 target,
                 &[
                     // `gb_ena`, as observed: a shell of zeros.
@@ -2120,65 +2205,147 @@ mod tests {
         );
     }
 
-    /// A `CN` code the identity cannot resolve to one exchange is refused, not
-    /// picked between.
+    /// **A code whose quote currency the code does not fix is refused.**
     ///
-    /// `000001` is the Shanghai Composite index on `sh` and Ping An Bank on
-    /// `sz`, both live, both answering — a factor-of-300 difference. The
-    /// registered gap is that such a code cannot be priced at all until the
-    /// grammar splits `CN` into `SH` and `SZ`; what must never happen is that
-    /// one of the two is chosen and published as the holding's value.
+    /// This is the defect the venue-per-currency shortcut produced, and it is
+    /// the one a cross-currency total cannot catch, because it happens INSIDE
+    /// one venue: every row still says `CNY`, so `price_holdings` sees one
+    /// currency, states a total, and appends it to the history series.
+    ///
+    /// All three constructions below were read off the live endpoint on
+    /// 2026-09-07, and all three are listed on exactly ONE exchange — so
+    /// asking a second exchange, which is what the old `CN` venue did, would
+    /// not have caught any of them:
+    ///
+    /// * `sh900932` 陆家Ｂ股 0.385 — a Shanghai B share, quoted in **USD**.
+    /// * `sz200725` 京东方Ｂ 4.770 — a Shenzhen B share, quoted in **HKD**
+    ///   (against `sz000725` 京东方Ａ at 5.680 CNY, the same company).
+    /// * `hk89988` 阿里巴巴－ＷＲ 94.45 — a renminbi counter, quoted in
+    ///   **CNY** (against `hk09988` at 111.00 HKD, the same company).
+    ///
+    /// The refusal is `Failed`, not `Unknown`: nothing about the name is
+    /// unknown, and a reader who is told "no source lists this" would go
+    /// looking for a spelling mistake. And no request goes out at all — the
+    /// currency cannot be determined, so there is nothing to ask.
     #[test]
-    fn a_cn_code_that_both_exchanges_answer_is_refused_rather_than_picked() {
+    fn a_code_whose_currency_the_code_does_not_fix_is_refused_before_any_request() {
+        // The fixture WOULD answer all three with a price, so a plugin that
+        // asked and labelled the answer would come back `Price`, not `Failed`.
         let (endpoint, targets) = sina_server(|target| {
-            sina_body(
+            sina_fixture_body(
                 target,
                 &[
-                    ("sh000001", "<NAME>,3942.5093,3930.1164,3933.2397"),
-                    ("sz000001", "<NAME>,11.870,11.890,11.700"),
+                    ("sh900932", "<NAME>,0.386,0.385,0.385,0.388,0.383"),
+                    ("sz200725", "<NAME>,4.750,4.750,4.770,4.810,4.750"),
+                    (
+                        "hk89988",
+                        "BABA-WR,<NAME>,94.150,94.450,93.850,93.900,94.450",
+                    ),
                 ],
             )
         });
         let cfg = sina_cfg(endpoint);
-        let answered = quote_asset(&cfg, &id("CN:000001"));
+        for (name, currency_it_is_really_in) in [
+            ("SH:900932", "USD"),
+            ("SZ:200725", "HKD"),
+            ("HK:89988", "CNY"),
+        ] {
+            let answered = quote_asset(&cfg, &id(name));
+            assert!(
+                matches!(&answered, Quote::Failed(why) if why.contains("cannot determine what currency")),
+                "{name} is quoted in {currency_it_is_really_in}, not in its venue's \
+                 default; it must be refused rather than priced: {answered:?}"
+            );
+        }
         assert!(
-            matches!(&answered, Quote::Failed(why) if why.contains("more than one exchange")),
-            "{answered:?}"
+            targets.try_recv().is_err(),
+            "a code with no determined currency must not even be asked about"
+        );
+    }
+
+    /// The mainland A-share ranges each resolve against their OWN exchange,
+    /// and the exchange comes from the identity rather than from the digits.
+    ///
+    /// `600519` on Shenzhen and `000001` on Shanghai are different securities
+    /// from the ones asserted above (`sh000001` is the Shanghai Composite
+    /// index at ~3933, against Ping An Bank's 11.87 on `sz`, a factor of 330).
+    /// The fixture answers neither, so a request that went to the wrong
+    /// exchange comes back `Unknown` rather than with a plausible number.
+    #[test]
+    fn a_mainland_code_is_asked_of_the_exchange_the_identity_names() {
+        let (endpoint, targets) = sina_server(|target| {
+            sina_fixture_body(
+                target,
+                &[
+                    // Both of these exist live; neither is what the identities
+                    // below name.
+                    ("sh000001", "<NAME>,3942.5093,3930.1164,3933.2397"),
+                    ("sz600519", "<NAME>,1.000,1.000,1.000"),
+                ],
+            )
+        });
+        let cfg = sina_cfg(endpoint);
+        // `SH:600519` asks Shanghai, which this fixture does not answer for —
+        // it must NOT fall through to the `sz600519` row sitting right there.
+        assert_eq!(quote_asset(&cfg, &id("SH:600519")), Quote::Unknown);
+        assert_eq!(
+            targets.recv_timeout(Duration::from_secs(5)).as_deref(),
+            Ok("/list=sh600519"),
+            "one exchange, one symbol, one request",
+        );
+        assert_eq!(quote_asset(&cfg, &id("SZ:000001")), Quote::Unknown);
+        assert_eq!(
+            targets.recv_timeout(Duration::from_secs(5)).as_deref(),
+            Ok("/list=sz000001"),
+        );
+    }
+
+    /// ChiNext (`30xxxx`) is renminbi like the Shenzhen main board, and a
+    /// mainland code that is not six digits is not spellable at all.
+    #[test]
+    fn chinext_prices_in_renminbi_and_a_non_six_digit_code_is_not_requested() {
+        let (endpoint, targets) =
+            sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
+        let cfg = sina_cfg(endpoint);
+        assert_eq!(
+            quote_asset(&cfg, &id("SZ:300750")),
+            Quote::Price(348.20, "CNY")
         );
         assert_eq!(
             targets.recv_timeout(Duration::from_secs(5)).as_deref(),
-            Ok("/list=sh000001,sz000001"),
-            "both candidates go out in ONE request",
+            Ok("/list=sz300750"),
         );
-
-        // A code NEITHER exchange answers is `Unknown`, not the same refusal:
-        // the two are different answers and a reader acts on them differently.
-        assert_eq!(quote_asset(&cfg, &id("CN:300750")), Quote::Unknown);
-    }
-
-    /// Shenzhen-only and Shanghai-only codes each resolve from the one
-    /// exchange that answers, without a rule keyed on the leading digit.
-    #[test]
-    fn a_cn_code_resolves_to_whichever_exchange_answers() {
-        let (endpoint, _targets) = sina_server(|target| sina_body(target, SINA_LIVE_ROWS));
-        let cfg = sina_cfg(endpoint);
-        assert_eq!(
-            quote_asset(&cfg, &id("CN:600519")),
-            Quote::Price(1316.94, "CNY"),
-            "Shanghai answers, Shenzhen does not"
-        );
-        assert_eq!(
-            quote_asset(&cfg, &id("CN:000001")),
-            Quote::Price(11.70, "CNY"),
-            "Shenzhen answers, Shanghai does not — in THIS fixture"
+        // Not six digits: unspellable, and no request.
+        assert_eq!(quote_asset(&cfg, &id("SH:60051")), Quote::Unknown);
+        assert_eq!(quote_asset(&cfg, &id("SZ:MAOTAI")), Quote::Unknown);
+        assert!(
+            targets.try_recv().is_err(),
+            "a name this source cannot spell must not reach it"
         );
     }
 
-    /// Hong Kong codes are zero-padded to five digits, and a symbol that is
-    /// not a code at all is not padded into one.
+    /// Hong Kong codes of one to five digits are zero-padded to five, and a
+    /// symbol that is not digits at all is not padded into one.
+    ///
+    /// One digit is a real case, not a degenerate one: `HK:1` is `hk00001`,
+    /// 长和 / CKH Holdings, which answers with a price live.
     #[test]
     fn a_hong_kong_code_is_padded_and_a_non_code_is_not_requested() {
-        let (endpoint, targets) = sina_server(|target| sina_body(target, SINA_LIVE_ROWS));
+        let (endpoint, targets) = sina_server(|target| {
+            sina_fixture_body(
+                target,
+                &[
+                    (
+                        "hk01810",
+                        "XIAOMI-W,<NAME>,28.220,28.440,28.400,27.120,27.480",
+                    ),
+                    (
+                        "hk00001",
+                        "CKH HOLDINGS,<NAME>,70.150,69.850,70.150,69.200,69.300",
+                    ),
+                ],
+            )
+        });
         let cfg = sina_cfg(endpoint);
         assert_eq!(
             quote_asset(&cfg, &id("HK:1810")),
@@ -2188,11 +2355,17 @@ mod tests {
             targets.recv_timeout(Duration::from_secs(5)).as_deref(),
             Ok("/list=hk01810"),
         );
+        assert_eq!(quote_asset(&cfg, &id("HK:1")), Quote::Price(69.30, "HKD"));
+        assert_eq!(
+            targets.recv_timeout(Duration::from_secs(5)).as_deref(),
+            Ok("/list=hk00001"),
+            "one digit is padded to five, not refused",
+        );
         // `TENCENT` is a legal identity — the grammar takes any `[A-Z0-9]+` —
         // and this source has no way to spell it. It answers `Unknown`
         // WITHOUT a request rather than padding a guess.
         assert_eq!(quote_asset(&cfg, &id("HK:TENCENT")), Quote::Unknown);
-        assert_eq!(quote_asset(&cfg, &id("CN:60051")), Quote::Unknown);
+        assert_eq!(quote_asset(&cfg, &id("HK:018100")), Quote::Unknown);
         assert!(
             targets.try_recv().is_err(),
             "a name this source cannot spell must not reach it"
@@ -2207,10 +2380,14 @@ mod tests {
     /// series, and out of `market.holdings.list` as prose. There are no
     /// exchange rates in this slice, so the honest answer is no total.
     ///
-    /// Every exit is checked, because each one states the total separately.
+    /// Both of the exits that state a total are checked below — the overlay
+    /// table, and the two accessors `market.holdings.list` builds its
+    /// structuredContent from. (`market.quote` prices one asset and states no
+    /// total, so it has nothing to withhold.)
     #[test]
     fn a_total_is_withheld_when_the_priced_rows_are_in_two_currencies() {
-        let (endpoint, _targets) = sina_server(|target| sina_body(target, SINA_LIVE_ROWS));
+        let (endpoint, _targets) =
+            sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
         let cfg = sina_cfg(endpoint);
         // `USDT` prices at 1.0 off the pinned leg with no request, so this
         // portfolio is FULLY priced — the refusal below is about currencies,
@@ -2241,7 +2418,11 @@ mod tests {
         assert!(caption.contains("no exchange rates"), "{caption}");
         assert_eq!(validate_payload(KIND_TABLE, &table), Ok(()));
 
-        // Exit 2: `market.holdings.list`'s prose and structuredContent.
+        // Exit 2: the prose and the two total accessors `market.holdings.list`
+        // fills its structuredContent from. This calls those directly rather
+        // than through the dispatcher, so what it pins is the values that tool
+        // publishes, not the wiring that carries them; the wiring is covered by
+        // the process suite's cross-currency test.
         assert!(total.stated().is_none());
         assert!(total.value_cell().is_null());
         assert!(total.currency_cell().is_null());
@@ -2259,7 +2440,8 @@ mod tests {
     /// the job it exists for.
     #[test]
     fn a_single_currency_portfolio_still_states_its_total() {
-        let (endpoint, _targets) = sina_server(|target| sina_body(target, SINA_LIVE_ROWS));
+        let (endpoint, _targets) =
+            sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
         let cfg = Config {
             // Settling in CNY changes nothing about what the sources quote.
             quote: "CNY".into(),
@@ -2359,7 +2541,19 @@ mod tests {
     /// among real names.
     #[test]
     fn a_name_without_a_colon_is_never_read_as_a_prefix() {
-        for name in ["USNVDA", "HK1810", "CRYPTOBTC", "CNW", "US", "HK", "CRYPTO"] {
+        for name in [
+            "USNVDA",
+            "HK1810",
+            "CRYPTOBTC",
+            "SH600519",
+            "SZ000001",
+            "CNW",
+            "US",
+            "HK",
+            "SH",
+            "SZ",
+            "CRYPTO",
+        ] {
             let parsed = id(name);
             assert_eq!(parsed.venue, Venue::Crypto, "`{name}`");
             assert_eq!(parsed.symbol, name);
@@ -2371,13 +2565,17 @@ mod tests {
     fn a_qualified_name_names_a_venue_and_folds_to_one_canonical_form() {
         assert_eq!(id("us:nvda").canonical(), "US:NVDA");
         assert_eq!(id("HK:1810").canonical(), "HK:1810");
-        assert_eq!(id("cn:600519").canonical(), "CN:600519");
+        assert_eq!(id("sh:600519").canonical(), "SH:600519");
+        assert_eq!(id("SZ:000001").canonical(), "SZ:000001");
         assert_eq!(id(" CRYPTO:btc ").canonical(), "CRYPTO:BTC");
         // A prefix that names no venue is refused rather than swallowed as
         // part of a bare name: pricing `SH:600519` as crypto `SH:600519`, or
         // as anything else, would be a number nobody asked for.
         for bad in [
-            "SH:600519",
+            // `CN:` was a venue until the Shanghai/Shenzhen split; a stored
+            // `CN:600519` no longer parses, which is the registered
+            // silent-deletion gap, not an accident.
+            "CN:600519",
             "JP:7203",
             ":BTC",
             "BTC:",
@@ -2401,11 +2599,14 @@ mod tests {
     /// Routing `US:BTC` to Binance would price it at bitcoin's price — a
     /// number for an identity nobody quoted. The two endpoints below are
     /// separate servers, so which one a name reaches is observable: the stock
-    /// server answers, the Binance one is dead.
+    /// server answers, the Binance one is dead. Two venues are exercised here,
+    /// `CRYPTO` and `US`; that the OTHER stock venues reach the stock source
+    /// under their own market prefix is what
+    /// [`each_market_is_priced_from_its_own_field_in_its_own_currency`] pins.
     #[test]
-    fn each_venue_reaches_its_own_source_and_no_other() {
+    fn a_crypto_and_a_us_identity_reach_two_different_sources() {
         let (endpoint, targets) = sina_server(|target| {
-            sina_body(
+            sina_fixture_body(
                 target,
                 &[
                     // A `gb_btc` row exists here on purpose: if `CRYPTO:BTC`
@@ -2490,7 +2691,7 @@ mod tests {
     /// `CRYPTO:W` shows two distinguishable rows.
     #[test]
     fn every_exit_echoes_the_venue() {
-        let (endpoint, _targets) = sina_server(|target| sina_body(target, &[]));
+        let (endpoint, _targets) = sina_server(|target| sina_fixture_body(target, &[]));
         let cfg = sina_cfg(endpoint);
         let (rows, total, complete) = price_holdings(
             &cfg,

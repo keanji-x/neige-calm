@@ -10,13 +10,13 @@
   "exposes_tools": [
     {
       "name": "market.quote",
-      "description": "Current price of one asset, in the currency that asset's market quotes in. Callers name the asset AND its venue; which source answers a venue, at which URL, is chosen by this plugin. CRYPTO prices in USDT, US in USD, HK in HKD, CN in CNY — nothing is converted between them.",
+      "description": "Current price of one asset, in the currency this plugin determined that price is in. Callers name the asset AND its venue; which source answers a venue, at which URL, is chosen by this plugin. Neither source states a currency, so it is determined from the venue and the code range: CRYPTO in USDT, US in USD, HK in HKD below code 80000, SH 6xxxxx and SZ 00xxxx/30xxxx in CNY. Codes outside those ranges — B shares, Hong Kong's renminbi and US-dollar counters, mainland funds and indices — are refused with the reason rather than priced under a guessed currency. Nothing is converted between currencies.",
       "input_schema": {
         "type": "object",
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK and CN (`CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `CN:600519`). A prefix counts only with the colon, so `USNVDA` is a crypto name."
+            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK, SH (Shanghai) and SZ (Shenzhen) — `CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `SH:600519`, `SZ:000001`. A prefix counts only with the colon, so `USNVDA` is a crypto name."
           }
         },
         "required": [
@@ -32,13 +32,13 @@
     },
     {
       "name": "market.holdings.set",
-      "description": "Record how much of an asset this Track holds. Replaces any existing quantity for that asset; 0 removes it. Records only — the price is fetched by the plugin's own refresh, which this call wakes. Each venue is priced in its own currency, and a Track whose priced holdings span two currencies gets per-asset rows but no total and no history points until currency conversion lands.",
+      "description": "Record how much of an asset this Track holds. Replaces any existing quantity for that asset; 0 removes it. Records only — the price is fetched by the plugin's own refresh, which this call wakes. Each venue is priced in its own currency, and a Track whose priced holdings span two currencies gets per-asset rows but no total and no history points — until it is back in one currency, or until currency conversion lands.",
       "input_schema": {
         "type": "object",
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK and CN (`CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `CN:600519`). A prefix counts only with the colon, so `USNVDA` is a crypto name."
+            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK, SH (Shanghai) and SZ (Shenzhen) — `CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `SH:600519`, `SZ:000001`. A prefix counts only with the colon, so `USNVDA` is a crypto name."
           },
           "quantity": {
             "type": "number",
@@ -100,7 +100,7 @@
       "sina_endpoint": {
         "type": "string",
         "default": "https://hq.sinajs.cn",
-        "description": "Base URL of the Sina quote list, the US, HK and CN source. Its /list= path is asked for gb_<symbol>, hk<code>, sh<code> and sz<code>."
+        "description": "Base URL of the Sina quote list, the US, HK, SH and SZ source. Its /list= path is asked for one symbol at a time: gb_<symbol>, hk<code padded to 5>, sh<code> or sz<code>."
       }
     },
     "additionalProperties": false

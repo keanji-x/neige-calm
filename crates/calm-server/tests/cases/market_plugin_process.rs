@@ -15,7 +15,7 @@
 //! priceable portfolio be built offline.
 //!
 //! A price now carries the currency its SOURCE quoted it in — `USDT` off
-//! Binance, `USD`/`HKD`/`CNY` off Sina — rather than the configured settlement
+//! Binance, `USD`/`HKD`/`CNY` off Sina, decided from the venue and code range — rather than the configured settlement
 //! currency, and a portfolio whose priced rows span two of them gets no total
 //! at all until exchange rates land.
 
@@ -728,35 +728,18 @@ fn removing_the_last_holding_publishes_an_empty_table() {
     assert_eq!(rows[0]["value"].as_f64(), Some(0.0));
 }
 
-/// A loopback stand-in for `hq.sinajs.cn`, the US/HK/CN source.
+// The fixture rows, the GBK name bytes and the response builder are shared
+// with the plugin's own unit tests — one copy of the wire format, so the two
+// suites cannot drift onto two different shapes of the same endpoint.
+include!("../../../../plugins/market/sina_fixture.rs");
+
+/// A loopback stand-in for `hq.sinajs.cn`, the US/HK/SH/SZ source.
 ///
 /// It reproduces the two properties of that endpoint that the plugin's parser
 /// depends on: the body is **GBK**, and a request with no `Referer` header is
 /// answered `403 Forbidden` — not with an empty list, not with JSON. The name
 /// field carries real GBK bytes so the decode is exercised here too.
-///
-/// The rows are real ones, read off `hq.sinajs.cn` on 2026-09-07, truncated
-/// after the fields the plugin reads. The field orders differ per market: US
-/// is field 1, HK is field 6, CN is field 3.
 fn sina_server() -> String {
-    /// 贵州癨 in GBK. The last character is `B0 5C`, a GBK character whose
-    /// trailing byte is the ASCII backslash.
-    const GBK_NAME: &[u8] = &[0xb9, 0xf3, 0xd6, 0xdd, 0xb0, 0x5c];
-    const ROWS: &[(&str, &str)] = &[
-        (
-            "gb_nvda",
-            "<NAME>,230.3600,0.84,2026-09-05 09:46:13,1.9100,231.0900,234.7600",
-        ),
-        (
-            "hk01810",
-            "XIAOMI-W,<NAME>,28.220,28.440,28.400,27.120,27.480,-0.960",
-        ),
-        (
-            "sh600519",
-            "<NAME>,1324.000,1330.000,1316.940,1333.600,1312.660",
-        ),
-    ];
-
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
     let port = listener.local_addr().expect("addr").port();
     std::thread::spawn(move || {
@@ -791,30 +774,7 @@ fn sina_server() -> String {
                 .nth(1)
                 .unwrap_or_default()
                 .to_string();
-            let mut body: Vec<u8> = Vec::new();
-            for symbol in target
-                .split("list=")
-                .nth(1)
-                .unwrap_or_default()
-                .split(',')
-                .filter(|s| !s.is_empty())
-            {
-                // A symbol this fixture does not know answers with an empty
-                // payload, which is what the real endpoint does for a name it
-                // does not list.
-                let payload = ROWS
-                    .iter()
-                    .find(|(name, _)| *name == symbol)
-                    .map_or("", |(_, payload)| *payload);
-                body.extend_from_slice(format!("var hq_str_{symbol}=\"").as_bytes());
-                for (index, chunk) in payload.split("<NAME>").enumerate() {
-                    if index > 0 {
-                        body.extend_from_slice(GBK_NAME);
-                    }
-                    body.extend_from_slice(chunk.as_bytes());
-                }
-                body.extend_from_slice(b"\";\n");
-            }
+            let body = sina_fixture_body(&target, SINA_FIXTURE_ROWS);
             let _ = write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -877,7 +837,7 @@ fn a_hong_kong_holding_is_priced_in_hkd_and_totalled_in_hkd() {
     assert!(!caption.contains("USDT"), "{caption}");
 
     // The stored history point exists — a stock holding no longer stalls the
-    // series the way it did while US/HK/CN had no source.
+    // series the way it did while the stock venues had no source.
     let points = kernel
         .kv
         .get("history/trk_caller")
