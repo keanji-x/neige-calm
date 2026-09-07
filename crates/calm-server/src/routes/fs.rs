@@ -423,7 +423,12 @@ async fn canonicalize_regular_file(raw: &Path) -> Result<(PathBuf, Metadata)> {
 }
 
 fn workspace_relative_path(raw: &str) -> Result<PathBuf> {
-    let raw = raw.trim();
+    workspace_relative_path_exact(raw.trim())
+}
+
+/// Preserve filename bytes once a caller has validated its path policy. In
+/// particular, trimming here could turn ` .codex/file` into `.codex/file`.
+fn workspace_relative_path_exact(raw: &str) -> Result<PathBuf> {
     if raw.is_empty() {
         return Err(CalmError::BadRequest(
             "workspace file path must be non-empty and relative".into(),
@@ -512,10 +517,6 @@ pub(crate) async fn open_workspace_regular_file(
     relative_path: &str,
     symlinks: WorkspaceSymlinks,
 ) -> Result<OpenWorkspaceFile> {
-    use nix::fcntl::{OFlag, OpenHow, ResolveFlag, openat2};
-    use nix::sys::stat::Mode;
-    use std::os::fd::{AsRawFd, FromRawFd};
-
     let relative = workspace_relative_path(relative_path)?;
     let root = tokio::fs::File::open(workspace_root)
         .await
@@ -530,13 +531,41 @@ pub(crate) async fn open_workspace_regular_file(
             workspace_root.display()
         )));
     }
+    open_workspace_regular_file_from_fd(
+        root.into_std().await,
+        workspace_root.to_path_buf(),
+        relative,
+        symlinks,
+    )
+    .await
+}
+
+/// Keep a caller-validated directory descriptor as authority through final open.
+#[cfg(target_os = "linux")]
+pub(crate) async fn open_workspace_regular_file_at(
+    root: std::fs::File,
+    relative_path: &str,
+    symlinks: WorkspaceSymlinks,
+) -> Result<OpenWorkspaceFile> {
+    let relative = workspace_relative_path_exact(relative_path)?;
+    open_workspace_regular_file_from_fd(root, PathBuf::from("workspace"), relative, symlinks).await
+}
+
+#[cfg(target_os = "linux")]
+async fn open_workspace_regular_file_from_fd(
+    root: std::fs::File,
+    workspace_root: PathBuf,
+    relative: PathBuf,
+    symlinks: WorkspaceSymlinks,
+) -> Result<OpenWorkspaceFile> {
+    use nix::fcntl::{OFlag, OpenHow, ResolveFlag, openat2};
+    use nix::sys::stat::Mode;
+    use std::os::fd::{AsRawFd, FromRawFd};
     let requested = workspace_root.join(&relative);
-    let workspace_root = workspace_root.to_path_buf();
     let mut resolve = ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_MAGICLINKS;
     if symlinks == WorkspaceSymlinks::Refused {
         resolve |= ResolveFlag::RESOLVE_NO_SYMLINKS;
     }
-    let root = root.into_std().await;
     tokio::task::spawn_blocking(move || {
         let raw_fd = openat2(
             root.as_raw_fd(),
@@ -615,6 +644,17 @@ pub(crate) async fn open_workspace_regular_file(
     _symlinks: WorkspaceSymlinks,
 ) -> Result<OpenWorkspaceFile> {
     workspace_relative_path(relative_path)?;
+    Err(CalmError::Internal(
+        "secure workspace reads require Linux openat2 support".into(),
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn open_workspace_regular_file_at(
+    _root: std::fs::File,
+    _relative_path: &str,
+    _symlinks: WorkspaceSymlinks,
+) -> Result<OpenWorkspaceFile> {
     Err(CalmError::Internal(
         "secure workspace reads require Linux openat2 support".into(),
     ))
@@ -1278,6 +1318,37 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(_)));
         assert!(err.to_string().contains("outside track workspace"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn workspace_file_legacy_trims_whitespace_but_fd_entry_preserves_it() {
+        let workspace = tempfile::tempdir().unwrap();
+        let spaced = " \u{2003}value.txt\u{2003} ";
+        std::fs::write(workspace.path().join("value.txt"), "legacy target").unwrap();
+        std::fs::write(workspace.path().join(spaced), "exact target").unwrap();
+        let legacy = open_workspace_regular_file(
+            workspace.path(),
+            spaced,
+            WorkspaceSymlinks::FollowedInsideRoot,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_workspace_file_response(legacy).await.unwrap().text,
+            "legacy target"
+        );
+        let exact = open_workspace_regular_file_at(
+            std::fs::File::open(workspace.path()).unwrap(),
+            spaced,
+            WorkspaceSymlinks::Refused,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_workspace_file_response(exact).await.unwrap().text,
+            "exact target"
+        );
     }
 
     #[cfg(target_os = "linux")]

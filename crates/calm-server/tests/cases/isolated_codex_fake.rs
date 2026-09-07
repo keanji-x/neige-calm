@@ -36,6 +36,7 @@ pub fn run() {
                 if method=="turn/start" {
                     assert!(!std::path::Path::new("/workspace/result.txt").exists(), "each execution starts empty");
                     std::fs::write("/workspace/result.txt",b"42\n").unwrap();
+                    if scenario=="files" { create_files(); }
                     let directory="/provider/home/sessions/2026/09/06";std::fs::create_dir_all(directory).unwrap();
                     let mut file=std::fs::File::create(format!("{directory}/rollout-2026-09-06T00-00-00-{thread_id}.jsonl")).unwrap();
                     for record in [json!({"timestamp":"2026-09-06T00:00:00Z","type":"session_meta","payload":{"id":thread_id,"cwd":"/workspace","originator":"fake","cli_version":"fake"}}),
@@ -51,7 +52,7 @@ pub fn run() {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                     }
-                    if scenario=="controlled" {
+                    if scenario=="controlled" || scenario=="files" {
                         while !std::path::Path::new("/workspace/report-success").exists()
                             && !std::path::Path::new("/workspace/report-failure").exists() {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -62,7 +63,10 @@ pub fn run() {
                         let env=config["mcp_servers"]["calm"]["env"].as_table_like().unwrap().iter()
                             .map(|(k,v)|(k.to_string(),v.as_str().unwrap().to_string())).collect::<Vec<_>>();
                         let success=scenario!="fail" && !std::path::Path::new("/workspace/report-failure").exists();
-                        tokio::task::spawn_blocking(move||report(&env,&task,success)).await.unwrap();
+                        let artifacts = if scenario=="files" {
+                            serde_json::from_str(&std::fs::read_to_string("/workspace/reported-files.json").unwrap()).unwrap()
+                        } else {Vec::new()};
+                        tokio::task::spawn_blocking(move||report(&env,&task,success,artifacts)).await.unwrap();
                     }
                     let _=peer.send(tokio_tungstenite::tungstenite::Message::Text(json!({"jsonrpc":"2.0","method":"turn/completed",
                         "params":{"threadId":thread_id,"turn":{"id":turn_id,"status":"completed","items":[]}}}).to_string())).await;
@@ -71,7 +75,7 @@ pub fn run() {
         }
     });
 }
-fn report(env: &[(String, String)], task: &str, success: bool) {
+fn report(env: &[(String, String)], task: &str, success: bool, artifacts: Vec<String>) {
     use std::process::{Command, Stdio};
     let mut child = Command::new("/mcp-shim")
         .env_clear()
@@ -94,7 +98,7 @@ fn report(env: &[(String, String)], task: &str, success: bool) {
         "native initialize failed: {response}"
     );
     let args = if success {
-        json!({"idempotency_key":task,"result":{"answer":42},"artifacts":[]})
+        json!({"idempotency_key":task,"result":{"answer":42},"artifacts":artifacts})
     } else {
         json!({"idempotency_key":task,"reason":"fixture requested failure"})
     };
@@ -109,4 +113,32 @@ fn report(env: &[(String, String)], task: &str, success: bool) {
     );
     drop(input);
     let _ = child.wait();
+}
+
+fn create_files() {
+    std::fs::create_dir("/workspace/nested").unwrap();
+    std::fs::write(
+        "/workspace/nested/报告 🧊.txt",
+        "<script>hello</script> 雪\n",
+    )
+    .unwrap();
+    std::fs::write("/workspace/blob.bin", [0, 255, 128, 1]).unwrap();
+    std::fs::write("/workspace/empty.txt", []).unwrap();
+    for (name, contents) in [
+        (" result.txt", "leading-space"),
+        ("result.txt ", "trailing-space"),
+        ("\u{2003}result.txt", "leading-unicode-space"),
+        ("result.txt\u{2003}", "trailing-unicode-space"),
+    ] {
+        std::fs::write(format!("/workspace/{name}"), contents).unwrap();
+    }
+    for (name, size) in [
+        ("limit.bin", 8 * 1024 * 1024),
+        ("large.bin", 8 * 1024 * 1024 + 1),
+    ] {
+        std::fs::File::create(format!("/workspace/{name}"))
+            .unwrap()
+            .set_len(size)
+            .unwrap();
+    }
 }

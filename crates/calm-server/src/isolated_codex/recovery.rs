@@ -28,6 +28,16 @@ pub(crate) async fn require_stopped_tx(tx: &mut Tx<'_>, task: &Task, op_id: &str
     if !valid_operation {
         return Err(denied());
     }
+    confirmed_record_tx(tx, task, op_id).await.map(|_| ())
+}
+
+/// Typed original stop identity only; callers separately require their exact
+/// task/Operation terminal outcome (failed for retry, done/succeeded for files).
+pub(super) async fn confirmed_record_tx(
+    tx: &mut Tx<'_>,
+    task: &Task,
+    op_id: &str,
+) -> Result<super::record::RunRecord> {
     // The typed private reader already binds Operation payload/output/target.
     // Do not expose parse errors or the private record through this capability.
     let record = journal::load_tx(tx, op_id).await.map_err(|_| denied())?;
@@ -76,5 +86,5 @@ pub(crate) async fn require_stopped_tx(tx: &mut Tx<'_>, task: &Task, op_id: &str
     {
         return Err(denied());
     }
-    Ok(())
+    Ok(record)
 }

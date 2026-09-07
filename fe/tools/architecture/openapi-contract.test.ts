@@ -29,6 +29,9 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   // calm-server/routes/isolated_tasks.rs DTOs; core/domain/independent-task.ts
   // owns their strict Zod decoders. calm-types cannot export these (#1501).
   'StartIsolatedTaskResponse', 'TaskAttemptReportResponse',
+  // calm-server/routes/task_artifacts.rs is outside calm-types' wire generator;
+  // core/domain/task-artifact-file.ts owns the strict response decoder (#1501).
+  'TaskArtifactFileResponse',
   'ViewCatalogEntry', 'TrackBacklinksResponse', 'TrackDetail', 'TrackFsContent', 'TrackFsEntry',
   'TrackReportReadResponse', 'TrackTemplate',
 ]);
@@ -189,7 +192,7 @@ describe('generated OpenAPI integrity', () => {
       .toThrow('operation has no responses');
   });
 
-  it.each(['StartIsolatedTaskResponse', 'TaskAttemptReportResponse'])(
+  it.each(['StartIsolatedTaskResponse', 'TaskAttemptReportResponse', 'TaskArtifactFileResponse'])(
     'accepts only the exact server-local %s response exception', (name) => {
       const responseDocument = (schemaName: string) => ({
         paths: {

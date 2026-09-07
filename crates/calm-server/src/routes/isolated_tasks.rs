@@ -123,16 +123,31 @@ pub async fn report(
     )?;
     let response = write_in_tx_typed(state.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            let track = crate::track_lifecycle::track_get_tx(tx, &track_id.clone().into()).await?;
-            task_attempt_get_tx(tx, &attempt_id)
-                .await?
-                .filter(|allocation| allocation.track_id == track_id && allocation.key == key)
-                .ok_or_else(|| CalmError::NotFound("Task attempt".into()))?;
-            // Card deletion removes worker_sessions but retains keyed Operations,
-            // allocation history and Events. Use only the original Operation's
-            // immutable identity as provenance; report content comes from Events.
-            // Never deserialize or return private paths, tokens or provider state.
-            let row: Option<(String, String)> = sqlx::query_as(
+            let report = accepted_report_tx(tx, &track_id, &key, &attempt_id).await?;
+            Ok(TaskAttemptReportResponse { attempt_id, report })
+        })
+    })
+    .await?;
+    Ok(Json(response))
+}
+
+/// Canonical accepted Event/Operation provenance shared by report and file reads.
+pub(crate) async fn accepted_report_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    track_id: &str,
+    key: &str,
+    attempt_id: &str,
+) -> Result<Option<AcceptedTaskReport>> {
+    let track = crate::track_lifecycle::track_get_tx(tx, &track_id.into()).await?;
+    task_attempt_get_tx(tx, attempt_id)
+        .await?
+        .filter(|allocation| allocation.track_id == track_id && allocation.key == key)
+        .ok_or_else(|| CalmError::NotFound("Task attempt".into()))?;
+    // Card deletion removes worker_sessions but retains keyed Operations,
+    // allocation history and Events. Use only the original Operation's
+    // immutable identity as provenance; report content comes from Events.
+    // Never deserialize or return private paths, tokens or provider state.
+    let row: Option<(String, String)> = sqlx::query_as(
                 "SELECT e.kind,e.payload FROM operations o JOIN events e ON e.scope_card=o.target_id \
                  WHERE o.kind='codex-isolated-worker' AND o.idempotency_key=?1 \
                  AND o.target_type='card' \
@@ -155,29 +170,24 @@ pub async fn report(
                  AND json_extract(e.actor,'$.kind')='AiCodexSession' \
                  ORDER BY e.id ASC LIMIT 1",
             )
-            .bind(&attempt_id).bind(&track_id).bind(track.area_id.as_str())
+            .bind(attempt_id).bind(track_id).bind(track.area_id.as_str())
             .fetch_optional(&mut **tx).await?;
-            let report = row
-                .map(|(kind, payload)| {
-                    let event =
-                        Event::from_kind_and_payload(&kind, serde_json::from_str(&payload)?)?;
-                    Ok::<_, CalmError>(match event {
-                        Event::TaskCompleted {
-                            result, artifacts, ..
-                        } => AcceptedTaskReport::Completed {
-                            result,
-                            artifacts: artifacts.into_iter().map(|artifact| artifact.0).collect(),
-                        },
-                        Event::TaskFailed { reason, .. } => AcceptedTaskReport::Failed { reason },
-                        _ => {
-                            return Err(CalmError::Internal("Unexpected task report event".into()));
-                        }
-                    })
-                })
-                .transpose()?;
-            Ok(TaskAttemptReportResponse { attempt_id, report })
+    let report = row
+        .map(|(kind, payload)| {
+            let event = Event::from_kind_and_payload(&kind, serde_json::from_str(&payload)?)?;
+            Ok::<_, CalmError>(match event {
+                Event::TaskCompleted {
+                    result, artifacts, ..
+                } => AcceptedTaskReport::Completed {
+                    result,
+                    artifacts: artifacts.into_iter().map(|artifact| artifact.0).collect(),
+                },
+                Event::TaskFailed { reason, .. } => AcceptedTaskReport::Failed { reason },
+                _ => {
+                    return Err(CalmError::Internal("Unexpected task report event".into()));
+                }
+            })
         })
-    })
-    .await?;
-    Ok(Json(response))
+        .transpose()?;
+    Ok(report)
 }

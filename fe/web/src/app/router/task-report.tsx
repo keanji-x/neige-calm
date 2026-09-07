@@ -3,9 +3,12 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { acceptedTaskReportOperation } from '../../../../core/domain/independent-task.ts';
 import { AcceptedReport } from '../../features/report/task/accepted-report.tsx';
+import { ArtifactFileAction } from '../../features/report/task/artifact-file.tsx';
+import type { TaskArtifactSelection } from './task-artifact-files.tsx';
 import { ApiError, queryKeys, runOperation } from '../providers/queries.ts';
 
-export function TaskReport({ trackId, taskKey, attemptId, status, transport, unauthorized }: {
+export function TaskReport({ trackId, taskKey, attemptId, status, transport, unauthorized, onViewArtifact }: {
+  onViewArtifact?: (selection: TaskArtifactSelection) => void;
   trackId: string; taskKey: string; attemptId: string; status: string | null; transport: ApiTransportPort; unauthorized: UnauthorizedChannel;
 }) {
   const terminal = status === 'done' || status === 'failed' || status === 'canceled';
@@ -17,5 +20,7 @@ export function TaskReport({ trackId, taskKey, attemptId, status, transport, una
   });
   return <AcceptedReport terminal={terminal} value={report.data} loading={report.isFetching}
     error={report.error instanceof ApiError ? report.error.message : report.isError ? 'Report is unavailable.' : null}
-    onRefresh={() => { void report.refetch(); }} />;
+    onRefresh={() => { void report.refetch(); }}
+    renderArtifact={onViewArtifact === undefined ? undefined : (index) => <ArtifactFileAction index={index}
+      onOpen={() => onViewArtifact({ taskKey, attemptId, index })} />} />;
 }

@@ -1,3 +1,4 @@
+import type { TaskArtifactSelection } from './task-artifact-files.tsx';
 import { useQueries, useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query';
 import type { ReportTaskRow } from '../../../../core/domain/report.ts';
 import type { ApiFailure, ApiTransportPort } from '../../../../core/api/types.ts';
@@ -15,7 +16,8 @@ function uncertainFailure(failure: ApiFailure): boolean {
 }
 
 /** QueryClient retains uncertain intent across collapse/navigation within this app session. */
-export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthorized, openWorker, openableWorkerIds }: {
+export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthorized, openWorker, openableWorkerIds, onViewArtifact }: {
+  onViewArtifact?: (selection: TaskArtifactSelection) => void;
   trackId: string; taskKey: string; expanded: boolean;
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel;
   openWorker: (cardId: string) => void; openableWorkerIds: ReadonlySet<string>;
@@ -94,7 +96,7 @@ export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthoriz
     renderReport={expanded ? (attemptId) => <TaskReport trackId={trackId} taskKey={taskKey} attemptId={attemptId}
       status={attemptId === execution?.attemptId ? execution.status
         : history.data?.attempts.find((attempt) => attempt.attempt_id === attemptId)?.status ?? null}
-      transport={transport} unauthorized={unauthorized} /> : undefined} />;
+      transport={transport} unauthorized={unauthorized} onViewArtifact={onViewArtifact} /> : undefined} />;
 }
 
 function taskHistoryKey(trackId: string, key: string) {

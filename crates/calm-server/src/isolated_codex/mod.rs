@@ -2,6 +2,7 @@
 pub mod adapter;
 mod admission;
 pub mod config;
+pub(crate) mod files;
 mod journal;
 pub(crate) mod lookup;
 pub use lookup::private_codex_home;

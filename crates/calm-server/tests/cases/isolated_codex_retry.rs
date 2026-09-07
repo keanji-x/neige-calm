@@ -522,3 +522,6 @@ async fn successor_claim_and_preparation_recheck_stop_and_refuse_old_callbacks()
         calm_server::model::TaskStatus::Dispatched
     );
 }
+
+#[path = "isolated_task_files.rs"]
+mod files;
