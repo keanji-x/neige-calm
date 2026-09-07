@@ -26,6 +26,7 @@ import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu'
 import { Divider } from '@astryxdesign/core/Divider';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
+import { Text } from '@astryxdesign/core/Text';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { useRef, type KeyboardEvent } from 'react';
 
@@ -98,7 +99,13 @@ export function ModelPill({
           button={{
             id: triggerId,
             label: `Model: ${label}`,
-            children: label,
+            /* Model names run long — `gpt-5.1-codex-max` and worse — and the
+               trigger cannot have the whole footer. `maxLines` ends it in an
+               ellipsis and `hasTruncateTooltip` offers the full name on hover
+               ONLY when it was actually shortened, which is the difference
+               between this and the `max-inline-size` that used to just cut it
+               off with no way to read the rest. */
+            children: <Text maxLines={1} hasTruncateTooltip>{label}</Text>,
             variant: 'secondary',
             size: 'sm',
             isDisabled: isDisabled || unreachable,
@@ -129,7 +136,9 @@ export function ModelPill({
             />
           )}
           <Divider />
-          <div className={styles.note} role="note">{SWITCH_NOTE}</div>
+          <div className={styles.note} role="note">
+            <Text type="supporting">{SWITCH_NOTE}</Text>
+          </div>
         </DropdownMenu>
       </span>
       {efforts.length > 1 && (
@@ -173,10 +182,14 @@ function EffortPill({
         button={{
           label: `Reasoning effort: ${label}`,
           children: label,
-          variant: 'secondary',
+          /* `ghost` against the model's `secondary`, because effort is a
+             property OF the chosen model and reads as one only if the two
+             controls are not the same weight. Two equal outlined pills side by
+             side said they were two independent settings, which is the one
+             thing this pair is not. */
+          variant: 'ghost',
           size: 'sm',
           isDisabled,
-          className: styles.trigger,
         }}
       >
         <Choice

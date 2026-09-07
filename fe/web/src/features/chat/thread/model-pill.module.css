@@ -3,17 +3,18 @@
     display: contents;
   }
 
+  /* A ceiling, not a clip: the label inside truncates with an ellipsis and
+     offers the full name on hover (`Text maxLines`), so this only decides how
+     much of the footer one control may take. */
   .trigger {
     max-inline-size: 14rem;
   }
 
-  /* A standing explanation, not a menu row: it must not look pressable. */
+  /* A standing explanation, not a menu row: it must not look pressable. The
+     type is `Text type="supporting"`; what is left here is the box. */
   .note {
     max-inline-size: 20rem;
     padding: var(--space-1) var(--space-2);
-    color: var(--text-3);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
     user-select: none;
   }
 }

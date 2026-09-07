@@ -8,8 +8,14 @@
 // the `rev` it was read at, and a refusal is reported to the reader rather
 // than retried, because a silent retry would overwrite text they never saw.
 
+import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
+import { Card } from '@astryxdesign/core/Card';
+import { HStack } from '@astryxdesign/core/HStack';
+import { List } from '@astryxdesign/core/List';
+import { Text } from '@astryxdesign/core/Text';
 import { TextArea } from '@astryxdesign/core/TextArea';
+import { VStack } from '@astryxdesign/core/VStack';
 import type {
   PendingQueueEntry, PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
@@ -111,6 +117,33 @@ function noticeText(outcome: PlannerQueueWriteOutcome, editing: boolean): string
   return null;
 }
 
+/**
+ * The heading over that sentence, and the colour it is said in.
+ *
+ * Split out because a refusal now renders as a `Banner`, and a Banner is a
+ * heading plus a body plus a status — where the previous version was one grey
+ * paragraph in `--text-warning, var(--text-3)`, a fallback that resolved to
+ * ordinary secondary text on every theme that does not define the first token.
+ * "Your change was not saved" then looked exactly like the message it was
+ * about, which is the one thing it must not look like.
+ *
+ * The three statuses are not decoration: `stale` is a race the reader can
+ * still win by trying again (warning), `gone` is the queue having moved on
+ * without them and nothing to retry (info), and `failed` is the server
+ * refusing (error).
+ */
+function noticeHeading(outcome: PlannerQueueWriteOutcome, editing: boolean): string {
+  if (outcome.kind === 'stale') return editing ? 'Not saved' : 'Nothing happened';
+  if (outcome.kind === 'gone') return 'Already sent';
+  return 'Could not be changed';
+}
+
+function noticeStatus(outcome: PlannerQueueWriteOutcome): 'warning' | 'info' | 'error' {
+  if (outcome.kind === 'stale') return 'warning';
+  if (outcome.kind === 'gone') return 'info';
+  return 'error';
+}
+
 export function PendingQueue({ entries, overflow, busy, onEdit, onDelete }: PendingQueueProps) {
   const [editor, setEditor] = useState<OpenEditor | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
@@ -133,132 +166,156 @@ export function PendingQueue({ entries, overflow, busy, onEdit, onDelete }: Pend
     }
   };
 
+  const total = entries.length + overflow;
   return (
     <section className={styles.queue} data-nc-pending-queue="" aria-label="Queued messages">
-      <p className={styles.caption} data-nc-pending-queue-caption="">
-        {entries.length + overflow === 1
-          ? 'One message is waiting to send when this turn ends.'
-          : `${entries.length + overflow} messages are waiting to send when this turn ends.`}
-      </p>
-      <ul className={styles.list}>
-        {entries.map((entry) => {
-          /* Whether THIS reader is editing THIS entry. A presentation
-             question, and the only thing that question decides. */
-          const draft = editor?.entryId === entry.entry_id ? editor.draft : null;
-          /* What the server last said about THIS entry. Independent of the
-             above, which is the point — see the matrix on `OpenEditor`. */
-          const shown = refusal?.entryId === entry.entry_id ? refusal.outcome : null;
-          const noticeLine = shown === null ? null : noticeText(shown, draft !== null);
-          /* The winner's text is offered as a REPLACEMENT, so it is only
-             offered where there is something to replace. With no editor open
-             the notice quotes the entry itself, which the row already shows. */
-          const lostRace = shown?.kind === 'stale' && draft !== null ? shown : null;
-          /* The revision the next write carries, edit or delete alike: the one
-             the server reported if it has spoken about this entry, otherwise
-             the one this page was read at. Read from the refusal and NOT from
-             the editor — a refused delete has no editor, and taking it from
-             there is how a retry ended up re-sending a revision it already
-             knew was stale, forever. */
-          const saveRev = shown?.kind === 'stale' ? shown.rev : entry.rev;
-          return (
-            <li key={entry.entry_id} className={styles.item} data-nc-pending-entry={entry.entry_id}>
-              {draft === null
-                ? <p className={styles.text}>{entry.text}</p>
-                : (
-                  <TextArea
-                    label="Edit queued message"
-                    isLabelHidden
-                    rows={3}
-                    value={draft}
-                    isDisabled={busy}
-                    onChange={(value: string) => {
-                      setEditor((current) => current?.entryId === entry.entry_id
-                        ? { ...current, draft: value } : current);
-                    }}
-                  />
-                )}
-              {noticeLine !== null && (
-                <p className={styles.notice} role="status" data-nc-pending-entry-notice="">
-                  {noticeLine}
-                </p>
-              )}
-              {lostRace !== null && (
-                <div className={styles.theirs} data-nc-pending-entry-theirs="">
-                  <p className={styles.text}>{lostRace.text}</p>
-                  <Button
-                    label="Use their version"
-                    variant="ghost"
-                    size="sm"
-                    isDisabled={busy}
-                    onClick={() => {
-                      setEditor((current) => current?.entryId === entry.entry_id
-                        ? { ...current, draft: lostRace.text } : current);
-                    }}
-                  />
-                </div>
-              )}
-              <div className={styles.actions}>
-                {draft === null
-                  ? (
-                    <>
-                      <Button
-                        label="Edit"
-                        variant="ghost"
-                        size="sm"
-                        isDisabled={busy}
-                        /* `onClick`, not `clickAction`: opening an editor is
-                           local state, and Astryx's action slot shows a
-                           spinner and disables the control until its promise
-                           settles, which is a lie about a synchronous
-                           toggle. The two writes below do use it. */
-                        onClick={() => {
-                          setEditor({ entryId: entry.entry_id, draft: entry.text });
-                          setRefusal(null);
-                        }}
-                      />
-                      <Button
-                        label="Delete"
-                        variant="ghost"
-                        size="sm"
-                        isDisabled={busy}
-                        clickAction={async () => {
-                          settle(entry.entry_id, await onDelete({ ...entry, rev: saveRev }));
-                        }}
-                      />
-                    </>
-                  )
-                  : (
-                    <>
-                      <Button
-                        label="Save"
-                        variant="primary"
-                        size="sm"
-                        isDisabled={busy || draft.trim() === ''}
-                        clickAction={async () => {
-                          settle(entry.entry_id, await onEdit({ ...entry, rev: saveRev }, draft));
-                        }}
-                      />
-                      <Button
-                        label="Cancel"
-                        variant="ghost"
-                        size="sm"
-                        isDisabled={busy}
-                        onClick={() => { setEditor(null); setRefusal(null); }}
-                      />
-                    </>
-                  )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-      {overflow > 0 && (
-        <p className={styles.overflow} role="status" data-nc-pending-overflow="">
-          {overflow === 1
-            ? '1 more queued message is waiting but cannot be shown or edited here.'
-            : `${overflow} more queued messages are waiting but cannot be shown or edited here.`}
-        </p>
-      )}
+      {/* `muted` rather than the default card: this sits between the transcript
+          and the composer, and a bordered white card there reads as a third
+          surface competing with both. */}
+      <Card variant="muted" padding={3}>
+        <VStack gap={3}>
+          <Text as="p" type="supporting" data-nc-pending-queue-caption="">
+            {total === 1
+              ? 'One message is waiting to send when this turn ends.'
+              : `${total} messages are waiting to send when this turn ends.`}
+          </Text>
+          <List className={styles.list}>
+            {entries.map((entry) => {
+              /* Whether THIS reader is editing THIS entry. A presentation
+                 question, and the only thing that question decides. */
+              const draft = editor?.entryId === entry.entry_id ? editor.draft : null;
+              /* What the server last said about THIS entry. Independent of the
+                 above, which is the point — see the matrix on `OpenEditor`. */
+              const shown = refusal?.entryId === entry.entry_id ? refusal.outcome : null;
+              const noticeLine = shown === null ? null : noticeText(shown, draft !== null);
+              /* The winner's text is offered as a REPLACEMENT, so it is only
+                 offered where there is something to replace. With no editor open
+                 the notice quotes the entry itself, which the row already shows. */
+              const lostRace = shown?.kind === 'stale' && draft !== null ? shown : null;
+              /* The revision the next write carries, edit or delete alike: the one
+                 the server reported if it has spoken about this entry, otherwise
+                 the one this page was read at. Read from the refusal and NOT from
+                 the editor — a refused delete has no editor, and taking it from
+                 there is how a retry ended up re-sending a revision it already
+                 knew was stale, forever. */
+              const saveRev = shown?.kind === 'stale' ? shown.rev : entry.rev;
+              return (
+                <li key={entry.entry_id} data-nc-pending-entry={entry.entry_id}>
+                  {/* Each entry gets its own card inside the muted region.
+                      Without it the rows ran together — a message, its two
+                      buttons, then the next message, all on one flat ground,
+                      with nothing saying where one ended. */}
+                  <Card padding={2}>
+                    <VStack gap={1.5} align="stretch">
+                    {draft === null
+                      ? <Text as="p" className={styles.text}>{entry.text}</Text>
+                      : (
+                        <TextArea
+                          label="Edit queued message"
+                          isLabelHidden
+                          rows={3}
+                          value={draft}
+                          isDisabled={busy}
+                          onChange={(value: string) => {
+                            setEditor((current) => current?.entryId === entry.entry_id
+                              ? { ...current, draft: value } : current);
+                          }}
+                        />
+                      )}
+                    {noticeLine !== null && shown !== null && (
+                      <div data-nc-pending-entry-notice="">
+                        <Banner
+                          status={noticeStatus(shown)}
+                          title={noticeHeading(shown, draft !== null)}
+                          description={noticeLine}
+                        />
+                      </div>
+                    )}
+                    {lostRace !== null && (
+                      <Card variant="muted" padding={2} data-nc-pending-entry-theirs="">
+                        <VStack gap={1.5} align="start">
+                          <Text as="p" type="supporting" className={styles.text}>
+                            {lostRace.text}
+                          </Text>
+                          <Button
+                            label="Use their version"
+                            variant="ghost"
+                            size="sm"
+                            isDisabled={busy}
+                            onClick={() => {
+                              setEditor((current) => current?.entryId === entry.entry_id
+                                ? { ...current, draft: lostRace.text } : current);
+                            }}
+                          />
+                        </VStack>
+                      </Card>
+                    )}
+                    <HStack gap={1} align="center">
+                      {draft === null
+                        ? (
+                          <>
+                            <Button
+                              label="Edit"
+                              variant="ghost"
+                              size="sm"
+                              isDisabled={busy}
+                              /* `onClick`, not `clickAction`: opening an editor is
+                                 local state, and Astryx's action slot shows a
+                                 spinner and disables the control until its promise
+                                 settles, which is a lie about a synchronous
+                                 toggle. The two writes below do use it. */
+                              onClick={() => {
+                                setEditor({ entryId: entry.entry_id, draft: entry.text });
+                                setRefusal(null);
+                              }}
+                            />
+                            <Button
+                              label="Delete"
+                              variant="ghost"
+                              size="sm"
+                              isDisabled={busy}
+                              clickAction={async () => {
+                                settle(entry.entry_id, await onDelete({ ...entry, rev: saveRev }));
+                              }}
+                            />
+                          </>
+                        )
+                        : (
+                          <>
+                            <Button
+                              label="Save"
+                              variant="primary"
+                              size="sm"
+                              isDisabled={busy || draft.trim() === ''}
+                              clickAction={async () => {
+                                settle(entry.entry_id, await onEdit({ ...entry, rev: saveRev }, draft));
+                              }}
+                            />
+                            <Button
+                              label="Cancel"
+                              variant="ghost"
+                              size="sm"
+                              isDisabled={busy}
+                              onClick={() => { setEditor(null); setRefusal(null); }}
+                            />
+                          </>
+                        )}
+                      </HStack>
+                    </VStack>
+                  </Card>
+                </li>
+              );
+            })}
+          </List>
+          {overflow > 0 && (
+            <Text as="p" type="supporting" role="status" data-nc-pending-overflow="">
+              {overflow === 1
+                ? '1 more queued message is waiting but cannot be shown or edited here.'
+                : `${overflow} more queued messages are waiting but cannot be shown or edited here.`}
+            </Text>
+          )}
+        </VStack>
+      </Card>
     </section>
   );
 }

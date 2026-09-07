@@ -351,8 +351,17 @@ describe('planner conversation regressions', () => {
      * property of the *chosen model* — it renders only when that model offers
      * more than one — so with no catalog there is nothing to offer, and a
      * second trigger appearing here would be the regression.
+     *
+     * `Attach an image` joined the list when the attach control became an
+     * `IconButton` — the composer's `headerActions` slot is specified to hold
+     * icon-only buttons, and the version before it was a `<label>` wrapping a
+     * file input, which is why the inventory never saw it. It is one control
+     * either way; what changed is that it is now announced, focusable and
+     * disable-able as one.
      */
-    expect([...names].sort()).toEqual(['Close conversation', 'Model: Default', 'Send']);
+    expect([...names].sort()).toEqual([
+      'Attach an image', 'Close conversation', 'Model: Default', 'Send',
+    ]);
     expect(screen.queryByRole('button', { name: /reset/i })).toBeNull();
   });
 

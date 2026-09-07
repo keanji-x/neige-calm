@@ -26,8 +26,15 @@
 // rather than a bug to fix here.
 
 import { useCallback, useEffect, useRef } from 'react';
-import { useState } from '../../ui/state/public.ts';
+import { Banner } from '@astryxdesign/core/Banner';
 import { ChatComposerDrawer } from '@astryxdesign/core/Chat';
+import { HStack } from '@astryxdesign/core/HStack';
+import { IconButton } from '@astryxdesign/core/IconButton';
+import { Thumbnail } from '@astryxdesign/core/Thumbnail';
+import { VStack } from '@astryxdesign/core/VStack';
+
+import { Icon } from '../../ui/icon/public.tsx';
+import { useState } from '../../ui/state/public.ts';
 
 import type {
   PlannerAttachment, UploadAttachmentResponse,
@@ -185,35 +192,61 @@ export function usePlannerAttachments(
 }
 
 /**
- * The paperclip.
+ * The attach control, in the composer's `headerActions` slot.
  *
- * A label wrapping a hidden `<input type="file">` rather than a button that
- * calls `click()` on one: the native control is the thing that opens the
- * picker, and driving it programmatically is the version that stops working
- * the moment a browser decides the call was not user-initiated.
+ * An `IconButton` because that is what the slot is specified to hold — Astryx's
+ * own note on it reads "left header actions (attach, mention); icon-only sm
+ * buttons" — and a hidden `<input type="file">` behind it, opened by `click()`.
+ * The design system's own `FileInput` opens its picker exactly this way; a
+ * click handler running inside a real user gesture is user-initiated, and this
+ * is what buys the button an accessible name, a focus ring, a disabled state
+ * and a keyboard-reachable reason, none of which a bare `<label>` had.
+ *
+ * The reason for being unavailable rides on `tooltip` rather than `title`.
+ * Astryx switches a tooltipped disabled button to `aria-disabled` so it stays
+ * focusable — which is the difference between a reason a keyboard user can
+ * reach and one only a mouse can.
  */
 export function PlannerAttachButton({ attachments, support, disabled = false }: {
   attachments: PlannerAttachments;
   support: AttachmentSupport;
   disabled?: boolean;
 }) {
+  const picker = useRef<HTMLInputElement | null>(null);
   const unavailable = !support.available;
   const blocked = disabled || unavailable || attachments.busy || attachments.atCapacity;
-  const title = unavailable
+  /* Only the two refusals a reader can act on get a tooltip. "Attach an image"
+     is already the button's label, and repeating it in a tooltip is a hover
+     that says nothing. */
+  const tooltip = unavailable
     ? (support.reason ?? ATTACHED_WORKSPACE_REASON)
     : attachments.atCapacity
       ? `A message can carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} images.`
-      : 'Attach an image';
+      : undefined;
   return (
-    <label className={styles.attach} title={title} data-nc-attach="">
-      <span className={styles.attachGlyph} aria-hidden="true">＋</span>
-      <span className={styles.attachLabel}>Image</span>
+    <span className={styles.attach} data-nc-attach="">
+      <IconButton
+        label="Attach an image"
+        icon={<Icon name="paperclip" size="sm" />}
+        variant="ghost"
+        size="sm"
+        isDisabled={blocked}
+        /* The spinner belongs to the control that started the upload; the
+           strip below shows the same wait as a skeleton tile. */
+        isLoading={attachments.busy}
+        tooltip={tooltip}
+        onClick={() => { picker.current?.click(); }}
+      />
       <input
+        ref={picker}
         className={styles.attachInput}
         type="file"
         accept={ATTACHABLE_IMAGE_TYPES.join(',')}
-        aria-label="Attach an image"
-        disabled={blocked}
+        /* The button above is the control: it carries the name, the state and
+           the focus. This is machinery, and a second announced file input
+           beside it would be a second thing to tab to that does nothing. */
+        aria-hidden="true"
+        tabIndex={-1}
         onChange={(event) => {
           const file = event.target.files?.[0];
           /* Cleared unconditionally so picking the same file twice in a row
@@ -222,31 +255,55 @@ export function PlannerAttachButton({ attachments, support, disabled = false }: 
           if (file !== undefined) void attachments.attach(file);
         }}
       />
-    </label>
+    </span>
   );
 }
 
-/** The strip of pending images, in the composer's drawer slot. */
+/**
+ * The strip of pending images, in the composer's drawer slot.
+ *
+ * `Thumbnail` rather than a hand-rolled tile: it is the design system's
+ * component for exactly this — a square preview with an overlaid remove
+ * button — and it samples the image behind that button (APCA) so the button
+ * stays legible on a light picture and a dark one alike. The version this
+ * replaced painted a fixed `rgb(0 0 0 / 55%)` disc, which is a constant answer
+ * to a question whose answer depends on the picture, and it did not follow the
+ * theme.
+ */
 export function PlannerAttachmentDrawer({ attachments }: { attachments: PlannerAttachments }) {
-  if (attachments.items.length === 0 && attachments.error === null) return null;
+  const { items, busy, error } = attachments;
+  if (items.length === 0 && error === null && !busy) return null;
   return (
-    <ChatComposerDrawer count={attachments.items.length} label="Images">
-      <ul className={styles.strip} data-nc-attachments="">
-        {attachments.items.map((item) => (
-          <li key={item.id} className={styles.item}>
-            <img className={styles.thumb} src={item.url} alt="" />
-            <button
-              type="button"
-              className={styles.remove}
-              aria-label="Remove this image"
-              onClick={() => { attachments.remove(item.id); }}
-            >×</button>
-          </li>
-        ))}
-      </ul>
-      {attachments.error !== null && (
-        <p className={styles.error} role="alert">{attachments.error}</p>
-      )}
+    <ChatComposerDrawer count={items.length} label="Images">
+      <VStack gap={2}>
+        <HStack gap={2} wrap="wrap" data-nc-attachments="">
+          {items.map((item, index) => (
+            <Thumbnail
+              key={item.id}
+              src={item.url}
+              /* The picture is the reader's own and was chosen a second ago;
+                 there is nothing true to say about its contents that they do
+                 not already know. The position is what tells two of them
+                 apart, and it is what the remove button is named after. */
+              label={`Image ${index + 1}`}
+              onRemove={() => { attachments.remove(item.id); }}
+            />
+          ))}
+          {/* An upload in flight has no url yet, so it is a tile with no src
+              and `isLoading` — the strip grows when the pick happens rather
+              than when the server answers, which is when the reader did it. */}
+          {busy && <Thumbnail isLoading label="Uploading" />}
+        </HStack>
+        {error !== null && (
+          <Banner
+            status="error"
+            title="That image was not attached"
+            /* The server's own sentence, which says which of the four refusals
+               this was. */
+            description={error}
+          />
+        )}
+      </VStack>
     </ChatComposerDrawer>
   );
 }

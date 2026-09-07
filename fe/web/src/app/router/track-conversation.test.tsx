@@ -867,7 +867,10 @@ describe('track conversations', () => {
   }
 
   async function attachAnImage() {
-    const picker = screen.getByLabelText('Attach an image');
+    /* The hidden input behind the attach button; it carries no accessible
+       name of its own — the `IconButton` that opens it does. */
+    const picker = document.querySelector<HTMLInputElement>('input[type="file"]');
+    if (picker === null) throw new Error('no file input rendered');
     const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'shot.png', { type: 'image/png' });
     await act(async () => {
       fireEvent.change(picker, { target: { files: [file] } });
