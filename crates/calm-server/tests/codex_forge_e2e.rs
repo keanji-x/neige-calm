@@ -3073,6 +3073,7 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
         json!({ "path": json_path }),
     )
     .await
+    .map(calm_server::mcp_server::result::ToolResult::into_structured)
     .map_err(|e| format!("{e:?}"));
     let mut json_diag = String::new();
     if let Ok(value) = &json_read {
@@ -3120,6 +3121,7 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
         json!({ "path": md_path }),
     )
     .await
+    .map(calm_server::mcp_server::result::ToolResult::into_structured)
     .map_err(|e| format!("{e:?}"));
     if let Ok(value) = &md_read {
         let content = value

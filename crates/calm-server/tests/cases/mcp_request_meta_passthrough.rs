@@ -211,7 +211,9 @@ fn identity_capture_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<To
         Box::pin(async move {
             tx.send(identity)
                 .expect("identity capture receiver should still be alive");
-            Ok(json!({ "status": "ok" }))
+            Ok(calm_server::mcp_server::result::ToolResult::structured(
+                json!({ "status": "ok" }),
+            ))
         })
     });
     registry.register(

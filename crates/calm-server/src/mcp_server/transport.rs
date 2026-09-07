@@ -628,19 +628,9 @@ async fn dispatch_tools_call(
         let identity =
             resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
         let fut = handler(ctx.clone(), identity, arguments);
-        let raw = fut.await?;
-        // Wrap the handler's raw payload in the MCP `CallToolResult`
-        // envelope so codex's MCP client parses it. The kernel's
-        // tools today return a JSON object; we surface it as a
-        // single `text` content block + `structuredContent` field
-        // so downstream agents can either parse the structured form
-        // or read the text representation.
-        let text = serde_json::to_string(&raw).unwrap_or_else(|_| "{}".to_string());
-        return Ok(json!({
-            "content": [{ "type": "text", "text": text }],
-            "structuredContent": raw,
-            "isError": false,
-        }));
+        // Serialize the typed envelope once. In particular, native images
+        // must not be converted into text by wrapping the result again.
+        return Ok(json!(fut.await?));
     }
 
     dispatch_plugin_tools_call(ctx, thread_id, name, arguments, connection_identity).await

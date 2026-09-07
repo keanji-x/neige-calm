@@ -289,7 +289,9 @@ pub async fn call_tool(
         .registry
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
-    handler(boot.ctx.clone(), identity, args).await
+    handler(boot.ctx.clone(), identity, args)
+        .await
+        .map(calm_server::mcp_server::result::ToolResult::into_structured)
 }
 
 pub fn planner_identity(boot: &Boot) -> ToolCallIdentity {

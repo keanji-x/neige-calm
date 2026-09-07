@@ -21,6 +21,7 @@ pub mod auth;
 pub mod framing;
 pub mod handshake;
 pub mod registry;
+pub mod result;
 pub(crate) mod tool_visibility;
 pub mod tools;
 pub mod transport;
