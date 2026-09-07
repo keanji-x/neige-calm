@@ -65,6 +65,7 @@ JSON，减少表数，但必须维持相同身份和不可变规则）：
 
 | 记录 | 必须保留的内容 | 唯一性与含义 |
 | --- | --- | --- |
+| thread registration | Provider thread、所属 Planner card/Track、注册时间 | 只记录实际注册新语义工具的线程；旧线程不能因升级自动获得标记 |
 | issuance | id、接收 session/thread/Track、实际发送内容、类型化恢复动作、创建时间 | 一个 id 对应一份不可变内容；动作含 key、原 attempt、依据事件、稳定恢复请求 key、当时可用性 |
 | turn binding | session/thread/turn、issuance id、确认时间 | 同一 Provider thread/turn 只能绑定一次；同值重放成功，不同 issuance 或 session 明确拒绝 |
 | call provenance | 原 session/thread/turn/callId、tool、规范参数指纹、首次接收时间 | 同一 callId 在原 turn 内不可改参数；只证明收到调用，不证明恢复成功 |
