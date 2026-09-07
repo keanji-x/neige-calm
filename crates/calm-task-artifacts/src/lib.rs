@@ -1,4 +1,4 @@
-//! Kernel-owned immutable snapshots for restricted local Git workspaces.
+//! Kernel-owned immutable ordinary-file and restricted local Git snapshots.
 //!
 //! Callers MUST establish and retain a trusted write boundary throughout capture,
 //! exclude the store and preparation parent from worker writable mounts, and check
@@ -9,6 +9,8 @@
 
 #[cfg(target_os = "linux")]
 mod capture;
+#[cfg(target_os = "linux")]
+mod file;
 #[cfg(target_os = "linux")]
 mod filesystem;
 #[cfg(target_os = "linux")]

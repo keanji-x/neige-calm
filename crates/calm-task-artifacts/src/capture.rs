@@ -22,7 +22,13 @@ impl ArtifactStore {
         if !marker.is_file() && !marker.is_dir() {
             return Err(Error::Unsupported("Git marker".into()));
         }
-        crate::git_index::inspect(request.source.root, &self.git, &self.limits)?;
+        crate::git_index::inspect(
+            request.source.root,
+            self.git
+                .as_ref()
+                .ok_or_else(|| Error::Unsupported("Git configuration missing".into()))?,
+            &self.limits,
+        )?;
         disk::private_dir(&stage.join("objects"))?;
         let mut entries = Vec::new();
         let mut total_bytes = 0u64;
@@ -61,39 +67,15 @@ impl ArtifactStore {
                     pending.push(name.clone());
                     Entry::Directory { path: name }
                 } else {
-                    disk::regular(&file)?;
-                    // An external hardlink can preserve an unconfined writer;
-                    // do not represent it as a supported isolated source.
-                    if meta.nlink() != 1 {
-                        return Err(Error::Unsupported("hard-linked source file".into()));
-                    }
-                    let mut object = tempfile::NamedTempFile::new_in(stage.join("objects"))?;
                     let limit = self
                         .limits
                         .max_file_bytes
                         .min(self.limits.max_total_bytes - total_bytes);
-                    let (digest, bytes) = disk::copy_hash(file, &mut object, limit)?;
-                    total_bytes += bytes;
-                    object.as_file().sync_all()?;
-                    let object_path = stage.join("objects").join(digest.as_str());
-                    match object.persist_noclobber(&object_path) {
-                        Ok(_) => {}
-                        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
-                            let existing = disk::open_beneath(
-                                &disk::open_dir(&stage.join("objects"))?,
-                                digest.as_str(),
-                            )?;
-                            let actual = disk::copy_hash(existing, &mut std::io::sink(), limit)?;
-                            disk::verify_identity(&actual, &digest, bytes)?;
-                        }
-                        Err(e) => return Err(e.error.into()),
+                    let entry = self.capture_object(file, name, stage, limit)?;
+                    if let Entry::File { bytes, .. } = &entry {
+                        total_bytes += bytes;
                     }
-                    Entry::File {
-                        path: name,
-                        digest,
-                        bytes,
-                        executable: meta.mode() & 0o111 != 0,
-                    }
+                    entry
                 };
                 entries.push(entry);
             }
@@ -105,6 +87,48 @@ impl ArtifactStore {
             entries,
             outputs,
         };
+        self.write_manifest(manifest, stage)
+    }
+
+    pub(crate) fn capture_object(
+        &self,
+        file: fs::File,
+        name: String,
+        stage: &Path,
+        limit: u64,
+    ) -> Result<Entry> {
+        disk::regular(&file)?;
+        let meta = file.metadata()?;
+        if meta.nlink() != 1 {
+            return Err(Error::Unsupported("hard-linked source file".into()));
+        }
+        let mut object = tempfile::NamedTempFile::new_in(stage.join("objects"))?;
+        let (digest, bytes) = disk::copy_hash(file, &mut object, limit)?;
+        object.as_file().sync_all()?;
+        let object_path = stage.join("objects").join(digest.as_str());
+        match object.persist_noclobber(&object_path) {
+            Ok(_) => {}
+            Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing =
+                    disk::open_beneath(&disk::open_dir(&stage.join("objects"))?, digest.as_str())?;
+                let actual = disk::copy_hash(existing, &mut std::io::sink(), limit)?;
+                disk::verify_identity(&actual, &digest, bytes)?;
+            }
+            Err(e) => return Err(e.error.into()),
+        }
+        Ok(Entry::File {
+            path: name,
+            digest,
+            bytes,
+            executable: meta.mode() & 0o111 != 0,
+        })
+    }
+
+    pub(crate) fn write_manifest(
+        &self,
+        manifest: SnapshotManifest,
+        stage: &Path,
+    ) -> Result<Digest> {
         manifest.validate(&self.limits)?;
         let bytes = serde_json::to_vec(&manifest)?;
         if bytes.len() as u64 > self.limits.max_manifest_bytes {

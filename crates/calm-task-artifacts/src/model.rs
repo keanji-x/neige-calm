@@ -108,6 +108,31 @@ pub struct CaptureRequest<'a> {
     pub source: QuiescentSource<'a>,
     pub outputs: &'a [OutputSlot],
 }
+/// Canonical relative ordinary-file path. No normalization or private `.codex`
+/// components are accepted. Store-specific ceilings are checked again on use.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileArtifactPath(String);
+impl FileArtifactPath {
+    pub fn new(value: impl Into<String>, limits: &Limits) -> Result<Self> {
+        let value = value.into();
+        file_path(&value, limits)?;
+        Ok(Self(value))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A stable binding to one file under a caller-established stopped-source boundary.
+/// The lazy source opener is supplied separately to `ArtifactStore::capture_file`
+/// so frozen replay never requires a source descriptor or source existence.
+pub struct FileCaptureRequest<'a> {
+    pub key: &'a str,
+    pub boundary_id: &'a str,
+    pub output: &'a str,
+    pub path: &'a FileArtifactPath,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MissingOutput {
@@ -161,12 +186,36 @@ pub struct SnapshotManifest {
 }
 impl SnapshotManifest {
     pub(crate) fn validate(&self, limits: &Limits) -> Result<()> {
-        if self.version != "file-manifest-v1" || self.delivery_version != "git-v1" {
+        if self.version != "file-manifest-v1"
+            || !matches!(self.delivery_version.as_str(), "git-v1" | "regular-file-v1")
+        {
             return Err(Error::Unsupported("manifest version".into()));
         }
         validate_entries(&self.entries, limits)?;
         if normalize_outputs(&self.outputs, limits)? != self.outputs {
             return Err(Error::Integrity("noncanonical output declarations".into()));
+        }
+        if self.delivery_version == "regular-file-v1" {
+            let [slot] = self.outputs.as_slice() else {
+                return Err(Error::Integrity("ordinary file requires one output".into()));
+            };
+            let [path] = slot.paths.as_slice() else {
+                return Err(Error::Integrity("ordinary file requires one path".into()));
+            };
+            file_path(path, limits)?;
+            // Only the declared file and its structural parent directories exist.
+            if self.entries.len() != path.split('/').count()
+                || !self
+                    .entries
+                    .iter()
+                    .any(|e| matches!(e, Entry::File { path: p, .. } if p == path))
+                || self.entries.iter().any(|e| match e {
+                    Entry::File { path: p, .. } => p != path,
+                    Entry::Directory { path: p } => p == path || !contains(p, path),
+                })
+            {
+                return Err(Error::Integrity("ordinary file manifest shape".into()));
+            }
         }
         Ok(())
     }
@@ -236,6 +285,23 @@ pub(crate) fn path(value: &str, limits: &Limits) -> Result<()> {
     }
     Ok(())
 }
+pub(crate) fn capture_identity(key: &str, boundary_id: &str) -> Result<()> {
+    for value in [key, boundary_id] {
+        if value.is_empty() || value.len() > 512 || value.bytes().any(|b| b.is_ascii_control()) {
+            return Err(Error::Invalid(
+                "capture key and trusted boundary ID must be nonempty bounded strings".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+pub(crate) fn file_path(value: &str, limits: &Limits) -> Result<()> {
+    path(value, limits)?;
+    if value.split('/').any(|part| part == ".codex") {
+        return Err(Error::Invalid("private artifact path".into()));
+    }
+    Ok(())
+}
 pub(crate) fn contains(parent: &str, child: &str) -> bool {
     child == parent
         || child
@@ -259,6 +325,19 @@ pub(crate) fn disjoint(paths: &[&str]) -> Result<()> {
     }
     Ok(())
 }
+pub(crate) fn output_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 128
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(Error::Invalid(
+            "slot needs a name and at least one path".into(),
+        ));
+    }
+    Ok(())
+}
 pub(crate) fn normalize_outputs(
     outputs: &[OutputSlot],
     limits: &Limits,
@@ -268,14 +347,8 @@ pub(crate) fn normalize_outputs(
     }
     let mut total_paths = 0usize;
     for slot in outputs {
-        if slot.name.is_empty()
-            || slot.name.len() > 128
-            || !slot
-                .name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            || slot.paths.is_empty()
-        {
+        output_name(&slot.name)?;
+        if slot.paths.is_empty() {
             return Err(Error::Invalid(
                 "slot needs a name and at least one path".into(),
             ));
