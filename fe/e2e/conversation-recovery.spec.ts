@@ -102,7 +102,11 @@ test('keeps a lost acknowledgement uncertain and asks before resending', async (
     await composer.press('Enter');
     await expect(page.getByRole('alert')).toContainText('Delivery is unconfirmed');
     expect(accepted).toBe(true);
-    await expect(page.getByText('Keep this uncertain message', { exact: true })).toBeVisible();
+    // The accepted message may also appear in Queued messages. This assertion
+    // pins retention of the user's local transcript bubble after the lost ACK.
+    await expect(page.locator('[data-nc-turn="you"]').filter({
+      hasText: /^Keep this uncertain message$/,
+    })).toBeVisible();
     await page.getByRole('button', { name: 'Check delivery' }).click();
     // The fixture app-server emits no userMessage rows, so even a successful
     // read cannot prove delivery. Checking must not replay the accepted input.
