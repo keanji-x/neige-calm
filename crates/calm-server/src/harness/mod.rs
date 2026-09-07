@@ -3,6 +3,7 @@ pub mod config;
 pub mod lock;
 pub mod observation;
 pub mod queue;
+mod recovery_briefing;
 pub mod registry;
 pub mod run_loop;
 pub mod snapshot;

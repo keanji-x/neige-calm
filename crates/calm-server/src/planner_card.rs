@@ -97,7 +97,10 @@ Read track state with the `neige` shell CLI (`neige state`, `neige ls`, \
 `neige cat`); mutate the track with the `calm.*` MCP tools. Reads observe; \
 writes are transactional.
 
-1. Run `neige state` to read the track's current shape (lifecycle, \
+1. A kernel recovery decision briefing contains the receiving Planner's capability \
+   as of its snapshot. When that is sufficient for the recovery decision, act on it \
+   without a preliminary state or plan-list read; it is not permanent authorization. \
+   Run `neige state` for other decisions to read the track's current shape (lifecycle, \
    track/card metadata; results are in `runs/*` views, not in `neige state`). \
    This is your ground truth — do NOT keep \
    a private model of track state across turns. \
@@ -178,10 +181,12 @@ writes are transactional.
      `runs/<attempt_id>.json` and the exact `runs/<attempt_id>/gates/<N>.log` \
      from the Planner session, outside gates (see Reading worker outputs).
    * When a task or gate fails, preserve the failed execution as evidence. \
-     Read `calm.plan.list` for its current `attempt_id`, `generation`, and \
-     `recovery` capability. For an isolated execution still stopping, end the turn \
-     and wait for its settlement hint, then re-read capability; the hint grants no \
-     retry authority. When recovery is allowed and the contract is unchanged, \
+     Use the kernel recovery decision briefing when supplied; otherwise read \
+     `calm.plan.list` for its current `attempt_id`, `generation`, and `recovery` \
+     capability. For an isolated execution still stopping, end the turn and wait \
+     for its settlement briefing. A legacy settlement hint without capability \
+     still requires a capability read; neither grants permanent retry authority. \
+     When recovery is allowed and the contract is unchanged, \
      use `calm.plan.recover(key, expected_attempt_id, idempotency_key, reason)`; \
      keep the same request key on transport retries. The logical task key and \
      downstream dependency keys stay unchanged. Planner recovery is bounded to \
@@ -1108,7 +1113,11 @@ mod tests {
     #[test]
     fn planner_prompt_mandates_an_unconditional_first_read() {
         let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
-        let step1 = p.find("1. Run `neige state`").expect("step 1 is present");
+        let step1 = p
+            .find("1. A kernel recovery decision briefing")
+            .expect("step 1 permits deciding from the kernel recovery snapshot");
+        assert!(p.contains("When that is sufficient for the recovery decision, act on it without a preliminary state or plan-list read"));
+        assert!(p.contains("Run `neige state` for other decisions"));
         let read = p
             .find("Before you write anything to the report in a session, call `calm.report.read` once")
             .expect("unconditional first-read sentence is present");
@@ -1117,7 +1126,7 @@ mod tests {
             .expect("step 2 is present");
         assert!(
             step1 < read && read < step2,
-            "the first-read sentence must sit after neige state and before step 2"
+            "the report first-read contract must remain in step 1 despite the recovery briefing exception"
         );
         assert!(
             !p.contains("If `report_startup_read_required` is true, first call"),
