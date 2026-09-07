@@ -155,6 +155,50 @@ async fn isolated_runtime_shutdown_stops_hup_ignoring_descendants() -> anyhow::R
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn isolated_runtime_launcher_death_stops_hup_ignoring_descendants() -> anyhow::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut host, client) = Host::start_command(private_root()?, true).await?;
+    let witness = host.root.path().join("witness.sock");
+    let listener = tokio::net::UnixListener::bind(&witness)?;
+    let mut spec = terminal_spec(
+        host.root.path(),
+        "descendants",
+        "trap 'exit 0' HUP; /bin/sh -c 'trap \"\" HUP TERM; exec \"$1\" --descendant-client \"$2\"' child \"$1\" \"$2\" & printf 'ready\\n'; wait",
+    );
+    spec.argv.extend([
+        "leader".into(),
+        env!("CARGO_BIN_EXE_terminal-runtime-parent-probe").into(),
+        witness.to_str().unwrap().into(),
+    ]);
+    let pane = client.create(spec).await?;
+    let (mut peer, _) = tokio::time::timeout(BUDGET, listener.accept()).await??;
+    pane.wait_for_text("ready").await?;
+    // Terminate only our owned launcher: no SDK shutdown may trigger the fence.
+    host.child.kill()?;
+    host.child.wait()?;
+    let mut byte = [0u8; 1];
+    let stopped = matches!(
+        tokio::time::timeout(BUDGET, peer.read(&mut byte)).await,
+        Ok(Ok(0))
+    );
+    if !stopped {
+        // Removing --kill-child leaves the namespace init alive. Gracefully
+        // stop that known runtime before asserting so a red test leaks nothing.
+        peer.write_all(b"x").await?;
+        // With --pid removed the runtime itself may already be gone; the
+        // cooperative descendant release above still guarantees cleanup.
+        let _ = tokio::time::timeout(BUDGET, client.shutdown()).await;
+        assert_eq!(
+            tokio::time::timeout(BUDGET, peer.read(&mut byte)).await??,
+            0
+        );
+    }
+    assert!(stopped, "descendant survived the owned launcher's death");
+    Ok(())
+}
+
 impl Drop for Host {
     fn drop(&mut self) {
         // Failure cleanup for this test-owned host only; no global daemon is

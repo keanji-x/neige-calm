@@ -18,16 +18,20 @@ The owning application must not blindly retry or dispose of its workspace.
 
 For a Neige terminal's process ownership, use `isolated_command` with an explicit
 absolute `unshare` executable. It creates a user/PID namespace, runs the RMUX
-host as namespace init, and ties that child to its launcher. The owner must
-observe the launcher exit before claiming the namespace is stopped. This is
+host as namespace init, and ties that child to its launcher. Graceful SDK shutdown followed by
+successful launcher exit is the current namespace stop receipt. Abnormal launcher
+death triggers containment but reaping that launcher alone does not synchronously
+prove quiescence; integration must also observe namespace init termination. This is
 process containment only, not a filesystem/network sandbox. There is no fallback
 when namespaces are unavailable. Plain `command` remains useful for daemon/SDK
 probes, but an RMUX pane-close response alone is not a process-tree stop receipt.
 
 The reason for one runtime per owned Terminal is measurable: upstream pane
 removal starts termination in the background, and an ignored HUP can outlive the
-pane/leader. The namespace shutdown regression checks a real descendant's writes
-stop after runtime shutdown and owned launcher exit. Neige's supervisor should
+pane/leader. The namespace shutdown regression checks a real descendant's socket
+closes after runtime shutdown and successful launcher exit. A separate test kills
+the launcher and requires descendant EOF, verifying the parent-death fence without
+treating launcher exit alone as proof. Neige's supervisor should
 own this outer process; RMUX remains the sole owner of PTYs inside it.
 The socket parent must be an existing private owned directory. The host leases
 a lock file and refuses existing socket paths; stale endpoint recovery requires
