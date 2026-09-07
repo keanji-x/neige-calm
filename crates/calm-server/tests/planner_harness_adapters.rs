@@ -737,6 +737,27 @@ async fn planner_thread_start_carries_neige_mcp_exec_shell_env() {
     );
     let thread_start = starts[0];
 
+    // #1578: this is the actual operation's provider request. Truthful write
+    // annotations plus approvalPolicy=never otherwise stop before tools/call.
+    assert_eq!(
+        thread_start.pointer("/params/approvalPolicy"),
+        Some(&json!("never"))
+    );
+    assert_eq!(
+        thread_start.pointer("/params/config/mcp_servers/calm/tools"),
+        Some(&json!({
+            "calm.terminal.open": {"approval_mode":"approve"},
+            "calm.terminal.control": {"approval_mode":"approve"},
+            "calm.terminal.input": {"approval_mode":"approve"}
+        })),
+        "Planner must explicitly delegate only Terminal writes to the kernel's live authority checks"
+    );
+    assert!(
+        thread_start
+            .pointer("/params/config/mcp_servers/calm/default_tools_approval_mode")
+            .is_none()
+    );
+
     // The #838 planner-path channel-3 assertions: the planner thread/start must
     // carry the MCP exec-shell env in shell_environment_policy.set so the
     // planner AI exec-shell can reach + authenticate to the MCP socket.
@@ -2214,3 +2235,6 @@ async fn lazy_mint_refuses_to_mint_while_the_app_server_is_down() {
         .expect_err("a down app-server must be refused before anything is minted");
     assert!(repo.card_get("conv-daemon-down").await.unwrap().is_none());
 }
+
+#[path = "cases/planner_terminal_approval.rs"]
+mod terminal_approval;

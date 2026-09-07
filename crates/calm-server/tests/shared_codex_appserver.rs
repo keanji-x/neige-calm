@@ -5443,3 +5443,6 @@ async fn connect_to_a_silent_peer_fails_with_a_bounded_diagnostic() {
         "the bound must be the connect timeout, not the outer belt; took {elapsed:?}"
     );
 }
+
+#[path = "cases/shared_terminal_approval.rs"]
+mod terminal_approval;
