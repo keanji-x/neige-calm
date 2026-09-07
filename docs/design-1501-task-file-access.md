@@ -49,9 +49,11 @@ No arbitrary model-provided string becomes a navigation URL or rendered HTML.
   identity validator with retry, keeping retry's failure-only policy unchanged.
   Missing/live/unknown/mismatched evidence stays unavailable. Do no filesystem
   IO while holding the database writer transaction.
-- Support ordinary relative references and `/workspace/<relative>` only. Reject
-  other absolute paths, URLs, dot/traversal/empty segments, backslashes, controls
-  and the reserved `.codex` subtree. Never fall back to the Track workspace.
+- Support ordinary relative references (including `./result.txt`) and
+  `/workspace/<relative>` only. Normalize harmless current-directory segments
+  before checking the reserved `.codex` subtree; reject parent traversal, other
+  absolute paths, URLs, empty segments, backslashes and controls. Never fall back
+  to the Track workspace.
 - The retained kernel workspace and its adjacent `.owner` marker bind the
   directory inode to the original operation. Open/validate that directory without
   following symlinks and retain the validated descriptor through the file open.
