@@ -38,7 +38,8 @@ describe('failed conversation delivery', () => {
     });
     const echo = {
       id: 'echo-1', author: 'you' as const, text: '', atMs: 0,
-      serverHighWaterBefore: 5, queued: false, attachments: [image('a.png')],
+      serverHighWaterBefore: 5, queued: false, entryId: null,
+      attachments: [image('a.png')],
     };
 
     it('matches the persisted row that carries the same image', () => {
