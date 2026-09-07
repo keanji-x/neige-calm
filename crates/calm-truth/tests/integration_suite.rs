@@ -41,3 +41,6 @@ fn assert_suite_complete(source: &str) {
 
 #[path = "planner_recovery_binding_migration.rs"]
 mod planner_recovery_binding_migration;
+
+#[path = "file_delivery_migration.rs"]
+mod file_delivery_migration;
