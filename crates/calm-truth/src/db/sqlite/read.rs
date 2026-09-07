@@ -485,6 +485,20 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
+    async fn task_for_worker_card(&self, card_id: &str) -> Result<Option<Task>> {
+        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE worker_card_id=?1 LIMIT 2");
+        let mut tasks = sqlx::query_as::<_, Task>(&sql)
+            .bind(card_id)
+            .fetch_all(&self.pool)
+            .await?;
+        if tasks.len() > 1 {
+            return Err(CalmError::Conflict(
+                "ambiguous task ownership for worker card",
+            ));
+        }
+        Ok(tasks.pop())
+    }
+
     async fn task_current_get(&self, track_id: &str, key: &str) -> Result<Option<Task>> {
         super::task_attempt::task_current_get_pool(&self.pool, track_id, key).await
     }

@@ -15,7 +15,12 @@ use uuid::Uuid;
 
 mod client;
 mod operations;
+mod target;
 use client::Client;
+pub(crate) use target::Binding;
+pub use target::Target;
+#[cfg(test)]
+pub(crate) use target::TaskBinding;
 
 pub struct TerminalInteraction {
     repo: Arc<dyn RouteRepo>,
@@ -42,14 +47,7 @@ impl TerminalInteraction {
             observations: StdMutex::new(HashMap::new()),
         }
     }
-    fn binding(identity: &ToolCallIdentity, terminal: &str) -> String {
-        format!("{}:{terminal}", identity.session_id)
-    }
-    pub async fn authorize(
-        repo: &dyn RouteRepo,
-        identity: &ToolCallIdentity,
-        terminal: Option<&str>,
-    ) -> Result<String> {
+    pub async fn authorize(repo: &dyn RouteRepo, identity: &ToolCallIdentity) -> Result<String> {
         ensure!(
             identity.role == CardRole::Planner,
             "planner-only terminal tool"
@@ -73,28 +71,15 @@ impl TerminalInteraction {
                 && current.area_id.as_str() == identity.area_id,
             "planner identity or Track changed"
         );
-        if let Some(terminal) = terminal {
-            let term = repo
-                .terminal_get(terminal)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("terminal unavailable"))?;
-            let card = repo
-                .card_get(term.card_id.as_str())
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("terminal card unavailable"))?;
-            ensure!(
-                card.kind == "terminal" && card.track_id == current.track_id,
-                "terminal outside Planner Track"
-            );
-        }
         Ok(current.track_id.to_string())
     }
-    async fn client(&self, identity: &ToolCallIdentity, terminal: &str) -> Result<Arc<Client>> {
-        Self::authorize(self.repo.as_ref(), identity, Some(terminal)).await?;
+    async fn client(&self, identity: &ToolCallIdentity, resolved: &Binding) -> Result<Arc<Client>> {
+        Self::check_binding(self.repo.as_ref(), identity, resolved, false).await?;
+        let terminal = resolved.terminal_id.as_str();
         let entry = self.renderer.get(terminal).ok_or_else(|| {
             anyhow::anyhow!("terminal unavailable; observation never starts a process")
         })?;
-        let binding = Self::binding(identity, terminal);
+        let binding = resolved.key(identity);
         let mut clients = self.clients.lock().await;
         clients.retain(|_, client| {
             client.screen.lock().is_ok_and(|state| state.available)
@@ -112,36 +97,52 @@ impl TerminalInteraction {
             return Ok(client.clone());
         }
         ensure!(clients.len() < 128, "Planner terminal client limit reached");
-        let repo = self.repo.clone();
-        let actor = identity.clone();
-        let terminal = terminal.to_owned();
-        let scope = ClientInputScope::Bound(Arc::new(move || {
-            let repo = repo.clone();
-            let actor = actor.clone();
-            let terminal = terminal.clone();
-            Box::pin(async move {
-                Self::authorize(repo.as_ref(), &actor, Some(&terminal))
-                    .await
-                    .is_ok()
-            })
-        }));
-        let client = Arc::new(Client::attach(entry, scope).await?);
+        let scope = Self::bound_scope(self.repo.clone(), identity, resolved);
+        let client = Arc::new(Client::attach(entry, scope, resolved.clone()).await?);
         clients.insert(binding, client.clone());
         Ok(client)
+    }
+    pub(crate) fn bound_scope(
+        repo: Arc<dyn RouteRepo>,
+        identity: &ToolCallIdentity,
+        resolved: &Binding,
+    ) -> ClientInputScope {
+        let scope_check = |write: bool| {
+            let repo = repo.clone();
+            let actor = identity.clone();
+            let expected = resolved.clone();
+            Arc::new(move || {
+                let repo = repo.clone();
+                let actor = actor.clone();
+                let expected = expected.clone();
+                Box::pin(async move {
+                    Self::check_binding(repo.as_ref(), &actor, &expected, write)
+                        .await
+                        .is_ok()
+                }) as futures::future::BoxFuture<'static, bool>
+            })
+                as Arc<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>
+        };
+        ClientInputScope::Bound {
+            observe: scope_check(false),
+            control: scope_check(true),
+        }
     }
     pub async fn observe(
         &self,
         identity: &ToolCallIdentity,
-        terminal: &str,
+        target: &Target,
         offset: usize,
         wait_ms: u64,
     ) -> Result<(Value, Vec<u8>)> {
         ensure!(wait_ms <= 2000, "observation wait exceeds 2000ms");
-        let client = self.client(identity, terminal).await?;
+        let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        let terminal = resolved.binding.terminal_id.as_str();
+        let client = self.client(identity, &resolved.binding).await?;
         if wait_ms > 0 {
             tokio::time::sleep(Duration::from_millis(wait_ms)).await;
         }
-        Self::authorize(self.repo.as_ref(), identity, Some(terminal)).await?;
+        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let (control, exited) = {
             let state = client
                 .screen
@@ -168,10 +169,11 @@ impl TerminalInteraction {
             .clone();
         let image_frame = frame.clone();
         let png = tokio::task::spawn_blocking(move || raster.png(&image_frame)).await??;
-        Self::authorize(self.repo.as_ref(), identity, Some(terminal)).await?;
+        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let observation_id = Uuid::new_v4();
         let metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
             "terminal_session_id":client.entry.handle.session_id,"control_id":control,"role":if control.is_some(){"owner"}else{"observer"},
+            "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
             "text":frame.text,"exited":exited,"image_source":"rmux_client_projection"});
@@ -187,7 +189,7 @@ impl TerminalInteraction {
         observations.insert(
             observation_id,
             Observation {
-                binding: Self::binding(identity, terminal),
+                binding: resolved.binding.key(identity),
                 connection: client.connection,
                 revision,
                 control,
@@ -200,20 +202,34 @@ impl TerminalInteraction {
     pub async fn control(
         &self,
         identity: &ToolCallIdentity,
-        terminal: &str,
+        target: &Target,
         action: &str,
     ) -> Result<Value> {
         if action == "detach" {
-            Self::authorize(self.repo.as_ref(), identity, None).await?;
-            let removed = self
-                .clients
-                .lock()
-                .await
-                .remove(&Self::binding(identity, terminal));
-            drop(removed);
+            Self::authorize(self.repo.as_ref(), identity).await?;
+            self.clients.lock().await.retain(|key, client| {
+                let selected = match target {
+                    Target::Terminal(id) => &client.binding.terminal_id == id,
+                    Target::Task(id) => client
+                        .binding
+                        .task
+                        .as_ref()
+                        .is_some_and(|task| &task.task_id == id),
+                };
+                !(selected && key == &client.binding.key(identity))
+            });
             return Ok(json!({"detached":true}));
         }
-        let client = self.client(identity, terminal).await?;
+        let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        let terminal = resolved.binding.terminal_id.as_str();
+        Self::check_binding(
+            self.repo.as_ref(),
+            identity,
+            &resolved.binding,
+            action == "claim",
+        )
+        .await?;
+        let client = self.client(identity, &resolved.binding).await?;
         let _serial = client.serial.lock().await;
         match action {
             "claim" => {

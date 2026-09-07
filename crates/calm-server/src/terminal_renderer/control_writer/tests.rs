@@ -24,6 +24,22 @@ async fn client(
     control: mpsc::UnboundedSender<SupervisorControl>,
     events: broadcast::Sender<DaemonMsg>,
 ) -> Client {
+    scoped_client(
+        barrier,
+        registry,
+        control,
+        events,
+        crate::terminal_renderer::ClientInputScope::InteractiveUser,
+    )
+    .await
+}
+async fn scoped_client(
+    barrier: Arc<crate::terminal_renderer::InputBarrier>,
+    registry: SharedOwnerRegistry,
+    control: mpsc::UnboundedSender<SupervisorControl>,
+    events: broadcast::Sender<DaemonMsg>,
+    scope: crate::terminal_renderer::ClientInputScope,
+) -> Client {
     let (input, incoming) = mpsc::channel(8);
     let (outgoing, output) = mpsc::channel(32);
     let id = Uuid::new_v4();
@@ -32,7 +48,7 @@ async fn client(
         outgoing,
         ClientPumpContext {
             input_barrier: barrier,
-            input_scope: crate::terminal_renderer::ClientInputScope::InteractiveUser,
+            input_scope: scope,
             event_rx: events.subscribe(),
             event_tx: events,
             render_plane: Arc::new(Mutex::new(RenderPlane::new(80, 24, 1024, 20))),
@@ -227,3 +243,6 @@ async fn lost_acknowledgement_blocks_new_control_and_queued_writes() {
     assert_eq!(registry.lock().unwrap().current_owner(), Some(old.id));
     assert!(barrier.grant().await.is_none());
 }
+
+#[cfg(test)]
+mod task_scope_tests;

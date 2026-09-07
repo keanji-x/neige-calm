@@ -362,6 +362,9 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn task_get(&self, id: &str) -> Result<Option<Task>>;
     /// Current execution only; None also covers a withdrawn pending projection.
     async fn task_current_get(&self, track_id: &str, key: &str) -> Result<Option<Task>>;
+    /// Historical membership matters too: a recovered/withdrawn execution's
+    /// worker card must not become an unowned manual terminal by omission.
+    async fn task_for_worker_card(&self, card_id: &str) -> Result<Option<Task>>;
     /// All surviving execution rows, oldest generation first.
     async fn task_history_by_key(&self, track_id: &str, key: &str) -> Result<Vec<Task>>;
     /// Issue #644 PR-B — every non-terminal task across every track

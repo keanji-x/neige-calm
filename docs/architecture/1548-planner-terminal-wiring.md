@@ -5,6 +5,7 @@ The application entry point is a Planner-only MCP tool set:
 | Tool | Behavior |
 |---|---|
 | `calm.terminal.open` | Idempotent visible Terminal-card creation through `terminal-create` OperationRuntime, attributed to the authenticated Planner session. |
+| `calm.terminal.resolve` | Resolve an exact current task attempt or Terminal ID to its real Worker card, worker session and view availability. |
 | `calm.terminal.observe` | PNG and text/cursor/mode state from the same captured RMUX projection, with observation and connection IDs. Reads never create or restart a process. |
 | `calm.terminal.control` | Claim/release control, or detach the model client while retaining the card/program. |
 | `calm.terminal.input` | One text/key/cell-click action, bound to a recent live observation and current control. A matching request ID replays its receipt without another write. |
@@ -59,6 +60,28 @@ Text excludes control characters and never implicitly submits. Enter, Escape,
 arrows and other supported keys are explicit actions. Application mouse input
 requires reported SGR mouse mode and in-range cell coordinates. Local history
 scrolling uses `observe.scroll_offset`; application paging uses explicit keys.
+
+## Task and Worker targeting
+
+Resolve, observe, control and input accept exactly one of `terminal_id` or
+`task_id`. The latter is the exact current `attempt_id` returned by
+`calm.plan.list`, not the logical task key. It resolves the task's actual Worker
+card and current worker session in the authenticated Planner's Track. Terminal,
+Codex and Claude Worker cards are supported; Planner and Assistant cards are
+excluded. Manual Codex/Claude Worker cards may be addressed by Terminal ID.
+
+Both selectors validate task ownership, including historical card membership,
+spawn-operation identity and the current execution allocation. A recovered task
+must be selected explicitly; an old Terminal ID cannot bypass this rule. Client
+and observation identities bind the exact task, card, worker session and Terminal.
+Queued input rechecks that binding immediately before the supervisor write.
+A finished task can retain a readable view, but cannot claim control or receive
+input. Release and detach remain available for cleanup.
+
+Some isolated Codex workers have a terminal record but no live PTY viewer.
+`resolve` returns `available: false` and `controllable: false` in that case;
+observing never starts a substitute session. Images cover only the selected
+Terminal's RMUX viewport, with independent per-terminal control and scroll offset.
 
 ## Child environment
 

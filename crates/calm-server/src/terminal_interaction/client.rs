@@ -51,6 +51,7 @@ impl ScreenState {
 }
 
 pub struct Client {
+    pub binding: super::Binding,
     pub id: Uuid,
     pub connection: Uuid,
     pub entry: Arc<RendererEntry>,
@@ -70,7 +71,11 @@ impl Drop for Client {
     }
 }
 impl Client {
-    pub async fn attach(entry: Arc<RendererEntry>, scope: ClientInputScope) -> Result<Self> {
+    pub async fn attach(
+        entry: Arc<RendererEntry>,
+        scope: ClientInputScope,
+        binding: super::Binding,
+    ) -> Result<Self> {
         let id = Uuid::new_v4();
         let size = entry
             .handle
@@ -179,6 +184,7 @@ impl Client {
         });
         abort.0.take();
         Ok(Self {
+            binding,
             id,
             connection: Uuid::new_v4(),
             entry,

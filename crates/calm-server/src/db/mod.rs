@@ -48,6 +48,7 @@ pub trait ServerRepoReadExt {
     async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>>;
     async fn task_get(&self, id: &str) -> Result<Option<Task>>;
     async fn task_current_get(&self, track_id: &str, key: &str) -> Result<Option<Task>>;
+    async fn task_for_worker_card(&self, card_id: &str) -> Result<Option<Task>>;
     async fn task_history_by_key(&self, track_id: &str, key: &str) -> Result<Vec<Task>>;
     async fn tasks_nonterminal(&self) -> Result<Vec<Task>>;
     async fn task_contexts_by_dst_track(
@@ -198,6 +199,12 @@ where
             .await
             .map_err(Into::into)
     }
+    async fn task_for_worker_card(&self, card_id: &str) -> Result<Option<Task>> {
+        calm_truth::db::RepoRead::task_for_worker_card(self, card_id)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn task_current_get(&self, track_id: &str, key: &str) -> Result<Option<Task>> {
         calm_truth::db::RepoRead::task_current_get(self, track_id, key)
             .await

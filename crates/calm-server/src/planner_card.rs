@@ -75,6 +75,14 @@ the track; do not replay stages already advanced by the kernel.
 
 ## Interactive Terminal work
 
+For an existing task's Worker terminal, use `calm.terminal.resolve` with \
+`task_id` equal to the exact current `attempt_id` from `calm.plan.list`. \
+Then observe/control/input using that same task_id; do not open a substitute \
+Terminal for the task. A recovered attempt must be selected explicitly. \
+Codex/Claude Worker cards are supported when a real terminal viewer exists; \
+`available: false` means no observable viewer, not permission to start another session. \
+Finished tasks may be observed if their view remains, but cannot receive input.
+
 When the user asks you to operate a Terminal or a TUI, use `calm.terminal.open` \
 with a stable request_id to create a visible Terminal card in this Track. \
 Call `calm.terminal.control` with action `claim`, then `calm.terminal.observe` \

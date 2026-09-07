@@ -1,13 +1,11 @@
 //! Production MCP/operation/renderer integration; the driver shares setup only.
-#[path = "../support/terminal_interaction.rs"]
-mod support;
+use crate::terminal_support::Harness;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::card_with_codex_create_tx;
 use calm_server::model::{CardRole, NewTrack, new_id};
 use serde_json::json;
 use std::time::Duration;
-use support::Harness;
 
 #[tokio::test]
 async fn planner_opens_visible_terminal_and_receives_png_and_confirmed_input() {
