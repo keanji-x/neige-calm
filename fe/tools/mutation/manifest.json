@@ -150,7 +150,9 @@
       "the a11y failure report (#1161) names the documentElement when the hiding attribute is on <html>",
       "the a11y failure report (#1161) names the outermost hidden ancestor once, not every element under it",
       "the a11y failure report (#1161) reports inert subtrees even though Testing Library does not treat them as hidden",
-      "the a11y failure report (#1161) returns the original error untouched when its message cannot be written"
+      "the a11y failure report (#1161) reports the DOM eagerly when a synchronous query fails",
+      "the a11y failure report (#1161) returns the original error untouched when its message cannot be written",
+      "the a11y failure report (#1161) still defers the report on a waitFor poll"
     ],
     "selection_paths": [
       "tools/test-tier/checker.test.ts",
