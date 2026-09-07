@@ -662,7 +662,7 @@
   why: >
     `calm.plan.cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
     缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
-  source: fe/core/events/invalidation-plan.ts:325-327
+  source: fe/core/events/invalidation-plan.ts:328-330
   authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:243-249
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
