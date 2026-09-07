@@ -118,3 +118,32 @@ pub(crate) async fn read(directory: File, relative: &str) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn task_file_fd_stays_bound_after_workspace_path_swap() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspaces");
+        super::super::workspace::prepare_root(&root).unwrap();
+        // Filesystem-stage fixture only: use the kernel creator for the owner marker.
+        // The REST tests separately obtain every valid stop proof from the real runtime.
+        let workspace = super::super::workspace::prepare(&root, "original-op").unwrap();
+        std::fs::write(workspace.join("value.txt"), b"original").unwrap();
+        let snapshot = || FileSnapshot {
+            operation_id: "original-op".into(),
+            workspace: workspace.clone(),
+        };
+        let directory = snapshot().open().unwrap();
+        std::fs::rename(&workspace, root.join("retained")).unwrap();
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("value.txt"), b"substituted").unwrap();
+        assert_eq!(read(directory, "value.txt").await.unwrap(), b"original");
+        assert!(
+            snapshot().open().is_err(),
+            "replacement cannot inherit the original owner marker"
+        );
+    }
+}

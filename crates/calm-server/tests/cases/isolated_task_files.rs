@@ -183,7 +183,7 @@ async fn file_reference_and_filesystem_escape_refused() {
     for index in 0..12 {
         file(&fx, &task, index, StatusCode::BAD_REQUEST).await;
     }
-    symlink("result.txt", workspace.join("link")).unwrap();
+    symlink("empty.txt", workspace.join("link")).unwrap();
     symlink(fx.root.path(), workspace.join("parent")).unwrap();
     std::fs::hard_link(workspace.join("result.txt"), workspace.join("hard")).unwrap();
     nix::unistd::mkfifo(
@@ -206,10 +206,26 @@ async fn file_reference_and_filesystem_escape_refused() {
 async fn file_stop_and_owner_identity_required() {
     let (fx, task, workspace, original) = completed_files(&["result.txt"]).await;
     fx.state.dispatcher.semaphore().close();
-    let mut changed = original.clone();
-    changed["data"]["isolated_execution"]["provider"]["record"]["stop"] = json!("Requested");
-    set_output(&fx, &task, &changed).await;
-    file(&fx, &task, 0, StatusCode::CONFLICT).await;
+    for (path, value) in [
+        ("/data/isolated_execution/admission", json!("open")),
+        (
+            "/data/isolated_execution/provider/record/stop",
+            json!("Requested"),
+        ),
+        (
+            "/data/isolated_execution/provider/record/stop/Quiesced/handle/init/namespace_inode",
+            json!(0),
+        ),
+        (
+            "/data/isolated_execution/request/workspace",
+            json!("/foreign/root"),
+        ),
+    ] {
+        let mut changed = original.clone();
+        *changed.pointer_mut(path).unwrap() = value;
+        set_output(&fx, &task, &changed).await;
+        file(&fx, &task, 0, StatusCode::CONFLICT).await;
+    }
     set_output(&fx, &task, &original).await;
     let (op_id, _, _) = operation(&fx, &task).await;
     let marker = workspace.parent().unwrap().join(format!("{op_id}.owner"));
@@ -241,8 +257,157 @@ async fn file_stop_and_owner_identity_required() {
     std::fs::remove_file(&marker).unwrap();
     std::fs::write(&marker, &original_marker).unwrap();
     std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let saved_marker = marker.with_extension("saved");
+    std::fs::rename(&marker, &saved_marker).unwrap();
+    symlink(&saved_marker, &marker).unwrap();
+    file(&fx, &task, 0, StatusCode::CONFLICT).await;
+    std::fs::remove_file(&marker).unwrap();
+    std::fs::rename(&saved_marker, &marker).unwrap();
+    let parent = workspace.parent().unwrap();
+    let saved_parent = parent.with_extension("saved");
+    std::fs::rename(parent, &saved_parent).unwrap();
+    symlink(&saved_parent, parent).unwrap();
+    file(&fx, &task, 0, StatusCode::CONFLICT).await;
+    std::fs::remove_file(parent).unwrap();
+    std::fs::rename(&saved_parent, parent).unwrap();
+    std::fs::rename(&workspace, workspace.with_extension("saved")).unwrap();
+    file(&fx, &task, 0, StatusCode::CONFLICT).await;
+    assert!(
+        !workspace.exists(),
+        "file access must never recreate a missing workspace"
+    );
+    std::fs::rename(workspace.with_extension("saved"), &workspace).unwrap();
     assert_eq!(
         file(&fx, &task, 0, StatusCode::OK).await["contentBase64"],
         "NDIK"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_requires_accepted_completed_event_and_sole_succeeded_operation() {
+    use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+    let (fx, task, _, _) = completed_files(&["result.txt"]).await;
+    fx.state.dispatcher.semaphore().close();
+    let pool = fx.boot.repo.sqlite_pool().unwrap();
+    for phase in ["failed", "spawn_started", "compensating", "stuck"] {
+        sqlx::query("UPDATE operations SET phase=?1 WHERE idempotency_key=?2")
+            .bind(phase)
+            .bind(&task.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        file(&fx, &task, 0, StatusCode::CONFLICT).await;
+    }
+    sqlx::query("UPDATE operations SET phase='succeeded' WHERE idempotency_key=?1")
+        .bind(&task.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tasks SET status='running' WHERE id=?1")
+        .bind(&task.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    file(&fx, &task, 0, StatusCode::CONFLICT).await;
+    sqlx::query("UPDATE tasks SET status='done' WHERE id=?1")
+        .bind(&task.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for column in ["spawn_artifacts_json", "compensation_state"] {
+        sqlx::query(&format!(
+            "UPDATE operations SET {column}='{{}}' WHERE idempotency_key=?1"
+        ))
+        .bind(&task.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        file(&fx, &task, 0, StatusCode::CONFLICT).await;
+        sqlx::query(&format!(
+            "UPDATE operations SET {column}=NULL WHERE idempotency_key=?1"
+        ))
+        .bind(&task.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let (event_id, actor): (i64,String) = sqlx::query_as("SELECT id,actor FROM events WHERE kind='task.completed' AND json_extract(payload,'$.idempotency_key')=?1")
+        .bind(&task.id).fetch_one(&pool).await.unwrap();
+    sqlx::query("UPDATE events SET actor=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&calm_server::ids::ActorId::KernelDispatcher).unwrap())
+        .bind(event_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    file(&fx, &task, 0, StatusCode::NOT_FOUND).await;
+    sqlx::query("UPDATE events SET actor=?1 WHERE id=?2")
+        .bind(actor)
+        .bind(event_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let ops = SqlxOperationRepo::new(pool.clone());
+    for (kind, key) in [
+        ("foreign-worker", Some(task.id.clone())),
+        ("task-verify", None),
+    ] {
+        let payload = json!({"track_id":task.track_id,"task_id":task.id});
+        let id = ops
+            .insert_operation(
+                kind,
+                OperationKey {
+                    operation_key: format!("file-conflict-{kind}"),
+                    idempotency_key: key,
+                    payload_hash: calm_server::routes::terminal_cards::stable_payload_hash(
+                        &payload,
+                    )
+                    .unwrap(),
+                },
+                payload,
+            )
+            .await
+            .unwrap();
+        file(&fx, &task, 0, StatusCode::CONFLICT).await;
+        sqlx::query("UPDATE operations SET idempotency_key=NULL,payload_json='{}' WHERE id=?1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        file(&fx, &task, 0, StatusCode::OK).await["contentBase64"],
+        "NDIK"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_retry_history_keeps_exact_attempt_bytes() {
+    let fx = fixture("files").await;
+    start_task(&fx).await;
+    let (first, workspace) = launch(&fx).await;
+    std::fs::write(workspace.join("reported-files.json"), "[\"result.txt\"]").unwrap();
+    finish(&fx, &first, &workspace, false).await;
+    file(&fx, &first, 0, StatusCode::NOT_FOUND).await;
+    let (status, receipt) = rest(&fx, "POST", &route(&fx, "recover"), recovery(&first)).await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    let (second, second_workspace) = launch(&fx).await;
+    std::fs::write(
+        second_workspace.join("reported-files.json"),
+        "[\"result.txt\"]",
+    )
+    .unwrap();
+    finish(&fx, &second, &second_workspace, true).await;
+    assert_ne!(workspace, second_workspace);
+    std::fs::write(workspace.join("result.txt"), b"old failure bytes").unwrap();
+    assert_eq!(
+        file(&fx, &second, 0, StatusCode::OK).await["contentBase64"],
+        "NDIK"
+    );
+    file(&fx, &first, 0, StatusCode::NOT_FOUND).await;
+    let history = rest(&fx, "GET", &route(&fx, "attempts"), Value::Null)
+        .await
+        .1;
+    assert_eq!(history["attempts"].as_array().unwrap().len(), 2);
+    assert_eq!(history["attempts"][0]["status"], "failed");
+    assert_eq!(history["attempts"][1]["status"], "done");
 }
