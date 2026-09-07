@@ -10,13 +10,13 @@
   "exposes_tools": [
     {
       "name": "market.quote",
-      "description": "Current price of one asset, in the currency this plugin determined that price is in. Callers name the asset AND its venue; which source answers a venue, at which URL, is chosen by this plugin. Neither source states a currency, so it is determined from the venue and the code range: CRYPTO in USDT, US in USD, HK in HKD below code 80000, SH 6xxxxx and SZ 00xxxx/30xxxx in CNY. Codes outside those ranges — B shares, Hong Kong's renminbi and US-dollar counters, mainland funds and indices — are refused with the reason rather than priced under a guessed currency. Nothing is converted between currencies.",
+      "description": "Current price of one asset, in the currency this plugin determined that price is in. Callers name the asset AND its venue; which source answers a venue, at which URL, is chosen by this plugin. Neither source states a currency, so it is determined from the venue and the code range: CRYPTO in USDT, US in USD, HK in HKD below code 80000, and in CNY the Shanghai 6xxxxx (A shares and STAR) and 5xxxxx (funds) codes and the Shenzhen 00xxxx (main board), 30xxxx (ChiNext) and 15xxxx/16xxxx (fund) codes. Codes outside those ranges — B shares, Hong Kong's renminbi and US-dollar counters, and the mainland bond and index ranges — are refused with the reason rather than priced under a guessed currency. Nothing is converted between currencies.",
       "input_schema": {
         "type": "object",
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK, SH (Shanghai) and SZ (Shenzhen) — `CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `SH:600519`, `SZ:000001`. A prefix counts only with the colon, so `USNVDA` is a crypto name. `CN:` is accepted only so holdings stored under the retired mainland venue still read back; it is never priced, and has to be re-recorded as `SH:<code>` or `SZ:<code>`."
+            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK, SH (Shanghai) and SZ (Shenzhen) — `CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `SH:600519`, `SZ:000001`. A prefix counts only with the colon, so `USNVDA` is a crypto name. `CN:` is accepted only so holdings stored under the retired mainland venue still read back; it is never priced, and has to be re-recorded under the exchange that lists the code — `SH:<code>` for a Shanghai listing, `SZ:<code>` for a Shenzhen one, not whichever is convenient. A Hong Kong code folds to five zero-padded digits, so `HK:1810` and `HK:01810` are one holding."
           }
         },
         "required": [
@@ -38,7 +38,7 @@
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK, SH (Shanghai) and SZ (Shenzhen) — `CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `SH:600519`, `SZ:000001`. A prefix counts only with the colon, so `USNVDA` is a crypto name. `CN:` is accepted only so holdings stored under the retired mainland venue still read back; it is never priced, and has to be re-recorded as `SH:<code>` or `SZ:<code>`."
+            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK, SH (Shanghai) and SZ (Shenzhen) — `CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `SH:600519`, `SZ:000001`. A prefix counts only with the colon, so `USNVDA` is a crypto name. `CN:` is accepted only so holdings stored under the retired mainland venue still read back; it is never priced, and has to be re-recorded under the exchange that lists the code — `SH:<code>` for a Shanghai listing, `SZ:<code>` for a Shenzhen one, not whichever is convenient. A Hong Kong code folds to five zero-padded digits, so `HK:1810` and `HK:01810` are one holding."
           },
           "quantity": {
             "type": "number",

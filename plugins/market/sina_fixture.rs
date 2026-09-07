@@ -10,8 +10,7 @@
 // bytes and of the body builder. Two copies of a fixture that encodes a real
 // endpoint's wire format drift apart one edit at a time, and the drift shows
 // up as one suite passing while the other tests a format the source stopped
-// using. There is one copy now; the plugin binary and the process test are the
-// same crate, so a plain `include!` reaches it from both.
+// using. There is one copy now.
 //
 // Everything here is test-only. It is `include!`d inside a `#[cfg(test)]`
 // scope in the plugin and inside a test target in the process suite, so it is

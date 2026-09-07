@@ -98,6 +98,14 @@ every row a pre-venues `market.holdings.set` wrote is a bare name, so a knob
 that reinterpreted them would silently reprice an existing portfolio the moment
 an operator flipped it.
 
+A Hong Kong code is folded to five zero-padded digits when it is parsed —
+`HK:1810`, `HK:01810` and `HK:001810` are one identity, canonically `HK:01810`
+— because leading zeros are optional in every human spelling of the same
+security. Two identities for one security is one holding recorded twice, in one
+currency, in a total that looks entirely ordinary. Five padded digits is the
+form HKEX and this source both use. Mainland codes are six digits at both
+exchanges and are asked for verbatim, so they have no second spelling to fold.
+
 The venue is written down rather than guessed, because a name alone does not
 identify a security — `W` is Wayfair on the NYSE and Wormhole in crypto — and
 every rule proposed for inferring one from a name's shape ("six digits means
@@ -111,7 +119,7 @@ plugin's business. There are two:
 | --- | --- | --- | --- |
 | `CRYPTO` | Binance spot | `<SYMBOL>USDT` | USDT |
 | `US` | Sina `hq.sinajs.cn` | `gb_<symbol>` | USD |
-| `HK` | Sina `hq.sinajs.cn` | `hk<code padded to 5 digits>` | HKD |
+| `HK` | Sina `hq.sinajs.cn` | `hk<5-digit code>` | HKD |
 | `SH` | Sina `hq.sinajs.cn` | `sh<6-digit code>` | CNY |
 | `SZ` | Sina `hq.sinajs.cn` | `sz<6-digit code>` | CNY |
 
@@ -121,7 +129,8 @@ the fabricated number this whole identity layer exists to prevent.
 
 Shanghai and Shenzhen are two venues rather than one `CN`, because a six-digit
 code does not say which exchange lists it and no rule keyed on the digits
-survives contact with real tickers. A single `CN` venue had to ask both and
+tells you which one does. (Digits do fix the quote CURRENCY once the exchange
+is known — that is the allowlist below — but that is a different question.) A single `CN` venue had to ask both and
 take whichever answered, and that is unsound the moment only one of them
 answers: `000001` is the Shanghai Composite index at 3933 on `sh` and Ping An
 Bank at 11.87 on `sz`, so a day when either is halted — this source answers a
@@ -154,15 +163,20 @@ range itself fixes the currency — and everything else is refused out loud:
 | venue | priced | refused, with the reason said out loud |
 | --- | --- | --- |
 | `US` | any `gb_` symbol, in USD | — |
-| `HK` | one to five digits, padded to five, below `80000`, in HKD | `8xxxx` (renminbi counters, verified on `hk89988`) and `9xxxx` (every code sampled there — `hk90988`, `hk96618` — is one this source does not list, so refusing the range gives up no price it could have published) |
+| `HK` | a five-digit code below `80000`, in HKD | `8xxxx` (renminbi counters, verified on `hk89988`) and `9xxxx` (no currency established for it either way; the two codes sampled there, `hk90988` and `hk96618`, are ones this source does not list, so on those two the refusal gives up no price — nothing is known about the rest of the range) |
 | `SH` | `6xxxxx` (A shares and STAR) and `5xxxxx` (funds), in CNY | `9xxxxx` B shares, and the bond and index ranges |
 | `SZ` | `00xxxx` (main board), `30xxxx` (ChiNext) and `15xxxx` / `16xxxx` (funds), in CNY | `2xxxxx` B shares, and the bond and index ranges |
 
-The fund ranges are renminbi like the boards they sit on — the only
-non-renminbi board found on either exchange is the B-share one — and were read
-off the live endpoint on 2026-09-07: `SH:510300` (沪深300ETF华泰柏瑞) 4.635,
-`SH:563210` (专精特新ETF富国) 1.949, `SH:511990` (华宝添益) 99.999 and
-`SZ:159915` (创业板ETF) 3.338. Being in an allowed range is not a promise the
+The fund ranges are renminbi by the exchanges' own rules rather than by
+sampling: 《上海证券交易所交易规则》and《深圳证券交易所交易规则》both state at
+3.3.11 that a fund order's tick size is denominated in renminbi, so a fund
+traded on either exchange quotes in renminbi whatever it holds. The codes a
+counterexample would have come from behave accordingly on the live endpoint on
+2026-09-07 — `SH:513500` (标普500ETF博时) 2.692, `SH:501018` (南方原油LOF)
+1.922, `SZ:160216` (国泰商品) 0.652 and `SH:588000` (科创50ETF) 1.705, all in
+renminbi. That the source carries the ranges at all was read off the same
+endpoint: `SH:510300` (沪深300ETF华泰柏瑞) 4.635, `SH:563210` (专精特新ETF富国)
+1.949, `SH:511990` (华宝添益) 99.999 and `SZ:159915` (创业板ETF) 3.338. Being in an allowed range is not a promise the
 source lists the code: `SZ:162201`, a LOF, answers with an empty row and comes
 back as *unknown* rather than as a currency refusal.
 
@@ -256,8 +270,10 @@ affected by this.
   second source or a checked-in table, which is not done.
 * **`CN:` is a migration path, not a venue.** A holding recorded as `CN:600519`
   before the Shanghai/Shenzhen split still parses, still reads back and is
-  never priced: it comes back as a failure naming `SH:600519` and `SZ:600519`,
-  and the holding has to be recorded again as one of them. The prefix is kept
+  never priced: it comes back as a failure naming `SH:600519` and `SZ:600519`
+  and asking which exchange lists the code. Exactly one of the two prices it —
+  `600519` is a Shanghai code, so `SZ:600519` is refused as well — and the
+  holding has to be recorded again under that one. The prefix is kept
   for what deleting it would do instead — the row would stop parsing, the read
   path drops a row it cannot parse without saying so, and the next `set`
   rewrites the whole document without it. A holding that visibly cannot be

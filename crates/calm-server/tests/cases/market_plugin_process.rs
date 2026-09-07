@@ -421,9 +421,11 @@ fn setting_a_holding_prices_it_now_and_publishes_to_the_callers_track() {
 /// A holding stored before venues existed and a write that names the same
 /// asset with its venue are ONE holding, and the write leaves ONE row.
 ///
-/// Driven through the real binary and the real KV because the collapse
-/// happens across the whole `set` path — load (which normalises), `retain`,
-/// then a whole-array overwrite. Without read-side normalisation the retain
+/// Driven through the real binary because the collapse happens across the
+/// whole `set` path — load (which normalises), `retain`, then a whole-array
+/// overwrite. The store is `FakeKernel`'s in-memory map, which reproduces the
+/// KV state semantics this turns on (one document per Track, replaced
+/// wholesale) rather than the KV service itself. Without read-side normalisation the retain
 /// compares `CRYPTO:BTC` against the legacy `BTC`, keeps it, and the KV ends
 /// up with two rows summing to 160 that the tables would price as one
 /// position of 160 BTC.
@@ -449,20 +451,62 @@ fn a_legacy_bare_holding_is_replaced_not_doubled_by_a_qualified_write() {
     );
 }
 
+/// **A Hong Kong holding written under two spellings is ONE row.**
+///
+/// `HK:01810` and `HK:1810` are the same shares of Xiaomi, and a user who
+/// records a position with the leading zero and later re-records it without
+/// one must not end up holding it twice. This is the same shape as the bare/
+/// qualified crypto collapse above, one venue over, and it is the reason the
+/// Hong Kong fold lives in `parse_asset` rather than only in the URL builder:
+/// padding at the URL alone would send both rows to `hk01810`, price both at
+/// 27.48 HKD and sum them into a single-currency total with nothing visibly
+/// wrong with it.
+///
+/// Driven end to end because the collapse is the whole `set` path — load
+/// (which normalises), `retain`, then a whole-array overwrite — and no single
+/// function performs it. Removing the Hong Kong arm from `canonical_symbol`
+/// must turn this test RED with two rows in the store.
+#[test]
+fn a_padded_hong_kong_holding_is_replaced_not_doubled_by_an_unpadded_write() {
+    let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
+    // Seeded directly, spelled the way a user or an earlier write left it.
+    kernel.kv.insert(
+        "holdings/trk_caller".to_string(),
+        json!([{ "asset": "HK:01810", "quantity": 100.0 }]),
+    );
+
+    kernel.set_holding(2, "hk:1810", 60.0, TRACK);
+
+    assert_eq!(
+        kernel.kv.get("holdings/trk_caller"),
+        Some(&json!([{ "asset": "HK:01810", "quantity": 60.0 }])),
+        "one row at the written quantity — two rows here would be 160 shares \
+         of Xiaomi priced and totalled as a position nobody holds"
+    );
+}
+
 /// A stored `CN:` holding SURVIVES an unrelated `market.holdings.set` on the
 /// same Track — quantity intact, alongside the newly written asset.
 ///
-/// This is the counter-evidence for the claim that removing `CN:` from the
-/// grammar would silently DELETE such rows. The deletion is not produced by
-/// any single function, so no unit test can rule it out: it is the
-/// composition of `load_holdings` (which drops rows it cannot parse, without
-/// saying so) and `store_holdings` (a whole-array overwrite). Only a real
-/// round trip — seed, then write something else, then read the store — can
-/// show that the stored row is still there afterwards.
+/// This is the evidence FOR keeping `CN:` in the grammar, not against it: the
+/// row survives only because `CN:600519` still parses. Remove the arm and the
+/// same round trip loses it.
 ///
-/// Driven through the real binary and the real KV for that reason. The seeded
-/// row is written directly, as the pre-split slice would have left it: the
-/// plugin has never seen this Track.
+/// The deletion that removal would cause is not produced by any single
+/// function — it is the composition of `load_holdings` (which drops rows it
+/// cannot parse, without saying so) and `store_holdings` (a whole-array
+/// overwrite). A unit test is not blind to the arm's removal: deleting
+/// `"CN" => Some(Venue::Cn)` turns the parser's own tests red too. What no
+/// unit test shows is the COMPOSITION — that the drop on the read side is what
+/// erases the row from the store on the next write — and only a real round
+/// trip (seed, write something else, read the store) does.
+///
+/// Driven through the real binary for that reason. The store is `FakeKernel`'s
+/// in-memory map rather than the KV service; what it reproduces is the state
+/// semantics this test turns on — one document per Track, replaced wholesale
+/// by `neige.kv.set` — not the service. The seeded row is written directly, as
+/// the pre-split slice would have left it: the plugin has never seen this
+/// Track.
 ///
 /// Deleting `"CN" => Some(Venue::Cn)` from `Venue::from_prefix` must turn this
 /// test RED. If it stays green, `CN:` is not carrying the round trip that is
@@ -841,8 +885,9 @@ fn last_holdings_table<'a>(kernel: &'a FakeKernel, track: &str) -> &'a Value {
 }
 
 /// A stock holding is priced through the whole shipping path — the real
-/// binary, the real KV, the real HTTP client — and reaches the reader in the
-/// currency ITS market quotes, not in the configured settlement currency.
+/// binary, the real HTTP client, and `FakeKernel`'s store standing in for the
+/// KV — and reaches the reader in the currency ITS market quotes, not in the
+/// configured settlement currency.
 ///
 /// The install settles in `USDT` (see `boot_sources`), so a row labelled
 /// `USDT` would look right in every crypto test and be wrong by a factor of
@@ -863,7 +908,11 @@ fn a_hong_kong_holding_is_priced_in_hkd_and_totalled_in_hkd() {
     );
     let table = last_holdings_table(&kernel, TRACK);
     let rows = table["rows"].as_array().expect("rows");
-    assert_eq!(rows[0]["asset"], json!("1810"));
+    assert_eq!(
+        rows[0]["asset"],
+        json!("01810"),
+        "the canonical five-digit Hong Kong code, which `HK:1810` folds to"
+    );
     assert_eq!(rows[0]["venue"], json!("HK"));
     assert_eq!(
         rows[0]["price"].as_f64(),

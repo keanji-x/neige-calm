@@ -184,7 +184,11 @@ enum Venue {
     /// slice that shipped before the Shanghai/Shenzhen split, so a KV document
     /// written by that version can hold `CN:600519` today. It is never priced:
     /// [`quote_asset`] answers it [`Quote::Failed`] with a message naming the
-    /// two spellings that would work, and no request goes out.
+    /// two prefixes and asking the caller which exchange lists the code, and
+    /// no request goes out. Only one of the two prefixes works for any given
+    /// code — the mainland ranges are split between the exchanges, so
+    /// `SZ:600519` is refused as surely as `CN:600519` is — and the message
+    /// says so rather than presenting them as interchangeable.
     ///
     /// It stays in the grammar because of what removing it would do to those
     /// stored rows, which is worse than an unpriceable holding. `CN:600519`
@@ -254,7 +258,8 @@ const ASSET_SYNTAX_ERROR: &str = "`asset` must be a name like \"BTC\", or a \
     in its own currency, with nothing converted between them. \"CN:\" also \
     parses, but only so that a holding stored under the retired mainland \
     venue can still be read back — it is never priced, and has to be recorded \
-    again as \"SH:<code>\" or \"SZ:<code>\".";
+    again under the exchange that lists the code: \"SH:<code>\" for a Shanghai \
+    listing, \"SZ:<code>\" for a Shenzhen one.";
 
 /// The one place an asset name becomes an identity.
 ///
@@ -283,6 +288,10 @@ const ASSET_SYNTAX_ERROR: &str = "`asset` must be a name like \"BTC\", or a \
 /// - `CN:` is a KNOWN prefix here, so `CN:600519` parses, round-trips and can
 ///   be read back out of the store. It is refused at PRICING time instead —
 ///   see [`Venue::Cn`] for why the refusal is placed there and not here.
+/// - The accepted symbol is then folded to one spelling per venue by
+///   [`canonical_symbol`]. Upper-casing is not enough on its own: Hong Kong
+///   codes are written both padded and unpadded, and two spellings of one
+///   security are two identities everywhere downstream.
 fn parse_asset(raw: &str) -> Option<AssetId> {
     let raw = raw.trim().to_ascii_uppercase();
     let (venue, symbol) = match raw.split_once(':') {
@@ -294,8 +303,68 @@ fn parse_asset(raw: &str) -> Option<AssetId> {
     }
     Some(AssetId {
         venue,
-        symbol: symbol.to_string(),
+        symbol: canonical_symbol(venue, symbol),
     })
+}
+
+/// Fold the spellings of ONE security at a venue onto one symbol.
+///
+/// Only Hong Kong needs this today, and it needs it because leading zeros are
+/// optional in every human-facing spelling of a Hong Kong code while the
+/// security is the same one. `HK:1810` and `HK:01810` are both Xiaomi, both
+/// resolve to `hk01810` at the source and both come back 27.48 HKD — but as
+/// two `AssetId`s they are two identities, and every comparison downstream is
+/// on identity: `holdings.retain` in `market.holdings.set` would not match one
+/// against the other, so a user who recorded a position one way and later
+/// re-recorded it the other would end up holding the SAME shares twice, in one
+/// currency, in a total that looks entirely ordinary. That is the same defect
+/// read-side normalisation already closes for bare crypto names (see
+/// [`Holding::from_json`]), one venue over.
+///
+/// **The canonical form is five digits, zero-padded.** Both directions fold
+/// equally well; this one is chosen because it is the spelling the exchange
+/// and the source both use — HKEX publishes five-digit securities codes, and
+/// `hq.sinajs.cn` keys on `hk01810` — which keeps [`AssetId::symbol`]'s
+/// contract (the symbol as the venue spells it) true rather than inventing a
+/// third form that only this plugin uses.
+///
+/// Leading zeros are stripped BEFORE padding, so the fold reaches spellings
+/// longer than five characters too: `HK:089988` and `HK:89988` are one
+/// identity, and get one answer, where previously the first was over five
+/// characters and unspellable while the second was a currency refusal. What is
+/// left longer than five digits after stripping — `HK:123456` — is no Hong
+/// Kong code at all; it is returned unchanged and [`sina_target`] refuses it.
+///
+/// Non-digit Hong Kong symbols (`HK:TENCENT`) and every other venue are
+/// returned unchanged. Mainland codes are six digits at both exchanges and
+/// this plugin asks for them verbatim (`sh600519`), with no padding anywhere,
+/// so no two spellings of one mainland code exist to fold; US symbols and
+/// crypto names are already folded by the upper-casing in [`parse_asset`].
+///
+/// A row already in the KV under a legacy spelling is rewritten to the
+/// canonical one by the write-triggered migration described on
+/// [`Holding::from_json`] — the read path normalises, and the next
+/// `market.holdings.set` overwrites the whole array. There is no separate
+/// migration.
+fn canonical_symbol(venue: Venue, symbol: &str) -> String {
+    match venue {
+        Venue::Hk if symbol.chars().all(|c| c.is_ascii_digit()) => {
+            let significant = symbol.trim_start_matches('0');
+            // All zeros is not a code, but it must still fold to one string
+            // rather than to the empty one.
+            let significant = if significant.is_empty() {
+                "0"
+            } else {
+                significant
+            };
+            if significant.len() <= 5 {
+                format!("{significant:0>5}")
+            } else {
+                significant.to_string()
+            }
+        }
+        _ => symbol.to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -584,8 +653,11 @@ fn quote_asset(cfg: &Config, asset: &AssetId) -> Quote {
         Venue::Cn => Quote::Failed(format!(
             "{} names no exchange: `CN` was the mainland venue before this plugin \
              split it into `SH` (Shanghai) and `SZ` (Shenzhen), and the code itself \
-             does not say which exchange lists it. Record this holding again as \
-             `SH:{symbol}` or `SZ:{symbol}`.",
+             does not say which exchange lists it. Record this holding again under \
+             the exchange that does — `SH:{symbol}` if it is listed in Shanghai, \
+             `SZ:{symbol}` if it is listed in Shenzhen. The two are not \
+             interchangeable: whichever of them does not list this code is refused \
+             as well.",
             asset.canonical(),
             symbol = asset.symbol,
         )),
@@ -786,9 +858,13 @@ enum SinaTarget {
 /// *inside* one venue where no cross-currency check can see it.
 ///
 /// So the ranges below are an ALLOWLIST: a code is priced only where the range
-/// itself fixes the currency. Everything else is
-/// [`SinaTarget::UndeterminedCurrency`] — visible, not guessed. What that
-/// excludes is a registered gap: B shares, Hong Kong's renminbi and
+/// itself fixes the currency. Everything else is refused, in one of two ways,
+/// and both are visible rather than guessed. A symbol this source could ask
+/// about, whose range fixes no currency, is
+/// [`SinaTarget::UndeterminedCurrency`]; a symbol that is not a code this
+/// source could ask about at all — `HK:TENCENT` — is
+/// [`SinaTarget::Unspellable`], and no currency question is reached. What the
+/// allowlist excludes is a registered gap: B shares, Hong Kong's renminbi and
 /// US-dollar counters, and every mainland range outside the A-share, ChiNext
 /// and fund ranges spelled out below.
 fn sina_target(asset: &AssetId) -> SinaTarget {
@@ -816,38 +892,49 @@ fn sina_target(asset: &AssetId) -> SinaTarget {
             price_field: SINA_LAST_PRICE_FIELD_US,
             currency: "USD",
         }),
-        // Hong Kong codes are zero-padded to five digits in this list: `1810`
-        // is `hk01810`, and `1` is `hk00001` (Cheung Kong, which answers). A
-        // symbol that is not one to five digits is not a Hong Kong stock code
-        // at all and gets no request rather than a padded guess.
+        // A Hong Kong identity arrives here ALREADY five digits when it is a
+        // code at all: [`canonical_symbol`] folded `HK:1810`, `HK:01810` and
+        // `HK:001810` onto `01810` at parse time, which is also the spelling
+        // this list keys on. No padding happens here — a second copy of that
+        // rule is what would let the two layers disagree. What is left to ask
+        // is only whether the symbol IS a five-digit code: `HK:TENCENT` and
+        // `HK:123456` are legal identities and no Hong Kong stock code, and
+        // they get no request rather than a guess.
         //
-        // The padded code must be below `80000`. `hk89988` is Alibaba's
-        // renminbi counter — live at 94.45 CNY while `hk09988` trades at
-        // 111.00 HKD, both verified — and the row gives no way to tell which
-        // currency it is in. What is established here is only that: 8xxxx is
-        // not reliably HKD.
+        // 8xxxx is refused. `hk89988` is Alibaba's renminbi counter — live at
+        // 94.45 CNY while `hk09988` trades at 111.00 HKD, both verified on
+        // 2026-09-07 — and the row gives no way to tell which currency it is
+        // in. What is established is that one range member is not HKD, so the
+        // range does not fix a currency.
         //
-        // 9xxxx is refused too, and what that costs was measured rather than
-        // reasoned about: `hk90988` and `hk96618` both answer with an EMPTY
-        // row on 2026-09-07, i.e. this source lists neither. Every 9xxxx code
-        // sampled is one the source has no price for, so refusing the range
-        // gives up no coverage that could have been priced — it turns an
-        // `Unknown` into a `Failed`. Nothing here is a claim about how HKEX
-        // assigns codes; that is not known. Note what is NOT in this range:
-        // `HK:9988` pads to `09988`, is below 80000, and is priced normally.
+        // 9xxxx is refused for a different and weaker reason, and the message
+        // below says so rather than borrowing 8xxxx's: no currency has been
+        // established for it either way. What refusing it costs was sampled,
+        // not reasoned about — `hk90988` and `hk96618` both answer with an
+        // EMPTY row on 2026-09-07, i.e. this source lists neither, so on those
+        // two codes the refusal turns an `Unknown` into a `Failed` and gives
+        // up no price. Nothing is known about the rest of the range, and
+        // nothing here is a claim about how HKEX assigns codes. Note what is
+        // NOT in this range: `HK:9988` folds to `09988`, is below 80000, and
+        // is priced normally.
         Venue::Hk => {
-            if asset.symbol.is_empty()
-                || asset.symbol.len() > 5
-                || !asset.symbol.chars().all(|c| c.is_ascii_digit())
-            {
+            if asset.symbol.len() != 5 || !asset.symbol.chars().all(|c| c.is_ascii_digit()) {
                 return SinaTarget::Unspellable;
             }
-            let code = format!("{:0>5}", asset.symbol);
-            if code.starts_with('8') || code.starts_with('9') {
+            let code = &asset.symbol;
+            if code.starts_with('8') {
                 return undetermined(
                     asset,
-                    "Hong Kong codes from 80000 up include renminbi and US-dollar \
-                     counters, and the row does not say which currency it is in",
+                    "Hong Kong codes from 80000 to 89999 include renminbi counters — \
+                     `hk89988` is one, quoted in CNY — and the row does not say which \
+                     currency it is in",
+                );
+            }
+            if code.starts_with('9') {
+                return undetermined(
+                    asset,
+                    "Hong Kong codes from 90000 up are outside every range this plugin \
+                     has established a quote currency for",
                 );
             }
             SinaTarget::Ask(SinaLookup {
@@ -862,13 +949,20 @@ fn sina_target(asset: &AssetId) -> SinaTarget {
         // 陆家Ｂ股, 0.385 USD), and stays refused. Bond and index ranges are
         // still not priced.
         //
-        // What fixes the currency for the fund range is that the only
-        // non-renminbi board found on this exchange is the B-share one, and
-        // `5xxxxx` is not it. That the source carries these codes at all was
-        // read off the live endpoint on 2026-09-07: `sh510300` (沪深300ETF
-        // 华泰柏瑞) 4.635, `sh563210` (专精特新ETF富国) 1.949, and `sh511990`
-        // (华宝添益) 99.999 — a money-market fund, whose ~100 quote is its
-        // unit price and not a stray scale.
+        // What fixes renminbi for the fund range is the exchange's own rule,
+        // not a sample: 《上海证券交易所交易规则》3.3.11 states that the tick
+        // size for a fund order is denominated in renminbi, so a fund traded
+        // on this exchange is quoted in renminbi whatever it holds. That
+        // covers the cases a sample would raise: `sh513500` (标普500ETF博时)
+        // 2.692, `sh501018` (南方原油LOF) 1.922 and `sh588000` (科创50ETF)
+        // 1.705 are QDII, commodity and STAR funds and all quote in renminbi
+        // on the live endpoint on 2026-09-07.
+        //
+        // That the source carries these codes at all was read off the same
+        // endpoint that day: `sh510300` (沪深300ETF华泰柏瑞) 4.635,
+        // `sh563210` (专精特新ETF富国) 1.949, and `sh511990` (华宝添益)
+        // 99.999 — a money-market fund, whose ~100 quote is its unit price and
+        // not a stray scale.
         Venue::Sh => {
             if !six_digits(&asset.symbol) {
                 return SinaTarget::Unspellable;
@@ -892,10 +986,14 @@ fn sina_target(asset: &AssetId) -> SinaTarget {
         // quoted in HONG KONG DOLLARS (`sz200725`, 京东方Ｂ, 4.770 HKD,
         // against `sz000725`'s 5.680 CNY), and stays refused.
         //
-        // Same basis as Shanghai's fund range: the only non-renminbi board
-        // found on this exchange is the B-share one, and neither fund range is
-        // it. `sz159915` (创业板ETF) answered 3.338 on the live endpoint on
-        // 2026-09-07. Being in range is not a promise the source has the code:
+        // Same basis as Shanghai's fund ranges: 《深圳证券交易所交易规则》
+        // 3.3.11 likewise denominates a fund order's tick size in renminbi, so
+        // the ranges are renminbi by the exchange's rule rather than by
+        // sampling. `sz159915` (创业板ETF) answered 3.338 and `sz160216`
+        // (国泰商品) 0.652 on the live endpoint on 2026-09-07, the latter a
+        // commodity LOF — the shape a counterexample would have had — quoting
+        // in renminbi like the rest. Being in range is not a promise the
+        // source has the code:
         // `sz162201` (宏利成长混合, a LOF) answers with an empty row, which
         // comes back `Unknown` — the source does not list it — rather than as
         // a currency refusal, and that is the honest distinction between the
@@ -2345,8 +2443,10 @@ mod tests {
     ///    next `market.holdings.set` — which writes the whole array back —
     ///    would erase it from the store permanently, with no message anywhere.
     /// 2. It is never priced. `CN` is not an exchange, so the answer is a
-    ///    `Failed` naming the two spellings that would work, and no request
-    ///    goes out to guess between them.
+    ///    `Failed` naming the two prefixes and asking which exchange lists the
+    ///    code, and no request goes out to guess between them. Exactly one of
+    ///    the two prefixes prices any given code; the message does not claim
+    ///    both would.
     #[test]
     fn a_stored_cn_holding_reads_back_and_is_refused_out_loud() {
         assert_eq!(id("cn:600519").canonical(), "CN:600519");
@@ -2360,9 +2460,14 @@ mod tests {
             "a CN row must survive the read path that rewrites the store",
         );
 
-        // The fixture answers `600519` on BOTH exchanges, with different
-        // numbers: anything that picked an exchange would come back `Price`
-        // here rather than `Failed`.
+        // The fixture would answer `sh600519`, so a `CN` that fell back to
+        // asking Shanghai would come back `Price` here rather than `Failed`.
+        // The `sz600519` row is in the fixture to show the same code is a
+        // different number on the other exchange; nothing reaches it, because
+        // `600519` is outside Shenzhen's renminbi ranges and `SZ:600519` is
+        // refused before any request — which is also why the failure message
+        // asks which exchange lists the code instead of offering the two
+        // spellings as equivalent.
         let (endpoint, targets) = sina_server(|target| {
             sina_fixture_body(
                 target,
@@ -2382,8 +2487,8 @@ mod tests {
                         && why.contains("SH:600519")
                         && why.contains("SZ:600519")
             ),
-            "a CN holding must fail visibly and name both spellings that work: \
-             {answered:?}",
+            "a CN holding must fail visibly and name both prefixes it could be \
+             re-recorded under: {answered:?}",
         );
         assert!(
             targets.try_recv().is_err(),
@@ -2506,11 +2611,15 @@ mod tests {
         );
     }
 
-    /// Hong Kong codes of one to five digits are zero-padded to five, and a
-    /// symbol that is not digits at all is not padded into one.
+    /// A Hong Kong identity reaches the source as `hk<its five digits>`, and a
+    /// symbol that is not a five-digit code is not padded or trimmed into one.
     ///
-    /// One digit is a real case, not a degenerate one: `HK:1` is `hk00001`,
-    /// 长和 / CKH Holdings, which answers with a price live.
+    /// The padding itself happens in [`canonical_symbol`] at parse time — see
+    /// [`hong_kong_spellings_of_one_code_are_one_identity`] — so what this
+    /// test pins is the other half: that the symbol reaches the URL unaltered,
+    /// and that a non-code gets no request at all. One digit is a real case,
+    /// not a degenerate one: `HK:1` is `hk00001`, 长和 / CKH Holdings, which
+    /// answers with a price live.
     #[test]
     fn a_hong_kong_code_is_padded_and_a_non_code_is_not_requested() {
         let (endpoint, targets) = sina_server(|target| {
@@ -2547,10 +2656,66 @@ mod tests {
         // and this source has no way to spell it. It answers `Unknown`
         // WITHOUT a request rather than padding a guess.
         assert_eq!(quote_asset(&cfg, &id("HK:TENCENT")), Quote::Unknown);
-        assert_eq!(quote_asset(&cfg, &id("HK:018100")), Quote::Unknown);
+        // Longer than five digits with nothing to strip: no Hong Kong code,
+        // and not folded into one either.
+        assert_eq!(quote_asset(&cfg, &id("HK:123456")), Quote::Unknown);
         assert!(
             targets.try_recv().is_err(),
             "a name this source cannot spell must not reach it"
+        );
+    }
+
+    /// **Every spelling of one Hong Kong code is ONE identity.**
+    ///
+    /// Leading zeros are optional in the way people write these codes, and
+    /// `HK:1810` and `HK:01810` are the same shares of Xiaomi at the same
+    /// 27.48 HKD. Left as two `AssetId`s they are two identities everywhere
+    /// downstream — `holdings.retain` matches neither against the other and
+    /// the price cache keys them apart — so a portfolio recorded one way and
+    /// re-recorded the other holds the position twice, in one currency, in a
+    /// total with nothing visibly wrong with it. The process-level proof that
+    /// the second write REPLACES the first lives in
+    /// `market_plugin_process.rs`; this is the identity underneath it.
+    ///
+    /// The canonical form is the padded one, `HK:01810`, because that is what
+    /// HKEX and this source both write.
+    #[test]
+    fn hong_kong_spellings_of_one_code_are_one_identity() {
+        for spelling in ["HK:1810", "HK:01810", "HK:001810", "hk:0001810"] {
+            assert_eq!(
+                id(spelling),
+                id("HK:01810"),
+                "`{spelling}` names the same security"
+            );
+            assert_eq!(id(spelling).canonical(), "HK:01810", "`{spelling}`");
+        }
+
+        // The fold reaches past five characters, so a refused range answers
+        // the same however it was written. Before it did not: `HK:089988` was
+        // over five characters and unspellable — an `Unknown` — while
+        // `HK:89988` was a currency refusal, two answers for one security.
+        let (endpoint, targets) = sina_server(|target| {
+            sina_fixture_body(
+                target,
+                &[(
+                    "hk89988",
+                    "BABA-WR,<NAME>,94.150,94.450,93.850,93.900,94.450",
+                )],
+            )
+        });
+        let cfg = sina_cfg(endpoint);
+        assert_eq!(id("HK:089988"), id("HK:89988"));
+        let padded = quote_asset(&cfg, &id("HK:089988"));
+        assert_eq!(padded, quote_asset(&cfg, &id("HK:89988")));
+        assert!(
+            matches!(&padded, Quote::Failed(why) if why.contains("cannot determine what currency")),
+            "both spellings must reach the SAME refusal, not one refusal and \
+             one `Unknown`: {padded:?}"
+        );
+        assert!(
+            targets.try_recv().is_err(),
+            "a code with no determined currency must not be asked about under \
+             either spelling",
         );
     }
 
@@ -2746,7 +2911,7 @@ mod tests {
     #[test]
     fn a_qualified_name_names_a_venue_and_folds_to_one_canonical_form() {
         assert_eq!(id("us:nvda").canonical(), "US:NVDA");
-        assert_eq!(id("HK:1810").canonical(), "HK:1810");
+        assert_eq!(id("HK:1810").canonical(), "HK:01810");
         assert_eq!(id("sh:600519").canonical(), "SH:600519");
         assert_eq!(id("SZ:000001").canonical(), "SZ:000001");
         assert_eq!(id(" CRYPTO:btc ").canonical(), "CRYPTO:BTC");
