@@ -6,6 +6,42 @@ in the delivery ledger at the end. Baseline: `4360896b`.
 
 ## Outcome
 
+### Delivery principles agreed with the user
+
+Build a usable Planner workflow on the existing framework, one complete scenario
+at a time. These principles govern the remaining #1501 slices:
+
+- Preserve the existing authorities for task declarations, execution attempts,
+  Operations, verification, artifacts and history. Connect implemented foundations
+  before introducing new mechanisms; conceptual responsibilities do not mandate
+  separate new tables or services.
+- Choose work by the Planner's observed burden in #1492: unnecessary mechanical
+  handoffs, repeated diagnosis, dependency rewrites and external rescue. A working
+  human download or configuration page alone does not establish Planner continuity.
+- Inspect current main and reproduce the scenario before selecting a fix. Earlier
+  deployment failures, including gate working-directory failures addressed by
+  #1490, are evidence to investigate rather than assumed current defects.
+- Reduce scope by limiting supported scenarios. Preserve identity, authorization,
+  exact input binding, failure explanations and evidence within that scope. Start,
+  result and the next allowed action must form one usable path.
+- Implement only the missing pieces required by that path. Record other work as
+  follow-ups in #1501; do not expand a slice into every conceptual object in the
+  design. Planner retains business and semantic decisions; the kernel executes
+  authorized mechanical preparation and delivery.
+- Exercise the complete path through the Planner's production tools and obtain
+  its feedback. Separate business work, mechanical compensation, recovery and
+  audit interviews when measuring effort. Unit tests and CI complement this
+  acceptance; they do not substitute for it.
+- Keep implementation delegated and isolated, with the coordinating agent owning
+  scope, integration, experiments and durable context. Finish the focused tests,
+  independent reviews and required CI before the authorized squash merge.
+
+The next candidate scenario is A producing a declared output and B consuming its
+verified exact version in the same Track. Establish the remaining gap on current
+main first. Initially constrain the provider, source and consumer count; ordinary
+handoff should need no temporary cwd from the Planner, extra terminal transport
+node or manual dependency repair. Real merge conflicts remain explicit decisions.
+
 A task is a continuing delegation. After execution is authorized, the system
 advances that work until its contract is satisfied, the user withdraws it, or an
 explicit blocker needs a decision outside the current authority. An execution
