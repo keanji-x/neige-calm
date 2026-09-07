@@ -403,6 +403,10 @@ struct QuiescedAreaDeletion {
     prepared: PreparedAreaDeletion,
     terminal_ids: Vec<String>,
     sealed_thread_ids: Vec<String>,
+    /// #1444 — every Card under every member Track, collected while quiesce
+    /// already enumerates them. Used only on the committed arm of
+    /// [`RecycledAreaDeletion::commit`].
+    card_ids: HashSet<String>,
 }
 
 struct RecycledAreaDeletion {
@@ -466,12 +470,14 @@ impl PreparedAreaDeletion {
         )
         .await?;
         let mut terminal_ids = Vec::new();
+        let mut card_ids: HashSet<String> = HashSet::new();
         let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(
             codex.shared_codex_appserver.clone(),
         );
         for track in &self.tracks {
             let cards = route.repo.cards_by_track(track.id.as_str()).await?;
             for card in &cards {
+                card_ids.insert(card.id.to_string());
                 if let Some(thread_id) =
                     quiesce_shared_card_active_turn(route.repo.as_ref(), codex, card).await?
                 {
@@ -499,6 +505,7 @@ impl PreparedAreaDeletion {
             prepared: self,
             terminal_ids,
             sealed_thread_ids: seals.retain(),
+            card_ids,
         })
     }
 }
@@ -509,6 +516,7 @@ impl QuiescedAreaDeletion {
             prepared,
             terminal_ids,
             sealed_thread_ids,
+            card_ids,
         } = self;
         let targets = prepared
             .tracks
@@ -537,6 +545,7 @@ impl QuiescedAreaDeletion {
                         prepared,
                         terminal_ids,
                         sealed_thread_ids,
+                        card_ids,
                     },
                     recycle_report,
                 })
@@ -674,6 +683,17 @@ impl RecycledAreaDeletion {
                 return Err(error);
             }
         };
+        // #1444 — the area delete has COMMITTED. Drop the shared daemon's
+        // in-memory thread attribution for every Card that went with it, so a
+        // later daemon reconnect cannot resume a thread whose Card has no
+        // database owner. Post-commit and infallible: the rollback arm above
+        // returns before reaching this, and no failure here can be reported as
+        // a database rollback. Other areas' Cards are not in this set.
+        self.quiesced
+            .prepared
+            .turn_daemon
+            .forget_threads_for_deleted_cards(&self.quiesced.card_ids)
+            .await;
         for track_id in deleted_track_ids {
             route
                 .write

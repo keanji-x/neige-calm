@@ -5,6 +5,7 @@
 //! later PRs switch callers over through the public methods here.
 
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -653,7 +654,31 @@ pub struct SharedCodexAppServer {
     notifications: NotificationFanout,
     pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
     kernel_initiated_threads: Arc<Mutex<HashSet<String>>>,
+    /// #1444 review r1 — bounded tombstones for threads a committed delete
+    /// forgot; see [`ForgottenThreads`].
+    forgotten_threads: Arc<Mutex<ForgottenThreads>>,
     kernel_thread_start_serial: Arc<Mutex<()>>,
+    /// #1444 R2 — the boundary that fences the resume replay against a
+    /// committed delete's cache cleanup. `resume_cached_threads` holds it
+    /// across each candidate's re-validation AND its resume RPC;
+    /// [`SharedCodexAppServer::forget_threads_for_deleted_cards`] takes it
+    /// too, so a mapping it drops cannot afterwards be resumed from the
+    /// snapshot the replay copied before the delete.
+    ///
+    /// Why not `kernel_thread_start_serial`, which the cleanup already takes:
+    /// `ensure_respawn_for_current_settings` and `thread_start_mint_*` hold
+    /// THAT guard across the respawn they trigger, and the respawn's resume
+    /// loop runs inside it — re-acquiring it per candidate self-deadlocks
+    /// (tokio mutexes are not reentrant). The proof is executed, not
+    /// asserted: that shape hung
+    /// `cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop`.
+    ///
+    /// Lock order is `kernel_thread_start_serial` → `resume_replay_serial`,
+    /// and never the reverse: the cleanup takes them in that order, and the
+    /// replay takes only this one (its caller may already hold the start
+    /// serial). Nothing acquired inside a replay iteration needs the start
+    /// serial, so the cleanup's wait is bounded by one resume RPC.
+    resume_replay_serial: Arc<Mutex<()>>,
     codex_bin: String,
     log_dir: PathBuf,
     restart_count: std::sync::atomic::AtomicU64,
@@ -974,7 +999,9 @@ impl SharedCodexAppServer {
             notifications: tx,
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
+            forgotten_threads: Arc::new(Mutex::new(ForgottenThreads::default())),
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
+            resume_replay_serial: Arc::new(Mutex::new(())),
             codex_bin: "codex".into(),
             log_dir: root.join("logs/shared-codex-appserver"),
             restart_count: std::sync::atomic::AtomicU64::new(0),
@@ -1034,7 +1061,9 @@ impl SharedCodexAppServer {
             notifications: tx,
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
+            forgotten_threads: Arc::new(Mutex::new(ForgottenThreads::default())),
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
+            resume_replay_serial: Arc::new(Mutex::new(())),
             codex_bin: cfg.codex_bin.clone(),
             log_dir: cfg.shared_codex_appserver_log_dir_resolved(),
             restart_count: std::sync::atomic::AtomicU64::new(0),
@@ -1514,6 +1543,86 @@ impl SharedCodexAppServer {
         }
         let client = self.connected_client().await?;
         Ok(client.config_read(cwd, deadline).await?.config)
+    }
+
+    /// #1444 — drop this daemon's `thread_id -> card_id` attribution for a set
+    /// of Cards whose owning Track/Area delete has **already committed**.
+    ///
+    /// Why it exists. `resume_cached_threads` (hot takeover *and* the
+    /// crash/respawn path in `transition_replace`, which does not rebuild the
+    /// cache from the database) resumes every entry it finds here. Without this
+    /// call the entries of a deleted Card survive the delete in memory, so a
+    /// reconnect resumes a thread whose Card has no database owner.
+    ///
+    /// **Serialization.** This takes `kernel_thread_start_serial`, the exact
+    /// guard [`handle_thread_started_notification`] holds across its
+    /// "is it already mapped? → resolve → insert" sequence. A late
+    /// `thread/started` for a deleted Card therefore cannot interleave with
+    /// this removal: it either finishes first (and its mapping is removed
+    /// here), or it runs after and finds no database owner to resolve, so it
+    /// inserts nothing.
+    ///
+    /// It also takes `resume_replay_serial`, which `resume_cached_threads`
+    /// holds across each candidate's re-validation and resume RPC, so a
+    /// candidate this call removes cannot afterwards issue a resume — the
+    /// in-flight snapshot the replay copied is not what decides.
+    ///
+    /// **Only after the commit.** Callers invoke this on the committed path
+    /// only. A failed transaction, or the workspace-compensation path, leaves
+    /// the mappings alone — the Cards still exist.
+    ///
+    /// **Infallible on purpose.** It returns how many mappings it dropped and
+    /// has no error path, so a cache miss can never be surfaced as, or
+    /// mistaken for, a database rollback. Cards not in `card_ids` are never
+    /// touched.
+    pub async fn forget_threads_for_deleted_cards(&self, card_ids: &HashSet<String>) -> usize {
+        if card_ids.is_empty() {
+            return 0;
+        }
+        let _start_guard = self.kernel_thread_start_serial.lock().await;
+        // #1444 R2 — and the replay boundary, in this order (see
+        // `resume_replay_serial`). An in-flight `resume_cached_threads` may
+        // hold a pre-delete snapshot; taking this makes the removal below
+        // strictly ordered against every remaining candidate's resume RPC.
+        let _replay_guard = self.resume_replay_serial.lock().await;
+        let mut dropped: Vec<(String, String)> = Vec::new();
+        self.thread_cache.retain(|thread_id, card_id| {
+            if card_ids.contains(card_id) {
+                dropped.push((thread_id.clone(), card_id.clone()));
+                false
+            } else {
+                true
+            }
+        });
+        {
+            let mut forgotten = self.forgotten_threads.lock().await;
+            for (thread_id, _) in &dropped {
+                forgotten.remember(thread_id);
+            }
+        }
+        for (thread_id, card_id) in &dropped {
+            tracing::info!(
+                target = "shared_codex_daemon::forget_deleted_card_thread",
+                %thread_id,
+                %card_id,
+                "dropped shared codex thread attribution for a deleted card"
+            );
+        }
+        dropped.len()
+    }
+
+    /// The `(thread_id, card_id)` pairs `resume_cached_threads` will iterate
+    /// on the next daemon (re)connect. It is a snapshot, so it is what the
+    /// loop CONSIDERS, not what it necessarily resumes: since #1444 R2 each
+    /// pair is re-validated against the live cache, under
+    /// `resume_replay_serial`, immediately before its resume RPC, and a
+    /// pair dropped by `forget_threads_for_deleted_cards` in the meantime is
+    /// skipped.
+    fn resume_candidates(&self) -> Vec<(String, String)> {
+        self.thread_cache
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
     }
 
     pub fn seal_turn_thread_for_deletion(&self, thread_id: &str) {
@@ -3423,6 +3532,58 @@ impl SharedCodexAppServer {
     }
 }
 
+/// #1444 review r1 — thread ids whose `thread_cache` attribution was dropped
+/// by [`SharedCodexAppServer::forget_threads_for_deleted_cards`].
+///
+/// Why it has to exist. `handle_thread_started_notification` falls through
+/// cache → `kernel_initiated_threads` → database → `pending.on_thread_started`,
+/// and the pending registry binds **FIFO without reading the thread id**: it
+/// hands the front entry whatever thread id arrived. So "no owner anywhere" is
+/// the sentence that authorizes a bind. A deleted Card's thread satisfies that
+/// sentence — its cache entry is gone by design and its database row went with
+/// the Track — and would be handed to whatever unrelated Card is next in the
+/// pending queue. Before #1444 the surviving cache entry accidentally stopped
+/// that fall-through; this restores the stop deliberately, without restoring a
+/// resumable mapping.
+///
+/// **Bound.** At most [`FORGOTTEN_THREAD_TOMBSTONE_CAP`] ids. Entries leave in
+/// exactly two ways and no others: FIFO eviction of the oldest when a new id
+/// would exceed the cap, and process exit. Nothing else adds to it — only a
+/// committed Track/Area delete does — so it grows one entry per deleted Card
+/// thread and never per notification.
+///
+/// **Eviction is safe.** Evicting the oldest tombstone only restores the
+/// pre-tombstone behaviour for a thread whose delete is at least
+/// [`FORGOTTEN_THREAD_TOMBSTONE_CAP`] deleted threads old; the hazard it guards
+/// is an in-flight notification, which is orders of magnitude shorter-lived.
+#[derive(Default)]
+struct ForgottenThreads {
+    order: VecDeque<String>,
+    set: HashSet<String>,
+}
+
+/// Cap for [`ForgottenThreads`]. ~4k short ids is well under a megabyte and far
+/// more deleted-Card threads than can plausibly have a notification in flight.
+const FORGOTTEN_THREAD_TOMBSTONE_CAP: usize = 4096;
+
+impl ForgottenThreads {
+    fn remember(&mut self, thread_id: &str) {
+        if !self.set.insert(thread_id.to_string()) {
+            return;
+        }
+        self.order.push_back(thread_id.to_string());
+        while self.order.len() > FORGOTTEN_THREAD_TOMBSTONE_CAP {
+            if let Some(evicted) = self.order.pop_front() {
+                self.set.remove(&evicted);
+            }
+        }
+    }
+
+    fn contains(&self, thread_id: &str) -> bool {
+        self.set.contains(thread_id)
+    }
+}
+
 // ===================== Notification routing & thread cache =====================
 impl SharedCodexAppServer {
     async fn install_client(
@@ -3449,6 +3610,7 @@ impl SharedCodexAppServer {
         let active_turns = self.active_turns.clone();
         let sealed_turn_threads = self.sealed_turn_threads.clone();
         let kernel_initiated_threads = self.kernel_initiated_threads.clone();
+        let forgotten_threads = self.forgotten_threads.clone();
         let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
         tokio::spawn(async move {
             while let Some(notification) = notifications.recv().await {
@@ -3458,6 +3620,7 @@ impl SharedCodexAppServer {
                         &repo,
                         &thread_cache,
                         &kernel_initiated_threads,
+                        &forgotten_threads,
                         &kernel_thread_start_serial,
                         thread_id,
                     )
@@ -3528,9 +3691,37 @@ impl SharedCodexAppServer {
         let Some(client) = self.running_client().await else {
             return;
         };
-        for entry in self.thread_cache.iter() {
-            let thread_id = entry.key().clone();
-            let card_id = entry.value().clone();
+        for (thread_id, card_id) in self.resume_candidates() {
+            // #1444 R2 — the candidate list above is a SNAPSHOT. A Track/Area
+            // delete can commit, and `forget_threads_for_deleted_cards` can
+            // drop the victim's mapping, while this loop is parked awaiting an
+            // earlier candidate's resume RPC. Removing the mapping cannot
+            // invalidate a vector already copied, so every candidate is
+            // re-validated against the live cache HERE, under
+            // `resume_replay_serial` — the boundary the cleanup takes too (see
+            // that field for why it is not `kernel_thread_start_serial`).
+            //
+            // The guard is held across the whole iteration, RPC included, not
+            // just across the read: a check-then-act that released it first
+            // would leave exactly the window this fixes, one iteration
+            // narrower. Cost: a delete's cleanup waits for at most ONE
+            // in-flight resume (tokio's mutex is fair, so the queued cleanup
+            // wins the guard before this loop's next iteration takes it), and
+            // an RPC is bounded by the client's request timeout. Ordering is
+            // then linearizable in both outcomes: a resume that beat the
+            // cleanup was issued while the Card still had a mapping; every
+            // candidate after it observes the removal and is skipped.
+            let _replay_guard = self.resume_replay_serial.lock().await;
+            if self.cached_card_for_thread(&thread_id).as_deref() != Some(card_id.as_str()) {
+                tracing::info!(
+                    target = "shared_codex_daemon::resume",
+                    %thread_id,
+                    %card_id,
+                    "skipping shared codex thread whose attribution was dropped \
+                     while the resume replay was in flight"
+                );
+                continue;
+            }
             tracing::info!(
                 target = "shared_codex_daemon::resume",
                 %thread_id,
@@ -3621,6 +3812,32 @@ impl SharedCodexAppServer {
 // ===================== Test-only helpers =====================
 #[cfg(any(test, feature = "fixtures"))]
 impl SharedCodexAppServer {
+    /// #1444 — hold the *production* serialization primitive shared by
+    /// `handle_thread_started_notification` and
+    /// [`Self::forget_threads_for_deleted_cards`]. A test holding this guard
+    /// parks both, which is what proves they are on one boundary rather than
+    /// merely reaching a consistent end state. Twin of
+    /// `lock_transition_serial_for_test`.
+    #[cfg(feature = "fixtures")]
+    pub async fn lock_thread_start_serial_for_test(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.kernel_thread_start_serial)
+            .lock_owned()
+            .await
+    }
+
+    /// #1444 — what a reconnect would CONSIDER resuming, read through the
+    /// same accessor `resume_cached_threads` uses, sorted for a stable
+    /// assertion. Post-#1444-R2 the loop re-validates each pair before its
+    /// RPC, so a fresh read here cannot by itself answer what an in-flight
+    /// replay will do — see
+    /// `cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop`.
+    #[cfg(feature = "fixtures")]
+    pub fn resume_candidates_for_test(&self) -> Vec<(String, String)> {
+        let mut candidates = self.resume_candidates();
+        candidates.sort();
+        candidates
+    }
+
     #[cfg(feature = "fixtures")]
     pub fn active_turn_for_test(&self, thread_id: &str) -> Option<String> {
         self.active_turns
@@ -3816,6 +4033,7 @@ impl SharedCodexAppServer {
             &self.repo,
             &self.thread_cache,
             &self.kernel_initiated_threads,
+            &self.forgotten_threads,
             &self.kernel_thread_start_serial,
             thread_id,
         )
@@ -4376,6 +4594,7 @@ async fn handle_thread_started_notification(
     repo: &Arc<dyn Repo>,
     thread_cache: &Arc<DashMap<String, String>>,
     kernel_initiated_threads: &Arc<Mutex<HashSet<String>>>,
+    forgotten_threads: &Arc<Mutex<ForgottenThreads>>,
     kernel_thread_start_serial: &Arc<Mutex<()>>,
     thread_id: &str,
 ) -> Result<ThreadStartedHandling> {
@@ -4407,6 +4626,18 @@ async fn handle_thread_started_notification(
             target: "shared_codex_daemon::pending_skip_already_mapped",
             %thread_id,
             "shared codex thread/started already has a card mapping"
+        );
+        return Ok(ThreadStartedHandling::DispatchNormally);
+    }
+
+    // #1444 review r1 — a thread a committed delete forgot is NOT an
+    // ownerless thread the FIFO registry may hand to the next pending Card.
+    // Its owner existed and was deleted; the correct owner is nobody.
+    if forgotten_threads.lock().await.contains(thread_id) {
+        tracing::warn!(
+            target: "shared_codex_daemon::pending_skip_forgotten_thread",
+            %thread_id,
+            "shared codex thread/started belongs to a deleted card's forgotten thread; not binding it to a pending card"
         );
         return Ok(ThreadStartedHandling::DispatchNormally);
     }
@@ -4681,6 +4912,31 @@ pub fn drop_spawned_child_guard_for_test(child: Child, pgid: i32) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// #1444 review r1 — the tombstone set's stated bound, executed: entries
+    /// leave it by FIFO eviction at the cap and by nothing else, and a
+    /// re-remembered id does not consume a second slot.
+    #[test]
+    fn forgotten_thread_tombstones_evict_oldest_first_at_the_cap() {
+        let mut forgotten = ForgottenThreads::default();
+        for n in 0..FORGOTTEN_THREAD_TOMBSTONE_CAP {
+            forgotten.remember(&format!("T-{n}"));
+        }
+        assert!(forgotten.contains("T-0"));
+        assert_eq!(forgotten.set.len(), FORGOTTEN_THREAD_TOMBSTONE_CAP);
+
+        // A duplicate is not a new slot: nothing is evicted.
+        forgotten.remember("T-0");
+        assert_eq!(forgotten.set.len(), FORGOTTEN_THREAD_TOMBSTONE_CAP);
+        assert!(forgotten.contains("T-0"));
+
+        // One over the cap evicts exactly the oldest, and only the oldest.
+        forgotten.remember("T-overflow");
+        assert_eq!(forgotten.set.len(), FORGOTTEN_THREAD_TOMBSTONE_CAP);
+        assert!(!forgotten.contains("T-0"), "the oldest must be evicted");
+        assert!(forgotten.contains("T-1"));
+        assert!(forgotten.contains("T-overflow"));
+    }
 
     /// #953 design test 7 — the dedup cache is updated ONLY after a
     /// successful DB write (`note_written`): a forced write failure (the

@@ -4089,6 +4089,15 @@ impl RecycledTrackDeletion {
         if wait_at_track_delete_commit_hook(track.id.as_str()).await {
             panic!("fixture: panic track deletion after recycle");
         }
+        // #1444 — the Cards this transaction is about to remove. Snapshotted
+        // before `finish_track_deletion` consumes the plan; used only on the
+        // committed arm below, never on the rollback/compensation arm.
+        let deleted_card_ids: HashSet<String> = prepared
+            .plan
+            .cards
+            .iter()
+            .map(|card| card.id.to_string())
+            .collect();
         let sweeps = match finish_track_deletion(route, prepared.plan, actor).await {
             Ok(sweeps) => sweeps,
             Err(error) => {
@@ -4122,6 +4131,15 @@ impl RecycledTrackDeletion {
                 return Err(error);
             }
         };
+        // #1444 — the row delete has COMMITTED, so the shared daemon's
+        // in-memory `thread_id -> card_id` attribution for these Cards is now
+        // stale and would otherwise be resumed on the next daemon reconnect.
+        // Post-commit and infallible: it cannot turn into a rollback, and the
+        // error arm above deliberately does not run it.
+        prepared
+            .turn_daemon
+            .forget_threads_for_deleted_cards(&deleted_card_ids)
+            .await;
         // This sweep is post-commit. A failure here must not restore the
         // workspace: the track row is already gone and the trash path is now
         // authoritative.

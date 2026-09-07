@@ -62,6 +62,8 @@ mod today_launchpad;
 mod today_summary;
 #[path = "cases/track_conversations.rs"]
 mod track_conversations;
+#[path = "cases/track_delete_thread_cache.rs"]
+mod track_delete_thread_cache;
 #[path = "cases/track_projection_policy_patch.rs"]
 mod track_projection_policy_patch;
 #[path = "cases/track_workspace_materialize.rs"]
