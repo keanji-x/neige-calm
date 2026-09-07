@@ -1,0 +1,7 @@
+{
+  "description": "Kernel cleanup fact names the exact failed task attempt and its settled Operation; neither identity may be defaulted.",
+  "wire": {
+    "ev": "task.execution_settled",
+    "data": { "task_id": "attempt-1", "operation_id": "op-1" }
+  }
+}

@@ -96,6 +96,9 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // tasks-row lookup and lives with the async callers — see
         // `is_gated_self_report`).
         Event::TaskGateResult { .. } => true,
+        Event::TaskExecutionSettled { .. } => {
+            matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
+        }
         // Issue #955 §5.7 — plugin-authored report edits (the accept
         // transaction's Batch apply) wake the planner exactly like user
         // edits: the report is the planner's work product, and neither a
@@ -811,6 +814,7 @@ impl Dispatcher {
         let kinds: Vec<String> = vec![
             "task.completed".into(),
             "task.failed".into(),
+            "task.execution_settled".into(),
             // Issue #644 PR-C — the gate runner's verdict: pushed to
             // the planner (hard-fire) and a scheduler trigger (a gate
             // verdict terminalizes the task — budget freed / deps
@@ -1042,7 +1046,8 @@ impl Inner {
         match &envelope.event {
             Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
-            | Event::TaskGateResult { .. } => {
+            | Event::TaskGateResult { .. }
+            | Event::TaskExecutionSettled { .. } => {
                 // Issue #644 PR-C (§6.5) — gated self-report
                 // suppression: a `task.completed` whose key resolves
                 // to a tasks row WITH a gate is a claim, not evidence;
@@ -1415,11 +1420,19 @@ impl Inner {
 
 /// Resolve execution identity identically for live notifications and boot replay.
 /// Execution IDs are opaque; a historical gate result keeps its author's key.
-pub(crate) async fn resolve_harness_observation<R: calm_truth::db::RepoRead + ?Sized>(
-    repo: &R,
+pub(crate) async fn resolve_harness_observation(
+    repo: &dyn crate::db::RepoEventWrite,
     track_id: &TrackId,
     event: &Event,
 ) -> crate::error::Result<Option<HarnessObservation>> {
+    if let Event::TaskExecutionSettled {
+        task_id,
+        operation_id,
+    } = event
+        && !crate::isolated_codex::settled::relevant(repo, track_id, task_id, operation_id).await?
+    {
+        return Ok(None);
+    }
     let task_key = if let Event::TaskGateResult {
         task_id,
         idempotency_key,
@@ -1482,6 +1495,11 @@ pub(crate) fn harness_observation_from_event(
         } => Some(HarnessObservation::TaskFailed {
             idempotency_key: idempotency_key.clone(),
             error: reason.clone(),
+        }),
+        Event::TaskExecutionSettled { task_id, .. } => Some(HarnessObservation::SystemContext {
+            text: format!(
+                "Failed task execution {task_id} has stopped and its Operation has settled. Re-read calm.plan.list for the current attempt and recovery capability. Choose a same-contract recovery only when authorized; if User authorization is required, explain that next step. Retained files remain evidence; an isolated recovery starts in a new empty workspace."
+            ),
         }),
         // Gate log paths use the author key resolved from the execution row.
         Event::TaskGateResult {

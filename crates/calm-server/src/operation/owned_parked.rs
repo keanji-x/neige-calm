@@ -28,7 +28,11 @@ pub(crate) async fn reconcile(
                     .bind(&op.id).bind(owner).fetch_one(&mut *tx).await?;
                 if !owned {return Err(CalmError::Conflict("owned parked completion lost lease".into()));}
                 let completion=complete_parked_tx(&mut tx,&op.id,&outcome).await?;
+                let events = if matches!(completion, ParkedCompletion::Completed(_)) {
+                    adapter.complete_owned_parked_tx(&mut tx, op).await?
+                } else { Vec::new() };
                 tx.commit().await?;
+                for event in events { ctx.events.emit_envelope(event); }
                 if let ParkedCompletion::Completed(result)=completion {ctx.completion.complete(result);}
                 Ok(())
             }

@@ -296,6 +296,13 @@ impl ProviderAdapter for IsolatedCodexAdapter {
     ) -> Result<ParkedRecovery> {
         super::observe::reconcile(self, op, mode, ctx).await
     }
+    async fn complete_owned_parked_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        op: &Operation,
+    ) -> Result<Vec<crate::event::BroadcastEnvelope>> {
+        super::settled::record_tx(tx, op).await
+    }
     async fn plan_compensation(
         &self,
         from_phase: PhaseTag,

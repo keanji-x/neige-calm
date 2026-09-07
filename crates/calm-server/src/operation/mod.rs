@@ -761,6 +761,16 @@ pub trait ProviderAdapter: Send + Sync {
         ))
     }
 
+    /// Append adapter-owned settlement facts in the successful parked completion
+    /// transaction. Returned durable events are published only after commit.
+    async fn complete_owned_parked_tx(
+        &self,
+        _tx: &mut Tx<'_>,
+        _op: &Operation,
+    ) -> Result<Vec<crate::event::BroadcastEnvelope>> {
+        Ok(Vec::new())
+    }
+
     async fn recover_parked(
         &self,
         _op: &Operation,

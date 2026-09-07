@@ -437,7 +437,8 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         // runs projection starts consuming `task.gate_result`.
         Event::TaskGateResult { .. }
         | Event::TaskContextFrozen { .. }
-        | Event::TaskContextAdvanced { .. } => {}
+        | Event::TaskContextAdvanced { .. }
+        | Event::TaskExecutionSettled { .. } => {}
         // Issue #760 slice 1: workspace leases are operational history.
         // They are persisted and replayable, but they do not change the
         // track filesystem projection in this slice.

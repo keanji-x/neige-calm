@@ -255,7 +255,7 @@ impl EventScope {
 /// Bump this together with a migration default whenever clients must gate on a
 /// new persisted wire shape; otherwise old clients can advance past events they
 /// cannot parse.
-pub const SYNC_EVENT_VERSION: u32 = 17;
+pub const SYNC_EVENT_VERSION: u32 = 18;
 
 /// #1505 PR2 — what happened to one entry in the harness pending queue.
 ///
@@ -773,6 +773,15 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         agent_message: Option<String>,
+    },
+
+    /// Kernel-owned execution cleanup settled after an isolated task failure.
+    /// This is a prompt to re-read current recovery capability, not retry authority.
+    /// Persisted atomically with the failed Operation after confirmed stop.
+    #[serde(rename = "task.execution_settled")]
+    TaskExecutionSettled {
+        task_id: String,
+        operation_id: String,
     },
 
     /// The task plan changed via an explicit plan tool or report-block
@@ -1304,7 +1313,7 @@ impl Event {
             // Issue #644 PR-B — like the other task-lifecycle signals:
             // no plugin / entity classification; consumers filter via the
             // events kind clause + the envelope's track scope.
-            Event::TaskDispatched { .. } => EventMetadata {
+            Event::TaskDispatched { .. } | Event::TaskExecutionSettled { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: None,
@@ -1414,6 +1423,7 @@ impl Event {
             Event::TaskFailed { .. } => "task.failed",
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
+            Event::TaskExecutionSettled { .. } => "task.execution_settled",
             Event::TaskContextFrozen { .. } => "task.context_frozen",
             Event::TaskContextAdvanced { .. } => "task.context_advanced",
             Event::WorkspaceLeased { .. } => "workspace.leased",
@@ -1598,6 +1608,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TaskCompleted { .. }
         | Event::TaskFailed { .. }
         | Event::TaskDispatched { .. }
+        | Event::TaskExecutionSettled { .. }
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. }
         | Event::TaskGateResult { .. } => vec!["*".into()],

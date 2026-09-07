@@ -308,6 +308,7 @@ async fn replay_harness_events_since(
             &[
                 "task.completed",
                 "task.failed",
+                "task.execution_settled",
                 // Issue #644 PR-C (§6.5/§8) — gate verdicts that
                 // landed while the kernel was down replay like live
                 // pushes.
