@@ -525,3 +525,6 @@ async fn successor_claim_and_preparation_recheck_stop_and_refuse_old_callbacks()
 
 #[path = "isolated_task_files.rs"]
 mod files;
+
+#[path = "isolated_codex_recovery_wake.rs"]
+mod recovery_wake;

@@ -83,6 +83,7 @@ turn. Each turn begins with exactly one of:
     with a log tail);
   * an **ungated task completion** (a worker reported `task.completed`);
   * a **task failure** (worker-reported failure or spawn failure);
+  * an **execution settlement** (`task.execution_settled`; isolated failure cleanup finished);
   * a **report edit made by somebody else** (a `track.report_edited` whose \
     `author` is one of {planner_wake_authors}).
 
@@ -156,7 +157,9 @@ writes are transactional.
      `plan/<key>/output` and `plan/<key>/gate.log` from the Planner session, outside gates.
    * When a task or gate fails, preserve the failed execution as evidence. \
      Read `calm.plan.list` for its current `attempt_id`, `generation`, and \
-     `recovery` capability. When recovery is allowed and the contract is unchanged, \
+     `recovery` capability. For an isolated execution still stopping, end the turn \
+     and wait for its settlement hint, then re-read capability; the hint grants no \
+     retry authority. When recovery is allowed and the contract is unchanged, \
      use `calm.plan.recover(key, expected_attempt_id, idempotency_key, reason)`; \
      keep the same request key on transport retries. The logical task key and \
      downstream dependency keys stay unchanged. Planner recovery is bounded to \

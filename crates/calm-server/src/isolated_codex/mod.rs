@@ -9,6 +9,7 @@ pub use lookup::private_codex_home;
 mod observe;
 mod record;
 pub(crate) mod recovery;
+pub(crate) mod settled;
 pub(crate) mod turn;
 mod workspace;
 

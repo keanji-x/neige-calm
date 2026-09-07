@@ -2151,6 +2151,24 @@ fn planner_push_predicate_and_observation_mapping_agree() {
             false,
             false,
         ),
+        row(
+            Event::TaskExecutionSettled {
+                task_id: "w:retry".into(),
+                operation_id: "op".into(),
+            },
+            ActorId::KernelDispatcher,
+            true,
+            true,
+        ),
+        row(
+            Event::TaskExecutionSettled {
+                task_id: "w:retry".into(),
+                operation_id: "op".into(),
+            },
+            ActorId::User,
+            false,
+            true,
+        ),
     ];
 
     let mut covered = std::collections::BTreeSet::new();

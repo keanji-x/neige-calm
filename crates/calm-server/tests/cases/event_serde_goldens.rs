@@ -1197,7 +1197,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 50] = [
+const ALL_KIND_TAGS: [&str; 51] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1230,6 +1230,7 @@ const ALL_KIND_TAGS: [&str; 50] = [
     "task.dispatched",
     "task.context_frozen",
     "task.context_advanced",
+    "task.execution_settled",
     "workspace.leased",
     "workspace.released",
     "forge.pr.merged",
@@ -1282,7 +1283,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 76,
+        files, 77,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1335,6 +1336,7 @@ fn kind_tag_list_matches_enum() {
             Event::TaskDispatched { .. } => "task.dispatched",
             Event::TaskContextFrozen { .. } => "task.context_frozen",
             Event::TaskContextAdvanced { .. } => "task.context_advanced",
+            Event::TaskExecutionSettled { .. } => "task.execution_settled",
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
@@ -1361,7 +1363,22 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        50,
+        51,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
+}
+
+#[test]
+fn task_execution_settled_requires_exact_identities() {
+    let golden = load("task_execution_settled.full.json");
+    let event: Event = serde_json::from_value(golden.wire.clone()).unwrap();
+    assert!(
+        matches!(&event, Event::TaskExecutionSettled { task_id, operation_id } if task_id == "attempt-1" && operation_id == "op-1")
+    );
+    assert_eq!(serde_json::to_value(event).unwrap(), golden.wire);
+    for field in ["task_id", "operation_id"] {
+        let mut missing = golden.wire.clone();
+        missing["data"].as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<Event>(missing).is_err());
+    }
 }

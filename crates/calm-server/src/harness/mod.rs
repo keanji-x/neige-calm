@@ -1,3 +1,4 @@
+pub(crate) mod catch_up;
 pub mod config;
 pub mod lock;
 pub mod observation;
@@ -13,9 +14,10 @@ use std::sync::Arc;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::{Repo, write_in_tx_typed};
-use crate::dispatcher;
 use crate::error::Result;
-use crate::event::{Event, EventBus};
+#[cfg(test)]
+use crate::event::Event;
+use crate::event::EventBus;
 use crate::ids::{CardId, TrackId};
 use crate::model::CardRole;
 use crate::per_card_lock::{KeyedLocks, lock_key};
@@ -302,53 +304,11 @@ async fn replay_harness_events_since(
     watermark: i64,
     snapshot: &mut HarnessSnapshot,
 ) -> Result<()> {
-    let rows = repo
-        .events_for_track(
-            track_id.as_str(),
-            &[
-                "task.completed",
-                "task.failed",
-                // Issue #644 PR-C (§6.5/§8) — gate verdicts that
-                // landed while the kernel was down replay like live
-                // pushes.
-                "task.gate_result",
-                "track.report_edited",
-                "workspace.leased",
-                "workspace.released",
-                "forge.scan.completed",
-                "forge.pr.opened",
-                "forge.pr.checks",
-                "forge.issue.closed",
-                "worktree.provisioned",
-                "forge.pr.merged",
-                "review.round",
-                "ratify.requested",
-                "ratify.resolved",
-                "codex.hook",
-                "claude.hook",
-            ],
-            Some(watermark),
-        )
-        .await?;
+    let observations =
+        catch_up::observations_since(repo.as_ref(), track_id, watermark, None).await?;
     let mut replayed = 0usize;
     let mut entries = snapshot.pending_entries();
-    for row in rows {
-        let role = role_needed_for_planner_push_filter(repo.as_ref(), &row.event).await?;
-        if !dispatcher::event_warrants_planner_push_with_role(&row.event, &row.actor, |_| role) {
-            continue;
-        }
-        // Issue #644 PR-C (§6.5) — the SAME gated-self-report
-        // consultation the live push branch runs: a crash between the
-        // emit tx and the live push must not replay a gated task's
-        // raw self-report to the planner.
-        if dispatcher::is_gated_self_report(repo.as_ref(), &row.event).await {
-            continue;
-        }
-        let Some(obs) =
-            dispatcher::resolve_harness_observation(repo.as_ref(), track_id, &row.event).await?
-        else {
-            continue;
-        };
+    for (event_id, obs) in observations {
         // #1505 PR1 — a dispatcher observation can never be a `UserMessage`
         // (`harness_observation_from_event` has no arm that builds one), and
         // `QueueEntry::system` is the runtime fence that says so. That is also
@@ -366,12 +326,12 @@ async fn replay_harness_events_since(
         // the max. That is the fail-closed direction — a stuck cursor is
         // visible and recoverable, an unaddressable queued message is not —
         // and it is unreachable today.
-        let entry = match queue::QueueEntry::system(obs, Some(row.id)) {
+        let entry = match queue::QueueEntry::system(obs, Some(event_id)) {
             Ok(entry) => entry,
             Err(error) => {
                 tracing::warn!(
                     card_id,
-                    event_id = row.id,
+                    event_id,
                     error = %error,
                     "harness recovery: refusing to replay a user-message observation \
                      from the dispatcher stream"
@@ -380,7 +340,7 @@ async fn replay_harness_events_since(
             }
         };
         entries.push(entry);
-        snapshot.push_watermark = snapshot.push_watermark.max(row.id);
+        snapshot.push_watermark = snapshot.push_watermark.max(event_id);
         replayed += 1;
     }
     if replayed > 0 {
@@ -397,19 +357,6 @@ async fn replay_harness_events_since(
         );
     }
     Ok(())
-}
-
-async fn role_needed_for_planner_push_filter(
-    repo: &dyn Repo,
-    event: &Event,
-) -> Result<Option<CardRole>> {
-    match event {
-        Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => repo
-            .card_role_get(card_id.as_str())
-            .await
-            .map_err(Into::into),
-        _ => Ok(None),
-    }
 }
 
 async fn persist_recovered_snapshot(

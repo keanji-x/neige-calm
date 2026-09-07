@@ -49,6 +49,16 @@ function event(value: unknown): WireEvent {
 }
 
 describe('invalidation plan behavior', () => {
+  it('refreshes task evidence after execution settlement without guessing an opaque attempt ID', () => {
+    const settled = wireEventSchema.parse({
+      ev: 'task.execution_settled',
+      data: { task_id: 'opaque-attempt', operation_id: 'operation-1' },
+    });
+    expect(invalidationPlanFor(settled)).toEqual({
+      invalidate: [['track-files'], ['track-report']], remove: [], writeThrough: [],
+    });
+  });
+
   it('write-through updates only an existing area before invalidating the list', () => {
     const value = event({ ev: 'area.updated', data: { id: 'c1', name: 'new' } });
     expect(invalidationPlanFor(value)).toEqual({
