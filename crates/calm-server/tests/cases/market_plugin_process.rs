@@ -1057,6 +1057,60 @@ fn a_portfolio_across_two_currencies_totals_and_writes_a_history_point() {
     assert!(kernel.is_responsive());
 }
 
+/// **`market.holdings.list`'s prose and its `structuredContent` answer the same
+/// question about the same total.**
+///
+/// The combination that catches it: `complete` is false because ONE holding's
+/// rate is missing, while the rest sum to a real partial total. The prose said
+/// "No total — not every holding could be priced and converted" over a
+/// `structuredContent.total` of 2633.88 — a number in the payload and a
+/// sentence denying it exists. That is the shape the `Empty`/`NonePriced`
+/// split removed from the holdings table, reappearing at a different exit.
+///
+/// Both halves are read out of ONE real reply, through the real binary: they
+/// are two exits on one fact, and reading either alone passes on the version
+/// where they disagree.
+#[test]
+fn the_list_tool_says_the_same_thing_in_prose_and_in_structured_content() {
+    let mut kernel =
+        FakeKernel::boot_settling(DEAD_ENDPOINT, &sina_server_without_rates(), 3600, "CNY");
+    // Priced in CNY, settling in CNY: needs no rate, and is counted.
+    kernel.set_holding(2, "SH:600519", 2.0, TRACK);
+    // Priced in USD with no USD→CNY row anywhere: cannot be converted.
+    kernel.set_holding(3, "US:NVDA", 1.0, TRACK);
+
+    let listed = kernel.call_tool(4, "market.holdings.list", json!({}), Some(TRACK));
+    let text = text_of(&listed);
+    let structured = listed
+        .pointer("/result/structuredContent")
+        .expect("structuredContent");
+
+    assert_eq!(
+        structured["complete"],
+        json!(false),
+        "one holding could not be converted: {structured:#?}"
+    );
+    assert_eq!(
+        structured["total"].as_f64(),
+        Some(2633.88),
+        "the payload carries a partial total: {structured:#?}"
+    );
+    assert_eq!(structured["currency"], json!("CNY"));
+    assert!(
+        text.contains("Partial total 2633.88 CNY"),
+        "the prose has to name the number the payload carries: {text}"
+    );
+    assert!(
+        !text.contains("No total"),
+        "2633.88 is in the payload; the prose must not deny it: {text}"
+    );
+    assert!(
+        text.contains("covers only the holdings that both priced and converted"),
+        "and it has to say what the number leaves out: {text}"
+    );
+    assert!(kernel.is_responsive());
+}
+
 /// **A holding whose exchange rate did not come back writes no history point**
 /// — and keeps the price that did.
 ///

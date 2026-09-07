@@ -232,16 +232,32 @@ converted number without being told what it was converted at.
 #### `USDT` is taken as 1 USD, and that is an assumption
 
 It is the one number in this plugin that no source stated. What it costs was
-measured rather than guessed: Binance's `USDTUSD` last traded at **0.99968** on
-2026-09-07, so the parity overstates a USDT-quoted holding by about **3.2 basis
-points** — 32 USD on a 100,000 USD crypto position, systematically and always
-in the same direction.
+measured on one day rather than guessed: `data-api.binance.vision` answered
+`USDTUSD` at **0.99967** on 2026-09-07 (a second sample minutes later read
+0.99966), so against that reading the parity overstates the **USDT-quoted part**
+of a portfolio by about **3.3 basis points** — 33 USD per 100,000 USD held in
+USDT-quoted assets.
 
-Every exit that shows the conversion says so in words — *"USDT taken as 1 USD —
-assumed, not quoted"* — rather than printing it as a rate alongside the ones
-that were fetched. Making it a quote instead is a one-constant change:
-`USDT_USD_ASSUMED_PARITY` in `main.rs` is the whole of it, and `USDTUSD` is
-listed on `data-api.binance.vision` with no key.
+Two things that reading does not establish, and this plugin does not claim.
+The effect on a whole total is those 3.3 bp scaled by how much of the portfolio
+is quoted in USDT, so a mostly-stock portfolio is off by far less. And one
+day's sample fixes no direction: `USDTUSD` has traded above 1 as well, and on
+such a day the same parity understates instead. What is fixed is that the
+parity is not the market's number.
+
+The prose exits say so in words — *"USDT taken as 1 USD — assumed, not
+quoted"* — rather than printing it as a rate alongside the ones that were
+fetched: the holdings table's caption, `market.holdings.list`'s text, and that
+tool's `conversions` array. The per-row `rate` cell is a bare number in every
+case, so a machine consumer reading only `holdings[i].rate` cannot tell an
+assumed 1 from a quoted one and has to read `conversions`.
+
+`USDT_USD_ASSUMED_PARITY` in `main.rs` is where the parity is decided, but
+replacing it is not by itself enough to make it a quote: a fetched leg needs a
+request, a failure that propagates instead of a value that always exists, and a
+place in the per-pass cache, and the `AssumedParity` hop would have to stop
+being a variant. `USDTUSD` is listed with no key; `USDUSDT` is not listed at
+all, so the reverse direction would have to be a reciprocal.
 
 **What this changes for an existing install:** the default `quote` is `USDT`
 and stays `USDT`; it now settles in USD. An all-crypto portfolio's total is
@@ -255,12 +271,15 @@ rate from an earlier pass: a rate this plugin could not read this pass is a
 rate it does not have. Its series stands still, exactly as a portfolio with an
 unpriceable holding does, and resumes on the next pass that reads the rate.
 
-**A `0` on the `Total` row means zero, and never means "unknown".** It appears
-for one case only — a Track that holds nothing, whose total really is zero, and
-whose caption says so. A portfolio that holds something none of which could be
-priced or converted shows an empty `Total` cell instead, because its value is
-unknown rather than nil, and a `0` there would read as *this portfolio is worth
-nothing*.
+**An empty `Total` cell means "unknown"; a `0` never does.** A portfolio that
+holds something, none of which could be priced or converted, shows an empty
+cell, because its value is unknown rather than nil and a `0` there would read
+as *this portfolio is worth nothing*.
+
+A `0` in that cell is arithmetic, and more than one thing produces it: a Track
+that holds nothing — the only case whose caption says the total is 0 — and
+equally a real total too small to survive rounding to two decimals, such as
+0.001 USDT, or a nanogram-sized crypto position settled into USD.
 
 ### Why the `Referer` header
 
@@ -316,11 +335,17 @@ affected by this.
   plotted against totals covering the whole — would draw a crash that never
   happened. The holdings table still goes out either way: it names the missing
   prices row by row, which is the honest form of the same information.
-* **A total is only stated when every holding both priced and converted**, and
-  a tick without a total contributes no history point. See *Currencies* above.
-* **`USDT` is taken as 1 USD.** An assumption, not a quote: the pair traded at
-  0.99968 on 2026-09-07, so any total containing a crypto holding is about 3.2
-  basis points high. Every published conversion says the step is assumed.
+* **Only a tick where every holding priced and converted contributes a history
+  point.** The published total is more forgiving than that: when some holdings
+  could not be valued the tables and `market.holdings.list` state a *partial*
+  total over the ones that could, and say what it covers. A partial total is
+  never written to history. See *Currencies* above.
+* **`USDT` is taken as 1 USD.** An assumption, not a quote: the pair answered
+  0.99967 on 2026-09-07, so on that day's reading the USDT-quoted part of a
+  portfolio is about 3.3 basis points high, and a whole total is off by that
+  scaled to its USDT weight. One day's sample fixes no direction. Every
+  published conversion says in prose that the step is assumed; the per-row
+  `rate` cell does not.
 * **Exchange rates come from Sina only.** The stock prices have no second
   source today either, but if one is added the fallback will be **partial**: a
   pass could price every stock through the fallback and still convert nothing,

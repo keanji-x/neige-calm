@@ -1211,22 +1211,36 @@ const SINA_FX_RATE_FIELD: usize = 8;
 /// quote, and it is the only number in this plugin that no source stated.**
 ///
 /// It is the owner's decision to approximate rather than to price the pair.
-/// What the approximation costs was measured, not guessed: Binance's `USDTUSD`
-/// last traded at **0.99968** on 2026-09-07, so this parity overstates a
-/// USDT-quoted holding by about **3.2 basis points** (0.032%) — 32 USD on a
-/// 100,000 USD crypto position. The error is systematic, always in the same
-/// direction, and it rides into every total and every history point that
-/// contains a crypto holding.
+/// What the approximation costs was measured on one day, not guessed:
+/// `data-api.binance.vision` answered
+/// `{"symbol":"USDTUSD","price":"0.99967000"}` on 2026-09-07 (a second sample
+/// minutes later read `0.99966000`). Against **0.99967**, this parity
+/// overstates the USDT-quoted part of a portfolio by about **3.3 basis
+/// points** — 33 USD per 100,000 USD held in USDT-quoted assets.
 ///
-/// **To make it a quote instead, replace this one constant with a fetch.**
-/// `USDTUSD` is listed on `data-api.binance.vision` and answers
-/// `{"symbol":"USDTUSD","price":"0.99967000"}` with no key; the other
-/// direction, `USDUSDT`, is not listed (`-1121 Invalid symbol`), so a real
-/// `USD → USDT` leg would have to be a reciprocal. Nothing else in this file
-/// hard-codes a rate, so this constant is the whole of the change.
+/// Two things that reading does NOT establish. The effect on a whole total is
+/// that 3.3 bp scaled by how much of the portfolio is quoted in USDT, so a
+/// mostly-stock portfolio is off by far less. And a snapshot fixes no
+/// direction: `USDTUSD` has traded above 1 as well, and on such a day the same
+/// parity understates instead. What is fixed is that the parity is not the
+/// market's number.
 ///
-/// Every exit that shows a conversion states this hop as an assumption rather
-/// than as a rate — see [`FxHop::describe`].
+/// **This constant is where the parity is decided, and replacing it is not by
+/// itself enough to make it a quote.** A fetched leg needs the shape the Sina
+/// legs already have — a request, a failure that propagates instead of a value
+/// that always exists, and a place in the per-pass cache — and
+/// [`FxHop::AssumedParity`] would have to stop being a variant. `USDTUSD` is
+/// listed with no key; the other direction, `USDUSDT`, is not
+/// (`-1121 Invalid symbol`), so a real `USD → USDT` leg would have to be a
+/// reciprocal. Nothing else in this file hard-codes a rate.
+///
+/// **Where the assumption is visible, exactly.** Every exit that states a
+/// converted TOTAL names the hops behind it and names this one as an
+/// assumption: the holdings table's caption, `market.holdings.list`'s prose,
+/// and that tool's `conversions` array. The per-row `rate` cell is a bare
+/// number in every case — a machine consumer reading only `holdings[i].rate`
+/// cannot tell an assumed 1 from a quoted one, and has to read `conversions`.
+/// See [`FxHop::describe`].
 const USDT_USD_ASSUMED_PARITY: f64 = 1.0;
 
 /// One hop of a conversion.
@@ -1281,9 +1295,15 @@ impl FxLeg {
         )
     }
 
-    /// What the caption calls this hop. One of the four pairs below in every
-    /// reachable case; the fallback names no symbol rather than naming a wrong
-    /// one, and no route constructs a leg outside the four.
+    /// What the caption calls this hop.
+    ///
+    /// The four pairs below are every leg a CONFIGURABLE settlement can reach:
+    /// [`Currency::settlement`] returns only `Usd` and `Cny`, and the one arm
+    /// of [`fx_route`] that builds a `Sina` leg puts the settlement currency in
+    /// `to`. `fx_route` itself is a total function over `Currency` pairs and
+    /// will happily build a fifth leg — `(Usd, Hkd)` — for a caller that asks
+    /// for one; nothing in this plugin asks. The fallback therefore names no
+    /// symbol rather than naming a wrong one.
     fn label(self) -> &'static str {
         match (self.from, self.to) {
             (Currency::Usd, Currency::Cny) => "fx_susdcny@sina",
@@ -1543,23 +1563,26 @@ enum PortfolioTotal {
 }
 
 impl PortfolioTotal {
-    /// The number and unit a caller may state. `None` wherever no number is
-    /// honest — which is every variant but one, on purpose.
+    /// Whether there is a portfolio value to announce and to plot, and in
+    /// what unit.
     ///
-    /// **[`Self::Empty`] answers `None` even though its `value_cell` is a real
-    /// `0`.** The two are answering different questions: the cell is "what
-    /// goes in the Total row", and this is "is there a portfolio value to
-    /// announce and to plot". An empty Track has no value to plot — the caller
-    /// that appends history points reads THIS, and a series of zeros for a
-    /// Track that holds nothing is a series about nothing. There is also no
-    /// unit to pair the zero with: nothing was priced, so no currency was
-    /// counted, and the settlement currency may itself be unconfigurable.
+    /// This is NOT "is the value cell honest". [`Self::Empty`]'s `0` is a true
+    /// number — the value of holding nothing — and this still answers `None`,
+    /// for two reasons that are about the caller rather than about the zero:
+    ///
+    /// - There is no unit to pair it with. Nothing was priced, so no currency
+    ///   was counted, and the configured settlement may not be one this plugin
+    ///   settles in. A number handed out with no unit is what this whole layer
+    ///   exists to prevent.
+    /// - The caller that appends history points reads this, and a series of
+    ///   zeros for a Track that holds nothing is a series about nothing. That
+    ///   is a choice about what the history is FOR, not a claim that the zero
+    ///   is wrong.
     ///
     /// That `refresh` also returns early for an empty portfolio does not make
-    /// this redundant. If this said `Some`, the correctness of the history
-    /// series would rest on that early return rather than on the value, and a
-    /// second caller added later would inherit a defect nothing here warned
-    /// about.
+    /// this redundant. If this said `Some`, the history series would be correct
+    /// only because of that early return, and a second caller added later would
+    /// inherit a defect nothing here warned about.
     fn stated(&self) -> Option<(f64, &str)> {
         match self {
             Self::Priced { amount, currency } => Some((*amount, currency.as_str())),
@@ -1677,8 +1700,12 @@ fn price_holdings(cfg: &Config, holdings: &[Holding], cache: &mut PassCache) -> 
                         if value.is_finite() {
                             Ok((price, currency, path, value))
                         } else {
+                            // The conversion SUCCEEDED; the product overflowed.
+                            // The rate is a fact this pass obtained, so it stays
+                            // on the row — that is what lets every reader below
+                            // tell this apart from a rate that never came back.
                             Err((
-                                Some((price, currency)),
+                                Some((price, currency, Some(path.factor))),
                                 format!(
                                     "{} × {} at {} is not a finite value",
                                     holding.asset.canonical(),
@@ -1689,7 +1716,7 @@ fn price_holdings(cfg: &Config, holdings: &[Holding], cache: &mut PassCache) -> 
                         }
                     }
                     Err(why) => Err((
-                        Some((price, currency)),
+                        Some((price, currency, None)),
                         format!(
                             "{} priced in {} but no {}→{} rate came back this pass — {why}",
                             holding.asset.canonical(),
@@ -1741,13 +1768,18 @@ fn price_holdings(cfg: &Config, holdings: &[Holding], cache: &mut PassCache) -> 
             Err((priced, why)) => {
                 complete = false;
                 eprintln!("market: {why}");
-                // A price that came back is kept even when the rate did not:
-                // it is a true number about this holding, and dropping it
-                // would hide that the failure was the conversion rather than
-                // the quote.
-                let (price, currency) = match priced {
-                    Some((price, currency)) => (json!(round_to(price, 2)), json!(currency.code())),
-                    None => (Value::Null, Value::Null),
+                // A price that came back is kept even when the conversion did
+                // not finish: it is a true number about this holding, and
+                // dropping it would hide that the failure was downstream of the
+                // quote. The rate is kept on the same terms — a row with a rate
+                // and no value overflowed, a row with neither had no rate.
+                let (price, currency, rate) = match priced {
+                    Some((price, currency, rate)) => (
+                        json!(round_to(price, 2)),
+                        json!(currency.code()),
+                        rate.map_or(Value::Null, |rate| json!(round_to(rate, 8))),
+                    ),
+                    None => (Value::Null, Value::Null, Value::Null),
                 };
                 let mut row = json!({
                     "asset": holding.asset.symbol,
@@ -1758,7 +1790,7 @@ fn price_holdings(cfg: &Config, holdings: &[Holding], cache: &mut PassCache) -> 
                     "value": Value::Null,
                 });
                 if settlement.is_some() {
-                    row["rate"] = Value::Null;
+                    row["rate"] = rate;
                 }
                 rows.push(row);
             }
@@ -2290,11 +2322,19 @@ fn text_result(text: String, structured: Value) -> Value {
 /// converted, so each value falls back to its own row's currency, which is the
 /// only unit that value is true in.
 ///
-/// The two failures are told apart in words. "price unavailable" is a quote
-/// that did not come back; "no <X>→<Y> rate" is a quote that did, with no way
-/// to carry it into the settlement currency — a distinction a reader needs,
-/// because the second says the holding is fine and the plugin's rate source is
-/// not. Split out from the tool arm so it can be asserted on without a kernel.
+/// The three failures are told apart in words, and each is read off the row
+/// rather than assumed:
+///
+/// - **no price** — the quote did not come back. Nothing else was attempted.
+/// - **no rate** — the quote came back and the conversion did not. The row has
+///   a price and no rate. A reader needs this one: it says the holding is fine
+///   and this plugin's rate source is not.
+/// - **not a finite value** — both came back and `price × quantity × rate`
+///   overflowed. The row has a price AND a rate. This case needs no rate at
+///   all when the holding is already in the settlement currency, so reporting
+///   it as a missing rate names a lookup that never happened.
+///
+/// Split out from the tool arm so it can be asserted on without a kernel.
 fn holdings_line(priced: &PricedPortfolio) -> String {
     priced
         .rows
@@ -2304,11 +2344,21 @@ fn holdings_line(priced: &PricedPortfolio) -> String {
             let unit = priced.settlement.map_or(native, |s| Some(s.code()));
             let value = match (row["value"].as_f64().zip(unit), native) {
                 (Some((value, unit)), _) => format!("{value} {unit}"),
-                (None, Some(native)) => format!(
-                    "{} {native}, but no {native}→{} rate",
-                    row["price"],
-                    priced.settlement.map_or("?", Currency::code),
-                ),
+                // A rate on the row means the conversion succeeded, so what
+                // failed is the arithmetic. With no settlement currency there
+                // is no rate cell and no conversion either — the identity path
+                // cannot fail — so an absent value there is an overflow too.
+                (None, Some(native)) => match (priced.settlement, row["rate"].as_f64()) {
+                    (Some(settlement), None) => format!(
+                        "{} {native}, but no {native}→{} rate",
+                        row["price"],
+                        settlement.code(),
+                    ),
+                    _ => format!(
+                        "{} {native} at {}, but the value is not a finite number",
+                        row["price"], row["qty"],
+                    ),
+                },
                 (None, None) => "price unavailable".into(),
             };
             let venue = row["venue"].as_str().unwrap_or("?");
@@ -2469,14 +2519,24 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
                 conversions,
                 ..
             } = priced;
+            // The prose and `structuredContent.total` below are two exits on
+            // ONE fact, and they must not disagree. A partial total is a real
+            // number over the rows that both priced and converted — the
+            // holdings table has always published it, saying what it covers —
+            // and `total.value_cell()` hands it out here too. Saying "no
+            // total" over the top of it would put a number in the payload and
+            // a sentence denying it exists, which is the shape
+            // `PortfolioTotal::Empty`/`NonePriced` were split to remove.
             let summary = match (complete, total.stated()) {
                 (true, Some((amount, currency))) => {
                     format!("{text}. Total {} {currency}.", round_to(amount, 2))
                 }
-                (false, _) => {
-                    format!("{text}. No total — not every holding could be priced and converted.")
-                }
-                (true, None) => format!(
+                (false, Some((amount, currency))) => format!(
+                    "{text}. Partial total {} {currency} — it covers only the holdings that \
+                     both priced and converted.",
+                    round_to(amount, 2),
+                ),
+                (_, None) => format!(
                     "{text}. No total — {}.",
                     total
                         .no_total_reason()
@@ -2500,6 +2560,11 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
                     // — a caller must never read a number here against a unit
                     // that came from somewhere else.
                     "currency": total.currency_cell(),
+                    // The hops behind every rate above, in the same words the
+                    // holdings table captions them with. A per-row `rate` is a
+                    // bare number and cannot say whether it was quoted or
+                    // assumed; this is where a machine consumer reads that.
+                    "conversions": conversions,
                     "complete": complete,
                 }),
             )
@@ -3852,6 +3917,58 @@ mod tests {
         );
     }
 
+    /// **An overflow is not a missing rate.**
+    ///
+    /// Settling in USD with a USD holding: the conversion path is the identity,
+    /// it needs no rate and cannot fail. What fails is `price × quantity`,
+    /// which overflows at `1e308` shares. Reporting that as
+    /// `no USD→USD rate` names a lookup that never happened and sends a reader
+    /// at the wrong source; before this was split, it also printed `?` as the
+    /// currency whenever nothing settled.
+    #[test]
+    fn a_value_that_overflows_is_not_reported_as_a_missing_rate() {
+        let (cfg, sina_targets) = converting_cfg("USD");
+        let priced = price_holdings(&cfg, &[holding("US:NVDA", 1e308)], &mut PassCache::new());
+        assert!(!priced.complete);
+        assert_eq!(priced.rows[0]["price"].as_f64(), Some(230.36));
+        assert_eq!(priced.rows[0]["currency"], json!("USD"));
+        assert_eq!(
+            priced.rows[0]["rate"].as_f64(),
+            Some(1.0),
+            "the conversion succeeded — it is the identity — so its rate stays \
+             on the row: {:?}",
+            priced.rows[0],
+        );
+        assert!(priced.rows[0]["value"].is_null(), "{:?}", priced.rows[0]);
+        assert_eq!(
+            sina_targets
+                .try_iter()
+                .filter(|target| target.contains("fx_"))
+                .count(),
+            0,
+            "no rate was ever looked for, so none can be missing",
+        );
+        let line = holdings_line(&priced);
+        assert!(
+            line.contains("not a finite number"),
+            "the reason has to be the one that happened: {line}",
+        );
+        assert!(
+            !line.contains("rate"),
+            "`no USD→USD rate` names a lookup that never happened: {line}",
+        );
+
+        // The same holding with NO settlement currency: still an overflow,
+        // still not a rate, and no `?` anywhere.
+        let (cfg, _targets) = converting_cfg("HKD");
+        let priced = price_holdings(&cfg, &[holding("US:NVDA", 1e308)], &mut PassCache::new());
+        assert_eq!(priced.settlement, None);
+        assert!(priced.rows[0]["value"].is_null());
+        let line = holdings_line(&priced);
+        assert!(line.contains("not a finite number"), "{line}");
+        assert!(!line.contains('?'), "{line}");
+    }
+
     /// **A settlement currency this plugin does not settle in converts
     /// nothing, and says so.**
     ///
@@ -3923,27 +4040,31 @@ mod tests {
         );
     }
 
-    /// A portfolio already in the settlement currency needs no rate at all,
-    /// and is priced with the rate source unreachable.
+    /// A portfolio already in the settlement currency needs no rate at all.
     ///
     /// Without this, "convert every row" could be satisfied by making every
     /// portfolio depend on the FX endpoint being up, including the ones that
     /// have nothing to convert.
+    ///
+    /// **Each half asserts against the server it actually uses.** The stock
+    /// half runs entirely against `fixture` — a server that would answer an
+    /// `fx_` request if one were made — and the assertion is that no such
+    /// request appears in ITS log. The crypto half reaches no endpoint at all,
+    /// and is the only half the refusing server below constrains.
     #[test]
     fn a_portfolio_already_in_the_settlement_currency_asks_for_no_rate() {
-        let (endpoint, targets) = sina_forbidden_server();
+        let (refusing, refused) = sina_forbidden_server();
         let cfg = Config {
             quote: "CNY".into(),
             binance_endpoint: "http://127.0.0.1:1".into(),
-            sina_endpoint: endpoint,
+            sina_endpoint: refusing,
             ..cfg()
         };
-        // Prices come from a fixture-free path here: these two holdings are
-        // priced by a second config below. What this half pins is that a
-        // portfolio whose rows are ALREADY in the settlement currency reaches
-        // a total with the rate endpoint refusing every request.
-        let (fixture, _fixture_targets) =
-            sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
+        // This table carries the FX rows too, so a request for one would be
+        // answered rather than failing — the absence below is the plugin not
+        // asking, not the fixture refusing.
+        let (fixture, fixture_targets) =
+            sina_server(|target| sina_fixture_body(target, &sina_fixture_all_rows()));
         let priced = price_holdings(
             &Config {
                 sina_endpoint: fixture,
@@ -3956,6 +4077,13 @@ mod tests {
         assert!(
             priced.conversions.is_empty(),
             "two CNY rows settling in CNY convert nothing",
+        );
+        let mut asked: Vec<String> = fixture_targets.try_iter().collect();
+        asked.sort();
+        assert_eq!(
+            asked,
+            vec!["/list=sh600519", "/list=sz000001"],
+            "the two prices and not one rate, off the server this half used",
         );
         assert_eq!(
             priced.total,
@@ -3994,9 +4122,11 @@ mod tests {
              are in",
         );
         assert_eq!(
-            targets.try_iter().count(),
+            refused.try_iter().count(),
             0,
-            "the refusing endpoint was never asked",
+            "the crypto half reached no endpoint at all: `USDT` prices off \
+             Binance's pinned leg with no request, and settling it is the \
+             assumed parity rather than a lookup",
         );
     }
 
@@ -4377,7 +4507,10 @@ mod tests {
                 rows: vec![json!({ "asset": "BTC", "qty": 1.0, "price": 2.0, "value": 2.0 })],
                 total: PortfolioTotal::NotFinite,
                 complete: true,
-                settlement: Some(Currency::Usdt),
+                // `Usd`, not `Usdt`: `Currency::settlement` never returns
+                // `Usdt`, so a hand-built portfolio settling in it would be a
+                // state production cannot reach.
+                settlement: Some(Currency::Usd),
                 conversions: Vec::new(),
             },
             "2026-09-06T12:00:00Z",
@@ -4450,8 +4583,12 @@ mod tests {
         );
     }
 
-    /// **The change column is blank wherever two adjacent points are in
-    /// different currencies**, and only there.
+    /// **The change column is blank wherever two adjacent points are not
+    /// known to share a unit.**
+    ///
+    /// That covers more than a currency change, and the assertions below name
+    /// each case: the first point has nothing before it, and a point that
+    /// records no currency is comparable to nothing at all.
     ///
     /// Two units in one series is not hypothetical: an operator who changes
     /// `quote` from `USD` to `CNY` writes exactly this document. Subtracting

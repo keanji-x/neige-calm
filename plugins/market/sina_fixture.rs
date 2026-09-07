@@ -60,12 +60,19 @@ const SINA_FIXTURE_ROWS: &[(&str, &str)] = &[
 /// the pair's name is field 9, whose GBK bytes are kept so the FX path decodes
 /// a real row rather than a convenient all-ASCII one.
 ///
-/// **`fx_susdcny` is the row that discriminates.** Its field 1 (bid, 6.7099),
-/// field 3 (previous close, 6.7108) and field 8 (current, 6.7111) are three
-/// different numbers, so a parser reading any field but 8 gives a different
-/// answer here. The others are weaker on purpose: they are what the endpoint
-/// actually served, and on a spot-quoted pair the bid and the current rate
-/// often coincide.
+/// **`fx_susdcny` is the ONLY row that discriminates field 8 from field 1.**
+/// Its field 1 (bid, 6.7099), field 3 (previous close, 6.7108) and field 8
+/// (current, 6.7111) are three different numbers. In each of the other five
+/// rows field 1 EQUALS field 8 — that is what the endpoint served, and on a
+/// spot-quoted pair the bid and the current rate coincide — so those five say
+/// nothing about which of the two a parser read.
+///
+/// The practical consequence, registered rather than worked around: changing
+/// `SINA_FX_RATE_FIELD` from 8 to 1 turns red only the tests whose conversion
+/// runs through `fx_susdcny`. A test converting through `fx_shkdusd`,
+/// `fx_shkdcny`, `fx_scnyusd`, `fx_susdhkd` or `fx_scnyhkd` stays green under
+/// that mutation. Field 3 (the previous close) differs from field 8 in every
+/// row, so that mutation is caught everywhere.
 ///
 /// Sina quotes all six ordered pairs over USD, HKD and CNY natively, which is
 /// why this plugin never divides one into another. All six are here even

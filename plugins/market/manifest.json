@@ -60,7 +60,7 @@
     },
     {
       "name": "market.holdings.list",
-      "description": "What this Track currently holds, with the venue, the latest price in its own market's currency, the rate applied and the value in the settlement currency. A total is stated when every holding both priced and converted; the reply names the rate behind each conversion, including the one step that is an assumption rather than a quote (USDT is taken as 1 USD).",
+      "description": "What this Track currently holds, with the venue, the latest price in its own market's currency, the rate applied and the value in the settlement currency. When every holding priced and converted, the reply states the total; when some did not, it states a partial total and says it covers only the holdings that did. There is no total at all when the configured settlement currency is not one this plugin settles in, when nothing could be valued, or when the values do not sum to a finite number — the reply says which. The rate behind each conversion is named in the prose and in `conversions`, including the one step that is an assumption rather than a quote (USDT is taken as 1 USD); the per-row `rate` is a bare number and does not distinguish the two.",
       "input_schema": {
         "type": "object",
         "properties": {},
@@ -85,7 +85,7 @@
       "quote": {
         "type": "string",
         "default": "USDT",
-        "description": "The currency a portfolio's total is stated in. Two values settle: USD and CNY. USDT is accepted and settles as USD, which is what the default means and what every install that never set this key gets; the USDT-to-USD step is an assumed parity of 1, not a quoted rate (the pair traded at 0.99968 on 2026-09-07, so the approximation is about 3.2 basis points). Any other value, HKD included, settles nothing: each holding keeps its own market's currency, and a portfolio spanning two of them gets no total. Prices are never converted — only totals are, at rates read from the quote source, and a rate that cannot be read leaves its holdings out of the total rather than being carried over from an earlier pass."
+        "description": "The currency a portfolio's total is stated in. Two values settle: USD and CNY. USDT is accepted and settles as USD, which is what the default means and what every install that never set this key gets; the USDT-to-USD step is an assumed parity of 1, not a quoted rate (the pair answered 0.99967 on 2026-09-07, so the approximation is about 3.3 basis points on the USDT-quoted part of a portfolio). Any other value, HKD included, settles nothing: each holding keeps its own market's currency, and a portfolio spanning two of them gets no total. A price is never converted: every price this plugin publishes is the number its own market quoted. What is converted is each holding's VALUE, and with it the total, at rates read from the quote source; a rate that cannot be read leaves its holdings without a value and out of the total, rather than being carried over from an earlier pass."
       },
       "poll_seconds": {
         "type": "integer",
