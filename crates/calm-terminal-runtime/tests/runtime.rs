@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::time::Duration;
 
-use calm_terminal_runtime::{RuntimeClient, RuntimeLaunch, TerminalSpec, connect};
+use calm_terminal_runtime::{RuntimeClient, RuntimeLaunch, TerminalLaunchConfig, connect};
 use rmux_sdk::PaneRecoveryEvent;
 use tempfile::TempDir;
 
@@ -34,8 +34,8 @@ fn launch(root: &TempDir) -> RuntimeLaunch {
     }
 }
 
-fn terminal_spec(root: &std::path::Path, name: &str, script: &str) -> TerminalSpec {
-    TerminalSpec {
+fn terminal_launch(root: &std::path::Path, name: &str, script: &str) -> TerminalLaunchConfig {
+    TerminalLaunchConfig {
         name: name.into(),
         argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
         cwd: root.to_owned(),
@@ -117,17 +117,17 @@ async fn isolated_runtime_shutdown_stops_hup_ignoring_descendants() -> anyhow::R
     let (mut host, client) = Host::start_command(private_root()?, true).await?;
     let witness = host.root.path().join("witness.sock");
     let listener = tokio::net::UnixListener::bind(&witness)?;
-    let mut spec = terminal_spec(
+    let mut launch_config = terminal_launch(
         host.root.path(),
         "descendants",
         "trap 'exit 0' HUP; /bin/sh -c 'trap \"\" HUP TERM; exec \"$1\" --descendant-client \"$2\"' child \"$1\" \"$2\" & printf 'ready\\n'; wait",
     );
-    spec.argv.extend([
+    launch_config.argv.extend([
         "leader".into(),
         env!("CARGO_BIN_EXE_terminal-runtime-parent-probe").into(),
         witness.to_str().unwrap().into(),
     ]);
-    let pane = client.create(spec).await?;
+    let pane = client.create(launch_config).await?;
     let (mut peer, _) = tokio::time::timeout(BUDGET, listener.accept()).await??;
     pane.wait_for_text("ready").await?;
     // An upstream pane-close reply is asynchronous. Stop the whole namespace
@@ -162,17 +162,17 @@ async fn isolated_runtime_launcher_death_stops_hup_ignoring_descendants() -> any
     let (mut host, client) = Host::start_command(private_root()?, true).await?;
     let witness = host.root.path().join("witness.sock");
     let listener = tokio::net::UnixListener::bind(&witness)?;
-    let mut spec = terminal_spec(
+    let mut launch_config = terminal_launch(
         host.root.path(),
         "descendants",
         "trap 'exit 0' HUP; /bin/sh -c 'trap \"\" HUP TERM; exec \"$1\" --descendant-client \"$2\"' child \"$1\" \"$2\" & printf 'ready\\n'; wait",
     );
-    spec.argv.extend([
+    launch_config.argv.extend([
         "leader".into(),
         env!("CARGO_BIN_EXE_terminal-runtime-parent-probe").into(),
         witness.to_str().unwrap().into(),
     ]);
-    let pane = client.create(spec).await?;
+    let pane = client.create(launch_config).await?;
     let (mut peer, _) = tokio::time::timeout(BUDGET, listener.accept()).await??;
     pane.wait_for_text("ready").await?;
     // Terminate only our owned launcher: no SDK shutdown may trigger the fence.
@@ -214,7 +214,7 @@ impl Drop for Host {
 async fn runtime_shell_round_trip_reconnect_and_exit() -> anyhow::Result<()> {
     let (mut host, client) = Host::start(private_root()?).await?;
     let create = || {
-        terminal_spec(
+        terminal_launch(
             host.root.path(),
             "terminal-1",
             "printf 'ready\\n'; IFS= read -r line; printf 'received:%s\\n' \"$line\"; IFS= read -r finish; printf 'last-line\\n'; exit 7",
@@ -279,7 +279,7 @@ async fn runtime_does_not_load_user_configuration() -> anyhow::Result<()> {
     // A real create/read round trip gives startup configuration a chance to
     // finish. Configuration is disabled at the production host constructor.
     let pane = client
-        .create(terminal_spec(
+        .create(terminal_launch(
             host.root.path(),
             "config-probe",
             "printf 'ready\\n'; read line",
@@ -375,16 +375,19 @@ async fn runtime_create_preserves_literal_cwd_argv_and_explicit_environment() ->
     let (mut host, client) = Host::start(private_root()?).await?;
     let cwd = host.root.path().join("work #{session_name}");
     std::fs::create_dir(&cwd)?;
-    let mut spec = terminal_spec(
+    let mut launch_config = terminal_launch(
         &cwd,
         "literal-probe",
         "printf 'cwd:%s\\narg:%s\\nexplicit:%s\\n' \"$PWD\" \"$1\" \"$NEIGE_EXPLICIT\"; read line",
     );
     let argument = "spaces ; $(not-a-command)";
-    spec.argv.extend(["probe-shell".into(), argument.into()]);
-    spec.environment
+    launch_config
+        .argv
+        .extend(["probe-shell".into(), argument.into()]);
+    launch_config
+        .environment
         .insert("NEIGE_EXPLICIT".into(), "intentional".into());
-    let pane = client.create(spec).await?;
+    let pane = client.create(launch_config).await?;
     pane.wait_for_text("explicit:intentional").await?;
     let text = pane.snapshot().await?.visible_lines().join("\n");
     assert!(
@@ -402,16 +405,18 @@ async fn runtime_create_preserves_literal_cwd_argv_and_explicit_environment() ->
 async fn runtime_invalid_creation_is_rejected_without_side_effects() -> anyhow::Result<()> {
     use calm_terminal_runtime::CreateError;
     let (mut host, client) = Host::start(private_root()?).await?;
-    let mut spec = terminal_spec(host.root.path(), "bad-geometry", "read line");
-    spec.cols = 0;
+    let mut launch_config = terminal_launch(host.root.path(), "bad-geometry", "read line");
+    launch_config.cols = 0;
     assert!(matches!(
-        client.create(spec).await,
+        client.create(launch_config).await,
         Err(CreateError::Invalid(_))
     ));
-    let mut spec = terminal_spec(host.root.path(), "bad-environment", "read line");
-    spec.environment.insert("BAD=KEY".into(), "value".into());
+    let mut launch_config = terminal_launch(host.root.path(), "bad-environment", "read line");
+    launch_config
+        .environment
+        .insert("BAD=KEY".into(), "value".into());
     assert!(matches!(
-        client.create(spec).await,
+        client.create(launch_config).await,
         Err(CreateError::Invalid(_))
     ));
     assert!(client.list_sessions().await?.is_empty());
@@ -437,7 +442,7 @@ fn runtime_creation_timeout_is_unknown_and_late_creation_is_reconcilable() -> an
         });
         ready.await?;
         let result = client
-            .create(terminal_spec(
+            .create(terminal_launch(
                 host.root.path(),
                 "late-create",
                 "printf 'ready\\n'; read line",

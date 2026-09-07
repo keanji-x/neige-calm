@@ -94,7 +94,7 @@ async fn pane_probe(root: PathBuf, executable: PathBuf) -> anyhow::Result<()> {
     .await??;
     let result = async {
         let pane = client
-            .create(calm_terminal_runtime::TerminalSpec {
+            .create(calm_terminal_runtime::TerminalLaunchConfig {
                 name: "environment-probe".into(),
                 cwd: launch.cwd.clone(),
                 cols: 80,

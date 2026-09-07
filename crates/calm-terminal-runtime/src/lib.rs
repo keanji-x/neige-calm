@@ -13,7 +13,7 @@ use std::time::Duration;
 
 mod client;
 mod readiness;
-pub use client::{CreateError, RuntimeClient, TerminalSession, TerminalSpec};
+pub use client::{CreateError, RuntimeClient, TerminalLaunchConfig, TerminalSession};
 
 /// Configuration supplied by the owning application, never by a model tool.
 /// The socket's parent must already be a private directory owned by this user.

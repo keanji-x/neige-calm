@@ -9,7 +9,7 @@ carry its selected license notices when this binary is added to the release.
 socket, working directory, HOME, PATH and locale; no inherited credentials or
 implicit rmux configuration. `connect` only connects to the supplied socket.
 It returns a constrained `RuntimeClient`, not the raw SDK create/respawn surface.
-`TerminalSpec.environment` supplies the complete invoking-client environment
+`TerminalLaunchConfig.environment` supplies the complete invoking-client environment
 through RMUX's typed request. Unix SDK creation otherwise reads the requester's
 `/proc` environment, even when the daemon itself was launched with `env_clear`.
 Creation timeouts have an explicit `OutcomeUnknown` result: an already queued

@@ -8,7 +8,7 @@ use std::time::Duration;
 use rmux_proto::{NewSessionExtRequest, ProcessCommand, Response, SessionName, TerminalSize};
 
 /// Complete caller intent for a new, single-pane terminal session.
-pub struct TerminalSpec {
+pub struct TerminalLaunchConfig {
     pub name: String,
     pub argv: Vec<String>,
     pub cwd: PathBuf,
@@ -45,9 +45,12 @@ impl RuntimeClient {
         }
     }
 
-    pub async fn create(&self, spec: TerminalSpec) -> Result<TerminalSession, CreateError> {
-        let name = spec.name.clone();
-        let request = create_request(spec)?;
+    pub async fn create(
+        &self,
+        launch_config: TerminalLaunchConfig,
+    ) -> Result<TerminalSession, CreateError> {
+        let name = launch_config.name.clone();
+        let request = create_request(launch_config)?;
         let endpoint = self.socket.clone();
         let request_name = name.clone();
         let unknown = || CreateError::OutcomeUnknown { name: name.clone() };
@@ -138,28 +141,31 @@ impl TerminalSession {
     }
 }
 
-fn create_request(spec: TerminalSpec) -> Result<NewSessionExtRequest, CreateError> {
-    let name = SessionName::new(&spec.name).map_err(|_| CreateError::Invalid("session name"))?;
-    if spec.argv.is_empty()
-        || spec.argv[0].is_empty()
-        || spec.argv.iter().any(|arg| arg.contains('\0'))
+fn create_request(
+    launch_config: TerminalLaunchConfig,
+) -> Result<NewSessionExtRequest, CreateError> {
+    let name =
+        SessionName::new(&launch_config.name).map_err(|_| CreateError::Invalid("session name"))?;
+    if launch_config.argv.is_empty()
+        || launch_config.argv[0].is_empty()
+        || launch_config.argv.iter().any(|arg| arg.contains('\0'))
     {
         return Err(CreateError::Invalid(
             "argv must contain a program and no NUL bytes",
         ));
     }
-    if !(1..=512).contains(&spec.cols) || !(1..=256).contains(&spec.rows) {
+    if !(1..=512).contains(&launch_config.cols) || !(1..=256).contains(&launch_config.rows) {
         return Err(CreateError::Invalid(
             "terminal geometry exceeds 512 columns or 256 rows",
         ));
     }
-    let cwd = spec
+    let cwd = launch_config
         .cwd
         .to_str()
         .filter(|cwd| !cwd.contains('\0'))
-        .filter(|_| spec.cwd.is_absolute())
+        .filter(|_| launch_config.cwd.is_absolute())
         .ok_or(CreateError::Invalid("cwd must be an absolute UTF-8 path"))?;
-    for (key, value) in &spec.environment {
+    for (key, value) in &launch_config.environment {
         let mut chars = key.chars();
         if !chars
             .next()
@@ -175,8 +181,8 @@ fn create_request(spec: TerminalSpec) -> Result<NewSessionExtRequest, CreateErro
         working_directory: Some(cwd.replace('#', "##")),
         detached: true,
         size: Some(TerminalSize {
-            cols: spec.cols,
-            rows: spec.rows,
+            cols: launch_config.cols,
+            rows: launch_config.rows,
         }),
         environment: Some(Vec::new()),
         group_target: None,
@@ -188,9 +194,10 @@ fn create_request(spec: TerminalSpec) -> Result<NewSessionExtRequest, CreateErro
         print_session_info: false,
         print_format: None,
         command: None,
-        process_command: Some(ProcessCommand::Argv(spec.argv)),
+        process_command: Some(ProcessCommand::Argv(launch_config.argv)),
         client_environment: Some(
-            spec.environment
+            launch_config
+                .environment
                 .into_iter()
                 .map(|(key, value)| format!("{key}={value}"))
                 .collect(),
