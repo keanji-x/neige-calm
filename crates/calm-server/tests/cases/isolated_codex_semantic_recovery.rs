@@ -199,7 +199,20 @@ async fn semantic_recovery_refuses_user_owned_and_superseded_attempt_without_ret
             assert_eq!(status, StatusCode::OK, "{receipt}");
             receipt["attempt_id"].as_str().unwrap().to_string()
         };
-        assert!(call(&fx, "fake-turn-0001", "late", "retry").await.is_err());
+        let error = call(&fx, "fake-turn-0001", "late", "retry")
+            .await
+            .unwrap_err();
+        if user_owned {
+            assert!(
+                error.to_string().contains("explicit User recovery"),
+                "{error}"
+            );
+        } else {
+            assert!(
+                error.to_string().contains("no longer current"),
+                "old binding must keep its expected attempt: {error}"
+            );
+        }
         assert_eq!(
             fx.boot
                 .repo

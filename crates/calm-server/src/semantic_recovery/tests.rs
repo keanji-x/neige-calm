@@ -273,7 +273,7 @@ async fn semantic_arguments_cannot_override_transport_identity_or_namespace() {
 }
 
 #[tokio::test]
-async fn early_dynamic_call_waits_without_blocking_ack_and_responds_on_original_connection() {
+async fn early_dynamic_call_waits_without_blocking_read_rpc_and_responds_on_original_connection() {
     let fx = Fixture::new().await;
     let issuance = fx.prepare().await;
     let (client, _notifications, mut server) = CodexAppServer::connect_pair_for_test().await;
@@ -287,23 +287,23 @@ async fn early_dynamic_call_waits_without_blocking_ack_and_responds_on_original_
         .await
         .unwrap();
     // This is an independent, real client RPC while the dynamic job waits on
-    // the binding. Its ACK can be read and committed without waiting on that job.
+    // the binding. A read response must arrive without waiting on that job;
+    // the production harness integration separately pins the exact turn ACK.
     let peer = async {
         let Message::Text(frame) = server.next().await.unwrap().unwrap() else {
             panic!("RPC text")
         };
         let frame: Value = serde_json::from_str(&frame).unwrap();
-        assert_eq!(frame["method"], "turn/start");
+        assert_eq!(frame["method"], "thread/loaded/list");
         server
             .send(Message::Text(
-                json!({"id":frame["id"],"result":{"turn":{"id":"turn"}}}).to_string(),
+                json!({"id":frame["id"],"result":{"data":["thread"]}}).to_string(),
             ))
             .await
             .unwrap();
     };
-    let selection = crate::planner_model::TurnModelSelection::inherit();
-    let (turn, ()) = tokio::join!(client.turn_start("thread", vec![], &selection), peer);
-    assert_eq!(turn.unwrap().turn_id(), Some("turn"));
+    let (threads, ()) = tokio::join!(client.thread_loaded_list(), peer);
+    assert_eq!(threads.unwrap(), vec!["thread".to_string()]);
     bind_turn(fx.repo.as_ref(), &issuance, "turn")
         .await
         .unwrap();
@@ -418,4 +418,40 @@ async fn recovery_tools_are_explicit_in_thread_start_and_absent_on_ordinary_thre
         );
         assert_eq!(result.unwrap().thread_id(), Some("minted"));
     }
+}
+
+#[tokio::test]
+async fn semantic_recovery_action_count_boundary_preserves_the_storage_guard() {
+    let fx = Fixture::new().await;
+    let actions: Vec<_> = (0..129)
+        .map(|index| Action {
+            key: format!("task-{index}"),
+            expected_attempt_id: format!("attempt-{index}"),
+            event_id: index + 1,
+            request_key: format!("action-{index}"),
+            capability: TaskRecoveryCapability {
+                allowed: false,
+                code: "explicit_user".into(),
+                reason: "User recovery required".into(),
+            },
+        })
+        .collect();
+    assert!(binding_problem("[]", &actions[..128]).is_none());
+    assert!(binding_problem("[]", &actions).unwrap().contains("128"));
+    let error = prepare(
+        fx.repo.as_ref(),
+        &fx.session,
+        &fx.track,
+        "thread",
+        &[crate::codex_appserver::InputItem::text("bounded input")],
+        actions,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, CalmError::BadRequest(ref reason) if reason.contains("128")));
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM planner_recovery_issuances")
+        .fetch_one(fx.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
 }
