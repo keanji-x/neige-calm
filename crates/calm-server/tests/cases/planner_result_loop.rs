@@ -12,6 +12,7 @@ use calm_server::scheduler::{PostClaimDriveTestHook, Scheduler, build_worker_pay
 use calm_server::state::DaemonClient;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_fs_view::{TrackFsError, TrackFsView};
+use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 
@@ -75,15 +76,15 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     let source = r#"{"timeout_secs":-1}"#;
     std::fs::write(dir.path().join("config.json"), source).unwrap();
     declare(&boot, json!({
-        "key":"audit", "kind":"codex", "goal":"Audit config.json without changing it; report one finding in audit.json and your result.",
-        "acceptance":"Accurately identify the invalid timeout, preserving the source.",
-        "ready":true, "declared_by":"spec",
+        "key":"audit", "kind":"codex", "goal":"Audit config.json without changing it; timeout_secs must be positive. Write matching JSON to audit.json and your result: subject (source version), valid (boolean), findings (array with id, field, actual, recommendation for each finding).",
+        "acceptance":"Report one finding with actual equal to the observed source value and a valid timeout recommendation. Set valid according to source validity; preserve the source.",
+        "ready":true, "declared_by":PLANNER_DECLARATION_AUTHOR,
         "gate":{"cwd":dir.path(), "timeout_secs":5, "steps":[{"name":"audit",
             "cmd":"python3 -c 'import json; a=json.load(open(\"audit.json\")); c=json.load(open(\"config.json\")); assert a[\"findings\"][0][\"actual\"] == c[\"timeout_secs\"] == -1; assert a[\"valid\"] is False; print(\"audit-json-checked\")'"}]}
     })).await;
     let mut downstream = json!({"key":"recommendation", "kind":"codex",
         "goal":"Recommend a timeout from the selected finding; leave the source unchanged.",
-        "ready":false, "declared_by":"spec", "depends_on":["audit"],
+        "ready":false, "declared_by":PLANNER_DECLARATION_AUTHOR, "depends_on":["audit"],
         "no_gate_reason":"Recommendation only; no implementation is changed."});
     let (b_block, b_rev) = declare(&boot, downstream.clone()).await;
     let a = current(&boot, "audit").await;
