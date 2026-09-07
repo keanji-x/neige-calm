@@ -255,6 +255,13 @@ rate from an earlier pass: a rate this plugin could not read this pass is a
 rate it does not have. Its series stands still, exactly as a portfolio with an
 unpriceable holding does, and resumes on the next pass that reads the rate.
 
+**A `0` on the `Total` row means zero, and never means "unknown".** It appears
+for one case only — a Track that holds nothing, whose total really is zero, and
+whose caption says so. A portfolio that holds something none of which could be
+priced or converted shows an empty `Total` cell instead, because its value is
+unknown rather than nil, and a `0` there would read as *this portfolio is worth
+nothing*.
+
 ### Why the `Referer` header
 
 `hq.sinajs.cn` answers `HTTP 403` with the body `Forbidden` to any request that

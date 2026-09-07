@@ -818,7 +818,21 @@ fn removing_the_last_holding_publishes_an_empty_table() {
         .expect("rows")
         .clone();
     assert_eq!(rows.len(), 1, "only the Total row remains: {rows:?}");
-    assert_eq!(rows[0]["value"].as_f64(), Some(0.0));
+    assert_eq!(
+        rows[0]["value"].as_f64(),
+        Some(0.0),
+        "an empty portfolio's total really is zero"
+    );
+    let caption = kernel.pushes.last().unwrap().1["caption"]
+        .as_str()
+        .expect("caption")
+        .to_string();
+    assert!(
+        caption.contains("this Track holds nothing, so its total is 0"),
+        "the caption explains the zero rather than denying there is a total: \
+         {caption}"
+    );
+    assert!(!caption.contains("no total is shown"), "{caption}");
 }
 
 // The fixture rows, the GBK name bytes and the response builder are shared
@@ -1076,13 +1090,17 @@ fn a_holding_whose_rate_is_unavailable_writes_no_history_point() {
         rows[1]["currency"].is_null(),
         "the Total is in no currency: {rows:?}"
     );
-    // The `0.0` in that cell is the registered wart on `PortfolioTotal::Nothing`
-    // — it covers an empty portfolio and a wholly unconvertible one alike — and
-    // it predates this slice. What is asserted here is that the caption denies
-    // there is a total, which is the part a reader acts on.
+    assert!(
+        rows[1]["value"].is_null(),
+        "this holding is worth 2748 HKD; a `0` here would be a wrong number \
+         rather than a missing one: {rows:?}"
+    );
     let caption = table["caption"].as_str().expect("caption");
     assert!(caption.contains("no total is shown"), "{caption}");
-    assert!(caption.contains("nothing could be priced"), "{caption}");
+    assert!(
+        caption.contains("not one holding could be priced and converted"),
+        "{caption}"
+    );
     assert!(
         !kernel.kv.contains_key("history/trk_caller"),
         "no point was written: {:?}",

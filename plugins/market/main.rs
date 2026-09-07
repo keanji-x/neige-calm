@@ -1526,13 +1526,40 @@ enum PortfolioTotal {
     },
     /// One currency, but the values do not sum to a finite number.
     NotFinite,
-    /// Nothing was priced at all: the total of nothing, in no currency.
-    Nothing,
+    /// The portfolio is EMPTY. Its total really is zero — that is not a
+    /// stand-in for an unknown number, it is the value of holding nothing.
+    Empty,
+    /// The portfolio is NOT empty and not one row of it could be priced and
+    /// converted. Its total is unknown, and zero is a wrong answer for it: a
+    /// reader shown `0` here would read "this portfolio is worth nothing"
+    /// where the truth is "this plugin could not value it".
+    ///
+    /// This and [`Self::Empty`] were one variant until #1556 S3, because the
+    /// count of counted currencies is zero in both cases. That put a `0` on
+    /// the table under a caption saying there was no total — a number in front
+    /// of a reader and a sentence denying it exists. The two are separate here
+    /// because they are separate facts, not because a check was added.
+    NonePriced,
 }
 
 impl PortfolioTotal {
     /// The number and unit a caller may state. `None` wherever no number is
     /// honest — which is every variant but one, on purpose.
+    ///
+    /// **[`Self::Empty`] answers `None` even though its `value_cell` is a real
+    /// `0`.** The two are answering different questions: the cell is "what
+    /// goes in the Total row", and this is "is there a portfolio value to
+    /// announce and to plot". An empty Track has no value to plot — the caller
+    /// that appends history points reads THIS, and a series of zeros for a
+    /// Track that holds nothing is a series about nothing. There is also no
+    /// unit to pair the zero with: nothing was priced, so no currency was
+    /// counted, and the settlement currency may itself be unconfigurable.
+    ///
+    /// That `refresh` also returns early for an empty portfolio does not make
+    /// this redundant. If this said `Some`, the correctness of the history
+    /// series would rest on that early return rather than on the value, and a
+    /// second caller added later would inherit a defect nothing here warned
+    /// about.
     fn stated(&self) -> Option<(f64, &str)> {
         match self {
             Self::Priced { amount, currency } => Some((*amount, currency.as_str())),
@@ -1555,28 +1582,26 @@ impl PortfolioTotal {
                 currencies.join(" and "),
             )),
             Self::NotFinite => Some("the values do not sum to a finite number".into()),
-            Self::Nothing => Some("nothing could be priced".into()),
+            Self::Empty => Some("this Track holds nothing".into()),
+            Self::NonePriced => {
+                Some("not one holding could be priced and converted this pass".into())
+            }
         }
     }
 
-    /// The `value` cell of the `Total` row. `null` wherever a number would be
-    /// a claim this plugin cannot make.
+    /// The `value` cell of the `Total` row. A number only where this plugin
+    /// can state one.
     ///
-    /// [`Self::Nothing`] is the exception, and it is not a clean one. It
-    /// covers an EMPTY portfolio, whose total really is zero, and equally a
-    /// non-empty portfolio not one row of which could be priced, whose total
-    /// is unknown — the two are one variant because `currencies` is empty
-    /// either way. The cell says `0.0` for both, while
-    /// [`Self::no_total_reason`] says "nothing could be priced" for both, so a
-    /// non-empty unpriced portfolio publishes a `0.0` under a caption denying
-    /// there is a total. That predates this slice; what is new is that the
-    /// caption is now printed next to the number. Splitting the variant is
-    /// left undone rather than papered over.
+    /// [`Self::Empty`] is the only variant outside [`Self::Priced`] with a
+    /// number, and it is a real one: the total of an empty portfolio is zero.
+    /// Every other variant is `null`, [`Self::NonePriced`] included — a
+    /// portfolio nothing could be valued in has an unknown total, and `0` is
+    /// not a spelling of unknown.
     fn value_cell(&self) -> Value {
         match self {
             Self::Priced { amount, .. } => json!(round_to(*amount, 2)),
-            Self::Nothing => json!(0.0),
-            Self::Unsettleable { .. } | Self::NotFinite => Value::Null,
+            Self::Empty => json!(0.0),
+            Self::Unsettleable { .. } | Self::NotFinite | Self::NonePriced => Value::Null,
         }
     }
 
@@ -1740,7 +1765,11 @@ fn price_holdings(cfg: &Config, holdings: &[Holding], cache: &mut PassCache) -> 
         }
     }
     let total = match currencies.as_slice() {
-        [] => PortfolioTotal::Nothing,
+        // Nothing was counted. WHY nothing was counted is the difference
+        // between a zero and an unknown, and the holdings themselves are what
+        // says which.
+        [] if holdings.is_empty() => PortfolioTotal::Empty,
+        [] => PortfolioTotal::NonePriced,
         [only] if sum.is_finite() => PortfolioTotal::Priced {
             amount: sum,
             currency: (*only).to_string(),
@@ -1824,18 +1853,24 @@ fn holdings_table(priced: PricedPortfolio, at: &str) -> Value {
         total_row["rate"] = Value::Null;
     }
     rows.push(total_row);
-    let mut caption = match (total.stated(), complete) {
-        (None, _) => format!(
+    let mut caption = match (&total, total.stated(), complete) {
+        // An empty portfolio's Total cell IS a number, so the caption must
+        // explain the zero rather than deny it. Every other unstated total
+        // shows `null`, and there the caption says why there is none.
+        (PortfolioTotal::Empty, _, _) => {
+            format!("Priced at {at} — this Track holds nothing, so its total is 0")
+        }
+        (_, None, _) => format!(
             "Priced at {at} — no total is shown: {}",
             total
                 .no_total_reason()
                 .unwrap_or_else(|| "no reason recorded".into()),
         ),
-        (Some((_, currency)), true) => format!("Priced at {at}, totalled in {currency}"),
+        (_, Some((_, currency)), true) => format!("Priced at {at}, totalled in {currency}"),
         // "or rates": a row is left out of the total both when its price did
         // not come back and when its exchange rate did not, and the caption
         // may not name only the first.
-        (Some((_, currency)), false) => format!(
+        (_, Some((_, currency)), false) => format!(
             "Priced at {at}, totalled in {currency} — some prices or exchange rates \
              unavailable; the total covers the rows that have both"
         ),
@@ -3692,8 +3727,129 @@ mod tests {
             "1545.97 here would be this pass's price at last pass's rate: {:?}",
             second.rows[0],
         );
-        assert_eq!(second.total, PortfolioTotal::Nothing);
+        assert_eq!(second.total, PortfolioTotal::NonePriced);
         assert!(!second.complete);
+    }
+
+    /// **An empty portfolio's total is 0, and a portfolio nothing could be
+    /// valued in has no total at all.**
+    ///
+    /// Both used to be one variant, because both count zero currencies, and
+    /// both published `0.0` in the Total cell — under a caption that said
+    /// there was no total. A number in front of a reader and a sentence
+    /// denying it exists is the whole shape of this defect, so each case is
+    /// asserted on the CELL and the CAPTION together: checking either alone
+    /// passes on the version that had them contradicting each other.
+    #[test]
+    fn an_empty_portfolio_totals_zero_and_an_unvalued_one_totals_nothing() {
+        // Empty: the zero is the real answer, and the caption explains it.
+        let priced = price_holdings(&cfg(), &[], &mut PassCache::new());
+        assert_eq!(priced.total, PortfolioTotal::Empty);
+        assert_eq!(priced.total.value_cell(), json!(0.0));
+        assert!(priced.complete, "nothing failed: there was nothing to do");
+        let table = holdings_table(priced, "2026-09-07T12:00:00Z");
+        assert_eq!(validate_payload(KIND_TABLE, &table), Ok(()));
+        let total_row = table["rows"]
+            .as_array()
+            .expect("rows")
+            .last()
+            .expect("total");
+        assert_eq!(total_row["value"], json!(0.0));
+        let caption = table["caption"].as_str().expect("caption");
+        assert!(
+            caption.contains("this Track holds nothing, so its total is 0"),
+            "the caption explains the zero: {caption}",
+        );
+        assert!(
+            !caption.contains("no total is shown"),
+            "a 0 in the cell and `no total is shown` in the caption is the \
+             contradiction this split removed: {caption}",
+        );
+
+        // Non-empty, and not one row could be priced: the total is UNKNOWN,
+        // and 0 is a wrong answer for it.
+        let cfg = Config {
+            binance_endpoint: "http://127.0.0.1:1".into(),
+            sina_endpoint: "http://127.0.0.1:1".into(),
+            ..cfg()
+        };
+        let priced = price_holdings(
+            &cfg,
+            &[holding("ZZZZ", 1.0), holding("US:NVDA", 1.0)],
+            &mut PassCache::new(),
+        );
+        assert_eq!(priced.total, PortfolioTotal::NonePriced);
+        assert!(
+            priced.total.value_cell().is_null(),
+            "0 would read as `this portfolio is worth nothing`",
+        );
+        assert!(!priced.complete);
+        assert_eq!(priced.rows.len(), 2, "the rows survive: {:?}", priced.rows);
+        let table = holdings_table(priced, "2026-09-07T12:00:00Z");
+        assert_eq!(validate_payload(KIND_TABLE, &table), Ok(()));
+        let total_row = table["rows"]
+            .as_array()
+            .expect("rows")
+            .last()
+            .expect("total");
+        assert!(total_row["value"].is_null(), "{total_row}");
+        let caption = table["caption"].as_str().expect("caption");
+        assert!(caption.contains("no total is shown"), "{caption}");
+        assert!(
+            caption.contains("not one holding could be priced and converted"),
+            "{caption}",
+        );
+    }
+
+    /// **A non-empty portfolio whose every rate is unavailable states no
+    /// total** — not a zero.
+    ///
+    /// Every holding PRICES here; only the rates are missing, which is the
+    /// path S3 added to this variant. Before the split this published a `0.0`
+    /// for a portfolio worth several thousand.
+    #[test]
+    fn a_portfolio_whose_every_rate_is_unavailable_states_no_total_not_a_zero() {
+        // Stock prices answer; no `fx_` row exists at this endpoint.
+        let (sina, _targets) = sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
+        let cfg = Config {
+            quote: "CNY".into(),
+            sina_endpoint: sina,
+            binance_endpoint: "http://127.0.0.1:1".into(),
+            ..cfg()
+        };
+        let priced = price_holdings(
+            &cfg,
+            &[holding("US:NVDA", 1.0), holding("HK:1810", 100.0)],
+            &mut PassCache::new(),
+        );
+        assert_eq!(
+            priced.rows[0]["price"].as_f64(),
+            Some(230.36),
+            "both holdings priced: what is missing is only the rates",
+        );
+        assert_eq!(priced.rows[1]["price"].as_f64(), Some(27.48));
+        assert_eq!(priced.total, PortfolioTotal::NonePriced);
+        assert!(
+            priced.total.value_cell().is_null(),
+            "this portfolio is worth thousands; `0` would be a wrong number, \
+             not a missing one",
+        );
+        assert!(priced.total.stated().is_none());
+        assert!(!priced.complete);
+        let table = holdings_table(priced, "2026-09-07T12:00:00Z");
+        assert_eq!(validate_payload(KIND_TABLE, &table), Ok(()));
+        let total_row = table["rows"]
+            .as_array()
+            .expect("rows")
+            .last()
+            .expect("total");
+        assert!(total_row["value"].is_null(), "{total_row}");
+        let caption = table["caption"].as_str().expect("caption");
+        assert!(caption.contains("no total is shown"), "{caption}");
+        assert!(
+            caption.contains("not one holding could be priced and converted"),
+            "{caption}",
+        );
     }
 
     /// **A settlement currency this plugin does not settle in converts
