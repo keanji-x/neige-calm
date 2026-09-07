@@ -1,3 +1,5 @@
+mod child_environment;
+
 use calm_session::control::{
     AttachRequest, Attached, CleanupRequest, ControlErrorKind, ControlMsg, ControlReply,
     EnsureProcRequest, IoMode, ProbeRequest, ProcSignal, ResizePtyRequest, SignalRequest,
@@ -1626,6 +1628,8 @@ async fn try_spawn_pipe(
     let _intentionally_unused_at_supervisor = &request.cwd;
     let mut cmd = Command::new(&request.program);
     cmd.args(&args)
+        .env_clear()
+        .envs(child_environment::allowed_environment())
         .envs(request.envs)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
@@ -1760,6 +1764,10 @@ async fn try_spawn_pty(
             child_already_reaped: false,
         })?;
     let mut cmd = CommandBuilder::new(&request.program);
+    cmd.env_clear();
+    for (key, value) in child_environment::allowed_environment() {
+        cmd.env(key, value);
+    }
     for arg in &request.args {
         cmd.arg(arg);
     }

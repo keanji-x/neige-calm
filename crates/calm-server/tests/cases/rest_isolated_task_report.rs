@@ -112,6 +112,7 @@ async fn native_report(
     let areas = calm_server::track_area_cache::TrackAreaCache::new();
     boot.repo.seed_track_area_cache(&areas).await.unwrap();
     let context = Arc::new(AppContext {
+        terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: boot.repo.clone(),
         track_vcs: None,
         events: boot.state.events.clone(),

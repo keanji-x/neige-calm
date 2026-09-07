@@ -1335,6 +1335,15 @@ impl AppState {
 
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+        mcp_server
+            .terminal_interaction
+            .set(Arc::new(
+                crate::terminal_interaction::TerminalInteraction::new(
+                    route_repo.clone(),
+                    terminal_renderer.clone(),
+                ),
+            ))
+            .map_err(|_| anyhow::anyhow!("terminal interaction already initialized"))?;
         let harness = HarnessRegistry::new();
         let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
             repo.clone(),

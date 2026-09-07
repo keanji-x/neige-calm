@@ -95,6 +95,7 @@ impl DaemonClient {
                 .supervisor_tx
                 .send(crate::terminal_renderer::SupervisorControl::Write(
                     crate::terminal_renderer::PtyWrite {
+                        authority: crate::terminal_renderer::WriteAuthority::TrustedKernel,
                         data: bytes.to_vec(),
                         input_seq: 1,
                         ack: Some(ack_tx),

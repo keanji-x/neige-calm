@@ -1,3 +1,5 @@
+#[path = "cases/planner_terminal.rs"]
+mod planner_terminal;
 #[path = "cases/terminal_card_endpoint.rs"]
 mod terminal_card_endpoint;
 #[path = "cases/terminal_lifecycle.rs"]

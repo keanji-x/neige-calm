@@ -784,6 +784,7 @@ mod tests {
         assert!(operation_runtime.set(runtime).is_ok());
         let plugin_host = Arc::new(OnceCell::new());
         let ctx = Arc::new(AppContext {
+            terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
             repo: route_repo,
             track_vcs: None,
             events,

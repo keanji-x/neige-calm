@@ -27,6 +27,10 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.report.write_markdown",
         "calm.review.round",
         "calm.task.verdict",
+        "calm.terminal.control",
+        "calm.terminal.input",
+        "calm.terminal.observe",
+        "calm.terminal.open",
         // #1211 S3 — the planner agent's naming write. Added as an entry, not by
         // loosening the assertion: the exact set is the contract.
         "calm.track.rename",

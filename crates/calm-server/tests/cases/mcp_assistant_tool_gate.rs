@@ -64,6 +64,10 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // #1211 S3 — naming the track is a planner judgement about what the track is;
     // an assistant has no plan of its own to name.
     "calm.track.rename",
+    "calm.terminal.open",
+    "calm.terminal.observe",
+    "calm.terminal.control",
+    "calm.terminal.input",
     // Track filesystem + history drill-ins (Planner|Worker, never Assistant).
     "calm.track.ls",
     "calm.track.cat",

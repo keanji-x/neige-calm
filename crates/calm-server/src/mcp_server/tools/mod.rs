@@ -15,6 +15,7 @@ pub(crate) mod lifecycle_args;
 pub mod plan;
 pub mod report_links;
 pub mod review;
+pub mod terminal;
 pub mod track_file;
 pub mod track_history;
 pub mod track_rename;
@@ -31,6 +32,7 @@ pub mod track_state;
 /// #293 cutover: the old `calm.wait_for_events` long-poll tool is gone —
 /// planner agents are driven by pushed turn inputs, not polling.
 pub fn register_default_tools(registry: &mut ToolRegistry) {
+    terminal::register_into(registry);
     emit::register_into(registry);
     plan::register_into(registry);
     report_links::register_into(registry);

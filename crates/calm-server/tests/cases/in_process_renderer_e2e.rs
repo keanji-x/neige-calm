@@ -310,6 +310,8 @@ fn spawn_client_pump(
             client_rx,
             daemon_tx,
             ClientPumpContext {
+                input_barrier: entry.handle.input_barrier.clone(),
+                input_scope: calm_server::terminal_renderer::ClientInputScope::InteractiveUser,
                 event_rx: entry.handle.event_tx.subscribe(),
                 event_tx: entry.handle.event_tx.clone(),
                 render_plane: entry.handle.render_plane.clone(),

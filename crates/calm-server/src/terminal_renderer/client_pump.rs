@@ -6,10 +6,15 @@ use calm_session::{ClientMsg, DaemonMsg};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
-use super::{PtyWrite, SharedExitState, SharedOwnerRegistry, SharedRenderPlane, SupervisorControl};
+use super::{
+    ClientInputScope, InputBarrier, PtyWrite, SharedExitState, SharedOwnerRegistry,
+    SharedRenderPlane, SupervisorControl, WriteAuthority,
+};
 use crate::terminal_renderer::snapshot::{rebuild_server_hello_snapshot, scrollback_request};
 
 pub struct ClientPumpContext {
+    pub input_barrier: std::sync::Arc<InputBarrier>,
+    pub input_scope: ClientInputScope,
     pub event_rx: broadcast::Receiver<DaemonMsg>,
     pub event_tx: broadcast::Sender<DaemonMsg>,
     pub render_plane: SharedRenderPlane,
@@ -54,6 +59,8 @@ pub async fn run_client_pump(
     ctx: ClientPumpContext,
 ) -> anyhow::Result<()> {
     let ClientPumpContext {
+        input_barrier,
+        input_scope,
         event_rx,
         event_tx,
         render_plane,
@@ -82,6 +89,12 @@ pub async fn run_client_pump(
         _ => None,
     };
 
+    let Some(first_grant) = input_barrier.grant().await else {
+        return Ok(());
+    };
+    if !input_scope.allowed().await {
+        return Ok(());
+    }
     let first_effects = {
         let guard = render_plane.lock().unwrap();
         let mut reg = owner_registry.lock().unwrap();
@@ -101,6 +114,7 @@ pub async fn run_client_pump(
             .on_client_frame(first, guard.transcript(), &mut reg, &ctx)
     };
 
+    drop(first_grant);
     let mut handshake_failed = false;
     for eff in first_effects {
         match eff {
@@ -229,7 +243,22 @@ pub async fn run_client_pump(
         let Some(msg) = incoming_rx.recv().await else {
             break;
         };
-        let effects = {
+        let grant = if matches!(msg, ClientMsg::OwnerClaim) {
+            match input_barrier.grant().await {
+                Some(guard) if input_scope.allowed().await => Some(guard),
+                _ => {
+                    let _ = per_client_tx.send(DaemonMsg::ProtocolError {
+                        code: calm_session::ProtocolErrorCode::NotOwner,
+                        message: "terminal control is unavailable or its scope was revoked".into(),
+                        expected_version: None,
+                    });
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        let (effects, authority) = {
             let guard = render_plane.lock().unwrap();
             let mut reg = owner_registry.lock().unwrap();
             let ctx = SessionContext {
@@ -243,10 +272,18 @@ pub async fn run_client_pump(
                 current_default_fg: guard.default_fg(),
                 current_default_bg: guard.default_bg(),
             };
-            connection
+            let effects = connection
                 .state
-                .on_client_frame(msg, guard.transcript(), &mut reg, &ctx)
+                .on_client_frame(msg, guard.transcript(), &mut reg, &ctx);
+            let authority = WriteAuthority::Connection {
+                permission: connection.state.input_permission(),
+                registry: owner_registry.clone(),
+                barrier: input_barrier.clone(),
+                scope: input_scope.clone(),
+            };
+            (effects, authority)
         };
+        drop(grant);
 
         let mut closed = false;
         for eff in effects {
@@ -276,6 +313,7 @@ pub async fn run_client_pump(
                     };
                     if supervisor_tx
                         .send(SupervisorControl::Write(PtyWrite {
+                            authority: authority.clone(),
                             data,
                             input_seq,
                             ack,
@@ -328,6 +366,7 @@ pub async fn run_client_pump(
                     }
                     if supervisor_tx
                         .send(SupervisorControl::Write(PtyWrite {
+                            authority: authority.clone(),
                             data: b"\x1b[I".to_vec(),
                             input_seq: 0,
                             ack: None,
@@ -364,6 +403,7 @@ pub(crate) fn apply_broadcaster_effects(
             }
             Effect::WriteToPty { data, input_seq } => {
                 let _ = supervisor_tx.send(SupervisorControl::Write(PtyWrite {
+                    authority: WriteAuthority::TrustedKernel,
                     data,
                     input_seq,
                     ack: None,

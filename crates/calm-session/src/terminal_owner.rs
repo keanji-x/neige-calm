@@ -5,7 +5,7 @@ use crate::Role;
 /// Server-issued ownership identity. The browser's client ID alone cannot
 /// distinguish overlapping connections during reconnect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct OwnerLease {
+pub struct OwnerLease {
     client_id: Uuid,
     generation: u64,
 }
@@ -38,6 +38,10 @@ impl OwnerRegistry {
 
     pub fn current_owner(&self) -> Option<Uuid> {
         self.owner.map(|lease| lease.client_id)
+    }
+
+    pub fn is_current(&self, lease: OwnerLease) -> bool {
+        self.owner == Some(lease)
     }
 
     pub(crate) fn lease(&self) -> Option<OwnerLease> {
