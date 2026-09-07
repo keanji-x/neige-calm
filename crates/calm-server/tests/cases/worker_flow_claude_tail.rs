@@ -39,12 +39,8 @@ async fn claude_transcript_tail_records_and_resumes_from_byte_cursor() {
 
     let (token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, "card-claude-tail").await == 3 }
-    })
-    .await;
-    assert_cursor(&repo, "card-claude-tail", 3, first_len).await;
+    wait_for_cursor(&repo, "card-claude-tail", 3, first_len).await;
+    assert_eq!(item_count(&repo, "card-claude-tail").await, 3);
 
     wf::append_transcript(
         &path,
@@ -55,12 +51,8 @@ async fn claude_transcript_tail_records_and_resumes_from_byte_cursor() {
         )],
     );
     let second_len = file_len(&path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, "card-claude-tail").await == 4 }
-    })
-    .await;
-    assert_cursor(&repo, "card-claude-tail", 4, second_len).await;
+    wait_for_cursor(&repo, "card-claude-tail", 4, second_len).await;
+    assert_eq!(item_count(&repo, "card-claude-tail").await, 4);
 
     token.cancel();
     handle.await.unwrap().unwrap();
@@ -69,12 +61,8 @@ async fn claude_transcript_tail_records_and_resumes_from_byte_cursor() {
     let third_len = file_len(&path);
     let (token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, "card-claude-tail").await == 5 }
-    })
-    .await;
-    assert_cursor(&repo, "card-claude-tail", 5, third_len).await;
+    wait_for_cursor(&repo, "card-claude-tail", 5, third_len).await;
+    assert_eq!(item_count(&repo, "card-claude-tail").await, 5);
     token.cancel();
     handle.await.unwrap().unwrap();
 }
@@ -101,12 +89,8 @@ async fn claude_tail_drains_records_appended_after_eof_when_runtime_exits_withou
 
     let (_token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, card_id).await == 4 }
-    })
-    .await;
-    assert_cursor(&repo, card_id, 4, initial_len).await;
+    wait_for_cursor(&repo, card_id, 4, initial_len).await;
+    assert_eq!(item_count(&repo, card_id).await, 4);
 
     let mut tx = repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
     tokio::time::sleep(Duration::from_millis(80)).await;
@@ -130,10 +114,10 @@ async fn claude_tail_drains_records_appended_after_eof_when_runtime_exits_withou
     wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         let finished = handle.is_finished();
-        async move { item_count(&repo, card_id).await == 6 && finished }
+        async move { cursor_matches(&repo, card_id, 6, final_len).await && finished }
     })
     .await;
-    assert_cursor(&repo, card_id, 6, final_len).await;
+    assert_eq!(item_count(&repo, card_id).await, 6);
     handle.await.unwrap().unwrap();
 }
 
@@ -161,12 +145,8 @@ async fn claude_tail_drains_unterminated_final_record_when_runtime_exits() {
 
     let (_token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, card_id).await == 2 }
-    })
-    .await;
-    assert_cursor(&repo, card_id, 2, initial_len).await;
+    wait_for_cursor(&repo, card_id, 2, initial_len).await;
+    assert_eq!(item_count(&repo, card_id).await, 2);
 
     let final_record = serde_json::to_string(&wf::claude_assistant(
         "assistant-unterminated-final",
@@ -185,10 +165,10 @@ async fn claude_tail_drains_unterminated_final_record_when_runtime_exits() {
     wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         let finished = handle.is_finished();
-        async move { item_count(&repo, card_id).await == 3 && finished }
+        async move { cursor_matches(&repo, card_id, 3, final_len).await && finished }
     })
     .await;
-    assert_cursor(&repo, card_id, 3, final_len).await;
+    assert_eq!(item_count(&repo, card_id).await, 3);
     handle.await.unwrap().unwrap();
 }
 
@@ -212,12 +192,8 @@ async fn claude_tail_terminal_drain_leaves_invalid_unterminated_tail_unrecorded(
 
     let (_token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, card_id).await == 2 }
-    })
-    .await;
-    assert_cursor(&repo, card_id, 2, initial_len).await;
+    wait_for_cursor(&repo, card_id, 2, initial_len).await;
+    assert_eq!(item_count(&repo, card_id).await, 2);
 
     let mut tx = repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
     session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Exited)
@@ -250,6 +226,34 @@ async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {
         .await
         .unwrap()
         .len()
+}
+
+/// Wait until the Claude transcript cursor for `card_id` reaches
+/// `record_index`/`byte_offset`.
+///
+/// Recorded items and the cursor checkpoint are two separate asynchronous
+/// writes, and the checkpoint is the later one, so waiting on the item count
+/// and then asserting the cursor can read the checkpoint one record behind.
+/// Wait on the cursor and assert the item count afterwards instead.
+async fn wait_for_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64, byte_offset: i64) {
+    wf::wait_until(wf::LIVENESS_BUDGET, || async {
+        cursor_matches(repo, card_id, record_index, byte_offset).await
+    })
+    .await;
+}
+
+async fn cursor_matches(
+    repo: &SqlxRepo,
+    card_id: &str,
+    record_index: i64,
+    byte_offset: i64,
+) -> bool {
+    repo.worker_flow_cursor_get(card_id, CLAUDE_TRANSCRIPT_SOURCE_KIND)
+        .await
+        .unwrap()
+        .is_some_and(|cursor| {
+            cursor.record_index == record_index && cursor.byte_offset == byte_offset
+        })
 }
 
 async fn assert_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64, byte_offset: i64) {

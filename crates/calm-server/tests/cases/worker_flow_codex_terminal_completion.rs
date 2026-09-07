@@ -50,12 +50,8 @@ async fn codex_tail_task_exits_after_terminal_completion_without_event() {
         .await
         .unwrap();
 
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, card_id).await == 2 }
-    })
-    .await;
-    wait_for_cursor(&repo, card_id, 3).await;
+    wf::wait_for_codex_cursor(&repo, card_id, 3).await;
+    assert_eq!(item_count(&repo, card_id).await, 2);
 
     wf::append_rollout(
         &path,
@@ -81,17 +77,4 @@ async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {
         .await
         .unwrap()
         .len()
-}
-
-async fn wait_for_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
-    wf::wait_until(wf::LIVENESS_BUDGET, || async {
-        repo.worker_flow_cursor_get(
-            card_id,
-            calm_server::worker_flow::cursor::CODEX_ROLLOUT_SOURCE_KIND,
-        )
-        .await
-        .unwrap()
-        .is_some_and(|cursor| cursor.record_index == record_index)
-    })
-    .await;
 }

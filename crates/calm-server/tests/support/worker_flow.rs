@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calm_exec::flow::WorkerFlowSource;
+use calm_server::db::RepoRead;
 use calm_server::db::sqlite::{
     SqlxRepo, area_create_tx, card_create_with_id_tx, session_start_runtime_tx, track_create_tx,
 };
@@ -20,6 +21,7 @@ use calm_server::worker_flow::claude_transcript::{
 use calm_server::worker_flow::codex_rollout::{
     CodexRolloutFlowSource, CodexRolloutFlowSourceOptions,
 };
+use calm_server::worker_flow::cursor::CODEX_ROLLOUT_SOURCE_KIND;
 use calm_truth::worker_flow_sink::WorkerFlowSink;
 use calm_types::worker::{
     LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
@@ -608,6 +610,24 @@ where
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("condition not met within {timeout:?}");
+}
+
+/// Wait until the Codex rollout cursor for `card_id` reaches `record_index`.
+///
+/// Recorded items and the cursor checkpoint are two separate asynchronous
+/// writes, and the checkpoint is the later one. A test that waits on the item
+/// count and then asserts the cursor can therefore observe the checkpoint one
+/// record behind. Wait on the cursor with this helper and assert the item
+/// count afterwards: once the cursor has advanced, the items it accounts for
+/// are already durable.
+pub async fn wait_for_codex_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
+    wait_until(LIVENESS_BUDGET, || async {
+        repo.worker_flow_cursor_get(card_id, CODEX_ROLLOUT_SOURCE_KIND)
+            .await
+            .unwrap()
+            .is_some_and(|cursor| cursor.record_index == record_index)
+    })
+    .await;
 }
 
 pub fn app_state(repo: Arc<SqlxRepo>, events: EventBus) -> AppState {

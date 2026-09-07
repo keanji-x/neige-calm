@@ -28,12 +28,8 @@ async fn codex_rollout_preserves_unterminated_final_line_until_complete() {
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, "card-torn").await == 2 }
-    })
-    .await;
-    assert_cursor(&repo, "card-torn", 3).await;
+    wf::wait_for_codex_cursor(&repo, "card-torn", 3).await;
+    assert_eq!(item_count(&repo, "card-torn").await, 2);
 
     let next = serde_json::to_string(&wf::reasoning("r1", "three")).unwrap();
     let split_at = next.len() / 2;
@@ -43,12 +39,8 @@ async fn codex_rollout_preserves_unterminated_final_line_until_complete() {
     assert_cursor(&repo, "card-torn", 3).await;
 
     append_raw(&path, &format!("{}\n", &next[split_at..]));
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, "card-torn").await == 3 }
-    })
-    .await;
-    assert_cursor(&repo, "card-torn", 4).await;
+    wf::wait_for_codex_cursor(&repo, "card-torn", 4).await;
+    assert_eq!(item_count(&repo, "card-torn").await, 3);
 
     token.cancel();
     handle.await.unwrap().unwrap();
