@@ -276,6 +276,7 @@ async fn status_route_returns_supervisor_identity_shape() {
             stop_grace: Duration::from_millis(1),
             calm_listen: Some("127.0.0.1:4040".into()),
             persist_identity_to: None,
+            boot_plugin_budget: crate::apply::DEFAULT_BOOT_PLUGIN_BUDGET,
         }),
         proc_supervisor: Supervisor::new(SupervisorConfig {
             name: "calm-proc-supervisor".into(),
@@ -287,6 +288,7 @@ async fn status_route_returns_supervisor_identity_shape() {
             stop_grace: Duration::from_millis(1),
             calm_listen: None,
             persist_identity_to: None,
+            boot_plugin_budget: crate::apply::DEFAULT_BOOT_PLUGIN_BUDGET,
         }),
         apply_lock: Arc::new(Mutex::new(())),
         admin_token: Some(Arc::from("test-token")),
@@ -326,6 +328,7 @@ async fn adopted_supervisor_status_keeps_peer_pid() {
         stop_grace: Duration::from_millis(1),
         calm_listen: None,
         persist_identity_to: None,
+        boot_plugin_budget: crate::apply::DEFAULT_BOOT_PLUGIN_BUDGET,
     });
 
     supervisor.adopt_identity(None, Some(12345)).await;

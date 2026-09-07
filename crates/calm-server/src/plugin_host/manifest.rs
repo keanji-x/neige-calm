@@ -347,35 +347,11 @@ impl ApiKeyIn {
 /// `tools/call` path is awaited by `AppState::new`.
 pub const MCP_HTTP_DEFAULT_TIMEOUT_MS: u64 = 10_000;
 
-/// Hard ceiling on the bring-up (`initialize` + `tools/list`) timeout, enforced
-/// here at manifest-parse time.
-///
-/// **Why a second knob exists at all.** `request_timeout_ms` used to govern two
-/// things with opposite constraints, and every round of review patched the
-/// arithmetic while the defect reappeared one level up:
-///
-/// * **bring-up** sits on the inline-awaited boot path (`AppState::new` →
-///   `autospawn_enabled` → `spawn_admitted` → `tools/list`), so it must be
-///   SHORT and hard-bounded — while it runs, the server does not serve;
-/// * **steady-state `tools/call`** is not on the boot path at all and is
-///   legitimately long.
-///
-/// One knob could satisfy neither: clamping it broke long tool calls, and
-/// widening the boot budget to respect it made boot latency operator-controlled
-/// and unbounded (`"request_timeout_ms": 600000` against a black-holed upstream
-/// stalled boot for 20.5 minutes). Splitting them makes the boot bound hold *by
-/// construction* for every manifest: `connector_bringup_budget` can never
-/// exceed `2 × 15 s + slack`, whatever the manifest asks for.
-///
-/// (Same shape as `trusted_forge_plugin`, one bit that gates both "may hold a
-/// track scope" and "gets the forge credential passthrough". The general lesson:
-/// when a constant needs adjusting for the third time, stop adjusting it and
-/// look for the second constraint riding on it.)
-///
-/// 15 s is chosen as "generous for a TLS handshake plus a cold upstream's first
-/// response, still short enough that a full slate of dead connectors cannot
-/// push boot past [`super::CONNECTOR_AUTOSPAWN_BUDGET`]".
-pub const MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS: u64 = 15_000;
+// #1282 — moved to `calm_types::boot_budget` with the rest of the boot-budget
+// chain (`MAX_CONNECTOR_BRINGUP_BUDGET` is derived from it). Re-exported so
+// `manifest::MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS` still names it here, where
+// parse-time validation enforces it.
+pub use calm_types::boot_budget::MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS;
 
 /// `mcp_http` top-level block. Present iff `kind == "mcp-http"`.
 #[derive(Serialize, Deserialize, Debug, Clone)]

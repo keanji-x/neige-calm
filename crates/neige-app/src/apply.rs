@@ -829,9 +829,116 @@ const CALM_START_TIMEOUT_ENV: &str = "CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_
 const CALM_STOP_GRACE_DEFAULT_SECS: u64 = 60;
 const CALM_STOP_GRACE_FLAG: &str = "--shared-codex-appserver-stop-grace-secs";
 const CALM_STOP_GRACE_ENV: &str = "CALM_SHARED_CODEX_APPSERVER_STOP_GRACE_SECS";
-/// Post-boot margin on top of the child's worst boot path: version probe,
-/// harness recovery, HTTP bind.
-const HEALTHCHECK_MARGIN: Duration = Duration::from_secs(60);
+/// #1282 — the allowance for everything the child does after its own
+/// shared-codex spawn budget and before `/api/version` can answer, MINUS the
+/// plugin-autospawn phase, which is a separate named entry in
+/// [`boot_budget_table`].
+///
+/// This is the historical `HEALTHCHECK_MARGIN` under an honest name. Its old
+/// doc comment listed the constituents as "version probe, harness recovery,
+/// HTTP bind" — a prose breakdown that was a second arithmetic next to the
+/// summed constant, and it silently omitted plugin autospawn, whose own
+/// closed-form ceiling (71.5 s with zero app plugins) already exceeded this
+/// whole 60 s. How the 60 s divides between version probe, harness recovery and
+/// bind is **not known**; it is deliberately left as one opaque named entry
+/// rather than split into invented parts.
+const OTHER_BOOT_ALLOWANCE: Duration = Duration::from_secs(60);
+
+/// #1282 — how many enabled `app` plugin slots the host budgets the child's
+/// boot autospawn phase for, by default.
+///
+/// The host cannot know the real count (see [`boot_budget_table`]), so it
+/// budgets a generous fixed number of slots and lets an operator raise it with
+/// `[timing] boot_plugin_budget_ms`.
+const DEFAULT_BOOT_PLUGIN_SLOTS: u32 = 8;
+
+/// #1282 — the default `[timing] boot_plugin_budget_ms`: calm-server's own
+/// closed-form boot-autospawn ceiling at [`DEFAULT_BOOT_PLUGIN_SLOTS`] app
+/// plugins.
+///
+/// Not a hand-copied number: `calm_types::boot_budget::boot_autospawn_ceiling`
+/// is the same `const fn` calm-server's `plugin_host` re-exports and fences its
+/// own boot with, so the two cannot drift by editing one literal.
+pub(crate) const DEFAULT_BOOT_PLUGIN_BUDGET: Duration =
+    calm_types::boot_budget::boot_autospawn_ceiling(DEFAULT_BOOT_PLUGIN_SLOTS);
+
+/// One named phase of the boot allowance the healthcheck deadline adds on top
+/// of the child's own start-timeout arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BootBudgetEntry {
+    pub(crate) phase: &'static str,
+    pub(crate) budget: Duration,
+}
+
+/// #1282 — the boot allowance, as a list of named phases.
+///
+/// **Why a list and not a constant with a comment.** The thing this replaces
+/// was a single `Duration` whose doc comment enumerated its parts. The
+/// enumeration and the number were two separate arithmetics, and they
+/// disagreed: the comment named "version probe, harness recovery, HTTP bind"
+/// and omitted plugin autospawn entirely, even though autospawn runs inside
+/// `AppState::new`, before the HTTP listener binds, and its closed-form ceiling
+/// is 71.5 s with zero app plugins — more than the whole 60 s margin. The
+/// deadline could therefore declare [`HealthcheckOutcome::TimedOut`] and roll
+/// back a boot that was going to succeed. Here [`healthcheck_deadline`] sums
+/// this list and [`render_boot_budget`] renders this list, so the documented
+/// breakdown and the enforced number are the same object.
+///
+/// **Why over-estimating is the cheap direction.** A too-large budget costs
+/// nothing on a boot that dies: the healthcheck loop checks
+/// `process_status()` every iteration and returns
+/// [`HealthcheckOutcome::ProcessDied`] the moment the child exits, whatever the
+/// deadline says. It costs nothing on a boot that succeeds either — the loop
+/// polls and returns at first success. It costs only on the narrow case of a
+/// child that stays alive but never becomes ready, where rollback is delayed.
+/// A too-small budget, by contrast, rolls back a healthy boot and restores the
+/// previous release over a good one. So the sizing is deliberately generous.
+///
+/// **Residue this does not close (#1282 stays open).** Two gaps remain, and
+/// nothing here claims otherwise:
+///
+/// * the host links **its own** build's constants, which need not equal the
+///   constants of the release it is about to health-check; and
+/// * the real enabled-app-plugin count is unknown to the host — it has no
+///   database and no unauthenticated endpoint that reports one — so
+///   [`DEFAULT_BOOT_PLUGIN_SLOTS`] is an assumption, not a measurement, and a
+///   deployment with more app plugins than that can still exceed this budget.
+///
+/// Closing them needs the child to report the budget of the spawn actually in
+/// progress over a host↔kernel protocol; that is option C on #1282 and is not
+/// implemented here.
+fn boot_budget_table(cfg: &SupervisorConfig) -> [BootBudgetEntry; 2] {
+    [
+        BootBudgetEntry {
+            phase: "PluginAutospawn",
+            budget: cfg.boot_plugin_budget,
+        },
+        BootBudgetEntry {
+            phase: "OtherBootAllowance",
+            budget: OTHER_BOOT_ALLOWANCE,
+        },
+    ]
+}
+
+/// The summed boot allowance — the margin term of [`healthcheck_deadline`].
+fn boot_budget_total(cfg: &SupervisorConfig) -> Duration {
+    boot_budget_table(cfg)
+        .iter()
+        .map(|entry| entry.budget)
+        .sum()
+}
+
+/// The operator-facing breakdown, rendered by iterating the SAME list
+/// [`boot_budget_total`] sums, so the printed parts and the enforced total
+/// cannot disagree.
+fn render_boot_budget(cfg: &SupervisorConfig) -> String {
+    let entries = boot_budget_table(cfg);
+    let parts: Vec<String> = entries
+        .iter()
+        .map(|entry| format!("{}={:?}", entry.phase, entry.budget))
+        .collect();
+    format!("{} = {:?}", parts.join(" + "), boot_budget_total(cfg))
+}
 
 /// #956 — the effective `shared_codex_appserver_start_timeout_secs`
 /// calm-server will resolve when spawned with this [`SupervisorConfig`],
@@ -952,13 +1059,14 @@ fn secs_flag_value<'a>(flag: &str, child_args: &'a [String]) -> Option<&'a str> 
 /// the overflow boundary.
 const HEALTHCHECK_DEADLINE_CEILING: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
-/// #956/#954 — the `/upgrade/apply` healthcheck deadline. Derived, not
+/// #956/#954/#1282 — the `/upgrade/apply` healthcheck deadline. Derived, not
 /// fixed: `2·effective_child_start_timeout + effective_child_stop_grace +
-/// 60s margin`, covering the full worst LEGITIMATE boot path (#954
+/// boot_budget_total`, covering the full worst LEGITIMATE boot path (#954
 /// defect 2) — adoption window for a persisted `starting` child
 /// (≤ start timeout) + graceful reap on window lapse (≤ stop grace) +
-/// fresh cold start (≤ start timeout) — plus the post-boot margin. At
-/// defaults: 2·120 + 60 + 60 = 360s ≥ the 300s worst path; the previous
+/// fresh cold start (≤ start timeout) — plus the named boot allowance in
+/// [`boot_budget_table`], which since #1282 includes the plugin-autospawn
+/// phase that runs before the child binds its listener. The previous
 /// `start + margin` derivation (180s) reached its deadline before the
 /// fresh spawn even began, firing rollback mid-legitimate-recovery. The
 /// healthcheck POLLS, so healthy boots return at first success — the only
@@ -970,7 +1078,7 @@ fn healthcheck_deadline(cfg: &SupervisorConfig) -> Duration {
     effective_child_start_timeout(cfg)
         .saturating_mul(2)
         .saturating_add(effective_child_stop_grace(cfg))
-        .saturating_add(HEALTHCHECK_MARGIN)
+        .saturating_add(boot_budget_total(cfg))
         .min(HEALTHCHECK_DEADLINE_CEILING)
 }
 
@@ -988,7 +1096,13 @@ async fn healthcheck(
     // `/api/version` can answer, so a fixed 60s deadline declared healthy
     // boots dead (60s < the 120s default). Derived from the exact
     // SupervisorConfig this supervisor spawns calm-server with.
-    let deadline = tokio::time::Instant::now() + healthcheck_deadline(&supervisor.cfg);
+    let budget = healthcheck_deadline(&supervisor.cfg);
+    tracing::info!(
+        deadline = ?budget,
+        boot_budget = %render_boot_budget(&supervisor.cfg),
+        "armed /upgrade/apply healthcheck deadline"
+    );
+    let deadline = tokio::time::Instant::now() + budget;
     let mut last_error = None;
     while tokio::time::Instant::now() < deadline {
         let status = supervisor.process_status().await;
@@ -1534,6 +1648,9 @@ mod tests {
             stop_grace: Duration::from_secs(1),
             calm_listen: Some("127.0.0.1:0".into()),
             persist_identity_to: None,
+            // The production default, so the deadline tests below describe the
+            // deployed configuration rather than a fixture-only one.
+            boot_plugin_budget: DEFAULT_BOOT_PLUGIN_BUDGET,
         }
     }
 
@@ -1719,11 +1836,11 @@ mod tests {
         let cfg = supervisor_config(vec![], vec![]);
         let effective = effective_child_start_timeout(&cfg);
         assert!(
-            healthcheck_deadline(&cfg) >= effective.saturating_add(HEALTHCHECK_MARGIN),
-            "healthcheck deadline {:?} must cover the child start timeout {:?} + {:?} margin",
+            healthcheck_deadline(&cfg) >= effective.saturating_add(boot_budget_total(&cfg)),
+            "healthcheck deadline {:?} must cover the child start timeout {:?} + boot budget {}",
             healthcheck_deadline(&cfg),
             effective,
-            HEALTHCHECK_MARGIN
+            render_boot_budget(&cfg)
         );
         // And raising the timeout raises the deadline (no fixed footgun) —
         // #954: it now enters the derivation twice (window + fresh spawn).
@@ -1735,7 +1852,7 @@ mod tests {
             healthcheck_deadline(&raised),
             Duration::from_secs(2 * 600)
                 .saturating_add(effective_child_stop_grace(&raised))
-                .saturating_add(HEALTHCHECK_MARGIN)
+                .saturating_add(boot_budget_total(&raised))
         );
     }
 
@@ -1752,15 +1869,17 @@ mod tests {
         // Defaults: start timeout 120s, stop grace 60s.
         let worst_path = Duration::from_secs(120 + 60 + 120);
         assert!(
-            healthcheck_deadline(&cfg) >= worst_path.saturating_add(HEALTHCHECK_MARGIN),
+            healthcheck_deadline(&cfg) >= worst_path.saturating_add(boot_budget_total(&cfg)),
             "healthcheck deadline {:?} must cover the worst legitimate boot \
              path {worst_path:?} (adoption window + graceful reap + fresh \
-             spawn) plus the {:?} margin",
+             spawn) plus the boot budget {}",
             healthcheck_deadline(&cfg),
-            HEALTHCHECK_MARGIN
+            render_boot_budget(&cfg)
         );
-        // 2·120 + 60 + 60 = 360s at defaults.
-        assert_eq!(healthcheck_deadline(&cfg), Duration::from_secs(360));
+        // #1282 — 2·120 + 60 + (PluginAutospawn 311.5 + OtherBootAllowance 60)
+        // = 671.5s at defaults. It was 360s while the plugin-autospawn phase
+        // was missing from the margin entirely.
+        assert_eq!(healthcheck_deadline(&cfg), Duration::from_millis(671_500));
         // The derived form: both effective knobs enter the formula.
         let start = effective_child_start_timeout(&cfg);
         let grace = effective_child_stop_grace(&cfg);
@@ -1769,7 +1888,7 @@ mod tests {
             start
                 .saturating_mul(2)
                 .saturating_add(grace)
-                .saturating_add(HEALTHCHECK_MARGIN)
+                .saturating_add(boot_budget_total(&cfg))
         );
         // Raising the stop grace alone widens the deadline too.
         let raised_grace = supervisor_config(
@@ -1781,8 +1900,121 @@ mod tests {
             start
                 .saturating_mul(2)
                 .saturating_add(Duration::from_secs(300))
-                .saturating_add(HEALTHCHECK_MARGIN)
+                .saturating_add(boot_budget_total(&raised_grace))
         );
+    }
+
+    /// #1282 — the deadline must budget the child's plugin-autospawn phase,
+    /// which runs inside `AppState::new` BEFORE the HTTP listener binds, at the
+    /// same closed-form ceiling calm-server itself fences that phase with.
+    ///
+    /// Asserted against the real `healthcheck_deadline` entry point and against
+    /// `calm_types::boot_budget::boot_autospawn_ceiling` — the function
+    /// calm-server's `plugin_host` re-exports — so neither side can be a copied
+    /// literal.
+    #[test]
+    fn healthcheck_deadline_budgets_the_child_boot_autospawn_ceiling() {
+        let cfg = supervisor_config(vec![], vec![]);
+        let expected = effective_child_start_timeout(&cfg)
+            .saturating_mul(2)
+            .saturating_add(effective_child_stop_grace(&cfg))
+            .saturating_add(OTHER_BOOT_ALLOWANCE)
+            .saturating_add(calm_types::boot_budget::boot_autospawn_ceiling(
+                DEFAULT_BOOT_PLUGIN_SLOTS,
+            ));
+        assert_eq!(healthcheck_deadline(&cfg), expected);
+        // 2·120 + 60 + 60 + (40 + 8·30 + 31.5) = 671.5s.
+        assert_eq!(expected, Duration::from_millis(671_500));
+    }
+
+    /// #1282 failing-first — the historical bug, pinned.
+    ///
+    /// `boot_autospawn_ceiling(0)` is 71.5 s: the enumeration fence plus the
+    /// connector-phase ceiling, with NO app plugins installed at all. The old
+    /// deadline added a flat 60 s margin whose doc comment listed "version
+    /// probe, harness recovery, HTTP bind" and never mentioned autospawn, so
+    /// even the emptiest possible plugin directory could overrun it and make
+    /// `/upgrade/apply` roll back a boot that was going to succeed. This
+    /// assertion is red on the pre-#1282 code (360s vs the 371.5s floor).
+    #[test]
+    fn healthcheck_deadline_exceeds_the_zero_app_plugin_autospawn_ceiling() {
+        let cfg = supervisor_config(vec![], vec![]);
+        let floor = effective_child_start_timeout(&cfg)
+            .saturating_mul(2)
+            .saturating_add(effective_child_stop_grace(&cfg))
+            .saturating_add(calm_types::boot_budget::boot_autospawn_ceiling(0));
+        assert_eq!(
+            calm_types::boot_budget::boot_autospawn_ceiling(0),
+            Duration::from_millis(71_500)
+        );
+        assert!(
+            healthcheck_deadline(&cfg) > floor,
+            "healthcheck deadline {:?} must strictly exceed {floor:?} (2·start \
+             + stop grace + the zero-app-plugin autospawn ceiling); boot \
+             budget is {}",
+            healthcheck_deadline(&cfg),
+            render_boot_budget(&cfg)
+        );
+    }
+
+    /// #1282 — the summed table IS the deadline's margin term, and the rendered
+    /// breakdown iterates the same list. This is what stops the documented
+    /// parts and the enforced number from being two arithmetics again.
+    #[test]
+    fn boot_budget_table_sums_to_the_deadline_margin_term() {
+        let cfg = supervisor_config(vec![], vec![]);
+        let derived = effective_child_start_timeout(&cfg)
+            .saturating_mul(2)
+            .saturating_add(effective_child_stop_grace(&cfg));
+        assert_eq!(
+            healthcheck_deadline(&cfg).saturating_sub(derived),
+            boot_budget_total(&cfg)
+        );
+        let table = boot_budget_table(&cfg);
+        assert_eq!(
+            table.iter().map(|entry| entry.budget).sum::<Duration>(),
+            boot_budget_total(&cfg)
+        );
+        let rendered = render_boot_budget(&cfg);
+        for entry in table.iter() {
+            assert!(
+                rendered.contains(entry.phase),
+                "rendered breakdown {rendered} omits {}",
+                entry.phase
+            );
+        }
+        assert!(
+            rendered.contains(&format!("{:?}", boot_budget_total(&cfg))),
+            "rendered breakdown {rendered} must state the summed total"
+        );
+    }
+
+    /// #1282 — the typed `[timing] boot_plugin_budget_ms` key reaches the
+    /// deadline, through the real config load and the real
+    /// `SupervisorConfig` production builder (not a fixture).
+    #[test]
+    fn timing_boot_plugin_budget_override_is_honored_by_the_deadline() {
+        let tmp = test_temp_dir("boot-plugin-budget-override");
+        let path = tmp.join("config.toml");
+        fs::write(&path, "[timing]\nboot_plugin_budget_ms = 900000\n").expect("write config");
+        let cfg = AppConfig::load(Some(&path)).expect("load config");
+        assert_eq!(cfg.timing.boot_plugin_budget, Duration::from_secs(900));
+
+        let supervisor_cfg = crate::calm_server_supervisor_config(&cfg);
+        assert_eq!(
+            supervisor_cfg.boot_plugin_budget,
+            Duration::from_secs(900),
+            "the production SupervisorConfig builder must carry the key"
+        );
+        let default_cfg = AppConfig::starter(path.clone());
+        assert_eq!(
+            healthcheck_deadline(&supervisor_cfg).saturating_sub(healthcheck_deadline(
+                &crate::calm_server_supervisor_config(&default_cfg)
+            )),
+            Duration::from_secs(900).saturating_sub(DEFAULT_BOOT_PLUGIN_BUDGET),
+            "raising the key must raise the deadline by exactly that much"
+        );
+        let _ = fs::remove_dir_all(tmp);
     }
 
     /// #954 T13 — stop-grace precedence chain, mirroring the start-timeout
