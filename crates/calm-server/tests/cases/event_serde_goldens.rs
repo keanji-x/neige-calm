@@ -1363,7 +1363,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        50,
+        51,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }
