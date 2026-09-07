@@ -923,3 +923,6 @@ async fn pump_terminates_on_terminal_exited() {
         "expected stream end after Close, got {end:?}",
     );
 }
+
+#[path = "terminal_owner_pump.rs"]
+mod owner_pump;
