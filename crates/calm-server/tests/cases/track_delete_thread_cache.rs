@@ -723,3 +723,296 @@ async fn a_late_thread_started_after_cleanup_does_not_bind_an_unrelated_pending_
     );
     assert_eq!(b.pending.pending_count().await, 0);
 }
+
+// ---------------------------------------------------------------------------
+// #1553 (hygiene) — the two sibling maps the #1444 cleanup does NOT touch.
+//
+// `sealed_turn_threads` (read by `turn_thread_is_sealed`) and `active_turns`
+// (read by `active_turn_id_for_thread`) had no remover on the committed delete
+// path: the seal is dropped only by a ROLLBACK, and the active turn only by an
+// interrupt that matches the same turn id. These tests drive the real
+// `DELETE /api/tracks/{id}` / `DELETE /api/areas/{id}` and assert both arms:
+// the committed arm now converges both maps, and the rollback arms still leave
+// them alone. No harm was constructible from the old leak — see
+// `SharedCodexAppServer::forget_turn_state_for_deleted_threads`.
+// ---------------------------------------------------------------------------
+
+/// Give the track's live planner worker session a codex thread id, the shape
+/// `quiesce_shared_card_active_turn` reads to decide what to seal, and return
+/// that thread id.
+async fn seal_bait_thread(b: &Boot, track_id: &str, thread_id: &str) {
+    let session_id: String = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE track_id=?1 \
+         AND state IN ('starting','running','idle','turn_pending') ORDER BY id LIMIT 1",
+    )
+    .bind(track_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    let updated =
+        sqlx::query("UPDATE worker_sessions SET provider='codex', thread_id=?1 WHERE id=?2")
+            .bind(thread_id)
+            .bind(&session_id)
+            .execute(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(updated.rows_affected(), 1);
+}
+
+/// A committed Track delete drops the sealed-thread verdict and the active turn
+/// id of the threads it sealed.
+///
+/// The active turn is seeded INSIDE the delete's commit window, after quiesce
+/// has already interrupted what it could see. That is the production shape that
+/// leaves one behind: `track_active_turn` inserts the id of a late `turn/started`
+/// on a sealed thread and its interrupt is best-effort — on failure the loop
+/// deliberately keeps the id (`shared_codex_appserver.rs`, "Keep the id in
+/// `active_turns`"). Seeding it directly is the same end state without the
+/// unreliable timing.
+#[tokio::test]
+async fn a_committed_track_delete_converges_the_sealed_and_active_turn_maps() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let track_id = managed_track(&b, &area_id, "converges its turn maps").await;
+    let sealed_thread = "T-sealed-1553";
+    seal_bait_thread(&b, &track_id, sealed_thread).await;
+
+    // Scope control: a kernel-minted thread with a live turn, i.e. the window
+    // between the mint and the database attribution write. Quiesce cannot see
+    // it (no `thread_id` row for this Card), so it is NOT in `sealed_thread_ids`
+    // and the new sweep must not touch it. Its `active_turns` entry surviving is
+    // what proves the sweep is scoped to the sealed set rather than a blanket
+    // clear of the map.
+    let card = card_ids(&b, &track_id).await[0].clone();
+    let unsealed_thread = mint_thread(&b, &card).await;
+    let unsealed_turn = b
+        .shared_codex
+        .turn_start(
+            &unsealed_thread,
+            vec![calm_server::codex_appserver::InputItem::text("seed")],
+            &calm_server::planner_model::TurnModelSelection::inherit(),
+        )
+        .await
+        .unwrap();
+
+    let hook = calm_server::routes::tracks::TrackDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        panic_after_release: false,
+    };
+    calm_server::routes::tracks::install_track_delete_commit_hook_for_test(&track_id, hook.clone());
+
+    let delete_app = b.app.clone();
+    let delete_id = track_id.clone();
+    let delete_task = tokio::spawn(async move {
+        request(
+            delete_app,
+            "DELETE",
+            &format!("/api/tracks/{delete_id}"),
+            None,
+        )
+        .await
+    });
+    hook.entered.notified().await;
+    assert!(
+        b.shared_codex.turn_thread_is_sealed_for_test(sealed_thread),
+        "premise: quiesce sealed the planner thread before the transaction"
+    );
+    b.shared_codex
+        .set_active_turn_for_test(sealed_thread, "late-turn-1553");
+    hook.release.notify_one();
+
+    let (status, body) = delete_task.await.unwrap();
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
+    assert!(b.repo.track_get(&track_id).await.unwrap().is_none());
+    // #1444's half converged too; this test does not re-prove it, it only pins
+    // that both halves are now on the same committed arm.
+    assert_eq!(
+        b.shared_codex.cached_card_for_thread(&unsealed_thread),
+        None
+    );
+
+    assert!(
+        !b.shared_codex.turn_thread_is_sealed_for_test(sealed_thread),
+        "#1553: a committed delete must drop the sealed-thread verdict"
+    );
+    assert_eq!(
+        b.shared_codex.active_turn_id_for_thread(sealed_thread),
+        None,
+        "#1553: a committed delete must drop the sealed thread's active turn id"
+    );
+    assert_eq!(
+        b.shared_codex.active_turn_id_for_thread(&unsealed_thread),
+        Some(unsealed_turn),
+        "the sweep must be scoped to the sealed set, not clear the whole map"
+    );
+}
+
+/// The Area twin: the same two entries are dropped by a committed Area delete.
+#[tokio::test]
+async fn a_committed_area_delete_converges_the_sealed_and_active_turn_maps() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let track_id = managed_track(&b, &area_id, "area converges its turn maps").await;
+    let sealed_thread = "T-sealed-area-1553";
+    seal_bait_thread(&b, &track_id, sealed_thread).await;
+    let card = card_ids(&b, &track_id).await[0].clone();
+    let unsealed_thread = mint_thread(&b, &card).await;
+    let unsealed_turn = b
+        .shared_codex
+        .turn_start(
+            &unsealed_thread,
+            vec![calm_server::codex_appserver::InputItem::text("seed")],
+            &calm_server::planner_model::TurnModelSelection::inherit(),
+        )
+        .await
+        .unwrap();
+
+    let hook = calm_server::routes::areas::AreaDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        fail_after_release: false,
+        panic_after_release: false,
+    };
+    calm_server::routes::areas::install_area_delete_commit_hook_for_test(&area_id, hook.clone());
+
+    let delete_app = b.app.clone();
+    let delete_id = area_id.clone();
+    let delete_task = tokio::spawn(async move {
+        request(
+            delete_app,
+            "DELETE",
+            &format!("/api/areas/{delete_id}"),
+            None,
+        )
+        .await
+    });
+    hook.entered.notified().await;
+    assert!(
+        b.shared_codex.turn_thread_is_sealed_for_test(sealed_thread),
+        "premise: quiesce sealed the planner thread before the transaction"
+    );
+    b.shared_codex
+        .set_active_turn_for_test(sealed_thread, "late-turn-area-1553");
+    hook.release.notify_one();
+
+    let (status, body) = delete_task.await.unwrap();
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
+    assert!(b.repo.area_get(&area_id).await.unwrap().is_none());
+    assert_eq!(
+        b.shared_codex.cached_card_for_thread(&unsealed_thread),
+        None
+    );
+
+    assert!(
+        !b.shared_codex.turn_thread_is_sealed_for_test(sealed_thread),
+        "#1553: a committed area delete must drop the sealed-thread verdict"
+    );
+    assert_eq!(
+        b.shared_codex.active_turn_id_for_thread(sealed_thread),
+        None,
+        "#1553: a committed area delete must drop the sealed thread's active turn"
+    );
+    assert_eq!(
+        b.shared_codex.active_turn_id_for_thread(&unsealed_thread),
+        Some(unsealed_turn),
+        "the sweep must be scoped to the sealed set, not clear the whole map"
+    );
+}
+
+/// Rollback arm, Track: the saga panics after the workspace recycle and before
+/// the transaction, so the compensation path runs and the Cards survive. The
+/// new sweep must not have run — the observable is `active_turns`, which no
+/// rollback path writes, unlike the seal, which
+/// `unseal_turn_thread_after_rollback` deliberately clears here.
+#[tokio::test]
+async fn a_rolled_back_track_delete_keeps_the_active_turn_entry() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let track_id = managed_track(&b, &area_id, "rolls back its turn maps").await;
+    let sealed_thread = "T-sealed-rollback-1553";
+    seal_bait_thread(&b, &track_id, sealed_thread).await;
+
+    let hook = calm_server::routes::tracks::TrackDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        panic_after_release: true,
+    };
+    calm_server::routes::tracks::install_track_delete_commit_hook_for_test(&track_id, hook.clone());
+
+    let delete_app = b.app.clone();
+    let delete_id = track_id.clone();
+    let delete_task = tokio::spawn(async move {
+        request(
+            delete_app,
+            "DELETE",
+            &format!("/api/tracks/{delete_id}"),
+            None,
+        )
+        .await
+    });
+    hook.entered.notified().await;
+    b.shared_codex
+        .set_active_turn_for_test(sealed_thread, "rollback-turn-1553");
+    hook.release.notify_one();
+
+    let (status, _) = delete_task.await.unwrap();
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        b.repo.track_get(&track_id).await.unwrap().is_some(),
+        "premise: the delete rolled back"
+    );
+    assert_eq!(
+        b.shared_codex.active_turn_id_for_thread(sealed_thread),
+        Some("rollback-turn-1553".to_string()),
+        "#1553: a rollback must not run the committed-arm turn-state sweep"
+    );
+}
+
+/// Rollback arm, Area: `finish_area_deletion` fails, the workspace compensation
+/// runs, and the Cards survive. Same observable as the Track twin.
+#[tokio::test]
+async fn a_failed_area_delete_commit_keeps_the_active_turn_entry() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let track_id = managed_track(&b, &area_id, "area rolls back its turn maps").await;
+    let sealed_thread = "T-sealed-area-rollback-1553";
+    seal_bait_thread(&b, &track_id, sealed_thread).await;
+
+    let hook = calm_server::routes::areas::AreaDeleteCommitHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        fail_after_release: true,
+        panic_after_release: false,
+    };
+    calm_server::routes::areas::install_area_delete_commit_hook_for_test(&area_id, hook.clone());
+
+    let delete_app = b.app.clone();
+    let delete_id = area_id.clone();
+    let delete_task = tokio::spawn(async move {
+        request(
+            delete_app,
+            "DELETE",
+            &format!("/api/areas/{delete_id}"),
+            None,
+        )
+        .await
+    });
+    hook.entered.notified().await;
+    b.shared_codex
+        .set_active_turn_for_test(sealed_thread, "rollback-turn-area-1553");
+    hook.release.notify_one();
+
+    let (status, _) = delete_task.await.unwrap();
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        b.repo.area_get(&area_id).await.unwrap().is_some(),
+        "premise: the area delete rolled back"
+    );
+    assert!(b.repo.track_get(&track_id).await.unwrap().is_some());
+    assert_eq!(
+        b.shared_codex.active_turn_id_for_thread(sealed_thread),
+        Some("rollback-turn-area-1553".to_string()),
+        "#1553: a rollback must not run the committed-arm turn-state sweep"
+    );
+}

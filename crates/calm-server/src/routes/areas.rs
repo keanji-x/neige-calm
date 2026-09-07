@@ -694,6 +694,14 @@ impl RecycledAreaDeletion {
             .turn_daemon
             .forget_threads_for_deleted_cards(&self.quiesced.card_ids)
             .await;
+        // #1553 (hygiene) — the Area twin of the same post-commit sweep: drop
+        // the deletion-time seal verdict and any active turn id for the threads
+        // this delete sealed. The rollback arm above returns first and leaves
+        // both entries alone.
+        self.quiesced
+            .prepared
+            .turn_daemon
+            .forget_turn_state_for_deleted_threads(&self.quiesced.sealed_thread_ids);
         for track_id in deleted_track_ids {
             route
                 .write

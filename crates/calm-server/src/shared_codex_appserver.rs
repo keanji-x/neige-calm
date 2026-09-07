@@ -1611,6 +1611,86 @@ impl SharedCodexAppServer {
         dropped.len()
     }
 
+    /// #1553 (hygiene) — drop the deletion-time turn bookkeeping for threads a
+    /// committed Track/Area delete has already sealed and quiesced.
+    ///
+    /// Sibling of [`Self::forget_threads_for_deleted_cards`], which converges
+    /// `thread_cache` only. `sealed_turn_threads` and `active_turns` have no
+    /// remover on the delete path at all: the seal is dropped only by
+    /// `unseal_turn_thread_after_rollback` (a rollback, which by design keeps
+    /// the Cards) and the active turn only by an interrupt that observes the
+    /// same turn id. So a committed delete used to leave one entry per sealed
+    /// thread in each map for the process lifetime.
+    ///
+    /// **This is hygiene, not a bug fix.** No harm was constructible from the
+    /// leaked entries: the only reader of `sealed_turn_threads` is
+    /// [`Self::turn_thread_is_sealed`], which refuses a `turn/start` on a
+    /// thread whose Card no longer exists, and the only reader of
+    /// `active_turns` is [`Self::active_turn_id_for_thread`], reached through
+    /// callers that first resolve a thread id from a database row the delete
+    /// removed. Both leaked entries are therefore unreachable, not wrong. What
+    /// they are is unbounded: a long-lived server accumulates them.
+    ///
+    /// **Serialization — deliberately none.** The question is which guard the
+    /// other writers of these two maps hold, and the answer is that none of
+    /// them holds any: `seal_turn_thread_for_deletion`,
+    /// `unseal_turn_thread_after_rollback`, [`Self::turn_start`],
+    /// `track_active_turn` in the notification loop, [`Self::turn_interrupt`]
+    /// and [`Self::interrupt_active_turn`] all write through `DashMap`'s own
+    /// per-entry locking and nothing else. This call takes the same: nothing.
+    ///
+    /// It specifically does NOT take `kernel_thread_start_serial` (the guard
+    /// `forget_threads_for_deleted_cards` takes). That guard fences
+    /// `handle_thread_started_notification` and the `thread_start_mint_*`
+    /// family — none of which touches either map here — so taking it would
+    /// fence nothing while adding a nesting edge to a lock whose holders keep
+    /// it across a respawn. That is the exact shape #1444 R2 self-deadlocked
+    /// on (see `resume_replay_serial`); it is not repeated here. For the same
+    /// reason no new mutex is introduced: see the gap below for what one would
+    /// have to fence, and why the cost is not warranted for a leak with no
+    /// constructible harm.
+    ///
+    /// **KNOWN GAP (unchanged risk class, stated rather than hardened away).**
+    /// Unsealing is a check-then-act against [`Self::turn_start`], whose
+    /// post-RPC sequence is `insert active_turns` → re-read the seal →
+    /// interrupt if sealed. A `turn/start` that inserts before this call and
+    /// re-reads the seal after it observes no seal, so its turn is left
+    /// running instead of interrupted. No lock-free ordering of the two
+    /// removals below can close that; only a mutex shared with `turn_start`'s
+    /// critical section could. It is left open because the interleaving needs
+    /// a `turn/start` in flight for an already-sealed thread at commit time,
+    /// and the harness that owns these threads cannot produce one:
+    /// `HarnessHandle::shutdown_inner` seals first, then takes the `issuance`
+    /// mutex, which waits for any in-flight `turn/start` to finish recording
+    /// its id before the seal is retained into `sealed_thread_ids`.
+    ///
+    /// **Only after the commit, and infallible.** Callers invoke this on the
+    /// committed arm only — the rollback and workspace-compensation arms keep
+    /// both entries, exactly like `forget_threads_for_deleted_cards`, because
+    /// their Cards still exist. It returns the number of map entries it
+    /// dropped (at most two per thread) and has no error path, so a miss can
+    /// never be surfaced as, or mistaken for, a database rollback.
+    pub fn forget_turn_state_for_deleted_threads(&self, thread_ids: &[String]) -> usize {
+        let mut dropped = 0_usize;
+        for thread_id in thread_ids {
+            if self.sealed_turn_threads.remove(thread_id).is_some() {
+                dropped += 1;
+            }
+            if self.active_turns.remove(thread_id).is_some() {
+                dropped += 1;
+            }
+        }
+        if dropped > 0 {
+            tracing::info!(
+                target = "shared_codex_daemon::forget_deleted_turn_state",
+                threads = thread_ids.len(),
+                dropped,
+                "dropped deletion-time turn bookkeeping for a committed delete"
+            );
+        }
+        dropped
+    }
+
     /// The `(thread_id, card_id)` pairs `resume_cached_threads` will iterate
     /// on the next daemon (re)connect. It is a snapshot, so it is what the
     /// loop CONSIDERS, not what it necessarily resumes: since #1444 R2 each

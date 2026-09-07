@@ -4140,6 +4140,14 @@ impl RecycledTrackDeletion {
             .turn_daemon
             .forget_threads_for_deleted_cards(&deleted_card_ids)
             .await;
+        // #1553 (hygiene) — same committed arm, the two sibling maps #1444 did
+        // not converge. `sealed_thread_ids` is exactly what quiesce sealed and
+        // interrupted for this delete; the error arm above returns before
+        // reaching here and keeps both entries, because its Cards still exist.
+        // Infallible and lock-free, like every other writer of those maps.
+        prepared
+            .turn_daemon
+            .forget_turn_state_for_deleted_threads(&sealed_thread_ids);
         // This sweep is post-commit. A failure here must not restore the
         // workspace: the track row is already gone and the trash path is now
         // authoritative.
