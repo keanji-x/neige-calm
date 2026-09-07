@@ -28,6 +28,9 @@ pub struct Harness {
     pub track: String,
 }
 impl Harness {
+    pub fn supervisor_socket(&self) -> PathBuf {
+        self.supervisor.sock().to_owned()
+    }
     pub async fn start() -> Self {
         let root = tempfile::tempdir().unwrap();
         let sql = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());

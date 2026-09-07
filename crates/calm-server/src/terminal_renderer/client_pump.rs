@@ -245,7 +245,7 @@ pub async fn run_client_pump(
         };
         let grant = if matches!(msg, ClientMsg::OwnerClaim) {
             match input_barrier.grant().await {
-                Some(guard) if input_scope.allowed().await => Some(guard),
+                Some(guard) if input_scope.control_allowed().await => Some(guard),
                 _ => {
                     let _ = per_client_tx.send(DaemonMsg::ProtocolError {
                         code: calm_session::ProtocolErrorCode::NotOwner,

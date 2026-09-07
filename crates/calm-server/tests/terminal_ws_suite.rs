@@ -18,3 +18,9 @@ mod ws_resolve_live_renderer;
 mod ws_terminal_e2e;
 #[path = "cases/ws_terminal_v2.rs"]
 mod ws_terminal_v2;
+
+#[path = "cases/task_terminal.rs"]
+mod task_terminal;
+
+#[path = "support/terminal_interaction.rs"]
+mod terminal_support;

@@ -5,7 +5,7 @@ impl TerminalInteraction {
     pub async fn input(
         &self,
         identity: &ToolCallIdentity,
-        terminal: &str,
+        target: &Target,
         observation: Uuid,
         request_key: &str,
         action: Value,
@@ -14,7 +14,10 @@ impl TerminalInteraction {
             !request_key.is_empty() && request_key.len() <= 128,
             "invalid input request key"
         );
-        let client = self.client(identity, terminal).await?;
+        let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
+        let terminal = resolved.binding.terminal_id.as_str();
+        let client = self.client(identity, &resolved.binding).await?;
         let _serial = client.serial.lock().await;
         let key = request_key.to_owned();
         let fingerprint = crate::routes::terminal_cards::stable_payload_hash(
@@ -43,7 +46,7 @@ impl TerminalInteraction {
                 .get(&observation)
                 .ok_or_else(|| anyhow::anyhow!("observation expired; observe again"))?;
             ensure!(
-                saved.binding == Self::binding(identity, terminal)
+                saved.binding == resolved.binding.key(identity)
                     && saved.connection == client.connection
                     && saved.created.elapsed() < Duration::from_secs(120),
                 "observation belongs to another connection or expired"

@@ -65,6 +65,7 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // an assistant has no plan of its own to name.
     "calm.track.rename",
     "calm.terminal.open",
+    "calm.terminal.resolve",
     "calm.terminal.observe",
     "calm.terminal.control",
     "calm.terminal.input",

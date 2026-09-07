@@ -10,15 +10,30 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 #[derive(Clone)]
 pub enum ClientInputScope {
     InteractiveUser,
-    Bound(Arc<dyn Fn() -> BoxFuture<'static, bool> + Send + Sync>),
+    Bound {
+        observe: Arc<dyn Fn() -> BoxFuture<'static, bool> + Send + Sync>,
+        control: Arc<dyn Fn() -> BoxFuture<'static, bool> + Send + Sync>,
+    },
 }
 impl ClientInputScope {
     pub async fn allowed(&self) -> bool {
         match self {
             Self::InteractiveUser => true,
-            Self::Bound(check) => tokio::time::timeout(std::time::Duration::from_secs(5), check())
-                .await
-                .unwrap_or(false),
+            Self::Bound { observe: check, .. } => {
+                tokio::time::timeout(std::time::Duration::from_secs(5), check())
+                    .await
+                    .unwrap_or(false)
+            }
+        }
+    }
+    pub async fn control_allowed(&self) -> bool {
+        match self {
+            Self::InteractiveUser => true,
+            Self::Bound { control, .. } => {
+                tokio::time::timeout(std::time::Duration::from_secs(5), control())
+                    .await
+                    .unwrap_or(false)
+            }
         }
     }
 }
@@ -65,7 +80,7 @@ impl WriteAuthority {
                 scope,
             } => {
                 let serial = barrier.grant().await?;
-                if !scope.allowed().await {
+                if !scope.control_allowed().await {
                     return None;
                 }
                 let allowed = match permission {

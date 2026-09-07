@@ -1,0 +1,507 @@
+//! Actual MCP and PTY paths with task/session metadata built by production helpers.
+use crate::terminal_support::Harness;
+use calm_server::card_role_cache::CardRoleCache;
+use calm_server::db::prelude::*;
+use calm_server::db::sqlite::{
+    card_with_claude_worker_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
+};
+use calm_server::model::{CardRole, NewTrack, new_id, now_ms};
+use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+use calm_server::terminal_renderer::RendererConfig;
+use serde_json::{Value, json};
+
+struct Worker {
+    task: String,
+    card: String,
+    session: String,
+    terminal: String,
+}
+async fn worker(h: &Harness, kind: &str, track: &str, viewer: bool) -> Worker {
+    let key = new_id();
+    let task = format!("{track}:{key}");
+    let card = new_id();
+    let session = new_id();
+    let op = SqlxOperationRepo::new(h.sql.pool().clone())
+        .insert_operation(
+            "terminal-worker",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task.clone()),
+                payload_hash: key.clone(),
+            },
+            json!({"track_id":track,"cmd":"true","idempotency_key":task}),
+        )
+        .await
+        .unwrap();
+    // This fixture records an already-finished spawn operation; it never drives
+    // a provider adapter or starts a real model.
+    sqlx::query("UPDATE operations SET phase='succeeded' WHERE id=?1")
+        .bind(&op)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    let roles = CardRoleCache::new();
+    let theme = calm_server::routes::theme::RequestTheme::default_dark();
+    let cwd = h.root.path().to_str().unwrap().to_owned();
+    let (_, terminal) = match kind {
+        "codex" => {
+            let (c, t, _) = card_with_codex_create_tx(
+                &mut tx,
+                card.clone(),
+                &session,
+                Some(&op),
+                track.into(),
+                None,
+                None,
+                cwd.clone(),
+                json!({}),
+                None,
+                None,
+                None,
+                CardRole::Worker,
+                true,
+                &roles,
+                theme,
+            )
+            .await
+            .unwrap();
+            (c, t)
+        }
+        "claude" => card_with_claude_worker_create_tx(
+            &mut tx,
+            card.clone(),
+            &session,
+            Some(&op),
+            track.into(),
+            None,
+            None,
+            "/bin/sh".into(),
+            cwd.clone(),
+            json!({}),
+            None,
+            None,
+            None,
+            "unused-settings".into(),
+            new_id(),
+            &roles,
+            theme,
+        )
+        .await
+        .unwrap(),
+        "terminal" => card_with_terminal_create_tx(
+            &mut tx,
+            card.clone(),
+            &session,
+            Some(&op),
+            track.into(),
+            None,
+            None,
+            "/bin/sh".into(),
+            cwd.clone(),
+            json!({}),
+            CardRole::Worker,
+            true,
+            &roles,
+            theme,
+        )
+        .await
+        .unwrap(),
+        _ => panic!("unsupported fixture kind"),
+    };
+    tx.commit().await.unwrap();
+    h.sql
+        .session_projection_set_status_for_card(
+            &card,
+            calm_server::session_projection_repo::WorkerSessionState::Running,
+        )
+        .await
+        .unwrap();
+    if viewer {
+        let mut config=RendererConfig{terminal_id:terminal.id.clone(),cols:80,rows:24,buffer_bytes:8192,
+            terminal_fg:(220,220,220),terminal_bg:(15,20,24),program:"/bin/sh".into(),
+            args:vec!["-c".into(),"printf 'WORKER_READY\\n'; while IFS= read -r line; do printf 'WORKER_REPLY:%s\\n' \"$line\"; done".into()],
+            envs:vec![],cwd,supervisor_sock:std::path::PathBuf::new()};
+        config.supervisor_sock = h.supervisor_socket();
+        h.state.terminal_renderer.ensure(config).await.unwrap();
+    }
+    // Stamp the task/worker association after its viewer exists, as the scheduler does.
+    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,'test','[]','running',?5,'user',?6,?6)")
+        .bind(&task).bind(track).bind(key).bind(kind).bind(&card).bind(now_ms()).execute(h.sql.pool()).await.unwrap();
+    Worker {
+        task,
+        card,
+        session,
+        terminal: terminal.id,
+    }
+}
+async fn snapshot(h: &Harness, target: Value) -> Value {
+    let mut args = target;
+    args["wait_ms"] = json!(50);
+    h.ok("calm.terminal.observe", args).await
+}
+async fn stop(h: &Harness, w: &Worker) {
+    h.state.terminal_renderer.drop_entry(&w.terminal).await;
+}
+
+#[tokio::test]
+async fn each_task_kind_resolves_observes_and_inputs_its_own_terminal() {
+    let h = Harness::start().await;
+    for kind in ["terminal", "codex", "claude"] {
+        let w = worker(&h, kind, &h.track, true).await;
+        let resolved = h
+            .ok("calm.terminal.resolve", json!({"task_id":w.task}))
+            .await;
+        assert_eq!(resolved["available"], true);
+        assert_eq!(resolved["card_kind"], kind);
+        assert_eq!(resolved["terminal_id"], w.terminal);
+        assert_eq!(resolved["worker_session_id"], w.session);
+        let viewed = h
+            .call(
+                "calm.terminal.observe",
+                json!({"task_id":w.task,"wait_ms":50}),
+            )
+            .await;
+        assert!(viewed.get("error").is_none(), "{viewed}");
+        assert!(
+            viewed["result"]["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "image")
+        );
+        let meta = &viewed["result"]["structuredContent"];
+        assert_eq!(meta["task"]["task_id"], w.task);
+        assert_eq!(meta["card_id"], w.card);
+        h.ok(
+            "calm.terminal.control",
+            json!({"task_id":w.task,"action":"claim"}),
+        )
+        .await;
+        let before = snapshot(&h, json!({"task_id":w.task})).await;
+        let typed=h.ok("calm.terminal.input",json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"text","action":{"type":"text","text":"hello"}})).await;
+        assert_eq!(typed["outcome"], "written");
+        let before = snapshot(&h, json!({"terminal_id":w.terminal})).await;
+        let entered=h.ok("calm.terminal.input",json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"enter","action":{"type":"key","key":"Enter"}})).await;
+        assert_eq!(entered["outcome"], "written");
+        let after = h.observe_text(&w.terminal, "WORKER_REPLY:hello").await;
+        assert_eq!(before["terminal_session_id"], after["terminal_session_id"]);
+        stop(&h, &w).await;
+    }
+}
+
+#[tokio::test]
+async fn foreign_track_task_and_terminal_are_both_refused() {
+    let h = Harness::start().await;
+    let own = h.sql.track_get(&h.track).await.unwrap().unwrap();
+    let foreign = h
+        .sql
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: own.area_id,
+            title: "foreign".into(),
+            sort: None,
+            cwd: h.root.path().to_str().unwrap().into(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let w = worker(&h, "claude", foreign.id.as_str(), true).await;
+    for target in [json!({"task_id":w.task}), json!({"terminal_id":w.terminal})] {
+        let result = h.call("calm.terminal.observe", target).await;
+        assert!(result.get("error").is_some(), "{result}");
+    }
+    stop(&h, &w).await;
+}
+
+#[tokio::test]
+async fn task_without_a_viewer_reports_unavailable_without_spawning() {
+    let h = Harness::start().await;
+    let w = worker(&h, "codex", &h.track, false).await;
+    let result = h
+        .ok("calm.terminal.resolve", json!({"task_id":w.task}))
+        .await;
+    assert_eq!(result["available"], false);
+    assert_eq!(result["controllable"], false);
+    assert_eq!(result["terminal_id"], w.terminal);
+    assert!(
+        h.call("calm.terminal.observe", json!({"task_id":w.task}))
+            .await
+            .get("error")
+            .is_some()
+    );
+    assert!(h.state.terminal_renderer.get(&w.terminal).is_none());
+    assert!(
+        h.sql
+            .terminal_get(&w.terminal)
+            .await
+            .unwrap()
+            .unwrap()
+            .pid
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn selectors_are_exclusive_and_planner_cards_are_not_worker_terminals() {
+    let h = Harness::start().await;
+    for args in [
+        json!({}),
+        json!({"task_id":"x","terminal_id":"y"}),
+        json!({"task_id":""}),
+    ] {
+        let reply = h.call("calm.terminal.resolve", args).await;
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+    }
+    let planner = h
+        .sql
+        .cards_by_track(&h.track)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "codex")
+        .unwrap();
+    let terminal = h
+        .sql
+        .terminal_get_by_card(planner.id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let reply = h
+        .call("calm.terminal.resolve", json!({"terminal_id":terminal.id}))
+        .await;
+    assert!(reply.get("error").is_some());
+}
+
+#[tokio::test]
+async fn task_completion_revokes_control_but_preserves_current_output() {
+    let h = Harness::start().await;
+    let w = worker(&h, "claude", &h.track, true).await;
+    h.ok(
+        "calm.terminal.control",
+        json!({"task_id":w.task,"action":"claim"}),
+    )
+    .await;
+    let before = snapshot(&h, json!({"task_id":w.task})).await;
+    sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
+        .bind(&w.task)
+        .bind(now_ms())
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    let after = snapshot(&h, json!({"task_id":w.task})).await;
+    assert_eq!(before["terminal_session_id"], after["terminal_session_id"]);
+    for target in [json!({"task_id":w.task}), json!({"terminal_id":w.terminal})] {
+        let mut args = target;
+        args["observation_id"] = before["observation_id"].clone();
+        args["request_id"] = json!("late");
+        args["action"] = json!({"type":"text","text":"wrong"});
+        assert!(
+            h.call("calm.terminal.input", args)
+                .await
+                .get("error")
+                .is_some()
+        );
+    }
+    h.ok(
+        "calm.terminal.control",
+        json!({"task_id":w.task,"action":"release"}),
+    )
+    .await;
+    stop(&h, &w).await;
+}
+
+#[tokio::test]
+async fn worker_session_replacement_invalidates_previous_task_observations() {
+    use calm_server::db::sqlite::session_supersede_and_start_tx;
+    use calm_server::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
+    let h = Harness::start().await;
+    let w = worker(&h, "codex", &h.track, true).await;
+    h.ok(
+        "calm.terminal.control",
+        json!({"task_id":w.task,"action":"claim"}),
+    )
+    .await;
+    let before = snapshot(&h, json!({"task_id":w.task})).await;
+    let old = h
+        .sql
+        .session_get_by_id(&w.session.clone().into())
+        .await
+        .unwrap()
+        .unwrap();
+    let next = new_id();
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    session_supersede_and_start_tx(
+        &mut tx,
+        &w.session,
+        WorkerSessionInit {
+            id: next.clone(),
+            card_id: w.card.clone(),
+            kind: WorkerSessionKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Running,
+            terminal_run_id: Some(w.terminal.clone()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: old.spawn_op_id,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let resolved = h
+        .ok("calm.terminal.resolve", json!({"task_id":w.task}))
+        .await;
+    assert_eq!(resolved["worker_session_id"], next);
+    h.ok(
+        "calm.terminal.control",
+        json!({"task_id":w.task,"action":"claim"}),
+    )
+    .await;
+    let fresh = snapshot(&h, json!({"task_id":w.task})).await;
+    assert_ne!(before["connection_id"], fresh["connection_id"]);
+    let rejected=h.call("calm.terminal.input",json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"old","action":{"type":"text","text":"stale"}})).await;
+    assert!(rejected.get("error").is_some(), "{rejected}");
+    let accepted=h.ok("calm.terminal.input",json!({"task_id":w.task,"observation_id":fresh["observation_id"],"request_id":"new","action":{"type":"text","text":"current"}})).await;
+    assert_eq!(accepted["outcome"], "written");
+    stop(&h, &w).await;
+}
+
+#[tokio::test]
+async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() {
+    use calm_types::task_recovery::{
+        TASK_IN_TRACK_ROUTE, TaskRecoveryConstraint, TaskRecoveryRequest,
+    };
+    let h = Harness::start().await;
+    let w = worker(&h, "terminal", &h.track, true).await;
+    h.ok(
+        "calm.terminal.control",
+        json!({"task_id":w.task,"action":"claim"}),
+    )
+    .await;
+    let task = h.sql.task_get(&w.task).await.unwrap().unwrap();
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    sqlx::query("UPDATE tasks SET status='failed',finished_at_ms=?2 WHERE id=?1")
+        .bind(&w.task)
+        .bind(now_ms())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let recovery = calm_server::db::sqlite::task_recovery_allocate_tx(
+        &mut tx,
+        &h.track,
+        &task.key,
+        &TaskRecoveryRequest {
+            expected_attempt_id: w.task.clone(),
+            idempotency_key: "next-generation".into(),
+            reason: "test explicit new attempt".into(),
+        },
+        "fingerprint",
+        &TaskRecoveryConstraint::V1 {
+            refs: vec![calm_types::event::TaskContextRef {
+                track_id: h.track.clone().into(),
+                block_id: "b_1000".into(),
+                rev: 1,
+                hash: "0".repeat(64),
+                is_root: true,
+            }],
+            spawn: TASK_IN_TRACK_ROUTE.into(),
+            declared_by: "user".into(),
+        },
+        &calm_server::ids::ActorId::User,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_ne!(recovery.attempt_id, w.task);
+    for target in [json!({"task_id":w.task}), json!({"terminal_id":w.terminal})] {
+        assert!(
+            h.call("calm.terminal.observe", target)
+                .await
+                .get("error")
+                .is_some()
+        );
+    }
+    h.ok(
+        "calm.terminal.control",
+        json!({"task_id":w.task,"action":"detach"}),
+    )
+    .await;
+    stop(&h, &w).await;
+}
+
+#[tokio::test]
+async fn reassigned_task_worker_and_manual_restart_do_not_bypass_execution_binding() {
+    let h = Harness::start().await;
+    let old = worker(&h, "claude", &h.track, true).await;
+    let other = worker(&h, "claude", &h.track, true).await;
+    sqlx::query("UPDATE tasks SET worker_card_id=?2 WHERE id=?1")
+        .bind(&old.task)
+        .bind(&other.card)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    for target in [
+        json!({"task_id":old.task}),
+        json!({"terminal_id":old.terminal}),
+    ] {
+        assert!(
+            h.call("calm.terminal.resolve", target)
+                .await
+                .get("error")
+                .is_some()
+        );
+    }
+    let restarted = worker(&h, "claude", &h.track, true).await;
+    // The current task still names this card, but its replaced session
+    // no longer carries the owning task operation. Direct ID must not bypass it.
+    sqlx::query("UPDATE worker_sessions SET spawn_op_id=NULL WHERE id=?1")
+        .bind(&restarted.session)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    assert!(
+        h.call(
+            "calm.terminal.resolve",
+            json!({"terminal_id":restarted.terminal})
+        )
+        .await
+        .get("error")
+        .is_some()
+    );
+    stop(&h, &old).await;
+    stop(&h, &other).await;
+    stop(&h, &restarted).await;
+}
+
+#[tokio::test]
+async fn missing_task_projection_cannot_be_reclassified_as_a_manual_terminal() {
+    let h = Harness::start().await;
+    let w = worker(&h, "codex", &h.track, true).await;
+    assert_eq!(
+        h.ok("calm.terminal.resolve", json!({"task_id":w.task}))
+            .await["available"],
+        true
+    );
+    sqlx::query("DELETE FROM tasks WHERE id=?1")
+        .bind(&w.task)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    let result = h
+        .call("calm.terminal.resolve", json!({"terminal_id":w.terminal}))
+        .await;
+    stop(&h, &w).await;
+    assert!(
+        result.get("error").is_some(),
+        "lost task row must not turn its Worker into a manual terminal: {result}"
+    );
+}

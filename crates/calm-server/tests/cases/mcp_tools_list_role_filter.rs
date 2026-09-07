@@ -31,6 +31,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.terminal.input",
         "calm.terminal.observe",
         "calm.terminal.open",
+        "calm.terminal.resolve",
         // #1211 S3 — the planner agent's naming write. Added as an entry, not by
         // loosening the assertion: the exact set is the contract.
         "calm.track.rename",
