@@ -36,11 +36,19 @@ at a time. These principles govern the remaining #1501 slices:
   scope, integration, experiments and durable context. Finish the focused tests,
   independent reviews and required CI before the authorized squash merge.
 
-The next candidate scenario is A producing a declared output and B consuming its
-verified exact version in the same Track. Establish the remaining gap on current
-main first. Initially constrain the provider, source and consumer count; ordinary
-handoff should need no temporary cwd from the Planner, extra terminal transport
-node or manual dependency repair. Real merge conflicts remain explicit decisions.
+The current slice is authorized declaration → automatic preparation/start →
+Planner confirmation from the actual attempt. Clarify existing startup ownership
+before adding new machinery: Track Working or a scheduler claim alone does not
+prove Worker execution. Keep readiness, release and User authority effective.
+
+The approved follow-up queue in #1501 is: remove one class of wake with no new
+decision; make existing long-task activity useful for deciding whether to wait or
+intervene; repair one retained failed candidate and reverify it; bind one verified
+file output to its consumer. Choose and complete one bounded scenario at a time.
+Exact file delivery remains a priority beyond reported-result continuation; do
+not restart the whole S2 implementation to deliver its first useful path. Ordinary
+handoff should need no temporary cwd from the Planner, extra transport node or
+manual dependency repair. Real merge conflicts remain explicit decisions.
 
 A task is a continuing delegation. After execution is authorized, the system
 advances that work until its contract is satisfied, the user withdraws it, or an

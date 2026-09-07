@@ -6534,7 +6534,59 @@ async fn planning_track_promotes_to_working_on_claim() {
         "task block write with no lifecycle arg leaves the track Planning"
     );
 
-    scheduler.schedule_track(boot.track_id.clone()).await;
+    let pending = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    assert_eq!(pending["tasks"][0]["status"], "pending");
+    let attempt_id = pending["tasks"][0]["attempt_id"].clone();
+    assert!(attempt_id.as_str().is_some_and(|id| !id.is_empty()));
+
+    // Observe the production claim before the provider can start. Track Working
+    // is already true here, but the Planner's attempt read must say Dispatched.
+    let claimed = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    scheduler.set_post_claim_drive_test_hook(PostClaimDriveTestHook {
+        claimed: claimed.clone(),
+        resume: resume.clone(),
+    });
+    let scheduled = tokio::spawn({
+        let scheduler = scheduler.clone();
+        let track = boot.track_id.clone();
+        async move { scheduler.schedule_track(track).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), claimed.notified())
+        .await
+        .expect("production claim must reach the post-claim hook");
+    let dispatched = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    assert_eq!(dispatched["tasks"][0]["attempt_id"], attempt_id);
+    assert_eq!(dispatched["tasks"][0]["status"], "dispatched");
+    assert!(dispatched["tasks"][0]["worker_card_id"].is_null());
+    assert_eq!(operation_count(&boot, "codex-worker").await, 0);
+    assert_eq!(
+        boot.repo
+            .track_get(boot.track_id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle,
+        TrackLifecycle::Working,
+    );
+    resume.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), scheduled)
+        .await
+        .expect("provider startup must settle")
+        .unwrap();
+    let running = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    assert_eq!(running["tasks"][0]["attempt_id"], attempt_id);
+    assert_eq!(running["tasks"][0]["status"], "running");
+    assert_eq!(
+        running["tasks"][0]["worker_card_id"],
+        boot.worker_card_id.as_str()
+    );
     let row = task_row(&boot, "p1").await;
     assert_eq!(
         row.status,
