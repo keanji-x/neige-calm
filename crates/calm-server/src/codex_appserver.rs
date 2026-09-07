@@ -34,6 +34,8 @@
 //! handle plus a [`NotificationStream`]. The reader demultiplexes incoming
 //! frames:
 //!
+//!   * **server requests** (method + id) use a separate bounded, connection-owned
+//!     handler/reply path; no handler means explicit refusal,
 //!   * **responses** (frames with an `id` we are waiting on) are routed to
 //!     the matching request via a per-id [`oneshot`] channel held in a
 //!     shared pending-map, and
@@ -59,6 +61,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 
 mod client_transport;
+mod server_requests;
+pub use server_requests::{
+    DynamicToolCallParams, DynamicToolCallResponse, DynamicToolRequest, DynamicToolText,
+    ServerRequestId,
+};
+#[cfg(test)]
+mod server_request_tests;
 use client_transport::{PendingRequest, TransportAbort};
 
 #[cfg(feature = "fixtures")]
@@ -683,7 +692,8 @@ type WsSink = Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<UnixStre
 /// called concurrently, but you hold a single handle.
 pub struct CodexAppServer {
     sink: WsSink,
-    transport: TransportAbort,
+    transport: Arc<TransportAbort>,
+    server_requests: Arc<server_requests::Registration>,
     pending: Pending,
     next_id: AtomicU64,
     /// Per-request response timeout. This is a leak/wedge backstop for a
@@ -780,6 +790,12 @@ fn turn_start_params(
 }
 
 impl CodexAppServer {
+    /// Register the sole dynamic-tool consumer for this connection. Default is
+    /// explicit refusal. This does not register tools on any provider thread.
+    pub fn take_dynamic_tool_requests(&self) -> Result<mpsc::Receiver<DynamicToolRequest>> {
+        self.server_requests.take()
+    }
+
     /// Test-only: build a fully-constructed [`CodexAppServer`] over an
     /// in-process `UnixStream::pair` WebSocket handshake, returning the
     /// client + its [`NotificationStream`] + the *server* end (which the
@@ -799,15 +815,25 @@ impl CodexAppServer {
         let (client_ws, _resp) = client_res.expect("client handshake");
         let server = server_res.expect("server handshake");
 
-        let transport = TransportAbort::new(client_ws.get_ref()).expect("retain owned socket");
+        let transport =
+            Arc::new(TransportAbort::new(client_ws.get_ref()).expect("retain owned socket"));
         let (write, read) = client_ws.split();
         let sink: WsSink = Arc::new(Mutex::new(write));
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
-        let reader = tokio::spawn(reader_loop(read, pending.clone(), notif_tx));
+        let server_requests = Arc::new(server_requests::Registration::default());
+        let reader = tokio::spawn(reader_loop(
+            read,
+            pending.clone(),
+            notif_tx,
+            sink.clone(),
+            transport.clone(),
+            server_requests.clone(),
+        ));
         let client = Self {
             sink,
             transport,
+            server_requests,
             pending,
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -882,8 +908,10 @@ impl CodexAppServer {
             }
         };
 
-        let transport = TransportAbort::new(ws.get_ref())
-            .map_err(|error| CalmError::CodexAppServer(format!("retain owned socket: {error}")))?;
+        let transport =
+            Arc::new(TransportAbort::new(ws.get_ref()).map_err(|error| {
+                CalmError::CodexAppServer(format!("retain owned socket: {error}"))
+            })?);
         let (write, read) = ws.split();
         let sink: WsSink = Arc::new(Mutex::new(write));
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
@@ -892,13 +920,22 @@ impl CodexAppServer {
         // module.
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
 
-        let reader = tokio::spawn(reader_loop(read, pending.clone(), notif_tx));
+        let server_requests = Arc::new(server_requests::Registration::default());
+        let reader = tokio::spawn(reader_loop(
+            read,
+            pending.clone(),
+            notif_tx,
+            sink.clone(),
+            transport.clone(),
+            server_requests.clone(),
+        ));
 
         tracing::debug!(sock = %sock_path.display(), "codex app-server: connected");
 
         let client = Self {
             sink,
             transport,
+            server_requests,
             pending,
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -1288,8 +1325,19 @@ async fn reader_loop(
     mut read: futures_util::stream::SplitStream<WebSocketStream<UnixStream>>,
     pending: Pending,
     notif_tx: mpsc::UnboundedSender<Notification>,
+    sink: WsSink,
+    transport: Arc<TransportAbort>,
+    registration: Arc<server_requests::Registration>,
 ) {
-    while let Some(frame) = read.next().await {
+    let mut requests = server_requests::Dispatch::new(sink, transport, registration);
+    loop {
+        let frame = tokio::select! {
+            finished = requests.tasks.join_next() => {
+                if matches!(finished, Some(Ok(true))) { continue; }
+                break;
+            }
+            frame = read.next() => match frame { Some(frame) => frame, None => break },
+        };
         let msg = match frame {
             Ok(m) => m,
             Err(e) => {
@@ -1317,14 +1365,15 @@ async fn reader_loop(
             }
         };
 
-        // A frame with an `id` we are tracking is a response. Everything
-        // else (a `method` with no tracked id, or an untracked id) is a
-        // notification we surface to the consumer.
-        //
-        // We emit integer ids, but the protocol permits string ids, so
-        // match an integer first and fall back to a string-encoded integer
-        // (defensive — keeps correlation robust if the server ever echoes
-        // the id as a string).
+        // Bidirectional IDs are independent: a server request must never
+        // consume a pending client RPC with the same ID.
+        if obj.get("method").is_some() && obj.get("id").is_some() {
+            if !requests.accept(&obj) {
+                break;
+            }
+            continue;
+        }
+        // We emit integer IDs, accepting string-encoded integers in responses.
         if let Some(id) = obj.get("id").and_then(|v| {
             v.as_u64()
                 .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
@@ -1489,16 +1538,26 @@ mod tests {
         let (client_ws, _resp) = client_res.expect("client handshake");
         let server = server_res.expect("server handshake");
 
-        let transport = TransportAbort::new(client_ws.get_ref()).expect("retain owned socket");
+        let transport =
+            Arc::new(TransportAbort::new(client_ws.get_ref()).expect("retain owned socket"));
         let (write, read) = client_ws.split();
         let sink: WsSink = Arc::new(Mutex::new(write));
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
-        let reader = tokio::spawn(reader_loop(read, pending.clone(), notif_tx));
+        let server_requests = Arc::new(server_requests::Registration::default());
+        let reader = tokio::spawn(reader_loop(
+            read,
+            pending.clone(),
+            notif_tx,
+            sink.clone(),
+            transport.clone(),
+            server_requests.clone(),
+        ));
 
         let client = CodexAppServer {
             sink,
             transport,
+            server_requests,
             pending,
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
