@@ -282,6 +282,10 @@ struct SupervisorConfig {
     stop_grace: Duration,
     calm_listen: Option<String>,
     persist_identity_to: Option<PathBuf>,
+    /// #1282 — the plugin-autospawn entry of the `/upgrade/apply` healthcheck
+    /// boot budget for this child. Required, not defaulted: it is a term of a
+    /// deadline whose under-estimation rolls back healthy boots.
+    boot_plugin_budget: Duration,
 }
 
 #[derive(Clone)]
@@ -373,6 +377,7 @@ fn calm_server_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
         stop_grace: cfg.timing.stop_grace,
         calm_listen: Some(cfg.child.calm_listen.clone()),
         persist_identity_to: None,
+        boot_plugin_budget: cfg.timing.boot_plugin_budget,
     }
 }
 
@@ -390,6 +395,7 @@ fn proc_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
         stop_grace: cfg.timing.stop_grace,
         calm_listen: None,
         persist_identity_to: Some(cfg.calm_data_dir_resolved()),
+        boot_plugin_budget: cfg.timing.boot_plugin_budget,
     }
 }
 

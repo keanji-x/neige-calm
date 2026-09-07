@@ -13,6 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+# #1282 — the boot-autospawn budget the host must cover before the child binds
+# its listener. Bottom-of-DAG vocabulary crate (no sqlx/axum/tokio); the host
+# CALLS `boot_autospawn_ceiling` rather than copying its number.
+calm-types = { path = "../calm-types" }
 axum = { version = "0.8", features = ["macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }

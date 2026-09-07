@@ -60,6 +60,13 @@ pub(crate) struct ChildConfig {
 pub(crate) struct TimingConfig {
     pub stop_grace: Duration,
     pub restart_delay: Duration,
+    /// #1282 — how much of the `/upgrade/apply` healthcheck deadline is
+    /// reserved for the child's plugin-autospawn phase, which runs before it
+    /// binds its HTTP listener. Defaults to
+    /// [`crate::apply::DEFAULT_BOOT_PLUGIN_BUDGET`]; raise it with
+    /// `[timing] boot_plugin_budget_ms` on a deployment with more app plugins
+    /// than the default assumes.
+    pub boot_plugin_budget: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +153,7 @@ struct ConfigBuilder {
     child_extra_args: Option<Vec<String>>,
     timing_stop_grace_ms: Option<u64>,
     timing_restart_delay_ms: Option<u64>,
+    timing_boot_plugin_budget_ms: Option<u64>,
     systemd_scope: Option<SystemdScope>,
     systemd_unit_path: Option<String>,
     systemd_unit_name: Option<String>,
@@ -225,6 +233,7 @@ impl AppConfig {
             timing: TimingConfig {
                 stop_grace: Duration::from_millis(5000),
                 restart_delay: Duration::from_millis(1000),
+                boot_plugin_budget: crate::apply::DEFAULT_BOOT_PLUGIN_BUDGET,
             },
             systemd: SystemdConfig {
                 scope: SystemdScope::User,
@@ -340,6 +349,9 @@ impl AppConfig {
         }
         if let Some(value) = builder.timing_restart_delay_ms {
             cfg.timing.restart_delay = Duration::from_millis(value);
+        }
+        if let Some(value) = builder.timing_boot_plugin_budget_ms {
+            cfg.timing.boot_plugin_budget = Duration::from_millis(value);
         }
         if let Some(value) = builder.systemd_scope {
             cfg.systemd.scope = value;
@@ -534,6 +546,13 @@ extra_args = []
 [timing]
 stop_grace_ms = 5000
 restart_delay_ms = 1000
+# #1282 — part of the /upgrade/apply healthcheck deadline, covering the child's
+# plugin-autospawn phase (it runs before the child binds its HTTP listener).
+# Defaults to calm-server's own boot_autospawn_ceiling(8 app plugins). Raise it
+# if this deployment enables more app plugins than that; over-estimating only
+# delays rollback of an alive-but-never-ready boot, while under-estimating rolls
+# back a healthy one.
+# boot_plugin_budget_ms = 311500
 
 [systemd]
 scope = "user"
@@ -641,6 +660,9 @@ fn set_value(
         ("child", "extra_args") => builder.child_extra_args = Some(parse_string_array(value)?),
         ("timing", "stop_grace_ms") => builder.timing_stop_grace_ms = Some(parse_u64(value)?),
         ("timing", "restart_delay_ms") => builder.timing_restart_delay_ms = Some(parse_u64(value)?),
+        ("timing", "boot_plugin_budget_ms") => {
+            builder.timing_boot_plugin_budget_ms = Some(parse_u64(value)?)
+        }
         ("systemd", "scope") => builder.systemd_scope = Some(parse_systemd_scope(value)?),
         ("systemd", "unit_path") => builder.systemd_unit_path = Some(parse_string(value)?),
         ("systemd", "unit_name") => builder.systemd_unit_name = Some(parse_string(value)?),
