@@ -2910,6 +2910,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
     let classified = TASK_BOUND_ADAPTER_KINDS
         .into_iter()
         .chain(NON_TASK_BOUND_ADAPTER_KINDS)
+        .chain(calm_server::operation::POST_EXECUTION_TASK_BOUND_ADAPTER_KINDS)
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
         registered, classified,

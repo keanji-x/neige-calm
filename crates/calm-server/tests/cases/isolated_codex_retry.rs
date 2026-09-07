@@ -12,7 +12,12 @@ use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
 use tower::ServiceExt;
 
-async fn rest(fx: &Fixture, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
+pub(super) async fn rest(
+    fx: &Fixture,
+    method: &str,
+    path: &str,
+    body: Value,
+) -> (StatusCode, Value) {
     let response = calm_server::routes::protected_router()
         .with_state(fx.state.clone())
         .layer(Extension(crate::task_projection_acceptance::principal()))
@@ -527,4 +532,4 @@ async fn successor_claim_and_preparation_recheck_stop_and_refuse_old_callbacks()
 mod files;
 
 #[path = "isolated_codex_recovery_wake.rs"]
-mod recovery_wake;
+pub(super) mod recovery_wake;

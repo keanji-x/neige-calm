@@ -6,7 +6,7 @@ use calm_server::harness::{
 };
 use calm_server::operation::{OperationRepo, SqlxOperationRepo};
 
-async fn planner(fx: &Fixture) -> PlannerHarness {
+pub(crate) async fn planner(fx: &Fixture) -> PlannerHarness {
     planner_with_daemon(
         fx,
         calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(fx.boot.repo.clone()),

@@ -243,6 +243,7 @@ automerge = "0.9"
 # Local crates
 # #679 PR1 — vocabulary + execution-contract layers. calm-server re-exports
 # the moved types (`pub use calm_types::…`) so external paths are unchanged.
+calm-task-artifacts = { path = "../calm-task-artifacts" }
 calm-types = { path = "../calm-types" }
 calm-exec = { path = "../calm-exec" }
 calm-truth = { path = "../calm-truth" }

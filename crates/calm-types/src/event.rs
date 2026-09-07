@@ -255,7 +255,7 @@ impl EventScope {
 /// Bump this together with a migration default whenever clients must gate on a
 /// new persisted wire shape; otherwise old clients can advance past events they
 /// cannot parse.
-pub const SYNC_EVENT_VERSION: u32 = 18;
+pub const SYNC_EVENT_VERSION: u32 = 19;
 
 /// #1505 PR2 — what happened to one entry in the harness pending queue.
 ///
@@ -777,6 +777,12 @@ pub enum Event {
 
     /// Kernel-owned execution cleanup settled after an isolated task failure.
     /// This is a prompt to re-read current recovery capability, not retry authority.
+    /// Exact immutable-file publication settled; does not change task business status.
+    #[serde(rename = "task.file_publication_settled")]
+    TaskFilePublicationSettled {
+        task_id: String,
+        operation_id: String,
+    },
     /// Persisted atomically with the failed Operation after confirmed stop.
     #[serde(rename = "task.execution_settled")]
     TaskExecutionSettled {
@@ -1313,7 +1319,9 @@ impl Event {
             // Issue #644 PR-B — like the other task-lifecycle signals:
             // no plugin / entity classification; consumers filter via the
             // events kind clause + the envelope's track scope.
-            Event::TaskDispatched { .. } | Event::TaskExecutionSettled { .. } => EventMetadata {
+            Event::TaskDispatched { .. }
+            | Event::TaskExecutionSettled { .. }
+            | Event::TaskFilePublicationSettled { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: None,
@@ -1424,6 +1432,7 @@ impl Event {
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
             Event::TaskExecutionSettled { .. } => "task.execution_settled",
+            Event::TaskFilePublicationSettled { .. } => "task.file_publication_settled",
             Event::TaskContextFrozen { .. } => "task.context_frozen",
             Event::TaskContextAdvanced { .. } => "task.context_advanced",
             Event::WorkspaceLeased { .. } => "workspace.leased",
@@ -1609,6 +1618,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TaskFailed { .. }
         | Event::TaskDispatched { .. }
         | Event::TaskExecutionSettled { .. }
+        | Event::TaskFilePublicationSettled { .. }
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. }
         | Event::TaskGateResult { .. } => vec!["*".into()],

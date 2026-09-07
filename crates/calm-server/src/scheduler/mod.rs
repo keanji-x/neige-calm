@@ -39,6 +39,7 @@
 //! backstop. `Event::TaskDispatched` is appended IN the claim tx so
 //! projections stay purely event-sourced (§5.6).
 
+mod file_delivery;
 mod worker_failure;
 pub(crate) use worker_failure::fail_worker_task_tx;
 
@@ -1028,6 +1029,7 @@ impl Scheduler {
             return Ok(());
         };
         let tasks = self.repo.tasks_by_track(track_id.as_str()).await?;
+        self.drive_file_producers(&tasks);
         // §6.2 trigger 2 — the emit-tx flip already moved gated rows to
         // `verifying`; this pass (poked by the `task.completed`
         // envelope) drives each one's gate. Fire-and-forget: a gate can
@@ -1132,6 +1134,24 @@ impl Scheduler {
         if let Some(hook) = post_claim_hook {
             hook.claimed.notify_one();
             hook.resume.notified().await;
+        }
+        if matches!(
+            crate::file_delivery::selection(&frozen),
+            Ok(Some(
+                calm_types::task_execution::FileDelivery::Consumer { .. }
+            ))
+        ) {
+            // Claim/budget remain serialized; file IO and the existing Operation
+            // wait must not hold the Track lock. Keep the same permit/singleflight.
+            let this = self.clone();
+            let track = track.clone();
+            tokio::spawn(async move {
+                let (_inflight, _permit) = (_inflight, _permit);
+                if let Err(error) = this.drive_spawn(&frozen, &track).await {
+                    tracing::warn!(task_id=%frozen.id, %error, "file consumer drive failed; sweep will reconcile");
+                }
+            });
+            return true;
         }
         if let Err(e) = self.drive_spawn(&frozen, track).await {
             tracing::warn!(
@@ -1292,6 +1312,9 @@ impl Scheduler {
                         // Post-claim re-read = the frozen row (review F2).
                         // Gone row = concurrent track delete; treat as lost.
                         let frozen = task_get_tx(tx, &task_id).await?.ok_or_else(race_lost_err)?;
+                        if crate::file_delivery::bind_claim_tx(tx, &frozen).await.is_err() {
+                            return Err(race_lost_err());
+                        }
                         // Round-2 review F1: revalidate the §5.2 ready
                         // predicate against the track's CURRENT plan in the
                         // same tx. The pass's ready set was computed before
@@ -2013,6 +2036,15 @@ impl Scheduler {
         }
         self.sweep_timeout_worker_cleanups().await;
         let mut pending_tracks: BTreeSet<String> = BTreeSet::new();
+        // A declared output is publication intent even before a consumer exists.
+        // Repair a crash between Operation settlement and durable Planner notification.
+        if let Some(pool) = self.repo.sqlite_pool() {
+            match sqlx::query_scalar::<_, String>("SELECT DISTINCT t.track_id FROM current_tasks t WHERE t.status='done' AND json_extract(t.context_json,'$.neige_execution.file_delivery.role')='producer' AND NOT EXISTS(SELECT 1 FROM events e WHERE e.kind='task.file_publication_settled' AND json_extract(e.payload,'$.task_id')=t.id)")
+                .fetch_all(&pool).await {
+                Ok(tracks) => pending_tracks.extend(tracks),
+                Err(error) => tracing::warn!(%error, "file publication sweep failed"),
+            }
+        }
         let tasks = match self.repo.tasks_nonterminal().await {
             Ok(tasks) => tasks,
             Err(e) => {

@@ -730,6 +730,11 @@ export const taskFailedSchema = z.object({
 });
 
 /** Failed execution cleanup settled; this does not grant recovery authority. */
+export const taskFilePublicationSettledSchema = z.object({
+  ev: z.literal('task.file_publication_settled'),
+  data: z.object({ task_id: z.string(), operation_id: z.string() }),
+});
+
 export const taskExecutionSettledSchema = z.object({
   ev: z.literal('task.execution_settled'),
   data: z.object({
@@ -1157,6 +1162,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   taskCompletedSchema,
   taskFailedSchema,
   taskExecutionSettledSchema,
+  taskFilePublicationSettledSchema,
   planUpdatedSchema,
   taskDispatchedSchema,
   taskContextFrozenSchema,

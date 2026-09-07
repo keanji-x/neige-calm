@@ -466,6 +466,14 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
     expect(result.success).toBe(false);
   });
 
+  it('parses publication settlement and refuses missing publication identity', () => {
+    const event = { ev: 'task.file_publication_settled', data: { task_id: 'attempt', operation_id: 'publication' } };
+    expect(wireEventSchema.parse(event)).toEqual(event);
+    for (const data of [{ task_id: 'attempt' }, { operation_id: 'publication' }]) {
+      expect(wireEventSchema.safeParse({ ev: event.ev, data }).success).toBe(false);
+    }
+  });
+
   it('parses task.execution_settled with exact execution identities', () => {
     const event = {
       ev: 'task.execution_settled',

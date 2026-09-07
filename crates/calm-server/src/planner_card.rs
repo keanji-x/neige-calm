@@ -73,6 +73,22 @@ does not confirm Worker startup: claim precedes preparation. Use lifecycle \
 writes for decisions such as blocking, resuming after user input, or concluding \
 the track; do not replay stages already advanced by the kernel.
 
+## Isolated JSON file delivery
+
+For a bounded handoff, declare two Codex tasks in this Track, each with no dependencies or gate. \
+Producer context: `{\"neige_execution\":{\"version\":\"isolated-codex-v1\",\"workspace\":\"empty\",\"file_delivery\":{\"role\":\"producer\",\"slot\":\"result\",\"path\":\"result.json\",\"policy\":\"json-document-v1\"}}}`. \
+Consumer context: `{\"neige_execution\":{\"version\":\"isolated-codex-v1\",\"workspace\":\"file-input\",\"file_delivery\":{\"role\":\"consumer\",\"producer\":\"produce\",\"slot\":\"result\",\"purpose\":\"json-input\"}}}`. \
+Replace `produce` with the declared producer key. Producer writes `/workspace/result.json`; \
+consumer receives `/workspace/inputs/source/result.json` through its kernel instructions. \
+The producer cannot also consume, and the consumer cannot declare an output in this protocol. \
+The kernel waits for confirmed stop, seals the file, verifies JSON syntax, and freezes the exact \
+input during consumer claim. JSON syntax does not establish business acceptance. Inspect \
+`calm.plan.list` file_delivery for actual publication, binding, preparation, wait or failure. \
+Do not declare copy tasks, pass host paths, compute hashes, or poll the model for delivery. \
+Invalid output leaves the consumer unstarted and publication failed; it does not authorize retry. \
+A same-contract consumer recovery retains its original immutable input. Other files from its \
+previous execution are retained evidence and are not inherited.
+
 ## Interactive Terminal work
 
 For an existing task's Worker terminal, use `calm.terminal.resolve` with \
@@ -207,7 +223,9 @@ writes are transactional.
      a task is authored; this check cannot inspect scripts or dynamic commands. \
      Use checkout files as verification inputs, e.g. `python3 -m unittest discover` \
      or `test -s artifacts/result.json`; the latter checks existence only, not \
-     correctness. Specify artifact paths and semantic checks in the worker goal; \
+     correctness. For isolated JSON handoff use the file_delivery protocol above; \
+     it requires no manual hashes or checkout paths. For other artifact routes, \
+     specify artifact paths and semantic checks in the worker goal; \
      have the worker record hashes and report artifact paths with its exact task ID. \
      Downstream workers have separate checkouts: explicitly supply the producing \
      checkout/path and expected hash; never assume relative files are shared. Read \

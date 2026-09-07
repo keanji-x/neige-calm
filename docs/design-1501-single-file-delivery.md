@@ -66,12 +66,20 @@ consumer 不能同时声明受本协议管理的输出；由此限定为两节�
 本 Track 的来源 key、槽位及 JSON 输入用途。consumer 必须引用实际 producer，
 未知/自引用/不支持的来源作为声明诊断，不猜测其他 Track 或旧成功执行。
 
-复用 scheduler 的异步单飞模式：当 producer 报告完成时，在 Track 调度锁之外
+复用 scheduler 的异步单飞模式：声明的 producer 输出本身就是 publication 意图，不依赖消费者已存在。当 producer 报告完成时，在 Track 调度锁之外
 等待其现有 Operation 真正停止并成功，然后提交稳定身份的文件 publication
 Operation。该 Operation 在停止凭据及冻结输出契约下捕获单文件、重新打开不可变
 快照并验证 JSON，将成功证据持久化。消费者等待既有 OperationCompletionBus，
 完成后重新 poke scheduler；丢通知及重启由已有操作恢复/调度 sweep 处理。
 不新增业务完成事件，不用一次新的 TaskCompleted 伪装文件已验收。
+
+实施审计修正：OperationCompletionBus + poke 不能唤醒已收到 A 完成报告的 Planner。
+因此 publication Operation 实际终结后，追加一次 kernel-only
+`task.file_publication_settled`（producer attempt、publication Operation ID）。
+它不修改 task 的业务状态，不授予重试权限。沿用已有 Event/Dispatcher/Harness
+SystemContext 及持久化 catch-up 水位；producer sweep 修复 Operation 终结与事件
+追加之间的崩溃窗口，事务内按 Operation 去重。不新建 outbox 或观察引擎。
+新事件版本为 19，0102 迁移和生成协议同步更新。
 
 publication 是“已结束执行的产物动作”，不是新的 Worker 启动。注册时必须显式
 列入这种任务绑定类别，校验当前 producer、接受的完成报告、停止凭据与冻结的
@@ -104,3 +112,14 @@ plan.list 暴露 producer publication 的实际状态、consumer 等待原因及
 不从失败推导自动重试权限。更强的业务验收策略不在首版能力范围内。
 
 只有库接口或设计提交不能标记 F4 完成。F4 账本仍保持未勾选。
+
+
+## CR-1501-F4-EVENT（orchestrator 已批准）
+
+为 publication 后失败/成功提供持久化 Planner 唤醒，批准仅扩展
+`task.file_publication_settled` 的事件 union、runtime schema 与已有 invalidation 映射。
+范围：`fe/core/api/generated/wire.ts` 及真实 generator 必需的事件/OpenAPI 产物，
+`fe/core/api/schemas.ts`、`fe/core/events/invalidation-plan.ts` 和对应小型契约测试。
+不包含 UI、全局样式、transport 分叉或新的协议引擎。事件身份由 kernel 终结的
+publication Operation 提供；live/catch-up 共用既有 SystemContext 管线。
+冻结产物的实际更改路径在提交及 PR 中逐条保留 `OWNERSHIP-CHANGE` trailer。

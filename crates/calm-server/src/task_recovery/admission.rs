@@ -89,6 +89,7 @@ pub(super) async fn admit_recovery_tx(
     constraint.validate(&previous.track_id).map_err(conflict)?;
     check_constraint_tx(tx, track, &previous.key, &constraint).await?;
     require_recoverable_predecessor_tx(tx, previous).await?;
+    crate::file_delivery::require_recovery_input_tx(tx, previous).await?;
     Ok(constraint)
 }
 
@@ -103,6 +104,16 @@ pub(crate) async fn validate_isolated_start_tx(tx: &mut Tx<'_>, task: &Task) -> 
         return Err(conflict(
             "isolated task is not authorized for a first start",
         ));
+    }
+    validate_frozen_contract_tx(tx, task).await
+}
+
+/// Read-only contract authority shared by starts and post-execution publication.
+/// Callers keep their own lifecycle/current-attempt/status guards.
+pub(crate) async fn validate_frozen_contract_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
+    let track = crate::track_lifecycle::track_get_tx(tx, &task.track_id.clone().into()).await?;
+    if task.context_stale_at_ms.is_some() {
+        return Err(conflict("frozen task context is stale"));
     }
     let constraint = claim_constraint_tx(tx, task).await?;
     check_constraint_tx(tx, &track, &task.key, &constraint).await

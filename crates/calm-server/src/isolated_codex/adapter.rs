@@ -153,7 +153,8 @@ impl ProviderAdapter for IsolatedCodexAdapter {
         let workspace = backend.workspace_root.join(&op.id);
         let context: Value = serde_json::from_str(&task.context_json)?;
         let prompt = format!(
-            "This task starts in a new empty workspace. Files you create remain with this execution. Before ending the turn, report through the native calm.task.complete or calm.task.fail tool using the exact task ID below.\n\n{}",
+            "{} Files you create remain with this execution. Before ending the turn, report through the native calm.task.complete or calm.task.fail tool using the exact task ID below.\n\n{}",
+            crate::file_delivery::prompt_tx(tx, &task).await?,
             codex_adapter::render_task_worker_prompt(
                 &task.id,
                 &task.goal,
@@ -253,6 +254,10 @@ impl ProviderAdapter for IsolatedCodexAdapter {
         })
         .await?;
         let record = self.prepare_endpoint(op).await?;
+        // Dormant endpoint preparation is also used to reconcile stop. File input
+        // admission belongs only to first launch, before connecting the provider.
+        crate::file_delivery::prepare_input(self.repo.as_ref(), op, &record.request.workspace)
+            .await?;
         let checkpoint = self.checkpoint(op, ctx)?;
         let backend = self.backend()?;
         let mut session = backend

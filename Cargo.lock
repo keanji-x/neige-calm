@@ -508,6 +508,7 @@ dependencies = [
  "calm-provider",
  "calm-server",
  "calm-session",
+ "calm-task-artifacts",
  "calm-terminal-view",
  "calm-test-sockets",
  "calm-truth",

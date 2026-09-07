@@ -76,6 +76,9 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
 /// Registered adapters whose payloads are not tied to a scheduler task row.
 /// Kept explicit so the registry coverage test fails when a new production
 /// adapter has not been classified on either side of the context fence.
+/// Retained artifact actions require completed-task authority, never start admission.
+pub const POST_EXECUTION_TASK_BOUND_ADAPTER_KINDS: [&str; 1] = ["task-file-publication"];
+
 pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 8] = [
     "terminal-create",
     "codex-create",

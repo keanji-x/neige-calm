@@ -1048,3 +1048,5 @@ mod boot_reconcile_retry_tests {
 }
 
 pub mod isolated_codex;
+
+pub mod file_delivery;

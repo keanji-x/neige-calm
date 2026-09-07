@@ -132,7 +132,11 @@ pub(super) async fn input_segments(
                     "run_summary": format!("runs/{task_id}.md"),
                 },
                 "decision": decision,
-                "limitations": "Isolated recovery starts a new execution in a new empty workspace. Retained files remain evidence, not inherited inputs. An accepted recovery receipt does not prove the Worker has started.",
+                "limitations": if matches!(crate::file_delivery::selection(&task)?, Some(calm_types::task_execution::FileDelivery::Consumer { .. })) {
+                    "Isolated consumer recovery starts a new workspace with the original immutable JSON input binding. Other retained files remain evidence. An accepted recovery receipt does not prove the Worker has started."
+                } else {
+                    "Isolated recovery starts a new execution in a new empty workspace. Retained files remain evidence, not inherited inputs. An accepted recovery receipt does not prove the Worker has started."
+                },
             });
             let text = render(&briefing)?;
             // Both renderings come from this same typed kernel snapshot. Never
