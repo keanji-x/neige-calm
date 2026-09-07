@@ -1,20 +1,14 @@
-/* #1505 PR4 — the queue strip that sits directly above the composer.
-   A strip and not a panel: no surface of its own, no card per row. What
-   separates it from the transcript above is space, and what separates one row
-   from the next is a hairline. */
+/* #1505 PR4 — the queued-message bubbles that float above the composer.
+
+   Not a surface of their own and not the composer's: each message is its own
+   chip on the page ground, which is what says "already said, still waiting"
+   rather than "the top of the box you are typing in". */
 
 @layer features {
-  /*
-   * `min-inline-size: 0` all the way down to the text.
-   *
-   * The drawer this sits in is a flex column with `overflow: hidden`, and a
-   * flex item's default `min-width: auto` is its CONTENT's width — so one long
-   * queued message made the row wider than the drawer, pushed the two icon
-   * buttons past its right edge, and the overflow rule clipped them off the
-   * screen entirely. Every box between the drawer and `.text` has to give way
-   * or none of them do; measured, not guessed — the buttons were gone.
-   */
   .queue {
+    /* Sits in the composer's `drawer` slot, so the only spacing it owes is the
+       gap between the last bubble and the field's top edge. */
+    padding-block-end: var(--space-2);
     min-inline-size: 0;
   }
 
@@ -23,38 +17,45 @@
     min-inline-size: 0;
   }
 
-  .caption {
-    /* The rows below are the content; this only says how many. */
-    padding-inline: var(--space-1);
-  }
-
   .list {
-    gap: 0;
+    gap: var(--space-1);
   }
 
-  /* Text, pencil, cross. The first track is `minmax(0, 1fr)` so the message
-     gets whatever is left and never more — see the note in the component. */
-  .row {
-    display: grid;
+  /*
+   * One bubble. Three tracks: the message, the pencil, the cross.
+   *
+   * `minmax(0, 1fr)` and not `auto` for the first, and this is load-bearing
+   * rather than a preference: `Text maxLines={1}` truncates by going
+   * `white-space: nowrap`, so its min-content is the WHOLE message. Any track
+   * that respects content minimums gets blown out by it — measured at 712px
+   * inside a 290px composer, with both icon buttons pushed off the edge and
+   * clipped away entirely. `min-inline-size: 0` on the item alone did not fix
+   * it; the track has to be the thing that refuses.
+   *
+   * `inline-grid` + `max-inline-size: 100%` is what makes it a bubble rather
+   * than a bar: a short message gets a short chip, a long one runs to the edge
+   * and ellipses there.
+   */
+  .bubble {
+    display: inline-grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: var(--space-1);
-    min-block-size: var(--row-h-sm);
-    padding-inline: var(--space-1);
-    border-radius: var(--radius-sm);
+    max-inline-size: 100%;
+    min-inline-size: 0;
+    /* Asymmetric on purpose: the text needs an inset from the bubble's edge,
+       the icon buttons carry their own. */
+    padding: var(--space-px) var(--space-1) var(--space-px) var(--space-3);
+    border-radius: var(--radius-pill);
+    background: var(--surface-chip);
   }
 
-  .row:hover {
-    background: var(--overlay-hover-faint);
-  }
-
-  /* Takes the whole row minus the two buttons, and gives way — `min-inline-size:
-     0` is what lets a flex child shrink below its content and therefore what
-     makes the ellipsis possible at all. */
   .text {
     min-inline-size: 0;
   }
 
+  /* A refusal is about one bubble, so it hangs under that bubble rather than
+     over the whole strip. */
   .notice {
     padding-block: var(--space-1);
   }

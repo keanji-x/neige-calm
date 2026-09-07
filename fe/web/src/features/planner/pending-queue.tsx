@@ -1,13 +1,26 @@
 // #1505 PR4 — the messages a person typed while a turn was running.
 //
-// ── One thin row each, and two icons ──────────────────────────────────────
+// ── One bubble each, and two icons ────────────────────────────────────────
 //
 // This used to be a stack of cards, each with the message in full, an inline
 // `TextArea` when you edited it, and four named buttons. In a 364px drawer,
 // directly above the thing you are typing into, that is a second composer
 // sitting on top of the first one. What a queued message actually needs is to
 // be recognisable — enough of its first line to know which one it is — and two
-// ways out. So: one line, ellipsis, a pencil and a cross.
+// ways out. So: one bubble, one line, ellipsis, a pencil and a cross.
+//
+// **A bubble, and deliberately NOT the composer's drawer surface.** The
+// version before this one sat in `ChatComposerDrawer`, which tints, rounds and
+// tucks itself behind the field — it makes the strip read as the top of the
+// input box. These messages are not part of the box you are typing in; they
+// are things already said and waiting. Discrete bubbles floating above it say
+// that, and the composer keeps its own edges.
+//
+// There is no caption over them either. "3 messages are waiting to send when
+// this turn ends" was a sentence explaining a picture that explains itself:
+// bubbles above the field are queued messages, and every reader who has ever
+// seen one knows it. What went with it is the words "when this turn ends",
+// which is a real fact and now goes unsaid — worth knowing that is the trade.
 //
 // ── Edit takes the message BACK; it does not edit it in place ─────────────
 //
@@ -32,7 +45,6 @@
 // `POST /planner/reset` was left standing when #1139 removed its last caller.
 
 import { Banner } from '@astryxdesign/core/Banner';
-import { ChatComposerDrawer } from '@astryxdesign/core/Chat';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { List } from '@astryxdesign/core/List';
 import { Text } from '@astryxdesign/core/Text';
@@ -139,25 +151,9 @@ export function PendingQueue({
     setRefusal(outcome.kind === 'done' ? null : { entryId, outcome });
   };
 
-  const total = entries.length + overflow;
   return (
-    /*
-     * `ChatComposerDrawer` and not a bare block: this renders in the
-     * composer's `drawer` slot, and the drawer is the thing that carries the
-     * surface — the tint, the top radius matched to the composer's, and the
-     * negative margin that tucks it behind the field. Without it the strip
-     * floated on the page ground above a composer it was supposed to be part
-     * of. The badge and the collapse handle come with it, which is what a
-     * queue that has grown to nine entries needs anyway.
-     */
-    <ChatComposerDrawer count={total} label="Queued">
-      <section className={styles.queue} data-nc-pending-queue="" aria-label="Queued messages">
+    <section className={styles.queue} data-nc-pending-queue="" aria-label="Queued messages">
       <VStack gap={1}>
-        <Text as="p" type="supporting" className={styles.caption} data-nc-pending-queue-caption="">
-          {total === 1
-            ? 'One message is waiting to send when this turn ends.'
-            : `${total} messages are waiting to send when this turn ends.`}
-        </Text>
         <List className={styles.list}>
           {entries.map((entry) => {
             const shown = refusal?.entryId === entry.entry_id ? refusal.outcome : null;
@@ -179,7 +175,7 @@ export function PendingQueue({
                     the screen. `minmax(0, 1fr)` is a track that content cannot
                     blow out; `min-inline-size: 0` on the item alone did not
                     fix it. */}
-                <div className={styles.row}>
+                <div className={styles.bubble}>
                   {/* One line and an ellipsis. `hasTruncateTooltip` gives the
                       whole message back on hover, and only when it was
                       actually shortened — so a short one gets no hover that
@@ -233,14 +229,17 @@ export function PendingQueue({
           })}
         </List>
         {overflow > 0 && (
+          /* The one line of prose left, and it earns its place: these are real
+             messages that will really be sent and that nothing here can
+             address, so without it a person who typed eleven and sees three
+             has been misinformed. "more" only when there is something for them
+             to be more THAN. */
           <Text as="p" type="supporting" role="status" data-nc-pending-overflow="">
-            {overflow === 1
-              ? '1 more queued message is waiting but cannot be shown or edited here.'
-              : `${overflow} more queued messages are waiting but cannot be shown or edited here.`}
+            {`${overflow} ${entries.length > 0 ? 'more ' : ''}queued message`
+              + `${overflow === 1 ? ' is' : 's are'} waiting but cannot be shown or edited here.`}
           </Text>
         )}
       </VStack>
-      </section>
-    </ChatComposerDrawer>
+    </section>
   );
 }

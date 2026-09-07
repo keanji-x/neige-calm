@@ -175,24 +175,42 @@ describe('PendingQueue', () => {
   /*
    * Entries this page does not carry: written before #1505 PR1 (no id, never
    * gains one) or past the page budget. Nothing here can address them, so
-   * they are counted and given no buttons — but they are counted, because a
+   * they get no bubble and no buttons — but they are still counted, because a
    * person who typed eleven and sees three has been misinformed.
+   *
+   * This one line of prose is all that survived the caption's removal, and it
+   * survived because it is the only place these messages exist at all.
    */
   it('counts the messages it cannot show, and offers them no controls', () => {
     renderQueue({ entries: [], overflow: 3 });
-    expect(screen.getByText(/3 more queued messages are waiting but cannot be shown/))
+    expect(screen.getByText('3 queued messages are waiting but cannot be shown or edited here.'))
       .toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Edit this message' })).toBeNull();
   });
 
-  it('counts unaddressable messages in the caption too', () => {
+  /* "more" only where there is something for them to be more than — with no
+     bubbles on screen there is nothing this count is in addition to. */
+  it('says “more” only when some of the queue is actually shown', () => {
     renderQueue({ entries: [entry()], overflow: 2 });
-    expect(screen.getByText('3 messages are waiting to send when this turn ends.')).toBeTruthy();
+    expect(screen.getByText('2 more queued messages are waiting but cannot be shown or edited here.'))
+      .toBeTruthy();
   });
 
-  /* The singular used to require `overflow === 0`, so this said "1 messages". */
-  it('says one message when the only one waiting is unaddressable', () => {
+  it('agrees with itself about one', () => {
     renderQueue({ entries: [], overflow: 1 });
-    expect(screen.getByText('One message is waiting to send when this turn ends.')).toBeTruthy();
+    expect(screen.getByText('1 queued message is waiting but cannot be shown or edited here.'))
+      .toBeTruthy();
   });
+
+  /*
+   * The caption over the bubbles is gone at the owner's call — a sentence
+   * explaining a picture that explains itself. This pins its absence so it
+   * cannot creep back in as somebody's "helpful" addition.
+   */
+  it('says nothing above the bubbles', () => {
+    renderQueue({ entries: [entry(), entry({ entry_id: 'e2', text: 'and the diff' })] });
+    expect(document.querySelector('[data-nc-pending-queue-caption]')).toBeNull();
+    expect(screen.queryByText(/waiting to send when this turn ends/)).toBeNull();
+  });
+
 });
