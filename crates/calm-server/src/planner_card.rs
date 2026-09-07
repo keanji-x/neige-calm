@@ -102,9 +102,9 @@ writes are transactional.
    maintenance contract, and you may not write to a document you have not \
    read. `report_startup_read_required` tells you whether it already holds \
    content beyond the default skeleton. If the read returns `task` blocks, \
-   treat them as the authoritative pre-set plan. Activate it by replacing \
-   those blocks and setting `ready: true` — use the read's block ids and \
-   revision as replace anchors. Do not mint duplicate tasks. Prose blocks are \
+   treat them as the authoritative pre-set plan. Activate eligible tasks by replacing \
+   those blocks and setting `ready: true` (decision-dependent tasks wait as below). \
+   Use the read's block ids and revision as replace anchors. Do not mint duplicate tasks. Prose blocks are \
    NOT a plan to activate: maintain them per the document's own contract.
 2. Decide what to do next and act:
    * **Name the track.** The title is a label for the work, not the user's \
@@ -154,7 +154,8 @@ writes are transactional.
      have the worker record hashes and report artifact paths with its exact task ID. \
      Downstream workers have separate checkouts: explicitly supply the producing \
      checkout/path and expected hash; never assume relative files are shared. Read \
-     `plan/<key>/output` and `plan/<key>/gate.log` from the Planner session, outside gates.
+     `runs/<attempt_id>.json` and the exact `runs/<attempt_id>/gates/<N>.log` \
+     from the Planner session, outside gates (see Reading worker outputs).
    * When a task or gate fails, preserve the failed execution as evidence. \
      Read `calm.plan.list` for its current `attempt_id`, `generation`, and \
      `recovery` capability. For an isolated execution still stopping, end the turn \
@@ -175,7 +176,13 @@ writes are transactional.
      when a follow-up has an isolated worker checkout, point `gate.cwd` at that \
      worker checkout. Never clean, reset, overwrite, or otherwise alter the \
      user's shared workspace to make a gate pass.
-   * Record verdicts via `calm.task.verdict(status=...)` when worker \
+   * If B needs your semantic decision on A, keep B `ready: false` or author B \
+     after deciding. `depends_on` waits for `Task.done`, not a Planner verdict. \
+     Read A's exact result and gate evidence, judge against its acceptance criteria, \
+     then put the small selected result, source attempt/event IDs and decision into B's authored \
+     `context` before setting B ready. Accepting an audit report does not accept \
+     the implementation it reviews. Pure ordering dependencies need no manual verdict.
+   * When semantic validation is required, record verdicts via `calm.task.verdict(status=...)` when worker \
      output is ready to validate. Required args include `message`; \
      optional `lifecycle` advances the track in the same write.
    * Discover report structure across the area with `calm.area.outline`, \
@@ -294,19 +301,19 @@ CLI, which composes with tools like `grep`, `jq`, and `head`:
 
 Available `<path>` values for `neige cat` / `neige ls`:
 
-  * `runs/<task_id>.md` — human-readable summary of one run \
-    (status, worker output, gate result, verdict if recorded).
-  * `runs/<task_id>.json` — structured projection. \
+  * `runs/<attempt_id>.md` — human-readable summary of one run \
+    (status, worker output, verdict if recorded).
+  * `runs/<attempt_id>.json` — structured projection. \
     `events.completed.payload.result` is the worker's actual output; \
     `events.failed` carries failures; `verdict` holds any \
-    `task.verdict` accept/reject you recorded; `worker_card.payload` \
+    `task.verdict` accept/reject you recorded; `worker_card_payload` \
     has the plan task context.
   * `runs/index.json` — array of all runs in the track with status, kind, \
     requested_at, finished_at, worker_card_id, and verdict.
-  * `runs/<task_id>/gates/<attempt>.log` — full log of the exact execution \
+  * `runs/<attempt_id>/gates/<N>.log` — full log of the exact execution \
     and verification attempt named by a gate-result observation.
   * `plan/<key>/gate.log` — latest verification gate log for the current \
-    execution of a task key; this alias can change after recovery.
+    execution of a task key; this alias can change after recovery or re-verification.
   * `cards/<card_id>/.payload.json` — the card's own payload in the \
     track (e.g. another worker's bookkeeping or dispatch context). \
     Runtime identity and status live in `cards/<card_id>/runtime.json`.
@@ -317,9 +324,13 @@ Available `<path>` values for `neige cat` / `neige ls`:
 
 When you are pushed an ungated task completion or failure, the canonical \
 first read is `neige cat runs/K.md` where `K` is the task id from the \
-observation. When you are pushed a gate result, first read \
+observation, an opaque execution/attempt ID, not a logical task key. \
+When you are pushed a gate result, first read \
 the exact `neige cat runs/K/gates/N.log` path in that observation, \
-where `K` is its execution id and `N` its gate attempt. Do not substitute \
+where `K` is its execution id and `N` its gate attempt; also read \
+`neige cat runs/K.json` for the worker result. Use `calm.plan.list` to discover \
+the current `attempt_id` when no observation supplies one; never construct it from a key. \
+Do not substitute \
 the current task-key alias when reading historical results. The push observation is just a \
 notification; the result lives in these views, not in `neige state`.
 
@@ -1138,6 +1149,13 @@ mod tests {
     fn planner_prompt_documents_neige_reads_for_worker_outputs() {
         let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
 
+        assert!(!p.contains("plan/<key>/output"));
+        assert!(p.contains("opaque execution/attempt ID, not a logical task key"));
+        assert!(p.contains("also read `neige cat runs/K.json`"));
+        assert!(p.contains("If B needs your semantic decision on A, keep B `ready: false`"));
+        assert!(p.contains("`depends_on` waits for `Task.done`, not a Planner verdict"));
+        assert!(p.contains("Pure ordering dependencies need no manual verdict"));
+
         assert!(
             p.contains("neige state") && p.contains("neige cat") && p.contains("neige ls"),
             "planner prompt must document the shell neige read CLI"
@@ -1147,8 +1165,8 @@ mod tests {
             "planner prompt must explain why the body-only neige view cannot supply an anchor"
         );
         assert!(
-            p.contains("runs/<task_id>"),
-            "planner prompt must document run projections by task id"
+            p.contains("runs/<attempt_id>"),
+            "planner prompt must document run projections by execution attempt id"
         );
         assert!(
             p.contains("plan/<key>/gate.log"),
