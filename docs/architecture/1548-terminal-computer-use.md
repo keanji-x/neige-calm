@@ -2,6 +2,12 @@
 
 ## Outcome and order
 
+The current application wiring is documented in
+[Planner Terminal client wiring](1548-planner-terminal-wiring.md). It connects
+Planner tools to the existing visible Terminal backend with a continuous RMUX
+observation projection. The separate RMUX-daemon backend migration discussed
+below remains a later choice; the two are not silently interchanged.
+
 The Planner using the user's astry model observes and operates the same terminal
 as the human. Each slice ends with a preview loop: observe, decide, act, observe,
 and verify. Issue #1548 defines S0–S6; none is complete merely because protocol

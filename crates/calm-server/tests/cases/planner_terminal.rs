@@ -262,3 +262,154 @@ async fn human_takeover_revokes_the_planners_saved_observation() {
     let _ = pump.await;
     h.stop(&terminal).await;
 }
+
+#[tokio::test]
+async fn repeated_input_request_never_reaches_the_terminal_twice() {
+    let h = Harness::start().await;
+    let open = h
+        .ok("calm.terminal.open", json!({"request_id":"input-receipts"}))
+        .await;
+    let terminal = open["terminal_id"].as_str().unwrap().to_owned();
+    h.ok(
+        "calm.terminal.control",
+        json!({"terminal_id":terminal,"action":"claim"}),
+    )
+    .await;
+    let view = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_ms":100}),
+        )
+        .await;
+    // Keep an application reading each submitted line. Unlike an idle shell,
+    // it counts an empty Enter too, so an accidental duplicate is observable.
+    let command = "i=0; printf 'COUNTER_READY\\n'; while IFS= read -r line; do i=$((i+1)); printf 'COUNT:%s:%s\\n' \"$i\" \"$line\"; done";
+    h.input(
+        &terminal,
+        &view,
+        "program",
+        json!({"type":"text","text":command}),
+    )
+    .await;
+    let typed = h.observe_text(&terminal, "while IFS=").await;
+    h.input(
+        &terminal,
+        &typed,
+        "start",
+        json!({"type":"key","key":"Enter"}),
+    )
+    .await;
+    let ready = h.observe_text(&terminal, "COUNTER_READY").await;
+    let first = h
+        .input(
+            &terminal,
+            &ready,
+            "one-enter",
+            json!({"type":"key","key":"Enter"}),
+        )
+        .await;
+    assert_eq!(first["outcome"], "written");
+    h.observe_text(&terminal, "COUNT:1:").await;
+    assert_eq!(
+        h.input(
+            &terminal,
+            &ready,
+            "one-enter",
+            json!({"type":"key","key":"Enter"})
+        )
+        .await,
+        first
+    );
+    let after = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_ms":100}),
+        )
+        .await;
+    h.input(
+        &terminal,
+        &after,
+        "probe-text",
+        json!({"type":"text","text":"PROBE"}),
+    )
+    .await;
+    let typed = h.observe_text(&terminal, "PROBE").await;
+    h.input(
+        &terminal,
+        &typed,
+        "probe-enter",
+        json!({"type":"key","key":"Enter"}),
+    )
+    .await;
+    let result = h.observe_text(&terminal, ":PROBE").await;
+    let lines = result["text"].as_array().unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.as_str() == Some("COUNT:2:PROBE")),
+        "duplicate Enter changed the physical input count: {result}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.as_str() == Some("COUNT:3:PROBE"))
+    );
+    h.stop(&terminal).await;
+}
+
+#[tokio::test]
+async fn detach_releases_receipts_and_old_observations_cannot_authorize_a_new_connection() {
+    let h = Harness::start().await;
+    let open = h
+        .ok("calm.terminal.open", json!({"request_id":"detach"}))
+        .await;
+    let terminal = open["terminal_id"].as_str().unwrap().to_owned();
+    h.ok(
+        "calm.terminal.control",
+        json!({"terminal_id":terminal,"action":"claim"}),
+    )
+    .await;
+    let old = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_ms":100}),
+        )
+        .await;
+    h.input(&terminal, &old, "one", json!({"type":"key","key":"Ctrl+U"}))
+        .await;
+    h.ok(
+        "calm.terminal.control",
+        json!({"terminal_id":terminal,"action":"detach"}),
+    )
+    .await;
+    h.ok(
+        "calm.terminal.control",
+        json!({"terminal_id":terminal,"action":"claim"}),
+    )
+    .await;
+    let fresh = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_ms":100}),
+        )
+        .await;
+    assert_ne!(old["connection_id"], fresh["connection_id"]);
+    let stale = h
+        .call(
+            "calm.terminal.input",
+            json!({"terminal_id":terminal,"observation_id":old["observation_id"],
+        "request_id":"one","action":{"type":"key","key":"Ctrl+U"}}),
+        )
+        .await;
+    assert!(stale.get("error").is_some());
+    let written = h
+        .input(
+            &terminal,
+            &fresh,
+            "one",
+            json!({"type":"key","key":"Ctrl+U"}),
+        )
+        .await;
+    assert_eq!(written["outcome"], "written");
+    h.stop(&terminal).await;
+}
