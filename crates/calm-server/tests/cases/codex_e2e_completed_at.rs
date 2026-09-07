@@ -52,6 +52,7 @@ use std::time::Duration;
 use calm_server::codex_appserver::{
     ClientInfo, CodexAppServer, InputItem, Notification, ThreadStatus,
 };
+use calm_server::planner_model::TurnModelSelection;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 // #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
@@ -276,7 +277,11 @@ async fn thread_read_completed_at_null_only_when_died_mid_turn() {
          and after the list write a one-sentence summary. Take your time.";
     let turn = server
         .client
-        .turn_start(&thread_id, vec![InputItem::text(in_progress_prompt)])
+        .turn_start(
+            &thread_id,
+            vec![InputItem::text(in_progress_prompt)],
+            &TurnModelSelection::inherit(),
+        )
         .await
         .expect("turn/start");
     let turn_id = turn.turn_id().map(str::to_string);
@@ -479,7 +484,11 @@ async fn run_abort_probe(server: &mut BootedServer, thread_id: &str) -> String {
          Take your time and be thorough.";
     let turn = match server
         .client
-        .turn_start(thread_id, vec![InputItem::text(long_prompt)])
+        .turn_start(
+            thread_id,
+            vec![InputItem::text(long_prompt)],
+            &TurnModelSelection::inherit(),
+        )
         .await
     {
         Ok(t) => t,

@@ -249,6 +249,13 @@ pub fn router() -> Router<AppState> {
             "/api/cards/{id}/planner/interrupt",
             post(interrupt_planner_card),
         )
+        // #1505 S4-3. Same reason as the PR2 route above: this router owns
+        // `/api/cards/{id}/**`, and a second router on the prefix is how two
+        // mounts start disagreeing about a middleware.
+        .route(
+            "/api/cards/{id}/planner/model",
+            axum::routing::put(crate::routes::planner_model::set_planner_model),
+        )
         .route("/api/cards/{id}/planner/run", get(get_planner_run))
         .route("/api/cards/{id}/planner/reset", post(reset_planner_card))
 }
@@ -838,6 +845,39 @@ pub struct GetPlannerRunResponse {
     /// that is acceptable or whether the dormant path should fall back to the
     /// persisted snapshot; the kernel slice does not pick for it.
     pub token_usage: Option<PlannerRunTokenUsage>,
+    /// #1505 S4-3 — the model slug this conversation's turns run with, or
+    /// `null` for "follow whatever this installation is configured to use".
+    ///
+    /// Read off the CARD, not off the harness, and therefore answered for a
+    /// dormant conversation as well: the selection is a property of the
+    /// conversation and outlives every runtime that serves it. That is the
+    /// opposite of `phase` and `token_usage` above, which are properties of a
+    /// live runtime and are `null` without one.
+    pub model: Option<String>,
+    /// The chosen reasoning effort, or `null` for the default. Same source and
+    /// same reasoning as [`GetPlannerRunResponse::model`].
+    pub reasoning_effort: Option<String>,
+    /// #1505 S4 — why this conversation's queue is not draining, or `null`
+    /// when there is nothing worth saying. `null` almost always.
+    ///
+    /// Three things fill it, and a client should render all three as the same
+    /// kind of standing notice rather than as an error about a request it just
+    /// made:
+    ///
+    ///  * the model or effort to run under cannot be determined (codex's
+    ///    configuration names none, or the stored selection is unreadable) —
+    ///    the text names the choice that fixes it;
+    ///  * codex refused to start the turn — the text says the message was NOT
+    ///    sent, and promises no delivery;
+    ///  * codex has been unreachable long enough that silence would look like
+    ///    a hang — the text says the message is still queued and will go out.
+    ///
+    /// A brief outage fills nothing, so this staying `null` is not evidence
+    /// that anything succeeded.
+    ///
+    /// It is not a general per-turn error channel and does not diagnose why a
+    /// model failed mid-turn; that is #1507's.
+    pub blocked_reason: Option<String>,
     /// #1505 PR1 — the addressable user entries still waiting for the next
     /// turn, in queue order. Empty when the harness is dormant.
     ///
@@ -1409,10 +1449,22 @@ pub(crate) async fn get_planner_run(
         )));
     }
 
+    // A payload whose model keys are unreadable is reported as "no selection"
+    // by this READ rather than as a 500. The turn-issuing path refuses on the
+    // same payload (`planner_model`'s header), so the conversation still stops;
+    // making the read fail as well would only take away the surface that has
+    // to show why.
+    let selection =
+        crate::planner_model::CardModelSelection::from_payload(&card.payload).unwrap_or_default();
     let dormant = GetPlannerRunResponse {
         card_id: card.id.clone(),
         worker_session_id: None,
         phase: None,
+        model: selection.model.clone(),
+        reasoning_effort: selection.reasoning_effort.clone(),
+        // A dormant conversation has no harness to be blocked, and nothing is
+        // waiting: there is no queue and no unsent sentence.
+        blocked_reason: None,
         token_usage: None,
         pending: Vec::new(),
         pending_overflow: 0,
@@ -1437,6 +1489,9 @@ pub(crate) async fn get_planner_run(
         card_id: card.id,
         worker_session_id: Some(runtime.id.clone()),
         phase: Some(snapshot.phase),
+        model: selection.model,
+        reasoning_effort: selection.reasoning_effort,
+        blocked_reason: harness.issuance_block().await,
         token_usage: snapshot
             .token_usage
             .as_ref()

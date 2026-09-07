@@ -11,6 +11,7 @@ use calm_server::config::Config;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::db::{Repo, RepoSyncDomainRaw};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
+use calm_server::planner_model::TurnModelSelection;
 use calm_server::routes::theme::RequestTheme;
 use calm_server::shared_codex_appserver::{
     SharedCodexAppServer, SharedThreadStartParams, ThreadConfig,
@@ -140,11 +141,19 @@ async fn shared_appserver_two_threads_true_binary() {
         .unwrap();
     assert_ne!(t1, t2);
     let _ = d
-        .turn_start(&t1, vec![InputItem::text("Say OK in one word.")])
+        .turn_start(
+            &t1,
+            vec![InputItem::text("Say OK in one word.")],
+            &TurnModelSelection::inherit(),
+        )
         .await
         .unwrap();
     let _ = d
-        .turn_start(&t2, vec![InputItem::text("Say OK in one word.")])
+        .turn_start(
+            &t2,
+            vec![InputItem::text("Say OK in one word.")],
+            &TurnModelSelection::inherit(),
+        )
         .await
         .unwrap();
 }
@@ -180,7 +189,11 @@ async fn shared_appserver_restart_resumes_thread() {
         .await
         .unwrap();
     let _ = d
-        .turn_start(&thread_id, vec![InputItem::text("Say OK in one word.")])
+        .turn_start(
+            &thread_id,
+            vec![InputItem::text("Say OK in one word.")],
+            &TurnModelSelection::inherit(),
+        )
         .await
         .unwrap();
     let pgid = d.status_snapshot().runtime.unwrap().pgid;

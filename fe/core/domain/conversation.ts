@@ -344,6 +344,22 @@ export type PlannerRun = Readonly<{
    * UI's job is to say they exist, not to pretend they can be touched.
    */
   pending_overflow: number;
+  /** #1505 S4-3 — the conversation's model selection; `null` follows the default. */
+  model: string | null;
+  reasoning_effort: string | null;
+  /**
+   * Why the queue is not draining, or `null` when there is nothing worth
+   * saying — which is almost always.
+   *
+   * Three things fill it: a selection that cannot be determined (the text
+   * names the choice that fixes it), a turn codex refused (the text says the
+   * message was NOT sent), and an outage long enough that silence would look
+   * like a hang (the text says the message is still coming). Render all three
+   * as one standing notice; `null` is not evidence that anything succeeded.
+   *
+   * It does not diagnose a turn that failed mid-flight.
+   */
+  blocked_reason: string | null;
 }>;
 
 export const HARNESS_ITEMS_PAGE_LIMIT = 300;
@@ -367,6 +383,203 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
          absent queue page is an empty one. */
       pending: z.array(pendingQueueEntrySchema).optional().default([]),
       pending_overflow: z.number().optional().default(0),
+      /* `.nullable()` and NOT `.nullable().optional()`, unlike the two above.
+         The server always sends these — `model`/`reasoning_effort` are read off
+         the card, which always exists on this route, and `blocked_reason` is
+         `null` rather than absent when nothing is wrong — so accepting their
+         absence would only hide the day one of them stopped being sent. */
+      model: z.string().nullable(), reasoning_effort: z.string().nullable(),
+      blocked_reason: z.string().nullable(),
+    }),
+  };
+}
+
+/**
+ * What one conversation has chosen. Both members always present; `null` is the
+ * value that means "follow whatever this installation is configured to use".
+ *
+ * There is deliberately no "unset" beyond `null`: `PUT
+ * /api/cards/{id}/planner/model` requires both keys and answers 422 without
+ * them, so a partial selection is not a state this type may represent.
+ */
+export type ModelSelection = Readonly<{ model: string | null; reasoning_effort: string | null }>;
+
+export const FOLLOW_INSTALLATION_DEFAULT: ModelSelection = Object.freeze({
+  model: null, reasoning_effort: null,
+});
+
+const reasoningEffortOptionSchema = z.object({
+  reasoning_effort: z.string(),
+  /* codex's own words for its own setting, shown verbatim. */
+  description: z.string(),
+});
+
+const catalogModelSchema = z.object({
+  /* The preset identifier. A React key and nothing else — the value that
+     travels to the server is `model`. */
+  id: z.string(),
+  model: z.string(),
+  display_name: z.string(),
+  description: z.string(),
+  /* Which entry codex's own picker highlights. NOT an answer to "what does
+     this installation follow" — that is `default` below. */
+  is_default: z.boolean(),
+  supported_reasoning_efforts: z.array(reasoningEffortOptionSchema),
+  default_reasoning_effort: z.string(),
+});
+
+/**
+ * `GET /api/models` — what can be chosen, and what is followed when nothing is.
+ *
+ * `source` and `default_source` are separate answers to separate questions and
+ * must not be collapsed: a live daemon can report an empty catalog (an account
+ * with nothing selectable), which reads identically to "codex is not running"
+ * unless the two are kept apart.
+ */
+export const modelCatalogSchema = z.object({
+  models: z.array(catalogModelSchema),
+  default: z.object({ model: z.string().nullable(), reasoning_effort: z.string().nullable() }),
+  default_source: z.enum(['config_read', 'config_toml', 'unknown']),
+  source: z.enum(['live', 'unavailable']),
+  fetched_at_ms: z.number().nullable(),
+});
+
+export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
+
+/**
+ * The catalog resolved against one card's workspace.
+ *
+ * `card_id` is not decoration: config layers are per-directory, so the default
+ * this card follows can differ from the global one. Without it the server
+ * answers `default_source: 'unknown'` rather than passing off a global value
+ * as this conversation's.
+ */
+export function modelCatalogOperation(cardId: string): ApiOperation<ModelCatalog> {
+  return {
+    method: 'GET',
+    path: `/api/models?card_id=${encodeURIComponent(cardId)}`,
+    responseSchema: modelCatalogSchema,
+  };
+}
+
+export type ModelSelectionResult = Readonly<{
+  model: string | null;
+  reasoning_effort: string | null;
+  effort_adjusted: boolean;
+  unknown_model: boolean;
+}>;
+
+/**
+ * Store this conversation's whole selection.
+ *
+ * The body names both keys explicitly rather than spreading `selection`: the
+ * server requires both, and a spread of a value that lost one would be a 422
+ * discovered at runtime instead of a type error here.
+ *
+ * The answer is echoed back rather than assumed. `effort_adjusted` says the
+ * effort asked for is not one the chosen model supports and has been moved to
+ * that model's own default; `unknown_model` says the slug is not in the
+ * catalog codex currently reports. Neither is an error and neither prevents
+ * the write — but a caller that drops them shows a value that is not what will
+ * run.
+ */
+/**
+ * Run writes one at a time, and drop the ones a later intent has superseded.
+ *
+ * #1505 S4 review. `PUT /planner/model` does codex catalog work before it
+ * writes, so two requests issued back to back can finish in the other order —
+ * click a model, then click "Default" while the first request is still out,
+ * and Default commits first and the model commits over it. The person's last
+ * choice loses to their previous one, silently, and no amount of transaction
+ * isolation fixes it: `BEGIN IMMEDIATE` orders the two writes, not the two
+ * intentions behind them.
+ *
+ * So the writes are serialised, and while one is in flight only the LATEST
+ * waiting intent is kept — pressing four options quickly sends two requests
+ * (the one already gone, and the last one), not four. The intermediate ones
+ * are answered with the outcome of the write that superseded them, because
+ * that is what the stored value will be.
+ *
+ * ## A rejected write hands the queue on; it does not strand or resurrect it
+ *
+ * The first cut of this function ran the queue inside `while (queuedIsSet)`
+ * *after* an `await write(args)` that could throw — so a rejection jumped past
+ * the loop with `queuedIsSet` still true. That is the defect this function
+ * exists to remove, restored twice over: the person's latest intent was
+ * dropped and never sent, and the NEXT, unrelated click resurrected it and
+ * committed it LAST. Click a model while offline, click Default, then later
+ * click a third: the server ends on Default and the pill shows the third.
+ *
+ * A failed write is superseded like any other, so the loop below takes the
+ * queue on both arms and only leaves when the queue is empty — at which point
+ * `queuedIsSet` is provably false whichever way it leaves. The chain's promise
+ * carries the outcome of the LAST write it actually performed, because that is
+ * the one that decided what is stored.
+ *
+ * What this does NOT do, stated so nobody reads it as more than it is: it
+ * orders one client's own writes. Two browser tabs racing each other are still
+ * last-write-wins, exactly like every other REST write on this surface.
+ */
+export function createSerialWriter<TArgs, TResult>(
+  write: (args: TArgs) => Promise<TResult>,
+): (args: TArgs) => Promise<TResult> {
+  let inFlight: Promise<TResult> | null = null;
+  let queued: TArgs | null = null;
+  let queuedIsSet = false;
+
+  const drain = async (args: TArgs): Promise<TResult> => {
+    let current = args;
+    for (;;) {
+      let result: TResult;
+      try {
+        result = await write(current);
+      } catch (error) {
+        /* Nothing superseded this one, so its failure is the chain's answer.
+           The queue is empty here, so nothing is left behind to resurrect. */
+        if (!queuedIsSet) throw error;
+        current = takeQueued();
+        continue;
+      }
+      if (!queuedIsSet) return result;
+      current = takeQueued();
+    }
+  };
+
+  const takeQueued = (): TArgs => {
+    const next = queued as TArgs;
+    queuedIsSet = false;
+    queued = null;
+    return next;
+  };
+
+  return (args: TArgs): Promise<TResult> => {
+    if (inFlight === null) {
+      const run = drain(args).finally(() => { inFlight = null; });
+      inFlight = run;
+      return run;
+    }
+    /* Supersede rather than append: an intent nobody can still see the effect
+       of is not worth a round trip, and sending it would put the store through
+       a value the person never ended on. */
+    queued = args;
+    queuedIsSet = true;
+    return inFlight;
+  };
+}
+
+export function setPlannerModelOperation(
+  cardId: string, selection: ModelSelection,
+): ApiOperation<ModelSelectionResult> {
+  return {
+    method: 'PUT',
+    path: `/api/cards/${encodeURIComponent(cardId)}/planner/model`,
+    body: { model: selection.model, reasoning_effort: selection.reasoning_effort },
+    responseSchema: z.object({
+      card_id: z.string(),
+      model: z.string().nullable(),
+      reasoning_effort: z.string().nullable(),
+      effort_adjusted: z.boolean(),
+      unknown_model: z.boolean(),
     }),
   };
 }

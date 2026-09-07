@@ -96,6 +96,7 @@ use calm_server::mcp_server::{McpServer, auth, build_default_registry};
 use calm_server::model::{
     CardRole, NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch, new_id, now_ms,
 };
+use calm_server::planner_model::TurnModelSelection;
 use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -370,7 +371,11 @@ Your idempotency key K is \"{idempotency_key}\". Following your reporting \
 contract, report task completion exactly once now, then stop."
     );
     let turn_id = daemon
-        .turn_start(&thread_id, vec![InputItem::text(&prompt)])
+        .turn_start(
+            &thread_id,
+            vec![InputItem::text(&prompt)],
+            &TurnModelSelection::inherit(),
+        )
         .await
         .expect("turn_start");
     eprintln!("[worker-mcp] turn_id={turn_id}");

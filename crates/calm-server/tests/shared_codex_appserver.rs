@@ -12,6 +12,7 @@ use calm_server::db::{
 };
 use calm_server::mcp_server::{McpShimConfig, auth};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
+use calm_server::planner_model::TurnModelSelection;
 use calm_server::proc_identity::{read_boot_id, read_proc_start_time};
 use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
@@ -2327,7 +2328,11 @@ async fn turn_start_seeds_active_turns_synchronously() {
         .await
         .unwrap();
     let turn_id = daemon
-        .turn_start(&thread_id, vec![InputItem::text("seed active turn")])
+        .turn_start(
+            &thread_id,
+            vec![InputItem::text("seed active turn")],
+            &TurnModelSelection::inherit(),
+        )
         .await
         .unwrap();
 
@@ -2339,6 +2344,99 @@ async fn turn_start_seeds_active_turns_synchronously() {
         daemon.active_turn_for_test(&thread_id).as_deref(),
         Some(turn_id.as_str())
     );
+}
+
+/// #1505 S4 review — the real client forwards the caller's selection.
+///
+/// Every other test of this feature reads the FIXTURES fake's recorded
+/// argument, and the fake records it and returns before `client.turn_start` is
+/// ever reached. Replacing the forwarded `selection` with
+/// `TurnModelSelection::inherit()` therefore left all of them green while
+/// silently sending every planner turn under codex's default. This one drives
+/// a real socket to a real child process and reads the frame that arrived.
+#[tokio::test]
+async fn turn_start_forwards_the_selection_onto_the_wire() {
+    let _guard = ENV_LOCK.lock().await;
+    let root = tempfile::tempdir().unwrap();
+    let capture = root.path().join("captured-requests.jsonl");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture);
+        std::env::set_var("FAKE_CODEX_SKIP_TURN_STARTED", "1");
+    }
+    let _capture_guard = EnvGuard("FAKE_CODEX_CAPTURE_REQUESTS");
+    let _started_guard = EnvGuard("FAKE_CODEX_SKIP_TURN_STARTED");
+
+    let repo = repo().await;
+    let card_id = seed_card(&repo, 1).await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let thread_id = daemon
+        .thread_start_for_card(
+            &card_id,
+            CardRole::Worker,
+            None,
+            SharedThreadStartParams {
+                cwd: "/tmp".into(),
+                approval_policy: "never".into(),
+                sandbox_mode: "workspace-write".into(),
+                developer_instructions: None,
+                config: ThreadConfig::NoMcp,
+            },
+        )
+        .await
+        .unwrap();
+    daemon
+        .turn_start(
+            &thread_id,
+            vec![InputItem::text("run under the chosen model")],
+            &TurnModelSelection {
+                model: Some("gpt-5-codex".into()),
+                effort: Some("high".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+    let frame = wait_for_captured_turn_start(&capture).await;
+    assert_eq!(
+        frame["params"]["model"],
+        serde_json::json!("gpt-5-codex"),
+        "frame was {frame}"
+    );
+    assert_eq!(
+        frame["params"]["effort"],
+        serde_json::json!("high"),
+        "frame was {frame}"
+    );
+}
+
+/// Block until the fake child has written a `turn/start` frame and return it.
+///
+/// The child is a separate PROCESS: the request is in the socket's buffer by
+/// the time `turn_start` returns, but the child still has to be scheduled to
+/// read it and append the line. The deadline is a failure ceiling, not a
+/// measurement — it exists so a frame that never arrives fails with what was
+/// captured instead of hanging.
+async fn wait_for_captured_turn_start(path: &std::path::Path) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        if let Some(frame) = rows
+            .iter()
+            .find(|row| row.get("method").and_then(serde_json::Value::as_str) == Some("turn/start"))
+        {
+            return frame.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no turn/start frame was captured; saw {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[tokio::test]
@@ -2371,7 +2469,11 @@ async fn interrupt_active_turn_immediately_after_turn_start_succeeds() {
         .await
         .unwrap();
     daemon
-        .turn_start(&thread_id, vec![InputItem::text("interrupt active turn")])
+        .turn_start(
+            &thread_id,
+            vec![InputItem::text("interrupt active turn")],
+            &TurnModelSelection::inherit(),
+        )
         .await
         .unwrap();
     daemon.interrupt_active_turn(&thread_id).await.unwrap();
@@ -2412,7 +2514,11 @@ async fn active_turns_map_tracks_turn_started_and_completed() {
         .await
         .unwrap();
     let turn_id = daemon
-        .turn_start(&thread_id, vec![InputItem::text("track active turn")])
+        .turn_start(
+            &thread_id,
+            vec![InputItem::text("track active turn")],
+            &TurnModelSelection::inherit(),
+        )
         .await
         .unwrap();
 

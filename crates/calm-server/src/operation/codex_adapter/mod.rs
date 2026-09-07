@@ -28,6 +28,7 @@ use crate::operation::workspace_lease::{
     remove_workspace_artifact_for_lease_by_id,
 };
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
+use crate::planner_model::TurnModelSelection;
 use crate::routes::cards::card_scope;
 use crate::routes::codex_cards::{
     INITIAL_TURN_LIFECYCLE_TIMEOUT, await_shared_initial_turn_lifecycle, default_cwd,
@@ -481,7 +482,14 @@ impl ProviderAdapter for CodexAdapter {
             let turn_started_at_ms = output_optional_i64(output, "turn_started_at_ms")?;
             if turn_started_at_ms.is_none() {
                 self.shared_codex_appserver
-                    .turn_start(&thread_id, vec![InputItem::text(prompt_text)])
+                    // #1505 S4-3: worker/dedicated threads carry no per-card
+                    // model selection — the picker addresses planner cards
+                    // only — so this turn has nothing to say about the model.
+                    .turn_start(
+                        &thread_id,
+                        vec![InputItem::text(prompt_text)],
+                        &TurnModelSelection::inherit(),
+                    )
                     .await?;
                 output.set_output_data("turn_started_at_ms", json!(now_ms()), "codex")?;
                 checkpoint_prompt_turn_started(ctx, op, output, &thread_id).await?;
@@ -1258,7 +1266,11 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                 .launch
                 .clone()
                 .run_observed(ctx.spawn_ctx.repo.as_ref(), async move {
-                    shared.turn_start(&launch_thread, items).await
+                    // #1505 S4-3: see the sibling call above — no picker
+                    // addresses this thread.
+                    shared
+                        .turn_start(&launch_thread, items, &TurnModelSelection::inherit())
+                        .await
                 })
                 .await;
             let turn_id = match started {

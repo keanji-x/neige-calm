@@ -35,6 +35,7 @@ use crate::mcp_server::transport;
 use crate::mcp_server::wiring::{card_mcp_thread_start_config, mint_and_persist_card_token};
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
+use crate::planner_model::TurnModelSelection;
 use crate::proc_identity::{
     read_boot_id, read_proc_start_time, sigkill_verified_group_members, signal_process_group,
     verify_owned_pid,
@@ -778,9 +779,36 @@ pub struct FakeSharedCodexAppServer {
     next_thread: AtomicU64,
     next_turn: AtomicU64,
     fail_next_thread_start: AtomicBool,
+    /// Sticky, unlike `fail_next_thread_start`: the condition it stands in for
+    /// (codex refusing every turn) is one whose RETRY behaviour is under test,
+    /// and a one-shot failure would be indistinguishable from a success on the
+    /// second attempt.
+    fail_turn_start: AtomicBool,
+    /// Answer `turn/start` the way codex does when it sees the input and says
+    /// no, as opposed to not answering at all. The two take opposite paths in
+    /// `maybe_issue_turn` and the fake has to be able to produce both.
+    reject_turn_start: AtomicBool,
+    /// A scripted `config/read` answer.
+    ///
+    /// Without this the fake answers no RPC at all, so every read is an
+    /// OUTAGE — and "codex could not be asked" and "codex answered, naming no
+    /// model" are the two sides of #1505 S4's transient/needs-a-choice split.
+    /// A fixture that can only produce one of them cannot test the split.
+    config_read: std::sync::Mutex<Option<CodexConfig>>,
+    /// Answer `config/read` the way codex does when it sees the request and
+    /// refuses it — an answer, not an outage. The two take opposite paths.
+    reject_config_read: AtomicBool,
+    /// Answer `model/list` the way codex does when it refuses the request.
+    reject_model_list: AtomicBool,
     fail_turn_interrupt: AtomicBool,
     started_thread_params: std::sync::Mutex<Vec<StartedThreadParam>>,
     started_turns: std::sync::Mutex<Vec<(String, Vec<InputItem>)>>,
+    /// #1505 S4-3 — the model selection each `turn/start` carried, in the
+    /// same order as `started_turns`. Kept in its own vector rather than
+    /// widened into that tuple so the dozen existing readers of
+    /// `started_turns_for_test` keep compiling and keep meaning what they
+    /// meant.
+    started_turn_selections: std::sync::Mutex<Vec<(String, TurnModelSelection)>>,
     interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
     turn_start_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
 }
@@ -792,9 +820,15 @@ impl FakeSharedCodexAppServer {
             next_thread: AtomicU64::new(1),
             next_turn: AtomicU64::new(1),
             fail_next_thread_start: AtomicBool::new(false),
+            fail_turn_start: AtomicBool::new(false),
+            reject_turn_start: AtomicBool::new(false),
+            config_read: std::sync::Mutex::new(None),
+            reject_config_read: AtomicBool::new(false),
+            reject_model_list: AtomicBool::new(false),
             fail_turn_interrupt: AtomicBool::new(false),
             started_thread_params: std::sync::Mutex::new(Vec::new()),
             started_turns: std::sync::Mutex::new(Vec::new()),
+            started_turn_selections: std::sync::Mutex::new(Vec::new()),
             interrupted_turns: std::sync::Mutex::new(Vec::new()),
             turn_start_return_hook: std::sync::Mutex::new(None),
         }
@@ -1277,7 +1311,12 @@ impl SharedCodexAppServer {
     /// ARCH INVARIANT (#550 F3): planner-harness reconciliation turn issuance
     /// goes through `harness::run_loop::IssueTurnHandle`; direct callers here
     /// are non-harness boot/operation paths or lower-level tests.
-    pub async fn turn_start(&self, thread_id: &str, items: Vec<InputItem>) -> Result<TurnId> {
+    pub async fn turn_start(
+        &self,
+        thread_id: &str,
+        items: Vec<InputItem>,
+        selection: &TurnModelSelection,
+    ) -> Result<TurnId> {
         if self.sealed_turn_threads.contains_key(thread_id) {
             return Err(CalmError::Conflict(format!(
                 "thread {thread_id} is sealed because its track is being deleted"
@@ -1293,12 +1332,26 @@ impl SharedCodexAppServer {
         }
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
+            if fake.reject_turn_start.load(Ordering::SeqCst) {
+                return Err(CalmError::CodexRefused(
+                    "turn/start failed: unknown model (code -32602)".into(),
+                ));
+            }
+            if fake.fail_turn_start.load(Ordering::SeqCst) {
+                return Err(CalmError::CodexAppServer(
+                    "forced turn/start failure for test".into(),
+                ));
+            }
             let n = fake.next_turn.fetch_add(1, Ordering::SeqCst);
             let turn_id = format!("fake-turn-{n:04}");
             fake.started_turns
                 .lock()
                 .expect("fake shared codex started turns mutex poisoned")
                 .push((thread_id.to_string(), items.clone()));
+            fake.started_turn_selections
+                .lock()
+                .expect("fake shared codex turn selections mutex poisoned")
+                .push((thread_id.to_string(), selection.clone()));
             let hook = fake
                 .turn_start_return_hook
                 .lock()
@@ -1325,7 +1378,7 @@ impl SharedCodexAppServer {
             return Ok(turn_id);
         }
         let client = self.connected_client().await?;
-        let turn = client.turn_start(thread_id, items).await?;
+        let turn = client.turn_start(thread_id, items, selection).await?;
         let turn_id = turn
             .turn_id()
             .map(ToOwned::to_owned)
@@ -1362,6 +1415,14 @@ impl SharedCodexAppServer {
     /// dormant installation must answer `GET /api/models` with
     /// `source: "unavailable"`, not by booting a codex process behind a GET.
     pub async fn model_list(&self, deadline: tokio::time::Instant) -> Result<Vec<CodexModel>> {
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref()
+            && fake.reject_model_list.load(Ordering::SeqCst)
+        {
+            return Err(CalmError::CodexRefused(
+                "model/list failed: catalog unavailable for this account (code -32603)".into(),
+            ));
+        }
         let client = self.connected_client().await?;
         let mut models: Vec<CodexModel> = Vec::new();
         let mut skipped = 0usize;
@@ -1435,6 +1496,22 @@ impl SharedCodexAppServer {
         cwd: Option<&str>,
         deadline: tokio::time::Instant,
     ) -> Result<CodexConfig> {
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            if fake.reject_config_read.load(Ordering::SeqCst) {
+                return Err(CalmError::CodexRefused(
+                    "config/read failed: no such workspace (code -32602)".into(),
+                ));
+            }
+            if let Some(config) = fake
+                .config_read
+                .lock()
+                .expect("fake shared codex config-read mutex poisoned")
+                .clone()
+            {
+                return Ok(config);
+            }
+        }
         let client = self.connected_client().await?;
         Ok(client.config_read(cwd, deadline).await?.config)
     }
@@ -3572,6 +3649,21 @@ impl SharedCodexAppServer {
             .unwrap_or_default()
     }
 
+    /// #1505 S4-3 — what each `turn/start` asked of the model, in issue
+    /// order. Pairs index-for-index with [`Self::started_turns_for_test`].
+    #[cfg(feature = "fixtures")]
+    pub fn started_turn_selections_for_test(&self) -> Vec<(String, TurnModelSelection)> {
+        self.fake
+            .as_ref()
+            .map(|fake| {
+                fake.started_turn_selections
+                    .lock()
+                    .expect("fake shared codex turn selections mutex poisoned")
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
     #[cfg(feature = "fixtures")]
     pub fn started_thread_params_for_test(&self) -> Vec<StartedThreadParam> {
         self.fake
@@ -3611,6 +3703,61 @@ impl SharedCodexAppServer {
     #[cfg(feature = "fixtures")]
     pub fn turn_thread_is_sealed_for_test(&self, thread_id: &str) -> bool {
         self.turn_thread_is_sealed(thread_id)
+    }
+
+    /// Answer `config/read` with this instead of failing. See
+    /// [`FakeSharedCodexAppServer::config_read`].
+    #[cfg(feature = "fixtures")]
+    pub fn set_config_read_for_test(&self, config: CodexConfig) {
+        if let Some(fake) = self.fake.as_ref() {
+            *fake
+                .config_read
+                .lock()
+                .expect("fake shared codex config-read mutex poisoned") = Some(config);
+        }
+    }
+
+    /// Make every subsequent `model/list` be REFUSED by codex.
+    #[cfg(feature = "fixtures")]
+    pub fn reject_model_list_for_test(&self) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.reject_model_list.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Make every subsequent `config/read` be REFUSED by codex.
+    #[cfg(feature = "fixtures")]
+    pub fn reject_config_read_for_test(&self) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.reject_config_read.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Make every subsequent `turn/start` be REFUSED by codex — an answer,
+    /// not an outage.
+    #[cfg(feature = "fixtures")]
+    pub fn reject_turn_start_for_test(&self) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.reject_turn_start.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Let `turn/start` succeed again, as codex does when it comes back.
+    #[cfg(feature = "fixtures")]
+    pub fn clear_turn_start_failure_for_test(&self) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.fail_turn_start.store(false, Ordering::SeqCst);
+            fake.reject_turn_start.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Make every subsequent `turn/start` fail, as codex does when it refuses
+    /// a turn outright.
+    #[cfg(feature = "fixtures")]
+    pub fn fail_turn_start_for_test(&self) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.fail_turn_start.store(true, Ordering::SeqCst);
+        }
     }
 
     #[cfg(feature = "fixtures")]

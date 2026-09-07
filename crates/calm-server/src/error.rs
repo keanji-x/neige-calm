@@ -42,6 +42,23 @@ pub struct ErrorBody {
 
 #[derive(Debug, Error)]
 pub enum CalmError {
+    /// Codex ANSWERED, and its answer was a JSON-RPC error.
+    ///
+    /// Distinct from [`CalmError::CodexAppServer`], which also covers every way
+    /// the question failed to arrive — no connection, a closed socket, a
+    /// timeout, an undecodable reply. The two demand opposite responses: the
+    /// transport cases clear themselves and are worth waiting out, while a
+    /// refusal means the input was seen and rejected, so retrying it unchanged
+    /// reproduces the refusal forever.
+    ///
+    /// Split at the source rather than recovered downstream by matching on the
+    /// formatted message, because a string that happens to contain "failed" is
+    /// a marker heuristic and this decision is load bearing: #1505 S4 tells a
+    /// person "your message will be sent when codex answers" on one arm and
+    /// "codex refused it" on the other.
+    #[error("codex refused: {0}")]
+    CodexRefused(String),
+
     #[error("not found: {0}")]
     NotFound(String),
 
@@ -296,6 +313,7 @@ impl CalmError {
             CalmError::Io(_) => "io_error",
             CalmError::Serde(_) => "serde_error",
             CalmError::CodexAppServer(_) => "codex_app_server",
+            CalmError::CodexRefused(_) => "codex_refused",
             CalmError::ServiceUnavailable(_) => "service_unavailable",
             CalmError::PayloadTooLarge(_) => "payload_too_large",
             CalmError::Internal(_) => "internal",
@@ -328,6 +346,7 @@ impl CalmError {
             | CalmError::Io(_)
             | CalmError::Serde(_)
             | CalmError::CodexAppServer(_)
+            | CalmError::CodexRefused(_)
             | CalmError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -437,6 +456,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PlannerHarnessDormant(m)
             | CalmError::PlannerHarnessRuntimeSuperseded(m)
             | CalmError::TodaySummaryNoActivity(m)
+            | CalmError::CodexRefused(m)
             | CalmError::CodexAppServer(m)
             | CalmError::PayloadTooLarge(m)
             | CalmError::Internal(m) => calm_truth::TruthError::Internal(m),

@@ -22,6 +22,7 @@ pub mod isolated_tasks;
 pub mod models;
 pub mod overlays;
 pub mod planner_input;
+pub mod planner_model;
 pub mod plugins;
 pub mod settings;
 pub mod task_recovery;

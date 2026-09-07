@@ -20,7 +20,13 @@ const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const TRACK_B = { ...TRACK, id: 'w2', title: 'Second track', sort: 2 };
 const CARD_B = { ...CARD, id: 'card-2', track_id: 'w2', title: 'Second chat' };
 const CARD_SAME_TRACK = { ...CARD, id: 'card-other', title: 'Other chat' };
-const PLANNER_RUN_IDLE = { card_id: CARD.id, worker_session_id: 'runtime', phase: 'idle' };
+/* #1505 S4-3 — `model` and `reasoning_effort` are required in the response
+   schema, not optional: the server reads them off the card, which always
+   exists on this route, so their absence would be drift rather than a state.
+   `null` in both is a conversation following the installation default. */
+const PLANNER_RUN_IDLE = {
+  card_id: CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null,
+};
 
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
@@ -260,14 +266,93 @@ describe('planner conversation regressions', () => {
    * conditional on there being a transcript, so an empty drawer is precisely
    * the state that never had one — proving nothing.
    */
-  it('offers exactly the close and Send, and no other control at all', async () => {
+  /*
+   * #1505 S4 review — the picker's REST call, from the drawer.
+   *
+   * `model-pill.test.tsx` renders the pill in isolation and asserts what it
+   * hands its `onChange`, so deleting the router's `store.setModel` body — the
+   * part that actually issues `PUT /api/cards/{id}/planner/model` — left every
+   * one of those green while the control silently did nothing. This presses
+   * the real control on the real route and looks at the wire.
+   */
+  it('sends the chosen model to the server when the picker is used', async () => {
+    const { requests } = setupWithTurns((request) => request.method === 'PUT'
+        && request.path.endsWith('/planner/model')
+      ? ok({
+        card_id: CARD.id, model: 'gpt-5', reasoning_effort: null,
+        effort_adjusted: false, unknown_model: false,
+      })
+      : undefined);
+    await openConversationWithTurns();
+    const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
+    fireEvent.click(within(drawer).getByRole('button', { name: /^Model:/ }));
+    /* Nothing answers `GET /api/models` here, so "Default" is the one choice
+       the menu can offer — which is enough: it is a real selection with a real
+       body, and it is the one that must reach the server. */
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Default/ }));
+
+    await waitFor(() => {
+      const writes = requests.filter((request) => request.path.endsWith('/planner/model'));
+      expect(writes).toHaveLength(1);
+      expect(writes[0]?.method).toBe('PUT');
+      /* Both keys, always. The server answers 422 for a body missing one, so a
+         client that spread a partial selection would be conforming and
+         broken. */
+      expect(writes[0]?.body).toEqual({ model: null, reasoning_effort: null });
+    });
+  });
+
+  /*
+   * #1505 S4 review round 2. The kernel can refuse to issue for a reason no
+   * amount of waiting fixes — codex's config naming no default model, or a
+   * stored selection it cannot read. Round 1 answered those with a silent
+   * retry, so the person's sentence sat in the queue rendering as healthy
+   * forever. The reason now rides on `planner-run`; this pins that it reaches
+   * the screen rather than stopping at the store.
+   */
+  it('shows why a queued message is not being sent when the reader has to act', async () => {
+    setupWithTurns((request) => request.path.endsWith('/planner/run')
+      ? ok({
+        ...PLANNER_RUN_IDLE,
+        blocked_reason: 'This conversation follows the default model, and codex\'s configuration '
+          + 'does not name one. Pick a model to start it again.',
+      })
+      : undefined);
+    await openConversationWithTurns();
+    expect(await screen.findByText(/Pick a model to start it again/)).toBeTruthy();
+  });
+
+  /* And it says nothing when there is nothing to act on, which is almost
+     always. A notice that is usually present is one the reader stops seeing. */
+  it('says nothing when the conversation is not blocked', async () => {
+    setupWithTurns();
+    await openConversationWithTurns();
+    expect(screen.queryByText(/Pick a model to start it again/)).toBeNull();
+  });
+
+  it('offers exactly the close, Send and the model picker, and no other control at all', async () => {
     setupWithTurns();
     await openConversationWithTurns();
     const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
     const names = within(drawer)
       .getAllByRole('button', { hidden: true })
       .map((button) => button.getAttribute('aria-label') ?? button.textContent);
-    expect([...names].sort()).toEqual(['Close conversation', 'Send']);
+    /*
+     * The third member is #1505 S4-3's model picker, and this line is where
+     * that decision is written down, as the note above requires.
+     *
+     * `Model: Default` and not a model's name: nothing in this setup answers
+     * `GET /api/models`, so the catalog is absent and the trigger says what is
+     * actually known — that this conversation follows whatever the
+     * installation is configured to use. Naming a model here would be the pill
+     * asserting something it has not been told.
+     *
+     * There is deliberately no effort control beside it. The effort menu is a
+     * property of the *chosen model* — it renders only when that model offers
+     * more than one — so with no catalog there is nothing to offer, and a
+     * second trigger appearing here would be the regression.
+     */
+    expect([...names].sort()).toEqual(['Close conversation', 'Model: Default', 'Send']);
     expect(screen.queryByRole('button', { name: /reset/i })).toBeNull();
   });
 
@@ -891,7 +976,7 @@ describe('planner conversation regressions', () => {
     'phase %s applies %s policy to markers, composer state and subsequent sends',
     async (phase, policy) => {
       const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
-        ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase })
+        ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, blocked_reason: null })
         : undefined);
       await openConversation();
       /*
@@ -903,7 +988,7 @@ describe('planner conversation regressions', () => {
        */
       await act(async () => {
         client.setQueryData(queryKeys.plannerRun(CARD.id),
-          { card_id: CARD.id, worker_session_id: 'runtime', phase });
+          { card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, blocked_reason: null });
         await Promise.resolve();
       });
       const input = () => requests.filter((request) => request.path.endsWith('/planner/input'));
@@ -985,7 +1070,10 @@ describe('planner conversation regressions', () => {
     const pendingInterrupt = new Promise<ApiTransportResponse>((resolve) => { resolveInterrupt = resolve; });
     const { requests } = setup((request) => {
       if (request.path.endsWith('/planner/run')) {
-        return ok({ card_id: CARD.id, worker_session_id: 'runtime', phase: 'turn_running' });
+        return ok({
+          card_id: CARD.id, worker_session_id: 'runtime', phase: 'turn_running',
+          model: null, reasoning_effort: null, blocked_reason: null,
+        });
       }
       return request.path.endsWith('/planner/interrupt') ? pendingInterrupt : undefined;
     });
