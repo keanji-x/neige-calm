@@ -156,8 +156,11 @@ try {
   await request({ action: 'key', key: 'Up' });
   await until(capture => text(capture).includes('> /status'));
   await request({ action: 'text', text: '/s' });
-  const filtered = await until(capture => text(capture).includes('> /s') && !text(capture).includes('/help'));
-  await render(filtered, '02-slash-filter');
+  await until(capture => text(capture).includes('> /s') && !text(capture).includes('/help'));
+  // fzf can retain the selected list index when filtering changes its rows.
+  // Establish the first result so Down must visibly change selection.
+  await request({ action: 'key', key: 'Up' });
+  await render(await until(capture => text(capture).includes('> /status')), '02-slash-filter');
   await request({ action: 'key', key: 'Down' });
   await until(capture => text(capture).includes('> /settings'));
   await request({ action: 'key', key: 'Up' });
