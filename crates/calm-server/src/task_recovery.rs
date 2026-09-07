@@ -38,6 +38,28 @@ pub async fn recover_failed_task(
     request: TaskRecoveryRequest,
     actor: ActorId,
 ) -> Result<TaskRecoveryReceipt> {
+    recover_with_binding(context, track_id, key, request, actor, None).await
+}
+
+pub(crate) async fn recover_failed_task_bound(
+    context: RecoveryContext<'_>,
+    track_id: &str,
+    key: &str,
+    request: TaskRecoveryRequest,
+    actor: ActorId,
+    binding: crate::semantic_recovery::BoundTurn,
+) -> Result<TaskRecoveryReceipt> {
+    recover_with_binding(context, track_id, key, request, actor, Some(binding)).await
+}
+
+async fn recover_with_binding(
+    context: RecoveryContext<'_>,
+    track_id: &str,
+    key: &str,
+    request: TaskRecoveryRequest,
+    actor: ActorId,
+    binding: Option<crate::semantic_recovery::BoundTurn>,
+) -> Result<TaskRecoveryReceipt> {
     if !calm_types::report_blocks::tasks::key_is_valid(key)
         || request.expected_attempt_id.trim().is_empty()
         || request.idempotency_key.trim().is_empty()
@@ -70,6 +92,9 @@ pub async fn recover_failed_task(
         context.write,
         move |tx| {
             Box::pin(async move {
+                if let Some(binding) = &binding {
+                    crate::semantic_recovery::authenticate_tx(tx, binding).await?;
+                }
                 let track = crate::track_lifecycle::track_get_tx(tx, &track_id).await?;
                 let scope = EventScope::Track {
                     track: track.id.clone(),

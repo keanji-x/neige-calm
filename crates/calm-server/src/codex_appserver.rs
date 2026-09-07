@@ -805,7 +805,7 @@ impl CodexAppServer {
     /// `planner_appserver`) construct a real client/handle without a `codex`
     /// binary. The server end is returned rather than parked so the
     /// caller controls its lifetime.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fixtures"))]
     pub(crate) async fn connect_pair_for_test()
     -> (Self, NotificationStream, WebSocketStream<UnixStream>) {
         let (client_io, server_io) = UnixStream::pair().expect("unix socket pair");
@@ -1000,7 +1000,37 @@ impl CodexAppServer {
         &self,
         params: PermissionThreadStartParams,
     ) -> Result<ThreadResult> {
+        self.thread_start_with_permissions_and_tools(params, Vec::new())
+            .await
+    }
+
+    pub(crate) async fn thread_start_with_params_and_tools(
+        &self,
+        params: ThreadStartParams,
+        tools: Vec<Value>,
+    ) -> Result<ThreadResult> {
+        self.thread_start_with_permissions_and_tools(
+            PermissionThreadStartParams {
+                cwd: params.cwd,
+                approval_policy: params.approval_policy,
+                permissions: ThreadPermissionSelection::LegacySandbox(params.sandbox_mode),
+                developer_instructions: params.developer_instructions,
+                config: params.config,
+            },
+            tools,
+        )
+        .await
+    }
+
+    async fn thread_start_with_permissions_and_tools(
+        &self,
+        params: PermissionThreadStartParams,
+        tools: Vec<Value>,
+    ) -> Result<ThreadResult> {
         let mut value = json!({"cwd":params.cwd,"approvalPolicy":params.approval_policy});
+        if !tools.is_empty() {
+            value["dynamicTools"] = json!(tools);
+        }
         match params.permissions {
             ThreadPermissionSelection::LegacySandbox(mode) => {
                 value["sandbox"] = Value::String(mode);

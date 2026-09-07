@@ -68,6 +68,10 @@ pub struct DynamicToolRequest {
 }
 
 impl DynamicToolRequest {
+    pub(crate) async fn cancelled(&mut self) {
+        self.response.closed().await;
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.response.is_closed()
     }

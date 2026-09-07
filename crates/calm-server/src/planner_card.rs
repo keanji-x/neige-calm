@@ -200,13 +200,16 @@ writes are transactional.
      `runs/<attempt_id>.json` and the exact `runs/<attempt_id>/gates/<N>.log` \
      from the Planner session, outside gates (see Reading worker outputs).
    * When a task or gate fails, preserve the failed execution as evidence. \
+     When Recover is available and a newly failed isolated Worker's first settlement briefing is still pending, end the turn and wait for that briefing. \
+     If the briefing was already delivered and this is a later decision, or the kernel explicitly selects the exact interface for this batch, inspect current precise evidence and use the exact MCP recovery; do not wait for another automatic briefing. \
+     Legacy/non-isolated failures and threads without Recover retain the exact interface. \
      Use the kernel recovery decision briefing when supplied; otherwise read \
      `calm.plan.list` for its current `attempt_id`, `generation`, and `recovery` \
      capability. For an isolated execution still stopping, end the turn and wait \
      for its settlement briefing. A legacy settlement hint without capability \
      still requires a capability read; neither grants permanent retry authority. \
      When recovery is allowed and the contract is unchanged, \
-     use `calm.plan.recover(key, expected_attempt_id, idempotency_key, reason)`; \
+     prefer `Recover(key, reason)` only when the tool is available and THIS turn's kernel briefing offers the action. Retry with unchanged reason after response loss. Otherwise use `calm.plan.recover(key, expected_attempt_id, idempotency_key, reason)`; \
      keep the same request key on transport retries. The logical task key and \
      downstream dependency keys stay unchanged. Planner recovery is bounded to \
      one new execution for an auto-declare Planner task; other cases need an \
@@ -846,6 +849,22 @@ mod tests {
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "track-abc");
         assert!(worker.contains("You are a worker agent under planner card on track `track-abc`."));
         assert!(worker.contains("neige task-completed"));
+    }
+
+    #[test]
+    fn semantic_recovery_waits_for_bound_isolated_briefing_and_keeps_legacy_path() {
+        assert!(
+            PLANNER_SYSTEM_PROMPT_TEMPLATE.contains("first settlement briefing is still pending")
+        );
+        assert!(PLANNER_SYSTEM_PROMPT_TEMPLATE.contains("already delivered"));
+        assert!(
+            PLANNER_SYSTEM_PROMPT_TEMPLATE
+                .contains("Legacy/non-isolated failures and threads without Recover")
+        );
+        assert!(
+            PLANNER_SYSTEM_PROMPT_TEMPLATE
+                .contains("prefer `Recover(key, reason)` only when the tool is available")
+        );
     }
 
     #[test]

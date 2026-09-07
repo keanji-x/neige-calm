@@ -638,6 +638,7 @@ pub mod replay;
 pub mod role_gate;
 pub mod routes;
 pub mod scheduler;
+pub mod semantic_recovery;
 pub mod session_projection_lookup;
 pub mod session_projection_repo;
 pub mod shared_codex_appserver;

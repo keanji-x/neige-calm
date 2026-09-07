@@ -1355,11 +1355,16 @@ impl AppState {
             Duration::from_secs(60 * 60 * 6),
         );
         let pending_codex_threads_spawn_serial = Arc::new(Mutex::new(()));
-        let shared_codex_appserver = SharedCodexAppServer::new_with_pending(
+        let shared_codex_appserver = SharedCodexAppServer::new_with_recovery(
             cfg,
             codex.shared_codex_home.clone(),
             repo.clone(),
             Some(pending_codex_threads.clone()),
+            Some(crate::semantic_recovery::RecoveryService {
+                repo: repo.clone(),
+                events: events.clone(),
+                write: write.clone(),
+            }),
         );
         let plugin = Arc::new(PluginHost::new_full(
             Arc::new(registry),
