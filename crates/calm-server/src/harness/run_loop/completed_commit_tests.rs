@@ -202,7 +202,7 @@ async fn queued_commit_before_done_is_consumed_without_a_turn_and_later_user_inp
             .len(),
         1
     );
-    // No stuck debounce/state after consuming the only soft observation.
+    // No stuck debounce/state after consuming the only observation.
     fx.harness
         .observe_user_message_durable("please explain the result".into(), vec![])
         .await
@@ -358,4 +358,68 @@ async fn completed_commit_consumption_restores_queue_and_debounce_on_persist_fai
     fx.issue().await;
     assert!(fx.stored().await.pending_entries().is_empty());
     assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 0);
+}
+
+#[tokio::test]
+async fn consuming_a_commit_does_not_bypass_remaining_soft_observation_debounce() {
+    let mut fx = Fixture::new().await;
+    let config = &mut Arc::get_mut(&mut fx.harness.inner)
+        .expect("the unstarted harness has one owner")
+        .config;
+    config.debounce_min_idle = Duration::from_secs(60);
+    config.debounce_max_wait = Duration::from_secs(120);
+    fx.lifecycle(TrackLifecycle::Done).await;
+    let (_, commit) = fx.commit().await;
+    let leased = QueueEntry::system(
+        Observation::WorkspaceLeased {
+            track_id: fx.harness.inner.track_id.clone(),
+            card_id: fx.harness.inner.card_id.clone(),
+            lease_id: "still-relevant".into(),
+            path: "/tmp/still-needed-workspace".into(),
+        },
+        None,
+    )
+    .unwrap();
+    fx.enqueue(vec![commit, leased.clone()]).await;
+    let young = Instant::now();
+    {
+        let mut debounce = fx.harness.inner.debounce.lock().await;
+        assert!(debounce.hard_fire, "the commit initially bypasses debounce");
+        debounce.first_pending_at = Some(young);
+        debounce.last_pending_at = Some(young);
+    }
+    fx.issue().await;
+    assert_eq!(
+        fx.harness.inner.daemon.turn_start_count_for_test(),
+        0,
+        "consuming the hard-fire commit must not send the remaining young soft observation"
+    );
+    assert_eq!(fx.stored().await.pending_entries(), vec![leased.clone()]);
+    {
+        let debounce = fx.harness.inner.debounce.lock().await;
+        assert!(!debounce.hard_fire);
+        assert_eq!(debounce.first_pending_at, Some(young));
+        assert_eq!(debounce.last_pending_at, Some(young));
+    }
+    fx.issue().await;
+    assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 0);
+    // Advance only the controlled queue timestamps, without a wall-clock wait.
+    {
+        let mut debounce = fx.harness.inner.debounce.lock().await;
+        let mature = Instant::now() - Duration::from_secs(61);
+        debounce.first_pending_at = Some(mature);
+        debounce.last_pending_at = Some(mature);
+    }
+    fx.issue().await;
+    assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 1);
+    assert_eq!(
+        fx.stored().await.issued_input_segments.unwrap().segments,
+        input_segments_for_entries(&fx.harness.inner.card_id, &[leased])
+    );
+    let sent = fx.harness.inner.daemon.started_turns_for_test();
+    let InputItem::Text { text } = &sent[0].1[0] else {
+        panic!("expected text input")
+    };
+    assert!(text.contains("/tmp/still-needed-workspace"));
+    assert!(!text.contains("committed branch completed-slice"));
 }

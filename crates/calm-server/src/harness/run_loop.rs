@@ -2824,6 +2824,13 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     }
 
+    // The removed commit may have been the only hard-fire entry. Let the
+    // next tick apply the existing debounce to any remaining soft entries;
+    // this invocation was admitted using the queue's pre-consumption state.
+    if hard_fire && !inner.debounce.lock().await.hard_fire {
+        return Ok(());
+    }
+
     let prior_turn = {
         let mut state = inner.state.lock().await;
         if !state.can_issue_turn() {
@@ -3895,5 +3902,4 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "completed_commit_tests.rs"]
 mod completed_commit_tests;
