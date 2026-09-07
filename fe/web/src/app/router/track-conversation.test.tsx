@@ -233,8 +233,25 @@ async function typeInto(field: HTMLElement, text: string) {
 async function write(text: string) {
   const field = messageField();
   await typeInto(field, text);
+  await submit();
+}
+
+/**
+ * Send what is in the field, by the only door there is while a turn runs.
+ *
+ * The `Queue message` button used to be that door for a mouse; it is gone, and
+ * these tests now press Enter instead. That is not a weaker test of the same
+ * thing — it is the stronger one. Astryx's `handleSubmit` refuses on an empty
+ * draft and on `isDisabled` and has never consulted `isStopShown`, so Enter
+ * was always the path that actually reached `POST /planner/input` during a
+ * turn; the button called the same `submit`. What every `[F4]`/`[F5]`/`[F6]`
+ * case below still proves is what it always proved: that a message typed
+ * during a running turn is posted, and is called queued only once its POST is
+ * acknowledged.
+ */
+async function submit() {
   await act(async () => {
-    fireEvent.keyDown(field, { key: 'Enter' });
+    fireEvent.keyDown(messageField(), { key: 'Enter' });
     await Promise.resolve();
   });
 }
@@ -670,7 +687,7 @@ describe('track conversations', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
       await screen.findByRole('button', { name: 'Stop' });
       await typeInto(messageField(), text);
-      fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+      await submit();
       await screen.findByRole('alert');
       expect(within(drawerElement()).getByText(text)).toBeTruthy();
       expect(document.querySelector('[data-nc-queued]')).toBeNull();
@@ -694,7 +711,7 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await screen.findByRole('button', { name: 'Stop' });
     await typeInto(messageField(), 'Waiting for the server');
-    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+    await submit();
     await waitFor(() => expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1));
     expect(within(drawerElement()).getByText('Waiting for the server')).toBeTruthy();
     expect(document.querySelector('[data-nc-queued-note]')).toBeNull();
@@ -721,7 +738,7 @@ describe('track conversations', () => {
     await screen.findByRole('button', { name: 'Stop' });
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       await typeInto(messageField(), text);
-      fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+      await submit();
       await waitFor(() => expect(attempts).toBe(attempt));
       if (attempt === 1) await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     }
@@ -969,7 +986,7 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await screen.findByRole('button', { name: 'Stop' });
     await typeInto(messageField(), 'Queued before the stall');
-    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+    await submit();
     await screen.findByText('Queued · sends when this turn ends');
     phase = 'wedged';
     await act(async () => { await client.invalidateQueries({ queryKey: ['planner-run', ASSISTANT_CARD.id] }); });

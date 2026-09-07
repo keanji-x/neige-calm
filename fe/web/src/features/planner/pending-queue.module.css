@@ -1,23 +1,42 @@
-/* #1505 PR4 — what the queue region still needs after Card/List/Text/Banner.
-   The surface, the type scale, the notice colours and the list reset are the
-   design system's; these three rules are the two things it has no opinion
-   about — where the region sits in the column, and that a queued message is
-   text a person typed, newlines and all. */
+/* #1505 PR4 — the queue strip that sits directly above the composer.
+   A strip and not a panel: no surface of its own, no card per row. What
+   separates it from the transcript above is space, and what separates one row
+   from the next is a hairline. */
 
 @layer features {
   .queue {
-    margin-block-start: var(--space-3);
+    margin-block: var(--space-2) var(--space-1);
   }
 
-  /* Astryx's `List` gaps its rows at spacing-0.5, which is right for label
-     rows and too tight for entries that can carry an editor, a banner and a
-     row of buttons. */
+  .caption {
+    /* The rows below are the content; this only says how many. */
+    padding-inline: var(--space-1);
+  }
+
   .list {
-    gap: var(--space-3);
+    gap: 0;
   }
 
+  .row {
+    /* The two icon buttons are 24px; the row is theirs, not the text's. */
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-1);
+    border-radius: var(--radius-sm);
+  }
+
+  .row:hover {
+    background: var(--overlay-hover-faint);
+  }
+
+  /* Takes the whole row minus the two buttons, and gives way — `min-inline-size:
+     0` is what lets a flex child shrink below its content and therefore what
+     makes the ellipsis possible at all. */
   .text {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+    flex: 1;
+    min-inline-size: 0;
+  }
+
+  .notice {
+    padding-block: var(--space-1);
   }
 }

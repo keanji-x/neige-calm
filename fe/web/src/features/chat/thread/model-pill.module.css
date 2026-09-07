@@ -10,6 +10,13 @@
     max-inline-size: 14rem;
   }
 
+  /* Secondary text, so the effort reads as belonging to the model beside it
+     rather than as its equal. The one property overridden on a vendor button,
+     and it is a token, not a re-implementation of the button. */
+  .effort {
+    color: var(--text-3);
+  }
+
   /* A standing explanation, not a menu row: it must not look pressable. The
      type is `Text type="supporting"`; what is left here is the box. */
   .note {

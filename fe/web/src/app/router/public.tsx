@@ -133,7 +133,10 @@ type ConversationStore = Readonly<{
   pendingQueue: readonly PendingQueueEntry[];
   /** Queued messages that exist but carry no id to address them by. */
   pendingQueueOverflow: number;
-  editQueuedEntry: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueWriteOutcome>;
+  /** Remove a queued entry so its words can go back in the composer. The same
+   *  compare-and-swap delete `deleteQueuedEntry` performs; a separate name
+   *  because the caller does something different with a `done`. */
+  takeBackQueuedEntry: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
   deleteQueuedEntry: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
   historyReady: boolean;
   historyLoading: boolean;
@@ -884,36 +887,15 @@ export function useConversationStore(
       turns: knownTurns.filter((turn) => !isRetired(turn)),
     }));
   };
-  /**
-   * Carry an accepted edit onto the echo that is standing in for it.
-   *
-   * The echo is retired by TEXT: `reconcileOptimisticConversationTurns` asks
-   * `userTextMatchesEcho` whether a persisted row is this echo coming back
-   * (`core/domain/conversation.ts`). Rewriting the queue entry and leaving the
-   * echo alone therefore breaks the only retirement route it has — the row
-   * that eventually lands says the NEW text, the echo still says the old one,
-   * they never match, and once the entry drains out of `pending` the `:448`
-   * filter stops hiding it. The reader is then looking at the edited message
-   * AND at a permanent pre-edit ghost captioned "sends when this turn ends",
-   * re-merged from the registry on every remount.
-   *
-   * So this is not cosmetic text-keeping: it is what keeps an edited message
-   * reconcilable at all. `retireQueuedEcho` is the wrong tool here — the
-   * message has not been withdrawn, it is still going to be sent and still
-   * going to come back — which is exactly why the two paths differ.
+  /*
+   * A take-back IS a delete. The entry leaves the queue and its echo is
+   * retired for the same reason a deleted one is — nothing more is coming for
+   * it from this harness — and the words then reappear as a draft, which is
+   * not a transcript row and must not leave one behind.
    */
-  const rewriteQueuedEcho = (entryId: string, text: string): void => {
-    const claims = (turn: TranscriptEntry) =>
-      isOptimisticConversationTurn(turn) && turn.entryId === entryId;
-    setEchoes((current) => current.map((turn) => claims(turn) ? { ...turn, text } : turn));
-    registry.updateExisting(cardId, ({ conversation: known, turns: knownTurns }) => ({
-      conversation: known,
-      turns: knownTurns.map((turn) => claims(turn) ? { ...turn, text } : turn),
-    }));
-  };
-  const editQueuedEntry = (entry: PendingQueueEntry, text: string) =>
-    mutations.editQueued(entry.entry_id, text, entry.rev).then((outcome) => {
-      if (outcome.kind === 'done') rewriteQueuedEcho(entry.entry_id, text);
+  const takeBackQueuedEntry = (entry: PendingQueueEntry) =>
+    mutations.deleteQueued(entry.entry_id, entry.rev).then((outcome) => {
+      if (outcome.kind === 'done') retireQueuedEcho(entry.entry_id);
       return outcome;
     });
   const deleteQueuedEntry = (entry: PendingQueueEntry) =>
@@ -971,7 +953,7 @@ export function useConversationStore(
     sendBlocked,
     pendingQueue,
     pendingQueueOverflow,
-    editQueuedEntry,
+    takeBackQueuedEntry,
     deleteQueuedEntry,
     historyReady: history.data !== undefined,
     historyLoading: history.isFetching,
@@ -2154,8 +2136,12 @@ function useConversationPanel(
               entries={store.pendingQueue}
               overflow={store.pendingQueueOverflow}
               busy={store.sending}
-              onEdit={store.editQueuedEntry}
+              /* Taking a message back replaces the composer's contents, so it
+                 is offered only when there is nothing there to destroy. */
+              composerBusy={composerDraft.trim() !== ''}
+              onTakeBack={store.takeBackQueuedEntry}
               onDelete={store.deleteQueuedEntry}
+              onEcho={setComposerDraft}
             />
             {/*
               * Nothing else follows the transcript.

@@ -2247,39 +2247,40 @@ export function ChatComposer({
    * and a three-way ternary nested inside a fragment inside an attribute is
    * not a thing anybody should have to read.
    */
-  const sendDoor = stopShown ? (
-            <button
-              type="button"
-              className={styles.queueSend}
-              data-nc-send-queued=""
-              disabled={disabled || (draft.trim() === '' && !allowEmptyText)}
-              onClick={() => { submit(draft); }}
-            >Queue message</button>
-          ) : allowEmptyText && draft.trim() === '' ? (
-            /*
-             * ── The third door, and it exists for the same measured reason ────
-             *
-             * `ChatSendButton` takes its availability from the composer
-             * context's `canSend`, which is false on an empty draft. An
-             * image-only message is an empty draft, so with only the vendor
-             * button on screen a person who has picked an image and typed
-             * nothing has no control to press. This is that control, and it is
-             * shown only while the vendor's own is unavailable, so the two are
-             * never both live.
-             *
-             * Named `Send image` rather than `Send`: while it is on screen the
-             * vendor button is also on screen saying `Send`, and two controls
-             * with one name is the ambiguity the `Queue message` note above
-             * refuses for the same reason.
-             */
-            <button
-              type="button"
-              className={styles.queueSend}
-              data-nc-send-attachment=""
-              disabled={disabled}
-              onClick={() => { submit(draft); }}
-            >Send image</button>
-          ) : undefined;
+  /*
+   * ── The one send door this composer adds, and the one it no longer does ──
+   *
+   * **Gone: `Queue message`.** It stood beside Stop while a turn ran, because
+   * `ChatSendButton` is one button in two states and that state is Stop, so a
+   * person who had typed a sentence had no button to press. It is gone at the
+   * owner's call, and what it cost is exactly that: a *button*. Enter still
+   * queues — Astryx's `handleSubmit` refuses only an empty draft and
+   * `isDisabled`, never `isStopShown`, so the keyboard path is untouched and
+   * `POST /planner/input` is reached the same way it always was. What a
+   * mouse-only reader loses is the affordance, not the capability, and what
+   * the footer gains is one control in it instead of two competing for the
+   * same corner. The queue strip above the field is where a queued message is
+   * now visible, which is the half that was missing when that button was
+   * written.
+   *
+   * **Kept: `Send image`.** Different failure, and not a duplicate of
+   * anything: `ChatSendButton` takes its availability from the composer
+   * context's `canSend`, which is false on an empty draft, and an image-only
+   * message IS an empty draft. Without this there is no control at all —
+   * not a second one — and Enter is already handled a few lines up by the
+   * same `allowEmptyText` guard. It shows only while the vendor's own button
+   * is unavailable, so the two are never both live, and it is named
+   * `Send image` rather than `Send` so two controls never share one name.
+   */
+  const sendDoor = allowEmptyText && draft.trim() === '' && !stopShown ? (
+    <button
+      type="button"
+      className={styles.queueSend}
+      data-nc-send-attachment=""
+      disabled={disabled}
+      onClick={() => { submit(draft); }}
+    >Send image</button>
+  ) : undefined;
 
   return (
     <div

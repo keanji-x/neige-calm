@@ -106,7 +106,12 @@ export function ModelPill({
                between this and the `max-inline-size` that used to just cut it
                off with no way to read the rest. */
             children: <Text maxLines={1} hasTruncateTooltip>{label}</Text>,
-            variant: 'secondary',
+            /* `ghost`: no fill, no border. The composer footer is a quiet row
+               under the field, and a filled pill there was the heaviest thing
+               in it — heavier than Send, which is the control anyone looking
+               at that row is actually aiming for. What says "this is
+               pressable" is the chevron and the hover, which ghost keeps. */
+            variant: 'ghost',
             size: 'sm',
             isDisabled: isDisabled || unreachable,
             className: styles.trigger,
@@ -182,14 +187,16 @@ function EffortPill({
         button={{
           label: `Reasoning effort: ${label}`,
           children: label,
-          /* `ghost` against the model's `secondary`, because effort is a
-             property OF the chosen model and reads as one only if the two
-             controls are not the same weight. Two equal outlined pills side by
-             side said they were two independent settings, which is the one
+          /* Both triggers are ghost now that neither is filled, so the
+             subordination that used to come from `secondary` vs `ghost` comes
+             from colour instead (`.effort`). Effort is a property OF the
+             chosen model and has to read as one; two identical controls side
+             by side said they were two independent settings, which is the one
              thing this pair is not. */
           variant: 'ghost',
           size: 'sm',
           isDisabled,
+          className: styles.effort,
         }}
       >
         <Choice
