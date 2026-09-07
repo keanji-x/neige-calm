@@ -7,9 +7,17 @@
 //! kernel keeps actual KV state — a plugin whose `kv.set` went nowhere would
 //! pass a stubbed-out harness while losing every holding in production.
 //!
-//! Network: only where a test needs a price. `DEAD_ENDPOINT` is a port nothing
-//! listens on, and the quote asset (`USDT`) prices at 1.0 without any venue,
-//! which is what lets a *partially* priceable portfolio be built offline.
+//! Network: only where a test needs a price, and never a real one — every
+//! source this plugin has is pointed at loopback here. `DEAD_ENDPOINT` is a
+//! port nothing listens on; [`price_server`] stands in for Binance and
+//! [`sina_server`] for `hq.sinajs.cn`. `USDT` prices at 1.0 with no request at
+//! all, off Binance's pinned quote leg, which is what lets a *partially*
+//! priceable portfolio be built offline.
+//!
+//! A price now carries the currency its SOURCE quoted it in — `USDT` off
+//! Binance, `USD`/`HKD`/`CNY` off Sina — rather than the configured settlement
+//! currency, and a portfolio whose priced rows span two of them gets no total
+//! at all until exchange rates land.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -107,6 +115,12 @@ impl FakeKernel {
     /// every other test uses an hour so that the only refreshes it sees are
     /// the ones its own tool calls caused.
     fn boot_polling(endpoint: &str, poll_seconds: u64) -> Self {
+        Self::boot_sources(endpoint, DEAD_ENDPOINT, poll_seconds)
+    }
+
+    /// Both sources named. The stock source defaults to [`DEAD_ENDPOINT`]
+    /// everywhere else so that no test can reach `hq.sinajs.cn` by omission.
+    fn boot_sources(endpoint: &str, sina_endpoint: &str, poll_seconds: u64) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_market"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -153,6 +167,7 @@ impl FakeKernel {
                         "poll_seconds": poll_seconds,
                         "quote": "USDT",
                         "binance_endpoint": endpoint,
+                        "sina_endpoint": sina_endpoint,
                     } }
                 }
             }
@@ -711,4 +726,239 @@ fn removing_the_last_holding_publishes_an_empty_table() {
         .clone();
     assert_eq!(rows.len(), 1, "only the Total row remains: {rows:?}");
     assert_eq!(rows[0]["value"].as_f64(), Some(0.0));
+}
+
+/// A loopback stand-in for `hq.sinajs.cn`, the US/HK/CN source.
+///
+/// It reproduces the two properties of that endpoint that the plugin's parser
+/// depends on: the body is **GBK**, and a request with no `Referer` header is
+/// answered `403 Forbidden` — not with an empty list, not with JSON. The name
+/// field carries real GBK bytes so the decode is exercised here too.
+///
+/// The rows are real ones, read off `hq.sinajs.cn` on 2026-09-07, truncated
+/// after the fields the plugin reads. The field orders differ per market: US
+/// is field 1, HK is field 6, CN is field 3.
+fn sina_server() -> String {
+    /// 贵州癨 in GBK. The last character is `B0 5C`, a GBK character whose
+    /// trailing byte is the ASCII backslash.
+    const GBK_NAME: &[u8] = &[0xb9, 0xf3, 0xd6, 0xdd, 0xb0, 0x5c];
+    const ROWS: &[(&str, &str)] = &[
+        (
+            "gb_nvda",
+            "<NAME>,230.3600,0.84,2026-09-05 09:46:13,1.9100,231.0900,234.7600",
+        ),
+        (
+            "hk01810",
+            "XIAOMI-W,<NAME>,28.220,28.440,28.400,27.120,27.480,-0.960",
+        ),
+        (
+            "sh600519",
+            "<NAME>,1324.000,1330.000,1316.940,1333.600,1312.660",
+        ),
+    ];
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while stream.read_exact(&mut byte).is_ok() {
+                head.push(byte[0]);
+                if head.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let head = String::from_utf8_lossy(&head).to_string();
+            if !head
+                .to_ascii_lowercase()
+                .contains("referer: https://finance.sina.com.cn")
+            {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden"
+                );
+                let _ = stream.flush();
+                continue;
+            }
+            let target = head
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            let mut body: Vec<u8> = Vec::new();
+            for symbol in target
+                .split("list=")
+                .nth(1)
+                .unwrap_or_default()
+                .split(',')
+                .filter(|s| !s.is_empty())
+            {
+                // A symbol this fixture does not know answers with an empty
+                // payload, which is what the real endpoint does for a name it
+                // does not list.
+                let payload = ROWS
+                    .iter()
+                    .find(|(name, _)| *name == symbol)
+                    .map_or("", |(_, payload)| *payload);
+                body.extend_from_slice(format!("var hq_str_{symbol}=\"").as_bytes());
+                for (index, chunk) in payload.split("<NAME>").enumerate() {
+                    if index > 0 {
+                        body.extend_from_slice(GBK_NAME);
+                    }
+                    body.extend_from_slice(chunk.as_bytes());
+                }
+                body.extend_from_slice(b"\";\n");
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len(),
+            );
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// The last `portfolio.holdings` payload pushed at `track`.
+fn last_holdings_table<'a>(kernel: &'a FakeKernel, track: &str) -> &'a Value {
+    kernel
+        .pushes
+        .iter()
+        .rev()
+        .find(|(kind, _)| kind == &format!("portfolio.holdings@{track}"))
+        .map(|(_, payload)| payload)
+        .expect("a holdings push")
+}
+
+/// A stock holding is priced through the whole shipping path — the real
+/// binary, the real KV, the real HTTP client — and reaches the reader in the
+/// currency ITS market quotes, not in the configured settlement currency.
+///
+/// The install settles in `USDT` (see `boot_sources`), so a row labelled
+/// `USDT` would look right in every crypto test and be wrong by a factor of
+/// the HKD/USDT rate here.
+#[test]
+fn a_hong_kong_holding_is_priced_in_hkd_and_totalled_in_hkd() {
+    let mut kernel = FakeKernel::boot_sources(DEAD_ENDPOINT, &sina_server(), 3600);
+
+    kernel.set_holding(2, "HK:1810", 100.0, TRACK);
+
+    assert_eq!(
+        kernel.kinds_pushed(),
+        vec![
+            format!("portfolio.holdings@{TRACK}"),
+            format!("portfolio.history@{TRACK}"),
+        ],
+        "a fully-priced tick publishes both tables"
+    );
+    let table = last_holdings_table(&kernel, TRACK);
+    let rows = table["rows"].as_array().expect("rows");
+    assert_eq!(rows[0]["asset"], json!("1810"));
+    assert_eq!(rows[0]["venue"], json!("HK"));
+    assert_eq!(
+        rows[0]["price"].as_f64(),
+        Some(27.48),
+        "field 6 of the HK row is the last price; field 3 (28.44) is the \
+         previous close: {rows:?}"
+    );
+    assert_eq!(rows[0]["currency"], json!("HKD"));
+    assert_eq!(rows[1]["value"].as_f64(), Some(2748.0), "the Total row");
+    assert_eq!(rows[1]["currency"], json!("HKD"));
+    let caption = table["caption"].as_str().expect("caption");
+    assert!(caption.contains("totalled in HKD"), "{caption}");
+    assert!(!caption.contains("USDT"), "{caption}");
+
+    // The stored history point exists — a stock holding no longer stalls the
+    // series the way it did while US/HK/CN had no source.
+    let points = kernel
+        .kv
+        .get("history/trk_caller")
+        .and_then(Value::as_array)
+        .expect("a history document");
+    assert_eq!(points.len(), 1, "{points:?}");
+    assert_eq!(points[0]["total"].as_f64(), Some(2748.0));
+}
+
+/// **A portfolio spanning two currencies gets rows but no total — and no
+/// history point.**
+///
+/// `USDT` prices at 1.0 off Binance's quote leg with no request; `US:NVDA`
+/// prices at 230.36 USD off the stock source. Both rows price, so the tick is
+/// COMPLETE — the refusal below is about currencies, not about a missing
+/// price, which is what makes this different from every other no-total test
+/// in this file. Adding 1 to 230.36 would publish 231.36 of nothing as the
+/// portfolio's value and append it to a series measured in something else.
+///
+/// The missing history point is the registered consequence: such a Track has
+/// no series until exchange rates land.
+#[test]
+fn a_portfolio_across_two_currencies_publishes_rows_but_no_total_and_no_history() {
+    let mut kernel = FakeKernel::boot_sources(DEAD_ENDPOINT, &sina_server(), 3600);
+    kernel.set_holding(2, "USDT", 1.0, TRACK);
+    // The crypto-only tick before this one must have had a total and a point,
+    // or the assertion below would pass for a plugin that never totals.
+    assert_eq!(kernel.last_total_for(TRACK), Some(1.0));
+    let before = kernel.pushes.len();
+
+    kernel.set_holding(3, "US:NVDA", 1.0, TRACK);
+
+    assert_eq!(
+        kernel.pushes_since(before),
+        vec![format!("portfolio.holdings@{TRACK}")],
+        "holdings only — no history read, no history write, no history overlay"
+    );
+    let table = last_holdings_table(&kernel, TRACK);
+    let rows = table["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 3, "both asset rows plus the Total: {rows:?}");
+    for row in &rows[..2] {
+        assert!(
+            row["price"].as_f64().is_some(),
+            "both holdings priced, so this tick is COMPLETE: {row}"
+        );
+    }
+    assert!(
+        rows[2]["value"].is_null(),
+        "231.36 is a number in no currency: {rows:?}"
+    );
+    assert!(rows[2]["currency"].is_null(), "{rows:?}");
+    let caption = table["caption"].as_str().expect("caption");
+    assert!(caption.contains("USDT and USD"), "{caption}");
+    assert!(caption.contains("no exchange rates"), "{caption}");
+
+    // The stored series still holds only the single-currency point from the
+    // first tick: the mixed one added nothing.
+    let points = kernel
+        .kv
+        .get("history/trk_caller")
+        .and_then(Value::as_array)
+        .expect("a history document");
+    assert_eq!(points.len(), 1, "{points:?}");
+
+    // And `market.holdings.list` says the same thing in its own words.
+    let listed = kernel.call_tool(4, "market.holdings.list", json!({}), Some(TRACK));
+    let text = text_of(&listed);
+    assert!(text.contains("1 USDT"), "{text}");
+    assert!(text.contains("230.36 USD"), "{text}");
+    assert!(text.contains("no exchange rates"), "{text}");
+    assert!(
+        listed
+            .pointer("/result/structuredContent/total")
+            .is_some_and(Value::is_null),
+        "{listed:#?}"
+    );
+    assert!(
+        listed
+            .pointer("/result/structuredContent/currency")
+            .is_some_and(Value::is_null),
+        "{listed:#?}"
+    );
+    assert!(kernel.is_responsive());
 }

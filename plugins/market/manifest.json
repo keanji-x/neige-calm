@@ -10,13 +10,13 @@
   "exposes_tools": [
     {
       "name": "market.quote",
-      "description": "Current price of one asset. Callers name the asset AND its venue; which source answers a venue, at which URL, is chosen by this plugin. Only the CRYPTO venue has a source today, so a US, HK or CN name is answered as unpriceable.",
+      "description": "Current price of one asset, in the currency that asset's market quotes in. Callers name the asset AND its venue; which source answers a venue, at which URL, is chosen by this plugin. CRYPTO prices in USDT, US in USD, HK in HKD, CN in CNY — nothing is converted between them.",
       "input_schema": {
         "type": "object",
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK and CN (`CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `CN:600519`). A prefix counts only with the colon, so `USNVDA` is a crypto name. Only the CRYPTO venue has a price source today."
+            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK and CN (`CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `CN:600519`). A prefix counts only with the colon, so `USNVDA` is a crypto name."
           }
         },
         "required": [
@@ -32,13 +32,13 @@
     },
     {
       "name": "market.holdings.set",
-      "description": "Record how much of an asset this Track holds. Replaces any existing quantity for that asset; 0 removes it. Records only — the price is fetched by the plugin's own refresh, which this call wakes. An asset on a venue with no source yet (US, HK, CN) is recorded but stays unpriced, and a portfolio holding one adds no history points until a source for that venue lands.",
+      "description": "Record how much of an asset this Track holds. Replaces any existing quantity for that asset; 0 removes it. Records only — the price is fetched by the plugin's own refresh, which this call wakes. Each venue is priced in its own currency, and a Track whose priced holdings span two currencies gets per-asset rows but no total and no history points until currency conversion lands.",
       "input_schema": {
         "type": "object",
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK and CN (`CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `CN:600519`). A prefix counts only with the colon, so `USNVDA` is a crypto name. Only the CRYPTO venue has a price source today."
+            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK and CN (`CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `CN:600519`). A prefix counts only with the colon, so `USNVDA` is a crypto name."
           },
           "quantity": {
             "type": "number",
@@ -60,7 +60,7 @@
     },
     {
       "name": "market.holdings.list",
-      "description": "What this Track currently holds, with the venue, latest price and value of each.",
+      "description": "What this Track currently holds, with the venue, latest price, value and currency of each. A total is stated only when the priced holdings are all in one currency.",
       "input_schema": {
         "type": "object",
         "properties": {},
@@ -85,7 +85,7 @@
       "quote": {
         "type": "string",
         "default": "USDT",
-        "description": "The asset every holding is priced in"
+        "description": "The settlement currency a portfolio's total is meant to be stated in. It is not a pricing input: each market is quoted in its own currency and nothing is converted yet, so this key has no effect on the published numbers until currency conversion lands."
       },
       "poll_seconds": {
         "type": "integer",
@@ -96,6 +96,11 @@
         "type": "string",
         "default": "https://data-api.binance.vision",
         "description": "Base URL of the Binance market-data source. api.binance.com is geo-restricted from some hosts; data-api.binance.vision serves the same /api/v3 paths with no key."
+      },
+      "sina_endpoint": {
+        "type": "string",
+        "default": "https://hq.sinajs.cn",
+        "description": "Base URL of the Sina quote list, the US, HK and CN source. Its /list= path is asked for gb_<symbol>, hk<code>, sh<code> and sz<code>."
       }
     },
     "additionalProperties": false

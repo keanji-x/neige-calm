@@ -18,7 +18,7 @@ it calls it with `0`, which removes the holding.
 
 An asset may also be named with its venue — `CRYPTO:BTC`, `US:NVDA`,
 `HK:1810`, `CN:600519` — which is what makes `W` on two venues two holdings
-rather than one. Only the crypto venue has a price source today; see
+rather than one. All four venues are priced, each in its own currency; see
 [Assets and sources](#assets-and-sources).
 
 | tool | what it does |
@@ -61,7 +61,7 @@ Two overlays per Track, both shaped as report `table` block payloads:
 
 | overlay kind | contents |
 | --- | --- |
-| `portfolio.holdings` | one row per asset — quantity, price, value — plus a `Total` row |
+| `portfolio.holdings` | one row per asset — quantity, price, value, currency — plus a `Total` row |
 | `portfolio.history` | the total over time, newest first, with the change against the previous point |
 
 Name them from a report and the numbers keep moving under a document that does
@@ -101,25 +101,56 @@ Shanghai") has counterexamples among real tickers. A wrong guess here is a
 silently wrong number in a total, not a visible failure.
 
 Which source answers a venue, at which URL, in which response shape, is this
-plugin's business. Today there is **one source, Binance spot, serving `CRYPTO`
-only**, with one resolution rule: `<SYMBOL><QUOTE>` is a spot symbol.
+plugin's business. There are two:
 
-> **`US`, `HK` and `CN` names can be recorded, but nothing prices them yet.**
-> An identity on one of those venues is reported as unknown — distinctly from a
-> lookup that failed — so it keeps a row with a null price, and, because only a
-> fully-priced tick contributes a history point (see *Limits* below), a Track
-> holding one adds no history points for as long as it holds it. That is a
-> stall this slice makes reachable, not one it invents: a crypto name the venue
-> does not list has always come back the same way.
+| venue | source | asked for | quoted in |
+| --- | --- | --- | --- |
+| `CRYPTO` | Binance spot | `<SYMBOL>USDT` | USDT |
+| `US` | Sina `hq.sinajs.cn` | `gb_<symbol>` | USD |
+| `HK` | Sina `hq.sinajs.cn` | `hk<code padded to 5 digits>` | HKD |
+| `CN` | Sina `hq.sinajs.cn` | `sh<code>` **and** `sz<code>` | CNY |
 
-Adding a source for those venues later changes nothing outside this plugin: an
-identity already qualified with its venue does not have to be renamed. A name
-that used to resolve nowhere starts resolving.
+An identity is never handed to the other venue's source: routing `US:BTC` to
+Binance would answer with bitcoin's price attached to a US listing, which is
+the fabricated number this whole identity layer exists to prevent.
+
+A `CN` code does not say which exchange lists it, and no rule keyed on the
+digits survives contact with real tickers, so both candidates go out in one
+request and the one that answers is the one taken. A code **both** exchanges
+answer is refused rather than picked between — `CN:000001` is the Shanghai
+Composite index on `sh` and Ping An Bank on `sz`, a factor-of-300 apart. Such
+a code cannot be priced until the grammar grows separate `SH` and `SZ` venues.
 
 The holdings table carries the venue as its own column rather than glued onto
 the name, so `US:W` and `CRYPTO:W` read as two distinguishable rows;
 `market.holdings.list`'s one-line prose, which has no columns, writes them out
 as `US:W` and `CRYPTO:W`.
+
+### Currencies, and why a total sometimes goes missing
+
+**Every price carries the currency its own market quotes in**, and that
+currency travels with the number to the table, to the history and to
+`market.holdings.list`. Nothing is converted: this plugin holds no exchange
+rates.
+
+So a portfolio whose priced holdings are all in one currency gets a total in
+that currency, as it always did — but one holding `BTC` (USDT) alongside
+`US:NVDA` (USD) gets **no total at all**. Adding 1 to 230.36 there would
+produce a figure in no currency, published as the portfolio's value. The
+per-asset rows still go out, each with its own currency, which is everything a
+reader can actually use.
+
+The consequence worth knowing: such a portfolio also contributes **no history
+points** for as long as it spans currencies, because a history point is a total.
+Its series stands still, exactly as a portfolio with an unpriceable holding
+does, until it is back in one currency or currency conversion lands.
+
+### Why the `Referer` header
+
+`hq.sinajs.cn` answers `HTTP 403` with the body `Forbidden` to any request that
+omits `Referer: https://finance.sina.com.cn`. Its responses are also **GBK**,
+not UTF-8; only the company-name fields are affected and this plugin reads none
+of them.
 
 ### Why `data-api.binance.vision`
 
@@ -132,14 +163,24 @@ Point `binance_endpoint` at the main API if your host is eligible.
 
 ## Settings
 
-Three keys, all optional, all with working defaults — an unconfigured install
+Four keys, all optional, all with working defaults — an unconfigured install
 is a working install.
 
 | key | default | meaning |
 | --- | --- | --- |
-| `quote` | `USDT` | the asset everything is priced in |
+| `quote` | `USDT` | the settlement currency a total is meant to be stated in |
 | `poll_seconds` | `30` | seconds between refreshes (floored at 5) |
 | `binance_endpoint` | `https://data-api.binance.vision` | the Binance market-data base URL |
+| `sina_endpoint` | `https://hq.sinajs.cn` | the US/HK/CN quote-list base URL |
+
+`quote` is **not** a pricing input. Each market is quoted in its own currency
+and nothing converts between them yet, so today this key changes none of the
+published numbers; it is what a later slice will convert totals into. It used
+to do three jobs at once — display unit, Binance's quote leg, and "this asset
+is the unit, worth 1" — and the last two now live inside the Binance source
+where they belong. Setting `quote` to `CNY` no longer sends `BTCCNY` to
+Binance, a pair that does not exist and that used to leave every crypto row
+unpriced.
 
 Configuration is read at handshake, so a change takes effect when the plugin is
 restarted; a re-handshake replaces it for the running poll thread too, rather
@@ -156,6 +197,13 @@ affected by this.
   plotted against totals covering the whole — would draw a crash that never
   happened. The holdings table still goes out either way: it names the missing
   prices row by row, which is the honest form of the same information.
+* **A total is only stated when the priced holdings share one currency**, and
+  a tick without a total contributes no history point. See *Currencies* above.
+* **Stored history points do not record their currency**, so the history
+  table's total column carries no unit. A series written before and after a
+  portfolio changed the currency it totals in is two series plotted as one;
+  recording the currency per point, and breaking the series where it changes,
+  is not done yet.
 * **A point that could not be stored is not displayed**, because the next tick
   reloads from the store and would silently delete it.
 * **At most 500 points per Track**, oldest dropped first.
