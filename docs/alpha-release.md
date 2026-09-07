@@ -108,11 +108,25 @@ Edit `~/.config/neige-app/config.toml` before starting:
   `.../current-web/web/dist/next`. The generated starter config includes both.
 - Check `[child] calm_listen` (default `127.0.0.1:4040`) and `[admin] listen`
   (default `127.0.0.1:4050`) are free. Use separate ports **and data/config/release
-  directories** for a second instance. Never point a rehearsal at production data.
+  directories**, including explicit `[child] plugins_dir` and `plugins_data_dir`,
+  for a second instance. These two paths do not derive from `data_dir`; leaving
+  them unset preserves the server's existing XDG defaults and can share production
+  plugins and secrets. Never point a rehearsal at production data.
 - Keep the database unset (`db_url = ""`) to use SQLite in `[child] data_dir`.
   Never use `mock` for persistent work. A fresh data directory is created at boot.
 - `[systemd] bin` should be `~/.local/bin/neige-app`. Put Codex and Git on the PATH
   used for installation; the unit captures that PATH.
+
+For example, merge these keys into the second instance's `[child]` section,
+using directories dedicated to that instance (also isolate the ports and
+config/release directories as described above):
+
+```toml
+[child]
+data_dir = "~/.local/share/neige-calm-second"
+plugins_dir = "~/.config/neige-calm-second/plugins"
+plugins_data_dir = "~/.local/share/neige-calm-second/plugins"
+```
 
 Installing plugins grants execution under this user's account. Only this trusted
 user should be able to write plugin sources and the plugin installation directory.

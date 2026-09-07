@@ -46,6 +46,8 @@ pub(crate) struct ChildConfig {
     pub calm_listen: String,
     pub db_url: Option<String>,
     pub data_dir: Option<PathBuf>,
+    pub plugins_dir: Option<PathBuf>,
+    pub plugins_data_dir: Option<PathBuf>,
     pub mcp_stdio_shim_bin: Option<PathBuf>,
     pub auth_username: Option<String>,
     pub auth_password: Option<String>,
@@ -134,6 +136,8 @@ struct ConfigBuilder {
     child_calm_listen: Option<String>,
     child_db_url: Option<String>,
     child_data_dir: Option<String>,
+    child_plugins_dir: Option<String>,
+    child_plugins_data_dir: Option<String>,
     child_mcp_stdio_shim_bin: Option<String>,
     child_auth_username: Option<String>,
     child_auth_password: Option<String>,
@@ -209,6 +213,8 @@ impl AppConfig {
                 calm_listen: "127.0.0.1:4040".into(),
                 db_url: None,
                 data_dir: Some(expand_tilde("~/.local/share/neige-calm")),
+                plugins_dir: None,
+                plugins_data_dir: None,
                 mcp_stdio_shim_bin: Some(current_server.join("bin").join("neige-mcp-stdio-shim")),
                 auth_username: Some("owner".into()),
                 auth_password: None,
@@ -306,6 +312,8 @@ impl AppConfig {
         }
         cfg.child.db_url = builder.child_db_url;
         cfg.child.data_dir = builder.child_data_dir.map(|v| expand_tilde(&v));
+        cfg.child.plugins_dir = builder.child_plugins_dir.map(|v| expand_tilde(&v));
+        cfg.child.plugins_data_dir = builder.child_plugins_data_dir.map(|v| expand_tilde(&v));
         cfg.child.mcp_stdio_shim_bin = builder
             .child_mcp_stdio_shim_bin
             .map(|v| expand_tilde(&v))
@@ -513,6 +521,9 @@ fe_dist = "~/.local/share/neige-app/releases/current-web/web/dist/next"
 calm_listen = "127.0.0.1:4040"
 db_url = ""
 data_dir = "~/.local/share/neige-calm"
+# For a second instance, explicitly set both plugin roots; neither follows data_dir.
+# plugins_dir = "~/.config/neige-calm-second/plugins"
+# plugins_data_dir = "~/.local/share/neige-calm-second/plugins"
 mcp_stdio_shim_bin = "~/.local/share/neige-app/releases/current-server/bin/neige-mcp-stdio-shim"
 auth_username = "owner"
 auth_password = ""
@@ -614,6 +625,10 @@ fn set_value(
         ("child", "calm_listen") => builder.child_calm_listen = Some(parse_string(value)?),
         ("child", "db_url") => builder.child_db_url = parse_optional_string(value)?,
         ("child", "data_dir") => builder.child_data_dir = parse_optional_string(value)?,
+        ("child", "plugins_dir") => builder.child_plugins_dir = parse_optional_string(value)?,
+        ("child", "plugins_data_dir") => {
+            builder.child_plugins_data_dir = parse_optional_string(value)?
+        }
         ("child", "mcp_stdio_shim_bin") => {
             builder.child_mcp_stdio_shim_bin = parse_optional_string(value)?
         }
@@ -1024,3 +1039,7 @@ db_migration_policy = "additive"
         path
     }
 }
+
+#[cfg(test)]
+#[path = "config_plugin_tests.rs"]
+mod plugin_tests;

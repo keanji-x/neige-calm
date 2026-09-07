@@ -318,6 +318,15 @@ impl From<&AppConfig> for SupervisorConfig {
 
 fn calm_server_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
     let control_sock = cfg.proc_supervisor_sock();
+    let mut child_args = cfg.child.extra_args.clone();
+    for (flag, path) in [
+        ("--plugins-dir", &cfg.child.plugins_dir),
+        ("--plugins-data-dir", &cfg.child.plugins_data_dir),
+    ] {
+        if let Some(path) = path {
+            child_args.extend([flag.to_owned(), path.display().to_string()]);
+        }
+    }
     let mut child_envs = vec![
         ("CALM_LISTEN".into(), cfg.child.calm_listen.clone()),
         (
@@ -358,7 +367,7 @@ fn calm_server_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
         name: "calm-server".into(),
         child_bin: cfg.child.bin.clone(),
         child_cwd: cfg.child.cwd.clone(),
-        child_args: cfg.child.extra_args.clone(),
+        child_args,
         child_envs,
         restart_delay: cfg.timing.restart_delay,
         stop_grace: cfg.timing.stop_grace,
