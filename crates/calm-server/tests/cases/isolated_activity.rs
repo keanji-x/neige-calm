@@ -286,6 +286,13 @@ async fn isolated_activity_foreign_sessions_and_broken_receipts_never_supply_evi
         .execute(&pool)
         .await
         .unwrap();
+    let foreign_live = row(&boot, &invocation(3), 3).await;
+    sqlx::query("UPDATE worker_flow_items SET worker_session_id=?1 WHERE id=?2")
+        .bind(crate::mcp_track_report::ASSISTANT_SESSION_ID)
+        .bind(foreign_live)
+        .execute(&pool)
+        .await
+        .unwrap();
     let cross_track = row(&boot, &invocation(3), 3).await;
     sqlx::query("UPDATE worker_flow_items SET track_id='foreign-track' WHERE id=?1")
         .bind(cross_track)
@@ -471,4 +478,106 @@ async fn isolated_activity_declined_invocation_does_not_prove_process_completion
             .is_none()
     );
     assert_eq!(read["recovery"]["allowed"], false);
+}
+
+#[tokio::test]
+async fn isolated_activity_rejects_checkpoint_binding_disagreements() {
+    // Each is independently discordant with an otherwise complete persisted binding.
+    for case in [
+        "thread",
+        "missing-thread",
+        "endpoint",
+        "missing-endpoint-session",
+    ] {
+        let (boot, _, op) = bound().await;
+        row(&boot, &invocation(1), 1).await;
+        let before = listed(&boot).await;
+        assert_eq!(before["activity"]["coverage"], "partial");
+        let pool = boot.repo.sqlite_pool().unwrap();
+        match case {
+            "thread" => {
+                sqlx::query("UPDATE worker_sessions SET thread_id='foreign-thread' WHERE id=?1")
+                    .bind(WORKER_SESSION_ID)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            "missing-thread" => {
+                sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?1")
+                    .bind(WORKER_SESSION_ID)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            "endpoint" => {
+                sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.isolated_execution.provider.record.endpoint.request.identity.attempt_id','foreign-attempt') WHERE id=?1")
+                    .bind(&op).execute(&pool).await.unwrap();
+            }
+            "missing-endpoint-session" => {
+                sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.isolated_execution.provider.record.endpoint.request.identity.session_id') WHERE id=?1")
+                    .bind(&op).execute(&pool).await.unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let after = listed(&boot).await;
+        assert_eq!(
+            after["activity"]["coverage"], "binding_unavailable",
+            "{case}"
+        );
+        assert!(after["activity"]["binding"].is_null(), "{case}");
+        assert!(
+            after["activity"]["recent"].as_array().unwrap().is_empty(),
+            "{case}"
+        );
+        assert_eq!(after["activity"]["collector_health"], "unknown", "{case}");
+        assert_eq!(after["status"], before["status"], "{case}");
+        assert_eq!(after["recovery"], before["recovery"], "{case}");
+    }
+}
+
+#[tokio::test]
+async fn isolated_activity_pairs_only_exact_command_end_ids() {
+    let (boot, _, _) = bound().await;
+    let a = command(1, "inProgress");
+    row(&boot, &a, 1).await;
+    let mut anonymous = command(2, "inProgress");
+    anonymous["call_id"] = Value::Null;
+    row(&boot, &anonymous, 2).await;
+    let mut b = command(3, "completed");
+    b["call_id"] = json!("command-b");
+    row(&boot, &b, 3).await;
+    let mut generic_a = item("toolResult", 4);
+    generic_a["call_id"] = a["call_id"].clone();
+    generic_a["ok"] = json!(true);
+    generic_a["output"] = json!([{"type":"text","text":"Process completed; exit code 0"}]);
+    row(&boot, &generic_a, 4).await;
+    row(&boot, &command(5, "declined"), 5).await;
+    let mut anonymous_end = command(6, "completed");
+    anonymous_end["call_id"] = Value::Null;
+    row(&boot, &anonymous_end, 6).await;
+    let before = listed(&boot).await;
+    for index in [0, 1] {
+        assert_eq!(
+            before["activity"]["recent"][index]["detail"]["completion"]["kind"],
+            "not_observed_in_tail",
+            "neither another ID, missing ID, generic result, nor refusal proves this invocation executed and completed"
+        );
+    }
+    assert_eq!(
+        before["activity"]["recent"][4]["detail"]["kind"],
+        "invocation_declined"
+    );
+    let end_a = row(&boot, &command(7, "completed"), 7).await;
+    let after = listed(&boot).await;
+    assert_eq!(
+        after["activity"]["recent"][0]["detail"]["completion"],
+        json!({"kind":"end_observed","row_id":end_a})
+    );
+    assert_eq!(
+        after["activity"]["recent"][1]["detail"]["completion"]["kind"],
+        "not_observed_in_tail"
+    );
+    assert_eq!(after["activity"]["latest_command_end"]["row_id"], end_a);
+    assert_eq!(after["status"], before["status"]);
+    assert_eq!(after["recovery"], before["recovery"]);
 }
