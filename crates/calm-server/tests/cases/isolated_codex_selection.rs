@@ -13,6 +13,22 @@ fn declaration(key: &str) -> Value {
 }
 
 #[tokio::test]
+async fn isolated_activity_missing_receipt_is_explicit_and_does_not_grant_recovery() {
+    let boot = boot().await;
+    declare(&boot, declaration("activity")).await;
+    let task = current(&boot, "activity").await;
+    let listed = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let entry = &listed["tasks"][0];
+    assert_eq!(entry["attempt_id"], task.id);
+    assert_eq!(entry["activity"]["coverage"], "binding_unavailable");
+    assert_eq!(entry["activity"]["collector_health"], "unknown");
+    assert_eq!(entry["recovery"]["allowed"], false);
+    assert_eq!(current(&boot, "activity").await.status, task.status);
+}
+
+#[tokio::test]
 async fn isolated_codex_authored_context_selects_distinct_operation() {
     let boot = boot().await;
     declare(&boot, declaration("isolated")).await;
