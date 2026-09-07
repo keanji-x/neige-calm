@@ -467,3 +467,49 @@ fn runtime_creation_timeout_is_unknown_and_late_creation_is_reconcilable() -> an
         host.shutdown(client).await
     })
 }
+
+#[tokio::test]
+async fn runtime_observation_includes_a_coherent_grid_and_recovery_boundary() -> anyhow::Result<()>
+{
+    let (mut host, client) = Host::start(private_root()?).await?;
+    let pane = client
+        .create(terminal_launch(
+            host.root.path(),
+            "observation",
+            "printf '\\033[2J\\033[H\\033[7m/status 中文\\033[0m\\r\\n> /'; read line",
+        ))
+        .await?;
+    pane.wait_for_text("/status 中文").await?;
+    let observation = pane.observe().await?;
+    let grid = observation
+        .snapshot
+        .as_ref()
+        .expect("typed grid is mandatory");
+    assert_eq!(observation.generation, pane.info().await?.generation);
+    assert!(grid.visible_lines()[0].contains("/status 中文"));
+    assert!(grid.visible_lines()[1].starts_with("> /"));
+    assert_eq!(grid.cursor.row, 1);
+    assert_eq!(grid.cursor.col, 3);
+    assert!(!observation.keyframe.is_empty());
+    assert!(observation.next_sequence > 0);
+    assert!(observation.coverage.history_complete());
+    assert!(!observation.alternate);
+    host.shutdown(client).await
+}
+
+#[tokio::test]
+async fn runtime_observation_of_removed_pane_is_unavailable_not_blank() -> anyhow::Result<()> {
+    let (mut host, client) = Host::start(private_root()?).await?;
+    let pane = client
+        .create(terminal_launch(
+            host.root.path(),
+            "removed",
+            "printf 'ready\\n'; read line",
+        ))
+        .await?;
+    pane.wait_for_text("ready").await?;
+    let observer = client.attach_existing("removed").await?;
+    pane.close().await?;
+    assert!(observer.observe().await.is_err());
+    host.shutdown(client).await
+}

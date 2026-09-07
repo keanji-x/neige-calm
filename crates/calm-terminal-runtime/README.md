@@ -56,3 +56,44 @@ shutdown, private endpoint ownership and launch-environment isolation. No real
 model is used. Next slices must cover Neige's operation and persistence fences.
 The runtime client does not yet certify persisted handles across daemon restarts;
 Neige's backend identity and generation checks belong to the next slice.
+
+## Coherent observation and developer preview
+
+`TerminalSession::observe` returns one bounded RMUX recovery capture with a
+mandatory typed viewport, cursor, process generation, next output sequence,
+keyframe and history coverage. Grid and keyframe come from the same upstream
+capture. Missing/revoked panes are errors, never a blank successful observation.
+This read result is not an input compare-and-swap token or a Neige ownership lease.
+
+The developer-only `preview-driver` example launches a contained, temporary host
+and accepts observation/text/key requests over its parent's private stdin. It
+loads no model or application configuration. It is not an application endpoint
+and must not be exposed as a user-facing or model-facing service.
+
+A browser acceptance probe runs actual fzf through that driver, reconstructs
+immutable captures in xterm 6, and compares all viewport cell text, widths, bold,
+reverse-video, foreground/background encodings and cursor positions. It exercises
+application PageDown/PageUp, real mouse selection through xterm's terminal input,
+slash filtering, arrow navigation, Enter confirmation and viewport-only history
+scroll. PNG/JSON artifacts distinguish the source capture from the scrolled view.
+This uses the xterm dependency used by Neige's frontend; it does not claim to test
+Neige Terminal-card creation, its production WebSocket bridge, MCP authorization,
+or actual astry image receipt.
+
+On a Linux developer host with working user/PID namespaces, `/usr/bin/fzf` and
+Playwright Chromium installed:
+
+```bash
+(cd fe && npm ci --ignore-scripts && npx playwright install chromium)
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=4 \
+  cargo build --locked -p calm-terminal-runtime --bin neige-terminal-runtime \
+  --example preview-driver
+node scripts/spike/terminal-runtime-preview-check.mjs \
+  --driver /absolute/target/debug/examples/preview-driver \
+  --runtime /absolute/target/debug/neige-terminal-runtime \
+  --output /absolute/new-evidence-directory
+```
+
+The probe binds an ephemeral loopback port, creates its own runtime and fresh
+artifact directory, and closes its browser/runtime on completion. It never
+connects to an existing user's terminal or invokes a real model.

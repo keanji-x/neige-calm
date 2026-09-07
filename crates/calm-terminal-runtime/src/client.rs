@@ -83,7 +83,10 @@ impl RuntimeClient {
         anyhow::ensure!(info.panes.len() == 1, "expected one terminal pane");
         let id = info.panes.remove(0).id;
         let pane = session.pane_by_id(id).await?;
-        Ok(TerminalSession { pane })
+        Ok(TerminalSession {
+            pane,
+            timeout: self.timeout,
+        })
     }
 
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<String>> {
@@ -109,6 +112,7 @@ impl RuntimeClient {
 /// A live SDK pane without the implicit-environment create/respawn surface.
 pub struct TerminalSession {
     pane: rmux_sdk::Pane,
+    timeout: std::time::Duration,
 }
 
 impl TerminalSession {
@@ -124,6 +128,35 @@ impl TerminalSession {
     pub async fn wait_for_text(&self, text: &str) -> anyhow::Result<()> {
         Ok(self.pane.wait_for_text(text).await?)
     }
+    /// Capture grid, cursor, raw keyframe and history coverage at one upstream
+    /// recovery boundary. Never substitute an empty screen for a vanished pane.
+    /// The returned generation/sequence describe this observation, not an input
+    /// compare-and-swap fence. The application still owns action authorization.
+    pub async fn observe(&self) -> anyhow::Result<rmux_sdk::PaneRecoveryRebase> {
+        tokio::time::timeout(self.timeout, async {
+            let mut options = rmux_sdk::PaneRecoveryOptions::default();
+            options.include_snapshot = true;
+            let mut stream = self.pane.recover_output_with(options).await?;
+            let Some(rmux_sdk::PaneRecoveryEvent::Rebase(capture)) = stream.next().await? else {
+                anyhow::bail!("terminal observation unavailable: no recovery capture");
+            };
+            let snapshot = capture
+                .snapshot
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("terminal observation missing viewport"))?;
+            snapshot.validate_shape()?;
+            anyhow::ensure!(
+                capture.cols > 0
+                    && capture.rows > 0
+                    && snapshot.cols == capture.cols
+                    && snapshot.rows == capture.rows,
+                "terminal observation has invalid viewport geometry"
+            );
+            Ok(capture)
+        })
+        .await?
+    }
+
     pub async fn recover_output(&self) -> anyhow::Result<rmux_sdk::PaneRecoveryStream> {
         Ok(self.pane.recover_output().await?)
     }
