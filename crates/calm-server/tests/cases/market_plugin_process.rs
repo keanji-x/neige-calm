@@ -7,9 +7,17 @@
 //! kernel keeps actual KV state — a plugin whose `kv.set` went nowhere would
 //! pass a stubbed-out harness while losing every holding in production.
 //!
-//! Network: only where a test needs a price. `DEAD_ENDPOINT` is a port nothing
-//! listens on, and the quote asset (`USDT`) prices at 1.0 without any venue,
-//! which is what lets a *partially* priceable portfolio be built offline.
+//! Network: only where a test needs a price, and never a real one — every
+//! source this plugin has is pointed at loopback here. `DEAD_ENDPOINT` is a
+//! port nothing listens on; [`price_server`] stands in for Binance and
+//! [`sina_server`] for `hq.sinajs.cn`. `USDT` prices at 1.0 with no request at
+//! all, off Binance's pinned quote leg, which is what lets a *partially*
+//! priceable portfolio be built offline.
+//!
+//! A price now carries the currency its SOURCE quoted it in — `USDT` off
+//! Binance, `USD`/`HKD`/`CNY` off Sina, decided from the venue and code range — rather than the configured settlement
+//! currency, and a portfolio whose priced rows span two of them gets no total
+//! at all until exchange rates land.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -107,6 +115,12 @@ impl FakeKernel {
     /// every other test uses an hour so that the only refreshes it sees are
     /// the ones its own tool calls caused.
     fn boot_polling(endpoint: &str, poll_seconds: u64) -> Self {
+        Self::boot_sources(endpoint, DEAD_ENDPOINT, poll_seconds)
+    }
+
+    /// Both sources named. The stock source defaults to [`DEAD_ENDPOINT`]
+    /// everywhere else so that no test can reach `hq.sinajs.cn` by omission.
+    fn boot_sources(endpoint: &str, sina_endpoint: &str, poll_seconds: u64) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_market"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -153,6 +167,7 @@ impl FakeKernel {
                         "poll_seconds": poll_seconds,
                         "quote": "USDT",
                         "binance_endpoint": endpoint,
+                        "sina_endpoint": sina_endpoint,
                     } }
                 }
             }
@@ -406,9 +421,11 @@ fn setting_a_holding_prices_it_now_and_publishes_to_the_callers_track() {
 /// A holding stored before venues existed and a write that names the same
 /// asset with its venue are ONE holding, and the write leaves ONE row.
 ///
-/// Driven through the real binary and the real KV because the collapse
-/// happens across the whole `set` path — load (which normalises), `retain`,
-/// then a whole-array overwrite. Without read-side normalisation the retain
+/// Driven through the real binary because the collapse happens across the
+/// whole `set` path — load (which normalises), `retain`, then a whole-array
+/// overwrite. The store is `FakeKernel`'s in-memory map, which reproduces the
+/// KV state semantics this turns on (one document per Track, replaced
+/// wholesale) rather than the KV service itself. Without read-side normalisation the retain
 /// compares `CRYPTO:BTC` against the legacy `BTC`, keeps it, and the KV ends
 /// up with two rows summing to 160 that the tables would price as one
 /// position of 160 BTC.
@@ -431,6 +448,90 @@ fn a_legacy_bare_holding_is_replaced_not_doubled_by_a_qualified_write() {
         kernel.kv.get("holdings/trk_caller"),
         Some(&json!([{ "asset": "CRYPTO:BTC", "quantity": 60.0 }])),
         "one row at the written quantity — two rows here would be 160 BTC"
+    );
+}
+
+/// **A Hong Kong holding written under two spellings is ONE row.**
+///
+/// `HK:01810` and `HK:1810` are the same shares of Xiaomi, and a user who
+/// records a position with the leading zero and later re-records it without
+/// one must not end up holding it twice. This is the same shape as the bare/
+/// qualified crypto collapse above, one venue over, and it is the reason the
+/// Hong Kong fold lives in `parse_asset` rather than only in the URL builder:
+/// padding at the URL alone would send both rows to `hk01810`, price both at
+/// 27.48 HKD and sum them into a single-currency total with nothing visibly
+/// wrong with it.
+///
+/// Driven end to end because the collapse is the whole `set` path — load
+/// (which normalises), `retain`, then a whole-array overwrite — and no single
+/// function performs it. Removing the Hong Kong arm from `canonical_symbol`
+/// must turn this test RED with two rows in the store.
+#[test]
+fn a_padded_hong_kong_holding_is_replaced_not_doubled_by_an_unpadded_write() {
+    let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
+    // Seeded directly, spelled the way a user or an earlier write left it.
+    kernel.kv.insert(
+        "holdings/trk_caller".to_string(),
+        json!([{ "asset": "HK:01810", "quantity": 100.0 }]),
+    );
+
+    kernel.set_holding(2, "hk:1810", 60.0, TRACK);
+
+    assert_eq!(
+        kernel.kv.get("holdings/trk_caller"),
+        Some(&json!([{ "asset": "HK:01810", "quantity": 60.0 }])),
+        "one row at the written quantity — two rows here would be 160 shares \
+         of Xiaomi priced and totalled as a position nobody holds"
+    );
+}
+
+/// A stored `CN:` holding SURVIVES an unrelated `market.holdings.set` on the
+/// same Track — quantity intact, alongside the newly written asset.
+///
+/// This is the evidence FOR keeping `CN:` in the grammar, not against it: the
+/// row survives only because `CN:600519` still parses. Remove the arm and the
+/// same round trip loses it.
+///
+/// The deletion that removal would cause is not produced by any single
+/// function — it is the composition of `load_holdings` (which drops rows it
+/// cannot parse, without saying so) and `store_holdings` (a whole-array
+/// overwrite). A unit test is not blind to the arm's removal: deleting
+/// `"CN" => Some(Venue::Cn)` turns the parser's own tests red too. What no
+/// unit test shows is the COMPOSITION — that the drop on the read side is what
+/// erases the row from the store on the next write — and only a real round
+/// trip (seed, write something else, read the store) does.
+///
+/// Driven through the real binary for that reason. The store is `FakeKernel`'s
+/// in-memory map rather than the KV service; what it reproduces is the state
+/// semantics this test turns on — one document per Track, replaced wholesale
+/// by `neige.kv.set` — not the service. The seeded row is written directly, as
+/// the pre-split slice would have left it: the plugin has never seen this
+/// Track.
+///
+/// Deleting `"CN" => Some(Venue::Cn)` from `Venue::from_prefix` must turn this
+/// test RED. If it stays green, `CN:` is not carrying the round trip that is
+/// the whole reason it was kept, and the decision to keep it rests on nothing.
+#[test]
+fn a_stored_cn_holding_survives_a_write_to_a_different_asset() {
+    let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
+    kernel.kv.insert(
+        "holdings/trk_caller".to_string(),
+        json!([{ "asset": "CN:600519", "quantity": 7.0 }]),
+    );
+
+    // A different asset entirely — the `CN:` row is not the one being
+    // rewritten, it is the bystander the overwrite must not lose.
+    kernel.set_holding(2, "SH:600519", 3.0, TRACK);
+
+    assert_eq!(
+        kernel.kv.get("holdings/trk_caller"),
+        Some(&json!([
+            { "asset": "CN:600519", "quantity": 7.0 },
+            { "asset": "SH:600519", "quantity": 3.0 },
+        ])),
+        "the legacy CN row must still be in the store at its original \
+         quantity; a parse failure on it would have dropped it from the load \
+         and the whole-array overwrite would then have erased it for good"
     );
 }
 
@@ -711,4 +812,204 @@ fn removing_the_last_holding_publishes_an_empty_table() {
         .clone();
     assert_eq!(rows.len(), 1, "only the Total row remains: {rows:?}");
     assert_eq!(rows[0]["value"].as_f64(), Some(0.0));
+}
+
+// The fixture rows, the GBK name bytes and the response builder are shared
+// with the plugin's own unit tests — one copy of the wire format, so the two
+// suites cannot drift onto two different shapes of the same endpoint.
+include!("../../../../plugins/market/sina_fixture.rs");
+
+/// A loopback stand-in for `hq.sinajs.cn`, the US/HK/SH/SZ source.
+///
+/// It reproduces the two properties of that endpoint that the plugin's parser
+/// depends on: the body is **GBK**, and a request with no `Referer` header is
+/// answered `403 Forbidden` — not with an empty list, not with JSON. The name
+/// field carries real GBK bytes so the decode is exercised here too.
+fn sina_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while stream.read_exact(&mut byte).is_ok() {
+                head.push(byte[0]);
+                if head.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let head = String::from_utf8_lossy(&head).to_string();
+            if !head
+                .to_ascii_lowercase()
+                .contains("referer: https://finance.sina.com.cn")
+            {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden"
+                );
+                let _ = stream.flush();
+                continue;
+            }
+            let target = head
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            let body = sina_fixture_body(&target, SINA_FIXTURE_ROWS);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len(),
+            );
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// The last `portfolio.holdings` payload pushed at `track`.
+fn last_holdings_table<'a>(kernel: &'a FakeKernel, track: &str) -> &'a Value {
+    kernel
+        .pushes
+        .iter()
+        .rev()
+        .find(|(kind, _)| kind == &format!("portfolio.holdings@{track}"))
+        .map(|(_, payload)| payload)
+        .expect("a holdings push")
+}
+
+/// A stock holding is priced through the whole shipping path — the real
+/// binary, the real HTTP client, and `FakeKernel`'s store standing in for the
+/// KV — and reaches the reader in the currency ITS market quotes, not in the
+/// configured settlement currency.
+///
+/// The install settles in `USDT` (see `boot_sources`), so a row labelled
+/// `USDT` would look right in every crypto test and be wrong by a factor of
+/// the HKD/USDT rate here.
+#[test]
+fn a_hong_kong_holding_is_priced_in_hkd_and_totalled_in_hkd() {
+    let mut kernel = FakeKernel::boot_sources(DEAD_ENDPOINT, &sina_server(), 3600);
+
+    kernel.set_holding(2, "HK:1810", 100.0, TRACK);
+
+    assert_eq!(
+        kernel.kinds_pushed(),
+        vec![
+            format!("portfolio.holdings@{TRACK}"),
+            format!("portfolio.history@{TRACK}"),
+        ],
+        "a fully-priced tick publishes both tables"
+    );
+    let table = last_holdings_table(&kernel, TRACK);
+    let rows = table["rows"].as_array().expect("rows");
+    assert_eq!(
+        rows[0]["asset"],
+        json!("01810"),
+        "the canonical five-digit Hong Kong code, which `HK:1810` folds to"
+    );
+    assert_eq!(rows[0]["venue"], json!("HK"));
+    assert_eq!(
+        rows[0]["price"].as_f64(),
+        Some(27.48),
+        "field 6 of the HK row is the last price; field 3 (28.44) is the \
+         previous close: {rows:?}"
+    );
+    assert_eq!(rows[0]["currency"], json!("HKD"));
+    assert_eq!(rows[1]["value"].as_f64(), Some(2748.0), "the Total row");
+    assert_eq!(rows[1]["currency"], json!("HKD"));
+    let caption = table["caption"].as_str().expect("caption");
+    assert!(caption.contains("totalled in HKD"), "{caption}");
+    assert!(!caption.contains("USDT"), "{caption}");
+
+    // The stored history point exists — a stock holding no longer stalls the
+    // series the way it did while the stock venues had no source.
+    let points = kernel
+        .kv
+        .get("history/trk_caller")
+        .and_then(Value::as_array)
+        .expect("a history document");
+    assert_eq!(points.len(), 1, "{points:?}");
+    assert_eq!(points[0]["total"].as_f64(), Some(2748.0));
+}
+
+/// **A portfolio spanning two currencies gets rows but no total — and no
+/// history point.**
+///
+/// `USDT` prices at 1.0 off Binance's quote leg with no request; `US:NVDA`
+/// prices at 230.36 USD off the stock source. Both rows price, so the tick is
+/// COMPLETE — the refusal below is about currencies, not about a missing
+/// price, which is what makes this different from every other no-total test
+/// in this file. Adding 1 to 230.36 would publish 231.36 of nothing as the
+/// portfolio's value and append it to a series measured in something else.
+///
+/// The missing history point is the registered consequence: such a Track has
+/// no series until exchange rates land.
+#[test]
+fn a_portfolio_across_two_currencies_publishes_rows_but_no_total_and_no_history() {
+    let mut kernel = FakeKernel::boot_sources(DEAD_ENDPOINT, &sina_server(), 3600);
+    kernel.set_holding(2, "USDT", 1.0, TRACK);
+    // The crypto-only tick before this one must have had a total and a point,
+    // or the assertion below would pass for a plugin that never totals.
+    assert_eq!(kernel.last_total_for(TRACK), Some(1.0));
+    let before = kernel.pushes.len();
+
+    kernel.set_holding(3, "US:NVDA", 1.0, TRACK);
+
+    assert_eq!(
+        kernel.pushes_since(before),
+        vec![format!("portfolio.holdings@{TRACK}")],
+        "holdings only — no history read, no history write, no history overlay"
+    );
+    let table = last_holdings_table(&kernel, TRACK);
+    let rows = table["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 3, "both asset rows plus the Total: {rows:?}");
+    for row in &rows[..2] {
+        assert!(
+            row["price"].as_f64().is_some(),
+            "both holdings priced, so this tick is COMPLETE: {row}"
+        );
+    }
+    assert!(
+        rows[2]["value"].is_null(),
+        "231.36 is a number in no currency: {rows:?}"
+    );
+    assert!(rows[2]["currency"].is_null(), "{rows:?}");
+    let caption = table["caption"].as_str().expect("caption");
+    assert!(caption.contains("USDT and USD"), "{caption}");
+    assert!(caption.contains("no exchange rates"), "{caption}");
+
+    // The stored series still holds only the single-currency point from the
+    // first tick: the mixed one added nothing.
+    let points = kernel
+        .kv
+        .get("history/trk_caller")
+        .and_then(Value::as_array)
+        .expect("a history document");
+    assert_eq!(points.len(), 1, "{points:?}");
+
+    // And `market.holdings.list` says the same thing in its own words.
+    let listed = kernel.call_tool(4, "market.holdings.list", json!({}), Some(TRACK));
+    let text = text_of(&listed);
+    assert!(text.contains("1 USDT"), "{text}");
+    assert!(text.contains("230.36 USD"), "{text}");
+    assert!(text.contains("no exchange rates"), "{text}");
+    assert!(
+        listed
+            .pointer("/result/structuredContent/total")
+            .is_some_and(Value::is_null),
+        "{listed:#?}"
+    );
+    assert!(
+        listed
+            .pointer("/result/structuredContent/currency")
+            .is_some_and(Value::is_null),
+        "{listed:#?}"
+    );
+    assert!(kernel.is_responsive());
 }
