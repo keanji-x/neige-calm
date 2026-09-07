@@ -798,6 +798,8 @@ pub struct FakeSharedCodexAppServer {
     /// Answer `config/read` the way codex does when it sees the request and
     /// refuses it — an answer, not an outage. The two take opposite paths.
     reject_config_read: AtomicBool,
+    /// Answer `model/list` the way codex does when it refuses the request.
+    reject_model_list: AtomicBool,
     fail_turn_interrupt: AtomicBool,
     started_thread_params: std::sync::Mutex<Vec<StartedThreadParam>>,
     started_turns: std::sync::Mutex<Vec<(String, Vec<InputItem>)>>,
@@ -822,6 +824,7 @@ impl FakeSharedCodexAppServer {
             reject_turn_start: AtomicBool::new(false),
             config_read: std::sync::Mutex::new(None),
             reject_config_read: AtomicBool::new(false),
+            reject_model_list: AtomicBool::new(false),
             fail_turn_interrupt: AtomicBool::new(false),
             started_thread_params: std::sync::Mutex::new(Vec::new()),
             started_turns: std::sync::Mutex::new(Vec::new()),
@@ -1412,6 +1415,14 @@ impl SharedCodexAppServer {
     /// dormant installation must answer `GET /api/models` with
     /// `source: "unavailable"`, not by booting a codex process behind a GET.
     pub async fn model_list(&self, deadline: tokio::time::Instant) -> Result<Vec<CodexModel>> {
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref()
+            && fake.reject_model_list.load(Ordering::SeqCst)
+        {
+            return Err(CalmError::CodexRefused(
+                "model/list failed: catalog unavailable for this account (code -32603)".into(),
+            ));
+        }
         let client = self.connected_client().await?;
         let mut models: Vec<CodexModel> = Vec::new();
         let mut skipped = 0usize;
@@ -3703,6 +3714,14 @@ impl SharedCodexAppServer {
                 .config_read
                 .lock()
                 .expect("fake shared codex config-read mutex poisoned") = Some(config);
+        }
+    }
+
+    /// Make every subsequent `model/list` be REFUSED by codex.
+    #[cfg(feature = "fixtures")]
+    pub fn reject_model_list_for_test(&self) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.reject_model_list.store(true, Ordering::SeqCst);
         }
     }
 

@@ -1205,3 +1205,66 @@ async fn an_unreachable_config_read_still_waits_quietly() {
          budget it is not said at all"
     );
 }
+
+/// #1505 S4 review r4 — the THIRD codex read on this path, classified at its
+/// own call site.
+///
+/// `MUT_W2` mutates the shared classifier and so is caught by the
+/// `config/read` test; a mutation that flips only THIS call site would not be.
+/// The class criticism was "third time, same site-by-site fix", so each
+/// consumer gets its own construction rather than relying on the one helper
+/// they happen to share today.
+#[tokio::test]
+async fn a_refused_model_list_is_not_sold_as_a_wait() {
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    // config/read answers and names a model but no effort — the common
+    // configuration — so resolving the effort needs the catalog.
+    boot.daemon.set_config_read_for_test(CodexConfig {
+        model: Some("gpt-5".into()),
+        model_reasoning_effort: None,
+    });
+    put_model(
+        &boot,
+        "user",
+        json!({"model": "gpt-5", "reasoning_effort": "high"}),
+    )
+    .await;
+    put_model(
+        &boot,
+        "user",
+        json!({"model": "gpt-5", "reasoning_effort": null}),
+    )
+    .await;
+    boot.daemon.reject_model_list_for_test();
+    post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let reason = loop {
+        if let Some(reason) = boot.harness.issuance_block().await {
+            break reason;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "codex refusing the catalog is an answer, and must be said at once"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(
+        !reason.contains("will be sent when it answers"),
+        "codex answered — waiting for it to answer is not the remedy: {reason}"
+    );
+    assert!(
+        reason.contains("has not been sent") && reason.contains("Pick a reasoning effort"),
+        "it must name the choice that removes the need for the catalog read: {reason}"
+    );
+
+    put_model(
+        &boot,
+        "user",
+        json!({"model": "gpt-5", "reasoning_effort": "high"}),
+    )
+    .await;
+    let seen = selections_after(&boot, 1).await;
+    assert_eq!(seen[0].effort.as_deref(), Some("high"));
+    assert_eq!(boot.harness.issuance_block().await, None);
+}
