@@ -92,7 +92,7 @@ pub struct TaskAttemptView {
     pub blocking_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TaskRecoveryCapability {
     pub allowed: bool,

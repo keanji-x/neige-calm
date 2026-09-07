@@ -10,13 +10,19 @@ use crate::model::{HarnessInputSegment, now_ms};
 use calm_types::task_recovery::TaskRecoveryCapability;
 use serde_json::json;
 
+pub(super) struct PreparedBriefing {
+    pub segments: Vec<HarnessInputSegment>,
+    pub actions: Vec<crate::semantic_recovery::Action>,
+}
+
 pub(super) async fn input_segments(
     repo: &dyn Repo,
     card_id: &CardId,
     track_id: &TrackId,
     planner_session_id: &str,
     entries: &[QueueEntry],
-) -> Result<Vec<HarnessInputSegment>> {
+    semantic: bool,
+) -> Result<PreparedBriefing> {
     let mut segments = input_segments_for_entries(card_id, entries);
     let candidates: Vec<_> = entries
         .iter()
@@ -31,7 +37,10 @@ pub(super) async fn input_segments(
         })
         .collect();
     if candidates.is_empty() {
-        return Ok(segments);
+        return Ok(PreparedBriefing {
+            segments,
+            actions: Vec::new(),
+        });
     }
     let track_id = track_id.clone();
     let planner_session_id = planner_session_id.to_string();
@@ -78,6 +87,16 @@ pub(super) async fn input_segments(
                     tx, &track_id, &task.key, &actor, crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
                 ).await?.recovery
             };
+            let action = crate::semantic_recovery::Action {
+                key: task.key.clone(), expected_attempt_id: task_id.clone(), event_id,
+                request_key: format!("planner-recovery:{}", uuid::Uuid::new_v4()),
+                capability: capability.clone(),
+            };
+            let decision = if semantic {
+                "This turn has a bound Recover tool. Only if planner_recovery.allowed is true, decide whether to call Recover with key and reason only. The kernel supplies the exact execution and stable request identity from THIS briefing. Prefer Recover over calm.plan.recover. Retry the same reason after response loss; never substitute a newer execution or invent binding parameters. Otherwise follow the stated prerequisite: wait or request explicit User recovery. No calm.plan.list read is required solely to discover this capability."
+            } else {
+                "Only if planner_recovery.allowed is true, decide whether to call calm.plan.recover using key and attempt_id above as key and expected_attempt_id. Otherwise follow the stated prerequisite: wait or request explicit User recovery. Retain your idempotency_key on retries. No calm.plan.list read is required solely to discover this recovery capability. If facts conflict, inspect the exact evidence; never replace the expected attempt silently. The kernel rechecks all prerequisites when the request executes."
+            };
             let briefing = json!({
                 "key": task.key,
                 "attempt_id": task_id,
@@ -100,21 +119,31 @@ pub(super) async fn input_segments(
                     "run": format!("runs/{task_id}.json"),
                     "run_summary": format!("runs/{task_id}.md"),
                 },
-                "decision": "Only if planner_recovery.allowed is true, decide whether to call calm.plan.recover using key and attempt_id above as key and expected_attempt_id. Otherwise follow the stated prerequisite: wait or request explicit User recovery. Retain your idempotency_key on retries. No calm.plan.list read is required solely to discover this recovery capability. If facts conflict, inspect the exact evidence; never replace the expected attempt silently. The kernel rechecks all prerequisites when the request executes.",
+                "decision": decision,
                 "limitations": "Isolated recovery starts a new execution in a new empty workspace. Retained files remain evidence, not inherited inputs. An accepted recovery receipt does not prove the Worker has started.",
             });
             briefings.push((index, format!(
                 "Recovery decision briefing (kernel snapshot):\n{}\nEnd recovery decision briefing.",
                 serde_json::to_string_pretty(&briefing)?,
-            )));
+            ), action));
         }
         Ok(briefings)
         })
     }).await?;
-    for (index, text) in briefings {
+    let mut actions = Vec::new();
+    for (index, text, action) in briefings {
         // Only replace the matching system text. Presentation, queue order,
         // user input and bound attachments keep their existing representation.
         segments[index].text = text;
+        if semantic {
+            // Duplicate notices for one execution do not create ambiguous actions.
+            if !actions
+                .iter()
+                .any(|old: &crate::semantic_recovery::Action| old.key == action.key)
+            {
+                actions.push(action);
+            }
+        }
     }
-    Ok(segments)
+    Ok(PreparedBriefing { segments, actions })
 }
