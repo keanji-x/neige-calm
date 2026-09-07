@@ -597,10 +597,11 @@ fn portfolios(rpc: &Rpc) -> Result<Vec<String>, String> {
 // identity, and a fabricated number in a total is the failure this whole
 // identity layer exists to prevent.
 //
-// **The prices are in different currencies, and nothing here converts them.**
-// A [`Quote::Price`] carries the currency this plugin determined the number is
-// in, and that currency travels with the number to every exit. Summing across
-// two of them is the one thing this slice must not do; see [`PortfolioTotal`].
+// **The prices are in different currencies**, and converting between them is
+// [`fx_path`]'s job, not this layer's. A [`Quote::Price`] carries the currency
+// this plugin determined the number is in, and that currency travels with the
+// number to every exit; a conversion happens once, at the portfolio layer, and
+// states which quotes it multiplied together.
 //
 // **Neither source states a currency.** Binance's `/ticker/price` answers a
 // bare number for a pair whose quote leg this plugin pinned itself (`USDT`),
@@ -608,6 +609,59 @@ fn portfolios(rpc: &Rpc) -> Result<Vec<String>, String> {
 // price is DECIDED HERE, from the venue and the code range — and where that
 // decision cannot be made the quote is refused rather than labelled with a
 // guess. See [`sina_target`] for which ranges are priced and why.
+
+/// A currency this plugin can attach to a number.
+///
+/// An enum rather than a string because every currency reaching this plugin is
+/// one of exactly four, and both things done with one — labelling a price, and
+/// finding a conversion to another — have to be total over that set. With a
+/// free string, "no rate came back for this pair" and "this is not a currency
+/// this plugin knows" would be the same runtime miss; the second is a bug and
+/// the first is just the market.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Currency {
+    /// Binance's pinned quote leg. It is a currency of its own here rather
+    /// than a spelling of [`Currency::Usd`], because a price quoted in it was
+    /// quoted in it — but it does not SETTLE: a portfolio stated in USDT is
+    /// stated in USD instead, at [`USDT_USD_ASSUMED_PARITY`].
+    Usdt,
+    Usd,
+    Hkd,
+    Cny,
+}
+
+impl Currency {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Usdt => "USDT",
+            Self::Usd => "USD",
+            Self::Hkd => "HKD",
+            Self::Cny => "CNY",
+        }
+    }
+
+    /// The currency a configured `quote` settles a portfolio in, or `None`
+    /// when this plugin does not settle in it.
+    ///
+    /// **Two currencies settle: `USD` and `CNY`.** `HKD` does not, and neither
+    /// does anything unrecognised — `quote` is a free string that nothing
+    /// validates, so this is where an unusable value becomes a visible absence
+    /// rather than a guess.
+    ///
+    /// `USDT` settles as `USD`. It is this plugin's default and the value
+    /// every existing install already has written down, and refusing it would
+    /// take the total away from every crypto-only portfolio that has one
+    /// today. What it costs is [`USDT_USD_ASSUMED_PARITY`]'s 3.2 basis points;
+    /// what it changes for such an install is the LABEL on a total it already
+    /// had — `USD` rather than `USDT`, on the same number.
+    fn settlement(quote: &str) -> Option<Self> {
+        match quote.trim().to_ascii_uppercase().as_str() {
+            "USD" | "USDT" => Some(Self::Usd),
+            "CNY" => Some(Self::Cny),
+            _ => None,
+        }
+    }
+}
 
 /// What a provider answered, or why it could not.
 #[derive(Clone, Debug, PartialEq)]
@@ -617,11 +671,11 @@ enum Quote {
     /// coincidence, and labelling an HKD price `USDT` because that is what the
     /// operator configured is the defect this payload exists to prevent.
     ///
-    /// Neither source states its currency, so this string is this plugin's own
+    /// Neither source states its currency, so this is this plugin's own
     /// determination — Binance's pinned quote leg for crypto, the venue and
     /// code range for a stock. A code whose currency cannot be determined that
     /// way is [`Quote::Failed`], not a `Price` with a guessed unit.
-    Price(f64, &'static str),
+    Price(f64, Currency),
     /// No valid quote came back, and nothing went wrong to explain it. That
     /// covers a name the source does not list, a name this plugin has no way
     /// to spell for the source, and a listed name answering the row of zeros
@@ -708,6 +762,10 @@ fn quote_cached(cfg: &Config, asset: &AssetId, cache: &mut PriceCache) -> Quote 
 /// still.
 const BINANCE_QUOTE_LEG: &str = "USDT";
 
+/// The currency [`BINANCE_QUOTE_LEG`] denominates a price in. Written once,
+/// next to the symbol it belongs to, so the two cannot come to disagree.
+const BINANCE_QUOTE_CURRENCY: Currency = Currency::Usdt;
+
 /// The spot symbol Binance is asked about.
 ///
 /// Built from the VENUE-LOCAL symbol, never from the canonical identity: a
@@ -728,7 +786,7 @@ fn binance_spot(cfg: &Config, asset: &AssetId) -> Quote {
     // `USDT` as the currency, so the 1.0 carries the same unit as every other
     // number this source returns.
     if asset.symbol == BINANCE_QUOTE_LEG {
-        return Quote::Price(1.0, BINANCE_QUOTE_LEG);
+        return Quote::Price(1.0, BINANCE_QUOTE_CURRENCY);
     }
     let symbol = binance_symbol(asset);
     let url = format!(
@@ -762,7 +820,7 @@ fn binance_spot(cfg: &Config, asset: &AssetId) -> Quote {
         };
     };
     match positive_price(price) {
-        Some(price) => Quote::Price(price, BINANCE_QUOTE_LEG),
+        Some(price) => Quote::Price(price, BINANCE_QUOTE_CURRENCY),
         None => Quote::Failed(format!(
             "{symbol}: `{price}` is not a positive finite price"
         )),
@@ -818,7 +876,7 @@ struct SinaLookup {
     /// response; this is the plugin's own determination from the venue and the
     /// code range, and [`sina_target`] refuses every code it cannot make that
     /// determination for.
-    currency: &'static str,
+    currency: Currency,
 }
 
 /// What this source can do with one identity.
@@ -890,7 +948,7 @@ fn sina_target(asset: &AssetId) -> SinaTarget {
         Venue::Us => SinaTarget::Ask(SinaLookup {
             symbol: format!("gb_{}", asset.symbol.to_ascii_lowercase()),
             price_field: SINA_LAST_PRICE_FIELD_US,
-            currency: "USD",
+            currency: Currency::Usd,
         }),
         // A Hong Kong identity arrives here ALREADY five digits when it is a
         // code at all: [`canonical_symbol`] folded `HK:1810`, `HK:01810` and
@@ -940,7 +998,7 @@ fn sina_target(asset: &AssetId) -> SinaTarget {
             SinaTarget::Ask(SinaLookup {
                 symbol: format!("hk{code}"),
                 price_field: SINA_LAST_PRICE_FIELD_HK,
-                currency: "HKD",
+                currency: Currency::Hkd,
             })
         }
         // Shanghai: `6xxxxx` is the A-share main board and the STAR market,
@@ -978,7 +1036,7 @@ fn sina_target(asset: &AssetId) -> SinaTarget {
             SinaTarget::Ask(SinaLookup {
                 symbol: format!("sh{}", asset.symbol),
                 price_field: SINA_LAST_PRICE_FIELD_SH_SZ,
-                currency: "CNY",
+                currency: Currency::Cny,
             })
         }
         // Shenzhen: `00xxxx` main board, `30xxxx` ChiNext and the `15xxxx` /
@@ -1016,7 +1074,7 @@ fn sina_target(asset: &AssetId) -> SinaTarget {
             SinaTarget::Ask(SinaLookup {
                 symbol: format!("sz{}", asset.symbol),
                 price_field: SINA_LAST_PRICE_FIELD_SH_SZ,
-                currency: "CNY",
+                currency: Currency::Cny,
             })
         }
     }
@@ -1037,7 +1095,14 @@ fn sina_payload<'a>(body: &'a str, symbol: &str) -> Option<&'a str> {
     Some(&rest[..rest.find('"')?])
 }
 
-/// Sina's quote list, `https://hq.sinajs.cn/list=<symbol>`.
+/// One row of Sina's quote list, `https://hq.sinajs.cn/list=<symbol>`.
+///
+/// `Ok(None)` is an EMPTY row, which is how this endpoint says it does not
+/// list a symbol — `var hq_str_gb_doge="";` and `var hq_str_fx_susdxxx="";`,
+/// both verified on 2026-09-07. A response missing the row altogether is an
+/// `Err`: it is a malformed answer to the question that was asked, not an
+/// answer about the symbol. Both callers — the stock price path and the
+/// exchange-rate path — need that distinction, and neither restates it.
 ///
 /// **One symbol per request.** The endpoint takes any number of
 /// comma-separated symbols and answers one row each, and this function uses
@@ -1057,13 +1122,8 @@ fn sina_payload<'a>(body: &'a str, symbol: &str) -> Option<&'a str> {
 /// the replacement is three bytes wide; nothing here indexes by offset. `"`
 /// (0x22) and `,` (0x2C) are also outside GBK's trailing-byte range
 /// (0x40–0xFE), so no name can smuggle a delimiter into the split.
-fn sina_quote(cfg: &Config, asset: &AssetId) -> Quote {
-    let lookup = match sina_target(asset) {
-        SinaTarget::Ask(lookup) => lookup,
-        SinaTarget::Unspellable => return Quote::Unknown,
-        SinaTarget::UndeterminedCurrency(why) => return Quote::Failed(why),
-    };
-    let url = format!("{}/list={}", cfg.sina_endpoint, lookup.symbol);
+fn sina_row(cfg: &Config, symbol: &str) -> Result<Option<String>, String> {
+    let url = format!("{}/list={symbol}", cfg.sina_endpoint);
     let response = match ureq::get(&url)
         .set("Referer", SINA_REFERER)
         .timeout(Duration::from_secs(10))
@@ -1073,29 +1133,39 @@ fn sina_quote(cfg: &Config, asset: &AssetId) -> Quote {
         // Unlike Binance, a non-200 here carries no price shape at all — the
         // 403 the missing `Referer` earns has the literal body `Forbidden` —
         // so the status is the answer and the body is not parsed.
-        Err(ureq::Error::Status(code, _)) => {
-            return Quote::Failed(format!("GET {url}: HTTP {code}"));
-        }
-        Err(e) => return Quote::Failed(format!("GET {url}: {e}")),
+        Err(ureq::Error::Status(code, _)) => return Err(format!("GET {url}: HTTP {code}")),
+        Err(e) => return Err(format!("GET {url}: {e}")),
     };
     let mut bytes = Vec::new();
-    if let Err(e) = response
+    response
         .into_reader()
         .take(SINA_MAX_BODY_BYTES)
         .read_to_end(&mut bytes)
-    {
-        return Quote::Failed(format!("reading {url}: {e}"));
-    }
+        .map_err(|e| format!("reading {url}: {e}"))?;
     let body = String::from_utf8_lossy(&bytes);
-
-    let symbol = &lookup.symbol;
     let Some(payload) = sina_payload(&body, symbol) else {
-        return Quote::Failed(format!("{url}: the response carried no `{symbol}` row"));
+        return Err(format!("{url}: the response carried no `{symbol}` row"));
     };
+    // "We do not list this." Not an error, and not a price — `fx_susdxxx` and
+    // `gb_doge` both come back this way, verified on 2026-09-07.
     if payload.is_empty() {
-        // "We do not list this." Not an error, and not a price.
-        return Quote::Unknown;
+        return Ok(None);
     }
+    Ok(Some(payload.to_string()))
+}
+
+fn sina_quote(cfg: &Config, asset: &AssetId) -> Quote {
+    let lookup = match sina_target(asset) {
+        SinaTarget::Ask(lookup) => lookup,
+        SinaTarget::Unspellable => return Quote::Unknown,
+        SinaTarget::UndeterminedCurrency(why) => return Quote::Failed(why),
+    };
+    let symbol = &lookup.symbol;
+    let payload = match sina_row(cfg, symbol) {
+        Ok(Some(payload)) => payload,
+        Ok(None) => return Quote::Unknown,
+        Err(why) => return Quote::Failed(why),
+    };
     let fields: Vec<&str> = payload.split(',').collect();
     let Some(raw) = fields.get(lookup.price_field) else {
         return Quote::Failed(format!(
@@ -1112,22 +1182,348 @@ fn sina_quote(cfg: &Config, asset: &AssetId) -> Quote {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Exchange rates
+// ---------------------------------------------------------------------------
+
+/// Which field of a Sina `fx_s…` row is the current rate.
+///
+/// **Field 8**, and the row itself is what says so. Every one of these rows
+/// carries its own change against the previous close in field 11, and that
+/// column is `field 8 − field 3` in all four pairs this plugin asks for, read
+/// live on 2026-09-07:
+///
+/// ```text
+/// fx_susdcny  f8 6.7111      − f3 6.7108      =  0.0003     = f11  0.0003
+/// fx_scnyusd  f8 0.149007    − f3 0.148994    =  0.000013   = f11  0.000013
+/// fx_shkdusd  f8 0.1275526474 − f3 0.1275396329 = 0.0000130 = f11  0.0000 (rounded)
+/// fx_shkdcny  f8 0.8560178052 − f3 0.8560104776 = 0.0000073 = f11  0.0000 (rounded)
+/// ```
+///
+/// Field 1 is NOT interchangeable with it: on the pairs Sina computes rather
+/// than quotes (marked 此行情由新浪财经计算得出 in field 13) field 1 is the bid
+/// and field 2 the ask, and field 8 is their midpoint — `fx_susdcny` answered
+/// bid 6.7099, ask 6.7123 and field 8 6.7111, which is exactly the mid.
+/// Reading field 1 there would publish the bid as the rate.
+const SINA_FX_RATE_FIELD: usize = 8;
+
+/// **`USDT` is settled as `USD` one for one. This is an ASSUMPTION, not a
+/// quote, and it is the only number in this plugin that no source stated.**
+///
+/// It is the owner's decision to approximate rather than to price the pair.
+/// What the approximation costs was measured, not guessed: Binance's `USDTUSD`
+/// last traded at **0.99968** on 2026-09-07, so this parity overstates a
+/// USDT-quoted holding by about **3.2 basis points** (0.032%) — 32 USD on a
+/// 100,000 USD crypto position. The error is systematic, always in the same
+/// direction, and it rides into every total and every history point that
+/// contains a crypto holding.
+///
+/// **To make it a quote instead, replace this one constant with a fetch.**
+/// `USDTUSD` is listed on `data-api.binance.vision` and answers
+/// `{"symbol":"USDTUSD","price":"0.99967000"}` with no key; the other
+/// direction, `USDUSDT`, is not listed (`-1121 Invalid symbol`), so a real
+/// `USD → USDT` leg would have to be a reciprocal. Nothing else in this file
+/// hard-codes a rate, so this constant is the whole of the change.
+///
+/// Every exit that shows a conversion states this hop as an assumption rather
+/// than as a rate — see [`FxHop::describe`].
+const USDT_USD_ASSUMED_PARITY: f64 = 1.0;
+
+/// One hop of a conversion.
+///
+/// A hop is either a rate a source answered or the parity this plugin assumes,
+/// and the two are never printed alike: a reader shown only a product cannot
+/// otherwise tell a quoted rate from an assumed one, and the assumed one is
+/// the number that could be wrong without any source being down.
+#[derive(Clone, Debug, PartialEq)]
+enum FxHop {
+    /// A rate read off a source, with the symbol it was read from.
+    Quoted { label: &'static str, factor: f64 },
+    /// [`USDT_USD_ASSUMED_PARITY`]. No source was asked, and none could fail.
+    AssumedParity,
+}
+
+impl FxHop {
+    fn factor(&self) -> f64 {
+        match self {
+            Self::Quoted { factor, .. } => *factor,
+            Self::AssumedParity => USDT_USD_ASSUMED_PARITY,
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Quoted { label, factor } => format!("{label} {}", round_to(*factor, 8)),
+            Self::AssumedParity => {
+                format!("USDT taken as {USDT_USD_ASSUMED_PARITY} USD — assumed, not quoted")
+            }
+        }
+    }
+}
+
+/// A rate this plugin knows how to fetch. Also the [`FxCache`] key, so two
+/// conversions that need the same pair fetch it once per pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct FxLeg {
+    from: Currency,
+    to: Currency,
+}
+
+impl FxLeg {
+    /// The Sina symbol for this pair. Sina quotes every ordered pair over
+    /// `USD`, `HKD` and `CNY` natively, so the symbol asked for is always the
+    /// direction wanted; this plugin never divides into the opposite one.
+    fn symbol(self) -> String {
+        format!(
+            "fx_s{}{}",
+            self.from.code().to_ascii_lowercase(),
+            self.to.code().to_ascii_lowercase()
+        )
+    }
+
+    /// What the caption calls this hop. One of the four pairs below in every
+    /// reachable case; the fallback names no symbol rather than naming a wrong
+    /// one, and no route constructs a leg outside the four.
+    fn label(self) -> &'static str {
+        match (self.from, self.to) {
+            (Currency::Usd, Currency::Cny) => "fx_susdcny@sina",
+            (Currency::Cny, Currency::Usd) => "fx_scnyusd@sina",
+            (Currency::Hkd, Currency::Usd) => "fx_shkdusd@sina",
+            (Currency::Hkd, Currency::Cny) => "fx_shkdcny@sina",
+            _ => "an unrouted pair",
+        }
+    }
+}
+
+/// One pass's exchange rates, keyed by pair. Same lifetime and same reason as
+/// [`PriceCache`]: a pass must not ask for one rate several times, and a later
+/// pass must not reuse this one's.
+type FxCache = HashMap<FxLeg, Result<f64, String>>;
+
+/// Everything one pass fetched from the open world, so a pass over many Tracks
+/// asks each source once per distinct thing it needs.
+struct PassCache {
+    prices: PriceCache,
+    rates: FxCache,
+}
+
+impl PassCache {
+    fn new() -> Self {
+        Self {
+            prices: PriceCache::new(),
+            rates: FxCache::new(),
+        }
+    }
+}
+
+/// Fetch one pair, once per pass.
+///
+/// A failure is cached alongside a success on purpose: within one pass a rate
+/// either came back or did not, and re-asking a source that just refused would
+/// let two rows of one portfolio be converted at rates fetched under different
+/// conditions. The cache is dropped at the end of the pass, so the next pass
+/// asks again — **there is no stale-rate fallback anywhere in this plugin**,
+/// and a pair that fails leaves its rows unconverted rather than reaching for
+/// the value it had last time.
+fn fx_leg(cfg: &Config, leg: FxLeg, cache: &mut FxCache) -> Result<f64, String> {
+    if let Some(hit) = cache.get(&leg) {
+        return hit.clone();
+    }
+    let fetched = fetch_fx_leg(cfg, leg);
+    cache.insert(leg, fetched.clone());
+    fetched
+}
+
+fn fetch_fx_leg(cfg: &Config, leg: FxLeg) -> Result<f64, String> {
+    let symbol = leg.symbol();
+    let Some(payload) = sina_row(cfg, &symbol)? else {
+        return Err(format!(
+            "the rate source does not list `{symbol}`, so there is no {}→{} rate \
+             this pass",
+            leg.from.code(),
+            leg.to.code(),
+        ));
+    };
+    let fields: Vec<&str> = payload.split(',').collect();
+    let Some(raw) = fields.get(SINA_FX_RATE_FIELD) else {
+        return Err(format!(
+            "{symbol}: the row has {} fields, so it has no field {SINA_FX_RATE_FIELD}",
+            fields.len(),
+        ));
+    };
+    // The same test as a price, and for the same reason: a row of zeros is how
+    // this source spells "nothing live here", and a rate of zero or less would
+    // value a whole portfolio at nothing.
+    positive_price(raw)
+        .ok_or_else(|| format!("{symbol}: `{}` is not a positive finite rate", raw.trim()))
+}
+
+/// One step of a route, before it has a number: either a pair to fetch or the
+/// assumed parity. Kept apart from [`FxHop`] so that WHICH steps a conversion
+/// takes is a table with no network in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FxStep {
+    Parity,
+    Fetch(FxLeg),
+}
+
+/// The steps that carry `from` to `to`, or `None` when this plugin has no
+/// route.
+///
+/// Settlement is `USD` or `CNY` and nothing else, so this table is the whole
+/// of it. **At most one fetched rate in any route**: the `USDT` step is the
+/// assumed parity, not a request.
+///
+/// ```text
+/// USDT → USD    assumed parity
+/// USDT → CNY    assumed parity, then fx_susdcny
+/// USD  → CNY    fx_susdcny
+/// CNY  → USD    fx_scnyusd
+/// HKD  → USD    fx_shkdusd
+/// HKD  → CNY    fx_shkdcny
+/// ```
+///
+/// `from == to` never reaches here; [`fx_path`] answers that with no hops at
+/// all rather than with a rate of 1 read off a source, because there is no
+/// conversion to make and a portfolio that needs none must not be left
+/// unpriceable by an unreachable source.
+fn fx_route(from: Currency, to: Currency) -> Option<Vec<FxStep>> {
+    match (from, to) {
+        (Currency::Usdt, Currency::Usd) => Some(vec![FxStep::Parity]),
+        (Currency::Usdt, Currency::Cny) => Some(vec![
+            FxStep::Parity,
+            FxStep::Fetch(FxLeg {
+                from: Currency::Usd,
+                to: Currency::Cny,
+            }),
+        ]),
+        (from, to) if from != Currency::Usdt && to != Currency::Usdt => {
+            Some(vec![FxStep::Fetch(FxLeg { from, to })])
+        }
+        _ => None,
+    }
+}
+
+/// A conversion this plugin actually obtained: the hops, in order, and their
+/// product.
+#[derive(Clone, Debug, PartialEq)]
+struct FxPath {
+    from: Currency,
+    to: Currency,
+    hops: Vec<FxHop>,
+    factor: f64,
+}
+
+impl FxPath {
+    /// One line a reader can check: which currencies, at what rate, out of
+    /// which quotes — and which step of it, if any, is assumed rather than
+    /// quoted.
+    fn describe(&self) -> String {
+        let hops = self
+            .hops
+            .iter()
+            .map(FxHop::describe)
+            .collect::<Vec<_>>()
+            .join(" × ");
+        format!(
+            "{}→{} {} ({hops})",
+            self.from.code(),
+            self.to.code(),
+            round_to(self.factor, 8),
+        )
+    }
+}
+
+/// What multiplies a number in `from` into a number in `to`, this pass.
+///
+/// `Err` is the honest answer to a rate that did not come back, and it is what
+/// leaves a holding's converted value `null`. There is deliberately no
+/// fallback: no cached rate from an earlier pass, no rate assumed between
+/// currencies whose names look related, no total assembled out of the rows
+/// that did convert. A rate this plugin could not read this pass is a rate it
+/// does not have.
+///
+/// The one number here that is not read from a source is
+/// [`USDT_USD_ASSUMED_PARITY`], and every exit that publishes a conversion
+/// says so in words.
+fn fx_path(
+    cfg: &Config,
+    from: Currency,
+    to: Currency,
+    cache: &mut FxCache,
+) -> Result<FxPath, String> {
+    // Identity. Not a conversion, so no source is asked and no source can make
+    // it fail: a portfolio already in the settlement currency prices with the
+    // rate endpoint unreachable, exactly as it did before rates existed.
+    if from == to {
+        return Ok(FxPath {
+            from,
+            to,
+            hops: Vec::new(),
+            factor: 1.0,
+        });
+    }
+    let Some(steps) = fx_route(from, to) else {
+        return Err(format!(
+            "this plugin has no route from {} to {}",
+            from.code(),
+            to.code(),
+        ));
+    };
+    let mut hops = Vec::with_capacity(steps.len());
+    let mut factor = 1.0;
+    for step in steps {
+        let hop = match step {
+            FxStep::Parity => FxHop::AssumedParity,
+            FxStep::Fetch(leg) => FxHop::Quoted {
+                label: leg.label(),
+                factor: fx_leg(cfg, leg, cache)?,
+            },
+        };
+        factor *= hop.factor();
+        hops.push(hop);
+    }
+    if !factor.is_finite() || factor <= 0.0 {
+        return Err(format!(
+            "the {}→{} hops multiply to {factor}, which is not a rate",
+            from.code(),
+            to.code(),
+        ));
+    }
+    Ok(FxPath {
+        from,
+        to,
+        hops,
+        factor,
+    })
+}
+
 /// What a set of priced rows sums to — or why it does not sum to anything.
 ///
-/// The variant that matters is [`PortfolioTotal::AcrossCurrencies`]. Once
-/// holdings can be quoted in USD, HKD, CNY and USDT at once, `total += value`
-/// over all of them produces a figure in no currency at all: 100 USD plus 100
-/// HKD is not 200 of anything. This plugin has no exchange rates yet, so the
-/// honest answer is no total — the same answer it already gives when the
-/// values do not sum to a finite number — and the per-asset rows, each with
-/// its own currency, carry everything a reader can actually use.
+/// Rows reach here already converted into one settlement currency, so summing
+/// them is a sum of like things. What is left to refuse is the case where the
+/// conversion could not happen at all: [`PortfolioTotal::Unsettleable`] covers
+/// a configured settlement currency this plugin does not settle in, which
+/// leaves each row in the currency its own source quoted. `total += value`
+/// over those produces a figure in no currency at all — 100 USD plus 100 HKD
+/// is not 200 of anything — so the honest answer is no total, and the
+/// per-asset rows, each with its own currency, carry everything a reader can
+/// actually use.
+///
+/// A row whose price came back but whose RATE did not is not in here at all:
+/// it is left out of the sum and marks the pass incomplete, the same as an
+/// unpriceable row.
 #[derive(Clone, Debug, PartialEq)]
 enum PortfolioTotal {
-    /// Every priced row was in `currency`, and they sum to a finite `amount`.
+    /// Every counted row was in `currency`, and they sum to a finite `amount`.
     Priced { amount: f64, currency: String },
-    /// The priced rows are quoted in more than one currency, listed here in
-    /// the order they were first seen.
-    AcrossCurrencies(Vec<String>),
+    /// `configured` is not a currency this plugin settles in, so nothing was
+    /// converted and the rows stand in more than one currency — listed in the
+    /// order they were first seen.
+    Unsettleable {
+        configured: String,
+        currencies: Vec<String>,
+    },
     /// One currency, but the values do not sum to a finite number.
     NotFinite,
     /// Nothing was priced at all: the total of nothing, in no currency.
@@ -1149,8 +1545,13 @@ impl PortfolioTotal {
     fn no_total_reason(&self) -> Option<String> {
         match self {
             Self::Priced { .. } => None,
-            Self::AcrossCurrencies(currencies) => Some(format!(
-                "these holdings are quoted in {} and this plugin has no exchange rates yet",
+            Self::Unsettleable {
+                configured,
+                currencies,
+            } => Some(format!(
+                "these holdings are quoted in {}, and `{configured}` — the configured \
+                 settlement currency — is not one this plugin settles in (`USD` and \
+                 `CNY` are)",
                 currencies.join(" and "),
             )),
             Self::NotFinite => Some("the values do not sum to a finite number".into()),
@@ -1175,7 +1576,7 @@ impl PortfolioTotal {
         match self {
             Self::Priced { amount, .. } => json!(round_to(*amount, 2)),
             Self::Nothing => json!(0.0),
-            Self::AcrossCurrencies(_) | Self::NotFinite => Value::Null,
+            Self::Unsettleable { .. } | Self::NotFinite => Value::Null,
         }
     }
 
@@ -1187,76 +1588,154 @@ impl PortfolioTotal {
     }
 }
 
-/// Price every holding of one portfolio.
+/// One portfolio, priced and converted: what every exit reads from.
+struct PricedPortfolio {
+    /// One row per holding, in the order held. Each carries its price in the
+    /// currency its own source quoted, the rate that carried it into
+    /// [`Self::settlement`], and its value in that settlement currency.
+    rows: Vec<Value>,
+    total: PortfolioTotal,
+    /// Whether every holding both priced AND converted. A history point is
+    /// appended only when this holds; see [`refresh`].
+    complete: bool,
+    /// The currency values are stated in, or `None` when the configured one is
+    /// not a currency this plugin settles in — in which case nothing was
+    /// converted and each row's value is in its own source's currency.
+    settlement: Option<Currency>,
+    /// One line per conversion actually used, in first-use order, each naming
+    /// its hops. Empty when nothing needed converting.
+    conversions: Vec<String>,
+}
+
+/// Price every holding of one portfolio and convert each into the settlement
+/// currency.
 ///
-/// Returns the table rows, what they total to, and whether every holding
-/// priced. An asset that could not be priced keeps its row with `null` price
-/// and value — dropping it would understate the portfolio silently, which is
-/// exactly what a null says out loud — and is left out of the total.
+/// An asset that could not be priced keeps its row with a `null` price and a
+/// `null` value — dropping it would understate the portfolio silently, which is
+/// exactly what a null says out loud — and is left out of the total. **A
+/// holding whose price came back but whose exchange rate did not is treated
+/// the same way**: its own price and currency stay on the row, because they are
+/// true, and its settlement value is `null`. There is no fallback to a rate
+/// from an earlier pass; see [`fx_path`].
 ///
-/// Each row carries the CURRENCY its price is in, straight from the source
-/// that answered. Nothing here re-labels a number with the configured
-/// settlement currency: that is how an HKD price ends up captioned `USDT`.
-fn price_holdings(
-    cfg: &Config,
-    holdings: &[Holding],
-    cache: &mut PriceCache,
-) -> (Vec<Value>, PortfolioTotal, bool) {
+/// Each row keeps the CURRENCY its price is in, straight from the source that
+/// answered. Nothing here re-labels a price with the settlement currency: that
+/// is how an HKD price ends up captioned `USDT`. What carries it across is a
+/// rate on the row and a named conversion in [`PricedPortfolio::conversions`].
+fn price_holdings(cfg: &Config, holdings: &[Holding], cache: &mut PassCache) -> PricedPortfolio {
+    // `None` means the configured value is not one of the two currencies this
+    // plugin settles in — see `Currency::settlement`. With no settlement
+    // currency nothing is converted, so each row stays in its own source's
+    // currency and a portfolio spanning two of them gets no total.
+    let settlement = Currency::settlement(&cfg.quote);
     let mut rows = Vec::with_capacity(holdings.len());
     let mut sum = 0.0;
-    // Distinct currencies among the PRICED rows, first-seen order. One entry
-    // means the sum is a number in that currency; more than one means it is
-    // not a number in any.
+    // Distinct currencies among the COUNTED rows, first-seen order. With a
+    // settlement currency there is at most one; without, one entry means the
+    // sum is a number in that currency and more than one means it is not a
+    // number in any.
     let mut currencies: Vec<&'static str> = Vec::new();
+    let mut conversions: Vec<String> = Vec::new();
     let mut complete = true;
     for holding in holdings {
         // `price * quantity` can overflow to infinity even when both factors
         // are finite, so the product is checked as well as the input.
-        let priced = match quote_cached(cfg, &holding.asset, cache) {
+        let converted = match quote_cached(cfg, &holding.asset, &mut cache.prices) {
             Quote::Price(price, currency) => {
-                let value = price * holding.quantity;
-                if value.is_finite() {
-                    Ok((price, currency, value))
-                } else {
-                    Err(format!(
-                        "{} × {} is not a finite value",
-                        holding.asset.canonical(),
-                        holding.quantity
-                    ))
+                // Each row is carried into the settlement currency, or — with
+                // none configured — left where it is, which is what `to`
+                // being the row's own currency means.
+                let to = settlement.unwrap_or(currency);
+                match fx_path(cfg, currency, to, &mut cache.rates) {
+                    Ok(path) => {
+                        let value = price * holding.quantity * path.factor;
+                        if value.is_finite() {
+                            Ok((price, currency, path, value))
+                        } else {
+                            Err((
+                                Some((price, currency)),
+                                format!(
+                                    "{} × {} at {} is not a finite value",
+                                    holding.asset.canonical(),
+                                    holding.quantity,
+                                    path.factor,
+                                ),
+                            ))
+                        }
+                    }
+                    Err(why) => Err((
+                        Some((price, currency)),
+                        format!(
+                            "{} priced in {} but no {}→{} rate came back this pass — {why}",
+                            holding.asset.canonical(),
+                            currency.code(),
+                            currency.code(),
+                            to.code(),
+                        ),
+                    )),
                 }
             }
-            Quote::Unknown => Err(format!(
-                "no valid quote came back for {} this pass",
-                holding.asset.canonical()
+            Quote::Unknown => Err((
+                None,
+                format!(
+                    "no valid quote came back for {} this pass",
+                    holding.asset.canonical()
+                ),
             )),
-            Quote::Failed(why) => Err(why),
+            Quote::Failed(why) => Err((None, why)),
         };
-        match priced {
-            Ok((price, currency, value)) => {
+        match converted {
+            Ok((price, currency, path, value)) => {
                 sum += value;
-                if !currencies.contains(&currency) {
-                    currencies.push(currency);
+                let stated = settlement.unwrap_or(currency);
+                if !currencies.contains(&stated.code()) {
+                    currencies.push(stated.code());
                 }
-                rows.push(json!({
+                if !path.hops.is_empty() {
+                    let described = path.describe();
+                    if !conversions.contains(&described) {
+                        conversions.push(described);
+                    }
+                }
+                let mut row = json!({
                     "asset": holding.asset.symbol,
                     "venue": holding.asset.venue.prefix(),
                     "qty": round_to(holding.quantity, 8),
                     "price": round_to(price, 2),
+                    "currency": currency.code(),
                     "value": round_to(value, 2),
-                    "currency": currency,
-                }));
+                });
+                // The rate cell exists only where a rate does. With no
+                // settlement currency nothing was converted, and a column of
+                // 1.0s would read as a conversion that happened.
+                if settlement.is_some() {
+                    row["rate"] = json!(round_to(path.factor, 8));
+                }
+                rows.push(row);
             }
-            Err(e) => {
+            Err((priced, why)) => {
                 complete = false;
-                eprintln!("market: {e}");
-                rows.push(json!({
+                eprintln!("market: {why}");
+                // A price that came back is kept even when the rate did not:
+                // it is a true number about this holding, and dropping it
+                // would hide that the failure was the conversion rather than
+                // the quote.
+                let (price, currency) = match priced {
+                    Some((price, currency)) => (json!(round_to(price, 2)), json!(currency.code())),
+                    None => (Value::Null, Value::Null),
+                };
+                let mut row = json!({
                     "asset": holding.asset.symbol,
                     "venue": holding.asset.venue.prefix(),
                     "qty": round_to(holding.quantity, 8),
-                    "price": Value::Null,
+                    "price": price,
+                    "currency": currency,
                     "value": Value::Null,
-                    "currency": Value::Null,
-                }));
+                });
+                if settlement.is_some() {
+                    row["rate"] = Value::Null;
+                }
+                rows.push(row);
             }
         }
     }
@@ -1267,9 +1746,21 @@ fn price_holdings(
             currency: (*only).to_string(),
         },
         [_] => PortfolioTotal::NotFinite,
-        many => PortfolioTotal::AcrossCurrencies(many.iter().map(|c| (*c).to_string()).collect()),
+        // Unreachable with a settlement currency configured, because every
+        // counted row was converted into it. Reachable, and the whole point,
+        // without one.
+        many => PortfolioTotal::Unsettleable {
+            configured: cfg.quote.clone(),
+            currencies: many.iter().map(|c| (*c).to_string()).collect(),
+        },
     };
-    (rows, total, complete)
+    PricedPortfolio {
+        rows,
+        total,
+        complete,
+        settlement,
+        conversions,
+    }
 }
 
 /// Round for display. Overlay payloads are read by humans through a table, and
@@ -1298,26 +1789,42 @@ fn round_to(value: f64, places: u32) -> f64 {
 
 /// The holdings table.
 ///
-/// It takes no [`Config`]: there is no longer any unit here that comes from
-/// the configuration. Every number on this table is in the currency the source
-/// that produced it quoted, and that currency is a column and a caption, so a
-/// portfolio holding `US:NVDA` and `HK:1810` reads as USD and HKD rather than
-/// as two numbers under one wrong heading.
+/// Two units live on this table and they are labelled apart. `Price` is in the
+/// currency the source that answered quoted — that is what the `Priced in`
+/// column says, per row — and `Value` is in the settlement currency, which the
+/// column heading names. `Rate` is what carried one to the other, and the
+/// caption spells out which quotes that rate is a product of, so a two-hop
+/// conversion never reads as a directly quoted pair.
+///
+/// With no settlement currency to convert into, the rate column is not shown
+/// at all and `Value` carries no unit in its heading: nothing was converted,
+/// each row's value is in its own `Priced in` currency, and a heading naming
+/// one currency would be wrong for the others.
 ///
 /// The table still goes out when there is no total: it is the only place the
 /// per-asset rows appear, and withholding it would leave whatever was
 /// published last on screen, presented as current.
-fn holdings_table(rows: Vec<Value>, total: &PortfolioTotal, complete: bool, at: &str) -> Value {
-    let mut rows = rows;
-    rows.push(json!({
+fn holdings_table(priced: PricedPortfolio, at: &str) -> Value {
+    let PricedPortfolio {
+        mut rows,
+        total,
+        complete,
+        settlement,
+        conversions,
+    } = priced;
+    let mut total_row = json!({
         "asset": "Total",
         "venue": Value::Null,
         "qty": Value::Null,
         "price": Value::Null,
-        "value": total.value_cell(),
         "currency": total.currency_cell(),
-    }));
-    let caption = match (total.stated(), complete) {
+        "value": total.value_cell(),
+    });
+    if settlement.is_some() {
+        total_row["rate"] = Value::Null;
+    }
+    rows.push(total_row);
+    let mut caption = match (total.stated(), complete) {
         (None, _) => format!(
             "Priced at {at} — no total is shown: {}",
             total
@@ -1325,76 +1832,138 @@ fn holdings_table(rows: Vec<Value>, total: &PortfolioTotal, complete: bool, at: 
                 .unwrap_or_else(|| "no reason recorded".into()),
         ),
         (Some((_, currency)), true) => format!("Priced at {at}, totalled in {currency}"),
+        // "or rates": a row is left out of the total both when its price did
+        // not come back and when its exchange rate did not, and the caption
+        // may not name only the first.
         (Some((_, currency)), false) => format!(
-            "Priced at {at}, totalled in {currency} — some prices unavailable; the total covers \
-             the priced rows only"
+            "Priced at {at}, totalled in {currency} — some prices or exchange rates \
+             unavailable; the total covers the rows that have both"
         ),
     };
+    if !conversions.is_empty() {
+        caption.push_str(". Converted at ");
+        caption.push_str(&conversions.join("; "));
+    }
+    let mut columns = vec![
+        json!({ "key": "asset", "label": "Asset" }),
+        // The venue is its own column rather than a prefix glued onto the
+        // name: `W` on two venues is two different companies, and a reader has
+        // to be able to tell which row is which.
+        json!({ "key": "venue", "label": "Venue" }),
+        json!({ "key": "qty", "label": "Quantity", "align": "right" }),
+        json!({ "key": "price", "label": "Price", "align": "right" }),
+        json!({ "key": "currency", "label": "Priced in" }),
+    ];
+    match settlement {
+        Some(settlement) => {
+            columns.push(json!({
+                "key": "rate",
+                "label": format!("Rate to {}", settlement.code()),
+                "align": "right",
+            }));
+            columns.push(json!({
+                "key": "value",
+                "label": format!("Value ({})", settlement.code()),
+                "align": "right",
+            }));
+        }
+        None => columns.push(json!({ "key": "value", "label": "Value", "align": "right" })),
+    }
     json!({
-        "columns": [
-            { "key": "asset", "label": "Asset" },
-            // The venue is its own column rather than a prefix glued onto the
-            // name: `W` on two venues is two different companies, and a
-            // reader has to be able to tell which row is which.
-            { "key": "venue", "label": "Venue" },
-            { "key": "qty", "label": "Quantity", "align": "right" },
-            // No unit in these two headings. The rows are in different
-            // currencies, so any single unit written here would be wrong for
-            // some of them; the `currency` column carries each row's own.
-            { "key": "price", "label": "Price", "align": "right" },
-            { "key": "value", "label": "Value", "align": "right" },
-            { "key": "currency", "label": "Currency" },
-        ],
+        "columns": columns,
         "rows": rows,
         "caption": caption,
         "highlight": "Total",
     })
 }
 
-/// History as a table, newest first, with the change against the previous
-/// point. `points` is `[{ "at": <rfc3339>, "total": <number> }]` in
-/// chronological order.
+/// The settlement currency a stored history point was written in, or `None`
+/// when the point does not say.
 ///
-/// KNOWN GAP — the column heading is a bare `Total`, with no currency.
-/// A stored point is `{at, total}` and has never recorded the currency its
-/// number was in, so nothing here can say what unit a point from last week
-/// used. This heading used to name the configured settlement currency; that
-/// was a claim about points this plugin cannot check, and with holdings now
-/// priced in their own currencies it would be wrong for any Track whose total
-/// is not in that currency. Recording the currency on new points, and breaking
-/// the series where the unit changes, is the next slice's work.
+/// **`None` is not a missing rate; it is an unknowable unit.** Points written
+/// before this slice are `{at, total}` and record no currency at all, and what
+/// unit each of them used was whatever the install's settlement was at that
+/// moment — a value nothing kept. So a point without a currency is comparable
+/// to no other point, including another point without one: two unknowns are
+/// not known to be the same unknown.
+fn point_currency(point: &Value) -> Option<&str> {
+    point.get("currency").and_then(Value::as_str)
+}
+
+/// History as a table, newest first, with the change against the previous
+/// point. `points` is `[{ "at": <rfc3339>, "total": <number>,
+/// "currency": <code> }]` in chronological order, with `currency` absent on
+/// points written before it was recorded.
+///
+/// **The change column is blank across a currency boundary.** Subtracting a
+/// total in HKD from a total in USDT draws a move the portfolio never made,
+/// and that is the same defect as plotting a subset total against a whole one.
+/// A row's own `Currency` cell says which unit its number is in, so the table
+/// no longer needs — and no longer has — a single unit in its heading.
+///
+/// KNOWN GAP — points written before this slice carry no currency, and their
+/// unit cannot be recovered. They keep their number and get an empty currency
+/// cell, and no change is computed on either side of them.
 fn history_table(points: &[Value]) -> Value {
     let mut rows: Vec<Value> = Vec::with_capacity(points.len());
+    let mut unlabelled = 0usize;
     for (index, point) in points.iter().enumerate() {
         let total = point.get("total").and_then(Value::as_f64).unwrap_or(0.0);
-        let change = if index == 0 {
-            Value::Null
-        } else {
-            let previous = points[index - 1]
-                .get("total")
-                .and_then(Value::as_f64)
-                .unwrap_or(total);
-            json!(round_to(total - previous, 2))
+        let currency = point_currency(point);
+        if currency.is_none() {
+            unlabelled += 1;
+        }
+        let previous = index.checked_sub(1).map(|i| &points[i]);
+        // Both points must SAY what unit they are in, and say the same one.
+        // `None == None` would be the mistake: it reads two unrecorded units
+        // as one.
+        let comparable = match (currency, previous.and_then(point_currency)) {
+            (Some(this), Some(before)) => this == before,
+            _ => false,
+        };
+        let change = match (comparable, previous) {
+            (true, Some(previous)) => {
+                let before = previous
+                    .get("total")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(total);
+                json!(round_to(total - before, 2))
+            }
+            _ => Value::Null,
         };
         rows.push(json!({
             "at": point.get("at").and_then(Value::as_str).unwrap_or(""),
             "total": round_to(total, 2),
+            "currency": currency.map_or(Value::Null, |c| json!(c)),
             "change": change,
         }));
     }
     rows.reverse();
+    let mut caption = format!(
+        "Total portfolio value over time, newest first — {} point{} since this plugin started watching",
+        points.len(),
+        if points.len() == 1 { "" } else { "s" },
+    );
+    if unlabelled > 0 {
+        caption.push_str(&format!(
+            ". {unlabelled} point{} recorded before this plugin stored a currency per point, so \
+             what unit {} in cannot be recovered and no change is shown against {}",
+            if unlabelled == 1 { " was" } else { "s were" },
+            if unlabelled == 1 { "it is" } else { "they are" },
+            if unlabelled == 1 { "it" } else { "them" },
+        ));
+    }
     json!({
         "columns": [
             { "key": "at", "label": "At" },
+            // No unit in this heading: each row states its own, and points
+            // that never recorded one state nothing.
             { "key": "total", "label": "Total", "align": "right" },
+            { "key": "currency", "label": "Currency" },
             { "key": "change", "label": "Change", "align": "right" },
         ],
         "rows": rows,
-        "caption": format!(
-            "Total portfolio value over time, newest first — {} point{} since this plugin started watching",
-            points.len(),
-            if points.len() == 1 { "" } else { "s" },
-        ),
+        "caption": caption,
     })
 }
 
@@ -1468,7 +2037,7 @@ enum Refreshed {
 /// against totals covering the whole, which reads as a crash that never
 /// happened. The holdings table still goes out — it names the missing prices
 /// row by row, which is the honest form of that same information.
-fn refresh(rpc: &Rpc, cfg: &Config, track_id: &str, cache: &mut PriceCache) -> Refreshed {
+fn refresh(rpc: &Rpc, cfg: &Config, track_id: &str, cache: &mut PassCache) -> Refreshed {
     let _serialized = REFRESH_LOCK.lock();
     // Read the holdings HERE, inside the lock, rather than taking them from
     // the caller. A poll pass lists every portfolio up front and then prices
@@ -1497,7 +2066,7 @@ fn refresh(rpc: &Rpc, cfg: &Config, track_id: &str, cache: &mut PriceCache) -> R
             rpc,
             track_id,
             "portfolio.holdings",
-            holdings_table(Vec::new(), &PortfolioTotal::Nothing, true, &at),
+            holdings_table(price_holdings(cfg, &[], &mut PassCache::new()), &at),
         ) {
             Refreshed::NothingHeld
         } else {
@@ -1505,43 +2074,48 @@ fn refresh(rpc: &Rpc, cfg: &Config, track_id: &str, cache: &mut PriceCache) -> R
         };
     }
 
-    let (rows, total, complete) = price_holdings(cfg, &holdings, cache);
+    let priced = price_holdings(cfg, &holdings, cache);
+    let complete = priced.complete;
 
-    // Each row's `price × qty` was checked for finiteness, but the sum of
-    // finite values can still overflow — and, since S2, the priced rows may
-    // not all be in one currency. Either way there is no total, and the
-    // per-asset rows are exactly what a reader needs when there is none.
-    if let Some(why) = total.no_total_reason() {
+    // Each row's `price × qty × rate` was checked for finiteness, but the sum
+    // of finite values can still overflow — and a settlement currency this
+    // plugin does not settle in leaves the rows in currencies that do not
+    // sum. Either way there is no total, and the per-asset rows are exactly
+    // what a reader needs when there is none.
+    if let Some(why) = priced.total.no_total_reason() {
         eprintln!("market: no total for {track_id} — {why}; publishing the rows without one");
     }
+    // Taken before the payload consumes the priced portfolio, so that the
+    // number appended to the series below and the number published above are
+    // one value rather than two computations of it.
+    let stated = priced
+        .total
+        .stated()
+        .map(|(amount, currency)| (amount, currency.to_string()));
+    let no_total_reason = priced.total.no_total_reason();
     if !push_overlay(
         rpc,
         track_id,
         "portfolio.holdings",
-        holdings_table(rows, &total, complete, &at),
+        holdings_table(priced, &at),
     ) {
         return Refreshed::Partially("the holdings table could not be published".into());
     }
     if !complete {
         return Refreshed::Partially(
-            "some holdings could not be priced; the history point was skipped".into(),
+            "some holdings could not be priced or converted; the history point was skipped".into(),
         );
     }
-    // KNOWN GAP, registered rather than worked around. A history point is a
-    // number over time, so it needs a total — and a portfolio whose priced
-    // holdings span two currencies has none until exchange rates land. Such a
-    // Track therefore contributes NO history points in the meantime, exactly
-    // as a Track with an unpriceable holding already does, and its series
-    // stands still until it is priced in one currency again or FX arrives.
-    // Inventing a rate, or summing the currencies as though they were one,
-    // would keep the series moving by publishing a number that is not the
-    // portfolio's value — which is the failure this slice exists to prevent.
-    let Some((total, _currency)) = total.stated() else {
+    // A history point is a number over time, so it needs a total. A portfolio
+    // that has none contributes NO points, exactly as a Track with an
+    // unpriceable holding does, and its series stands still until it has one
+    // again. Publishing a figure assembled out of the rows that happened to
+    // work would keep the series moving with a number that is not the
+    // portfolio's value — the failure this whole layer exists to prevent.
+    let Some((total, currency)) = stated else {
         return Refreshed::Partially(format!(
             "there is no portfolio total — {}; the history point was skipped",
-            total
-                .no_total_reason()
-                .unwrap_or_else(|| "no reason recorded".into()),
+            no_total_reason.unwrap_or_else(|| "no reason recorded".into()),
         ));
     };
 
@@ -1552,12 +2126,17 @@ fn refresh(rpc: &Rpc, cfg: &Config, track_id: &str, cache: &mut PriceCache) -> R
             return Refreshed::Partially("the history could not be read".into());
         }
     };
-    // The currency is dropped here, deliberately and visibly: a stored point
-    // is `{at, total}` and records no unit. So the currency a price carries
-    // reaches the quote, the rows and the tables, and stops at this line — a
-    // Track that switches the currency it totals in writes two series into one
-    // document. Recording the unit per point is the next slice's work.
-    points.push(json!({ "at": at, "total": round_to(total, 2) }));
+    // **The unit goes into the document with the number.** A point used to be
+    // `{at, total}`, and a Track that changed the currency it totals in wrote
+    // two series into one document with nothing to tell them apart; the
+    // difference between two such points is a move the portfolio never made.
+    // What is stored here is what the number is in, so `history_table` can
+    // refuse to subtract across the boundary rather than guess where one is.
+    //
+    // This fixes new points only. Points already in the store record no
+    // currency, and what unit each of them used is not recoverable from
+    // anything this plugin kept — see [`point_currency`].
+    points.push(json!({ "at": at, "total": round_to(total, 2), "currency": currency }));
     if points.len() > MAX_HISTORY_POINTS {
         let drop = points.len() - MAX_HISTORY_POINTS;
         points.drain(0..drop);
@@ -1592,7 +2171,7 @@ fn refresh_all(rpc: &Rpc, cfg: &Config) {
             return;
         }
     };
-    let mut cache = PriceCache::new();
+    let mut cache = PassCache::new();
     for track_id in track_ids {
         if let Refreshed::Partially(why) = refresh(rpc, cfg, &track_id, &mut cache) {
             eprintln!("market: incomplete refresh of {track_id} — {why}");
@@ -1665,23 +2244,38 @@ fn text_result(text: String, structured: Value) -> Value {
 }
 
 /// The one-line prose `market.holdings.list` answers with, built from the
-/// rows [`price_holdings`] produced.
+/// priced portfolio.
 ///
 /// The venue is glued to the symbol HERE, unlike in the table, because this
 /// exit has no columns to put it in: `1 × W` names Wayfair and Wormhole
 /// equally well, and a Planner reading the line has nothing else to go on.
-/// The currency comes from the ROW for the same reason it does in the table:
-/// this line can carry rows in several currencies at once, so one unit taken
-/// from the configuration would be wrong for some of them.
-/// Split out from the tool arm so it can be asserted on without a kernel.
-fn holdings_line(rows: &[Value]) -> String {
-    rows.iter()
+///
+/// Every value on this line is in ONE unit — the settlement currency — and
+/// the line says which. With no settlement currency configured nothing was
+/// converted, so each value falls back to its own row's currency, which is the
+/// only unit that value is true in.
+///
+/// The two failures are told apart in words. "price unavailable" is a quote
+/// that did not come back; "no <X>→<Y> rate" is a quote that did, with no way
+/// to carry it into the settlement currency — a distinction a reader needs,
+/// because the second says the holding is fine and the plugin's rate source is
+/// not. Split out from the tool arm so it can be asserted on without a kernel.
+fn holdings_line(priced: &PricedPortfolio) -> String {
+    priced
+        .rows
+        .iter()
         .map(|row| {
-            let value = row["value"]
-                .as_f64()
-                .zip(row["currency"].as_str())
-                .map(|(v, currency)| format!("{v} {currency}"))
-                .unwrap_or_else(|| "price unavailable".into());
+            let native = row["currency"].as_str();
+            let unit = priced.settlement.map_or(native, |s| Some(s.code()));
+            let value = match (row["value"].as_f64().zip(unit), native) {
+                (Some((value, unit)), _) => format!("{value} {unit}"),
+                (None, Some(native)) => format!(
+                    "{} {native}, but no {native}→{} rate",
+                    row["price"],
+                    priced.settlement.map_or("?", Currency::code),
+                ),
+                (None, None) => "price unavailable".into(),
+            };
             let venue = row["venue"].as_str().unwrap_or("?");
             let asset = row["asset"].as_str().unwrap_or("?");
             format!("{} × {venue}:{asset} = {value}", row["qty"])
@@ -1728,12 +2322,12 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
             // fact and, for anything but a crypto holding on a default
             // install, a different string.
             Quote::Price(price, currency) => text_result(
-                format!("{canonical} = {price} {currency}"),
+                format!("{canonical} = {price} {}", currency.code()),
                 json!({
                     "asset": asset.symbol,
                     "venue": asset.venue.prefix(),
                     "price": price,
-                    "currency": currency,
+                    "currency": currency.code(),
                 }),
             ),
             Quote::Unknown => tool_error(format!(
@@ -1831,19 +2425,36 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
                     json!({ "holdings": [] }),
                 );
             }
-            let (rows, total, complete) = price_holdings(cfg, &holdings, &mut PriceCache::new());
-            let text = holdings_line(&rows);
+            let priced = price_holdings(cfg, &holdings, &mut PassCache::new());
+            let text = holdings_line(&priced);
+            let PricedPortfolio {
+                rows,
+                total,
+                complete,
+                conversions,
+                ..
+            } = priced;
             let summary = match (complete, total.stated()) {
                 (true, Some((amount, currency))) => {
                     format!("{text}. Total {} {currency}.", round_to(amount, 2))
                 }
-                (false, _) => format!("{text}. No total — not every holding could be priced."),
+                (false, _) => {
+                    format!("{text}. No total — not every holding could be priced and converted.")
+                }
                 (true, None) => format!(
                     "{text}. No total — {}.",
                     total
                         .no_total_reason()
                         .unwrap_or_else(|| "no reason recorded".into()),
                 ),
+            };
+            // The conversions ride along so a caller reading this reply sees
+            // the same hops the table's caption states, rather than a
+            // converted total with no way to check what it was converted at.
+            let summary = if conversions.is_empty() {
+                summary
+            } else {
+                format!("{summary} Converted at {}.", conversions.join("; "))
             };
             text_result(
                 summary,
@@ -2130,7 +2741,7 @@ mod tests {
             };
             assert_eq!(
                 quote_asset(&cfg, &id("BTC")),
-                Quote::Price(2.5, "USDT"),
+                Quote::Price(2.5, Currency::Usdt),
                 "settling in {settlement} must not change what the source quotes in"
             );
             let target = targets
@@ -2165,7 +2776,7 @@ mod tests {
             };
             assert_eq!(
                 quote_asset(&cfg, &id("USDT")),
-                Quote::Price(1.0, "USDT"),
+                Quote::Price(1.0, Currency::Usdt),
                 "the leg prices itself under settlement {settlement}"
             );
             // Only a CRYPTO identity. `US:USDT` is a different asset that
@@ -2291,10 +2902,26 @@ mod tests {
             sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
         let cfg = sina_cfg(endpoint);
         for (name, expected, target) in [
-            ("US:NVDA", Quote::Price(230.36, "USD"), "/list=gb_nvda"),
-            ("HK:1810", Quote::Price(27.48, "HKD"), "/list=hk01810"),
-            ("SH:600519", Quote::Price(1316.94, "CNY"), "/list=sh600519"),
-            ("SZ:000001", Quote::Price(11.70, "CNY"), "/list=sz000001"),
+            (
+                "US:NVDA",
+                Quote::Price(230.36, Currency::Usd),
+                "/list=gb_nvda",
+            ),
+            (
+                "HK:1810",
+                Quote::Price(27.48, Currency::Hkd),
+                "/list=hk01810",
+            ),
+            (
+                "SH:600519",
+                Quote::Price(1316.94, Currency::Cny),
+                "/list=sh600519",
+            ),
+            (
+                "SZ:000001",
+                Quote::Price(11.70, Currency::Cny),
+                "/list=sz000001",
+            ),
         ] {
             assert_eq!(quote_asset(&cfg, &id(name)), expected, "{name}");
             assert_eq!(
@@ -2320,7 +2947,7 @@ mod tests {
             sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
         assert_eq!(
             quote_asset(&sina_cfg(endpoint), &id("US:NVDA")),
-            Quote::Price(230.36, "USD"),
+            Quote::Price(230.36, Currency::Usd),
             "the shipping request must carry the Referer this server demands"
         );
 
@@ -2533,7 +3160,7 @@ mod tests {
         ] {
             assert_eq!(
                 quote_asset(&cfg, &id(name)),
-                Quote::Price(price, "CNY"),
+                Quote::Price(price, Currency::Cny),
                 "{name} is a renminbi fund and must be priced",
             );
             assert_eq!(
@@ -2596,7 +3223,7 @@ mod tests {
         let cfg = sina_cfg(endpoint);
         assert_eq!(
             quote_asset(&cfg, &id("SZ:300750")),
-            Quote::Price(348.20, "CNY")
+            Quote::Price(348.20, Currency::Cny)
         );
         assert_eq!(
             targets.recv_timeout(Duration::from_secs(5)).as_deref(),
@@ -2640,13 +3267,16 @@ mod tests {
         let cfg = sina_cfg(endpoint);
         assert_eq!(
             quote_asset(&cfg, &id("HK:1810")),
-            Quote::Price(27.48, "HKD")
+            Quote::Price(27.48, Currency::Hkd)
         );
         assert_eq!(
             targets.recv_timeout(Duration::from_secs(5)).as_deref(),
             Ok("/list=hk01810"),
         );
-        assert_eq!(quote_asset(&cfg, &id("HK:1")), Quote::Price(69.30, "HKD"));
+        assert_eq!(
+            quote_asset(&cfg, &id("HK:1")),
+            Quote::Price(69.30, Currency::Hkd)
+        );
         assert_eq!(
             targets.recv_timeout(Duration::from_secs(5)).as_deref(),
             Ok("/list=hk00001"),
@@ -2719,117 +3349,477 @@ mod tests {
         );
     }
 
-    /// **The defect this slice exists to prevent: a total across currencies.**
+    /// Stocks and rates off one Sina fixture, with Binance unreachable.
     ///
-    /// A Track holding 1 NVDA (USD) and 1 USDT prices both rows fine. Adding
-    /// 230.36 to 1 gives 231.36 of nothing — not USD, not USDT — and that
-    /// number would go on the table as the portfolio's value, into the history
-    /// series, and out of `market.holdings.list` as prose. There are no
-    /// exchange rates in this slice, so the honest answer is no total.
+    /// Nothing crypto may reach a live endpoint in these tests, and nothing
+    /// has to: `USDT` prices at 1.0 off Binance's pinned leg with no request,
+    /// and settling it costs no request either — the `USDT`/`USD` step is
+    /// [`USDT_USD_ASSUMED_PARITY`], not a lookup.
+    fn converting_cfg(quote: &str) -> (Config, mpsc::Receiver<String>) {
+        let (sina, sina_targets) =
+            sina_server(|target| sina_fixture_body(target, &sina_fixture_all_rows()));
+        (
+            Config {
+                quote: quote.into(),
+                sina_endpoint: sina,
+                binance_endpoint: "http://127.0.0.1:1".into(),
+                ..cfg()
+            },
+            sina_targets,
+        )
+    }
+
+    /// **The whole of S3 in one portfolio: four currencies, one total.**
     ///
-    /// Both of the exits that state a total are checked below — the overlay
-    /// table, and the two accessors `market.holdings.list` builds its
-    /// structuredContent from. (`market.quote` prices one asset and states no
-    /// total, so it has nothing to withhold.)
+    /// Four rows, quoted by two sources in USDT, USD, HKD and CNY, settling in
+    /// CNY. Before this slice such a Track got per-asset rows, no total and no
+    /// history point at all; the number asserted here is the one that was
+    /// missing.
+    ///
+    /// Every rate below is a quote read off the FX rows of the same fixture
+    /// the prices come from, except the USDT row's parity step, which the
+    /// caption says is assumed.
     #[test]
-    fn a_total_is_withheld_when_the_priced_rows_are_in_two_currencies() {
-        let (endpoint, _targets) =
-            sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
-        let cfg = sina_cfg(endpoint);
-        // `USDT` prices at 1.0 off the pinned leg with no request, so this
-        // portfolio is FULLY priced — the refusal below is about currencies,
-        // not about a missing price.
-        let (rows, total, complete) = price_holdings(
+    fn a_four_currency_portfolio_totals_through_real_rates() {
+        let (cfg, sina_targets) = converting_cfg("CNY");
+        let priced = price_holdings(
+            &cfg,
+            &[
+                holding("USDT", 1.0),
+                holding("US:NVDA", 1.0),
+                holding("HK:1810", 100.0),
+                holding("SH:600519", 2.0),
+            ],
+            &mut PassCache::new(),
+        );
+        assert!(priced.complete, "{:?}", priced.rows);
+        assert_eq!(priced.settlement, Some(Currency::Cny));
+
+        // Each row keeps the price and currency ITS source quoted…
+        let quoted: Vec<(&Value, &Value)> = priced
+            .rows
+            .iter()
+            .map(|row| (&row["price"], &row["currency"]))
+            .collect();
+        assert_eq!(
+            quoted,
+            vec![
+                (&json!(1.0), &json!("USDT")),
+                (&json!(230.36), &json!("USD")),
+                (&json!(27.48), &json!("HKD")),
+                (&json!(1316.94), &json!("CNY")),
+            ],
+            "a converted row must not be relabelled with the settlement currency",
+        );
+        // …and carries the rate that took it into the settlement currency.
+        let rates: Vec<f64> = priced
+            .rows
+            .iter()
+            .map(|row| row["rate"].as_f64().expect("a rate"))
+            .collect();
+        assert_eq!(
+            rates,
+            vec![6.7111, 6.7111, 0.85601781, 1.0],
+            "USDT rides USD's rate at par; CNY→CNY is an identity",
+        );
+        let values: Vec<f64> = priced
+            .rows
+            .iter()
+            .map(|row| row["value"].as_f64().expect("a value"))
+            .collect();
+        assert_eq!(values, vec![6.71, 1545.97, 2352.34, 2633.88]);
+        assert_eq!(
+            priced.total,
+            PortfolioTotal::Priced {
+                amount: 6538.897024689601,
+                currency: "CNY".into(),
+            },
+            "the total this Track had no way to state before this slice",
+        );
+
+        // The reader is told what the numbers were converted at, hop by hop —
+        // and which hop is not a quote.
+        let table = holdings_table(priced, "2026-09-07T12:00:00Z");
+        assert_eq!(validate_payload(KIND_TABLE, &table), Ok(()));
+        let caption = table["caption"].as_str().expect("caption");
+        assert!(caption.contains("totalled in CNY"), "{caption}");
+        assert!(
+            caption.contains("USD→CNY 6.7111 (fx_susdcny@sina 6.7111)"),
+            "{caption}",
+        );
+        assert!(
+            caption.contains("HKD→CNY 0.85601781 (fx_shkdcny@sina 0.85601781)"),
+            "{caption}",
+        );
+        assert!(
+            caption.contains(
+                "USDT→CNY 6.7111 (USDT taken as 1 USD — assumed, not quoted × \
+                 fx_susdcny@sina 6.7111)"
+            ),
+            "the assumed step is named as assumed, and the quoted step names its \
+             symbol: {caption}",
+        );
+        let columns: Vec<&str> = table["columns"]
+            .as_array()
+            .expect("columns")
+            .iter()
+            .map(|column| column["label"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            columns,
+            vec![
+                "Asset",
+                "Venue",
+                "Quantity",
+                "Price",
+                "Priced in",
+                "Rate to CNY",
+                "Value (CNY)",
+            ],
+            "the two units on this table are labelled apart: {table}",
+        );
+        let total_row = table["rows"]
+            .as_array()
+            .expect("rows")
+            .last()
+            .expect("total");
+        assert_eq!(total_row["value"], json!(6538.9));
+        assert_eq!(total_row["currency"], json!("CNY"));
+
+        // Which pairs were asked for, in which direction. Sina lists every
+        // ordered pair, so a route that divided into the opposite one would
+        // show up here as the wrong symbol rather than as a failure — and one
+        // `fx_susdcny` serves both the USD row and the USDT row.
+        let mut asked: Vec<String> = sina_targets.try_iter().collect();
+        asked.sort();
+        assert_eq!(
+            asked,
+            vec![
+                "/list=fx_shkdcny",
+                "/list=fx_susdcny",
+                "/list=gb_nvda",
+                "/list=hk01810",
+                "/list=sh600519",
+            ],
+            "no `fx_scnyusd`, no `fx_scnyhkd`, and no second request for a pair \
+             two rows share",
+        );
+    }
+
+    /// **`USDT` settles as `USD` at an assumed parity, and every exit says the
+    /// parity is assumed.**
+    ///
+    /// The number is not in dispute — it is 1 — so what this pins is that the
+    /// reader is told it was not quoted. A conversion shown as a bare rate
+    /// would read as something a source answered, and this one is the only
+    /// number in the plugin that no source did.
+    #[test]
+    fn the_usdt_parity_is_published_as_an_assumption_not_as_a_rate() {
+        let (cfg, sina_targets) = converting_cfg("USD");
+        let priced = price_holdings(&cfg, &[holding("USDT", 1000.0)], &mut PassCache::new());
+        assert!(priced.complete);
+        assert_eq!(priced.settlement, Some(Currency::Usd));
+        assert_eq!(priced.rows[0]["currency"], json!("USDT"));
+        assert_eq!(priced.rows[0]["rate"].as_f64(), Some(1.0));
+        assert_eq!(priced.rows[0]["value"].as_f64(), Some(1000.0));
+        assert_eq!(
+            priced.total,
+            PortfolioTotal::Priced {
+                amount: 1000.0,
+                currency: "USD".into(),
+            },
+            "the total is stated in USD — the unit the rates are in — not in USDT",
+        );
+        assert_eq!(
+            priced.conversions,
+            vec!["USDT→USD 1 (USDT taken as 1 USD — assumed, not quoted)".to_string()],
+            "the word `assumed` is what a reader has to be able to see",
+        );
+        assert_eq!(
+            sina_targets.try_iter().count(),
+            0,
+            "the parity is not fetched, so nothing was asked",
+        );
+
+        // And the default `quote` — the value every existing install carries —
+        // resolves to the same settlement, so such an install keeps the total
+        // it had rather than losing it to an unrecognised setting.
+        assert_eq!(Currency::settlement("USDT"), Some(Currency::Usd));
+        assert_eq!(
+            Currency::settlement(&Config::default().quote),
+            Some(Currency::Usd)
+        );
+    }
+
+    /// **A fiat pair is asked for in the direction it is wanted.**
+    ///
+    /// Sina quotes `fx_susdcny` at 6.7111 and `fx_scnyusd` at 0.149007, and
+    /// those two are not reciprocals of each other — `1/6.7111` is 0.14900538,
+    /// which differs from the quoted 0.149007 in the sixth decimal because the
+    /// two rows were last updated an hour apart. Dividing into the wrong one
+    /// would publish a number no source stated, so each direction has its own
+    /// request.
+    #[test]
+    fn each_fiat_direction_is_its_own_quote_rather_than_a_reciprocal() {
+        let (cfg, sina_targets) = converting_cfg("CNY");
+        let priced = price_holdings(&cfg, &[holding("US:NVDA", 1.0)], &mut PassCache::new());
+        assert_eq!(priced.rows[0]["rate"].as_f64(), Some(6.7111));
+        assert_eq!(priced.rows[0]["value"].as_f64(), Some(1545.97));
+        let asked: Vec<String> = sina_targets.try_iter().collect();
+        assert!(
+            asked.contains(&"/list=fx_susdcny".to_string())
+                && !asked.contains(&"/list=fx_scnyusd".to_string()),
+            "USD→CNY asks for the USD→CNY row: {asked:?}",
+        );
+
+        // The opposite direction is a different quote, not 1/6.7111.
+        let (cfg, _targets) = converting_cfg("USD");
+        let priced = price_holdings(&cfg, &[holding("SH:600519", 1.0)], &mut PassCache::new());
+        assert_eq!(
+            priced.rows[0]["rate"].as_f64(),
+            Some(0.149007),
+            "0.14900538 would be the reciprocal of the other row",
+        );
+
+        // And Hong Kong has its own pair per settlement currency, rather than
+        // being routed through the other one.
+        let (cfg, sina_targets) = converting_cfg("USD");
+        let priced = price_holdings(&cfg, &[holding("HK:1810", 100.0)], &mut PassCache::new());
+        assert_eq!(priced.rows[0]["rate"].as_f64(), Some(0.12755265));
+        assert_eq!(priced.rows[0]["value"].as_f64(), Some(350.51));
+        let asked: Vec<String> = sina_targets.try_iter().collect();
+        assert!(
+            asked.contains(&"/list=fx_shkdusd".to_string()),
+            "HKD→USD is one quote, not HKD→CNY→USD: {asked:?}",
+        );
+    }
+
+    /// **A rate that did not come back leaves its row unpriceable — and does
+    /// not fall back to anything.**
+    ///
+    /// The stock price is there; only the rate row is missing. The holding
+    /// keeps the price and currency it does have, because those are true, and
+    /// gets no value, no rate and no place in the total. The pass is
+    /// incomplete, which is what stops a history point being written from a
+    /// partial portfolio.
+    #[test]
+    fn a_holding_whose_rate_did_not_come_back_is_left_out_of_the_total() {
+        // Stocks answer; the rate rows do not exist at this endpoint.
+        let (sina, _targets) = sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
+        let cfg = Config {
+            quote: "CNY".into(),
+            sina_endpoint: sina,
+            binance_endpoint: "http://127.0.0.1:1".into(),
+            ..cfg()
+        };
+        let priced = price_holdings(
+            &cfg,
+            &[holding("US:NVDA", 1.0), holding("SH:600519", 2.0)],
+            &mut PassCache::new(),
+        );
+        assert!(!priced.complete, "the USD row could not be converted");
+        assert_eq!(
+            priced.rows[0]["price"].as_f64(),
+            Some(230.36),
+            "the price came back and is kept: what failed is the conversion",
+        );
+        assert_eq!(priced.rows[0]["currency"], json!("USD"));
+        assert!(priced.rows[0]["rate"].is_null(), "{:?}", priced.rows[0]);
+        assert!(priced.rows[0]["value"].is_null(), "{:?}", priced.rows[0]);
+        assert_eq!(
+            priced.total,
+            PortfolioTotal::Priced {
+                amount: 2633.88,
+                currency: "CNY".into(),
+            },
+            "the CNY row needs no conversion and is counted; the USD row is not",
+        );
+        let line = holdings_line(&priced);
+        assert!(
+            line.contains("230.36 USD, but no USD→CNY rate"),
+            "the reader is told which of the two lookups failed: {line}",
+        );
+        let table = holdings_table(priced, "2026-09-07T12:00:00Z");
+        assert_eq!(validate_payload(KIND_TABLE, &table), Ok(()));
+        let caption = table["caption"].as_str().expect("caption");
+        assert!(
+            caption.contains("some prices or exchange rates unavailable"),
+            "{caption}",
+        );
+    }
+
+    /// **No stale rates.** A pass whose rate source is unreachable converts
+    /// nothing, even when an earlier pass converted the same pair.
+    ///
+    /// The two passes share nothing but the `Config`: a plugin that kept the
+    /// last rate anywhere outside the per-pass cache would still value the
+    /// second portfolio, at the earlier number, with nothing on the table
+    /// saying so.
+    #[test]
+    fn a_rate_from_an_earlier_pass_is_never_reused() {
+        let (working, _targets) = converting_cfg("CNY");
+        let first = price_holdings(&working, &[holding("US:NVDA", 1.0)], &mut PassCache::new());
+        assert_eq!(first.rows[0]["rate"].as_f64(), Some(6.7111));
+        assert_eq!(first.rows[0]["value"].as_f64(), Some(1545.97));
+
+        // Same asset, same pair, a pass later, with the rate source refusing.
+        let (dead_sina, _dead_targets) = sina_forbidden_server();
+        let broken = Config {
+            sina_endpoint: dead_sina,
+            ..working
+        };
+        let second = price_holdings(&broken, &[holding("US:NVDA", 1.0)], &mut PassCache::new());
+        assert!(second.rows[0]["value"].is_null(), "{:?}", second.rows[0]);
+        assert!(second.rows[0]["rate"].is_null(), "{:?}", second.rows[0]);
+        assert_eq!(second.total, PortfolioTotal::Nothing);
+        assert!(!second.complete);
+    }
+
+    /// **A settlement currency this plugin does not settle in converts
+    /// nothing, and says so.**
+    ///
+    /// `quote` is a free string that nothing validates, and `HKD` is a real
+    /// currency this plugin prices in but does not settle in. Rather than
+    /// picking one for the operator, every row stays in the currency its
+    /// source quoted — so a single-currency portfolio still totals, and one
+    /// spanning two gets no total and a caption naming the configured value.
+    #[test]
+    fn a_settlement_currency_this_plugin_does_not_settle_in_converts_nothing() {
+        assert_eq!(Currency::settlement("HKD"), None);
+        let (cfg, sina_targets) = converting_cfg("HKD");
+        let priced = price_holdings(
             &cfg,
             &[holding("USDT", 1.0), holding("US:NVDA", 1.0)],
-            &mut PriceCache::new(),
+            &mut PassCache::new(),
         );
-        assert!(complete, "both rows priced: {rows:?}");
+        assert!(priced.complete, "both rows priced: {:?}", priced.rows);
+        assert_eq!(priced.settlement, None);
+        assert!(priced.conversions.is_empty());
         assert_eq!(
-            total,
-            PortfolioTotal::AcrossCurrencies(vec!["USDT".into(), "USD".into()]),
+            sina_targets
+                .try_iter()
+                .filter(|t| t.contains("fx_"))
+                .count(),
+            0,
+            "with nothing to settle into, no rate is fetched",
         );
-        assert_eq!(rows[0]["currency"], json!("USDT"));
-        assert_eq!(rows[1]["currency"], json!("USD"));
+        assert_eq!(
+            priced.total,
+            PortfolioTotal::Unsettleable {
+                configured: "HKD".into(),
+                currencies: vec!["USDT".into(), "USD".into()],
+            },
+        );
+        assert_eq!(priced.rows[0]["currency"], json!("USDT"));
+        assert_eq!(priced.rows[1]["currency"], json!("USD"));
+        assert_eq!(priced.rows[1]["value"].as_f64(), Some(230.36));
 
-        // Exit 1: the overlay table. The Total row states nothing and the
-        // caption says why.
-        let table = holdings_table(rows.clone(), &total, complete, "2026-09-07T12:00:00Z");
+        assert!(priced.total.stated().is_none());
+        assert!(priced.total.value_cell().is_null());
+        assert!(priced.total.currency_cell().is_null());
+        let line = holdings_line(&priced);
+        assert!(line.contains("1 USDT"), "{line}");
+        assert!(line.contains("230.36 USD"), "{line}");
+        assert!(!line.contains("231.36"), "{line}");
+
+        let table = holdings_table(priced, "2026-09-07T12:00:00Z");
+        assert_eq!(validate_payload(KIND_TABLE, &table), Ok(()));
         let table_rows = table["rows"].as_array().expect("rows");
         assert!(
             table_rows.last().expect("total row")["value"].is_null(),
             "231.36 is not the value of this portfolio: {table_rows:?}"
         );
         let caption = table["caption"].as_str().expect("caption");
-        assert!(caption.contains("USDT and USD"), "{caption}");
-        assert!(caption.contains("no exchange rates"), "{caption}");
-        assert_eq!(validate_payload(KIND_TABLE, &table), Ok(()));
-
-        // Exit 2: the prose and the two total accessors `market.holdings.list`
-        // fills its structuredContent from. This calls those directly rather
-        // than through the dispatcher, so what it pins is the values that tool
-        // publishes, not the wiring that carries them; the wiring is covered by
-        // the process suite's cross-currency test.
-        assert!(total.stated().is_none());
-        assert!(total.value_cell().is_null());
-        assert!(total.currency_cell().is_null());
-        let line = holdings_line(&rows);
-        assert!(line.contains("1 USDT"), "{line}");
-        assert!(line.contains("230.36 USD"), "{line}");
-        assert!(!line.contains("231.36"), "{line}");
+        assert!(caption.contains("quoted in USDT and USD"), "{caption}");
+        assert!(caption.contains("`HKD`"), "{caption}");
+        assert!(caption.contains("`USD` and `CNY` are"), "{caption}");
+        let columns: Vec<&str> = table["columns"]
+            .as_array()
+            .expect("columns")
+            .iter()
+            .map(|column| column["label"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            columns,
+            vec!["Asset", "Venue", "Quantity", "Price", "Priced in", "Value"],
+            "no rate column and no unit on `Value`: nothing was converted",
+        );
     }
 
-    /// A portfolio that IS in one currency still totals — in that currency,
-    /// whatever the install settles in.
+    /// A portfolio already in the settlement currency needs no rate at all,
+    /// and is priced with the rate source unreachable.
     ///
-    /// Without this, "withhold the total when the currencies differ" could be
-    /// satisfied by never stating one, and the plugin would have stopped doing
-    /// the job it exists for.
+    /// Without this, "convert every row" could be satisfied by making every
+    /// portfolio depend on the FX endpoint being up, including the ones that
+    /// have nothing to convert.
     #[test]
-    fn a_single_currency_portfolio_still_states_its_total() {
-        let (endpoint, _targets) =
-            sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
+    fn a_portfolio_already_in_the_settlement_currency_asks_for_no_rate() {
+        let (endpoint, targets) = sina_forbidden_server();
         let cfg = Config {
-            // Settling in CNY changes nothing about what the sources quote.
             quote: "CNY".into(),
-            ..sina_cfg(endpoint)
+            binance_endpoint: "http://127.0.0.1:1".into(),
+            sina_endpoint: endpoint,
+            ..cfg()
         };
-        let (rows, total, complete) = price_holdings(
-            &cfg,
-            &[holding("US:NVDA", 2.0), holding("US:NVDA", 2.0)],
-            &mut PriceCache::new(),
-        );
-        assert!(complete);
-        assert_eq!(
-            total,
-            PortfolioTotal::Priced {
-                amount: 921.44,
-                currency: "USD".into()
+        // Prices come from a fixture-free path here: these two holdings are
+        // priced by a second config below. What this half pins is that a
+        // portfolio whose rows are ALREADY in the settlement currency reaches
+        // a total with the rate endpoint refusing every request.
+        let (fixture, _fixture_targets) =
+            sina_server(|target| sina_fixture_body(target, SINA_FIXTURE_ROWS));
+        let priced = price_holdings(
+            &Config {
+                sina_endpoint: fixture,
+                ..cfg.clone()
             },
-            "two USD rows total in USD, not in the settlement currency: {rows:?}"
+            &[holding("SH:600519", 2.0), holding("SZ:000001", 2.0)],
+            &mut PassCache::new(),
         );
-        let caption = holdings_table(rows, &total, complete, "2026-09-07T12:00:00Z");
+        assert!(priced.complete);
         assert!(
-            caption["caption"]
+            priced.conversions.is_empty(),
+            "two CNY rows settling in CNY convert nothing",
+        );
+        assert_eq!(
+            priced.total,
+            PortfolioTotal::Priced {
+                amount: 2657.28,
+                currency: "CNY".into()
+            },
+        );
+        let table = holdings_table(priced, "2026-09-07T12:00:00Z");
+        assert!(
+            table["caption"]
                 .as_str()
                 .expect("caption")
-                .contains("totalled in USD"),
-            "{caption}"
+                .contains("totalled in CNY"),
+            "{table}"
         );
 
-        // And an all-crypto portfolio, the shape every existing install has.
-        let (rows, total, complete) = price_holdings(
-            &cfg,
+        // And the shape every existing install has: all crypto, settling in
+        // the default `USDT`. Neither source is reachable and it still totals.
+        let priced = price_holdings(
+            &Config {
+                quote: "USDT".into(),
+                ..cfg
+            },
             &[holding("USDT", 3.0), holding("USDT", 4.0)],
-            &mut PriceCache::new(),
+            &mut PassCache::new(),
         );
-        assert!(complete && rows.len() == 2);
+        assert!(priced.complete && priced.rows.len() == 2);
         assert_eq!(
-            total,
+            priced.total,
             PortfolioTotal::Priced {
                 amount: 7.0,
-                currency: "USDT".into()
+                currency: "USD".into()
             },
+            "the same number it always had, now labelled in the unit the rates \
+             are in",
+        );
+        assert_eq!(
+            targets.try_iter().count(),
+            0,
+            "the refusing endpoint was never asked",
         );
     }
 
@@ -2970,10 +3960,13 @@ mod tests {
             "a crypto identity still goes to Binance"
         );
         // And `US:BTC` is a different asset that reaches the stock source.
-        assert_eq!(quote_asset(&cfg, &id("US:BTC")), Quote::Price(1.0, "USD"));
+        assert_eq!(
+            quote_asset(&cfg, &id("US:BTC")),
+            Quote::Price(1.0, Currency::Usd)
+        );
         assert_eq!(
             quote_asset(&cfg, &id("US:NVDA")),
-            Quote::Price(230.36, "USD")
+            Quote::Price(230.36, Currency::Usd)
         );
         let asked: Vec<String> = std::iter::from_fn(|| targets.try_recv().ok()).collect();
         assert_eq!(asked, vec!["/list=gb_btc", "/list=gb_nvda"], "{asked:?}");
@@ -3038,11 +4031,12 @@ mod tests {
     fn every_exit_echoes_the_venue() {
         let (endpoint, _targets) = sina_server(|target| sina_fixture_body(target, &[]));
         let cfg = sina_cfg(endpoint);
-        let (rows, total, complete) = price_holdings(
+        let priced = price_holdings(
             &cfg,
             &[holding("USDT", 3.0), holding("US:W", 1.0)],
-            &mut PriceCache::new(),
+            &mut PassCache::new(),
         );
+        let rows = &priced.rows;
         assert_eq!(rows[0]["asset"], json!("USDT"));
         assert_eq!(rows[0]["venue"], json!("CRYPTO"));
         assert_eq!(rows[1]["asset"], json!("W"));
@@ -3052,7 +4046,7 @@ mod tests {
         // structuredContent, so the venue reaches that half with them — and
         // its HUMAN-READABLE line, which has no columns, must name the venue
         // too. `1 × W` is Wayfair and Wormhole equally.
-        let line = holdings_line(&rows);
+        let line = holdings_line(&priced);
         assert!(line.contains("CRYPTO:USDT"), "{line}");
         assert!(line.contains("US:W"), "{line}");
 
@@ -3076,7 +4070,7 @@ mod tests {
             "the unit of the number, from the source that produced it"
         );
 
-        let table = holdings_table(rows, &total, complete, "2026-09-06T12:00:00Z");
+        let table = holdings_table(priced, "2026-09-06T12:00:00Z");
         let columns: Vec<&str> = table["columns"]
             .as_array()
             .expect("columns")
@@ -3140,22 +4134,24 @@ mod tests {
         // not a second opinion written here, which could agree with the
         // plugin and disagree with the renderer.
         let cfg = cfg();
-        let (rows, total, complete) =
-            price_holdings(&cfg, &[holding("USDT", 3.0)], &mut PriceCache::new());
+        let priced = price_holdings(&cfg, &[holding("USDT", 3.0)], &mut PassCache::new());
         assert_eq!(
-            total,
+            priced.total,
             PortfolioTotal::Priced {
                 amount: 3.0,
-                currency: "USDT".into()
+                // `USD`, not `USDT`: the default `quote` settles in USD at the
+                // assumed parity, so this is the same number under the unit
+                // the rates are in.
+                currency: "USD".into()
             }
         );
-        assert!(complete);
-        let holdings = holdings_table(rows, &total, complete, "2026-09-06T12:00:00Z");
+        assert!(priced.complete);
+        let holdings = holdings_table(priced, "2026-09-06T12:00:00Z");
         assert_eq!(validate_payload(KIND_TABLE, &holdings), Ok(()));
 
         let points = vec![
-            json!({ "at": "2026-09-06T12:00:00Z", "total": 100.0 }),
-            json!({ "at": "2026-09-06T12:00:30Z", "total": 110.0 }),
+            json!({ "at": "2026-09-06T12:00:00Z", "total": 100.0, "currency": "USDT" }),
+            json!({ "at": "2026-09-06T12:00:30Z", "total": 110.0, "currency": "USDT" }),
         ];
         assert_eq!(
             validate_payload(KIND_TABLE, &history_table(&points)),
@@ -3172,22 +4168,26 @@ mod tests {
             binance_endpoint: "http://127.0.0.1:1".into(),
             ..cfg()
         };
-        let (rows, total, complete) = price_holdings(
+        let priced = price_holdings(
             &cfg,
             &[holding("USDT", 3.0), holding("ZZZZ", 1.0)],
-            &mut PriceCache::new(),
+            &mut PassCache::new(),
         );
-        assert!(!complete);
+        assert!(!priced.complete);
         assert_eq!(
-            total,
+            priced.total,
             PortfolioTotal::Priced {
                 amount: 3.0,
-                currency: "USDT".into()
+                currency: "USD".into()
             },
             "the total covers the priced rows only"
         );
-        assert_eq!(rows.len(), 2, "the unpriceable holding keeps its row");
-        assert!(rows[1]["price"].is_null() && rows[1]["value"].is_null());
+        assert_eq!(
+            priced.rows.len(),
+            2,
+            "the unpriceable holding keeps its row"
+        );
+        assert!(priced.rows[1]["price"].is_null() && priced.rows[1]["value"].is_null());
     }
 
     #[test]
@@ -3196,9 +4196,13 @@ mod tests {
         // the whole table would leave the previous overlay on screen, read as
         // current — the failure mode is silence, not a wrong number.
         let table = holdings_table(
-            vec![json!({ "asset": "BTC", "qty": 1.0, "price": 2.0, "value": 2.0 })],
-            &PortfolioTotal::NotFinite,
-            true,
+            PricedPortfolio {
+                rows: vec![json!({ "asset": "BTC", "qty": 1.0, "price": 2.0, "value": 2.0 })],
+                total: PortfolioTotal::NotFinite,
+                complete: true,
+                settlement: Some(Currency::Usdt),
+                conversions: Vec::new(),
+            },
             "2026-09-06T12:00:00Z",
         );
         let rows = table["rows"].as_array().expect("rows");
@@ -3218,20 +4222,20 @@ mod tests {
         // Two holdings of the quote asset price without any network (1.0
         // each), and each row's value is finite while their sum is not. The
         // per-row check alone would pass this straight into the history.
-        let (rows, total, complete) = price_holdings(
+        let priced = price_holdings(
             &cfg(),
             &[holding("USDT", 1e308), holding("USDT", 1e308)],
-            &mut PriceCache::new(),
+            &mut PassCache::new(),
         );
-        assert!(complete, "both rows price fine on their own");
-        assert_eq!(rows.len(), 2);
+        assert!(priced.complete, "both rows price fine on their own");
+        assert_eq!(priced.rows.len(), 2);
         assert_eq!(
-            total,
+            priced.total,
             PortfolioTotal::NotFinite,
             "the sum is what `refresh` must refuse"
         );
-        assert!(total.value_cell().is_null());
-        assert!(total.stated().is_none());
+        assert!(priced.total.value_cell().is_null());
+        assert!(priced.total.stated().is_none());
     }
 
     #[test]
@@ -3249,9 +4253,9 @@ mod tests {
     #[test]
     fn history_rows_are_newest_first_with_the_change_against_the_previous_point() {
         let points = vec![
-            json!({ "at": "t1", "total": 100.0 }),
-            json!({ "at": "t2", "total": 110.0 }),
-            json!({ "at": "t3", "total": 90.0 }),
+            json!({ "at": "t1", "total": 100.0, "currency": "USDT" }),
+            json!({ "at": "t2", "total": 110.0, "currency": "USDT" }),
+            json!({ "at": "t3", "total": 90.0, "currency": "USDT" }),
         ];
         let table = history_table(&points);
         let rows = table["rows"].as_array().expect("rows");

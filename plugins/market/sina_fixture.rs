@@ -55,6 +55,61 @@ const SINA_FIXTURE_ROWS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The exchange-rate rows, copied from the same live endpoint on the same day
+/// (2026-09-07) and truncated after field 9 — the current rate is field 8 and
+/// the pair's name is field 9, whose GBK bytes are kept so the FX path decodes
+/// a real row rather than a convenient all-ASCII one.
+///
+/// **`fx_susdcny` is the row that discriminates.** Its field 1 (bid, 6.7099),
+/// field 3 (previous close, 6.7108) and field 8 (current, 6.7111) are three
+/// different numbers, so a parser reading any field but 8 gives a different
+/// answer here. The others are weaker on purpose: they are what the endpoint
+/// actually served, and on a spot-quoted pair the bid and the current rate
+/// often coincide.
+///
+/// Sina quotes all six ordered pairs over USD, HKD and CNY natively, which is
+/// why this plugin never divides one into another. All six are here even
+/// though only four are routed today, so a route that reached for the wrong
+/// direction gets the WRONG number out of this table rather than nothing at
+/// all.
+const SINA_FIXTURE_FX_ROWS: &[(&str, &str)] = &[
+    (
+        "fx_susdcny",
+        "19:31:20,6.7099000000,6.7123000000,6.7108000000,139.0000000000,6.7103000000,6.7123000000,6.6984000000,6.7111000000,<NAME>",
+    ),
+    (
+        "fx_scnyusd",
+        "18:29:18,0.149007,0.149014,0.148994,0.8,0.149038,0.149038,0.148958,0.149007,<NAME>",
+    ),
+    (
+        "fx_susdhkd",
+        "19:31:25,7.839800,7.840500,7.840700,31,7.840700,7.841000,7.837900,7.839800,<NAME>",
+    ),
+    (
+        "fx_shkdusd",
+        "19:30:45,0.1275526474,0.1275526474,0.1275396329,0.5044180000,0.1275396329,0.1275851950,0.1275347532,0.1275526474,<NAME>",
+    ),
+    (
+        "fx_shkdcny",
+        "19:30:46,0.8560178052,0.8560178052,0.8560104776,5.1304190000,0.8560104776,0.8563623440,0.8558493021,0.8560178052,<NAME>",
+    ),
+    (
+        "fx_scnyhkd",
+        "19:31:25,1.168180,1.168340,1.168210,7,1.168210,1.168430,1.167730,1.168180,<NAME>",
+    ),
+];
+
+/// Every row this fixture knows — the stock rows and the exchange-rate rows.
+/// A test that prices a holding in one currency and settles in another needs
+/// both from one server, so the default table is the union.
+fn sina_fixture_all_rows() -> Vec<(&'static str, &'static str)> {
+    SINA_FIXTURE_ROWS
+        .iter()
+        .chain(SINA_FIXTURE_FX_ROWS)
+        .copied()
+        .collect()
+}
+
 /// Build a Sina response for `target` out of a table of known rows, answering
 /// every symbol the request asked for and no others.
 ///

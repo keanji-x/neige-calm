@@ -121,6 +121,13 @@ impl FakeKernel {
     /// Both sources named. The stock source defaults to [`DEAD_ENDPOINT`]
     /// everywhere else so that no test can reach `hq.sinajs.cn` by omission.
     fn boot_sources(endpoint: &str, sina_endpoint: &str, poll_seconds: u64) -> Self {
+        Self::boot_settling(endpoint, sina_endpoint, poll_seconds, "USDT")
+    }
+
+    /// Both sources and the settlement currency. `USDT` is the default
+    /// everywhere else, which is what makes a crypto-only portfolio need no
+    /// exchange rate at all.
+    fn boot_settling(endpoint: &str, sina_endpoint: &str, poll_seconds: u64, quote: &str) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_market"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -165,7 +172,7 @@ impl FakeKernel {
                         // a test: every refresh these tests observe is one a
                         // tool call caused.
                         "poll_seconds": poll_seconds,
-                        "quote": "USDT",
+                        "quote": quote,
                         "binance_endpoint": endpoint,
                         "sina_endpoint": sina_endpoint,
                     } }
@@ -826,6 +833,17 @@ include!("../../../../plugins/market/sina_fixture.rs");
 /// answered `403 Forbidden` — not with an empty list, not with JSON. The name
 /// field carries real GBK bytes so the decode is exercised here too.
 fn sina_server() -> String {
+    sina_server_with_rows(sina_fixture_all_rows())
+}
+
+/// The same endpoint serving only the STOCK rows: it lists no exchange rate at
+/// all, which is how a pass that can price a holding but cannot convert it is
+/// built without taking the whole endpoint down.
+fn sina_server_without_rates() -> String {
+    sina_server_with_rows(SINA_FIXTURE_ROWS.to_vec())
+}
+
+fn sina_server_with_rows(rows: Vec<(&'static str, &'static str)>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
     let port = listener.local_addr().expect("addr").port();
     std::thread::spawn(move || {
@@ -860,7 +878,7 @@ fn sina_server() -> String {
                 .nth(1)
                 .unwrap_or_default()
                 .to_string();
-            let body = sina_fixture_body(&target, SINA_FIXTURE_ROWS);
+            let body = sina_fixture_body(&target, &rows);
             let _ = write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -884,17 +902,16 @@ fn last_holdings_table<'a>(kernel: &'a FakeKernel, track: &str) -> &'a Value {
         .expect("a holdings push")
 }
 
-/// A stock holding is priced through the whole shipping path — the real
-/// binary, the real HTTP client, and `FakeKernel`'s store standing in for the
-/// KV — and reaches the reader in the currency ITS market quotes, not in the
-/// configured settlement currency.
+/// A stock holding is priced and CONVERTED through the whole shipping path —
+/// the real binary, the real HTTP client, and `FakeKernel`'s store standing in
+/// for the KV.
 ///
-/// The install settles in `USDT` (see `boot_sources`), so a row labelled
-/// `USDT` would look right in every crypto test and be wrong by a factor of
-/// the HKD/USDT rate here.
+/// The price stays in the currency its market quotes; what reaches the total
+/// is that number carried into the settlement currency by a rate this plugin
+/// fetched. Both units are on the table, labelled apart.
 #[test]
-fn a_hong_kong_holding_is_priced_in_hkd_and_totalled_in_hkd() {
-    let mut kernel = FakeKernel::boot_sources(DEAD_ENDPOINT, &sina_server(), 3600);
+fn a_hong_kong_holding_is_priced_in_hkd_and_settled_in_usd() {
+    let mut kernel = FakeKernel::boot_settling(DEAD_ENDPOINT, &sina_server(), 3600, "USD");
 
     kernel.set_holding(2, "HK:1810", 100.0, TRACK);
 
@@ -904,7 +921,7 @@ fn a_hong_kong_holding_is_priced_in_hkd_and_totalled_in_hkd() {
             format!("portfolio.holdings@{TRACK}"),
             format!("portfolio.history@{TRACK}"),
         ],
-        "a fully-priced tick publishes both tables"
+        "a fully-priced, fully-converted tick publishes both tables"
     );
     let table = last_holdings_table(&kernel, TRACK);
     let rows = table["rows"].as_array().expect("rows");
@@ -920,96 +937,215 @@ fn a_hong_kong_holding_is_priced_in_hkd_and_totalled_in_hkd() {
         "field 6 of the HK row is the last price; field 3 (28.44) is the \
          previous close: {rows:?}"
     );
-    assert_eq!(rows[0]["currency"], json!("HKD"));
-    assert_eq!(rows[1]["value"].as_f64(), Some(2748.0), "the Total row");
-    assert_eq!(rows[1]["currency"], json!("HKD"));
+    assert_eq!(
+        rows[0]["currency"],
+        json!("HKD"),
+        "the price is not relabelled with the settlement currency"
+    );
+    assert_eq!(
+        rows[0]["rate"].as_f64(),
+        Some(0.12755265),
+        "field 8 of `fx_shkdusd`: {rows:?}"
+    );
+    assert_eq!(rows[0]["value"].as_f64(), Some(350.51));
+    assert_eq!(rows[1]["value"].as_f64(), Some(350.51), "the Total row");
+    assert_eq!(rows[1]["currency"], json!("USD"));
     let caption = table["caption"].as_str().expect("caption");
-    assert!(caption.contains("totalled in HKD"), "{caption}");
-    assert!(!caption.contains("USDT"), "{caption}");
+    assert!(caption.contains("totalled in USD"), "{caption}");
+    assert!(
+        caption.contains("HKD→USD 0.12755265 (fx_shkdusd@sina 0.12755265)"),
+        "the conversion is named, at the rate it used: {caption}",
+    );
 
-    // The stored history point exists — a stock holding no longer stalls the
-    // series the way it did while the stock venues had no source.
+    // The stored history point carries its own unit.
     let points = kernel
         .kv
         .get("history/trk_caller")
         .and_then(Value::as_array)
         .expect("a history document");
     assert_eq!(points.len(), 1, "{points:?}");
-    assert_eq!(points[0]["total"].as_f64(), Some(2748.0));
+    assert_eq!(points[0]["total"].as_f64(), Some(350.51));
+    assert_eq!(
+        points[0]["currency"],
+        json!("USD"),
+        "a point that does not say what it is in cannot be compared to \
+         anything later: {points:?}"
+    );
 }
 
-/// **A portfolio spanning two currencies gets rows but no total — and no
-/// history point.**
+/// **A portfolio spanning two currencies totals again, and its series moves.**
 ///
-/// `USDT` prices at 1.0 off Binance's quote leg with no request; `US:NVDA`
-/// prices at 230.36 USD off the stock source. Both rows price, so the tick is
-/// COMPLETE — the refusal below is about currencies, not about a missing
-/// price, which is what makes this different from every other no-total test
-/// in this file. Adding 1 to 230.36 would publish 231.36 of nothing as the
-/// portfolio's value and append it to a series measured in something else.
-///
-/// The missing history point is the registered consequence: such a Track has
-/// no series until exchange rates land.
+/// `USDT` prices at 1.0 off Binance's quote leg with no request; `HK:1810`
+/// prices at 27.48 HKD off the stock source. Before this slice such a Track
+/// got rows, no total and no history point at all — 1 plus 2748 is not a
+/// number in any currency. Now each row is carried into USD first, so the sum
+/// is a sum of like things, and the point that was being withheld is written.
 #[test]
-fn a_portfolio_across_two_currencies_publishes_rows_but_no_total_and_no_history() {
-    let mut kernel = FakeKernel::boot_sources(DEAD_ENDPOINT, &sina_server(), 3600);
+fn a_portfolio_across_two_currencies_totals_and_writes_a_history_point() {
+    let mut kernel = FakeKernel::boot_settling(DEAD_ENDPOINT, &sina_server(), 3600, "USD");
     kernel.set_holding(2, "USDT", 1.0, TRACK);
-    // The crypto-only tick before this one must have had a total and a point,
-    // or the assertion below would pass for a plugin that never totals.
     assert_eq!(kernel.last_total_for(TRACK), Some(1.0));
     let before = kernel.pushes.len();
 
-    kernel.set_holding(3, "US:NVDA", 1.0, TRACK);
+    kernel.set_holding(3, "HK:1810", 100.0, TRACK);
 
     assert_eq!(
         kernel.pushes_since(before),
+        vec![
+            format!("portfolio.holdings@{TRACK}"),
+            format!("portfolio.history@{TRACK}"),
+        ],
+        "the history overlay goes out too: this tick HAS a total",
+    );
+    let table = last_holdings_table(&kernel, TRACK);
+    let rows = table["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 3, "both asset rows plus the Total: {rows:?}");
+    assert_eq!(rows[0]["currency"], json!("USDT"));
+    assert_eq!(rows[1]["currency"], json!("HKD"));
+    assert_eq!(
+        rows[2]["value"].as_f64(),
+        Some(351.51),
+        "1 USDT at par plus 2748 HKD at 0.1275526474: {rows:?}"
+    );
+    assert_eq!(rows[2]["currency"], json!("USD"));
+    let caption = table["caption"].as_str().expect("caption");
+    assert!(caption.contains("totalled in USD"), "{caption}");
+    assert!(
+        caption.contains("USDT→USD 1 (USDT taken as 1 USD — assumed, not quoted)"),
+        "the one number no source stated is published as an assumption: {caption}",
+    );
+    assert!(
+        caption.contains("HKD→USD 0.12755265 (fx_shkdusd@sina 0.12755265)"),
+        "{caption}",
+    );
+
+    // Two points now, both labelled, and the second one is the one that used
+    // to be skipped.
+    let points = kernel
+        .kv
+        .get("history/trk_caller")
+        .and_then(Value::as_array)
+        .expect("a history document");
+    assert_eq!(points.len(), 2, "{points:?}");
+    assert_eq!(points[1]["total"].as_f64(), Some(351.51));
+    assert_eq!(points[1]["currency"], json!("USD"));
+
+    // And `market.holdings.list` says the same thing in its own words.
+    let listed = kernel.call_tool(4, "market.holdings.list", json!({}), Some(TRACK));
+    let text = text_of(&listed);
+    assert!(text.contains("Total 351.51 USD"), "{text}");
+    assert!(text.contains("assumed, not quoted"), "{text}");
+    assert_eq!(
+        listed.pointer("/result/structuredContent/currency"),
+        Some(&json!("USD")),
+        "{listed:#?}"
+    );
+    assert!(kernel.is_responsive());
+}
+
+/// **A holding whose exchange rate did not come back writes no history point**
+/// — and keeps the price that did.
+///
+/// The stock source answers the price and lists no rate row at all, which is
+/// the shape of a partial outage rather than a dead endpoint. The holding is
+/// unconvertible, so it is out of the total, so there is no total, so the
+/// series stands still. Nothing reaches for an older rate to keep it moving.
+#[test]
+fn a_holding_whose_rate_is_unavailable_writes_no_history_point() {
+    let mut kernel =
+        FakeKernel::boot_settling(DEAD_ENDPOINT, &sina_server_without_rates(), 3600, "USD");
+
+    kernel.set_holding(2, "HK:1810", 100.0, TRACK);
+
+    assert_eq!(
+        kernel.kinds_pushed(),
         vec![format!("portfolio.holdings@{TRACK}")],
         "holdings only — no history read, no history write, no history overlay"
     );
     let table = last_holdings_table(&kernel, TRACK);
     let rows = table["rows"].as_array().expect("rows");
-    assert_eq!(rows.len(), 3, "both asset rows plus the Total: {rows:?}");
-    for row in &rows[..2] {
-        assert!(
-            row["price"].as_f64().is_some(),
-            "both holdings priced, so this tick is COMPLETE: {row}"
-        );
-    }
-    assert!(
-        rows[2]["value"].is_null(),
-        "231.36 is a number in no currency: {rows:?}"
+    assert_eq!(
+        rows[0]["price"].as_f64(),
+        Some(27.48),
+        "the price came back and is kept: {rows:?}"
     );
-    assert!(rows[2]["currency"].is_null(), "{rows:?}");
+    assert_eq!(rows[0]["currency"], json!("HKD"));
+    assert!(rows[0]["rate"].is_null(), "{rows:?}");
+    assert!(rows[0]["value"].is_null(), "{rows:?}");
+    assert!(
+        rows[1]["currency"].is_null(),
+        "the Total is in no currency: {rows:?}"
+    );
+    // The `0.0` in that cell is the registered wart on `PortfolioTotal::Nothing`
+    // — it covers an empty portfolio and a wholly unconvertible one alike — and
+    // it predates this slice. What is asserted here is that the caption denies
+    // there is a total, which is the part a reader acts on.
     let caption = table["caption"].as_str().expect("caption");
-    assert!(caption.contains("USDT and USD"), "{caption}");
-    assert!(caption.contains("no exchange rates"), "{caption}");
+    assert!(caption.contains("no total is shown"), "{caption}");
+    assert!(caption.contains("nothing could be priced"), "{caption}");
+    assert!(
+        !kernel.kv.contains_key("history/trk_caller"),
+        "no point was written: {:?}",
+        kernel.kv.get("history/trk_caller"),
+    );
+    assert!(kernel.is_responsive());
+}
 
-    // The stored series still holds only the single-currency point from the
-    // first tick: the mixed one added nothing.
+/// **A point written before this slice does not say what it is in, and nothing
+/// pretends otherwise.**
+///
+/// KNOWN GAP, registered rather than worked around: `{at, total}` records no
+/// currency, and the unit it used — whatever the install settled in at that
+/// moment — was never stored anywhere. So the change column is blank across
+/// that boundary rather than subtracting two numbers that may be in different
+/// units, and the row's own currency cell is empty rather than borrowing
+/// today's.
+#[test]
+fn a_point_from_before_this_slice_is_not_compared_against_a_new_one() {
+    let mut kernel = FakeKernel::boot_settling(DEAD_ENDPOINT, &sina_server(), 3600, "USD");
+    // A point in the shape this plugin used to write. `100.0` in an unknown
+    // unit: if it were read as USD, the row below would show a change of
+    // +250.51 — a move this portfolio never made.
+    kernel.kv.insert(
+        "history/trk_caller".into(),
+        json!([{ "at": "2026-09-06T12:00:00Z", "total": 100.0 }]),
+    );
+
+    kernel.set_holding(2, "HK:1810", 100.0, TRACK);
+
     let points = kernel
         .kv
         .get("history/trk_caller")
         .and_then(Value::as_array)
         .expect("a history document");
-    assert_eq!(points.len(), 1, "{points:?}");
-
-    // And `market.holdings.list` says the same thing in its own words.
-    let listed = kernel.call_tool(4, "market.holdings.list", json!({}), Some(TRACK));
-    let text = text_of(&listed);
-    assert!(text.contains("1 USDT"), "{text}");
-    assert!(text.contains("230.36 USD"), "{text}");
-    assert!(text.contains("no exchange rates"), "{text}");
+    assert_eq!(points.len(), 2, "the old point is kept: {points:?}");
     assert!(
-        listed
-            .pointer("/result/structuredContent/total")
-            .is_some_and(Value::is_null),
-        "{listed:#?}"
+        points[0].get("currency").is_none(),
+        "nothing invents a unit for it: {points:?}"
     );
+    assert_eq!(points[1]["currency"], json!("USD"));
+
+    let history = kernel
+        .pushes
+        .iter()
+        .rev()
+        .find(|(kind, _)| kind == &format!("portfolio.history@{TRACK}"))
+        .map(|(_, payload)| payload)
+        .expect("a history push");
+    let rows = history["rows"].as_array().expect("rows");
+    // Newest first.
+    assert_eq!(rows[0]["total"].as_f64(), Some(350.51));
+    assert_eq!(rows[0]["currency"], json!("USD"));
     assert!(
-        listed
-            .pointer("/result/structuredContent/currency")
-            .is_some_and(Value::is_null),
-        "{listed:#?}"
+        rows[0]["change"].is_null(),
+        "250.51 would be a move between two different units: {rows:?}"
+    );
+    assert_eq!(rows[1]["total"].as_f64(), Some(100.0));
+    assert!(rows[1]["currency"].is_null(), "{rows:?}");
+    let caption = history["caption"].as_str().expect("caption");
+    assert!(
+        caption.contains("1 point was recorded before this plugin stored a currency"),
+        "{caption}"
     );
     assert!(kernel.is_responsive());
 }

@@ -63,8 +63,8 @@ Two overlays per Track, both shaped as report `table` block payloads:
 
 | overlay kind | contents |
 | --- | --- |
-| `portfolio.holdings` | one row per asset — quantity, price, value, currency — plus a `Total` row |
-| `portfolio.history` | the total over time, newest first, with the change against the previous point |
+| `portfolio.holdings` | one row per asset — quantity, price, the currency it is priced in, the rate applied and the value in the settlement currency — plus a `Total` row |
+| `portfolio.history` | the total over time, newest first, each point with its own currency, and the change against the previous point where the two share one |
 
 Name them from a report and the numbers keep moving under a document that does
 not change:
@@ -185,27 +185,75 @@ the name, so `US:W` and `CRYPTO:W` read as two distinguishable rows;
 `market.holdings.list`'s one-line prose, which has no columns, writes them out
 as `US:W` and `CRYPTO:W`.
 
-### Currencies, and why a total sometimes goes missing
+### Currencies, conversion, and why a total sometimes goes missing
 
 **Every price carries the currency this plugin determined it is in**, and that
 currency travels with the number to `market.quote`, to the holdings table and
-to `market.holdings.list`. It stops there: a stored history point is
-`{at, total}` and records no unit, so the history table's total column carries
-none. Nothing is converted either: this plugin holds no exchange rates.
+to `market.holdings.list`. `market.quote` never converts: it answers one
+asset's price in one market's currency.
 
-So a portfolio whose priced holdings are all in one currency gets a total in
-that currency, as it always did — but one holding `BTC` (USDT) alongside
-`US:NVDA` (USD) gets **no total at all**. Adding 1 to 230.36 there would
-produce a figure in no currency, published as the portfolio's value. The
-per-asset rows still go out, each with its own currency, which is everything a
-reader can actually use.
+A **total** is a different thing, and it is converted. Each row is carried into
+the settlement currency the install configures, so a Track holding `BTC`
+(USDT), `US:NVDA` (USD), `HK:1810` (HKD) and `SH:600519` (CNY) gets one total
+in one currency and a history point to go with it. Before conversion landed
+such a Track got rows and nothing else, because adding 1 to 230.36 produces a
+figure in no currency at all.
 
-The consequence worth knowing: such a portfolio also contributes **no history
-points** for as long as it spans currencies, because a history point is a total.
-Its series stands still, exactly as a portfolio with an unpriceable holding
-does. It resumes as soon as the priced holdings are back in one currency — by
-selling or by removing the odd holding — and would resume for a mixed portfolio
-too once currency conversion lands.
+**Two currencies settle: `USD` and `CNY`.** `USDT` is accepted and settles as
+USD — see below. Anything else, `HKD` included, settles nothing: each row keeps
+its own market's currency, and a portfolio spanning two of them gets no total,
+with the caption naming the value that was configured.
+
+The rates come from the same source the stock prices do, `hq.sinajs.cn`, one
+request per pair:
+
+| pair | symbol | on 2026-09-07 |
+| --- | --- | --- |
+| USD → CNY | `fx_susdcny` | 6.7111 |
+| CNY → USD | `fx_scnyusd` | 0.149007 |
+| HKD → USD | `fx_shkdusd` | 0.1275526 |
+| HKD → CNY | `fx_shkdcny` | 0.8560178 |
+
+Sina quotes every ordered pair natively, so **each direction is its own
+request** and no rate here is the reciprocal of another. The two directions are
+not reciprocals in the data either — `1/6.7111` is 0.14900538 against the
+quoted 0.149007 — because the two rows were last updated an hour apart, and
+dividing into the wrong one would publish a number no source stated.
+
+A row already in the settlement currency is not converted and asks for nothing:
+an all-crypto portfolio settling in the default still prices with the rate
+source unreachable.
+
+**Every conversion is stated where its result is.** The holdings table carries
+the rate on each row and names the pair behind it in the caption; the same
+lines come back from `market.holdings.list`. A reader is never shown a
+converted number without being told what it was converted at.
+
+#### `USDT` is taken as 1 USD, and that is an assumption
+
+It is the one number in this plugin that no source stated. What it costs was
+measured rather than guessed: Binance's `USDTUSD` last traded at **0.99968** on
+2026-09-07, so the parity overstates a USDT-quoted holding by about **3.2 basis
+points** — 32 USD on a 100,000 USD crypto position, systematically and always
+in the same direction.
+
+Every exit that shows the conversion says so in words — *"USDT taken as 1 USD —
+assumed, not quoted"* — rather than printing it as a rate alongside the ones
+that were fetched. Making it a quote instead is a one-constant change:
+`USDT_USD_ASSUMED_PARITY` in `main.rs` is the whole of it, and `USDTUSD` is
+listed on `data-api.binance.vision` with no key.
+
+**What this changes for an existing install:** the default `quote` is `USDT`
+and stays `USDT`; it now settles in USD. An all-crypto portfolio's total is
+therefore the **same number** it was before, labelled `USD` instead of `USDT` —
+USD being the unit the rates are in. No configuration needs changing.
+
+**When a rate does not come back**, the holdings quoted in that currency keep
+their own price and currency — those are true — and get no converted value, no
+place in the total, and no history point for that tick. Nothing falls back to a
+rate from an earlier pass: a rate this plugin could not read this pass is a
+rate it does not have. Its series stands still, exactly as a portfolio with an
+unpriceable holding does, and resumes on the next pass that reads the rate.
 
 ### Why the `Referer` header
 
@@ -230,20 +278,21 @@ is a working install.
 
 | key | default | meaning |
 | --- | --- | --- |
-| `quote` | `USDT` | the settlement currency a total is meant to be stated in |
+| `quote` | `USDT` | the currency a total is stated in — `USD` or `CNY`, with `USDT` settling as `USD` |
 | `poll_seconds` | `30` | seconds between refreshes (floored at 5) |
 | `binance_endpoint` | `https://data-api.binance.vision` | the Binance market-data base URL |
 | `sina_endpoint` | `https://hq.sinajs.cn` | the US/HK/SH/SZ quote-list base URL |
 
-`quote` is **not** a pricing input. Each market is quoted in its own currency
-and nothing converts between them yet, so today this key changes none of the
-published numbers; it is what a later slice will convert totals into. It used
-to do three jobs at once — display unit, Binance's quote leg, and "this asset
-is the unit, worth 1" — and the last two now live inside the Binance source
-where they belong. Setting `quote` to `CNY` no longer sends `BTCCNY` to
-Binance: that pair does not exist (`{"code":-1121,"msg":"Invalid symbol."}`),
-so a `BTC` holding on a CNY-settling install used to go unpriced — and with it
-the whole Track's history series.
+`quote` is **not** a pricing input: each market is quoted in its own currency
+and that is what every price cell says. It is the unit **totals** are stated
+in, and the only values that settle are `USD` and `CNY` (`USDT` settles as
+`USD`). It used to do three jobs at once — display unit, Binance's quote leg,
+and "this asset is the unit, worth 1" — and the last two now live inside the
+Binance source where they belong. Setting `quote` to `CNY` does not send
+`BTCCNY` to Binance: that pair does not exist
+(`{"code":-1121,"msg":"Invalid symbol."}`), so a `BTC` holding on a CNY-settling
+install used to go unpriced — and with it the whole Track's history series. It
+is now priced in USDT and converted.
 
 Configuration is read at handshake, so a change takes effect when the plugin is
 restarted; a re-handshake replaces it for the running poll thread too, rather
@@ -260,8 +309,19 @@ affected by this.
   plotted against totals covering the whole — would draw a crash that never
   happened. The holdings table still goes out either way: it names the missing
   prices row by row, which is the honest form of the same information.
-* **A total is only stated when the priced holdings share one currency**, and
+* **A total is only stated when every holding both priced and converted**, and
   a tick without a total contributes no history point. See *Currencies* above.
+* **`USDT` is taken as 1 USD.** An assumption, not a quote: the pair traded at
+  0.99968 on 2026-09-07, so any total containing a crypto holding is about 3.2
+  basis points high. Every published conversion says the step is assumed.
+* **Exchange rates come from Sina only.** The stock prices have no second
+  source today either, but if one is added the fallback will be **partial**: a
+  pass could price every stock through the fallback and still convert nothing,
+  because `hq.sinajs.cn` is the only source of rates here. Such a pass has rows
+  and no total, not a total assembled at a guessed rate.
+* **Only `USD` and `CNY` settle.** `HKD` is priced but not settled in, and any
+  unrecognised `quote` settles nothing: rows keep their own currencies and a
+  portfolio spanning two gets no total. The caption names the configured value.
 * **A code whose quote currency the code does not fix is refused, not priced.**
   Shanghai and Shenzhen B shares, and Hong Kong's renminbi and US-dollar
   counters, cannot be held here yet; nor can the mainland bond and index
@@ -278,11 +338,14 @@ affected by this.
   path drops a row it cannot parse without saying so, and the next `set`
   rewrites the whole document without it. A holding that visibly cannot be
   priced is better than one that silently disappears.
-* **Stored history points do not record their currency**, so the history
-  table's total column carries no unit. A series written before and after a
-  portfolio changed the currency it totals in is two series plotted as one;
-  recording the currency per point, and breaking the series where it changes,
-  is not done yet.
+* **History points written before this slice do not record their currency.**
+  A stored point used to be `{at, total}`, and the unit it used — whatever the
+  install settled in at that moment — was never written down anywhere, so it
+  cannot be recovered. Those points keep their number, show an empty currency
+  cell, and have **no change computed on either side of them**: subtracting
+  across an unknown unit would draw a move the portfolio never made. New points
+  each record their own currency, and the change column is likewise blank
+  wherever two adjacent points are in different currencies.
 * **A point that could not be stored is not displayed**, because the next tick
   reloads from the store and would silently delete it.
 * **At most 500 points per Track**, oldest dropped first.

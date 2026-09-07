@@ -10,7 +10,7 @@
   "exposes_tools": [
     {
       "name": "market.quote",
-      "description": "Current price of one asset, in the currency this plugin determined that price is in. Callers name the asset AND its venue; which source answers a venue, at which URL, is chosen by this plugin. Neither source states a currency, so it is determined from the venue and the code range: CRYPTO in USDT, US in USD, HK in HKD below code 80000, and in CNY the Shanghai 6xxxxx (A shares and STAR) and 5xxxxx (funds) codes and the Shenzhen 00xxxx (main board), 30xxxx (ChiNext) and 15xxxx/16xxxx (fund) codes. Codes outside those ranges — B shares, Hong Kong's renminbi and US-dollar counters, and the mainland bond and index ranges — are refused with the reason rather than priced under a guessed currency. Nothing is converted between currencies.",
+      "description": "Current price of one asset, in the currency this plugin determined that price is in. This tool never converts: it answers one asset's price in one market's currency, and conversion happens only where a portfolio is totalled. Callers name the asset AND its venue; which source answers a venue, at which URL, is chosen by this plugin. Neither source states a currency, so it is determined from the venue and the code range: CRYPTO in USDT, US in USD, HK in HKD below code 80000, and in CNY the Shanghai 6xxxxx (A shares and STAR) and 5xxxxx (funds) codes and the Shenzhen 00xxxx (main board), 30xxxx (ChiNext) and 15xxxx/16xxxx (fund) codes. Codes outside those ranges — B shares, Hong Kong's renminbi and US-dollar counters, and the mainland bond and index ranges — are refused with the reason rather than priced under a guessed currency.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -32,7 +32,7 @@
     },
     {
       "name": "market.holdings.set",
-      "description": "Record how much of an asset this Track holds. Replaces any existing quantity for that asset; 0 removes it. Records only — the price is fetched by the plugin's own refresh, which this call wakes. Each venue is priced in its own currency, and a Track whose priced holdings span two currencies gets per-asset rows but no total and no history points — until it is back in one currency, or until currency conversion lands.",
+      "description": "Record how much of an asset this Track holds. Replaces any existing quantity for that asset; 0 removes it. Records only — the price is fetched by the plugin's own refresh, which this call wakes. Each venue is priced in its own currency, and the total is stated in the settlement currency the install configures (USD or CNY), converted at rates read from the same quote source. A holding whose rate could not be read this pass keeps its own price but has no converted value, is left out of the total, and stops that tick contributing a history point.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -60,7 +60,7 @@
     },
     {
       "name": "market.holdings.list",
-      "description": "What this Track currently holds, with the venue, latest price, value and currency of each. A total is stated only when the priced holdings are all in one currency.",
+      "description": "What this Track currently holds, with the venue, the latest price in its own market's currency, the rate applied and the value in the settlement currency. A total is stated when every holding both priced and converted; the reply names the rate behind each conversion, including the one step that is an assumption rather than a quote (USDT is taken as 1 USD).",
       "input_schema": {
         "type": "object",
         "properties": {},
@@ -85,7 +85,7 @@
       "quote": {
         "type": "string",
         "default": "USDT",
-        "description": "The settlement currency a portfolio's total is meant to be stated in. It is not a pricing input: each market is quoted in its own currency and nothing is converted yet, so this key has no effect on the published numbers until currency conversion lands."
+        "description": "The currency a portfolio's total is stated in. Two values settle: USD and CNY. USDT is accepted and settles as USD, which is what the default means and what every install that never set this key gets; the USDT-to-USD step is an assumed parity of 1, not a quoted rate (the pair traded at 0.99968 on 2026-09-07, so the approximation is about 3.2 basis points). Any other value, HKD included, settles nothing: each holding keeps its own market's currency, and a portfolio spanning two of them gets no total. Prices are never converted — only totals are, at rates read from the quote source, and a rate that cannot be read leaves its holdings out of the total rather than being carried over from an earlier pass."
       },
       "poll_seconds": {
         "type": "integer",
