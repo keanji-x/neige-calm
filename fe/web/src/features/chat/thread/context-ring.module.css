@@ -1,13 +1,32 @@
 /* #1255 S3 — the context meter beside the send button. */
 
 @layer features {
+  /*
+   * `flex: none`, and the svg sized here rather than only by its attributes.
+   *
+   * This sits in the composer's send row, which is a flex line, and the
+   * reset's `svg { max-inline-size: 100% }` lets a squeezed flex item take the
+   * svg with it. Measured before the fix: the ring rendered 3.7px wide by 18
+   * tall — an ellipse the width of a hairline, which reads as a speck and not
+   * as a meter. Neither half is optional: `flex: none` keeps the span its own
+   * size, the explicit svg box keeps the drawing from being the thing that
+   * gives way if anything ever squeezes it again.
+   */
   .ring {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: none;
     padding: var(--space-1);
     border-radius: var(--radius-pill);
     cursor: default;
+  }
+
+  .ring svg {
+    inline-size: 18px;
+    block-size: 18px;
+    max-inline-size: none;
+    flex: none;
   }
 
   .ring:focus-visible {

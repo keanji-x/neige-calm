@@ -31,8 +31,10 @@ describe('context ring', () => {
     expect(ring()?.getAttribute('data-nc-context-ring')).toBe('5');
     /* The label carries the whole readout, because there is no tab stop here
        to reach the tooltip with — see the note on the trigger. */
-    expect(ring()?.getAttribute('aria-label'))
-      .toBe('24.1k of 258k in context, 5% of what this thread can use');
+    /* The label is the tooltip's sentence and nothing else — the percentage
+       is the ring's own job. What this line pins is that the ARC came from
+       the server's number: 24.1k/258.4k is 9%, and it says 5. */
+    expect(ring()?.getAttribute('aria-label')).toBe('24.1k of 258k in context');
   });
 
   it('says the counts on hover, in the words a person asked for them in', async () => {
@@ -65,7 +67,7 @@ describe('context ring', () => {
        mouse. The label is what makes that acceptable rather than a hole. */
     render(<ContextRing usage={usage()} />);
     expect(ring()?.hasAttribute('tabindex')).toBe(false);
-    expect(ring()?.getAttribute('aria-label')).toContain('24.1k of 258k');
+    expect(ring()?.getAttribute('aria-label')).toBe('24.1k of 258k in context');
   });
 
   it('shows a count that overshot its window as its own state, not as a full ring', async () => {

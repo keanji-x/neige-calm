@@ -152,12 +152,10 @@ function ringLabel(state: ContextRingState): string {
     return `${formatTokens(state.used)} of a ${formatTokens(state.window)} context window `
       + '— more than the window holds, so no percentage is shown';
   }
-  if (state.kind === 'filled') {
-    const counts = state.window === null
-      ? `${formatTokens(state.used)} in context`
-      : `${formatTokens(state.used)} of ${formatTokens(state.window)} in context`;
-    return `${counts}, ${Math.round(state.percent)}% of what this thread can use`;
-  }
+  /* The same sentence the tooltip shows, and only that: the two say one thing
+     so a reader who hears it and a reader who hovers are told the same. The
+     percentage is the ring's own job, and it is the ring that draws it. */
+  if (state.kind === 'filled') return contextCounts(state);
   return '';
 }
 
@@ -178,18 +176,23 @@ function ContextTooltip({ state }: { state: ContextRingState }) {
       </span>
     );
   }
-  return (
-    <span className={styles.tip}>
-      <span className={styles.tipLead}>
-        {formatTokens(state.used)}
-        {state.window === null ? ' in context' : ` of ${formatTokens(state.window)} in context`}
-      </span>
-      {/* Why the ring is not those two numbers divided. Stated without naming
-          the floor's size, which is the kernel's constant and not ours. */}
-      <span className={styles.tipNote}>
-        {Math.round(state.percent)}% of what this thread can use — the prompt and
-        tools it starts with do not count toward the ring.
-      </span>
-    </span>
-  );
+  /*
+   * One line, and the owner's call: the sentence that used to sit under it
+   * explained why the ring's percentage is not these two numbers divided.
+   * That is still true — the kernel takes the prompt-and-tools floor off both
+   * sides — but it is an explanation nobody asked for on every hover, and a
+   * reader who never does the division never had the question.
+   *
+   * The explanation lives on `contextRingState` and in `token_usage.rs`, which
+   * is where the next person to touch the arithmetic will be.
+   */
+  return <span className={styles.tipLead}>{contextCounts(state)}</span>;
+}
+
+/** `24.1k of 258k in context`. The one sentence both the tooltip and the
+ *  label say, so the two cannot drift apart. */
+function contextCounts(state: Extract<ContextRingState, { kind: 'filled' }>): string {
+  return state.window === null
+    ? `${formatTokens(state.used)} in context`
+    : `${formatTokens(state.used)} of ${formatTokens(state.window)} in context`;
 }
