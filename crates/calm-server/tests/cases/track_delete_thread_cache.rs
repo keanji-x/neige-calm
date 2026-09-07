@@ -29,7 +29,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::pending_codex_threads::PendingThreadStartRegistry;
+use calm_server::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::{
@@ -52,6 +52,7 @@ struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
     shared_codex: Arc<SharedCodexAppServer>,
+    pending: Arc<PendingThreadStartRegistry>,
     _tmp: TempDir,
 }
 
@@ -83,8 +84,10 @@ async fn boot() -> Boot {
         sqlx_repo.clone(),
         events.clone(),
     ));
-    let shared_codex =
-        SharedCodexAppServer::new_fake_running_with_pending(sqlx_repo.clone(), Some(pending));
+    let shared_codex = SharedCodexAppServer::new_fake_running_with_pending(
+        sqlx_repo.clone(),
+        Some(pending.clone()),
+    );
     let state = AppState::from_parts(
         repo,
         events,
@@ -105,6 +108,7 @@ async fn boot() -> Boot {
         app,
         repo: sqlx_repo,
         shared_codex,
+        pending,
         _tmp: tmp,
     }
 }
@@ -529,4 +533,193 @@ async fn a_daemon_reconnect_would_not_resume_a_deleted_cards_thread() {
     }
     assert_resumable(&b, &survivor_pairs);
     assert_not_resumable(&b, &victim_pairs);
+}
+
+// ---------------------------------------------------------------------------
+// #1444 review r1 — the reviewer's adversarial ordering, built literally.
+//
+// `handle_thread_started_notification` falls through cache -> kernel-initiated
+// -> database -> `pending.on_thread_started`, and the pending registry binds
+// FIFO: it hands the *front* entry whatever thread id arrives, without ever
+// looking at the thread id. So any `thread/started` that reaches that last
+// branch is attributed to whichever Card happens to be waiting.
+//
+// Before #1444 the `thread_cache` entry of a deleted Card survived and stopped
+// the fall-through. This is the construction that asks whether dropping it
+// opened a cross-attribution window.
+// ---------------------------------------------------------------------------
+
+/// One terminal for `card_id`, alive (no exit code, not signal-killed) —
+/// `PendingThreadStartRegistry::is_terminal_alive` drops the front entry
+/// otherwise, and the FIFO bind under test would never be reached.
+async fn insert_live_terminal(b: &Boot, card_id: &str, terminal_id: &str) {
+    let theme = calm_server::routes::theme::RequestTheme::default_dark();
+    sqlx::query(
+        r#"INSERT INTO terminals
+               (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
+    )
+    .bind(terminal_id)
+    .bind(card_id)
+    .bind("bash")
+    .bind("/workspace")
+    .bind("{}")
+    .bind(theme.fg_arg())
+    .bind(theme.bg_arg())
+    .bind(0_i64)
+    .execute(b.repo.pool())
+    .await
+    .unwrap();
+}
+
+/// The Card of `track_id` that owns a live worker session — the only Card the
+/// pending registry can bind, since `bind_entry` requires an active runtime.
+async fn card_with_live_session(b: &Boot, track_id: &str) -> (String, String) {
+    sqlx::query_as(
+        "SELECT card_id, id FROM worker_sessions WHERE track_id=?1 \
+         AND state IN ('starting','running','idle','turn_pending') ORDER BY id LIMIT 1",
+    )
+    .bind(track_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .expect("premise: the track owns a live worker session")
+}
+
+/// Queue one real pending registration for `card_id`, the way a TUI-started
+/// empty codex card does.
+async fn register_pending(b: &Boot, track_id: &str, terminal_id: &str) -> String {
+    let (card_id, worker_session_id) = card_with_live_session(b, track_id).await;
+    insert_live_terminal(b, &card_id, terminal_id).await;
+    b.pending
+        .register(PendingEntry::new(
+            card_id.clone(),
+            Some(track_id.to_string()),
+            terminal_id.to_string(),
+            worker_session_id,
+        ))
+        .await
+        .unwrap();
+    card_id
+}
+
+/// The finding, executed end to end.
+///
+/// The victim thread enters `thread_cache` through the pending registry — the
+/// one production insert that does NOT also record the thread in
+/// `kernel_initiated_threads`, so nothing but the cache stands between it and
+/// the FIFO bind. Its Track is then deleted through the real route (mapping
+/// forgotten, database attribution gone with the Track), an *unrelated* Card
+/// registers a live pending spawn, and a late duplicate `thread/started` for
+/// the deleted thread is handled.
+///
+/// It must not be handed to the unrelated Card.
+#[tokio::test]
+async fn a_late_thread_started_after_cleanup_does_not_bind_an_unrelated_pending_card() {
+    let b = boot().await;
+    let area_id = create_area(&b, "Atlas").await;
+    let victim_track = managed_track(&b, &area_id, "victim").await;
+    let other_track = managed_track(&b, &area_id, "unrelated").await;
+    let late_thread = "T-late-after-cleanup-1444";
+
+    // 1. The victim's thread arrives through the pending path, so the cache is
+    //    the ONLY place that knows it.
+    let victim_card = register_pending(&b, &victim_track, "term-victim-1444").await;
+    let bound = b
+        .shared_codex
+        .handle_thread_started_notification_for_test(late_thread)
+        .await
+        .unwrap();
+    assert!(
+        bound,
+        "premise: the victim's thread/started took the pending branch"
+    );
+    assert_eq!(
+        b.shared_codex
+            .cached_card_for_thread(late_thread)
+            .as_deref(),
+        Some(victim_card.as_str()),
+        "premise: the victim card owns the thread"
+    );
+
+    // 2. The delete commits; #1444's cleanup forgets the mapping.
+    let (status, body) = request(
+        b.app.clone(),
+        "DELETE",
+        &format!("/api/tracks/{victim_track}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
+    assert_eq!(
+        b.shared_codex.cached_card_for_thread(late_thread),
+        None,
+        "premise: the delete forgot the mapping"
+    );
+    let db_owner: Option<(String,)> =
+        sqlx::query_as("SELECT card_id FROM worker_sessions WHERE thread_id=?1")
+            .bind(late_thread)
+            .fetch_optional(b.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        db_owner.is_none(),
+        "premise: the database attribution went with the Track, so the \
+         handler really does fall through to the pending branch"
+    );
+
+    // 3. An unrelated Card is waiting for ITS OWN thread/started.
+    let other_card = register_pending(&b, &other_track, "term-other-1444").await;
+    assert_eq!(b.pending.pending_count().await, 1);
+
+    // 4. The late notification for the deleted thread.
+    let rebound = b
+        .shared_codex
+        .handle_thread_started_notification_for_test(late_thread)
+        .await
+        .unwrap();
+
+    assert!(
+        !rebound,
+        "a deleted Card's thread was bound to an unrelated pending Card"
+    );
+    assert_eq!(
+        b.shared_codex.cached_card_for_thread(late_thread),
+        None,
+        "the deleted thread must not be re-cached under any card"
+    );
+    assert_eq!(
+        b.pending.pending_count().await,
+        1,
+        "the unrelated Card must still be waiting for its own thread/started"
+    );
+    let stolen: Option<(String,)> =
+        sqlx::query_as("SELECT card_id FROM worker_sessions WHERE thread_id=?1")
+            .bind(late_thread)
+            .fetch_optional(b.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        stolen.is_none(),
+        "the deleted thread was written onto {stolen:?}"
+    );
+
+    // Negative control: the guard must reject only the forgotten thread, not
+    // ownerless `thread/started` in general. The unrelated Card's OWN thread
+    // start still binds — otherwise this test would pass just as well against
+    // a guard that refused every pending bind.
+    let own_thread = "T-own-1444";
+    let own_bound = b
+        .shared_codex
+        .handle_thread_started_notification_for_test(own_thread)
+        .await
+        .unwrap();
+    assert!(
+        own_bound,
+        "the unrelated Card's own thread/started must still bind"
+    );
+    assert_eq!(
+        b.shared_codex.cached_card_for_thread(own_thread).as_deref(),
+        Some(other_card.as_str())
+    );
+    assert_eq!(b.pending.pending_count().await, 0);
 }

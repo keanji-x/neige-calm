@@ -5,6 +5,7 @@
 //! later PRs switch callers over through the public methods here.
 
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -653,6 +654,9 @@ pub struct SharedCodexAppServer {
     notifications: NotificationFanout,
     pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
     kernel_initiated_threads: Arc<Mutex<HashSet<String>>>,
+    /// #1444 review r1 — bounded tombstones for threads a committed delete
+    /// forgot; see [`ForgottenThreads`].
+    forgotten_threads: Arc<Mutex<ForgottenThreads>>,
     kernel_thread_start_serial: Arc<Mutex<()>>,
     codex_bin: String,
     log_dir: PathBuf,
@@ -974,6 +978,7 @@ impl SharedCodexAppServer {
             notifications: tx,
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
+            forgotten_threads: Arc::new(Mutex::new(ForgottenThreads::default())),
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
             codex_bin: "codex".into(),
             log_dir: root.join("logs/shared-codex-appserver"),
@@ -1034,6 +1039,7 @@ impl SharedCodexAppServer {
             notifications: tx,
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
+            forgotten_threads: Arc::new(Mutex::new(ForgottenThreads::default())),
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
             codex_bin: cfg.codex_bin.clone(),
             log_dir: cfg.shared_codex_appserver_log_dir_resolved(),
@@ -1555,6 +1561,12 @@ impl SharedCodexAppServer {
                 true
             }
         });
+        {
+            let mut forgotten = self.forgotten_threads.lock().await;
+            for (thread_id, _) in &dropped {
+                forgotten.remember(thread_id);
+            }
+        }
         for (thread_id, card_id) in &dropped {
             tracing::info!(
                 target = "shared_codex_daemon::forget_deleted_card_thread",
@@ -3482,6 +3494,58 @@ impl SharedCodexAppServer {
     }
 }
 
+/// #1444 review r1 — thread ids whose `thread_cache` attribution was dropped
+/// by [`SharedCodexAppServer::forget_threads_for_deleted_cards`].
+///
+/// Why it has to exist. `handle_thread_started_notification` falls through
+/// cache → `kernel_initiated_threads` → database → `pending.on_thread_started`,
+/// and the pending registry binds **FIFO without reading the thread id**: it
+/// hands the front entry whatever thread id arrived. So "no owner anywhere" is
+/// the sentence that authorizes a bind. A deleted Card's thread satisfies that
+/// sentence — its cache entry is gone by design and its database row went with
+/// the Track — and would be handed to whatever unrelated Card is next in the
+/// pending queue. Before #1444 the surviving cache entry accidentally stopped
+/// that fall-through; this restores the stop deliberately, without restoring a
+/// resumable mapping.
+///
+/// **Bound.** At most [`FORGOTTEN_THREAD_TOMBSTONE_CAP`] ids. Entries leave in
+/// exactly two ways and no others: FIFO eviction of the oldest when a new id
+/// would exceed the cap, and process exit. Nothing else adds to it — only a
+/// committed Track/Area delete does — so it grows one entry per deleted Card
+/// thread and never per notification.
+///
+/// **Eviction is safe.** Evicting the oldest tombstone only restores the
+/// pre-tombstone behaviour for a thread whose delete is at least
+/// [`FORGOTTEN_THREAD_TOMBSTONE_CAP`] deleted threads old; the hazard it guards
+/// is an in-flight notification, which is orders of magnitude shorter-lived.
+#[derive(Default)]
+struct ForgottenThreads {
+    order: VecDeque<String>,
+    set: HashSet<String>,
+}
+
+/// Cap for [`ForgottenThreads`]. ~4k short ids is well under a megabyte and far
+/// more deleted-Card threads than can plausibly have a notification in flight.
+const FORGOTTEN_THREAD_TOMBSTONE_CAP: usize = 4096;
+
+impl ForgottenThreads {
+    fn remember(&mut self, thread_id: &str) {
+        if !self.set.insert(thread_id.to_string()) {
+            return;
+        }
+        self.order.push_back(thread_id.to_string());
+        while self.order.len() > FORGOTTEN_THREAD_TOMBSTONE_CAP {
+            if let Some(evicted) = self.order.pop_front() {
+                self.set.remove(&evicted);
+            }
+        }
+    }
+
+    fn contains(&self, thread_id: &str) -> bool {
+        self.set.contains(thread_id)
+    }
+}
+
 // ===================== Notification routing & thread cache =====================
 impl SharedCodexAppServer {
     async fn install_client(
@@ -3508,6 +3572,7 @@ impl SharedCodexAppServer {
         let active_turns = self.active_turns.clone();
         let sealed_turn_threads = self.sealed_turn_threads.clone();
         let kernel_initiated_threads = self.kernel_initiated_threads.clone();
+        let forgotten_threads = self.forgotten_threads.clone();
         let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
         tokio::spawn(async move {
             while let Some(notification) = notifications.recv().await {
@@ -3517,6 +3582,7 @@ impl SharedCodexAppServer {
                         &repo,
                         &thread_cache,
                         &kernel_initiated_threads,
+                        &forgotten_threads,
                         &kernel_thread_start_serial,
                         thread_id,
                     )
@@ -3895,6 +3961,7 @@ impl SharedCodexAppServer {
             &self.repo,
             &self.thread_cache,
             &self.kernel_initiated_threads,
+            &self.forgotten_threads,
             &self.kernel_thread_start_serial,
             thread_id,
         )
@@ -4455,6 +4522,7 @@ async fn handle_thread_started_notification(
     repo: &Arc<dyn Repo>,
     thread_cache: &Arc<DashMap<String, String>>,
     kernel_initiated_threads: &Arc<Mutex<HashSet<String>>>,
+    forgotten_threads: &Arc<Mutex<ForgottenThreads>>,
     kernel_thread_start_serial: &Arc<Mutex<()>>,
     thread_id: &str,
 ) -> Result<ThreadStartedHandling> {
@@ -4486,6 +4554,18 @@ async fn handle_thread_started_notification(
             target: "shared_codex_daemon::pending_skip_already_mapped",
             %thread_id,
             "shared codex thread/started already has a card mapping"
+        );
+        return Ok(ThreadStartedHandling::DispatchNormally);
+    }
+
+    // #1444 review r1 — a thread a committed delete forgot is NOT an
+    // ownerless thread the FIFO registry may hand to the next pending Card.
+    // Its owner existed and was deleted; the correct owner is nobody.
+    if forgotten_threads.lock().await.contains(thread_id) {
+        tracing::warn!(
+            target: "shared_codex_daemon::pending_skip_forgotten_thread",
+            %thread_id,
+            "shared codex thread/started belongs to a deleted card's forgotten thread; not binding it to a pending card"
         );
         return Ok(ThreadStartedHandling::DispatchNormally);
     }
@@ -4760,6 +4840,31 @@ pub fn drop_spawned_child_guard_for_test(child: Child, pgid: i32) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// #1444 review r1 — the tombstone set's stated bound, executed: entries
+    /// leave it by FIFO eviction at the cap and by nothing else, and a
+    /// re-remembered id does not consume a second slot.
+    #[test]
+    fn forgotten_thread_tombstones_evict_oldest_first_at_the_cap() {
+        let mut forgotten = ForgottenThreads::default();
+        for n in 0..FORGOTTEN_THREAD_TOMBSTONE_CAP {
+            forgotten.remember(&format!("T-{n}"));
+        }
+        assert!(forgotten.contains("T-0"));
+        assert_eq!(forgotten.set.len(), FORGOTTEN_THREAD_TOMBSTONE_CAP);
+
+        // A duplicate is not a new slot: nothing is evicted.
+        forgotten.remember("T-0");
+        assert_eq!(forgotten.set.len(), FORGOTTEN_THREAD_TOMBSTONE_CAP);
+        assert!(forgotten.contains("T-0"));
+
+        // One over the cap evicts exactly the oldest, and only the oldest.
+        forgotten.remember("T-overflow");
+        assert_eq!(forgotten.set.len(), FORGOTTEN_THREAD_TOMBSTONE_CAP);
+        assert!(!forgotten.contains("T-0"), "the oldest must be evicted");
+        assert!(forgotten.contains("T-1"));
+        assert!(forgotten.contains("T-overflow"));
+    }
 
     /// #953 design test 7 — the dedup cache is updated ONLY after a
     /// successful DB write (`note_written`): a forced write failure (the
