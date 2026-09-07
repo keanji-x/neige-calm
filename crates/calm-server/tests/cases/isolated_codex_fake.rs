@@ -117,10 +117,20 @@ fn report(env: &[(String, String)], task: &str, success: bool, artifacts: Vec<St
 
 fn create_files() {
     std::fs::create_dir("/workspace/nested").unwrap();
-    std::fs::write("/workspace/nested/报告 🧊.txt", "<script>hello</script> 雪\n").unwrap();
-    std::fs::write("/workspace/blob.bin", [0,255,128,1]).unwrap();
+    std::fs::write(
+        "/workspace/nested/报告 🧊.txt",
+        "<script>hello</script> 雪\n",
+    )
+    .unwrap();
+    std::fs::write("/workspace/blob.bin", [0, 255, 128, 1]).unwrap();
     std::fs::write("/workspace/empty.txt", []).unwrap();
-    for (name,size) in [("limit.bin",8*1024*1024),("large.bin",8*1024*1024+1)] {
-        std::fs::File::create(format!("/workspace/{name}")).unwrap().set_len(size).unwrap();
+    for (name, size) in [
+        ("limit.bin", 8 * 1024 * 1024),
+        ("large.bin", 8 * 1024 * 1024 + 1),
+    ] {
+        std::fs::File::create(format!("/workspace/{name}"))
+            .unwrap()
+            .set_len(size)
+            .unwrap();
     }
 }
