@@ -2869,7 +2869,8 @@ mod tests {
     /// of the move and not something this fix may take away.
     #[test]
     fn a_harvest_carries_an_addressable_id_and_mints_only_for_one_without() {
-        let addressable = QueueEntry::user_message("please look at the report".into(), None);
+        let addressable =
+            QueueEntry::user_message("please look at the report".into(), None, Vec::new());
         let claimed = addressable
             .id()
             .expect("a minted user entry is addressable")
