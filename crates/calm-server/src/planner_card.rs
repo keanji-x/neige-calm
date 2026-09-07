@@ -133,7 +133,9 @@ writes are transactional.
        * `pending` / `awaiting_projection`: waiting for admission or scheduling; \
          report any supplied `blocking_reason` (such as dependencies or capacity).
        * `dispatched`: claimed; startup has not yet been confirmed.
-       * `running`: startup succeeded; this is not proof of current progress or completed work.
+       * `running`: the kernel recorded the attempt as running; this alone does not prove \
+         successful provider startup, health, or current progress. Confirm execution from \
+         available Worker output or completion/gate evidence.
        * `verifying` / `done` / `failed` / `canceled`: report the observed phase; \
          inspect result/gate evidence or `status_detail` and `recovery` as appropriate. \
          A fast task can finish before you ever observe `running`.
@@ -834,6 +836,7 @@ mod tests {
             !prompt.contains("`lifecycle` field that you must advance"),
             "Planner must not be instructed to manually drive the kernel startup chain"
         );
+        assert!(!prompt.contains("`running`: startup succeeded"));
         for contract in [
             "Do not write `planning`, `dispatching`, or `working` just to start a task",
             "`declare-and-wait` still requires the User's release",
@@ -842,7 +845,8 @@ mod tests {
             "`calm.plan.list` for the current `attempt_id`, `status`, and `blocking_reason`",
             "`pending` / `awaiting_projection`: waiting for admission or scheduling",
             "`dispatched`: claimed; startup has not yet been confirmed",
-            "`running`: startup succeeded; this is not proof of current progress",
+            "`running`: the kernel recorded the attempt as running; this alone does not prove successful provider startup, health, or current progress",
+            "Confirm execution from available Worker output or completion/gate evidence",
             "If the key has no entry, read `calm.report.read` and its `taskDiagnostics`",
             "End the turn after declaration; do not poll for startup",
         ] {
