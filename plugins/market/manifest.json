@@ -10,13 +10,13 @@
   "exposes_tools": [
     {
       "name": "market.quote",
-      "description": "Current price of one asset by name, e.g. BTC. The source is chosen by this plugin; callers name the asset, not the venue.",
+      "description": "Current price of one asset. Callers name the asset AND its venue; which source answers a venue, at which URL, is chosen by this plugin. Only the CRYPTO venue has a source today, so a US, HK or CN name is answered as unpriceable.",
       "input_schema": {
         "type": "object",
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset name, e.g. BTC"
+            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK and CN (`CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `CN:600519`). A prefix counts only with the colon, so `USNVDA` is a crypto name. Only the CRYPTO venue has a price source today."
           }
         },
         "required": [
@@ -32,13 +32,13 @@
     },
     {
       "name": "market.holdings.set",
-      "description": "Record how much of an asset this Track holds. Replaces any existing quantity for that asset; 0 removes it. Records only — the price is fetched by the plugin's own refresh, which this call wakes.",
+      "description": "Record how much of an asset this Track holds. Replaces any existing quantity for that asset; 0 removes it. Records only — the price is fetched by the plugin's own refresh, which this call wakes. An asset on a venue with no source yet (US, HK, CN) is recorded but stays unpriced, and a portfolio holding one adds no history points until a source for that venue lands.",
       "input_schema": {
         "type": "object",
         "properties": {
           "asset": {
             "type": "string",
-            "description": "Asset name, e.g. BTC"
+            "description": "Asset name. Bare (`BTC`) means the crypto venue; a venue-qualified name is `<VENUE>:<SYMBOL>` over CRYPTO, US, HK and CN (`CRYPTO:BTC`, `US:NVDA`, `HK:1810`, `CN:600519`). A prefix counts only with the colon, so `USNVDA` is a crypto name. Only the CRYPTO venue has a price source today."
           },
           "quantity": {
             "type": "number",
@@ -60,7 +60,7 @@
     },
     {
       "name": "market.holdings.list",
-      "description": "What this Track currently holds, with the latest price and value of each.",
+      "description": "What this Track currently holds, with the venue, latest price and value of each.",
       "input_schema": {
         "type": "object",
         "properties": {},
