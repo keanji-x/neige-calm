@@ -131,16 +131,25 @@ describe('PendingQueue', () => {
       .toHaveBeenCalledWith('card-1', 'look at the report'));
   });
 
-  it('takes the words back out again when the message already left the queue', async () => {
-    const { onWithdraw } = renderQueue({
+  /*
+   * `gone` KEEPS the words, and this is the cell that made the difference.
+   *
+   * It reads like "already sent" and it is not: the server returns it whenever
+   * the entry is no longer there, which includes another actor having deleted
+   * it. Withdrawing on that reading empties the composer for a message that
+   * was never delivered and no longer exists — in neither place, which is the
+   * outcome this ordering exists to prevent.
+   */
+  it('keeps the words when the message is merely no longer in the queue', async () => {
+    const { onWithdraw, onEcho } = renderQueue({
       onTakeBack: vi.fn<PendingQueueProps['onTakeBack']>(() => Promise.resolve({ kind: 'gone' })),
     });
     await userEvent.click(editButtons()[0]);
-    /* NOT "already sent": the same answer comes back when another actor
-       removed it, and the server does not say which happened. */
     await screen.findByText(/no longer in the queue/);
-    await waitFor(() => expect(onWithdraw)
-      .toHaveBeenCalledWith('card-1', 'look at the report'));
+    expect(onEcho).toHaveBeenCalledWith('card-1', 'look at the report');
+    expect(onWithdraw).not.toHaveBeenCalled();
+    /* And it says the ambiguity rather than asserting delivery. */
+    expect(screen.getByText(/the server does not say which/)).toBeTruthy();
   });
 
   /*
@@ -204,6 +213,38 @@ describe('PendingQueue', () => {
      */
     expect(onEcho).toHaveBeenCalledTimes(1);
     expect(onWithdraw).not.toHaveBeenCalled();
+  });
+
+  /*
+   * The echo happens before the request goes out.
+   *
+   * **This does NOT pin the thing that actually matters, and saying so is the
+   * point of this comment.** The reason the echo lives in `onClick` is that
+   * Astryx runs `clickAction` inside `startTransition` (`Button.tsx:593`), and
+   * a transition update is non-urgent — React may let a later urgent update
+   * supersede it, which is how typing during the request beat a deferred echo.
+   * That is a property of React's SCHEDULING, and this harness cannot observe
+   * it: `onEcho` here is a mock, not a state update, and `act()` flushes both
+   * kinds of update indiscriminately anyway. Measured, not assumed — moving
+   * the echo back inside `clickAction` leaves every test in this file green.
+   *
+   * So what is pinned is the weaker, checkable half: the call order. The
+   * placement is held by the comment on the component and by the vendor line
+   * cited above. **KNOWN GAP in coverage, deliberate** — the alternative was a
+   * test whose name claimed the scheduling property and whose body could not
+   * fail on it.
+   */
+  it('echoes before the request is issued', async () => {
+    const seen: string[] = [];
+    const onEcho = vi.fn<PendingQueueProps['onEcho']>(() => { seen.push('echo'); });
+    const onTakeBack = vi.fn<PendingQueueProps['onTakeBack']>(() => {
+      seen.push('request');
+      return done;
+    });
+    renderQueue({ onEcho, onTakeBack });
+    await userEvent.click(editButtons()[0]);
+    await waitFor(() => expect(onTakeBack).toHaveBeenCalled());
+    expect(seen[0]).toBe('echo');
   });
 
   /*

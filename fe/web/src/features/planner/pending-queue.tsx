@@ -173,12 +173,21 @@ type Refusal = Readonly<{
  * withdrawing them is wrong for a deletion in that the message is gone. **A
  * duplicate you can see beats a message you cannot get back.**
  *
- * `withdraw` — the entry is definitely still going to be sent: `stale` means
- * nothing happened to it, `gone` means it has already left the queue. Leaving
- * the words in the box would invite sending the same message twice.
+ * `withdraw` — `stale` only. Nothing happened to the entry, it is still in the
+ * queue and still going to be sent, so a copy in the composer is a second copy
+ * of a live message.
+ *
+ * **`gone` keeps them, and that is a correction.** It reads like "already
+ * sent", and it is not: the server returns it whenever the entry is no longer
+ * there, which includes another actor having deleted it. Withdrawing on that
+ * reading empties the composer for a message that was never delivered and no
+ * longer exists — the message is then in neither place, which is the one
+ * outcome this whole ordering is built to prevent. Keeping the words risks a
+ * duplicate if it really was sent; the notice says which is which is unknown,
+ * and a duplicate is recoverable.
  */
 function wordsAfter(outcome: PlannerQueueWriteOutcome): 'keep' | 'withdraw' {
-  return outcome.kind === 'done' || outcome.kind === 'failed' ? 'keep' : 'withdraw';
+  return outcome.kind === 'stale' ? 'withdraw' : 'keep';
 }
 
 const IMAGES_REASON =
@@ -201,7 +210,8 @@ function noticeText(outcome: PlannerQueueWriteOutcome, wordsKept: boolean): stri
        and the server does not say which happened. All that is known is that
        the queue no longer has it. */
     return 'This message is no longer in the queue — it has either been sent or '
-      + 'been removed somewhere else.';
+      + 'been removed somewhere else, and the server does not say which. Your '
+      + 'words are in the box; check the conversation before sending again.';
   }
   if (outcome.kind === 'failed') {
     /* Only the pencil leaves words behind, and only it may say so. The cross
@@ -217,7 +227,7 @@ function noticeText(outcome: PlannerQueueWriteOutcome, wordsKept: boolean): stri
 
 function noticeHeading(outcome: PlannerQueueWriteOutcome): string {
   if (outcome.kind === 'stale') return 'Nothing happened';
-  if (outcome.kind === 'gone') return 'Already sent';
+  if (outcome.kind === 'gone') return 'No longer in the queue';
   return 'Could not be changed';
 }
 
@@ -329,16 +339,38 @@ export function PendingQueue({
                     size="sm"
                     isDisabled={blocked || composerBusy || hasImages}
                     tooltip={editReason}
-                    onClick={() => { setWriting(true); }}
+                    /*
+                     * The echo happens HERE, in `onClick`, and that placement
+                     * is the correctness of the whole ordering.
+                     *
+                     * Astryx runs `clickAction` inside `startTransition`
+                     * (`Button.tsx`), and a state update made in a transition
+                     * is non-urgent: React may defer it and let a later urgent
+                     * update supersede it. An echo written there was therefore
+                     * NOT the synchronous write this file claims — type into
+                     * the composer while the DELETE is open and the deferred
+                     * echo loses to the typing, while the entry is deleted
+                     * anyway. Exactly the gap echo-first exists to remove,
+                     * reintroduced by the vendor's scheduling. `onClick` runs
+                     * before the transition starts, so this is a committed
+                     * write before anything is awaited.
+                     *
+                     * The two refusals are re-asked here too, for the same
+                     * reason the lock is raised here: this is the last moment
+                     * that is still synchronous with the press.
+                     */
+                    onClick={() => {
+                      if (composerHasWords.current || hasImages) return;
+                      setWriting(true);
+                      onEcho(cardId, text);
+                    }}
                     clickAction={async () => {
                       try {
-                        /* Re-asked rather than read off the render that drew
-                           the button — but asked BEFORE anything is awaited, so
-                           the answer cannot go stale between the check and the
-                           write. That ordering is the point; see the note at
-                           the top of this file. */
+                        /* The same two questions, because `onClick` cannot
+                           stop `clickAction` from running — Astryx calls both.
+                           Answered identically and one tick apart, so this
+                           cannot disagree with the echo above. */
                         if (composerHasWords.current || hasImages) return;
-                        onEcho(cardId, text);
                         const outcome = await onTakeBack({ ...entry, text, rev });
                         settle(entry.entry_id, outcome, wordsAfter(outcome) === 'keep');
                         if (wordsAfter(outcome) === 'withdraw') onWithdraw(cardId, text);

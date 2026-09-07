@@ -334,37 +334,47 @@ export function useConversationStore(
    * state the interaction promises never to produce — for as long as the
    * refresh took, or forever if it failed.
    */
-  const [forgotten, setForgotten] = useState<ReadonlySet<string>>(() => new Set());
   /*
-   * Emptied on every card change, because entry ids are unique per CARD and
-   * this hook serves whichever card `scope` currently names.
+   * Entries this client has had a `done` DELETE for, and which the cached page
+   * has not caught up with yet.
    *
-   * Without it the set is a mask over the wrong queue: take back A/x, open B
-   * whose queue also holds an id x, and B's message is invisible; and B's page
-   * not listing x clears A's tombstone, so returning to A on a cached page
-   * resurrects a bubble the server has already deleted. Both were found by
-   * review, and both are the same mistake — a per-card fact stored where the
-   * card is a variable.
+   * **Keyed by card AND entry, not by entry.** Entry ids are unique per card
+   * and this hook serves whichever card `scope` currently names, so a bare id
+   * is a mask over the wrong queue: take back A/x and B's own x disappears.
+   * Clearing the set on every card change was the first attempt and it is not
+   * the same thing — it leaves a window (a DELETE from A that answers after
+   * the switch still writes a bare id into B's mask) and it throws away
+   * tombstones that are still needed (leave A and come back before its page
+   * refreshes, and the deleted bubble is there again). A composite key needs
+   * neither the reset nor the window: an entry from another card simply never
+   * matches.
    */
-  useEffect(() => { setForgotten(new Set()); }, [cardId]);
+  const [forgotten, setForgotten] = useState<ReadonlySet<string>>(() => new Set());
+  const forgottenKey = (card: string, entryId: string): string => `${card}\u0000${entryId}`;
   const servedQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
   const pendingQueue = useMemo(
     () => (forgotten.size === 0
       ? servedQueue
-      : servedQueue.filter((entry) => !forgotten.has(entry.entry_id))),
-    [servedQueue, forgotten],
+      : servedQueue.filter((entry) => !forgotten.has(forgottenKey(cardId, entry.entry_id)))),
+    [servedQueue, forgotten, cardId],
   );
   useEffect(() => {
     if (forgotten.size === 0) return;
-    const served = new Set(servedQueue.map((entry) => entry.entry_id));
-    /* Only ids the page has stopped listing are dropped, and only when there
-       is something to drop — an unconditional `setForgotten` here re-renders
-       forever. */
-    if (![...forgotten].some((id) => !served.has(id))) return;
-    setForgotten((current) => new Set([...current].filter((id) => served.has(id))));
-  }, [servedQueue, forgotten]);
+    /* A tombstone is retired only when the page that owns it says the entry is
+       gone. Keys for OTHER cards are left alone: this card's page says nothing
+       about them, and dropping them here is how a tombstone was lost while its
+       own card was not on screen. */
+    const served = new Set(servedQueue.map((entry) => forgottenKey(cardId, entry.entry_id)));
+    const mine = (key: string) => key.startsWith(`${cardId}\u0000`);
+    /* Only when there is something to drop — an unconditional `setForgotten`
+       here re-renders forever. */
+    if (![...forgotten].some((key) => mine(key) && !served.has(key))) return;
+    setForgotten((current) => new Set(
+      [...current].filter((key) => !mine(key) || served.has(key)),
+    ));
+  }, [servedQueue, forgotten, cardId]);
   const forgetQueuedEntry = (entryId: string): void => {
-    setForgotten((current) => new Set([...current, entryId]));
+    setForgotten((current) => new Set([...current, forgottenKey(cardId, entryId)]));
   };
   const pendingQueueOverflow = run.data?.pending_overflow ?? 0;
   const pendingQueueIds = useMemo(
