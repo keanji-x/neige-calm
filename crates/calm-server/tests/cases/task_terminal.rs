@@ -3,7 +3,8 @@ use crate::terminal_support::Harness;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    card_with_claude_worker_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
+    card_with_claude_create_tx, card_with_claude_worker_create_tx, card_with_codex_create_tx,
+    card_with_terminal_create_tx,
 };
 use calm_server::model::{CardRole, NewTrack, new_id, now_ms};
 use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
@@ -118,12 +119,7 @@ async fn worker(h: &Harness, kind: &str, track: &str, viewer: bool) -> Worker {
         .await
         .unwrap();
     if viewer {
-        let mut config=RendererConfig{terminal_id:terminal.id.clone(),cols:80,rows:24,buffer_bytes:8192,
-            terminal_fg:(220,220,220),terminal_bg:(15,20,24),program:"/bin/sh".into(),
-            args:vec!["-c".into(),"printf 'WORKER_READY\\n'; while IFS= read -r line; do printf 'WORKER_REPLY:%s\\n' \"$line\"; done".into()],
-            envs:vec![],cwd,supervisor_sock:std::path::PathBuf::new()};
-        config.supervisor_sock = h.supervisor_socket();
-        h.state.terminal_renderer.ensure(config).await.unwrap();
+        spawn_viewer(h, &terminal.id).await;
     }
     // Stamp the task/worker association after its viewer exists, as the scheduler does.
     sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,'test','[]','running',?5,'user',?6,?6)")
@@ -134,6 +130,14 @@ async fn worker(h: &Harness, kind: &str, track: &str, viewer: bool) -> Worker {
         session,
         terminal: terminal.id,
     }
+}
+async fn spawn_viewer(h: &Harness, terminal: &str) {
+    let mut config=RendererConfig{terminal_id:terminal.to_owned(),cols:80,rows:24,buffer_bytes:8192,
+            terminal_fg:(220,220,220),terminal_bg:(15,20,24),program:"/bin/sh".into(),
+            args:vec!["-c".into(),"printf 'WORKER_READY\\n'; while IFS= read -r line; do printf 'WORKER_REPLY:%s\\n' \"$line\"; done".into()],
+            envs:vec![],cwd:h.root.path().to_str().unwrap().to_owned(),supervisor_sock:std::path::PathBuf::new()};
+    config.supervisor_sock = h.supervisor_socket();
+    h.state.terminal_renderer.ensure(config).await.unwrap();
 }
 async fn snapshot(h: &Harness, target: Value) -> Value {
     let mut args = target;
@@ -504,4 +508,100 @@ async fn missing_task_projection_cannot_be_reclassified_as_a_manual_terminal() {
         result.get("error").is_some(),
         "lost task row must not turn its Worker into a manual terminal: {result}"
     );
+}
+
+#[tokio::test]
+async fn manual_codex_and_claude_workers_are_controllable_without_a_task() {
+    let h = Harness::start().await;
+    for kind in ["codex", "claude"] {
+        let card = new_id();
+        let session = new_id();
+        let roles = CardRoleCache::new();
+        let theme = calm_server::routes::theme::RequestTheme::default_dark();
+        let cwd = h.root.path().to_str().unwrap().to_owned();
+        let mut tx = h.sql.pool().begin().await.unwrap();
+        let terminal = if kind == "codex" {
+            card_with_codex_create_tx(
+                &mut tx,
+                card.clone(),
+                &session,
+                None,
+                h.track.clone().into(),
+                None,
+                None,
+                cwd,
+                json!({}),
+                None,
+                None,
+                None,
+                CardRole::Worker,
+                true,
+                &roles,
+                theme,
+            )
+            .await
+            .unwrap()
+            .1
+        } else {
+            card_with_claude_create_tx(
+                &mut tx,
+                card.clone(),
+                &session,
+                h.track.clone().into(),
+                None,
+                None,
+                "/bin/sh".into(),
+                cwd,
+                json!({}),
+                None,
+                None,
+                None,
+                "unused-settings".into(),
+                new_id(),
+                CardRole::Worker,
+                true,
+                &roles,
+                theme,
+            )
+            .await
+            .unwrap()
+            .1
+        };
+        tx.commit().await.unwrap();
+        spawn_viewer(&h, &terminal.id).await;
+        let resolved = h
+            .ok("calm.terminal.resolve", json!({"terminal_id":terminal.id}))
+            .await;
+        assert_eq!(resolved["task"], Value::Null);
+        assert_eq!(resolved["card_kind"], kind);
+        assert_eq!(resolved["available"], true);
+        assert_eq!(resolved["controllable"], true);
+        h.ok(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal.id,"action":"claim"}),
+        )
+        .await;
+        let before = h.observe_text(&terminal.id, "WORKER_READY").await;
+        let written = h
+            .input(
+                &terminal.id,
+                &before,
+                "manual-text",
+                json!({"type":"text","text":"manual"}),
+            )
+            .await;
+        assert_eq!(written["outcome"], "written");
+        let before = snapshot(&h, json!({"terminal_id":terminal.id})).await;
+        let entered = h
+            .input(
+                &terminal.id,
+                &before,
+                "manual-enter",
+                json!({"type":"key","key":"Enter"}),
+            )
+            .await;
+        assert_eq!(entered["outcome"], "written");
+        h.observe_text(&terminal.id, "WORKER_REPLY:manual").await;
+        h.state.terminal_renderer.drop_entry(&terminal.id).await;
+    }
 }

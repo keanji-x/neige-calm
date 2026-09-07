@@ -17,8 +17,10 @@ mod client;
 mod operations;
 mod target;
 use client::Client;
-use target::Binding;
+pub(crate) use target::Binding;
 pub use target::Target;
+#[cfg(test)]
+pub(crate) use target::TaskBinding;
 
 pub struct TerminalInteraction {
     repo: Arc<dyn RouteRepo>,
@@ -95,8 +97,18 @@ impl TerminalInteraction {
             return Ok(client.clone());
         }
         ensure!(clients.len() < 128, "Planner terminal client limit reached");
+        let scope = Self::bound_scope(self.repo.clone(), identity, resolved);
+        let client = Arc::new(Client::attach(entry, scope, resolved.clone()).await?);
+        clients.insert(binding, client.clone());
+        Ok(client)
+    }
+    pub(crate) fn bound_scope(
+        repo: Arc<dyn RouteRepo>,
+        identity: &ToolCallIdentity,
+        resolved: &Binding,
+    ) -> ClientInputScope {
         let scope_check = |write: bool| {
-            let repo = self.repo.clone();
+            let repo = repo.clone();
             let actor = identity.clone();
             let expected = resolved.clone();
             Arc::new(move || {
@@ -111,13 +123,10 @@ impl TerminalInteraction {
             })
                 as Arc<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>
         };
-        let scope = ClientInputScope::Bound {
+        ClientInputScope::Bound {
             observe: scope_check(false),
             control: scope_check(true),
-        };
-        let client = Arc::new(Client::attach(entry, scope, resolved.clone()).await?);
-        clients.insert(binding, client.clone());
-        Ok(client)
+        }
     }
     pub async fn observe(
         &self,

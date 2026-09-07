@@ -493,7 +493,7 @@ impl RepoRead for SqlxRepo {
             .await?;
         if tasks.len() > 1 {
             return Err(CalmError::Conflict(
-                "ambiguous task ownership for worker card".into(),
+                "ambiguous task ownership for worker card",
             ));
         }
         Ok(tasks.pop())
