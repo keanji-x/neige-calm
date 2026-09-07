@@ -253,3 +253,32 @@ async fn server_reply_write_timeout_poison_closes_original_connection() {
     assert!(client.transport.check().is_err());
     drop(lock);
 }
+
+#[tokio::test]
+async fn peer_eof_closes_dynamic_receiver_while_client_is_retained() {
+    let (client, mut notifications, mut server) = CodexAppServer::connect_pair_for_test().await;
+    let mut requests = client.take_dynamic_tool_requests().unwrap();
+    send(&mut server, call(json!(1))).await;
+    let held = requests.recv().await.unwrap();
+    drop(server);
+    assert!(notifications.recv().await.is_none());
+    assert!(held.is_cancelled());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), requests.recv())
+            .await
+            .expect("EOF must close the registered request receiver")
+            .is_none()
+    );
+    assert!(client.take_dynamic_tool_requests().is_err());
+}
+
+#[tokio::test]
+async fn peer_eof_refuses_first_registration_on_retained_dead_client() {
+    let (client, mut notifications, server) = CodexAppServer::connect_pair_for_test().await;
+    drop(server);
+    assert!(notifications.recv().await.is_none());
+    assert!(
+        client.take_dynamic_tool_requests().is_err(),
+        "dead connections cannot acquire a handler"
+    );
+}

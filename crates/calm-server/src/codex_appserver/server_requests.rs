@@ -83,20 +83,49 @@ impl DynamicToolRequest {
 
 #[derive(Default)]
 pub(super) struct Registration {
-    handler: StdMutex<Option<mpsc::Sender<DynamicToolRequest>>>,
+    state: StdMutex<RegistrationState>,
+}
+
+#[derive(Default)]
+enum RegistrationState {
+    #[default]
+    Unregistered,
+    Registered(mpsc::Sender<DynamicToolRequest>),
+    Closed,
 }
 
 impl Registration {
     pub(super) fn take(&self) -> Result<mpsc::Receiver<DynamicToolRequest>> {
-        let mut slot = self.handler.lock().expect("dynamic tool registration");
-        if slot.is_some() {
-            return Err(CalmError::CodexAppServer(
-                "dynamic tool receiver already registered on this connection".into(),
-            ));
+        let mut slot = self.state.lock().expect("dynamic tool registration");
+        match &*slot {
+            RegistrationState::Unregistered => {}
+            RegistrationState::Registered(_) => {
+                return Err(CalmError::CodexAppServer(
+                    "dynamic tool receiver already registered on this connection".into(),
+                ));
+            }
+            RegistrationState::Closed => {
+                return Err(CalmError::CodexAppServer(
+                    "dynamic tool connection is closed".into(),
+                ));
+            }
         }
         let (tx, rx) = mpsc::channel(HANDLER_LIMIT);
-        *slot = Some(tx);
+        *slot = RegistrationState::Registered(tx);
         Ok(rx)
+    }
+
+    fn sender(&self) -> Option<mpsc::Sender<DynamicToolRequest>> {
+        match &*self.state.lock().expect("dynamic tool registration") {
+            RegistrationState::Registered(sender) => Some(sender.clone()),
+            RegistrationState::Unregistered | RegistrationState::Closed => None,
+        }
+    }
+
+    pub(super) fn close(&self) {
+        // Drop the stored sender even while a public client retains this state.
+        // Closed is permanent: a late registration cannot create an inert queue.
+        *self.state.lock().expect("dynamic tool registration") = RegistrationState::Closed;
     }
 }
 
@@ -124,6 +153,7 @@ pub(super) struct Dispatch {
 
 impl Drop for Dispatch {
     fn drop(&mut self) {
+        self.registration.close();
         self.transport.poison();
     }
 }
@@ -224,12 +254,7 @@ impl Dispatch {
                 "dynamic tool identity fields must be nonempty",
             ));
         }
-        let handler = self
-            .registration
-            .handler
-            .lock()
-            .expect("dynamic tool registration")
-            .clone();
+        let handler = self.registration.sender();
         let Some(handler) = handler else {
             return self.reply(error(
                 Some(id),

@@ -709,6 +709,7 @@ pub struct CodexAppServer {
 
 impl Drop for CodexAppServer {
     fn drop(&mut self) {
+        self.server_requests.close();
         self.transport.poison();
         self.reader.abort();
     }
