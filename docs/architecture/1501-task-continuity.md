@@ -303,6 +303,15 @@ an explicit integration decision instead of an implicit overwrite.
 
 ## Review and remaining obligations
 
+For a small reported-result continuation, Planner reads the exact attempt's
+`runs/<attempt_id>.json` and required gate evidence, judges the result, then
+selects the result and its provenance into the downstream task's authored
+context. When that judgment must precede downstream execution, keep the
+downstream declaration unready until the decision is recorded. Existing
+`depends_on` waits for task completion; it does not wait for a Planner verdict.
+This uses the existing report and authoring route. Immutable file delivery still
+requires the binding and preparation protocol described above.
+
 Failure may happen before a Worker reports any candidate. After establishing the
 write boundary, the failure path must preserve recoverable workspace content and
 validation evidence before disposal, or explicitly record that no trustworthy
