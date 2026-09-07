@@ -39,14 +39,13 @@
 pub(crate) const PLANNER_SYSTEM_PROMPT_TEMPLATE: &str = "\
 You are the planner agent for track `{track_id}`.
 
-You are the track's sole long-running AI authority and the only actor \
-(besides the user) that may drive the track's lifecycle state machine. \
-Worker cards report task results; you decide what state the track is in.
+You are the track's sole long-running AI authority. Worker cards report task \
+results; you own planning and semantic decisions, while the kernel drives \
+execution and its automatic lifecycle transitions. The user retains final authority.
 
 ## Track lifecycle (issue #145)
 
-Every track has an explicit `lifecycle` field that you must advance \
-through the canonical happy path:
+Every track has an explicit `lifecycle` field. Its canonical happy path is:
 
   draft → planning → dispatching → working → reviewing → done
 
@@ -65,9 +64,14 @@ to drive the track state machine in the same atomic operation as your \
 action. Those tools also require `message`, a short human-readable \
 rationale for the event. The kernel validates the (from → to, \
 actor=planner) edge; an illegal transition is rejected and nothing is \
-persisted. The kernel auto-drives `draft → planning` on your first \
-write. The kernel schedules ready plan tasks, spawns workers, runs \
-verification gates, and drives task status from the plan.
+persisted. The kernel auto-drives `draft → planning` on your first report \
+write and `planning → dispatching → working` when it claims an eligible task. \
+Do not write `planning`, `dispatching`, or `working` just to start a task. \
+The kernel schedules authorized ready tasks, prepares and starts workers, \
+runs verification gates, and drives task status from the plan. Track `working` \
+does not confirm Worker startup: claim precedes preparation. Use lifecycle \
+writes for decisions such as blocking, resuming after user input, or concluding \
+the track; do not replay stages already advanced by the kernel.
 
 ## How you are driven
 
@@ -102,7 +106,7 @@ writes are transactional.
    maintenance contract, and you may not write to a document you have not \
    read. `report_startup_read_required` tells you whether it already holds \
    content beyond the default skeleton. If the read returns `task` blocks, \
-   treat them as the authoritative pre-set plan. Activate eligible tasks by replacing \
+   treat them as the authoritative pre-set plan. Activate authorized, eligible tasks by replacing \
    those blocks and setting `ready: true` (decision-dependent tasks wait as below). \
    Use the read's block ids and revision as replace anchors. Do not mint duplicate tasks. Prose blocks are \
    NOT a plan to activate: maintain them per the document's own contract.
@@ -122,10 +126,25 @@ writes are transactional.
      chat track refuses the same way. \
      Do not stall the work waiting to name it, and do not name it from a \
      guess: if you do not yet know what the user wants, ask.
+   * Readiness is not a User release: `declare-and-wait` still requires the User's release. \
+     Do not change User authorship or grant `released_by_user` to make a task start. \
+     Preserve unready tasks that await a decision. End the turn after declaration; do not poll for startup. \
+     When reporting execution on a later turn, use `calm.plan.list` for the current `attempt_id`, `status`, and `blocking_reason`:
+       * `pending` / `awaiting_projection`: waiting for admission or scheduling; \
+         report any supplied `blocking_reason` (such as dependencies or capacity).
+       * `dispatched`: claimed; startup has not yet been confirmed.
+       * `running`: startup succeeded; this is not proof of current progress or completed work.
+       * `verifying` / `done` / `failed` / `canceled`: report the observed phase; \
+         inspect result/gate evidence or `status_detail` and `recovery` as appropriate. \
+         A fast task can finish before you ever observe `running`.
+     If the key has no entry, read `calm.report.read` and its `taskDiagnostics`; \
+     the declaration may be unready, invalid, or awaiting User release before any attempt is allocated. \
+     Explain the recorded prerequisite or preparation failure; do not invent an attempt or claim startup from a write receipt.
    * Maintain task declarations as report `task` blocks. Read the report with \
      `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while \
      replace passes the target block's `rev` as `if_rev`. Use \
-     `calm.report.blocks.upsert` for both operations. A live task payload needs a per-track-unique \
+     `calm.report.blocks.upsert` for both operations. To start an authorized Planner task, \
+     its payload needs a per-track-unique \
      `key`, `kind` (`codex`, `claude`, or `terminal`), `ready: true`, \
      and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` \
      sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to \
@@ -655,7 +674,8 @@ const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
     "   * Maintain task declarations as report `task` blocks. Read the report with ",
     "`calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while ",
     "replace passes the target block's `rev` as `if_rev`. Use ",
-    "`calm.report.blocks.upsert` for both operations. A live task payload needs a per-track-unique ",
+    "`calm.report.blocks.upsert` for both operations. To start an authorized Planner task, ",
+    "its payload needs a per-track-unique ",
     "`key`, `kind` (`codex`, `claude`, or `terminal`), `ready: true`, ",
     "and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` ",
     "sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to ",
@@ -800,6 +820,37 @@ mod tests {
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "track-abc");
         assert!(worker.contains("You are a worker agent under planner card on track `track-abc`."));
         assert!(worker.contains("neige task-completed"));
+    }
+
+    #[test]
+    fn planner_prompt_delegates_startup_and_confirms_the_current_attempt() {
+        let prompt =
+            crate::operation::planner_harness_start_adapter::render_planner_developer_instructions(
+                "track-startup",
+                None,
+                None,
+            );
+        assert!(
+            !prompt.contains("`lifecycle` field that you must advance"),
+            "Planner must not be instructed to manually drive the kernel startup chain"
+        );
+        for contract in [
+            "Do not write `planning`, `dispatching`, or `working` just to start a task",
+            "`declare-and-wait` still requires the User's release",
+            "Do not change User authorship or grant `released_by_user`",
+            "Track `working` does not confirm Worker startup: claim precedes preparation",
+            "`calm.plan.list` for the current `attempt_id`, `status`, and `blocking_reason`",
+            "`pending` / `awaiting_projection`: waiting for admission or scheduling",
+            "`dispatched`: claimed; startup has not yet been confirmed",
+            "`running`: startup succeeded; this is not proof of current progress",
+            "If the key has no entry, read `calm.report.read` and its `taskDiagnostics`",
+            "End the turn after declaration; do not poll for startup",
+        ] {
+            assert!(
+                prompt.contains(contract),
+                "missing startup contract: {contract}"
+            );
+        }
     }
 
     #[test]
