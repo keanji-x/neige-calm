@@ -56,5 +56,42 @@ Operation 准备并核验输入后才启动 B。Planner 无须声明搬运任务
 多文件/目录、Git 整树、任意 gate、多个来源、合并冲突、全局 GC 和完整失败
 候选继承不加入本 PR。F5 后续复用本次精确绑定与准备机制，单独增加修复用途。
 
-持久化字段、调用入口及事件接线在实际实现前补入本文；只有库接口或设计提交
-不能标记 F4 完成。F4 账本仍保持未勾选。
+## 内核接线
+
+执行选择显式区分空工作区的单文件 producer 和带文件输入的 consumer；旧选择
+保持不变。不复用 `depends_on` 暗示文件复制。首版 producer 不能同时声明输入，
+consumer 不能同时声明受本协议管理的输出；由此限定为两节点闭环。
+
+输出公开声明槽位、源相对路径和 `json-document-v1` 验证策略；输入公开声明
+本 Track 的来源 key、槽位及 JSON 输入用途。consumer 必须引用实际 producer，
+未知/自引用/不支持的来源作为声明诊断，不猜测其他 Track 或旧成功执行。
+
+复用 scheduler 的异步单飞模式：当 producer 报告完成时，在 Track 调度锁之外
+等待其现有 Operation 真正停止并成功，然后提交稳定身份的文件 publication
+Operation。该 Operation 在停止凭据及冻结输出契约下捕获单文件、重新打开不可变
+快照并验证 JSON，将成功证据持久化。消费者等待既有 OperationCompletionBus，
+完成后重新 poke scheduler；丢通知及重启由已有操作恢复/调度 sweep 处理。
+不新增业务完成事件，不用一次新的 TaskCompleted 伪装文件已验收。
+
+新增迁移保存两类记录：
+
+- publication 记录绑定 Track、producer attempt、源 Operation、publication
+  Operation、输出契约、快照/文件摘要、验证策略及结果。只有对应 Operation 成功
+  且证据匹配才能消费；失败留在该 Operation 的诊断中，不重写旧 task done。
+- input binding 在 B claim 事务绑定上述来源、快照、用途及固定输入目录；
+  源自原 attempt 的恢复保留同一绑定，无法证明原绑定时拒绝启动。准备回执
+  另有明确 bound/prepared 状态；身份列不可修改，不能依赖“最新”选择。
+
+记录保留至 Track 删除；首版不做 GC，不能跟随 Worker card/源工作区删除清理
+被引用内容。旧 migration 不修改；旧任务不会被默认补成具有文件消费权限。
+
+B 的已有 isolated Operation 创建 owner 标记后，在受保护的输入子目录物化。
+重启遇到已存在目录时，只能逐项验证它确实等于冻结绑定；不同目录不能覆盖，
+不能因出现目录就伪造准备成功。TaskLaunch 前再次验证输入和原有当前任务授权。
+Worker 收到内核提供的相对输入位置与来源说明，不接触宿主机临时路径或凭据。
+
+plan.list 暴露 producer publication 的实际状态、consumer 等待原因及输入绑定
+摘要。格式无效、缺文件、源执行未停止、授权撤回及准备冲突都必须能解释，
+不从失败推导自动重试权限。更强的业务验收策略不在首版能力范围内。
+
+只有库接口或设计提交不能标记 F4 完成。F4 账本仍保持未勾选。
