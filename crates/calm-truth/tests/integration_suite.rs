@@ -38,3 +38,5 @@ fn assert_suite_complete(source: &str) {
         "a root test file is missing from the suite"
     );
 }
+
+mod planner_recovery_binding_migration;
