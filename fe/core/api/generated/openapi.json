@@ -1478,6 +1478,97 @@
         }
       }
     },
+    "/api/cards/{id}/planner/model": {
+      "put": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "set_planner_model",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPlannerModelBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Selection stored. `effort_adjusted` and `unknown_model` report what the catalog said about it; neither is an error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetPlannerModelResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not `X-Calm-Actor: user`, or the card is not a planner codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`model` or `reasoning_effort` is missing from the body, or an unknown key is present. Both keys are required; `null` is how the default is chosen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/planner/reset": {
       "post": {
         "tags": [
@@ -6904,8 +6995,22 @@
             "type": "boolean",
             "description": "#1505 S6 — whether this card can take image attachments at all.\n\nIt cannot when the track's workspace is a directory the person already\nowns: attachments are written under `<workspace>/.neige/`, and neige\nnever writes into an attached workspace, so the upload endpoint answers\n400 there.\n\nAnswered here rather than left for the client to work out, and answered\nbefore the attempt rather than by the attempt. Half the tracks in\nproduction were created with a `cwd` and are attached, so a paperclip\nthat looks available and then refuses would be the common case rather\nthan the edge. The criterion is the same function the upload runs\n(`planner_attachments::attachment_root`), called rather than restated."
           },
+          "blocked_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "#1505 S4 — why this conversation's queue is not draining, or `null`\nwhen there is nothing worth saying. `null` almost always.\n\nThree things fill it, and a client should render all three as the same\nkind of standing notice rather than as an error about a request it just\nmade:\n\n * the model or effort to run under cannot be determined (codex's\n   configuration names none, or the stored selection is unreadable) —\n   the text names the choice that fixes it;\n * codex refused to start the turn — the text says the message was NOT\n   sent, and promises no delivery;\n * codex has been unreachable long enough that silence would look like\n   a hang — the text says the message is still queued and will go out.\n\nA brief outage fills nothing, so this staying `null` is not evidence\nthat anything succeeded.\n\nIt is not a general per-turn error channel and does not diagnose why a\nmodel failed mid-turn; that is #1507's."
+          },
           "card_id": {
             "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "#1505 S4-3 — the model slug this conversation's turns run with, or\n`null` for \"follow whatever this installation is configured to use\".\n\nRead off the CARD, not off the harness, and therefore answered for a\ndormant conversation as well: the selection is a property of the\nconversation and outlives every runtime that serves it. That is the\nopposite of `phase` and `token_usage` above, which are properties of a\nlive runtime and are `null` without one."
           },
           "pending": {
             "type": "array",
@@ -6930,6 +7035,13 @@
                 "description": "Current harness phase, or null when the harness is dormant."
               }
             ]
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The chosen reasoning effort, or `null` for the default. Same source and\nsame reasoning as [`GetPlannerRunResponse::model`]."
           },
           "token_usage": {
             "oneOf": [
@@ -8354,6 +8466,65 @@
           },
           "worker_session_id": {
             "type": "string"
+          }
+        }
+      },
+      "SetPlannerModelBody": {
+        "type": "object",
+        "required": [
+          "model",
+          "reasoning_effort"
+        ],
+        "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model **slug** to run with, or `null` to follow the installation\ndefault. Required — see the module header.\n\nA slug, never a catalog entry's `id`: `GET /api/models` returns both\nand only `model` is the one codex is invoked by.\n\n`#[schema(required = true)]` is not decoration and not a duplicate of\n[`required_nullable`]. The two live in different worlds: serde decides\nwhat the handler accepts, utoipa decides what the published\nOpenAPI document promises, and utoipa derives optionality from the `Option<T>` in the\nfield type alone — it cannot see a `deserialize_with`. Without this the\ndocument said both fields were optional while the handler answered 422\nfor omitting one, so a client generated from either checked-in copy was\nconforming and broken at the same time."
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The reasoning effort, or `null` to follow the default. Required.\n\nA bare string rather than a closed set: codex accepts any non-empty\neffort, so an enum here would start refusing values the day codex ships\na new one.\n\n`#[schema(required = true)]` for the same reason as `model` above."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SetPlannerModelResponse": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "effort_adjusted",
+          "unknown_model"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "effort_adjusted": {
+            "type": "boolean",
+            "description": "The requested effort was not among the chosen model's supported ones\nand was moved to that model's own default. Never done silently — a\ncaller that ignores this flag shows a value that will not run."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stored slug, echoed rather than assumed."
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stored effort. Differs from the request when `effort_adjusted`."
+          },
+          "unknown_model": {
+            "type": "boolean",
+            "description": "The slug is not in the catalog codex currently reports. A hint, not a\nrefusal: the stored value is the requested one either way. Always\n`false` when the catalog could not be read, because \"we could not ask\"\nis not evidence of absence."
           }
         }
       },
