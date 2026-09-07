@@ -1,0 +1,4 @@
+{
+  "description": "Kernel immutable file publication settlement identifies the source attempt and publication Operation; no business status or retry permission is implied.",
+  "wire": {"ev":"task.file_publication_settled","data":{"task_id":"attempt-1","operation_id":"publication-1"}}
+}

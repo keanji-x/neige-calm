@@ -1,10 +1,10 @@
 //! One explicitly selected task, one private controller, one existing Operation.
 pub(crate) mod activity;
 pub mod adapter;
-mod admission;
+pub(crate) mod admission;
 pub mod config;
 pub(crate) mod files;
-mod journal;
+pub(crate) mod journal;
 pub(crate) mod lookup;
 pub use lookup::private_codex_home;
 mod observe;

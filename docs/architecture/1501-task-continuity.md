@@ -292,8 +292,12 @@ Recovery alone is insufficient if a downstream worker receives the wrong files.
 For artifact dependencies, bind exact eligible content, not a mutable path or a
 global "latest successful" result. Keep pure ordering dependencies supported.
 
-The first delivery implementation is limited to explicitly supported isolated Git
-workspaces and declared output slots. Kernel sealing must establish a consistent
+The first connected delivery loop is limited to one declared ordinary JSON file
+from an isolated Codex workspace (#1581). The kernel uses its existing stopped
+namespace and pinned directory authority; it does not fabricate Git metadata.
+The existing whole-Git-worktree artifact library remains a separate capability.
+This refines the earlier proposed Git-only first slice after the actual stop and
+workspace APIs were audited. Kernel sealing must establish a consistent
 snapshot after a proven write boundary; Worker self-report and lease release alone
 are not that proof. Unsupported files/workspaces fail explicitly. Public output
 requirements belong to the contract; private gates may conceal checks, not add

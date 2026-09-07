@@ -87,6 +87,17 @@ pub(crate) fn relative_reference(reference: &str) -> Result<String> {
 }
 
 impl FileSnapshot {
+    pub(crate) fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+    pub(crate) fn store_root(&self) -> Result<PathBuf> {
+        Ok(self
+            .workspace
+            .parent()
+            .ok_or_else(stop_unavailable)?
+            .join(".file-artifacts"))
+    }
+
     pub(crate) fn open(self) -> Result<File> {
         // Root authority comes from the validated immutable original request,
         // not a currently enabled provider or the Track's mutable workspace.

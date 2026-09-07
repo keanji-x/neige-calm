@@ -14,9 +14,14 @@
 // backend, which is covered by the backend's own /api/version tests.
 
 import { describe, it, expect } from 'vitest';
-import { isCompatible } from './version';
+import { isCompatible, WEB_COMPAT_VERSION } from './version';
 
 describe('isCompatible', () => {
+  it('refuses bundles predating file-publication events', () => {
+    expect(WEB_COMPAT_VERSION).toBeGreaterThan(24);
+    expect(isCompatible({ minWebCompatVersion: WEB_COMPAT_VERSION }, 24)).toBe(false);
+  });
+
   it('returns true when server min equals frontend version', () => {
     expect(isCompatible({ minWebCompatVersion: 1 }, 1)).toBe(true);
   });

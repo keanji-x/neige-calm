@@ -151,7 +151,12 @@ pub(crate) async fn task_recovery_view_tx(
                 Ok(_) => TaskRecoveryCapability {
                     allowed: true,
                     code: "available".into(),
-                    reason: if crate::isolated_codex::selected(task)? {
+                    reason: if matches!(
+                        crate::file_delivery::selection(task)?,
+                        Some(calm_types::task_execution::FileDelivery::Consumer { .. })
+                    ) {
+                        "Retry this goal in a new workspace with the original immutable JSON input binding. Previous Worker-created files are not inherited.".into()
+                    } else if crate::isolated_codex::selected(task)? {
                         "Retry this goal as a new execution in a new empty workspace. Previous results stay with the old attempt.".into()
                     } else {
                         "Retry the preparation failure as a new execution under its unchanged contract.".into()

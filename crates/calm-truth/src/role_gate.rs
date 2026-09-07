@@ -395,8 +395,10 @@ pub fn enforce_role(
         }
     }
 
-    if matches!(event, Event::TaskExecutionSettled { .. })
-        && !matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
+    if matches!(
+        event,
+        Event::TaskExecutionSettled { .. } | Event::TaskFilePublicationSettled { .. }
+    ) && !matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
     {
         return Err(RoleViolation::NotKernelForTaskExecutionSettled {
             actor: format!("{actor:?}"),
@@ -1897,6 +1899,32 @@ mod tests {
             ActorId::AiPlannerSession("planner-session".into()),
             ActorId::AiCodexSession("worker-session".into()),
             ActorId::AiClaudeSession("worker-session".into()),
+        ] {
+            assert!(
+                enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).is_err(),
+                "{actor:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn task_file_publication_settled_is_kernel_only() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let event = Event::TaskFilePublicationSettled {
+            task_id: "a".into(),
+            operation_id: "publication".into(),
+        };
+        for actor in [ActorId::Kernel, ActorId::KernelDispatcher] {
+            enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).unwrap();
+        }
+        for actor in [
+            ActorId::User,
+            ActorId::Plugin("p".into()),
+            ActorId::AiPlanner("p".into()),
+            ActorId::AiCodex("w".into()),
+            ActorId::AiPlannerSession("p".into()),
+            ActorId::AiCodexSession("w".into()),
         ] {
             assert!(
                 enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).is_err(),

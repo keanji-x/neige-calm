@@ -1393,6 +1393,59 @@ struct PlannerPushWiringRow {
     expect_observation: bool,
 }
 
+/// Retained failed-publication facts for the repo-enriched mapping row. A failed
+/// admission needs no captured-file receipt or live worker/provider process.
+async fn planner_push_publication_fixture() -> (crate::db::sqlite::SqlxRepo, Event) {
+    use crate::operation::{OperationKey, OperationRepo, PhaseTag, SqlxOperationRepo};
+    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::raw_sql("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('c','Area','red',0,1,1);
+        INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('w','c','Track',0,1,1);")
+        .execute(repo.pool()).await.unwrap();
+    let task_id = "publication-source-attempt";
+    let context = serde_json::json!({"neige_execution":{"version":"isolated-codex-v1",
+        "workspace":"empty","file_delivery":{"role":"producer","slot":"result",
+        "path":"result.json","policy":"json-document-v1"}}});
+    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) VALUES(?1,'w','produce','codex','Write JSON',?2,'done',1,1)")
+        .bind(task_id).bind(context.to_string()).execute(repo.pool()).await.unwrap();
+    let operations = SqlxOperationRepo::new(repo.pool().clone());
+    let payload =
+        serde_json::json!({"task_id":task_id,"track_id":"w","source_operation_id":"source-op"});
+    let operation_id = operations
+        .insert_operation(
+            crate::file_delivery::OPERATION_KIND,
+            OperationKey {
+                operation_key: "publication-wiring".into(),
+                idempotency_key: Some(format!("file:{task_id}")),
+                payload_hash: crate::routes::terminal_cards::stable_payload_hash(&payload).unwrap(),
+            },
+            payload,
+        )
+        .await
+        .unwrap();
+    let claimed = operations.claim_drive_batch(1).await.unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].id, operation_id);
+    operations
+        .mark_failed(
+            &claimed[0],
+            "file producer has no accepted completion report".into(),
+            PhaseTag::Pending,
+            Some("internal".into()),
+        )
+        .await
+        .unwrap()
+        .expect("owned publication settles");
+    (
+        repo,
+        Event::TaskFilePublicationSettled {
+            task_id: task_id.into(),
+            operation_id,
+        },
+    )
+}
+
 /// Canonical census of every `Event` kind tag, derived from the
 /// derived deserializer's unknown-variant diagnostic: serde lists the
 /// complete accepted-tag set when asked to parse an unknown `ev`, so
@@ -1439,7 +1492,8 @@ fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
 /// #828 slice 1 — predicate⇒mapping consistency table over EVERY
 /// event kind. Each row checks the push predicate
 /// (`event_warrants_planner_push`) and the harness-observation mapping
-/// (`harness_observation_from_event`) jointly, and the
+/// (`harness_observation_from_event`, or the actual repo-enriched resolver for
+/// file publication settlement) jointly, and the
 /// `all_event_kind_tags` census asserts the table covers every kind:
 /// a new `Event` variant breaks compilation at the two exhaustive
 /// seams AND fails this test until a row records its expected wiring
@@ -1457,8 +1511,8 @@ fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
 /// pinned in `event_warrants_planner_push_covers_push_allowlist` and
 /// `event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin`;
 /// this table owns per-kind coverage and cross-seam agreement.
-#[test]
-fn planner_push_predicate_and_observation_mapping_agree() {
+#[tokio::test]
+async fn planner_push_predicate_and_observation_mapping_agree() {
     let cache = CardRoleCache::new();
     let track = TrackId::from("w");
     let area = AreaId::from("c");
@@ -1526,7 +1580,7 @@ fn planner_push_predicate_and_observation_mapping_agree() {
         updated_at: 1,
     };
 
-    let rows: Vec<PlannerPushWiringRow> = vec![
+    let mut rows: Vec<PlannerPushWiringRow> = vec![
         // -- Push-capable kinds, push-side rows: predicate true ⇒
         //    mapping Some. ------------------------------------------
         row(
@@ -2171,6 +2225,15 @@ fn planner_push_predicate_and_observation_mapping_agree() {
         ),
     ];
 
+    let (publication_repo, publication_event) = planner_push_publication_fixture().await;
+    for (actor, expect_push) in [
+        (ActorId::Kernel, true),
+        (ActorId::KernelDispatcher, true),
+        (ActorId::User, false),
+    ] {
+        rows.push(row(publication_event.clone(), actor, expect_push, true));
+    }
+
     let mut covered = std::collections::BTreeSet::new();
     for row in &rows {
         let kind = row.event.kind_tag();
@@ -2188,8 +2251,27 @@ fn planner_push_predicate_and_observation_mapping_agree() {
             "push predicate mismatch for {kind} (actor {})",
             row.actor
         );
+        let observation = if let Event::TaskFilePublicationSettled { operation_id, .. } = &row.event
+        {
+            // This kind deliberately has no pure mapping: live dispatch and
+            // catch-up require retained publication identity and outcome.
+            assert!(
+                harness_observation_from_event(&track, &row.event, Some("impl-parser")).is_none()
+            );
+            let resolved = resolve_harness_observation(&publication_repo, &track, &row.event)
+                .await
+                .expect("retained publication resolves");
+            assert!(
+                matches!(&resolved, Some(HarnessObservation::SystemContext { text })
+                if text.contains(operation_id) && text.contains("failed")
+                    && text.contains("file producer has no accepted completion report"))
+            );
+            resolved
+        } else {
+            harness_observation_from_event(&track, &row.event, Some("impl-parser"))
+        };
         assert_eq!(
-            harness_observation_from_event(&track, &row.event, Some("impl-parser")).is_some(),
+            observation.is_some(),
             row.expect_observation,
             "observation mapping mismatch for {kind} (actor {})",
             row.actor

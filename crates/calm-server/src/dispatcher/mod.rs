@@ -96,7 +96,7 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // tasks-row lookup and lives with the async callers — see
         // `is_gated_self_report`).
         Event::TaskGateResult { .. } => true,
-        Event::TaskExecutionSettled { .. } => {
+        Event::TaskExecutionSettled { .. } | Event::TaskFilePublicationSettled { .. } => {
             matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
         }
         // Issue #955 §5.7 — plugin-authored report edits (the accept
@@ -364,6 +364,9 @@ fn dispatcher_operation_runtime(
             codex_adapter,
             codex_worker_adapter,
             isolated_codex_adapter,
+            Arc::new(crate::file_delivery::adapter::FilePublicationAdapter::new(
+                route_repo.clone(),
+            )),
             claude_adapter,
             claude_worker_adapter,
             claude_restart_adapter,
@@ -835,6 +838,7 @@ impl Dispatcher {
             "task.completed".into(),
             "task.failed".into(),
             "task.execution_settled".into(),
+            "task.file_publication_settled".into(),
             // Issue #644 PR-C — the gate runner's verdict: pushed to
             // the planner (hard-fire) and a scheduler trigger (a gate
             // verdict terminalizes the task — budget freed / deps
@@ -1078,7 +1082,7 @@ impl Inner {
             Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
             | Event::TaskGateResult { .. }
-            | Event::TaskExecutionSettled { .. } => {
+            | Event::TaskExecutionSettled { .. } | Event::TaskFilePublicationSettled { .. } => {
                 // Issue #644 PR-C (§6.5) — gated self-report
                 // suppression: a `task.completed` whose key resolves
                 // to a tasks row WITH a gate is a claim, not evidence;
@@ -1384,7 +1388,10 @@ impl Inner {
         if envelope_id <= cursor {
             return;
         }
-        if matches!(event, Event::TaskExecutionSettled { .. }) {
+        if matches!(
+            event,
+            Event::TaskExecutionSettled { .. } | Event::TaskFilePublicationSettled { .. }
+        ) {
             let preceding = match crate::harness::catch_up::observations_since(
                 self.repo.as_ref(),
                 &track_id,
@@ -1493,6 +1500,19 @@ pub(crate) async fn resolve_harness_observation(
     track_id: &TrackId,
     event: &Event,
 ) -> crate::error::Result<Option<HarnessObservation>> {
+    if let Event::TaskFilePublicationSettled {
+        task_id,
+        operation_id,
+    } = event
+    {
+        return crate::file_delivery::settlement::observation(
+            repo,
+            track_id,
+            task_id,
+            operation_id,
+        )
+        .await;
+    }
     if let Event::TaskExecutionSettled {
         task_id,
         operation_id,
@@ -1548,6 +1568,7 @@ pub(crate) fn harness_observation_from_event(
     task_key: Option<&str>,
 ) -> Option<HarnessObservation> {
     match event {
+        Event::TaskFilePublicationSettled { .. } => None, // requires the retained Operation read above
         Event::TaskCompleted {
             idempotency_key,
             result,
@@ -1566,7 +1587,7 @@ pub(crate) fn harness_observation_from_event(
         }),
         Event::TaskExecutionSettled { task_id, .. } => Some(HarnessObservation::SystemContext {
             text: format!(
-                "Failed task execution {task_id} has stopped and its Operation has settled. Re-read calm.plan.list for the current attempt and recovery capability. Choose a same-contract recovery only when authorized; if User authorization is required, explain that next step. Retained files remain evidence; an isolated recovery starts in a new empty workspace."
+                "Failed task execution {task_id} has stopped and its Operation has settled. Re-read calm.plan.list for the current attempt and recovery capability. Choose a same-contract recovery only when authorized; if User authorization is required, explain that next step. Isolated recovery uses a new workspace. Declared JSON consumers retain their original immutable input binding; other retained files remain evidence."
             ),
         }),
         // Gate log paths use the author key resolved from the execution row.

@@ -4,7 +4,8 @@
 mod admission;
 mod view;
 pub(crate) use admission::{
-    check_recovery_attempt_tx, require_attempt_startable_tx, validate_isolated_start_tx,
+    check_recovery_attempt_tx, require_attempt_startable_tx, validate_frozen_contract_tx,
+    validate_isolated_start_tx,
 };
 pub use calm_types::task_recovery::{TaskAttemptView, TaskRecoveryCapability, TaskRecoveryView};
 pub use view::task_recovery_view;

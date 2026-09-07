@@ -1,10 +1,10 @@
 use crate::{Entry, Error, Materialized, Result, SlotBinding, SnapshotId};
 use crate::{filesystem as disk, model, store::ArtifactStore};
 use std::{
-    collections::BTreeMap,
-    fs::{self, OpenOptions},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::Path,
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, File, OpenOptions},
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
 };
 
 #[derive(Default)]
@@ -52,6 +52,38 @@ impl ArtifactStore {
     /// caller has already authorized these bindings. Missing output paths fail;
     /// presence of a slot is not evidence that it passed a gate.
     pub fn materialize(&self, inputs: &[SlotBinding], destination: &Path) -> Result<Materialized> {
+        self.publish_plan(self.slot_plan(inputs)?, destination)
+    }
+
+    /// Explicit reconciliation of a possibly published destination, before consumer
+    /// start. The caller must supply the original frozen bindings and keep the
+    /// destination and its ancestors protected from writers through verification
+    /// and launch. Exact inventory, types, hashes, modes and single file links must
+    /// match; no destination is created, rewritten or replaced. Successful checks
+    /// repeat file/directory and publication fsync barriers after an uncertain rename.
+    /// This checks content, not Operation ownership or consumption authority.
+    pub fn verify_materialized(
+        &self,
+        inputs: &[SlotBinding],
+        destination: &Path,
+    ) -> Result<Materialized> {
+        let plan = self.slot_plan(inputs)?;
+        let destination = self.destination(destination)?;
+        let _lock = self.lock()?;
+        let root = disk::open_dir(&destination)?;
+        if root.metadata()?.dev() != disk::open_dir(&self.root)?.metadata()?.dev() {
+            return Err(Error::Unsupported("prepared destination filesystem".into()));
+        }
+        self.verify_plan(&plan, &root)?;
+        disk::sync_dir(destination.parent().expect("validated destination parent"))?;
+        disk::sync_dir(&self.root.join("staging"))?;
+        Ok(Materialized {
+            destination,
+            entries: plan.entries.into_values().collect(),
+        })
+    }
+
+    fn slot_plan(&self, inputs: &[SlotBinding]) -> Result<Plan> {
         if inputs.len() > self.limits.max_entries {
             return Err(Error::Limit("input bindings".into()));
         }
@@ -88,7 +120,8 @@ impl ArtifactStore {
             }
             self.check_plan(&plan)?;
         }
-        self.publish_plan(plan, destination)
+        self.check_plan(&plan)?;
+        Ok(plan)
     }
 
     /// Prepare the FULL candidate for an already-authorized repair. This includes
@@ -112,8 +145,7 @@ impl ArtifactStore {
             &self.limits,
         )
     }
-    fn publish_plan(&self, plan: Plan, destination: &Path) -> Result<Materialized> {
-        self.check_plan(&plan)?;
+    fn destination(&self, destination: &Path) -> Result<PathBuf> {
         disk::absolute(destination)?;
         let parent = destination
             .parent()
@@ -130,6 +162,12 @@ impl ArtifactStore {
                 "destination and store must not overlap".into(),
             ));
         }
+        Ok(destination)
+    }
+
+    fn publish_plan(&self, plan: Plan, destination: &Path) -> Result<Materialized> {
+        self.check_plan(&plan)?;
+        let destination = self.destination(destination)?;
         match fs::symlink_metadata(&destination) {
             Ok(_) => return Err(Error::DestinationExists(destination)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -141,6 +179,7 @@ impl ArtifactStore {
         // publication requires the destination to be on this same filesystem.
         let stage = tempfile::Builder::new()
             .prefix("prepare-")
+            .permissions(fs::Permissions::from_mode(0o700))
             .rand_bytes(12)
             .tempdir_in(self.root.join("staging"))?;
         for entry in plan.entries.values() {
@@ -168,35 +207,163 @@ impl ArtifactStore {
                 }
             }
         }
-        // Verify the actual prepared bytes and executable metadata, then fsync
-        // directory entries from leaves to root before publishing the directory.
-        let prepared_root = disk::open_dir(stage.path())?;
-        for entry in plan.entries.values().rev() {
-            let file = disk::open_beneath(&prepared_root, entry.path())?;
-            match entry {
-                Entry::Directory { .. } => file.sync_all()?,
-                Entry::File {
-                    digest,
-                    bytes,
-                    executable,
-                    ..
-                } => {
-                    let mode = file.metadata()?.mode() & 0o777;
-                    if mode != if *executable { 0o700 } else { 0o600 } {
-                        return Err(Error::Integrity("prepared executable metadata".into()));
-                    }
-                    let actual = disk::copy_hash(file, &mut std::io::sink(), *bytes)?;
-                    disk::verify_identity(&actual, digest, *bytes)?;
-                }
-            }
-        }
-        prepared_root.sync_all()?;
+        self.verify_plan(&plan, &disk::open_dir(stage.path())?)?;
         disk::rename_new(stage.path(), &destination)?;
-        disk::sync_dir(&parent)?;
+        disk::sync_dir(destination.parent().expect("validated destination parent"))?;
         disk::sync_dir(&self.root.join("staging"))?;
         Ok(Materialized {
             destination,
             entries: plan.entries.into_values().collect(),
         })
+    }
+
+    fn verify_plan(&self, plan: &Plan, root: &File) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        let directories =
+            std::iter::once("").chain(plan.entries.values().filter_map(|entry| match entry {
+                Entry::Directory { path } => Some(path.as_str()),
+                _ => None,
+            }));
+        // Enumerate only expected directories through pinned FDs. Unknown entries
+        // fail immediately; no unbounded walk or traversal into an extra directory.
+        for relative in directories {
+            let directory = if relative.is_empty() {
+                root.try_clone()?
+            } else {
+                disk::open_beneath(root, relative)?
+            };
+            let meta = directory.metadata()?;
+            if !meta.is_dir() || meta.mode() & 0o7777 != 0o700 {
+                return Err(Error::Integrity("prepared directory metadata".into()));
+            }
+            for item in fs::read_dir(disk::fd_path(&directory))? {
+                let name = item?
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| Error::Integrity("prepared non-UTF-8 entry".into()))?;
+                let path = if relative.is_empty() {
+                    name
+                } else {
+                    format!("{relative}/{name}")
+                };
+                if !plan.entries.contains_key(&path) || !seen.insert(path) {
+                    return Err(Error::Integrity("unexpected prepared entry".into()));
+                }
+            }
+        }
+        if seen.len() != plan.entries.len() {
+            return Err(Error::Integrity("missing prepared entry".into()));
+        }
+        // Verify and sync leaves before their parent directories. Hash the actual
+        // prepared bytes with the same bounded streaming verifier as capture.
+        for entry in plan.entries.values().rev() {
+            let file = disk::open_beneath(root, entry.path())?;
+            if let Entry::File {
+                digest,
+                bytes,
+                executable,
+                ..
+            } = entry
+            {
+                let meta = file.metadata()?;
+                if !meta.is_file()
+                    || meta.nlink() != 1
+                    || meta.mode() & 0o7777 != if *executable { 0o700 } else { 0o600 }
+                {
+                    return Err(Error::Integrity("prepared file metadata".into()));
+                }
+                let actual = disk::copy_hash(file.try_clone()?, &mut std::io::sink(), *bytes)?;
+                disk::verify_identity(&actual, digest, *bytes)?;
+            }
+            file.sync_all()?;
+        }
+        root.sync_all()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FileArtifactPath, FileCaptureRequest, Limits};
+
+    #[test]
+    fn materialized_reconciliation_repairs_uncertain_publication_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("store");
+        let limits = Limits {
+            max_entries: 16,
+            max_file_bytes: 1024,
+            max_total_bytes: 1024,
+            max_manifest_bytes: 4096,
+            max_path_bytes: 128,
+            max_depth: 8,
+        };
+        let store = ArtifactStore::open_files(&root, limits.clone()).unwrap();
+        let source = temp.path().join("source");
+        fs::write(&source, b"original").unwrap();
+        let path = FileArtifactPath::new("result", &limits).unwrap();
+        let receipt = store
+            .capture_file(
+                FileCaptureRequest {
+                    key: "capture",
+                    boundary_id: "stopped",
+                    output: "result",
+                    path: &path,
+                },
+                || {
+                    Ok(OpenOptions::new()
+                        .read(true)
+                        .custom_flags(nix::libc::O_NONBLOCK)
+                        .open(&source)?)
+                },
+            )
+            .unwrap();
+        let bindings = [SlotBinding {
+            snapshot: receipt.snapshot,
+            output: "result".into(),
+            into: "input".into(),
+        }];
+        let destination = temp.path().join("consumer");
+        let fail = || {
+            let parent = temp.path().to_path_buf();
+            move |at: &Path| {
+                if at == parent {
+                    Err(std::io::Error::other("publication fsync interrupted").into())
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        assert!(matches!(
+            disk::faults::with_sync(fail(), || store.materialize(&bindings, &destination)),
+            Err(Error::Io(_))
+        ));
+        assert!(
+            destination.is_dir(),
+            "actual rename must precede the injected failure"
+        );
+        assert!(matches!(
+            store.materialize(&bindings, &destination),
+            Err(Error::DestinationExists(_))
+        ));
+        assert!(
+            matches!(
+                disk::faults::with_sync(fail(), || store
+                    .verify_materialized(&bindings, &destination)),
+                Err(Error::Io(_))
+            ),
+            "reconciliation must finish publication durability before success"
+        );
+        fs::remove_file(source).unwrap();
+        let reopened = ArtifactStore::open_files(&root, limits).unwrap();
+        let verified = reopened
+            .verify_materialized(&bindings, &destination)
+            .unwrap();
+        assert_eq!(verified.destination, destination);
+        assert_eq!(
+            fs::read(destination.join("input/result")).unwrap(),
+            b"original"
+        );
     }
 }

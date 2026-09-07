@@ -19,7 +19,7 @@ const FORMAT: &[u8] = b"calm-task-artifacts/file-manifest-v1\n";
 pub struct ArtifactStore {
     pub(crate) root: PathBuf,
     pub(crate) limits: Limits,
-    pub(crate) git: GitConfig,
+    pub(crate) git: Option<GitConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,13 +43,23 @@ impl ArtifactStore {
     /// exclude this tree from every worker's writable mounts. Only abandoned,
     /// unpublished capture staging is removed, under an exclusive process lock.
     pub fn open(root: &Path, limits: Limits, git: GitConfig) -> Result<Self> {
-        limits.validate()?;
         disk::absolute(&git.binary)?;
         if git.timeout.is_zero() {
             return Err(Error::Invalid(
                 "Git inspection timeout must be positive".into(),
             ));
         }
+        Self::open_inner(root, limits, Some(git))
+    }
+
+    /// Open a store for ordinary-file capture, reads and materialization, with no
+    /// Git dependency. Whole-tree capture is explicitly unavailable on this handle.
+    pub fn open_files(root: &Path, limits: Limits) -> Result<Self> {
+        Self::open_inner(root, limits, None)
+    }
+
+    fn open_inner(root: &Path, limits: Limits, git: Option<GitConfig>) -> Result<Self> {
+        limits.validate()?;
         disk::absolute(root)?;
         disk::open_dir(
             root.parent()
@@ -151,24 +161,37 @@ impl ArtifactStore {
     pub(crate) fn capture_inner(
         &self,
         request: CaptureRequest<'_>,
-        mut checkpoint: impl FnMut(CapturePoint) -> Result<()>,
+        checkpoint: impl FnMut(CapturePoint) -> Result<()>,
     ) -> Result<CaptureReceipt> {
-        for value in [request.key, request.source.boundary_id] {
-            if value.is_empty() || value.len() > 512 || value.bytes().any(|b| b.is_ascii_control())
-            {
-                return Err(Error::Invalid(
-                    "capture key and trusted boundary ID must be nonempty bounded strings".into(),
-                ));
-            }
+        model::capture_identity(request.key, request.source.boundary_id)?;
+        if self.git.is_none() {
+            return Err(Error::Unsupported(
+                "Git capture needs explicit Git configuration".into(),
+            ));
         }
         let outputs = model::normalize_outputs(request.outputs, &self.limits)?;
         let request_bytes =
             serde_json::to_vec(&("capture-v1", request.source.boundary_id, &outputs))?;
+        self.capture_transaction(
+            request.key,
+            &request_bytes,
+            |stage| self.capture_tree(&request, outputs, stage),
+            checkpoint,
+        )
+    }
+
+    pub(crate) fn capture_transaction(
+        &self,
+        key: &str,
+        request_bytes: &[u8],
+        capture: impl FnOnce(&Path) -> Result<Digest>,
+        mut checkpoint: impl FnMut(CapturePoint) -> Result<()>,
+    ) -> Result<CaptureReceipt> {
         if request_bytes.len() as u64 > self.limits.max_manifest_bytes {
             return Err(Error::Limit("request bytes".into()));
         }
-        let fingerprint = Digest::of(&request_bytes);
-        let key_digest = Digest::of(request.key.as_bytes());
+        let fingerprint = Digest::of(request_bytes);
+        let key_digest = Digest::of(key.as_bytes());
         let request_dir = self.root.join("captures").join(key_digest.as_str());
         let _lock = self.lock()?;
         match disk::open_dir(&request_dir) {
@@ -196,7 +219,7 @@ impl ArtifactStore {
             .tempdir_in(self.root.join("staging"))?;
         let snapshot_stage = stage.path().join("snapshot");
         disk::private_dir(&snapshot_stage)?;
-        let snapshot = self.capture_tree(&request, outputs, &snapshot_stage)?;
+        let snapshot = capture(&snapshot_stage)?;
         let record = CaptureRecord {
             version: "capture-v1".into(),
             key_digest,

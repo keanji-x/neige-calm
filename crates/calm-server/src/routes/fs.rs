@@ -688,41 +688,65 @@ async fn open_workspace_regular_file_from_fd(
     relative: PathBuf,
     symlinks: WorkspaceSymlinks,
 ) -> Result<OpenWorkspaceFile> {
-    use nix::fcntl::{OFlag, OpenHow, openat2};
-    use nix::sys::stat::Mode;
-    use std::os::fd::{AsRawFd, FromRawFd};
     let requested = workspace_root.join(&relative);
-    let resolve = workspace_resolve_flags(symlinks);
     tokio::task::spawn_blocking(move || {
-        let raw_fd = openat2(
-            root.as_raw_fd(),
-            &relative,
-            OpenHow::new()
-                .flags(OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)
-                .mode(Mode::empty())
-                .resolve(resolve),
-        )
-        .map_err(|error| map_workspace_open_err(&requested, &workspace_root, error))?;
-        // SAFETY: `openat2` returned a new owned descriptor and this is its
-        // only conversion into an owning Rust value.
-        let file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
-        let meta = file
-            .metadata()
-            .map_err(|error| map_io_err(&requested, error))?;
-        if !meta.is_file() {
-            return Err(CalmError::BadRequest(format!(
-                "path {} is not a regular file",
-                requested.display()
-            )));
-        }
+        let file =
+            open_workspace_regular_file_fd(&root, &relative, symlinks, false).map_err(|error| {
+                match error.raw_os_error() {
+                    Some(code) => map_workspace_open_err(
+                        &requested,
+                        &workspace_root,
+                        nix::errno::Errno::from_raw(code),
+                    ),
+                    None => CalmError::BadRequest(format!(
+                        "path {} is not a regular file",
+                        requested.display()
+                    )),
+                }
+            })?;
+        let size = file.metadata()?.len();
         Ok(OpenWorkspaceFile {
             file: tokio::fs::File::from_std(file),
             display_path: requested,
-            size: meta.len(),
+            size,
         })
     })
     .await
     .map_err(|error| CalmError::Internal(format!("workspace open task failed: {error}")))?
+}
+
+/// Shared synchronous core for lazy descriptor-only artifact capture and async reads.
+/// `same_mount` is required for sealed outputs, whose source cannot cross mounts.
+#[cfg(target_os = "linux")]
+pub(crate) fn open_workspace_regular_file_fd(
+    root: &std::fs::File,
+    relative: &Path,
+    symlinks: WorkspaceSymlinks,
+    same_mount: bool,
+) -> std::io::Result<std::fs::File> {
+    use nix::fcntl::{OFlag, OpenHow, ResolveFlag, openat2};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let mut resolve = workspace_resolve_flags(symlinks);
+    if same_mount {
+        resolve |= ResolveFlag::RESOLVE_NO_XDEV;
+    }
+    let raw_fd = openat2(
+        root.as_raw_fd(),
+        relative,
+        OpenHow::new()
+            .flags(OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)
+            .resolve(resolve),
+    )
+    .map_err(std::io::Error::from)?;
+    // SAFETY: openat2 returned a fresh descriptor transferred to one owner.
+    let file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    Ok(file)
 }
 
 #[cfg(target_os = "linux")]

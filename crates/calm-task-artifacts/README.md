@@ -1,8 +1,8 @@
 # calm-task-artifacts
 
-A synchronous, Linux-only filesystem library for #1501's restricted local Git
-artifact delivery. It captures exact ordinary file bytes, keeps immutable
-snapshots independent of source workspaces, and prepares verified input slots or
+A synchronous, Linux-only filesystem library for #1501's ordinary-file and
+restricted local Git artifact delivery. It captures exact ordinary file bytes,
+keeps immutable snapshots independent of source workspaces, and prepares verified input slots or
 whole failed candidates. It does not implement scheduling, database state,
 acceptance, recovery authority, or provider stopping.
 
@@ -11,11 +11,12 @@ acceptance, recovery authority, or provider stopping.
 The kernel caller must:
 
 - Establish a trusted write boundary before capture and keep the source quiescent
-  until capture finishes. `QuiescentSource.boundary_id` is a required assertion
+  until capture finishes. Both capture requests require a `boundary_id` assertion
   identifying that proof; the library does not verify a provider stopped.
-- Supply an isolated local Git worktree and a trusted absolute Git binary through
-  `GitConfig`. Keep the store, its ancestors, and preparation parent inaccessible
-  to workers for writes. Store directories must be private and caller-owned.
+- For whole-tree capture, supply an isolated local Git worktree and a trusted
+  absolute Git binary through `GitConfig`. For ordinary-file capture, supply the
+  descriptor contract below. Keep the store, its ancestors, and preparation parent
+  inaccessible to workers for writes. Store directories must be private and caller-owned.
 - Authorize each exact snapshot/slot binding, including repair-purpose access to
   rejected work. Bind attempt IDs, repository provenance, original inputs, gate
   evidence and retention in the existing kernel persistence layer.
@@ -29,8 +30,8 @@ filesystem as the store. The library API is exported only on Linux; callers on
 other platforms must refuse this delivery capability.
 
 Use a blocking thread when calling from an async executor. All Cargo validation
-for this task uses the cooperative `/tmp/neige-1501-cargo.lock` and the shared
-repository target directory.
+for this task uses the cooperative `/tmp/neige-1501-cargo.lock` and an exclusive
+physical-worktree target directory.
 
 ## Public API
 
@@ -63,8 +64,8 @@ timeout. No environment variable configures library behavior.
 
 `SnapshotId` is a checked lowercase SHA-256 `Digest`. `Snapshot` exposes read-only
 `id()`, `manifest()`, and `missing_outputs()` getters. A `SnapshotManifest` records
-`file-manifest-v1`, delivery schema `git-v1`, sorted complete candidate `entries`,
-and sorted public `outputs`. Entries preserve relative paths, file SHA-256, byte
+`file-manifest-v1`, explicit delivery schema (`git-v1` or `regular-file-v1`), sorted
+candidate `entries`, and sorted public `outputs`. Entries preserve relative paths, file SHA-256, byte
 length and executable bit; directory entries also preserve empty directories.
 `Materialized` returns the exact destination and prepared entry inventory.
 
@@ -75,9 +76,94 @@ this library. A slot's declared paths retain their source-relative layout:
 `inputs/b/notes.txt`. Bindings' `into` paths must be disjoint. One slot's paths may
 not duplicate or overlap another slot's paths.
 
+## One ordinary file from a pinned descriptor
+
+```rust,ignore
+let store = ArtifactStore::open_files(&kernel_store, limits.clone())?;
+let path = FileArtifactPath::new("out/result.json", &limits)?;
+let receipt = store.capture_file(FileCaptureRequest {
+    key: capture_operation_id,
+    boundary_id: stop_proof_id,
+    output: "result",
+    path: &path,
+}, || open_exact_stopped_source_file())?;
+let sealed_bytes = store.read_snapshot_file(&receipt.snapshot, &path)?;
+// The kernel verifies this sealed version, then authorizes one SlotBinding.
+```
+
+`FileCaptureRequest` requires a stable key, boundary identity, output name and
+`FileArtifactPath`. The path constructor rejects ambiguous spellings instead of
+normalizing them: absolute paths, dot/traversal segments, empty components,
+backslashes, control bytes and `.git`, `.gitmodules`, or `.codex` components.
+Every path ceiling is checked again against the current store limits. The output
+name follows the existing slot-name policy. No JSON validation occurs here:
+empty files, binary bytes and invalid JSON are valid file candidates.
+
+The lazy opener returns `Result<std::fs::File>`. The caller must establish the
+stop boundary, resolve the correct attempt and owner-checked root, and open the
+exact file beneath that pinned directory with symlinks and mount crossings
+refused. It must use `O_NONBLOCK` **when opening**, so a FIFO cannot block before
+the library sees its descriptor. It transfers an independently owned read-only
+file description with no shared offset users or concurrent writers. The library
+checks regular-file type, read-only/nonblocking flags and exactly one hardlink,
+rewinds to byte zero, then captures through that descriptor without reopening a
+pathname. Descriptor checks cannot establish source provenance or process stop;
+those remain caller assertions. The source must be outside the protected store.
+The opener executes under the store lock and must not reenter the store.
+
+No Git binary is configured or run by `open_files`/`capture_file`; no directory is
+walked and no adjacent file is retained. The manifest contains exactly the named
+file and its structural parent directories. Missing files fail before key freeze;
+there is no missing-output candidate in this route. File/total/entry/path/depth/
+manifest ceilings apply. The existing shared object writer, capture transaction,
+publication barriers, snapshot verification and materialization are reused.
+
+The manifest remains `file-manifest-v1` with explicit delivery version
+`regular-file-v1`, whose one-file shape is validated on reopen. The existing
+`git-v1` manifest and `capture-v1` record formats are unchanged and remain readable.
+The new request fingerprint is domain-separated with `file-capture-v1`, binding
+boundary, output and path. Reusing a key for changed bindings or the other capture
+contract conflicts. Frozen replay finishes publication/verification **before any
+source opener invocation**, including after source deletion. An uncertain result
+must retry the same request, not choose a new key and current bytes.
+
+`read_snapshot_file(snapshot_id, &path)` verifies the snapshot, requires an exact
+file entry, and returns bounded bytes rehashed against its digest and length.
+It works for known manifest versions; it exposes no raw object handle. Callers
+must authorize the snapshot/path and bind any verification evidence to that exact
+version. Reading establishes integrity, not JSON validity, business acceptance or
+consumer eligibility. `open_files` can read/materialize existing Git snapshots;
+whole-tree `capture` needs an explicitly Git-configured `open` handle.
+
+Existing `materialize` prepares the slot under `into`, preserving its declared
+relative path (for example `inputs/a/out/result.json`). The destination must be
+absent and on the store filesystem; existing directories are never merged or
+adopted. Caller-controlled input location, retained bindings and authorization
+through consumer start remain kernel responsibilities. No accepted bit, retention
+GC, download API, or production kernel handoff is added by this component.
+
+`verify_materialized(&bindings, &existing_destination)` explicitly reconciles an
+uncertain publication before consumer start. It uses the same slot plan and
+prepared-tree verifier as `materialize`: the retained snapshots must verify, and
+the existing destination must contain exactly the expected files/directories,
+with matching bytes, executable metadata, `0600`/`0700` file permissions, `0700`
+directory permissions (including the root), and single-link regular files. Extra
+or missing entries, symlinks, special files, hardlinks, special mode bits and a
+different filesystem are refused. Preparation explicitly creates its root with
+`0700`, rather than inheriting tempfile's default directory permissions.
+
+The verifier never creates, overwrites, deletes or repairs destination content.
+After checking, it repeats file/directory and both publication-parent fsync
+barriers, returning the same `Materialized` inventory shape. A failed barrier
+remains an uncertain result. The kernel must supply the original frozen binding
+and retain ownership/write exclusion for the destination and ancestors through
+verification and launch; byte equality alone cannot prove Operation ownership.
+There is no automatic fallback inside `materialize`: callers choose explicit
+verification after `DestinationExists`. This companion covers slot inputs only.
+
 ## Whole candidate versus output slots
 
-All ordinary worktree files and directories are captured, including untracked
+The original Git `capture` captures all ordinary worktree files and directories, including untracked
 and ignored files. Only the root `.git` metadata is excluded. The `.git` marker
 must be a directory or regular gitdir file; it is never copied or recursively
 walked. Linked Git worktrees are supported. Git performs only a bounded read-only
@@ -112,8 +198,9 @@ owns those subsequent preparation decisions. There is no accepted/eligible bit.
 The file-manifest store is smaller than implementing Git object transactions,
 retention refs and filter-independent worktree reconstruction for this scope.
 Each snapshot directory holds a canonical manifest and raw SHA-256 objects.
-Identical candidate bytes, executable bits, directories and normalized slots
-produce the same ID regardless of capture key, boundary token or source location.
+Identical candidate bytes, executable bits, directories, normalized slots and
+delivery version produce the same ID regardless of capture key, boundary token
+or source location.
 Objects are deduplicated within a snapshot. Cross-snapshot deduplication and GC
 are intentionally absent.
 
@@ -142,8 +229,9 @@ original snapshot with `replayed: true`, even if the source changed or disappear
 Changing the boundary or slot declarations conflicts. The receipt and snapshot
 contain no implicit "latest" reference. Different keys can retain the same content
 ID. The key is globally scoped within this store; callers should use a unique
-capture Operation identity. The source path is deliberately not replay identity:
-a frozen request never re-reads any source location.
+capture Operation identity. The physical source location is deliberately not replay
+identity; the ordinary file's declared relative path is part of its output binding.
+A frozen request never re-reads any source location.
 
 A failure before durable key freeze may be retried against the source because no
 snapshot binding was accepted. After freeze, the capture's exact staged identity
@@ -182,8 +270,9 @@ whole directory using no-replace rename. Existing destinations (even empty ones
 or symlinks) are refused. A failed preparation never exposes a partially populated
 destination. A process crash after successful rename may leave a complete
 prepared destination with a lost response; the caller's Operation must reconcile
-that state and its frozen bindings. The library never overwrites an existing
-consumer binding or guesses whether an existing directory is reusable.
+that state and its frozen bindings. `verify_materialized` can explicitly check
+and finish durability for those exact slot inputs. The library never overwrites
+an existing consumer binding or guesses which bindings to reconcile.
 
 ## Validation
 
@@ -244,3 +333,26 @@ the exact production bytes returned all 32 tests to green under the same lock:
 | Recreate missing initialized control directories | `open_rejects_initialized_store_missing_control_directory` |
 | Require the redundant staged snapshot to verify again | `duplicate_cleanup_replays_after_partial_removal` |
 | Delete the redundant copy before syncing canonical publication | `duplicate_cleanup_preserves_stage_until_published_sync_succeeds` |
+
+
+## Ordinary-file component validation
+
+The component adds 16 tests through the production capture/read/materialize APIs,
+including deleted-source replay, uncertain key fsync, fixed legacy manifest and
+request identities, malformed one-file manifests, pinned descriptors, unrelated
+files, corruption, descriptor admission and resource limits. Reconciliation tests cover exact existing
+inputs, inventory/link/type/mode drift, wrong bindings, retained snapshot loss,
+and a real rename followed by an injected publication fsync failure. The library still
+has no production kernel handoff caller in this component.
+
+Validated with the following commands, each under
+`flock --close /tmp/neige-1501-cargo.lock env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 CARGO_TARGET_DIR=/mnt/data2/kenji/.build/neige1501-planner-recovery-target`:
+
+- `cargo nextest run --locked -p calm-task-artifacts --test-threads 8 --no-fail-fast`:
+  48 passed, no skips (32 existing plus 16 new).
+- `cargo clippy --locked -p calm-task-artifacts --all-targets -- -D warnings`: passed.
+- `cargo fmt -p calm-task-artifacts -- --check`: passed.
+
+No new mutation run, broad workspace gate, model run or integrated F4 acceptance
+was performed for this component. Parent integration owns independent full-diff
+reviews and the remaining kernel boundary validation.

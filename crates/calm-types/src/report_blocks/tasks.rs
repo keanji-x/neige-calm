@@ -894,6 +894,28 @@ pub fn project_task_declarations(
             ));
         }
     }
+    for declaration in &declarations {
+        use crate::task_execution::{FileDelivery, IsolatedCodexSelection};
+        let Ok(Some(selection)) = IsolatedCodexSelection::from_context(&declaration.context) else {
+            continue;
+        };
+        let Some(FileDelivery::Consumer { producer, slot, .. }) = selection.file_delivery else {
+            continue;
+        };
+        let sources: Vec<_> = declarations
+            .iter()
+            .filter(|source| source.key == producer && !source.tombstone)
+            .collect();
+        let valid = producer != declaration.key && sources.len() == 1 &&
+            IsolatedCodexSelection::from_context(&sources[0].context).ok().flatten()
+                .is_some_and(|source| matches!(source.file_delivery, Some(FileDelivery::Producer { slot: output, .. }) if output == slot));
+        if !valid && let Some(index) = declaration.block_index {
+            diagnostics[index].push(Diagnostic::new(
+                "context",
+                "file_delivery must select one declared producer and slot in this Track",
+            ));
+        }
+    }
     let graph = declaration_graph(&declarations);
     for (keys, cycle) in cyclic_components(&graph) {
         for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {
