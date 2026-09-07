@@ -47,7 +47,14 @@ where
     F: Fn(Arc<AppContext>, ToolCallIdentity, Value) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Value, RpcError>> + Send + 'static,
 {
-    Arc::new(move |ctx, identity, args| -> ToolHandlerFuture { Box::pin(f(ctx, identity, args)) })
+    Arc::new(move |ctx, identity, args| -> ToolHandlerFuture {
+        let result = f(ctx, identity, args);
+        Box::pin(async move {
+            result
+                .await
+                .map(crate::mcp_server::result::ToolResult::structured)
+        })
+    })
 }
 
 fn review_round_descriptor() -> ToolDescriptor {

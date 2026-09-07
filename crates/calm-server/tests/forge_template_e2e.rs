@@ -2062,7 +2062,9 @@ async fn call_review_tool(
         .review_registry
         .lookup(name)
         .unwrap_or_else(|| panic!("review tool not registered: {name}"));
-    handler(fx.review_ctx.clone(), planner_identity(fx), args).await
+    handler(fx.review_ctx.clone(), planner_identity(fx), args)
+        .await
+        .map(calm_server::mcp_server::result::ToolResult::into_structured)
 }
 
 fn approved_channels() -> Vec<ChannelVerdict> {

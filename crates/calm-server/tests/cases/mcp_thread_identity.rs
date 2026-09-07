@@ -40,6 +40,9 @@ use tracing_subscriber::{Layer, registry as tracing_registry};
 
 const TEST_BUDGET: Duration = Duration::from_secs(5);
 
+#[path = "mcp_native_image.rs"]
+mod native_image_tests;
+
 struct Boot {
     server: Arc<McpServer>,
     sqlx_repo: Arc<SqlxRepo>,
@@ -167,7 +170,9 @@ fn capture_identity_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<To
         let tx = tx.clone();
         Box::pin(async move {
             tx.send(identity).unwrap();
-            Ok(json!({ "ok": true }))
+            Ok(calm_server::mcp_server::result::ToolResult::structured(
+                json!({ "ok": true }),
+            ))
         })
     });
     registry.register(test_descriptor("test.capture_identity"), handler);
@@ -179,7 +184,9 @@ fn role_gate_registry() -> Arc<ToolRegistry> {
     let handler: ToolHandler = Arc::new(move |_ctx, identity, _args| -> ToolHandlerFuture {
         Box::pin(async move {
             require_role(&identity, CardRole::Planner)?;
-            Ok(json!({ "role": "planner" }))
+            Ok(calm_server::mcp_server::result::ToolResult::structured(
+                json!({ "role": "planner" }),
+            ))
         })
     });
     registry.register(test_descriptor("test.planner_only"), handler);
@@ -1163,7 +1170,11 @@ async fn daemontrust_with_worker_thread_uses_resolved_card_identity() {
 async fn tools_list_cardbound_without_thread_id_uses_bound_role() {
     let mut registry = ToolRegistry::new();
     let handler: ToolHandler = Arc::new(move |_ctx, _identity, _args| -> ToolHandlerFuture {
-        Box::pin(async move { Ok(json!({ "ok": true })) })
+        Box::pin(async move {
+            Ok(calm_server::mcp_server::result::ToolResult::structured(
+                json!({ "ok": true }),
+            ))
+        })
     });
     registry.register(
         test_descriptor("test.planner_no_annotations"),
@@ -1235,7 +1246,11 @@ async fn tools_list_daemontrust_without_thread_id_returns_role_union() {
     let daemon_token = "daemon-token-tools-list";
     let mut registry = ToolRegistry::new();
     let handler: ToolHandler = Arc::new(move |_ctx, _identity, _args| -> ToolHandlerFuture {
-        Box::pin(async move { Ok(json!({ "ok": true })) })
+        Box::pin(async move {
+            Ok(calm_server::mcp_server::result::ToolResult::structured(
+                json!({ "ok": true }),
+            ))
+        })
     });
     registry.register(test_descriptor("test.planner_tool"), handler);
     let boot = boot_with_registry_and_daemon_hash(

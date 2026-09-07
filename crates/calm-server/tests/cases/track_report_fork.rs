@@ -1551,7 +1551,9 @@ async fn call_planner_tool(
     let handler = registry
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
-    handler(ctx.clone(), identity, args).await
+    handler(ctx.clone(), identity, args)
+        .await
+        .map(calm_server::mcp_server::result::ToolResult::into_structured)
 }
 
 /// The task payload the source track's user declares. `declared_by: "user"` is

@@ -244,7 +244,9 @@ async fn call_tool(
         .registry
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
-    handler(boot.ctx.clone(), planner_identity(boot), args).await
+    handler(boot.ctx.clone(), planner_identity(boot), args)
+        .await
+        .map(calm_server::mcp_server::result::ToolResult::into_structured)
 }
 
 async fn request_ratification(

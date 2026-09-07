@@ -22,6 +22,7 @@ use crate::db::RouteRepo;
 use crate::event::EventBus;
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::mcp_server::framing::RpcError;
+use crate::mcp_server::result::ToolResult;
 use crate::model::CardRole;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
@@ -236,7 +237,7 @@ pub struct AppContext {
 /// `BoxFuture<'static, …>` keeps the registry's hash-map values
 /// object-safe.
 pub type ToolHandlerFuture =
-    Pin<Box<dyn Future<Output = Result<Value, RpcError>> + Send + 'static>>;
+    Pin<Box<dyn Future<Output = Result<ToolResult, RpcError>> + Send + 'static>>;
 
 /// One tool's invocation contract. The transport calls this with the
 /// per-call [`ToolCallIdentity`] and the raw `arguments` JSON value from
@@ -519,7 +520,9 @@ mod tests {
     }
 
     fn fake_handler(who: &'static str) -> ToolHandler {
-        Arc::new(move |_ctx, _identity, _args| Box::pin(async move { Ok(json!({ "who": who })) }))
+        Arc::new(move |_ctx, _identity, _args| {
+            Box::pin(async move { Ok(ToolResult::structured(json!({ "who": who }))) })
+        })
     }
 
     async fn fake_context() -> Arc<AppContext> {
@@ -562,7 +565,7 @@ mod tests {
         .await
         .expect("alias forwards to real handler");
 
-        assert_eq!(out, json!({ "who": "real" }));
+        assert_eq!(out.into_structured(), json!({ "who": "real" }));
     }
 
     #[test]
@@ -638,7 +641,7 @@ mod tests {
         .await
         .expect("real handler still callable");
 
-        assert_eq!(out, json!({ "who": "real" }));
+        assert_eq!(out.into_structured(), json!({ "who": "real" }));
     }
 
     #[test]
