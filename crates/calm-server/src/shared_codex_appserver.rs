@@ -1516,6 +1516,65 @@ impl SharedCodexAppServer {
         Ok(client.config_read(cwd, deadline).await?.config)
     }
 
+    /// #1444 — drop this daemon's `thread_id -> card_id` attribution for a set
+    /// of Cards whose owning Track/Area delete has **already committed**.
+    ///
+    /// Why it exists. `resume_cached_threads` (hot takeover *and* the
+    /// crash/respawn path in `transition_replace`, which does not rebuild the
+    /// cache from the database) resumes every entry it finds here. Without this
+    /// call the entries of a deleted Card survive the delete in memory, so a
+    /// reconnect resumes a thread whose Card has no database owner.
+    ///
+    /// **Serialization.** This takes `kernel_thread_start_serial`, the exact
+    /// guard [`handle_thread_started_notification`] holds across its
+    /// "is it already mapped? → resolve → insert" sequence. A late
+    /// `thread/started` for a deleted Card therefore cannot interleave with
+    /// this removal: it either finishes first (and its mapping is removed
+    /// here), or it runs after and finds no database owner to resolve, so it
+    /// inserts nothing.
+    ///
+    /// **Only after the commit.** Callers invoke this on the committed path
+    /// only. A failed transaction, or the workspace-compensation path, leaves
+    /// the mappings alone — the Cards still exist.
+    ///
+    /// **Infallible on purpose.** It returns how many mappings it dropped and
+    /// has no error path, so a cache miss can never be surfaced as, or
+    /// mistaken for, a database rollback. Cards not in `card_ids` are never
+    /// touched.
+    pub async fn forget_threads_for_deleted_cards(&self, card_ids: &HashSet<String>) -> usize {
+        if card_ids.is_empty() {
+            return 0;
+        }
+        let _start_guard = self.kernel_thread_start_serial.lock().await;
+        let mut dropped: Vec<(String, String)> = Vec::new();
+        self.thread_cache.retain(|thread_id, card_id| {
+            if card_ids.contains(card_id) {
+                dropped.push((thread_id.clone(), card_id.clone()));
+                false
+            } else {
+                true
+            }
+        });
+        for (thread_id, card_id) in &dropped {
+            tracing::info!(
+                target = "shared_codex_daemon::forget_deleted_card_thread",
+                %thread_id,
+                %card_id,
+                "dropped shared codex thread attribution for a deleted card"
+            );
+        }
+        dropped.len()
+    }
+
+    /// The exact `(thread_id, card_id)` pairs `resume_cached_threads` will
+    /// iterate on the next daemon (re)connect.
+    fn resume_candidates(&self) -> Vec<(String, String)> {
+        self.thread_cache
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
+    }
+
     pub fn seal_turn_thread_for_deletion(&self, thread_id: &str) {
         self.sealed_turn_threads.insert(thread_id.to_string(), ());
     }
@@ -3528,9 +3587,7 @@ impl SharedCodexAppServer {
         let Some(client) = self.running_client().await else {
             return;
         };
-        for entry in self.thread_cache.iter() {
-            let thread_id = entry.key().clone();
-            let card_id = entry.value().clone();
+        for (thread_id, card_id) in self.resume_candidates() {
             tracing::info!(
                 target = "shared_codex_daemon::resume",
                 %thread_id,
@@ -3621,6 +3678,28 @@ impl SharedCodexAppServer {
 // ===================== Test-only helpers =====================
 #[cfg(any(test, feature = "fixtures"))]
 impl SharedCodexAppServer {
+    /// #1444 — hold the *production* serialization primitive shared by
+    /// `handle_thread_started_notification` and
+    /// [`Self::forget_threads_for_deleted_cards`]. A test holding this guard
+    /// parks both, which is what proves they are on one boundary rather than
+    /// merely reaching a consistent end state. Twin of
+    /// `lock_transition_serial_for_test`.
+    #[cfg(feature = "fixtures")]
+    pub async fn lock_thread_start_serial_for_test(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.kernel_thread_start_serial)
+            .lock_owned()
+            .await
+    }
+
+    /// #1444 — what a reconnect would resume, read through the same accessor
+    /// `resume_cached_threads` uses, sorted for a stable assertion.
+    #[cfg(feature = "fixtures")]
+    pub fn resume_candidates_for_test(&self) -> Vec<(String, String)> {
+        let mut candidates = self.resume_candidates();
+        candidates.sort();
+        candidates
+    }
+
     #[cfg(feature = "fixtures")]
     pub fn active_turn_for_test(&self, thread_id: &str) -> Option<String> {
         self.active_turns
