@@ -16,7 +16,7 @@ fn declaration(key: &str, delivery: Value) -> Value {
         "empty"
     };
     json!({"key":key,"kind":"codex","goal":"Process the declared JSON document and report using native MCP.",
-        "declared_by":"spec","ready":true,"no_gate_reason":"JSON syntax policy only; no business gate.",
+        "declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,"ready":true,"no_gate_reason":"JSON syntax policy only; no business gate.",
         "context":{"neige_execution":{"version":"isolated-codex-v1","workspace":workspace,"file_delivery":delivery}}})
 }
 fn producer() -> Value {

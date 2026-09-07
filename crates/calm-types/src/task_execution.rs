@@ -140,10 +140,30 @@ mod tests {
                 )
                 .unwrap();
             for (kind, spawn, deps, gate) in [
-                ("claude", "in-wave", false, false),
-                ("codex", "sub-wave", false, false),
-                ("codex", "in-wave", true, false),
-                ("codex", "in-wave", false, true),
+                (
+                    "claude",
+                    crate::task_recovery::TASK_IN_TRACK_ROUTE,
+                    false,
+                    false,
+                ),
+                (
+                    "codex",
+                    crate::task_recovery::TASK_CHILD_TRACK_ROUTE,
+                    false,
+                    false,
+                ),
+                (
+                    "codex",
+                    crate::task_recovery::TASK_IN_TRACK_ROUTE,
+                    true,
+                    false,
+                ),
+                (
+                    "codex",
+                    crate::task_recovery::TASK_IN_TRACK_ROUTE,
+                    false,
+                    true,
+                ),
             ] {
                 assert!(selection.validate_route(kind, spawn, deps, gate).is_err());
             }
