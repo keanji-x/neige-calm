@@ -449,6 +449,48 @@ fn a_legacy_bare_holding_is_replaced_not_doubled_by_a_qualified_write() {
     );
 }
 
+/// A stored `CN:` holding SURVIVES an unrelated `market.holdings.set` on the
+/// same Track — quantity intact, alongside the newly written asset.
+///
+/// This is the counter-evidence for the claim that removing `CN:` from the
+/// grammar would silently DELETE such rows. The deletion is not produced by
+/// any single function, so no unit test can rule it out: it is the
+/// composition of `load_holdings` (which drops rows it cannot parse, without
+/// saying so) and `store_holdings` (a whole-array overwrite). Only a real
+/// round trip — seed, then write something else, then read the store — can
+/// show that the stored row is still there afterwards.
+///
+/// Driven through the real binary and the real KV for that reason. The seeded
+/// row is written directly, as the pre-split slice would have left it: the
+/// plugin has never seen this Track.
+///
+/// Deleting `"CN" => Some(Venue::Cn)` from `Venue::from_prefix` must turn this
+/// test RED. If it stays green, `CN:` is not carrying the round trip that is
+/// the whole reason it was kept, and the decision to keep it rests on nothing.
+#[test]
+fn a_stored_cn_holding_survives_a_write_to_a_different_asset() {
+    let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
+    kernel.kv.insert(
+        "holdings/trk_caller".to_string(),
+        json!([{ "asset": "CN:600519", "quantity": 7.0 }]),
+    );
+
+    // A different asset entirely — the `CN:` row is not the one being
+    // rewritten, it is the bystander the overwrite must not lose.
+    kernel.set_holding(2, "SH:600519", 3.0, TRACK);
+
+    assert_eq!(
+        kernel.kv.get("holdings/trk_caller"),
+        Some(&json!([
+            { "asset": "CN:600519", "quantity": 7.0 },
+            { "asset": "SH:600519", "quantity": 3.0 },
+        ])),
+        "the legacy CN row must still be in the store at its original \
+         quantity; a parse failure on it would have dropped it from the load \
+         and the whole-array overwrite would then have erased it for good"
+    );
+}
+
 /// A call with no Track is refused, not defaulted. Acting on some other
 /// Track's portfolio is the failure the `_meta` namespace exists to prevent.
 #[test]
