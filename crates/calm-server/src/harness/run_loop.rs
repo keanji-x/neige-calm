@@ -22,9 +22,11 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
 use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
+#[cfg(test)]
+use crate::harness::queue::input_segments_for_entries;
 use crate::harness::queue::{
     FoldOutcome, MutationResult, QueueEntry, QueueEntryId, QueueMutation, apply_mutation,
-    input_segments_for_entries, try_fold_tail,
+    try_fold_tail,
 };
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
@@ -2877,7 +2879,27 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // the presentation and the rendered text to
     // `Observation::input_segments_for`, so this is not a second copy of that
     // table.
-    let input_segments = input_segments_for_entries(&inner.card_id, &drained);
+    let input_segments = match super::recovery_briefing::input_segments(
+        inner.repo.as_ref(),
+        &inner.card_id,
+        &inner.track_id,
+        &inner.worker_session_id,
+        &drained,
+    )
+    .await
+    {
+        Ok(segments) => segments,
+        Err(error) => {
+            // Briefing reads must not lose the drained notifications or leave
+            // the harness stuck Issuing. Retry from the original durable queue.
+            rebuffer_head(inner, drained).await;
+            *inner.state.lock().await = prior_turn
+                .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
+                .unwrap_or(HarnessState::Idle);
+            persist_snapshot(inner).await?;
+            return Err(error);
+        }
+    };
 
     let joined_observation_text = input_segments
         .iter()

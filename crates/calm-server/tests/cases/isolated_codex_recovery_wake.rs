@@ -7,6 +7,17 @@ use calm_server::harness::{
 use calm_server::operation::{OperationRepo, SqlxOperationRepo};
 
 async fn planner(fx: &Fixture) -> PlannerHarness {
+    planner_with_daemon(
+        fx,
+        calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(fx.boot.repo.clone()),
+    )
+    .await
+}
+
+async fn planner_with_daemon(
+    fx: &Fixture,
+    daemon: std::sync::Arc<calm_server::shared_codex_appserver::SharedCodexAppServer>,
+) -> PlannerHarness {
     let worker_session_id = planner_identity(&fx.boot).session_id;
     let areas = calm_server::track_area_cache::TrackAreaCache::new();
     fx.boot.repo.seed_track_area_cache(&areas).await.unwrap();
@@ -47,10 +58,8 @@ async fn planner(fx: &Fixture) -> PlannerHarness {
         events: fx.boot.ctx.events.clone(),
         card_role_cache: fx.boot.card_role_cache.clone(),
         track_area_cache: areas,
-        // Keep the real harness queue live without issuing any model request.
-        daemon: calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(
-            fx.boot.repo.clone(),
-        ),
+        // The ordinary queue tests use a stub; briefing tests capture real turn input.
+        daemon,
         config: HarnessConfig::default(),
         snapshot,
     });
@@ -250,6 +259,17 @@ async fn planner_observes_failure_then_settled_isolated_recovery() {
 }
 
 async fn restore_planner(fx: &Fixture) -> PlannerHarness {
+    restore_planner_with_daemon(
+        fx,
+        calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(fx.boot.repo.clone()),
+    )
+    .await
+}
+
+async fn restore_planner_with_daemon(
+    fx: &Fixture,
+    daemon: std::sync::Arc<calm_server::shared_codex_appserver::SharedCodexAppServer>,
+) -> PlannerHarness {
     use calm_server::harness::{
         ClaimMode, RecoveryOutcome, new_track_delete_locks, spawn_recovered_harness,
     };
@@ -268,7 +288,7 @@ async fn restore_planner(fx: &Fixture) -> PlannerHarness {
         fx.boot.ctx.events.clone(),
         fx.boot.card_role_cache.clone(),
         areas,
-        calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(fx.boot.repo.clone()),
+        daemon,
         &fx.state.harness,
         &new_track_delete_locks(),
         runtime,
@@ -710,3 +730,6 @@ async fn settlement_catch_up_respects_recovered_harness_watermark() {
         "settlement must synchronize the recovered prefix so a delayed failure is not duplicated live or after persistence/replay"
     );
 }
+
+#[path = "isolated_codex_recovery_briefing.rs"]
+mod briefing;
