@@ -21,8 +21,8 @@ pub fn register_into(registry: &mut ToolRegistry) {
     for (name, description, properties, required) in [
         (
             "calm.terminal.open",
-            "Open a visible Terminal card in your authenticated Track. request_id is required for idempotent creation. The terminal starts your configured shell; send commands using input. Use the returned terminal_id; never use exec to impersonate this tool.",
-            json!({"request_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200}}),
+            "Open a visible Terminal card in your authenticated Track. request_id is required for idempotent creation. The terminal starts your configured shell unless program is supplied; send commands using input. Use the returned terminal_id; never use exec to impersonate this tool.",
+            json!({"request_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200},"program":{"type":"string","minLength":1,"maxLength":4096}}),
             vec!["request_id"],
         ),
         (
@@ -67,6 +67,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
 struct Open {
     request_id: String,
     title: Option<String>,
+    program: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -114,6 +115,10 @@ async fn call(
             if args.request_id.is_empty()
                 || args.request_id.len() > 128
                 || args.title.as_ref().is_some_and(|s| s.len() > 200)
+                || args
+                    .program
+                    .as_ref()
+                    .is_some_and(|s| s.is_empty() || s.len() > 4096 || s.contains('\0'))
             {
                 return Err(RpcError::invalid_params(
                     "invalid terminal request_id or title",
@@ -126,7 +131,7 @@ async fn call(
                 track_id: track_id.clone(),
                 title: args.title,
                 sort: None,
-                program: String::new(),
+                program: args.program.unwrap_or_default(),
                 cwd: String::new(),
                 env: json!({}),
                 theme: crate::routes::theme::RequestTheme::default_dark(),

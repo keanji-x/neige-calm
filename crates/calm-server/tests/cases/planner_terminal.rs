@@ -15,7 +15,7 @@ async fn planner_opens_visible_terminal_and_receives_png_and_confirmed_input() {
     let opened = h
         .call(
             "calm.terminal.open",
-            json!({"request_id":"open-1","title":"Planner terminal"}),
+            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal"}),
         )
         .await;
     assert!(opened.get("error").is_none(), "{opened}");
@@ -40,7 +40,7 @@ async fn planner_opens_visible_terminal_and_receives_png_and_confirmed_input() {
     let repeated = h
         .ok(
             "calm.terminal.open",
-            json!({"request_id":"open-1","title":"Planner terminal"}),
+            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal"}),
         )
         .await;
     assert_eq!(repeated["terminal_id"], terminal);
@@ -108,7 +108,10 @@ async fn planner_opens_visible_terminal_and_receives_png_and_confirmed_input() {
 async fn planner_terminal_refuses_unowned_and_cross_track_input() {
     let mut h = Harness::start().await;
     let open = h
-        .ok("calm.terminal.open", json!({"request_id":"no-owner"}))
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"no-owner"}),
+        )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
     let denied=h.call("calm.terminal.input",json!({"terminal_id":terminal,"observation_id":open["observation_id"],"request_id":"denied","action":{"type":"text","text":"bad"}})).await;
@@ -169,7 +172,10 @@ async fn human_takeover_revokes_the_planners_saved_observation() {
     };
     let h = Harness::start().await;
     let open = h
-        .ok("calm.terminal.open", json!({"request_id":"handoff"}))
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"handoff"}),
+        )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
     h.ok(
@@ -267,7 +273,10 @@ async fn human_takeover_revokes_the_planners_saved_observation() {
 async fn repeated_input_request_never_reaches_the_terminal_twice() {
     let h = Harness::start().await;
     let open = h
-        .ok("calm.terminal.open", json!({"request_id":"input-receipts"}))
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"input-receipts"}),
+        )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
     h.ok(
@@ -283,7 +292,7 @@ async fn repeated_input_request_never_reaches_the_terminal_twice() {
         .await;
     // Keep an application reading each submitted line. Unlike an idle shell,
     // it counts an empty Enter too, so an accidental duplicate is observable.
-    let command = "i=0; printf 'COUNTER_READY\\n'; while IFS= read -r line; do i=$((i+1)); printf 'COUNT:%s:%s\\n' \"$i\" \"$line\"; done";
+    let command = "i=0; printf '%s%s\\n' COUNTER_ READY; while IFS= read -r line; do i=$((i+1)); printf 'COUNT:%s:%s\\n' \"$i\" \"$line\"; done";
     h.input(
         &terminal,
         &view,
@@ -300,6 +309,13 @@ async fn repeated_input_request_never_reaches_the_terminal_twice() {
     )
     .await;
     let ready = h.observe_text(&terminal, "COUNTER_READY").await;
+    assert!(
+        ready["text"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line.as_str() == Some("COUNTER_READY"))
+    );
     let first = h
         .input(
             &terminal,
@@ -361,7 +377,10 @@ async fn repeated_input_request_never_reaches_the_terminal_twice() {
 async fn detach_releases_receipts_and_old_observations_cannot_authorize_a_new_connection() {
     let h = Harness::start().await;
     let open = h
-        .ok("calm.terminal.open", json!({"request_id":"detach"}))
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"detach"}),
+        )
         .await;
     let terminal = open["terminal_id"].as_str().unwrap().to_owned();
     h.ok(
