@@ -22,17 +22,40 @@
     color: var(--text-3);
   }
 
-  /* A ceiling, not a clip: the label inside truncates with an ellipsis and
-     offers the full name on hover (`Text maxLines`), so this only decides how
-     much of the footer one control may take. */
+  /*
+   * A ceiling AND a floor of zero.
+   *
+   * 9rem, and the number is measured rather than chosen.
+   *
+   * With the old 14rem and a long name
+   * (`gpt-5.1-codex-max-experimental-preview-2026`), the footer's content came
+   * to 392px inside a 364px drawer and the send button's right edge landed
+   * 36px OUTSIDE it — the send button, not the pill, because Astryx's own
+   * `footerLeft` keeps `min-width: auto` and pushes its sibling out rather
+   * than shrinking. `min-inline-size: 0` on this control and on the row it
+   * sits in is necessary and was not sufficient: the box that refuses is the
+   * vendor's, and reaching into it by its generated class names would be a
+   * fixture around somebody else's internals.
+   *
+   * So the ceiling does the work instead. 9rem measured zero escaping boxes at
+   * 364px; 14rem measured six. It is ~24 characters at `--text-xs`, which
+   * holds every name in the catalog this was measured against
+   * (`gpt-6-astra`, `gpt-5.1-codex-max`) uncut, and truncates the rest with
+   * the ellipsis and hover this control already had.
+   */
+  .group {
+    min-inline-size: 0;
+  }
+
   .trigger {
-    max-inline-size: 14rem;
+    max-inline-size: 9rem;
+    min-inline-size: 0;
   }
 
   /* A standing explanation, not a menu row: it must not look pressable. The
      type is `Text type="supporting"`; what is left here is the box. */
   .note {
-    max-inline-size: 20rem;
+    max-inline-size: 9rem;
     padding: var(--space-1) var(--space-2);
     user-select: none;
   }

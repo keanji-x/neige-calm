@@ -19,6 +19,22 @@ function ring(): HTMLElement | null {
   return document.querySelector('[data-nc-context-ring]');
 }
 
+/**
+ * The drawn arc, as a fraction of the circle.
+ *
+ * The `data-nc-context-ring` attribute is a label ABOUT the arc; this is the
+ * arc. Asserting only the attribute let an implementation that hardcoded the
+ * dasharray — or dropped the svg entirely — pass every test in this file.
+ */
+function drawnFraction(): number | null {
+  const fill = document.querySelector('[data-nc-context-ring] circle + circle');
+  const dash = fill?.getAttribute('stroke-dasharray');
+  const radius = Number(fill?.getAttribute('r'));
+  if (dash == null || Number.isNaN(radius)) return null;
+  const drawn = Number(dash.split(' ')[0]);
+  return drawn / (2 * Math.PI * radius);
+}
+
 describe('context ring', () => {
   it('draws the arc from the percent the server computed, never from the two counts', () => {
     /*
@@ -29,6 +45,9 @@ describe('context ring', () => {
      */
     render(<ContextRing usage={usage()} />);
     expect(ring()?.getAttribute('data-nc-context-ring')).toBe('5');
+    /* And the arc itself: 4.9% of the circle, not the 9.3% the two counts
+       would give. This is the assertion the attribute was standing in for. */
+    expect(drawnFraction()).toBeCloseTo(0.049, 3);
     /* The label carries the whole readout, because there is no tab stop here
        to reach the tooltip with — see the note on the trigger. */
     /* The label is the tooltip's sentence and nothing else — the percentage
@@ -73,6 +92,14 @@ describe('context ring', () => {
   it('shows a count that overshot its window as its own state, not as a full ring', async () => {
     render(<ContextRing usage={usage({ used_tokens: 2_361_529, context_window: 258_400, percent: null })} />);
     expect(ring()?.getAttribute('data-nc-context-ring')).toBe('over');
+    /*
+     * NO arc. The kernel withholds a percentage here rather than clamping,
+     * because a clamp renders a malfunction as a plausible "the context is
+     * full" and destroys the evidence — and drawing a full ring would undo
+     * that decision one layer up. This drew 100% until a review caught it,
+     * while a comment three lines away said it did not.
+     */
+    expect(drawnFraction()).toBe(0);
     await userEvent.hover(screen.getByRole('img', { name: /more than the window holds/ }));
     expect(await screen.findByText(/more than the window holds/)).toBeTruthy();
   });

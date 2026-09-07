@@ -33,6 +33,7 @@ import {
   cardAddMenuEntries, isAssistantHarnessPayload, isPlannerHarnessPayload, partitionTrackCards,
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
+import footerStyles from './composer-footer.module.css';
 import { TodayPage } from '../../features/today/public.tsx';
 import { nameTodaySummaryConversation } from '../../../../core/domain/today.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
@@ -322,7 +323,37 @@ export function useConversationStore(
      below: an entry the queue region is drawing must not also be drawn in the
      transcript. It is recomputed on every read, never latched — an entry that
      drains leaves this set and its echo becomes visible again. */
-  const pendingQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
+  /*
+   * Entries this client has had a `done` DELETE for, and which the cached page
+   * has not caught up with yet.
+   *
+   * Keyed by entry id and cleared when the page stops listing them, so it is a
+   * catch-up window and not a second source of truth: the moment the server's
+   * own page agrees, the id leaves this set. Without it a confirmed take-back
+   * left the bubble on screen while its words sat in the composer — the one
+   * state the interaction promises never to produce — for as long as the
+   * refresh took, or forever if it failed.
+   */
+  const [forgotten, setForgotten] = useState<ReadonlySet<string>>(() => new Set());
+  const servedQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
+  const pendingQueue = useMemo(
+    () => (forgotten.size === 0
+      ? servedQueue
+      : servedQueue.filter((entry) => !forgotten.has(entry.entry_id))),
+    [servedQueue, forgotten],
+  );
+  useEffect(() => {
+    if (forgotten.size === 0) return;
+    const served = new Set(servedQueue.map((entry) => entry.entry_id));
+    /* Only ids the page has stopped listing are dropped, and only when there
+       is something to drop — an unconditional `setForgotten` here re-renders
+       forever. */
+    if (![...forgotten].some((id) => !served.has(id))) return;
+    setForgotten((current) => new Set([...current].filter((id) => served.has(id))));
+  }, [servedQueue, forgotten]);
+  const forgetQueuedEntry = (entryId: string): void => {
+    setForgotten((current) => new Set([...current, entryId]));
+  };
   const pendingQueueOverflow = run.data?.pending_overflow ?? 0;
   const pendingQueueIds = useMemo(
     () => new Set(pendingQueue.map((entry) => entry.entry_id)), [pendingQueue],
@@ -895,7 +926,21 @@ export function useConversationStore(
    */
   const takeBackQueuedEntry = (entry: PendingQueueEntry) =>
     mutations.deleteQueued(entry.entry_id, entry.rev).then((outcome) => {
-      if (outcome.kind === 'done') retireQueuedEcho(entry.entry_id);
+      if (outcome.kind === 'done') {
+        retireQueuedEcho(entry.entry_id);
+        /*
+         * Drop the bubble now rather than when the page comes back.
+         *
+         * `refreshAfter` invalidates `planner-run`, and until that answers the
+         * cached page still lists the entry — so a confirmed take-back showed
+         * the message in the composer AND in the strip above it, which is the
+         * one state this interaction promises never to produce. If the refresh
+         * is slow, or fails, that state is where it stays. The server has
+         * already agreed the entry is gone; this is the cache catching up, not
+         * a guess about the server.
+         */
+        forgetQueuedEntry(entry.entry_id);
+      }
       return outcome;
     });
   const deleteQueuedEntry = (entry: PendingQueueEntry) =>
@@ -2026,9 +2071,25 @@ function useConversationPanel(
                     /* Taking a message back replaces the composer's contents,
                        so it is offered only when there is nothing to destroy. */
                     composerBusy={composerDraft.trim() !== ''}
+                    cardId={open.id}
                     onTakeBack={store.takeBackQueuedEntry}
                     onDelete={store.deleteQueuedEntry}
-                    onEcho={setComposerDraft}
+                    /*
+                     * The words go back to the conversation they came from, or
+                     * nowhere.
+                     *
+                     * This drawer is reused across conversations — same route,
+                     * same `<Drawer>` — so a DELETE issued in A can answer
+                     * while B is open, and `setComposerDraft` is B's. Without
+                     * this check A's message landed on top of whatever B's
+                     * reader had typed. The reader of A has lost the recovery,
+                     * which is the smaller wrong: they left, and nothing they
+                     * can see says otherwise.
+                     */
+                    onEcho={(from, text) => {
+                      if (from !== open.id) return;
+                      setComposerDraft(text);
+                    }}
                   />
                   <PlannerAttachmentDrawer attachments={attachments} />
                 </>
@@ -2072,7 +2133,7 @@ function useConversationPanel(
                * filled), so this is a row removed, not a row moved.
                */
               footerActions={(
-                <HStack gap={1} align="center">
+                <HStack gap={1} align="center" className={footerStyles.group}>
                   <PlannerAttachButton
                     attachments={attachments}
                     support={{

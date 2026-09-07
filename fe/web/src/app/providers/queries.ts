@@ -330,10 +330,12 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
      * #1505 PR4 — the queue write.
      *
      * One, now: the strip's pencil takes a message back rather than editing it
-     * in place, and a take-back is this same delete. `editPlannerInputOperation`
-     * and `PUT /planner/input/:id` are still there and still served; nothing in
-     * the browser calls them, the way `POST /planner/reset` was left standing
-     * when #1139 removed its last caller.
+     * in place, and a take-back is this same delete. The edit route is
+     * `PATCH /api/cards/{id}/planner/input/{entry_id}` — `routes/cards.rs`
+     * mounts `patch(...).delete(...)` on that path, and `put` belongs to
+     * `/planner/model`, which is a different route — and it is still served;
+     * nothing in the browser calls it any more, the way `POST /planner/reset`
+     * was left standing when #1139 removed its last caller.
      *
      * It resolves rather than rejects on a refusal, and that is the point: a
      * lost compare-and-swap and a drained entry are answers the reader has to

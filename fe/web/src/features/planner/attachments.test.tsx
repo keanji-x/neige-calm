@@ -79,6 +79,22 @@ async function pick(file: File) {
 }
 
 describe('planner attachments', () => {
+  /*
+   * The control opens the picker.
+   *
+   * Every other test here dispatches `change` on the hidden input directly,
+   * which is the only way to simulate a file choice — and which means none of
+   * them execute the line that opens it. Delete `picker.current?.click()` and
+   * they all still pass while nobody can attach anything.
+   */
+  it('opens the file picker when the control is pressed', async () => {
+    render(<Harness upload={vi.fn<UploadAttachment>()} />);
+    const opened = vi.fn();
+    picker().addEventListener('click', opened);
+    await userEvent.click(attachButton());
+    expect(opened).toHaveBeenCalledTimes(1);
+  });
+
   it('uploads on pick and previews the server copy, not a local one', async () => {
     const upload = vi.fn<UploadAttachment>().mockResolvedValue(uploaded(0));
     render(<Harness upload={upload} />);

@@ -40,9 +40,21 @@
 //
 // The compare-and-swap has NOT gone away — a take-back is still a delete, and
 // a delete still carries the revision it was read at and can still be refused.
-// What is gone is the *editor* on top of it. `PUT /planner/input/:id` is still
-// served and nothing in the browser calls it any more, the same way
+// What is gone is the *editor* on top of it. The edit route is a PATCH (not a
+// PUT: `routes/cards.rs` mounts `patch(...).delete(...)` on that path) and it
+// is still served; nothing in the browser calls it any more, the same way
 // `POST /planner/reset` was left standing when #1139 removed its last caller.
+//
+// -- What a take-back does NOT bring back ---------------------------------
+//
+// **Images.** A queued message can carry them (`PendingQueueEntry.attachments`,
+// straight off `page_pending_entries`), and handing back only the words would
+// silently drop them -- for an image-only message that is the entire message.
+// So the pencil is refused on an entry carrying any, with a reason, and the
+// cross still works. Restoring them would mean adopting server-held attachment
+// ids into the composer's strip, and whether those ids survive their entry's
+// deletion is a question about the kernel nobody has asked; guessing it is how
+// the images get lost a second, quieter way. **KNOWN GAP, deliberate.**
 
 import { Banner } from '@astryxdesign/core/Banner';
 import { IconButton } from '@astryxdesign/core/IconButton';
@@ -54,6 +66,7 @@ import type {
   PendingQueueEntry, PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
 import { Icon } from '../../ui/icon/public.tsx';
+import { useRef } from 'react';
 import { useState } from '../../ui/state/public.ts';
 import styles from './pending-queue.module.css';
 
@@ -88,9 +101,19 @@ export type PendingQueueProps = Readonly<{
   /** Remove the entry from the queue and hand its words back. */
   onTakeBack: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
   onDelete: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
-  /** Put these words in the composer. Called only after a take-back that the
-   *  server confirmed, so the message cannot be in two places. */
-  onEcho: (text: string) => void;
+  /**
+   * Put these words in the composer.
+   *
+   * Carries the card the take-back was STARTED on. A write in flight outlives
+   * the conversation it belongs to — the drawer is reused across
+   * conversations, so a DELETE issued in A can answer while B is open — and
+   * without the id the answer went into whichever composer happened to be on
+   * screen, overwriting a draft that had nothing to do with it. Same ownership
+   * rule the attachment strip already runs on `generation`.
+   */
+  onEcho: (cardId: string, text: string) => void;
+  /** The conversation these entries belong to. See {@link onEcho}. */
+  cardId: string;
 }>;
 
 /**
@@ -112,13 +135,47 @@ type Refusal = Readonly<{ entryId: string; outcome: PlannerQueueWriteOutcome }>;
  */
 function noticeText(outcome: PlannerQueueWriteOutcome): string | null {
   if (outcome.kind === 'stale') {
+    /* "as shown" is a promise about the bubble above this notice, and it is
+       kept: a stale refusal carries the winner's text and the row renders THAT
+       from then on (`shownText`). It used to keep rendering the text this page
+       was read at, so the sentence pointed at words the server had already
+       replaced — and a retry then deleted the new message while handing back
+       the old one. */
     return 'This message changed before your change could be applied, so nothing '
       + 'happened to it. It now reads as shown; try again if you still want to.';
   }
   if (outcome.kind === 'gone') return 'This message already left the queue.';
-  if (outcome.kind === 'failed') return outcome.message;
+  if (outcome.kind === 'failed') {
+    /* The ambiguous one — see `echoOn`. Say what is uncertain rather than
+       implying the message is safely where it was. */
+    return `${outcome.message} Your words are back in the box; check the queue `
+      + 'above before sending them again.';
+  }
   return null;
 }
+
+/**
+ * Whether a take-back's outcome licenses handing the words to the composer.
+ *
+ * `done` obviously. `failed` too, and that is the decision worth writing down:
+ * a transport failure cannot distinguish "the server refused" from "the server
+ * deleted it and the answer was lost on the way back". Withholding the words
+ * is right for the first and loses the message outright for the second.
+ * Handing them over is wrong for the first only in that the message is briefly
+ * in two places — which the reader can see, and fix with the cross. **A
+ * duplicate you can see beats a message you cannot get back**, so the
+ * ambiguous outcome resolves toward the recoverable error.
+ *
+ * `stale` and `gone` are not ambiguous: the entry is definitely still queued,
+ * or definitely already sent. Echoing either would duplicate a live message.
+ */
+function echoOn(outcome: PlannerQueueWriteOutcome): boolean {
+  return outcome.kind === 'done' || outcome.kind === 'failed';
+}
+
+const IMAGES_REASON =
+  'This message carries images, and taking it back would return only the words. '
+  + 'Delete it and say it again, or leave it to send.';
 
 function noticeHeading(outcome: PlannerQueueWriteOutcome): string {
   if (outcome.kind === 'stale') return 'Nothing happened';
@@ -141,9 +198,39 @@ const COMPOSER_BUSY_REASON =
   'Send or clear what you are writing first — taking this back would replace it.';
 
 export function PendingQueue({
-  entries, overflow, busy, composerBusy, onTakeBack, onDelete, onEcho,
+  entries, overflow, busy, composerBusy, cardId, onTakeBack, onDelete, onEcho,
 }: PendingQueueProps) {
   const [refusal, setRefusal] = useState<Refusal | null>(null);
+  /*
+   * One lock for the whole strip, not one per button.
+   *
+   * Astryx's `clickAction` disables the control it is on while its promise is
+   * unsettled, and that is all it does — which left every OTHER control live.
+   * Two pencils pressed in quick succession therefore issued two take-backs:
+   * both entries were deleted, and only the second answer's words survived,
+   * because the first echo was overwritten by the second. The write that is in
+   * flight is a fact about this card, so it is held for this card.
+   *
+   * **Raised in `onClick`, released in `clickAction`.** Astryx runs
+   * `clickAction` inside `startTransition` (`Button.tsx`), and a state update
+   * made in a transition is non-urgent — measured: setting it there produced
+   * no locked render at all while the request was open, which is precisely the
+   * window it exists to cover. `onClick` runs before that transition starts,
+   * so the lock is up before the first `await`. Releasing it inside the
+   * transition is fine; nothing is racing to observe the unlock.
+   */
+  const [writing, setWriting] = useState(false);
+  /*
+   * What the composer holds RIGHT NOW, readable from inside a settled promise.
+   *
+   * `composerBusy` as a prop is only ever the value at the moment of the
+   * click. Start a take-back over an empty composer and type while the DELETE
+   * is in flight, and the answer arrived and overwrote what had just been
+   * typed. The guard has to be re-asked when the words are actually about to
+   * move, which means reading it out of a ref rather than out of a closure.
+   */
+  const composerHasWords = useRef(composerBusy);
+  composerHasWords.current = composerBusy;
 
   if (entries.length === 0 && overflow === 0) return null;
 
@@ -151,6 +238,7 @@ export function PendingQueue({
     setRefusal(outcome.kind === 'done' ? null : { entryId, outcome });
   };
 
+  const blocked = busy || writing;
   return (
     <section className={styles.queue} data-nc-pending-queue="" aria-label="Queued messages">
       <VStack gap={1}>
@@ -163,18 +251,20 @@ export function PendingQueue({
                was read at. Without this a refused write retried against a
                revision it already knew was stale, forever. */
             const rev = shown?.kind === 'stale' ? shown.rev : entry.rev;
+            /* And the TEXT that goes with that revision. A stale refusal is
+               the server telling us what the entry says now; from that moment
+               the row shows the winner's words and a retry hands those back.
+               Reading `entry.text` here is how a retry deleted the new message
+               and returned the old one. */
+            const text = shown?.kind === 'stale' ? shown.text : entry.text;
+            const hasImages = entry.attachments.length > 0;
+            /* Only the two refusals a reader can act on get a tooltip; the
+               button's own label already says what it does. */
+            const editReason = hasImages
+              ? IMAGES_REASON
+              : composerBusy ? COMPOSER_BUSY_REASON : undefined;
             return (
               <li key={entry.entry_id} data-nc-pending-entry={entry.entry_id}>
-                {/* A grid and not an `HStack`, and this is the reason rather
-                    than a preference: `Text maxLines={1}` truncates by going
-                    `white-space: nowrap`, so its min-content is the WHOLE
-                    message. In a flex row that minimum propagates up through
-                    the drawer's grid item — measured at 712px inside a 290px
-                    drawer — and the two icon buttons ended up past the right
-                    edge, where the drawer's `overflow: hidden` cut them off
-                    the screen. `minmax(0, 1fr)` is a track that content cannot
-                    blow out; `min-inline-size: 0` on the item alone did not
-                    fix it. */}
                 <div className={styles.bubble}>
                   {/* One line and an ellipsis. `hasTruncateTooltip` gives the
                       whole message back on hover, and only when it was
@@ -186,22 +276,34 @@ export function PendingQueue({
                     hasTruncateTooltip
                     data-nc-pending-entry-text=""
                   >
-                    {entry.text}
+                    {text}
                   </Text>
                   <IconButton
                     label="Edit this message"
                     icon={<Icon name="pencil" size="sm" />}
                     variant="ghost"
                     size="sm"
-                    isDisabled={busy || composerBusy}
-                    tooltip={composerBusy ? COMPOSER_BUSY_REASON : undefined}
+                    isDisabled={blocked || composerBusy || hasImages}
+                    tooltip={editReason}
+                    onClick={() => { setWriting(true); }}
                     clickAction={async () => {
-                      const outcome = await onTakeBack({ ...entry, rev });
-                      settle(entry.entry_id, outcome);
-                      /* Only a take-back the server confirmed hands the words
-                         over. A refused one leaves the message where it is,
-                         and echoing it anyway would put it in two places. */
-                      if (outcome.kind === 'done') onEcho(entry.text);
+                      try {
+                        /* Re-asked here, not read off the render that drew the
+                           button: the composer may have gained words since. */
+                        if (composerHasWords.current || hasImages) return;
+                        const outcome = await onTakeBack({ ...entry, text, rev });
+                        settle(entry.entry_id, outcome);
+                        if (!echoOn(outcome)) return;
+                        /* Asked a second time, for the window the request was
+                           open. Refusing here leaves the words unrecovered
+                           rather than destroying what was typed instead — and
+                           the entry is gone, so the reader is told by the
+                           notice rather than silently. */
+                        if (composerHasWords.current) return;
+                        onEcho(cardId, text);
+                      } finally {
+                        setWriting(false);
+                      }
                     }}
                   />
                   <IconButton
@@ -209,9 +311,14 @@ export function PendingQueue({
                     icon={<Icon name="close" size="sm" />}
                     variant="ghost"
                     size="sm"
-                    isDisabled={busy}
+                    isDisabled={blocked}
+                    onClick={() => { setWriting(true); }}
                     clickAction={async () => {
-                      settle(entry.entry_id, await onDelete({ ...entry, rev }));
+                      try {
+                        settle(entry.entry_id, await onDelete({ ...entry, text, rev }));
+                      } finally {
+                        setWriting(false);
+                      }
                     }}
                   />
                 </div>

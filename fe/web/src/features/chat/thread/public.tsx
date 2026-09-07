@@ -1959,10 +1959,10 @@ export function ChatComposer({
    * one line up: what goes there needs a query and a card id, both of which
    * live in `app/router`, and `features/**` may not import `app/**`.
    *
-   * It shares the slot with the two send-door buttons below, which appear only
-   * in states this one knows nothing about, so it is rendered *before*
-   * whichever of them is up rather than instead of it. Read the slot's
-   * contents as "everything that is not the send button", in reading order.
+   * It shares the slot with the one remaining send-door button below, which
+   * appears only in a state this one knows nothing about, so it is rendered
+   * *before* it rather than instead of it. Read the slot's contents as
+   * "everything that is not the send button", in reading order.
    */
   sendAdornment?: ReactNode;
   /**
@@ -2244,8 +2244,8 @@ export function ChatComposer({
    *
    * Lifted out of the `sendActions` attribute when the slot gained a second
    * occupant (the context ring): the slot now holds "whatever is not Send",
-   * and a three-way ternary nested inside a fragment inside an attribute is
-   * not a thing anybody should have to read.
+   * and a ternary nested inside a fragment inside an attribute is not a thing
+   * anybody should have to read.
    */
   /*
    * ── The one send door this composer adds, and the one it no longer does ──
@@ -2256,12 +2256,19 @@ export function ChatComposer({
    * owner's call, and what it cost is exactly that: a *button*. Enter still
    * queues — Astryx's `handleSubmit` refuses only an empty draft and
    * `isDisabled`, never `isStopShown`, so the keyboard path is untouched and
-   * `POST /planner/input` is reached the same way it always was. What a
-   * mouse-only reader loses is the affordance, not the capability, and what
-   * the footer gains is one control in it instead of two competing for the
-   * same corner. The queue strip above the field is where a queued message is
-   * now visible, which is the half that was missing when that button was
-   * written.
+   * `POST /planner/input` is reached the same way it always was — held down by
+   * the `[F4]`/`[F5]`/`[F6]` cases in `track-conversation.test.tsx`, which
+   * drive it through Enter.
+   *
+   * **For anyone who cannot use a keyboard, that is the capability and not
+   * only the affordance**, and it is gone while a turn runs: with a draft
+   * typed there is only Stop, and with an image and no text there is not even
+   * `Send image` (it is suppressed by `!stopShown` below). Saying "the
+   * affordance, not the capability" would be true only of a reader who has
+   * both hands on a keyboard. **KNOWN GAP, accepted by the owner** in exchange
+   * for one control in that corner instead of two. The queue strip above the
+   * field is where a queued message is now visible, which is the half that was
+   * missing when that button was written.
    *
    * **Kept: `Send image`.** Different failure, and not a duplicate of
    * anything: `ChatSendButton` takes its availability from the composer
@@ -2320,6 +2327,20 @@ export function ChatComposer({
            submission. Keep unsent words while disabled, and
            let IME Enter accept its candidate without submitting. */
         if (event.key !== 'Enter' || event.shiftKey) return;
+        /*
+         * Only Enter pressed IN THE FIELD is a send.
+         *
+         * This handler is on the composer's root and captures, which was
+         * harmless while the field was the only focusable thing under it. The
+         * `drawer` slot changed that: the queued-message bubbles live inside
+         * this root now, each with a pencil and a cross. Tab to one of them
+         * with an image picked and an empty draft, press Enter, and the
+         * `allowEmptyText` branch below sent the image and called
+         * `preventDefault()` — so the button a person was actually on never
+         * fired. A key pressed on a button belongs to that button.
+         */
+        if (!(event.target instanceof Element)
+          || event.target.closest('[contenteditable], textarea, input') === null) return;
         if (event.nativeEvent.isComposing) {
           event.stopPropagation();
           return;

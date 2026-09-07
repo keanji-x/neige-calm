@@ -10,9 +10,15 @@
 // survives being restated in TypeScript." So nothing here divides anything.
 //
 // The two raw counts still travel, and they are shown, because "24k of 258k"
-// is the thing a person actually wants to know. The tooltip says both, and
-// says why they do not divide out to the ring's own figure, so a reader who
-// checks the arithmetic finds an explanation rather than a bug.
+// is the thing a person actually wants to know. The tooltip says exactly that
+// and no more (owner's call).
+//
+// **So the tooltip's two numbers do not divide out to the ring's own figure,
+// and nothing on screen says why.** A reader who checks the arithmetic finds
+// 9% where the ring shows 5%. That is a known and accepted gap, not an
+// oversight: the explanation lived under the counts for one round and was
+// removed as noise. The arithmetic itself is stated on `contextRingState` and
+// owned by `token_usage.rs`.
 //
 // ── When there is no ring ─────────────────────────────────────────────────
 //
@@ -94,7 +100,22 @@ export function ContextRing({ usage }: { usage: PlannerRunTokenUsage | null }) {
   if (state.kind === 'none') return null;
 
   const over = state.kind === 'over';
-  const percent = over ? 100 : Math.min(100, Math.max(0, state.percent));
+  /*
+   * The over-window state draws NO arc, and that is the whole point of it
+   * having its own state.
+   *
+   * This used to compute `over ? 100 : …` and hand 100 to the dasharray — a
+   * full ring, in warning colour. That is a meter reading, and a meter reading
+   * is exactly what the kernel refused to state: it withholds `percent`
+   * rather than clamping, because clamping renders a malfunction as a
+   * plausible "the context is full" and destroys the only evidence. Drawing
+   * the clamp here undid that decision one layer up while a comment three
+   * lines away claimed it did not.
+   *
+   * What is left is the track alone, in warning colour: a ring with nothing in
+   * it, which is what "there is no percentage" looks like.
+   */
+  const percent = over ? 0 : Math.min(100, Math.max(0, state.percent));
   const label = ringLabel(state);
 
   return (
@@ -167,9 +188,11 @@ function ContextTooltip({ state }: { state: ContextRingState }) {
         <span className={styles.tipLead}>
           {formatTokens(state.used)} of a {formatTokens(state.window)} window
         </span>
-        {/* Said plainly rather than drawn as a full ring: the count is larger
-            than the window it is measured against, which is not a context
-            that is full — it is a reading that cannot be one. */}
+        {/* Said in words, because there is no arc to say it with: the count
+            is larger than the window it is measured against, which is not a
+            context that is full — it is a reading that cannot be one. The
+            ring beside this is empty and warning-coloured for the same
+            reason. */}
         <span className={styles.tipNote}>
           That is more than the window holds, so no percentage is shown.
         </span>

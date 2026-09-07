@@ -135,7 +135,7 @@ export function ModelPill({
   };
 
   return (
-    <HStack gap={1} align="center">
+    <HStack gap={1} align="center" className={styles.group}>
       <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape}>
         <DropdownMenu
           placement={placement}

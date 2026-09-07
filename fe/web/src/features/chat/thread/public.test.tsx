@@ -1340,6 +1340,33 @@ describe('ChatComposer', () => {
     expect(buttons).toEqual(['Stop']);
   });
 
+  /*
+   * Enter belongs to the control it was pressed on.
+   *
+   * The composer's key handler is on its root and captures, which was harmless
+   * while the field was the only focusable thing under it. The `drawer` slot
+   * changed that — the queued-message bubbles live inside this root now, each
+   * with its own buttons — and the `allowEmptyText` branch then sent the
+   * picked image and called `preventDefault()`, so the button the person was
+   * actually on never fired.
+   */
+  it('does not send when Enter is pressed on something else in the composer', () => {
+    const onSend = vi.fn();
+    const pressed = vi.fn();
+    render(
+      <ChatComposer
+        onSend={onSend}
+        allowEmptyText
+        drawer={<button type="button" onKeyDown={pressed}>Delete this message</button>}
+      />,
+    );
+    const button = screen.getByRole('button', { name: 'Delete this message' });
+    button.focus();
+    fireEvent.keyDown(button, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(pressed).toHaveBeenCalledTimes(1);
+  });
+
   it('sends with Enter while a turn is running', async () => {
     const onSend = vi.fn();
     render(<ChatComposer onSend={onSend} onStop={vi.fn()} />);
