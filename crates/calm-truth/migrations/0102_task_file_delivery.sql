@@ -29,4 +29,4 @@ WHEN NEW.attempt_id != OLD.attempt_id OR NEW.track_id != OLD.track_id
 BEGIN SELECT RAISE(ABORT, 'file input identity is immutable'); END;
 
 -- New settlement vocabulary requires clients to negotiate event version 19.
-UPDATE events SET event_version=19 WHERE kind='task.file_publication_settled';
+UPDATE events SET event_version = 19 WHERE kind = 'task.file_publication_settled';
