@@ -235,8 +235,12 @@ Provider 内部推理来实现工作笔记。该项单独设计存储/访问契�
   [首版范围、验收和保留限制](design-1501-single-file-delivery.md)继续适用；
   多文件与同版本验证优先按[多文件交付与验收接续](design-1501-versioned-delivery.md)
   继续；JSON 机制通过不代表代码交付完成，GC 仍为后续。
-- [ ] F4 扩展：先完成多文件候选、同版本 gate/Reviewer 和普通下游交付闭环；
-  具体约束与验收见[交付接续设计](design-1501-versioned-delivery.md)。
+- [x] F4 扩展 A1：[#1584](https://github.com/keanji-x/neige-calm/pull/1584) 已合入。
+  普通文件集合封存、同版本机器检查、准确输入绑定和下游启动已接通；
+  自然语言双任务演练完成源码/README/测试交付及 total=10，四处文件字节与执行位相同。
+  [实现与实际验收](design-1501-candidate-verification.md)明确机器检查的范围。
+- [ ] F4 扩展 A2：同版本 Reviewer 与复核要求的强制验收仍待实现；
+  具体约束见[交付接续设计](design-1501-versioned-delivery.md)。
 - [ ] F5 失败候选修复：在上述版本绑定上保留候选与问题，显式修复后重新验收；
   不以 JSON-only 修复替代真实代码项目闭环。
 - [ ] F6 语义计划编辑：后续。
