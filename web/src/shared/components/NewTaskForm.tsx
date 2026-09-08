@@ -223,11 +223,13 @@ export function NewTaskForm({
   // describe what the cwd matches), but they no longer overwrite the
   // user's manual areaChoice.
   const userOverrodeAutoMatchRef = useRef(false);
+  const selectionGenerationRef = useRef(0);
 
   // A confirmation belongs to the exact cwd + target selection that produced
   // the 409. Editing either withdraws the action, including the two-step new
   // Area branch whose already-minted id is otherwise no longer visible.
   useEffect(() => {
+    selectionGenerationRef.current += 1;
     setFolderConflict(null);
     overrideTargetRef.current = null;
   }, [areaChoice, cwd]);
@@ -431,6 +433,7 @@ export function NewTaskForm({
     async (e?: React.FormEvent | React.KeyboardEvent) => {
       e?.preventDefault();
       if (!canSubmit) return;
+      const selectionGeneration = selectionGenerationRef.current;
       setSubmitting(true);
       setErrorMsg(null);
       setFolderConflict(null);
@@ -509,7 +512,7 @@ export function NewTaskForm({
         const formatted = formatSubmitError(e, areas);
         setErrorMsg(formatted);
         const conflict = e instanceof CalmApiError ? asFolderConflict(e.body) : null;
-        if (conflict && targetAreaId) {
+        if (conflict && targetAreaId && selectionGeneration === selectionGenerationRef.current) {
           setFolderConflict({ body: conflict, targetAreaId, cwd: cwd.trim() });
         }
       } finally {

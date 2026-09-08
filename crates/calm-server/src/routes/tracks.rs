@@ -1881,7 +1881,7 @@ async fn enforce_folder_claim_tx(
         // scan/insert TOCTOU. Pinned by `post_api_tracks_attach_folder_*` in
         // `tests/cases/track_cwd_terminal_at.rs`.
         Some(_) => Ok(()),
-        None if *attach => {
+        None if *attach || allow_cross_area_cwd.is_some() => {
             // No claim covers the cwd and the caller wants to mint one. Check
             // the *reverse* overlap first: an existing folder that is a
             // descendant of the proposed cwd (`/a/b` exists, claim `/a`).
@@ -1902,7 +1902,7 @@ async fn enforce_folder_claim_tx(
             // A reuse confirmation is bound to the original claim. Its
             // disappearance must not turn consent into a new attachment.
             if allow_cross_area_cwd.is_some() {
-                return Err(CalmError::Conflict(
+                return Err(CalmError::BadRequest(
                     "track create: the authorized folder claim no longer covers this cwd".into(),
                 ));
             }

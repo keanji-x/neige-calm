@@ -761,6 +761,34 @@ describe('the new-track page is a route reached from Area groups', () => {
     },
   );
 
+  it('unlocks the draft when vanished directory consent is rejected as invalid input', async () => {
+    const { sent } = harness({
+      templates: [],
+      otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
+      trackCreateSequence: [
+        { status: 409, statusText: 'Conflict', body: CONFLICT },
+        { status: 400, statusText: 'Bad Request', body: {
+          code: 'bad_request', error: 'The authorized folder claim no longer covers this cwd',
+        } },
+        { status: 201, statusText: 'Created', body: { ...TRACK_ROW, area_id: 'c2' } },
+      ],
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Original intent');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Reuse directory in Reading' }));
+    await screen.findByText('The authorized folder claim no longer covers this cwd');
+    const message = screen.getByLabelText(TASK_LABEL);
+    await userEvent.clear(message);
+    await userEvent.type(message, 'Current intent');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(3));
+    const request = createdTrackRequests(sent)[2];
+    expect(request?.body).toMatchObject({ area_id: 'c2', cwd: '/srv/app', first_message: 'Current intent' });
+    expect(request?.body).not.toHaveProperty('allow_cross_area_cwd');
+  });
+
   it('does not offer an owning-Area retry for an ancestor conflict that moving cannot resolve', async () => {
     harness({
       templates: TEMPLATES,

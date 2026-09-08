@@ -663,27 +663,29 @@ async fn cross_area_cwd_authorization_rejects_deleted_claim_without_attaching() 
         .await
         .unwrap();
     boot.repo.area_folder_delete(claim.id).await.unwrap();
-    let (status, body) = post(
-        boot.app.clone(),
-        "/api/tracks",
-        json!({
-            "area_id": boot.area_id,
-            "cwd": cwd,
-            "attach_folder": true,
-            "allow_cross_area_cwd": {"folder_id": claim.id, "area_id": boot.other_area_id},
-            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert!(
-        boot.repo
-            .tracks_by_area(&boot.area_id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(boot.repo.area_folders_list_all().await.unwrap().is_empty());
+    for attach_folder in [false, true] {
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/tracks",
+            json!({
+                "area_id": boot.area_id,
+                "cwd": cwd,
+                "attach_folder": attach_folder,
+                "allow_cross_area_cwd": {"folder_id": claim.id, "area_id": boot.other_area_id},
+                "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+        assert!(
+            boot.repo
+                .tracks_by_area(&boot.area_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(boot.repo.area_folders_list_all().await.unwrap().is_empty());
+    }
 }
 
 #[tokio::test]
@@ -783,7 +785,7 @@ async fn cross_area_cwd_authorization_does_not_bypass_unclaimed_cwd_fence() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
     assert!(
         boot.repo
             .tracks_by_area(&boot.area_id)
