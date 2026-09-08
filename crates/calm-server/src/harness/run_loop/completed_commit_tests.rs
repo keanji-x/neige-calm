@@ -282,10 +282,14 @@ async fn completed_commit_filter_keeps_failure_and_user_entries_in_order() {
     fx.enqueue(vec![commit, failure, user]).await;
     fx.issue().await;
     let stored = fx.stored().await;
-    assert_eq!(
-        stored.issued_input_segments.as_ref().unwrap().segments,
-        expected
-    );
+    let actual = &stored.issued_input_segments.as_ref().unwrap().segments;
+    assert_eq!(actual.len(), 2);
+    assert_eq!(actual[0].presentation, expected[0].presentation);
+    assert_eq!(actual[0].attachments, expected[0].attachments);
+    // The failure can acquire verified detail metadata at delivery. Its base
+    // receipt and its position before the unmodified user segment must survive.
+    assert!(actual[0].text.starts_with(&expected[0].text));
+    assert_eq!(actual[1], expected[1]);
     assert!(stored.pending_entries().is_empty());
     assert_eq!(stored.push_watermark, event_id);
     assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 1);

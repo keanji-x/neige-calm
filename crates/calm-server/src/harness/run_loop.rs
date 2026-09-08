@@ -2891,7 +2891,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             }
             None => false,
         };
-        super::recovery_briefing::input_segments(
+        let mut prepared = super::recovery_briefing::input_segments(
             inner.repo.as_ref(),
             &inner.card_id,
             &inner.track_id,
@@ -2899,7 +2899,19 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             &drained,
             semantic,
         )
-        .await
+        .await?;
+        super::result_receipt::enrich(
+            inner.repo.as_ref(),
+            &crate::state::WriteContext::new(
+                inner.card_role_cache.clone(),
+                inner.track_area_cache.clone(),
+            ),
+            &inner.track_id,
+            &drained,
+            &mut prepared.segments,
+        )
+        .await?;
+        crate::error::Result::Ok(prepared)
     }
     .await;
     let prepared = match prepared {
@@ -3990,3 +4002,6 @@ mod completed_commit_tests;
 
 #[cfg(test)]
 mod recovery_briefing_tests;
+
+#[cfg(test)]
+mod result_receipt_tests;
