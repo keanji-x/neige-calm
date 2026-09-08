@@ -1,9 +1,0 @@
-   Compiling calm-server v0.1.0 (/mnt/data2/kenji/neige-calm/.codex-local/worktrees/issue-1501-candidate-verification/crates/calm-server)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 12s
-────────────
- Nextest run ID 57e2b351-4f05-4517-b7a8-40bc3780480d with nextest profile: default
-    Starting 2 tests across 1 binary (338 tests skipped)
-        PASS [   2.814s] (1/2) calm-server::mcp_integration_suite candidate_verification::review::lease::candidate_lease_defers_past_deadline
-        PASS [   2.893s] (2/2) calm-server::mcp_integration_suite candidate_verification::review::lease::candidate_lease_defers_pre_deadline
-────────────
-     Summary [   2.894s] 2 tests run: 2 passed, 338 skipped
