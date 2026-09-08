@@ -20,7 +20,7 @@ import { ErrorBox } from '../../ui/error-box/public.tsx';
 import {
   OperationFeedback, useDeleteConfirm, useOperationFeedback,
 } from '../../ui/operation-feedback/public.tsx';
-import { useState } from '../../ui/state/public.ts';
+import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import { TypedDeleteBody, useTypedConfirm } from '../../ui/typed-confirm/public.tsx';
 import type { NavTarget } from '../router/navigation.ts';
 import { routeParamFromPath } from '../router/navigation.ts';
@@ -90,7 +90,7 @@ export function Sidebar({
   userLabel = 'You', nowMs, readError = null, activityError = null,
   readLoading = false, onRetryRead = () => undefined,
 }: SidebarProps) {
-  const [expandedOverride, setExpandedOverride] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const preferences = useUiPreferences();
   const railRef = useRef<HTMLElement | null>(null);
   const areaDisclosureRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingAreaFocusRef = useRef<string | null>(null);
@@ -105,9 +105,6 @@ export function Sidebar({
     .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));
 
   const activeTrackId = routeParamFromPath(currentPath, '/track/') ?? null;
-  const activeAreaId = activeTrackId === null
-    ? null
-    : userTracks.find((track) => track.id === activeTrackId)?.areaId ?? null;
 
   const deletingArea = userAreas.find((area) => area.id === areaConfirm.target);
   const typed = useTypedConfirm(deletingArea?.name ?? '');
@@ -116,39 +113,14 @@ export function Sidebar({
     tracksByArea.get(areaConfirm.target ?? '')?.length,
   );
 
-  // Navigating into a track drops any manual collapse on its area — the row the
-  // user just opened has to be visible. Dropping the override (rather than
-  // forcing `true`) keeps the chevron usable straight afterwards.
-  useEffect(() => {
-    if (activeAreaId === null) return;
-    setExpandedOverride((current) => {
-      if (!current.has(activeAreaId)) return current;
-      const next = new Map(current);
-      next.delete(activeAreaId);
-      return next;
-    });
-  }, [activeAreaId, activeTrackId]);
-
-  /*
-   * …and then brings it into view. Expanding the area is only half of "show me
-   * where I am": a workspace with a dozen areas puts the open track below the
-   * fold as often as not, and the rail then shows an expanded area with nothing
-   * marked in it.
-   *
-   * The target is found by `aria-current="page"`, which is the same fact the
-   * highlight is drawn from rather than a second copy of it — there is exactly
-   * one such row now that the shortcut sections no longer claim to be current.
-   *
-   * `block: 'nearest'` scrolls only when the row is actually outside the
-   * viewport, so arriving at a track already on screen moves nothing (principle
-   * 3). It re-runs on `expandedOverride` too, because the effect above may have
-   * only just expanded the area the row lives in.
-   */
+  // Reveal the current row when visible without undoing manual Area collapse.
+  const activeAreaId = userTracks.find((track) => track.id === activeTrackId)?.areaId;
+  const activeAreaExpanded = activeAreaId === undefined ? true : preferences.areaExpanded(activeAreaId);
   useEffect(() => {
     if (collapsed || activeTrackId === null) return;
     railRef.current?.querySelector('[aria-current="page"]')
       ?.scrollIntoView?.({ block: 'nearest' });
-  }, [activeTrackId, collapsed, expandedOverride]);
+  }, [activeTrackId, collapsed, activeAreaExpanded]);
 
   /* A collapsed Area initial is an entrance into the expanded tree, not a
      destination of its own. Restore focus to the disclosure it reveals and
@@ -249,7 +221,7 @@ export function Sidebar({
               title={area.name}
               onClick={() => {
                 pendingAreaFocusRef.current = area.id;
-                setExpandedOverride((current) => new Map(current).set(area.id, true));
+                preferences.setAreaExpanded(area.id, true);
                 onToggleCollapsed();
               }}
             >
@@ -294,9 +266,8 @@ export function Sidebar({
                     key={area.id}
                     area={area}
                     areaTracks={visibleTracks(tracksByArea.get(area.id) ?? [])}
-                    expanded={expandedOverride.get(area.id) ?? true}
-                    onToggle={(nextExpanded) => setExpandedOverride((current) =>
-                      new Map(current).set(area.id, nextExpanded))}
+                    expanded={preferences.areaExpanded(area.id)}
+                    onToggle={(nextExpanded) => preferences.setAreaExpanded(area.id, nextExpanded)}
                     disclosureRef={(element) => {
                       if (element === null) areaDisclosureRefs.current.delete(area.id);
                       else areaDisclosureRefs.current.set(area.id, element);

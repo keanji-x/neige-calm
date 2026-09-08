@@ -292,7 +292,7 @@ describe('architecture/no-create-context-outside-allowlist', () => {
 });
 
 describe('architecture allowlists', () => {
-  it('permits only the exact Track draft provider context path', async () => {
+  it.each(['router/new-track-drafts', 'providers/ui-preferences'])('permits only the exact %s context path', async (ownerPath) => {
     const eslint = new ESLint({
       cwd: root,
       overrideConfigFile: true,
@@ -306,8 +306,8 @@ describe('architecture allowlists', () => {
       }],
     });
     const source = 'import { createContext } from "react"; export const context = createContext(null);';
-    const [owner] = await eslint.lintText(source, { filePath: resolve(root, 'web/src/app/router/new-track-drafts.tsx') });
-    const [sibling] = await eslint.lintText(source, { filePath: resolve(root, 'web/src/app/router/new-track-drafts-other.tsx') });
+    const [owner] = await eslint.lintText(source, { filePath: resolve(root, `web/src/app/${ownerPath}.tsx`) });
+    const [sibling] = await eslint.lintText(source, { filePath: resolve(root, `web/src/app/${ownerPath}-other.tsx`) });
     expect(owner.messages).toEqual([]);
     expect(sibling.messages.map((message) => message.ruleId)).toEqual(['architecture/no-create-context-outside-allowlist']);
   });
