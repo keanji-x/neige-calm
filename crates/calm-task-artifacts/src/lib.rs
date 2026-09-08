@@ -12,6 +12,8 @@ mod capture;
 #[cfg(target_os = "linux")]
 mod file;
 #[cfg(target_os = "linux")]
+mod file_set;
+#[cfg(target_os = "linux")]
 mod filesystem;
 #[cfg(target_os = "linux")]
 mod git_index;

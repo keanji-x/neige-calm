@@ -46,18 +46,7 @@ impl ArtifactStore {
             request.key,
             &request_bytes,
             |stage| {
-                let mut file = open_source()?;
-                disk::regular(&file)?;
-                let flags = OFlag::from_bits_truncate(
-                    fcntl(file.as_raw_fd(), FcntlArg::F_GETFL).map_err(std::io::Error::from)?,
-                );
-                if !flags.contains(OFlag::O_NONBLOCK) || flags & OFlag::O_ACCMODE != OFlag::O_RDONLY
-                {
-                    return Err(Error::Invalid(
-                        "source descriptor must be read-only and opened nonblocking".into(),
-                    ));
-                }
-                file.rewind()?;
+                let file = ordinary_source(open_source()?)?;
                 disk::private_dir(&stage.join("objects"))?;
                 let mut entries = Vec::new();
                 for (slash, _) in path.match_indices('/') {
@@ -107,6 +96,20 @@ impl ArtifactStore {
         disk::verify_identity(&actual, digest, *bytes)?;
         Ok(content)
     }
+}
+
+pub(crate) fn ordinary_source(mut file: File) -> Result<File> {
+    disk::regular(&file)?;
+    let flags = OFlag::from_bits_truncate(
+        fcntl(file.as_raw_fd(), FcntlArg::F_GETFL).map_err(std::io::Error::from)?,
+    );
+    if !flags.contains(OFlag::O_NONBLOCK) || flags & OFlag::O_ACCMODE != OFlag::O_RDONLY {
+        return Err(Error::Invalid(
+            "source descriptor must be read-only and opened nonblocking".into(),
+        ));
+    }
+    file.rewind()?;
+    Ok(file)
 }
 
 #[cfg(test)]

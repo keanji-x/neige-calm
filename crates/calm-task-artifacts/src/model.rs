@@ -133,6 +133,16 @@ pub struct FileCaptureRequest<'a> {
     pub path: &'a FileArtifactPath,
 }
 
+/// One nonempty explicit set of ordinary files under one stopped-source boundary.
+/// Order is not identity; duplicate and ancestor/descendant paths are refused.
+/// The lazy opener passed to `ArtifactStore::capture_files` is unused on replay.
+pub struct FileSetCaptureRequest<'a> {
+    pub key: &'a str,
+    pub boundary_id: &'a str,
+    pub output: &'a str,
+    pub paths: &'a [FileArtifactPath],
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MissingOutput {
@@ -187,7 +197,10 @@ pub struct SnapshotManifest {
 impl SnapshotManifest {
     pub(crate) fn validate(&self, limits: &Limits) -> Result<()> {
         if self.version != "file-manifest-v1"
-            || !matches!(self.delivery_version.as_str(), "git-v1" | "regular-file-v1")
+            || !matches!(
+                self.delivery_version.as_str(),
+                "git-v1" | "regular-file-v1" | "regular-file-set-v1"
+            )
         {
             return Err(Error::Unsupported("manifest version".into()));
         }
@@ -215,6 +228,26 @@ impl SnapshotManifest {
                 })
             {
                 return Err(Error::Integrity("ordinary file manifest shape".into()));
+            }
+        }
+        if self.delivery_version == "regular-file-set-v1" {
+            let [slot] = self.outputs.as_slice() else {
+                return Err(Error::Integrity(
+                    "ordinary file set requires one output".into(),
+                ));
+            };
+            let shape = file_set_shape(&slot.paths, limits)?;
+            if self.entries.len() != shape.len()
+                || self
+                    .entries
+                    .iter()
+                    .zip(shape)
+                    .any(|(entry, (path, directory))| {
+                        entry.path() != path
+                            || matches!(entry, Entry::Directory { .. }) != directory
+                    })
+            {
+                return Err(Error::Integrity("ordinary file set manifest shape".into()));
             }
         }
         Ok(())
@@ -409,4 +442,33 @@ pub(crate) fn validate_entries(entries: &[Entry], limits: &Limits) -> Result<()>
         }
     }
     Ok(())
+}
+
+/// Exact bounded inventory: true denotes a structural parent, false a file.
+/// Inputs are validated and disjoint before any inventory is allocated.
+pub(crate) fn file_set_shape(paths: &[String], limits: &Limits) -> Result<BTreeMap<String, bool>> {
+    if paths.is_empty() {
+        return Err(Error::Invalid("ordinary file set must be nonempty".into()));
+    }
+    if paths.len() > limits.max_entries {
+        return Err(Error::Limit("entry count".into()));
+    }
+    for path in paths {
+        file_path(path, limits)?;
+    }
+    disjoint(&paths.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let mut shape = BTreeMap::new();
+    for path in paths {
+        for (slash, _) in path.match_indices('/') {
+            shape.insert(path[..slash].to_owned(), true);
+            if shape.len() > limits.max_entries {
+                return Err(Error::Limit("entry count".into()));
+            }
+        }
+        shape.insert(path.clone(), false);
+        if shape.len() > limits.max_entries {
+            return Err(Error::Limit("entry count".into()));
+        }
+    }
+    Ok(shape)
 }
