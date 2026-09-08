@@ -356,3 +356,45 @@ Validated with the following commands, each under
 No new mutation run, broad workspace gate, model run or integrated F4 acceptance
 was performed for this component. Parent integration owns independent full-diff
 reviews and the remaining kernel boundary validation.
+
+## Explicit ordinary-file set component (PR1583 prework)
+
+`FileSetCaptureRequest { key, boundary_id, output, paths }` supplies one nonempty
+explicit slice of `FileArtifactPath` values. `capture_files(request, opener)`
+takes `FnMut(&FileArtifactPath) -> Result<File>`; each path is mandatory and is
+opened once in canonical order during a fresh capture. No source tree is
+enumerated and Git is not required. The opener follows the same stopped-source,
+pinned-root, symlink/mount refusal, read-only/nonblocking and exclusive descriptor
+ownership contract as `capture_file`. The kernel establishes and retains that
+boundary for the entire set.
+
+The exact manifest contains only declared files and their unique structural
+parents, under one named output. Empty lists, duplicates, prefix conflicts and
+private paths fail before source opening. Entry ceilings include files and
+parents; bytes are bounded per file and across the complete set, even when
+identical content deduplicates to one stored object. Path/depth, request and
+manifest ceilings also apply. Files retain raw bytes and executable bits; normal
+materialization applies the existing 0600/0700 modes.
+
+The additive delivery version is `regular-file-set-v1`; request fingerprints
+use `file-set-capture-v1`. List order is not identity. The store marker, manifest
+schema version, capture-record encoding, Git identities and single-file
+`regular-file-v1` / `file-capture-v1` bytes are unchanged. Readers predating this
+extension reject the new delivery version. The existing capture transaction
+freezes the entire set at once; frozen replay/conflict never invokes the opener.
+A pre-freeze failure publishes neither a snapshot nor a key binding.
+
+This bounded library component is prework for PR1583, not whole-loop delivery.
+Parent integration owns contract approval, independent reviews, mutation
+verification, shared gates and kernel/end-to-end acceptance.
+
+Focused verification for this component used
+`flock --close /tmp/neige-1501-cargo.lock env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 CARGO_TARGET_DIR=/mnt/data2/kenji/.build/neige1501-fileset-target`:
+
+- `cargo nextest run --locked -p calm-task-artifacts --test file_set --test file --lib --test-threads 8 --no-fail-fast`: 31 passed, none skipped.
+- After tightening pre-allocation path admission,
+  `cargo nextest run --locked -p calm-task-artifacts --test file_set --lib file_set --test-threads 8 --no-fail-fast`: 9 passed, 12 filtered out.
+- `cargo fmt -p calm-task-artifacts -- --check` and `git diff --check`: passed.
+
+No workspace gate, new dependency, mutation run, service or model experiment was
+performed. Independent integration reviews remain with the parent.

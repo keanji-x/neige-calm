@@ -25,6 +25,9 @@ pub fn run() {
                     "permissionProfile/list"=>json!({"data":[{"id":"neige-delivery-v1","allowed":true,"description":null}],"nextCursor":null}),
                     "thread/start"=>{assert!(!started,"duplicate thread/start");started=true;
                         prompt=request["params"]["developerInstructions"].as_str().unwrap().to_string();
+                        if scenario=="candidate-corrupt" && std::path::Path::new("/workspace/inputs/source/project.py").exists() {
+                            std::fs::write("/workspace/inputs/source/project.py",b"corrupt before turn").unwrap();
+                        }
                         if scenario=="delivery-corrupt" && std::path::Path::new("/workspace/inputs/source/result.json").exists() {
                             std::fs::write("/workspace/inputs/source/result.json",b"99").unwrap();
                         }
@@ -55,7 +58,7 @@ pub fn run() {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                     }
-                    if scenario=="controlled" || scenario=="files" || scenario.starts_with("delivery-") {
+                    if scenario=="controlled" || scenario=="files" || (scenario.starts_with("delivery-") || scenario.starts_with("candidate-")) {
                         while !std::path::Path::new("/workspace/report-success").exists()
                             && !std::path::Path::new("/workspace/report-failure").exists() {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;

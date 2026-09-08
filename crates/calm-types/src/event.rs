@@ -255,7 +255,7 @@ impl EventScope {
 /// Bump this together with a migration default whenever clients must gate on a
 /// new persisted wire shape; otherwise old clients can advance past events they
 /// cannot parse.
-pub const SYNC_EVENT_VERSION: u32 = 19;
+pub const SYNC_EVENT_VERSION: u32 = 20;
 
 /// #1505 PR2 — what happened to one entry in the harness pending queue.
 ///
@@ -780,6 +780,12 @@ pub enum Event {
     /// Exact immutable-file publication settled; does not change task business status.
     #[serde(rename = "task.file_publication_settled")]
     TaskFilePublicationSettled {
+        task_id: String,
+        operation_id: String,
+    },
+    /// Exact candidate verification settled; result must be read before qualification.
+    #[serde(rename = "task.candidate_verification_settled")]
+    TaskCandidateVerificationSettled {
         task_id: String,
         operation_id: String,
     },
@@ -1321,6 +1327,7 @@ impl Event {
             // events kind clause + the envelope's track scope.
             Event::TaskDispatched { .. }
             | Event::TaskExecutionSettled { .. }
+            | Event::TaskCandidateVerificationSettled { .. }
             | Event::TaskFilePublicationSettled { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -1433,6 +1440,7 @@ impl Event {
             Event::TaskDispatched { .. } => "task.dispatched",
             Event::TaskExecutionSettled { .. } => "task.execution_settled",
             Event::TaskFilePublicationSettled { .. } => "task.file_publication_settled",
+            Event::TaskCandidateVerificationSettled { .. } => "task.candidate_verification_settled",
             Event::TaskContextFrozen { .. } => "task.context_frozen",
             Event::TaskContextAdvanced { .. } => "task.context_advanced",
             Event::WorkspaceLeased { .. } => "workspace.leased",
@@ -1618,6 +1626,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TaskFailed { .. }
         | Event::TaskDispatched { .. }
         | Event::TaskExecutionSettled { .. }
+        | Event::TaskCandidateVerificationSettled { .. }
         | Event::TaskFilePublicationSettled { .. }
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. }

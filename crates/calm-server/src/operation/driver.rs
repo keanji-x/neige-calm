@@ -854,6 +854,15 @@ impl OperationRuntime {
             }
             return Ok(());
         };
+        if matches!(claim_mode, ParkedClaimMode::SteadyState) {
+            let adapter = self.adapter(&op.kind)?;
+            if adapter.owns_parked_resource() {
+                let eligible = adapter.owned_parked_recovery_eligible(&op).await;
+                if !eligible {
+                    return Ok(());
+                }
+            }
+        }
         if now_ms() > deadline_ms {
             return self
                 .apply_parked_past_deadline_with_claim(&op.id, claim_mode)

@@ -31,7 +31,7 @@ fn consumer() -> Value {
         json!({"role":"consumer","producer":"produce","slot":"result","purpose":"json-input"}),
     )
 }
-async fn schedule(fx: &Fixture) {
+pub(super) async fn schedule(fx: &Fixture) {
     let scheduler = fx.state.dispatcher.scheduler();
     scheduler.mark_boot_sweep_complete();
     scheduler.mark_context_sweep_boot_complete();
@@ -81,7 +81,7 @@ async fn schedule(fx: &Fixture) {
         }
     }
 }
-async fn workspace(fx: &Fixture, task: &Task) -> PathBuf {
+pub(super) async fn workspace(fx: &Fixture, task: &Task) -> PathBuf {
     let raw: String = sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE kind='codex-isolated-worker' AND idempotency_key=?1")
         .bind(&task.id).fetch_one(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
     let output: Value = serde_json::from_str(&raw).unwrap();
@@ -91,7 +91,7 @@ async fn workspace(fx: &Fixture, task: &Task) -> PathBuf {
             .unwrap(),
     )
 }
-async fn settle(fx: &Fixture, task: &Task, success: bool) {
+pub(super) async fn settle(fx: &Fixture, task: &Task, success: bool) {
     std::fs::write(
         workspace(fx, task).await.join(if success {
             "report-success"
@@ -132,7 +132,7 @@ async fn source(scenario: &str, bytes: &[u8]) -> (Fixture, Task, PathBuf) {
     settle(&fx, &task, true).await;
     (fx, task, path)
 }
-async fn publish(fx: &Fixture, task: &Task) -> String {
+pub(super) async fn publish(fx: &Fixture, task: &Task) -> String {
     let source = fx
         .state
         .operation_runtime
@@ -179,7 +179,7 @@ async fn input_binding(fx: &Fixture, task: &Task) -> Value {
             .unwrap();
     serde_json::from_str(&raw).unwrap()
 }
-async fn listed(fx: &Fixture) -> Value {
+pub(super) async fn listed(fx: &Fixture) -> Value {
     call_tool(
         &fx.boot,
         "calm.plan.list",

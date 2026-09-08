@@ -12,7 +12,7 @@ mod record;
 pub(crate) mod recovery;
 pub(crate) mod settled;
 pub(crate) mod turn;
-mod workspace;
+pub(crate) mod workspace;
 
 use crate::error::{CalmError, Result};
 use crate::ids::ActorId;

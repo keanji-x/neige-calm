@@ -79,6 +79,12 @@ async fn validate_binding_tx(tx: &mut Tx<'_>, task: &Task, binding: &Binding) ->
 }
 /// Runs in the existing claim transaction. Recovery only inherits its predecessor.
 pub(crate) async fn bind_claim_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
+    if matches!(
+        selection(task)?,
+        Some(FileDelivery::CandidateConsumer { .. })
+    ) {
+        return super::candidate_input::bind_claim_tx(tx, task).await;
+    }
     let Some(FileDelivery::Consumer {
         producer,
         slot,
@@ -122,6 +128,9 @@ pub(crate) async fn bind_claim_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
 }
 pub(crate) async fn prompt_tx(tx: &mut Tx<'_>, task: &Task) -> Result<String> {
     match selection(task)? {
+        Some(FileDelivery::CandidateProducer { .. } | FileDelivery::CandidateConsumer { .. }) => {
+            super::candidate_input::prompt(tx, task).await
+        }
         Some(FileDelivery::Consumer { producer, .. }) => {
             let (binding, _, _) = load_tx(tx, &task.id)
                 .await?
@@ -186,6 +195,14 @@ pub(crate) async fn prepare_input(
     workspace: &Path,
 ) -> Result<()> {
     let owned = op.clone();
+    let candidate = write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move { is_candidate_tx(tx, &owned).await })
+    })
+    .await?;
+    if candidate {
+        return super::candidate_input::prepare(repo, op, workspace).await;
+    }
+    let owned = op.clone();
     let binding = write_in_tx_typed(repo, move |tx| {
         Box::pin(async move { authorized_tx(tx, &owned).await })
     })
@@ -213,6 +230,9 @@ pub(crate) async fn prepare_input(
 }
 /// Final byte check occurs under TaskLaunch's authority transaction before first turn.
 pub(crate) async fn verify_input(tx: &mut Tx<'_>, op: &Operation, workspace: &Path) -> Result<()> {
+    if is_candidate_tx(tx, op).await? {
+        return super::candidate_input::verify(tx, op, workspace).await;
+    }
     let Some((binding, state, prepared)) = authorized_tx(tx, op).await? else {
         return Ok(());
     };
@@ -227,8 +247,29 @@ pub(crate) async fn verify_input(tx: &mut Tx<'_>, op: &Operation, workspace: &Pa
         .map_err(|_| conflict("input verification interrupted"))?
 }
 
+async fn is_candidate_tx(tx: &mut Tx<'_>, op: &Operation) -> Result<bool> {
+    let task = task_get_tx(
+        tx,
+        op.idempotency_key
+            .as_deref()
+            .ok_or_else(|| conflict("input task missing"))?,
+    )
+    .await?
+    .ok_or_else(|| conflict("input task missing"))?;
+    Ok(matches!(
+        selection(&task)?,
+        Some(FileDelivery::CandidateConsumer { .. })
+    ))
+}
+
 /// Recovery admission must not promise a continuation whose original input is missing.
 pub(crate) async fn require_recovery_input_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
+    if matches!(
+        selection(task)?,
+        Some(FileDelivery::CandidateConsumer { .. })
+    ) {
+        return super::candidate_input::require_recovery(tx, task).await;
+    }
     if matches!(selection(task)?, Some(FileDelivery::Consumer { .. })) {
         let (binding, _, _) = load_tx(tx, &task.id)
             .await?

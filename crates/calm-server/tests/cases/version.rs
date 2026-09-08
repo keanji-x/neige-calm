@@ -137,11 +137,11 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
     );
-    // #1501 F4: migration 0102 adds file publication settlement at version 19.
+    // #1501 F4: migration 0103 adds candidate verification settlement at version 20.
     // `scripts/gate-sync-event-version-lockstep.sh` binds the constant to that
     // literal; the assertion below is the literal number, so bumping the
     // constant alone cannot make this file agree with itself.
-    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 19);
+    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 20);
 
     // minWebCompatVersion must echo the in-process constant — the whole
     // point of the field is to bind frontend expectations to a value the
@@ -157,13 +157,13 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     // #1316 S4b: 23 -> 24 so a cached bundle reading `runtime_id` off the
     // planner REST responses and the rewritten event payloads gets the refresh
     // curtain instead of rendering an undefined-shaped conversation.
-    // #1501 F4: 25 excludes bundles that cannot classify file publication.
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 25);
+    // #1501 F4: 26 excludes bundles that cannot classify candidate verification.
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 26);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 25);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 26);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

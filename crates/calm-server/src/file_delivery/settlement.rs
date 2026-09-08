@@ -50,6 +50,9 @@ pub(crate) async fn observation(
         let current = crate::db::sqlite::task_attempt_current_tx(tx, &task.track_id, &task.key).await?;
         if task.track_id != track.as_str() || current.is_none_or(|current| current.attempt_id != task_id) { return Ok(None) }
         let view: Value = view_tx(tx, &task).await?;
+        if matches!(selection(&task)?,Some(FileDelivery::CandidateProducer { .. })) {
+            return Ok(Some(Observation::SystemContext { text: format!("Candidate file publication for task `{}` ({task_id}) settled with Operation state `{phase}`. Sealing is not machine verification or delivery qualification. Read calm.plan.list for separate candidate verification and input state. Current file delivery: {view}",task.key) }));
+        }
         Ok(Some(Observation::SystemContext {
             text: format!("JSON file publication for task `{}` ({task_id}) settled with Operation state `{phase}`. Read calm.plan.list for exact publication and input preparation state. JSON syntax success is not business acceptance; publication failure does not authorize automatic retry. Current file delivery: {view}", task.key),
         }))

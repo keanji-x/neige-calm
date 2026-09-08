@@ -735,6 +735,11 @@ export const taskFilePublicationSettledSchema = z.object({
   data: z.object({ task_id: z.string(), operation_id: z.string() }),
 });
 
+export const taskCandidateVerificationSettledSchema = z.object({
+  ev: z.literal('task.candidate_verification_settled'),
+  data: z.object({ task_id: z.string(), operation_id: z.string() }),
+});
+
 export const taskExecutionSettledSchema = z.object({
   ev: z.literal('task.execution_settled'),
   data: z.object({
@@ -1163,6 +1168,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   taskFailedSchema,
   taskExecutionSettledSchema,
   taskFilePublicationSettledSchema,
+  taskCandidateVerificationSettledSchema,
   planUpdatedSchema,
   taskDispatchedSchema,
   taskContextFrozenSchema,

@@ -17,6 +17,7 @@ pub mod claude_adapter;
 pub mod claude_restart_adapter;
 pub mod codex_adapter;
 pub mod forge_action_adapter;
+pub(crate) mod gate_process;
 pub mod planner_harness_interrupt_adapter;
 pub mod planner_harness_shutdown_adapter;
 pub mod planner_harness_start_adapter;
@@ -77,7 +78,8 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
 /// Kept explicit so the registry coverage test fails when a new production
 /// adapter has not been classified on either side of the context fence.
 /// Retained artifact actions require completed-task authority, never start admission.
-pub const POST_EXECUTION_TASK_BOUND_ADAPTER_KINDS: [&str; 1] = ["task-file-publication"];
+pub const POST_EXECUTION_TASK_BOUND_ADAPTER_KINDS: [&str; 2] =
+    ["task-file-publication", "candidate-verify"];
 
 pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 8] = [
     "terminal-create",
@@ -747,10 +749,18 @@ pub trait ProviderAdapter: Send + Sync {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome>;
 
-    /// Adapter-owned resources have no host process-group artifact. Their
-    /// private receipt and stop proof are reconciled before saga completion.
+    /// Adapter-owned resources require private stop/quiescence proof before
+    /// saga completion, including resources with recorded process-group artifacts.
     fn owns_parked_resource(&self) -> bool {
         false
+    }
+
+    /// Read-only hint for steady sweeps before claiming an owned parked resource.
+    /// False defers this sweep only; true never authorizes recovery or settlement.
+    /// Decisions may race exit/reaping or row changes: all claimed checks still apply.
+    /// Boot, explicit cancellation, and compensation do not consult this hint.
+    async fn owned_parked_recovery_eligible(&self, _op: &Operation) -> bool {
+        true
     }
 
     async fn recover_owned_parked(
