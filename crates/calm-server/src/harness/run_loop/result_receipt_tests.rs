@@ -5,6 +5,89 @@ use crate::db::RepoRead;
 use serde_json::json;
 
 #[tokio::test]
+async fn deep_completion_and_same_batch_user_reach_transport() {
+    for depth in [123, 124] {
+        let fx = Fixture::new().await;
+        let nested = format!(
+            "{}\"deep-report-marker\"{}",
+            "[".repeat(depth),
+            "]".repeat(depth)
+        );
+        // MCP task_complete accepts Value arguments, then retains result as-is.
+        let args: serde_json::Value = serde_json::from_str(&format!(
+            "{{\"idempotency_key\":\"deep-attempt\",\"result\":{nested}}}"
+        ))
+        .expect("valid MCP completion arguments");
+        let event = Event::TaskCompleted {
+            idempotency_key: args["idempotency_key"].as_str().unwrap().into(),
+            result: args["result"].clone(),
+            artifacts: vec![],
+            agent_message: None,
+        };
+        let event: Event = serde_json::from_str(&serde_json::to_string(&event).unwrap())
+            .expect("valid persisted Event ingress");
+        enqueue_event(&fx, event).await;
+        fx.enqueue(vec![QueueEntry::user_message(
+            "same-batch-user-marker".into(),
+            None,
+            vec![],
+        )])
+        .await;
+        let queued = fx.stored().await.pending_entries();
+        assert_eq!(queued.len(), 2);
+        let original = queued[0].observation();
+        let parsed: Observation = serde_json::from_str(&serde_json::to_string(&original).unwrap())
+            .expect("valid Observation ingress");
+        assert_eq!(parsed, original);
+        let track = fx
+            .repo
+            .track_get(fx.harness.inner.track_id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        let write = crate::state::WriteContext::new(
+            fx.harness.inner.card_role_cache.clone(),
+            fx.harness.inner.track_area_cache.clone(),
+        );
+        let content = calm_truth::track_fs_view::TrackFsView::new(fx.repo.as_ref(), &write)
+            .cat(&track, "runs/deep-attempt.json")
+            .await
+            .unwrap();
+        let wrapped = serde_json::from_str::<serde_json::Value>(&content.content);
+        if depth == 123 {
+            wrapped.expect("123-level run-wrapper control parses");
+        } else {
+            assert!(
+                wrapped
+                    .unwrap_err()
+                    .to_string()
+                    .contains("recursion limit exceeded")
+            );
+        }
+        let issued = maybe_issue_turn(&fx.harness.inner).await;
+        let sent = fx.harness.inner.daemon.started_turns_for_test();
+        assert_eq!(
+            sent.len(),
+            1,
+            "depth={depth}: actual transport delivery blocked: {issued:?}"
+        );
+        issued.unwrap();
+        let InputItem::Text { text } = &sent[0].1[0] else {
+            panic!("expected text input")
+        };
+        assert!(text.contains("deep-report-marker"));
+        assert!(text.contains("same-batch-user-marker"));
+        assert!(fx.stored().await.pending_entries().is_empty());
+        assert!(fx.harness.inner.pending_queue.lock().await.is_empty());
+        if depth == 124 {
+            assert!(text.contains("Exact execution details unavailable"));
+        } else {
+            read_details(&fx, text).await;
+        }
+    }
+}
+
+#[tokio::test]
 async fn completed_result_receipt_reaches_planner_turn() {
     let fx = Fixture::new().await;
     let event = Event::TaskCompleted {
@@ -173,14 +256,28 @@ async fn receipt_empty_completion_and_failure_without_report_are_honest() {
             &fx,
             Event::TaskCompleted {
                 idempotency_key: "empty-attempt".into(),
-                result,
+                result: result.clone(),
                 artifacts: vec![],
                 agent_message: None,
             },
         )
         .await;
         let text = turn(&fx).await;
-        assert!(text.contains("No worker report content was supplied"));
+        assert!(text.contains("Recorded completion result as supplied"));
+        assert!(!text.contains("No worker report content was supplied"));
+        let preview = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Report preview: "))
+            .unwrap();
+        let preview: serde_json::Value = serde_json::from_str(preview).unwrap();
+        let expected = result
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| result.to_string());
+        assert_eq!(preview["text"], expected);
+        assert_eq!(preview["truncated"], false);
+        assert!(text.contains("Task completion report received"));
+        assert!(text.contains("Report arrival does not establish execution settlement"));
         assert!(!text.contains(".md"));
         read_details(&fx, &text).await;
     }
@@ -197,7 +294,7 @@ async fn receipt_empty_completion_and_failure_without_report_are_honest() {
         )
         .await;
         let text = turn(&fx).await;
-        assert!(text.contains("Task execution failed receipt"));
+        assert!(text.contains("Task failure report received"));
         assert!(text.contains("A worker report may not exist"));
         assert!(text.contains(reason));
         assert!(!text.contains(".md"));
@@ -407,6 +504,115 @@ async fn receipt_detail_projection_failure_keeps_report_deliverable() {
     assert!(text.contains("report survives unavailable optional details"));
     assert!(text.contains("Exact execution details unavailable"));
     assert!(!text.contains("calm.track.cat("));
+}
+
+#[tokio::test]
+async fn receipt_run_locator_validates_original_identity_against_real_reader() {
+    for identity in [
+        "".into(),
+        ".".into(),
+        "..".into(),
+        "index".into(),
+        "../escape".into(),
+        "/absolute".into(),
+        "runs/nested".into(),
+        "has space".into(),
+        "a%2fb".into(),
+        "a\\b".into(),
+        "a\nb".into(),
+        "測試".into(),
+        "x".repeat(508),
+        "valid._:-attempt".into(),
+        "index.json".into(),
+        "x".repeat(507),
+    ] {
+        let fx = Fixture::new().await;
+        let safe = matches!(identity.as_str(), "valid._:-attempt" | "index.json")
+            || identity == "x".repeat(507);
+        let id = enqueue_event(
+            &fx,
+            Event::TaskCompleted {
+                idempotency_key: identity.clone(),
+                result: json!("original report for locator validation"),
+                artifacts: vec![],
+                agent_message: None,
+            },
+        )
+        .await;
+        let text = turn(&fx).await;
+        assert!(text.contains("original report for locator validation"));
+        let preview = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Original execution idempotency_key: "))
+            .unwrap();
+        let preview: serde_json::Value = serde_json::from_str(preview).unwrap();
+        assert_eq!(preview["text"], identity);
+        if safe {
+            let run = read_details(&fx, &text).await;
+            assert_eq!(run["idempotency_key"], identity);
+            assert_eq!(run["events"]["completed"]["event_id"], id);
+        } else {
+            assert!(
+                text.contains("Exact execution details unavailable"),
+                "{identity:?}"
+            );
+            assert!(!text.contains("calm.track.cat("), "{identity:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn receipt_optional_track_absence_and_read_error_preserve_segments() {
+    let fx = Fixture::new().await;
+    let write = crate::state::WriteContext::new(
+        fx.harness.inner.card_role_cache.clone(),
+        fx.harness.inner.track_area_cache.clone(),
+    );
+    let entries = vec![
+        QueueEntry::system(
+            Observation::TaskCompleted {
+                idempotency_key: "original-completion".into(),
+                result: json!(null),
+            },
+            Some(21),
+        )
+        .unwrap(),
+        QueueEntry::system(
+            Observation::TaskFailed {
+                idempotency_key: "original-failure".into(),
+                error: "original-error".into(),
+            },
+            Some(22),
+        )
+        .unwrap(),
+        QueueEntry::user_message("retained-user-input".into(), None, vec![]),
+    ];
+    for read_error in [false, true] {
+        if read_error {
+            fx.repo.pool().close().await;
+        }
+        let mut segments =
+            super::super::queue::input_segments_for_entries(&fx.harness.inner.card_id, &entries);
+        let original = segments.clone();
+        super::super::result_receipt::enrich(
+            fx.repo.as_ref(),
+            &write,
+            &TrackId::from("missing-track"),
+            &entries,
+            &mut segments,
+        )
+        .await;
+        for index in [0, 1] {
+            assert!(segments[index].text.starts_with(&original[index].text));
+            assert!(
+                segments[index]
+                    .text
+                    .contains("Exact execution details unavailable")
+            );
+            assert!(!segments[index].text.contains("calm.track.cat("));
+        }
+        assert_eq!(segments[2], original[2]);
+    }
 }
 
 #[tokio::test]

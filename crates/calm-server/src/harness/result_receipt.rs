@@ -2,7 +2,6 @@
 //! No new queue fields, task-key aliases, workspace paths, or authority claims.
 use super::{Observation, QueueEntry};
 use crate::db::Repo;
-use crate::error::Result;
 use crate::ids::TrackId;
 use crate::model::HarnessInputSegment;
 use crate::state::WriteContext;
@@ -15,7 +14,7 @@ pub(super) async fn enrich(
     track_id: &TrackId,
     entries: &[QueueEntry],
     segments: &mut [HarnessInputSegment],
-) -> Result<()> {
+) {
     let receipts: Vec<_> = entries
         .iter()
         .enumerate()
@@ -46,59 +45,50 @@ pub(super) async fn enrich(
         })
         .collect();
     if receipts.is_empty() {
-        return Ok(());
+        return;
     }
-    let track = repo.track_get(track_id.as_str()).await?;
-    let view = TrackFsView::new(repo, write);
-    let listing = match &track {
-        Some(track) => match view.ls(track, Some("runs")).await {
-            Ok(listing) => listing,
-            Err(error) => {
-                // Details are optional: unrelated corrupt card/run projections
-                // must not strand the already-persisted result in this batch.
-                tracing::warn!(?error, "result receipt detail listing unavailable");
-                Vec::new()
-            }
-        },
-        None => Vec::new(),
+    let track = match repo.track_get(track_id.as_str()).await {
+        Ok(track) => track,
+        Err(error) => {
+            tracing::warn!(?error, "result receipt detail track unavailable");
+            None
+        }
     };
+    let view = TrackFsView::new(repo, write);
     for (index, envelope_id, identity, kind, field, report) in receipts {
-        // Accept only a single bounded virtual filename from the real listing.
-        // Never derive a location from arbitrary task keys or report contents.
-        let entry = listing.iter().find(|entry| {
-            entry.extra.get("idempotency_key").and_then(Value::as_str) == Some(&identity)
-                && entry.name.ends_with(".json")
-                && entry.name.len() <= 512
-                && entry
-                    .name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
-        });
         let mut detail = None;
-        if let (Some(track), Some(entry)) = (&track, entry) {
-            let path = format!("runs/{}", entry.name);
-            let content = match view.cat(track, &path).await {
-                Ok(content) => Some(content),
+        if let (Some(track), Some(path)) = (&track, run_detail_path(&identity)) {
+            // cat resolves one exact execution key. Avoid a preliminary runs
+            // listing; the reader owns projection and reserved-path semantics.
+            let run = match view.cat(track, &path).await {
+                Ok(content) => match serde_json::from_str::<Value>(&content.content) {
+                    Ok(run) => Some(run),
+                    Err(error) => {
+                        // Valid ingress can exceed the parser's recursion limit
+                        // after run wrapping. Optional detail must not requeue
+                        // the durable report or other entries in its batch.
+                        tracing::warn!(?error, "result receipt detail parse unavailable");
+                        None
+                    }
+                },
                 Err(error) => {
                     tracing::warn!(?error, "result receipt detail read unavailable");
                     None
                 }
             };
-            let run: Value = match content {
-                Some(content) => serde_json::from_str(&content.content)?,
-                None => Value::Null,
-            };
-            let event = &run["events"][kind];
-            // A run projection can advance. Only advertise it when it still
-            // contains the queued event, or (legacy queues lack envelope IDs)
-            // the exact recorded payload and identity. Never substitute latest.
-            if run["idempotency_key"].as_str() == Some(&identity)
-                && event["payload"]["idempotency_key"].as_str() == Some(&identity)
-                && event["payload"].get(field) == Some(&report)
-                && envelope_id.is_none_or(|id| event["event_id"].as_i64() == Some(id))
-                && let Some(event_id) = event["event_id"].as_i64()
-            {
-                detail = Some((path, event_id));
+            if let Some(run) = run {
+                let event = &run["events"][kind];
+                // A run projection can advance. Only advertise it when it still
+                // contains the queued event, or (legacy queues lack envelope IDs)
+                // the exact recorded payload and identity. Never substitute latest.
+                if run["idempotency_key"].as_str() == Some(&identity)
+                    && event["payload"]["idempotency_key"].as_str() == Some(&identity)
+                    && event["payload"].get(field) == Some(&report)
+                    && envelope_id.is_none_or(|id| event["event_id"].as_i64() == Some(id))
+                    && let Some(event_id) = event["event_id"].as_i64()
+                {
+                    detail = Some((path, event_id));
+                }
             }
         }
         segments[index].text.push_str(&match detail {
@@ -109,5 +99,20 @@ pub(super) async fn enrich(
             None => "\nExact execution details unavailable through the current track reader. No worker report file is asserted to exist; retain the original queued receipt.".into(),
         });
     }
-    Ok(())
+}
+
+// This address is an existing virtual run record, not a filesystem path or a
+// task-key alias. The gate-log helper validates a different address shape; here
+// also exclude the reader's reserved index.json and bound the full filename.
+fn run_detail_path(identity: &str) -> Option<String> {
+    if identity.is_empty()
+        || identity.len() > 507
+        || matches!(identity, "." | ".." | "index")
+        || !identity
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+    {
+        return None;
+    }
+    Some(format!("runs/{identity}.json"))
 }

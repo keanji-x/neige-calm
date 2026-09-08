@@ -2910,7 +2910,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             &drained,
             &mut prepared.segments,
         )
-        .await?;
+        .await;
         crate::error::Result::Ok(prepared)
     }
     .await;

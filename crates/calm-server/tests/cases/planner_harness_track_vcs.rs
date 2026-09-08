@@ -1608,7 +1608,7 @@ async fn batched_observations_get_one_diff_block_covering_all_changes() {
     assert!(text.contains(&format!("cards/{}/.payload.json new", first.id)));
     assert!(text.contains(second.id.as_str()));
     assert!(text.contains(third.id.as_str()));
-    assert_eq!(text.matches("Task execution completed receipt").count(), 3);
+    assert_eq!(text.matches("Task completion report received").count(), 3);
     boot.harness.shutdown().await.unwrap();
 }
 
