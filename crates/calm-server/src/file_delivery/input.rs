@@ -81,7 +81,7 @@ async fn validate_binding_tx(tx: &mut Tx<'_>, task: &Task, binding: &Binding) ->
 pub(crate) async fn bind_claim_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
     if matches!(
         selection(task)?,
-        Some(FileDelivery::CandidateConsumer { .. })
+        Some(FileDelivery::CandidateConsumer { .. } | FileDelivery::CandidateReviewer { .. })
     ) {
         return super::candidate_input::bind_claim_tx(tx, task).await;
     }
@@ -128,9 +128,11 @@ pub(crate) async fn bind_claim_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
 }
 pub(crate) async fn prompt_tx(tx: &mut Tx<'_>, task: &Task) -> Result<String> {
     match selection(task)? {
-        Some(FileDelivery::CandidateProducer { .. } | FileDelivery::CandidateConsumer { .. }) => {
-            super::candidate_input::prompt(tx, task).await
-        }
+        Some(
+            FileDelivery::CandidateProducer { .. }
+            | FileDelivery::CandidateConsumer { .. }
+            | FileDelivery::CandidateReviewer { .. },
+        ) => super::candidate_input::prompt(tx, task).await,
         Some(FileDelivery::Consumer { producer, .. }) => {
             let (binding, _, _) = load_tx(tx, &task.id)
                 .await?
@@ -258,7 +260,7 @@ async fn is_candidate_tx(tx: &mut Tx<'_>, op: &Operation) -> Result<bool> {
     .ok_or_else(|| conflict("input task missing"))?;
     Ok(matches!(
         selection(&task)?,
-        Some(FileDelivery::CandidateConsumer { .. })
+        Some(FileDelivery::CandidateConsumer { .. } | FileDelivery::CandidateReviewer { .. })
     ))
 }
 
@@ -266,7 +268,7 @@ async fn is_candidate_tx(tx: &mut Tx<'_>, op: &Operation) -> Result<bool> {
 pub(crate) async fn require_recovery_input_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
     if matches!(
         selection(task)?,
-        Some(FileDelivery::CandidateConsumer { .. })
+        Some(FileDelivery::CandidateConsumer { .. } | FileDelivery::CandidateReviewer { .. })
     ) {
         return super::candidate_input::require_recovery(tx, task).await;
     }

@@ -191,7 +191,7 @@ fn task_verdict_descriptor() -> ToolDescriptor {
              `*.worker_requested`. `status = \"accepted\"` emits \
              `task.completed`; `status = \"rejected\"` emits `task.failed` \
              with `reason` (free-form). `message` is required and should \
-             explain the verdict; it is persisted as `agent_message`. \
+             explain the verdict; it is persisted as `agent_message`. For a review-required candidate, accept the producer attempt only after its exact machine and designated Reviewer evidence pass. The kernel binds that evidence and decision event ID atomically; early acceptance fails, and acceptance of the Reviewer task alone does not qualify code. Identical accepted evidence reuses its decision ID. Rejection revokes future delivery starts without changing Task terminal state. \
              Optional `lifecycle` drives the track state machine in the same \
              atomic write when accepting, rejecting, blocking, or continuing \
              the track. The verdict is persisted on the events log so audit \

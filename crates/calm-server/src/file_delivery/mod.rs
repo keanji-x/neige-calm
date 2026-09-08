@@ -2,6 +2,8 @@
 pub mod adapter;
 pub(crate) mod candidate;
 pub(crate) mod candidate_input;
+pub(crate) mod candidate_qualification;
+pub(crate) mod candidate_review;
 pub(crate) mod candidate_verify;
 mod candidate_view;
 mod input;

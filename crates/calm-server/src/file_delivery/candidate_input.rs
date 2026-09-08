@@ -1,8 +1,5 @@
 //! Exact qualified candidate input through claim, preparation and preturn.
-use super::{
-    candidate::{self, Candidate},
-    candidate_verify, *,
-};
+use super::{candidate::Candidate, candidate_verify, *};
 use crate::{
     db::sqlite::{task_attempt_get_tx, task_get_tx},
     db::{RouteRepo, write_in_tx_typed},
@@ -16,7 +13,22 @@ use std::path::Path;
 pub(crate) struct Binding {
     pub candidate: Candidate,
     pub verification_operation_id: String,
-    pub purpose: CandidateInputPurpose,
+    pub purpose: BindingPurpose,
+}
+/// Persisted purpose is separate from the authorable ordinary-consumer purpose.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum BindingPurpose {
+    #[serde(rename = "verified-candidate-input")]
+    VerifiedCandidateInput,
+    #[serde(rename = "candidate-review-input")]
+    CandidateReviewInput,
+}
+impl From<CandidateInputPurpose> for BindingPurpose {
+    fn from(value: CandidateInputPurpose) -> Self {
+        match value {
+            CandidateInputPurpose::VerifiedCandidateInput => Self::VerifiedCandidateInput,
+        }
+    }
 }
 pub(crate) async fn load_tx(
     tx: &mut Tx<'_>,
@@ -27,68 +39,89 @@ pub(crate) async fn load_tx(
     row.map(|(raw, state, op)| Ok((serde_json::from_str(&raw)?, state, op)))
         .transpose()
 }
-pub(crate) async fn validate_tx(tx: &mut Tx<'_>, task: &Task, binding: &Binding) -> Result<()> {
-    let Some(FileDelivery::CandidateConsumer {
-        producer,
-        slot,
-        purpose,
-    }) = selection(task)?
-    else {
-        return Err(conflict("candidate consumer contract missing"));
+pub(crate) async fn validate_source_tx(
+    tx: &mut Tx<'_>,
+    task: &Task,
+    binding: &Binding,
+) -> Result<()> {
+    let (producer, slot, purpose, reviewer) = match selection(task)? {
+        Some(FileDelivery::CandidateConsumer {
+            producer,
+            slot,
+            purpose,
+        }) => (producer, slot, BindingPurpose::from(purpose), false),
+        Some(FileDelivery::CandidateReviewer { producer, slot, .. }) => {
+            (producer, slot, BindingPurpose::CandidateReviewInput, true)
+        }
+        _ => return Err(conflict("candidate input contract missing")),
     };
     let (source, _) = source_tx(tx, &binding.candidate.source).await?;
     if source.track_id != task.track_id
         || source.key != producer
         || binding.candidate.slot()? != slot
         || binding.purpose != purpose
+        || (reviewer && binding.candidate.policy()?.reviewer() != Some(task.key.as_str()))
     {
-        return Err(conflict("candidate consumer binding authority changed"));
+        return Err(conflict("candidate input binding authority changed"));
     }
     candidate_verify::qualified_tx(tx, &binding.verification_operation_id, &binding.candidate)
         .await?;
     Ok(())
 }
+pub(crate) async fn validate_tx(tx: &mut Tx<'_>, task: &Task, binding: &Binding) -> Result<()> {
+    crate::task_recovery::validate_frozen_contract_tx(tx, task).await?;
+    validate_source_tx(tx, task, binding).await?;
+    if matches!(
+        selection(task)?,
+        Some(FileDelivery::CandidateConsumer { .. })
+    ) {
+        super::candidate_qualification::validate_binding_tx(tx, task, binding).await?;
+    }
+    Ok(())
+}
 pub(crate) async fn bind_claim_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
-    let Some(FileDelivery::CandidateConsumer {
-        producer,
-        slot,
-        purpose,
-    }) = selection(task)?
-    else {
-        return Ok(());
+    let (producer, slot, purpose, reviewer) = match selection(task)? {
+        Some(FileDelivery::CandidateConsumer {
+            producer,
+            slot,
+            purpose,
+        }) => (producer, slot, BindingPurpose::from(purpose), false),
+        Some(FileDelivery::CandidateReviewer { producer, slot, .. }) => {
+            (producer, slot, BindingPurpose::CandidateReviewInput, true)
+        }
+        _ => return Ok(()),
     };
     if let Some((binding, _, _)) = load_tx(tx, &task.id).await? {
         return validate_tx(tx, task, &binding).await;
     }
     let allocation = task_attempt_get_tx(tx, &task.id)
         .await?
-        .ok_or_else(|| conflict("candidate consumer allocation missing"))?;
-    let binding = match allocation.origin {
+        .ok_or_else(|| conflict("candidate input allocation missing"))?;
+    let predecessor = match allocation.origin {
         TaskAttemptOrigin::Recovery {
             previous_attempt_id,
             ..
-        } => {
-            load_tx(tx, &previous_attempt_id)
-                .await?
-                .ok_or_else(|| conflict("candidate recovery input missing"))?
-                .0
-        }
-        _ => {
-            let row: Option<(String,String)> = sqlx::query_as("SELECT c.operation_id,o.id FROM task_file_candidates c JOIN current_tasks t ON t.id=c.producer_attempt_id JOIN operations o ON o.kind='candidate-verify' AND o.idempotency_key='candidate:' || c.operation_id AND o.phase='succeeded' WHERE t.track_id=?1 AND t.key=?2 AND c.slot=?3")
-                .bind(&task.track_id).bind(producer).bind(slot).fetch_optional(&mut **tx).await?;
-            let (publication, verification_operation_id) =
-                row.ok_or_else(|| conflict("waiting for successful candidate verification"))?;
-            Binding {
-                candidate: candidate::load_tx(tx, &publication).await?,
-                verification_operation_id,
-                purpose,
-            }
-        }
+        } => Some(previous_attempt_id),
+        _ => None,
     };
-    validate_tx(tx, task, &binding).await?;
+    let binding = if let Some(previous) = &predecessor {
+        load_tx(tx, previous)
+            .await?
+            .ok_or_else(|| conflict("candidate recovery input missing"))?
+            .0
+    } else {
+        let mut binding =
+            super::candidate_review::select_input_tx(tx, &task.track_id, &producer, &slot).await?;
+        binding.purpose = purpose;
+        binding
+    };
+    validate_source_tx(tx, task, &binding).await?;
     sqlx::query("INSERT INTO task_candidate_input_bindings(attempt_id,track_id,publication_operation_id,verification_operation_id,binding_json,state) VALUES(?1,?2,?3,?4,?5,'bound')")
         .bind(&task.id).bind(&task.track_id).bind(&binding.candidate.publication_operation_id).bind(&binding.verification_operation_id).bind(serde_json::to_string(&binding)?).execute(&mut **tx).await?;
-    Ok(())
+    if !reviewer {
+        super::candidate_qualification::bind_tx(tx, task, &binding, predecessor.as_deref()).await?;
+    }
+    validate_tx(tx, task, &binding).await
 }
 async fn authorized_tx(
     tx: &mut Tx<'_>,
@@ -150,17 +183,37 @@ pub(crate) async fn prompt(tx: &mut Tx<'_>, task: &Task) -> Result<String> {
             paths,
             policy,
         }) => Ok(format!(
-            "Write every declared ordinary file for output `{slot}` under /workspace: {}. After confirmed stop the kernel seals these files and runs these exact machine checks against a working copy: {}. Scope is declared check exit status only; semantic review and repair are unsupported.",
+            "Write every declared ordinary file for output `{slot}` under /workspace: {}. After confirmed stop the kernel seals these files and runs these exact machine checks against a working copy: {}. Machine scope is declared check exit status only. A review-required policy additionally waits for its named Reviewer and Planner acceptance; repair is unsupported.",
             serde_json::to_string(&paths)?,
             serde_json::to_string(&policy)?
         )),
+        Some(FileDelivery::CandidateReviewer { producer, .. }) => {
+            let (binding, _, _) = load_tx(tx, &task.id)
+                .await?
+                .ok_or_else(|| conflict("reviewer input missing"))?;
+            validate_tx(tx, task, &binding).await?;
+            let evidence = candidate_verify::qualified_tx(
+                tx,
+                &binding.verification_operation_id,
+                &binding.candidate,
+            )
+            .await?;
+            Ok(format!(
+                "Review the exact sealed files from `{producer}` at /workspace/inputs/source. Machine verification Operation {} checked this same candidate under policy {}. Machine verdict: {}. Review against the task acceptance requirements. Complete with result containing exactly passed (boolean) and blocking_findings (array of specific reasons). passed=true requires no blockers; passed=false requires at least one blocker. Do not supply a subject, hash or operation identity; the kernel binds your report to this input. A report completion does not accept the implementation.",
+                binding.verification_operation_id,
+                serde_json::to_string(&evidence.policy)?,
+                serde_json::to_string(
+                    &serde_json::json!({"passed":evidence.verdict.passed,"exit_code":evidence.verdict.exit_code,"failing_step":evidence.verdict.failing_step,"status_detail":evidence.verdict.status_detail,"log_tail":evidence.verdict.log_tail})
+                )?
+            ))
+        }
         Some(FileDelivery::CandidateConsumer { producer, .. }) => {
             let (binding, _, _) = load_tx(tx, &task.id)
                 .await?
                 .ok_or_else(|| conflict("candidate consumer binding missing"))?;
             validate_tx(tx, task, &binding).await?;
             Ok(format!(
-                "Read the exact sealed files from `{producer}` at /workspace/inputs/source. The declared machine checks passed for this candidate. This does not assert full test coverage or semantic review."
+                "Read the exact sealed files from `{producer}` at /workspace/inputs/source. The declared machine checks passed for this candidate. The kernel checked the frozen qualification policy, including exact Reviewer/Planner evidence when required. This does not assert full test coverage."
             ))
         }
         _ => Err(conflict("not a candidate delivery")),

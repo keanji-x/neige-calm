@@ -25,6 +25,12 @@ pub fn run() {
                     "permissionProfile/list"=>json!({"data":[{"id":"neige-delivery-v1","allowed":true,"description":null}],"nextCursor":null}),
                     "thread/start"=>{assert!(!started,"duplicate thread/start");started=true;
                         prompt=request["params"]["developerInstructions"].as_str().unwrap().to_string();
+                        if scenario=="candidate-review-preturn" && prompt.contains("Read the exact sealed files") {
+                            std::fs::write("/workspace/await-preturn",b"").unwrap();
+                            while !std::path::Path::new("/workspace/resume-preturn").exists() {
+                                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                            }
+                        }
                         if scenario=="candidate-corrupt" && std::path::Path::new("/workspace/inputs/source/project.py").exists() {
                             std::fs::write("/workspace/inputs/source/project.py",b"corrupt before turn").unwrap();
                         }
@@ -104,7 +110,17 @@ fn report(env: &[(String, String)], task: &str, success: bool, artifacts: Vec<St
         "native initialize failed: {response}"
     );
     let args = if success {
-        json!({"idempotency_key":task,"result":{"answer":42},"artifacts":artifacts})
+        {
+            let result = if std::path::Path::new("/workspace/report-result.json").exists() {
+                serde_json::from_str::<Value>(
+                    &std::fs::read_to_string("/workspace/report-result.json").unwrap(),
+                )
+                .unwrap()
+            } else {
+                json!({"answer":42})
+            };
+            json!({"idempotency_key":task,"result":result,"artifacts":artifacts})
+        }
     } else {
         json!({"idempotency_key":task,"reason":"fixture requested failure"})
     };

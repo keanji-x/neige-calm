@@ -1130,3 +1130,36 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
         ))
         .with_state(state)
 }
+
+/// A2's event-linked receipt must leave before its event in the actual reset.
+#[tokio::test]
+async fn reset_from_fixture_with_candidate_decision_receipt() {
+    let fixture = load_fixture("track-grid-layout-trace.events.json");
+    let (repo, bus, _state) = replay::boot_in_memory().await.unwrap();
+    let ids = replay::seed_events(&repo, &bus, &fixture).await.unwrap();
+    seed_rooted_track(&repo).await;
+    let track: String = sqlx::query_scalar("SELECT id FROM tracks LIMIT 1")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO task_candidate_decisions(event_id,track_id,producer_attempt_id,event_json) VALUES(?1,?2,'retained-producer','{}')").bind(ids[0]).bind(track).execute(repo.pool()).await.unwrap();
+    // Retained FK-complete rows are reset input, not qualification fixtures.
+    for (id, kind) in [
+        ("reset-publication", "task-file-publication"),
+        ("reset-verification", "candidate-verify"),
+    ] {
+        sqlx::query("INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_json,payload_json,phase,created_at_ms,updated_at_ms) VALUES(?1,?1,?2,'fixture','card','{}','{}','succeeded',1,1)").bind(id).bind(kind).execute(repo.pool()).await.unwrap();
+    }
+    sqlx::query("INSERT INTO task_file_candidates(operation_id,track_id,producer_attempt_id,slot,candidate_json) SELECT 'reset-publication',track_id,'retained-producer','project','{}' FROM task_candidate_decisions").execute(repo.pool()).await.unwrap();
+    sqlx::query("INSERT INTO task_candidate_input_bindings(attempt_id,track_id,publication_operation_id,verification_operation_id,binding_json,state) SELECT 'reset-consumer',track_id,'reset-publication','reset-verification','{}','bound' FROM task_candidate_decisions").execute(repo.pool()).await.unwrap();
+    sqlx::query("INSERT INTO task_candidate_decision_bindings(attempt_id,decision_event_id) VALUES('reset-consumer',?1)").bind(ids[0]).execute(repo.pool()).await.unwrap();
+    let reset = replay::reset_from_fixture(&repo, &bus, &fixture)
+        .await
+        .expect("production reset must delete candidate receipts before events");
+    assert_eq!(reset[0], 1);
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM task_candidate_decisions")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+}

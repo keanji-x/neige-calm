@@ -1144,6 +1144,7 @@ impl Scheduler {
             Ok(Some(
                 calm_types::task_execution::FileDelivery::Consumer { .. }
                     | calm_types::task_execution::FileDelivery::CandidateConsumer { .. }
+                    | calm_types::task_execution::FileDelivery::CandidateReviewer { .. }
             ))
         ) {
             // Claim/budget remain serialized; file IO and the existing Operation
@@ -2041,6 +2042,11 @@ impl Scheduler {
             tracing::warn!(error = %e, "scheduler sweep: sweep_parked failed; next tick retries");
         }
         self.sweep_timeout_worker_cleanups().await;
+        if let Err(error) =
+            crate::isolated_codex::settled::backfill_reviews(self.repo.as_ref(), &self.events).await
+        {
+            tracing::warn!(%error, "review settlement sweep failed; next tick retries");
+        }
         let mut pending_tracks: BTreeSet<String> = BTreeSet::new();
         // A declared output is publication intent even before a consumer exists.
         // Repair a crash between Operation settlement and durable Planner notification.

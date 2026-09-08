@@ -8,7 +8,8 @@ pub(super) async fn view_tx(tx: &mut Tx<'_>, task: &Task, role: &FileDelivery) -
     } else {
         let key = match role {
             FileDelivery::CandidateProducer { .. } => &task.key,
-            FileDelivery::CandidateConsumer { producer, .. } => producer,
+            FileDelivery::CandidateConsumer { producer, .. }
+            | FileDelivery::CandidateReviewer { producer, .. } => producer,
             _ => return Err(conflict("not candidate role")),
         };
         sqlx::query_scalar("SELECT c.operation_id FROM task_file_candidates c JOIN current_tasks t ON t.id=c.producer_attempt_id WHERE t.track_id=?1 AND t.key=?2")
@@ -17,7 +18,8 @@ pub(super) async fn view_tx(tx: &mut Tx<'_>, task: &Task, role: &FileDelivery) -
     let mut view = json!({"contract":role,"candidate":{"state":"waiting"},"verification":{"state":"waiting"},"qualified":false,"scope":"declared-checks-only"});
     let producer_key = match role {
         FileDelivery::CandidateProducer { .. } => &task.key,
-        FileDelivery::CandidateConsumer { producer, .. } => producer,
+        FileDelivery::CandidateConsumer { producer, .. }
+        | FileDelivery::CandidateReviewer { producer, .. } => producer,
         _ => return Err(conflict("not candidate role")),
     };
     let publication_state: Option<(String, String, Option<String>)> = if let Some(id) = &publication
@@ -34,11 +36,27 @@ pub(super) async fn view_tx(tx: &mut Tx<'_>, task: &Task, role: &FileDelivery) -
     };
     if let Some(publication) = publication {
         let candidate = super::candidate::load_tx(tx, &publication).await?;
+        view["scope"] = json!(candidate.policy()?.scope());
+        view["decision"] = super::candidate_qualification::decision_view_tx(tx, &candidate).await?;
         view["candidate"] = json!({"state":"sealed","publication_operation_id":publication,"snapshot":candidate.snapshot});
         let verification: Option<(String,String,Option<String>,Option<String>)> = sqlx::query_as("SELECT id,phase,last_error,tx_output_json FROM operations WHERE kind='candidate-verify' AND idempotency_key=?1")
             .bind(format!("candidate:{publication}")).fetch_optional(&mut **tx).await?;
         if let Some((id, phase, error, output)) = verification {
-            let reason = match super::candidate_verify::qualified_tx(tx, &id, &candidate).await {
+            view["review"] = super::candidate_review::view_tx(tx, &candidate, &id).await?;
+            let qualification = if let Some((binding, _, _)) = &binding {
+                if matches!(role, FileDelivery::CandidateConsumer { .. }) {
+                    super::candidate_input::validate_tx(tx, task, binding).await
+                } else {
+                    super::candidate_qualification::qualified_tx(tx, &candidate, &id)
+                        .await
+                        .map(|_| ())
+                }
+            } else {
+                super::candidate_qualification::qualified_tx(tx, &candidate, &id)
+                    .await
+                    .map(|_| ())
+            };
+            let reason = match qualification {
                 Ok(_) => None,
                 Err(CalmError::Conflict(reason) | CalmError::Forbidden(reason)) => Some(reason),
                 Err(error) => return Err(error),
@@ -56,7 +74,13 @@ pub(super) async fn view_tx(tx: &mut Tx<'_>, task: &Task, role: &FileDelivery) -
         }
     }
     if let Some((binding, state, _)) = binding {
-        view["input"] = json!({"state":state,"publication_operation_id":binding.candidate.publication_operation_id,"verification_operation_id":binding.verification_operation_id,"path":"/workspace/inputs/source"});
+        let decision: Option<i64> = sqlx::query_scalar(
+            "SELECT decision_event_id FROM task_candidate_decision_bindings WHERE attempt_id=?1",
+        )
+        .bind(&task.id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        view["input"] = json!({"state":state,"publication_operation_id":binding.candidate.publication_operation_id,"verification_operation_id":binding.verification_operation_id,"decision_event_id":decision,"purpose":binding.purpose,"path":"/workspace/inputs/source"});
     }
     Ok(view)
 }

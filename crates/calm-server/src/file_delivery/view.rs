@@ -22,7 +22,9 @@ pub(crate) async fn view_tx(tx: &mut Tx<'_>, task: &Task) -> Result<Value> {
     };
     if matches!(
         role,
-        FileDelivery::CandidateProducer { .. } | FileDelivery::CandidateConsumer { .. }
+        FileDelivery::CandidateProducer { .. }
+            | FileDelivery::CandidateConsumer { .. }
+            | FileDelivery::CandidateReviewer { .. }
     ) {
         return super::candidate_view::view_tx(tx, task, &role).await;
     }
@@ -43,7 +45,9 @@ pub(crate) async fn view_tx(tx: &mut Tx<'_>, task: &Task) -> Result<Value> {
         })
         .transpose()?;
     let producer_id = match &role {
-        FileDelivery::CandidateProducer { .. } | FileDelivery::CandidateConsumer { .. } => {
+        FileDelivery::CandidateProducer { .. }
+        | FileDelivery::CandidateConsumer { .. }
+        | FileDelivery::CandidateReviewer { .. } => {
             unreachable!("routed above")
         }
         FileDelivery::Producer { .. } => Some(task.id.clone()),

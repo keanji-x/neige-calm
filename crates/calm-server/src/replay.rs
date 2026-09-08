@@ -340,14 +340,15 @@ pub async fn reset_from_fixture(
     // what enforces correctness; we no longer rely on `ON DELETE CASCADE`
     // declarations to bail us out.
     //
-    // `overlays` and `events` have no FKs into the domain tables, so
-    // they can go anywhere; we drain them first to keep the audit log
-    // out of the way of the structural wipe.
+    // Event-linked candidate decision bindings and receipts must precede the
+    // event log. Production Track cascades and Operation stop guards remain intact.
     let pool = repo.pool();
     // #930 uniform rule: writing transactions always BEGIN IMMEDIATE —
     // deferred transactions are reserved for read-only work.
     let mut tx = begin_immediate_tx(pool).await?;
     for stmt in [
+        "DELETE FROM task_candidate_decision_bindings",
+        "DELETE FROM task_candidate_decisions",
         "DELETE FROM events",
         // Retention bookkeeping must reset WITH the event log: a stale
         // `events_prune_watermark` from the pre-reset log would sit above

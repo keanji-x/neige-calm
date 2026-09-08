@@ -138,6 +138,23 @@ pub(crate) async fn accepted_report_tx(
     key: &str,
     attempt_id: &str,
 ) -> Result<Option<AcceptedTaskReport>> {
+    Ok(accepted_report_evidence_tx(tx, track_id, key, attempt_id)
+        .await?
+        .map(|e| e.report))
+}
+
+pub(crate) struct AcceptedReportEvidence {
+    pub event_id: i64,
+    pub operation_id: String,
+    pub report: AcceptedTaskReport,
+}
+
+pub(crate) async fn accepted_report_evidence_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    track_id: &str,
+    key: &str,
+    attempt_id: &str,
+) -> Result<Option<AcceptedReportEvidence>> {
     let track = crate::track_lifecycle::track_get_tx(tx, &track_id.into()).await?;
     task_attempt_get_tx(tx, attempt_id)
         .await?
@@ -147,8 +164,8 @@ pub(crate) async fn accepted_report_tx(
     // allocation history and Events. Use only the original Operation's
     // immutable identity as provenance; report content comes from Events.
     // Never deserialize or return private paths, tokens or provider state.
-    let row: Option<(String, String)> = sqlx::query_as(
-                "SELECT e.kind,e.payload FROM operations o JOIN events e ON e.scope_card=o.target_id \
+    let row: Option<(i64, String, String, String)> = sqlx::query_as(
+                "SELECT e.id,o.id,e.kind,e.payload FROM operations o JOIN events e ON e.scope_card=o.target_id \
                  WHERE o.kind='codex-isolated-worker' AND o.idempotency_key=?1 \
                  AND o.target_type='card' \
                  AND json_extract(o.payload_json,'$.version')='isolated-worker-v1' \
@@ -173,9 +190,9 @@ pub(crate) async fn accepted_report_tx(
             .bind(attempt_id).bind(track_id).bind(track.area_id.as_str())
             .fetch_optional(&mut **tx).await?;
     let report = row
-        .map(|(kind, payload)| {
+        .map(|(event_id, operation_id, kind, payload)| {
             let event = Event::from_kind_and_payload(&kind, serde_json::from_str(&payload)?)?;
-            Ok::<_, CalmError>(match event {
+            let report = match event {
                 Event::TaskCompleted {
                     result, artifacts, ..
                 } => AcceptedTaskReport::Completed {
@@ -186,6 +203,11 @@ pub(crate) async fn accepted_report_tx(
                 _ => {
                     return Err(CalmError::Internal("Unexpected task report event".into()));
                 }
+            };
+            Ok::<_, CalmError>(AcceptedReportEvidence {
+                event_id,
+                operation_id,
+                report,
             })
         })
         .transpose()?;

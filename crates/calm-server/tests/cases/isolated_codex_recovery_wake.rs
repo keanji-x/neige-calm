@@ -14,7 +14,7 @@ pub(crate) async fn planner(fx: &Fixture) -> PlannerHarness {
     .await
 }
 
-async fn planner_with_daemon(
+pub(crate) async fn planner_with_daemon(
     fx: &Fixture,
     daemon: std::sync::Arc<calm_server::shared_codex_appserver::SharedCodexAppServer>,
 ) -> PlannerHarness {
@@ -258,7 +258,7 @@ async fn planner_observes_failure_then_settled_isolated_recovery() {
     handle.shutdown().await.unwrap();
 }
 
-async fn restore_planner(fx: &Fixture) -> PlannerHarness {
+pub(crate) async fn restore_planner(fx: &Fixture) -> PlannerHarness {
     restore_planner_with_daemon(
         fx,
         calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(fx.boot.repo.clone()),

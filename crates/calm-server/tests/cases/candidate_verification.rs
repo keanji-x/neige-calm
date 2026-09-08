@@ -561,3 +561,6 @@ mod review;
 
 #[path = "candidate_authoring.rs"]
 mod authoring;
+
+#[path = "candidate_review_qualification.rs"]
+mod candidate_review_qualification;

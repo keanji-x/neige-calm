@@ -789,7 +789,7 @@ pub enum Event {
         task_id: String,
         operation_id: String,
     },
-    /// Persisted atomically with the failed Operation after confirmed stop.
+    /// Persisted after confirmed stop with a failed execution or a terminal Done Reviewer Operation.
     #[serde(rename = "task.execution_settled")]
     TaskExecutionSettled {
         task_id: String,

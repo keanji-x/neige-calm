@@ -1540,9 +1540,20 @@ pub(crate) async fn resolve_harness_observation(
         task_id,
         operation_id,
     } = event
-        && !crate::isolated_codex::settled::relevant(repo, track_id, task_id, operation_id).await?
     {
-        return Ok(None);
+        if !crate::isolated_codex::settled::relevant(repo, track_id, task_id, operation_id).await? {
+            return Ok(None);
+        }
+        if let Some(observation) = crate::isolated_codex::settled::review_observation(
+            repo,
+            track_id,
+            task_id,
+            operation_id,
+        )
+        .await?
+        {
+            return Ok(Some(observation));
+        }
     }
     let task_key = if let Event::TaskGateResult {
         task_id,

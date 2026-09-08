@@ -109,6 +109,12 @@ impl CardDecisionSink {
                 let track_id = track_id.clone();
                 let worker_card_id = worker_card_id_for_tx.clone();
                 Box::pin(async move {
+                    crate::file_delivery::candidate_review::validate_report_tx(
+                        tx,
+                        track_id.as_str(),
+                        &event,
+                    )
+                    .await?;
                     // Admission, task CAS, report event, and lifecycle promotion
                     // share one transaction. Same-outcome repeats roll back as
                     // idempotent success; foreign or conflicting reports fail.
@@ -258,6 +264,11 @@ impl CardDecisionSink {
         lifecycle: Option<TrackLifecycle>,
         event: Event,
     ) -> Result<(), CalmError> {
+        if identity.role != CardRole::Planner {
+            return Err(CalmError::Forbidden(
+                "candidate verdict requires Planner identity".into(),
+            ));
+        }
         let actor = identity.to_actor_id();
         let card_id_str = identity.card_id.clone();
         let principal = identity.to_principal();
@@ -294,54 +305,92 @@ impl CardDecisionSink {
             track_id: track_id.clone(),
         });
 
-        write_with_actor_events_typed::<(), _>(
-            self.repo.as_ref(),
-            None,
-            &self.events,
-            &self.write,
-            move |tx| {
-                let event = event.clone();
-                let actor = actor.clone();
-                let scope = scope.clone();
-                let track_scope = track_scope.clone();
-                let track_id = track_id.clone();
-                let message = message.clone();
-                let recorder_shadow = Arc::clone(&recorder_shadow);
-                Box::pin(async move {
-                    let mut events = Vec::new();
-                    if let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id).await? {
-                        events.extend(
-                            auto_events
-                                .into_iter()
-                                .map(|event| (ActorId::Kernel, track_scope.clone(), event)),
-                        );
-                    }
-                    if let Some(target) = lifecycle
-                        && let Some(lifecycle_events) = apply_requested_transition_in_tx(
+        let committed = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                let mut event = event;
+                let candidate = crate::file_delivery::candidate_qualification::prepare_verdict_tx(
+                    tx,
+                    track_id.as_str(),
+                    &mut event,
+                )
+                .await?;
+                let repeated = candidate
+                    && crate::file_delivery::candidate_qualification::is_repeat_tx(
+                        tx,
+                        track_id.as_str(),
+                        &event,
+                    )
+                    .await?;
+                let mut events = Vec::new();
+                if let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id).await? {
+                    events.extend(
+                        auto_events
+                            .into_iter()
+                            .map(|event| (ActorId::Kernel, track_scope.clone(), event)),
+                    );
+                }
+                if let Some(target) = lifecycle
+                    && let Some(lifecycle_events) = apply_requested_transition_in_tx(
+                        tx,
+                        &track_id,
+                        target,
+                        &actor,
+                        message.clone(),
+                    )
+                    .await?
+                {
+                    recorder_shadow
+                        .record(tx, RecorderShadowDecisionKind::TrackLifecycle)
+                        .await?;
+                    events.extend(
+                        lifecycle_events
+                            .into_iter()
+                            .map(|event| (actor.clone(), track_scope.clone(), event)),
+                    );
+                }
+                let mut committed = Vec::new();
+                for (actor, scope, event) in events {
+                    let id = crate::db::sqlite::append_decision_event_in_tx(
+                        tx, &actor, &scope, None, &event,
+                    )
+                    .await?;
+                    committed.push(crate::event::BroadcastEnvelope {
+                        id,
+                        event_version: crate::event::SYNC_EVENT_VERSION,
+                        actor,
+                        scope,
+                        event,
+                    });
+                }
+                if !repeated {
+                    let id = crate::db::sqlite::append_decision_event_in_tx(
+                        tx, &actor, &scope, None, &event,
+                    )
+                    .await?;
+                    if candidate {
+                        crate::file_delivery::candidate_qualification::record_decision_tx(
                             tx,
-                            &track_id,
-                            target,
-                            &actor,
-                            message.clone(),
+                            track_id.as_str(),
+                            id,
+                            &event,
                         )
-                        .await?
-                    {
-                        recorder_shadow
-                            .record(tx, RecorderShadowDecisionKind::TrackLifecycle)
-                            .await?;
-                        events.extend(
-                            lifecycle_events
-                                .into_iter()
-                                .map(|event| (actor.clone(), track_scope.clone(), event)),
-                        );
+                        .await?;
                     }
-                    events.push((actor, scope, event));
-                    Ok(((), events))
-                })
-            },
-        )
+                    committed.push(crate::event::BroadcastEnvelope {
+                        id,
+                        event_version: crate::event::SYNC_EVENT_VERSION,
+                        actor,
+                        scope,
+                        event,
+                    });
+                }
+                Ok(committed)
+            })
+        })
         .await?;
-
+        for event in committed {
+            self.events.emit_envelope(event);
+        }
         Ok(())
     }
 

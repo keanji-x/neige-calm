@@ -95,7 +95,7 @@ When a downstream task needs related files such as code, README and tests, use t
 Candidate producer context: `{\"neige_execution\":{\"version\":\"isolated-codex-v1\",\"workspace\":\"empty\",\"file_delivery\":{\"role\":\"candidate_producer\",\"slot\":\"project\",\"paths\":[\"src/project.py\",\"README.md\",\"tests/test_project.py\"],\"policy\":{\"scope\":\"declared-checks-only\",\"timeout_secs\":60,\"steps\":[{\"name\":\"tests\",\"cmd\":\"PYTHONPATH=src python3 -c 'import unittest; s=unittest.defaultTestLoader.discover(\\\"tests\\\"); assert s.countTestCases()>0; assert unittest.TextTestRunner().run(s).wasSuccessful()'\"}]}}}}`.
 Candidate consumer context: `{\"neige_execution\":{\"version\":\"isolated-codex-v1\",\"workspace\":\"file-input\",\"file_delivery\":{\"role\":\"candidate_consumer\",\"producer\":\"produce\",\"slot\":\"project\",\"purpose\":\"verified-candidate-input\"}}}`.
 Adapt the producer key, bounded file list and named checks to the actual project. Commands must be single-line; explicitly check discovery/count where the acceptance requires tests. The kernel seals the files, runs the frozen checks in its own working copy, and supplies /workspace/inputs/source only after exact matching verification succeeds. Do not copy files, invent transport tasks, compute hashes or assemble content from a JSON manifest.
-Inspect calm.plan.list file_delivery for candidate, verification and input facts. Producer Done and verification Operation completion alone are not check success. Machine-qualified delivery covers declared checks only; review-required qualification and failed-candidate repair are unsupported. Do not silently downgrade either requirement or imply a completed review resolves its findings. Same-contract consumer recovery retains its original candidate input, not its failed output files.
+Inspect calm.plan.list file_delivery for candidate, verification and input facts. Producer Done and verification Operation completion alone are not check success. Machine-qualified delivery covers declared checks only; failed-candidate repair is unsupported. For review-required delivery, set producer policy scope to `review-required` and add required `reviewer` (the review task key); retain timeout_secs and steps. Declare that named same-Track Codex task with workspace `file-input` and file_delivery role `candidate_reviewer`, producer key, matching slot and purpose `candidate-review-input`. Put the semantic acceptance requirements in its goal/acceptance. Reviewer waits for machine success and receives the same candidate plus machine evidence. Its completion result requires passed and blocking_findings: true with an empty list, or false with specific nonempty blockers. Inspect file_delivery.review and verification; accept the producer attempt through calm.task.verdict only after matching review passes. Accepting the review task itself does not accept the code. Early producer acceptance is refused. Identical acceptance evidence reuses the original decision ID; rejection revokes future starts without changing Task terminal state. Ordinary consumers retain purpose `verified-candidate-input`. Do not silently downgrade either requirement or imply a completed review resolves its findings. Same-contract consumer recovery retains its original candidate input, not its failed output files.
 
 ## Interactive Terminal work
 
@@ -942,7 +942,13 @@ mod tests {
             assert!(matches!(
                 (producer, selection.file_delivery),
                 (true, Some(FileDelivery::CandidateProducer { .. }))
-                    | (false, Some(FileDelivery::CandidateConsumer { .. }))
+                    | (
+                        false,
+                        Some(
+                            FileDelivery::CandidateConsumer { .. }
+                                | FileDelivery::CandidateReviewer { .. }
+                        )
+                    )
             ));
         }
     }
