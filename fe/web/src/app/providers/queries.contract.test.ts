@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Invariants owned by the shared query layer.
-import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElement, type ReactNode } from 'react';
@@ -227,6 +227,37 @@ describe('delete mutation wiring', () => {
     controller.abort();
     await expect(result.current.remove('c1', controller.signal)).rejects.toBeInstanceOf(ApiError);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() });
+  });
+
+  it('removes a successfully deleted area from the rendered list before refetch completes', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const original = toArea(areaWireSchema.parse(userArea));
+    client.setQueryData(queryKeys.areas(), [original]);
+    let resolveRefetch!: (response: ApiTransportResponse) => void;
+    const refetch = new Promise<ApiTransportResponse>((resolve) => { resolveRefetch = resolve; });
+    const getStarted = vi.fn();
+    const transport: ApiTransportPort = {
+      send: (request) => {
+        if (request.method === 'DELETE') {
+          return Promise.resolve({ status: 204, statusText: 'No Content', body: undefined });
+        }
+        getStarted();
+        return refetch;
+      },
+    };
+    const { result } = renderHook(() => ({
+      areas: useQuery({ ...areaListQueryOptions(transport, unauthorized), staleTime: Infinity }).data,
+      mutations: useAreaMutations(transport, unauthorized),
+    }), {
+      wrapper: mutationWrapper(client),
+    });
+
+    await act(() => result.current.mutations.remove('c1'));
+
+    await waitFor(() => expect(getStarted).toHaveBeenCalledOnce());
+    await waitFor(() => expect(result.current.areas).toEqual([]));
+    resolveRefetch(ok([]));
+    await waitFor(() => expect(result.current.areas).toEqual([]));
   });
 
   it('writes an Area PATCH response through before its background refetch', async () => {

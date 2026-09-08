@@ -930,6 +930,11 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
     mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>
       runOperation(transport, { ...deleteAreaOperation(areaId), signal }, unauthorized),
     onSuccess: (_result, { areaId }) => {
+      // DELETE is authoritative: remove the row synchronously so the sidebar
+      // cannot keep rendering a successfully deleted Area while its background
+      // reconciliation is still in flight.
+      client.setQueryData<Area[]>(queryKeys.areas(), (current) =>
+        current?.filter((area) => area.id !== areaId));
       // The area is gone; its track list can never resolve again, so drop it
       // instead of leaving a permanently-stale entry behind.
       client.removeQueries({ queryKey: queryKeys.tracksInArea(areaId) });
