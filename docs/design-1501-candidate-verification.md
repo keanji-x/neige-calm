@@ -170,3 +170,40 @@ modes. Race, boot, cancellation, and live overdue cleanup tests protect the bypa
 boundaries. The historical 30s timeout itself was not reproduced in diagnosis;
 eight repeated denials were correlated to recovery owner UUIDs returning
 `LeaveParked`, establishing the contention mechanism without a timeout increase.
+
+
+## Delivered A1 and remaining loops
+
+[#1584](https://github.com/keanji-x/neige-calm/pull/1584) merged as
+`3283f85e22086855c816e7f3e9ec5cc8cf048b34`. A1 delivers machine-qualified
+file sets; it does not complete A2 Reviewer-required qualification or B failed-candidate repair.
+
+A bounded natural-language Planner trial at reviewed source `e4cee647b` completed
+exactly two business tasks and two attempts, with one candidate publication, one
+verification Operation and one consumer binding. It delivered `src/score.py`,
+`README.md` and `tests/test_score.py`; six unit tests and direct behavior checks
+passed, and the consumer called the delivered code and wrote `total=10`.
+Independent auditing matched every declared byte and executable bit across the
+producer, sealed store, verification working copy and consumer, and checked both
+isolated namespace-stop proofs. No protocol JSON was supplied in the user goal,
+no transport task was added, and no external task correction was made. The Planner
+self-corrected one missing report-block reference; semantic report editing remains F6.
+
+An earlier trial stopped before any Worker because human-readable Chinese check
+names were rejected as machine identifiers. The captured context became a native
+authoring regression, and readable names plus indexed policy diagnostics fixed the
+cause. That failed trial is retained as failed evidence, not counted as a handoff.
+
+Verification includes focused production tests, exact-prediction source mutations,
+full independent reviews and green PR CI. Rebase checks preserved all delivery
+patches and validated the updated filesystem/Codex/frontend baseline. The merge
+also included concurrent #1585 directory-reuse changes; its tree is the exact union
+of that parent and the reviewed branch. The live trial above remains attributed to
+its actual source rather than relabeled as a run of the squash commit. All private
+experimental services were stopped after evidence collection.
+
+Next work stays sequential: A2 binds Reviewer disposition to the same candidate and
+required acceptance policy; B adds explicit rejected-candidate repair with preserved
+inputs/findings and fresh verification. Dynamic file discovery, multi-source merge,
+physical GC and the documented ordinary-gate recovery limitations remain follow-ups
+in #1501. The user deployment on port 4140 was inspected but not redeployed here.
