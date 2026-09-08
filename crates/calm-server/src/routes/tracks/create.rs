@@ -365,6 +365,7 @@ pub(super) struct CreateRequestShape {
     pub recipe_id: Option<String>,
     pub template_input: Option<serde_json::Value>,
     pub attach_folder: bool,
+    pub allow_cross_area_cwd: Option<super::CrossAreaCwdAuthorization>,
     pub theme: RequestTheme,
     pub fork_report_from: Option<String>,
 }
@@ -657,7 +658,7 @@ async fn plan_message_less(
 /// second copy of this field list would drift silently — the two would then
 /// disagree about whether one key names the same create.
 fn create_request_digest(shape: &CreateRequestShape) -> Result<String> {
-    stable_payload_hash(&serde_json::json!({
+    let mut payload = serde_json::json!({
         "title": shape.title,
         "sort": shape.sort,
         "cwd": shape.cwd,
@@ -667,7 +668,13 @@ fn create_request_digest(shape: &CreateRequestShape) -> Result<String> {
         "attach_folder": shape.attach_folder,
         "theme": shape.theme,
         "fork_report_from": shape.fork_report_from,
-    }))
+    });
+    // Existing durable bindings predate this optional field. Preserve their
+    // exact payload shape when no authorization was supplied.
+    if let Some(authorization) = &shape.allow_cross_area_cwd {
+        payload["allow_cross_area_cwd"] = serde_json::to_value(authorization)?;
+    }
+    stable_payload_hash(&payload)
 }
 
 /// #1426 — which create shape a request is, and therefore which binding
@@ -1233,6 +1240,36 @@ async fn start_planner_harness_with_first_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cross_area_authorization_is_part_of_idempotent_create_identity() {
+        let shape = |allow_cross_area_cwd| CreateRequestShape {
+            title: "shared cwd".into(),
+            sort: None,
+            cwd: Some("/repo".into()),
+            template_id: None,
+            recipe_id: None,
+            template_input: None,
+            attach_folder: false,
+            allow_cross_area_cwd,
+            theme: RequestTheme {
+                fg: (1, 2, 3),
+                bg: (4, 5, 6),
+            },
+            fork_report_from: None,
+        };
+        let denied = create_request_digest(&shape(None)).unwrap();
+        let allowed =
+            create_request_digest(&shape(Some(super::super::CrossAreaCwdAuthorization {
+                folder_id: 7,
+                area_id: "owner".into(),
+            })))
+            .unwrap();
+        assert_ne!(
+            denied, allowed,
+            "authorization must require a distinct idempotency key"
+        );
+    }
 
     /// Golden, not a round trip. A self-consistency check would stay green if
     /// the namespace were merged into the conversation flavours', which is the

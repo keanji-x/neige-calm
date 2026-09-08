@@ -205,6 +205,16 @@ export function NewTaskForm({
   );
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [folderConflict, setFolderConflict] = useState<{
+    body: FolderConflictBody;
+    targetAreaId: string;
+    cwd: string;
+  } | null>(null);
+  const overrideTargetRef = useRef<{
+    areaId: string;
+    cwd: string;
+    authorization: { folder_id: number; area_id: string };
+  } | null>(null);
   // Tracks whether the user has explicitly overridden an auto-match. A
   // hit lands → we set areaChoice to `{ mode: 'auto', ... }` AND clear
   // this flag so future resolves can also auto-match. Once the user
@@ -213,6 +223,14 @@ export function NewTaskForm({
   // describe what the cwd matches), but they no longer overwrite the
   // user's manual areaChoice.
   const userOverrodeAutoMatchRef = useRef(false);
+
+  // A confirmation belongs to the exact cwd + target selection that produced
+  // the 409. Editing either withdraws the action, including the two-step new
+  // Area branch whose already-minted id is otherwise no longer visible.
+  useEffect(() => {
+    setFolderConflict(null);
+    overrideTargetRef.current = null;
+  }, [areaChoice, cwd]);
 
   const createTrack = useCreateTrackMutation();
   const createArea = useCreateAreaMutation();
@@ -415,6 +433,8 @@ export function NewTaskForm({
       if (!canSubmit) return;
       setSubmitting(true);
       setErrorMsg(null);
+      setFolderConflict(null);
+      let targetAreaId: string | null = null;
       try {
         const finalCwd = cwd.trim();
         // Resolve the area_id + attach_folder flag from the form state:
@@ -425,7 +445,14 @@ export function NewTaskForm({
         //     with attach=true.
         let areaId: string;
         let attachFolder: boolean;
-        if (areaChoice.mode === 'auto') {
+        const authorizedOverride = overrideTargetRef.current;
+        // Consent is single-use. A retry that races with a changed claim must
+        // surface the new owner and require a fresh click for that identity.
+        overrideTargetRef.current = null;
+        if (authorizedOverride?.cwd === finalCwd) {
+          areaId = authorizedOverride.areaId;
+          attachFolder = false;
+        } else if (areaChoice.mode === 'auto') {
           areaId = areaChoice.resolve.area_id;
           attachFolder = false;
         } else if (areaChoice.mode === 'existing') {
@@ -446,6 +473,7 @@ export function NewTaskForm({
           // The new area is already in `useAreasQuery` cache via the
           // mutation's onSuccess invalidate. No extra work here.
         }
+        targetAreaId = areaId;
 
         // issue-dev variant (#891 ③): bind the track to the shipped
         // workflow and carry the input JSON. The raw-JSON override wins
@@ -465,6 +493,9 @@ export function NewTaskForm({
           title: title.trim(),
           cwd: finalCwd,
           attach_folder: attachFolder,
+          allow_cross_area_cwd: authorizedOverride?.cwd === finalCwd
+            ? authorizedOverride.authorization
+            : undefined,
           theme: readHostThemeRgb(),
           ...templateFields,
         });
@@ -477,6 +508,10 @@ export function NewTaskForm({
       } catch (e) {
         const formatted = formatSubmitError(e, areas);
         setErrorMsg(formatted);
+        const conflict = e instanceof CalmApiError ? asFolderConflict(e.body) : null;
+        if (conflict && targetAreaId) {
+          setFolderConflict({ body: conflict, targetAreaId, cwd: cwd.trim() });
+        }
       } finally {
         setSubmitting(false);
       }
@@ -805,9 +840,29 @@ export function NewTaskForm({
         )}
 
         {errorMsg && (
-          <p className="new-task-form-err" role="alert">
-            {errorMsg}
-          </p>
+          <div className="new-task-form-err" role="alert">
+            <p>{errorMsg}</p>
+            {folderConflict &&
+              folderConflict.body.conflict_kind !== 'ancestor' &&
+              (areaChoice.mode !== 'existing' || areaChoice.areaId === folderConflict.targetAreaId) && (
+              <button
+                type="button"
+                onClick={() => {
+                  overrideTargetRef.current = {
+                    areaId: folderConflict.targetAreaId,
+                    cwd: folderConflict.cwd,
+                    authorization: {
+                      folder_id: folderConflict.body.folder_id,
+                      area_id: folderConflict.body.area_id,
+                    },
+                  };
+                  void handleSubmit();
+                }}
+              >
+                Reuse this directory anyway
+              </button>
+            )}
+          </div>
         )}
 
         <div className="new-task-form-actions">
@@ -1153,6 +1208,8 @@ function asFolderConflict(body: unknown): FolderConflictBody | null {
     typeof body === 'object' &&
     'conflict_path' in body &&
     typeof (body as { conflict_path: unknown }).conflict_path === 'string' &&
+    'folder_id' in body &&
+    Number.isSafeInteger((body as { folder_id: unknown }).folder_id) &&
     'conflict_kind' in body &&
     'area_id' in body &&
     typeof (body as { area_id: unknown }).area_id === 'string'

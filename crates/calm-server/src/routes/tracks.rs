@@ -392,6 +392,12 @@ pub struct CreateTrackRequest {
     pub template_input: Option<serde_json::Value>,
     #[serde(default)]
     pub attach_folder: bool,
+    /// Explicit authorization to create this track in `area_id` while its cwd
+    /// remains covered by the exact conflicting claim identified here. The
+    /// ids are checked inside the create transaction, so a concurrent claim
+    /// change fails closed. This never creates, moves, or deletes a claim.
+    #[serde(default)]
+    pub allow_cross_area_cwd: Option<CrossAreaCwdAuthorization>,
     pub theme: RequestTheme,
     /// One-time creation instruction: copy this track's report snapshot into
     /// the new report inside the track-create transaction.
@@ -445,6 +451,14 @@ pub struct CreateTrackRequest {
     /// 500 claims — it does not promise the track is usable.
     #[serde(default)]
     pub first_message: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CrossAreaCwdAuthorization {
+    pub folder_id: i64,
+    #[schema(value_type = String)]
+    pub area_id: crate::ids::AreaId,
 }
 
 impl CreateTrackRequest {
@@ -1177,6 +1191,7 @@ pub(crate) async fn create_track(
             recipe_id: request.recipe_id.clone(),
             template_input: request.template_input.clone(),
             attach_folder: request.attach_folder,
+            allow_cross_area_cwd: request.allow_cross_area_cwd.clone(),
             theme: request.theme,
             fork_report_from: request.fork_report_from.clone(),
         },
@@ -1220,6 +1235,7 @@ pub(crate) async fn create_track(
     // #1384 — deliberately AFTER the arm decision above: it is create-path
     // request validation, and the resuming arms mint nothing, so re-running it
     // on a replay is the variant-3 class this design closes.
+    let allow_cross_area_cwd = request.allow_cross_area_cwd.clone();
     let (mut p, named_source, cwd_omitted) = request.into_parts()?;
     // PR6 (#136) — track create now atomically mints a `CardRole::Planner`
     // codex card alongside the track row. Both rows commit in one tx
@@ -1347,6 +1363,11 @@ pub(crate) async fn create_track(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("area `{}`", p.area_id)))?;
     let is_system_area = area.kind == AreaKind::System;
+    if allow_cross_area_cwd.is_some() && (is_system_area || cwd_omitted) {
+        return Err(CalmError::BadRequest(
+            "cross-area cwd authorization requires an explicit cwd in a user area".into(),
+        ));
+    }
     if is_system_area {
         p.attach_folder = false;
     }
@@ -1373,6 +1394,7 @@ pub(crate) async fn create_track(
     } else {
         FolderClaim::Enforce {
             attach: attach_folder,
+            allow_cross_area_cwd,
             conflict: conflict.clone(),
         }
     };
@@ -1754,6 +1776,7 @@ enum FolderClaim {
     /// cwd no area claims is refused rather than making a homeless track.
     Enforce {
         attach: bool,
+        allow_cross_area_cwd: Option<CrossAreaCwdAuthorization>,
         conflict: FolderConflictSlot,
     },
 }
@@ -1816,7 +1839,12 @@ async fn enforce_folder_claim_tx(
     intent: FolderClaimIntent,
     pass: FolderClaimPass,
 ) -> Result<()> {
-    let FolderClaim::Enforce { attach, conflict } = claim else {
+    let FolderClaim::Enforce {
+        attach,
+        allow_cross_area_cwd,
+        conflict,
+    } = claim
+    else {
         return Ok(());
     };
     let existing = area_folders_list_all_tx(tx).await?;
@@ -1824,12 +1852,21 @@ async fn enforce_folder_claim_tx(
         // Some other area already covers this cwd. `Descendant` is the right
         // label from the cwd's point of view: the cwd is a descendant of an
         // existing folder owned by another area.
-        Some(f) if f.area_id.as_str() != area_id => Err(conflict.park(FolderConflict {
-            folder_id: f.id,
-            area_id: f.area_id.clone(),
-            conflict_path: f.path.clone(),
-            conflict_kind: FolderConflictKind::Descendant,
-        })),
+        Some(f)
+            if f.area_id.as_str() != area_id
+                && allow_cross_area_cwd.as_ref().is_some_and(|authorization| {
+                    authorization.folder_id == f.id && authorization.area_id == f.area_id
+                }) =>
+        {
+            Ok(())
+        }
+        Some(f) if f.area_id.as_str() != area_id || allow_cross_area_cwd.is_some() => Err(conflict
+            .park(FolderConflict {
+                folder_id: f.id,
+                area_id: f.area_id.clone(),
+                conflict_path: f.path.clone(),
+                conflict_kind: FolderConflictKind::Descendant,
+            })),
         // Same area already covers it — `attach_folder` is a no-op.
         //
         // #275 behavior change. Before that fix the insert ran unconditionally
@@ -1861,6 +1898,13 @@ async fn enforce_folder_claim_tx(
                     conflict_path: f.path.clone(),
                     conflict_kind: FolderConflictKind::Ancestor,
                 }));
+            }
+            // A reuse confirmation is bound to the original claim. Its
+            // disappearance must not turn consent into a new attachment.
+            if allow_cross_area_cwd.is_some() {
+                return Err(CalmError::Conflict(
+                    "track create: the authorized folder claim no longer covers this cwd".into(),
+                ));
             }
             if pass == FolderClaimPass::Authoritative {
                 area_folder_create_tx(tx, area_id, normalized_cwd).await?;
@@ -3111,6 +3155,7 @@ async fn repoint_track_workspace(
     let fence_path = new_path.clone();
     let fence_claim = FolderClaim::Enforce {
         attach: requested.attach_folder,
+        allow_cross_area_cwd: None,
         conflict: fence_conflict.clone(),
     };
     let fence = crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
@@ -3274,6 +3319,7 @@ async fn repoint_track_workspace(
     let write_conflict = FolderConflictSlot::default();
     let write_claim = FolderClaim::Enforce {
         attach: requested.attach_folder,
+        allow_cross_area_cwd: None,
         conflict: write_conflict.clone(),
     };
     let write_track_id = track_id.clone();

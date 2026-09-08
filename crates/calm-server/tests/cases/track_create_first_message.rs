@@ -2709,6 +2709,34 @@ async fn a_legacy_binding_without_a_request_fingerprint_fails_closed() {
     b.shutdown_harnesses().await;
 }
 
+/// Frozen pre-cross-area request fingerprint for create_track's empty title,
+/// omitted cwd/source fields and black/white theme. Seed the old persisted
+/// digest, then replay through the real HTTP route on the upgraded server.
+#[tokio::test]
+async fn pre_cross_area_bindings_replay_after_upgrade() {
+    for message in [None, Some("same sentence")] {
+        let b = boot().await;
+        let key = "idem-pre-cross-area";
+        let (created, original) = b.create_track(Some(key), message).await;
+        assert_eq!(created, StatusCode::CREATED, "body={original}");
+        sqlx::query("UPDATE track_create_idempotency SET create_request_sha256 = ?1 WHERE idempotency_key = ?2")
+            .bind("2e059b04225d633c402c23612df059bda03c1d064f4eac24d817061e9c9095ce")
+            .bind(key)
+            .execute(b.repo.pool()).await.unwrap();
+        let messages_before = b.user_message_event_count().await;
+        let (status, replay) = b.create_track(Some(key), message).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "message={message:?}, body={replay}"
+        );
+        assert_eq!(replay["id"], original["id"]);
+        assert_eq!(b.track_count().await, 1);
+        assert_eq!(b.user_message_event_count().await, messages_before);
+        b.shutdown_harnesses().await;
+    }
+}
+
 /// T-V4b — the control: the message-less path keeps its `warn!` + 201 during the
 /// same outage.
 ///

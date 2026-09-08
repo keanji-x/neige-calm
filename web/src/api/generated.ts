@@ -1813,6 +1813,7 @@ export interface components {
             position?: number | null;
         };
         CreateTrackRequest: {
+            allow_cross_area_cwd?: null | components["schemas"]["CrossAreaCwdAuthorization"];
             area_id: string;
             attach_folder?: boolean;
             /**
@@ -1921,6 +1922,11 @@ export interface components {
              *     server applies no non-empty validation.
              */
             title?: string;
+        };
+        CrossAreaCwdAuthorization: {
+            area_id: string;
+            /** Format: int64 */
+            folder_id: number;
         };
         /**
          * @description Where [`ModelsResponse::default`] came from. Always present, including

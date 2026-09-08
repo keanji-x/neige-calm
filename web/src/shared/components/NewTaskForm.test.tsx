@@ -355,6 +355,73 @@ describe('NewTaskForm — submit', () => {
       expect(txt).toMatch(/already claimed/i);
     });
   });
+
+  it('requires a second explicit action before sending cross-area cwd authorization', async () => {
+    vi.spyOn(api, 'listAreas').mockResolvedValue([
+      area('area-1', 'Mine'),
+      area('area-other', 'Atlas', '#c97', 1),
+    ]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
+    const createSpy = vi.spyOn(api, 'createTrack')
+      .mockRejectedValueOnce(new CalmApiError(409, 'conflict', 'conflict', {
+        folder_id: 2,
+        area_id: 'area-other',
+        conflict_path: '/Users/me/code',
+        conflict_kind: 'descendant',
+      }))
+      .mockResolvedValueOnce({
+        id: 'w-shared', area_id: 'area-1', title: 'share', cwd: '/Users/me/code/x',
+        lifecycle: 'draft', sort: 0, archived_at: null, terminal_at: null, updated_at: 0,
+      } as unknown as Awaited<ReturnType<typeof api.createTrack>>);
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { onCreated } = renderForm({ defaultAreaId: 'area-1' });
+    await user.type(screen.getByLabelText(/task description/i), 'share');
+    await user.type(screen.getByLabelText(/working directory/i), '/Users/me/code/x');
+    await act(async () => vi.advanceTimersByTime(400));
+    await user.click(screen.getByRole('button', { name: /create task/i }));
+
+    const override = await screen.findByRole('button', { name: /reuse this directory anyway/i });
+    expect(screen.getByRole('alert').textContent).toMatch(/Atlas/);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(createSpy.mock.calls[0][0].allow_cross_area_cwd).toBeUndefined();
+
+    await user.click(override);
+    await waitFor(() => expect(createSpy).toHaveBeenCalledTimes(2));
+    expect(createSpy.mock.calls[1][0]).toMatchObject({
+      area_id: 'area-1',
+      cwd: '/Users/me/code/x',
+      attach_folder: false,
+      allow_cross_area_cwd: { folder_id: 2, area_id: 'area-other' },
+    });
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+  });
+
+  it('consumes consent when a changed claim rejects the authorized retry', async () => {
+    vi.spyOn(api, 'listAreas').mockResolvedValue([
+      area('area-1', 'Mine'), area('area-other', 'Atlas', '#c97', 1),
+    ]);
+    vi.spyOn(api, 'resolveAreaPath').mockResolvedValue(null);
+    const conflict = (folder_id: number) => new CalmApiError(409, 'conflict', 'conflict', {
+      folder_id, area_id: 'area-other', conflict_path: '/Users/me/code', conflict_kind: 'descendant',
+    });
+    const createSpy = vi.spyOn(api, 'createTrack')
+      .mockRejectedValueOnce(conflict(2))
+      .mockRejectedValueOnce(conflict(3))
+      .mockResolvedValueOnce({ id: 'w', area_id: 'area-1' } as Awaited<ReturnType<typeof api.createTrack>>);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderForm({ defaultAreaId: 'area-1' });
+    await user.type(screen.getByLabelText(/working directory/i), '/Users/me/code/x');
+    await act(async () => vi.advanceTimersByTime(400));
+    await user.click(screen.getByRole('button', { name: /create task/i }));
+    await user.click(await screen.findByRole('button', { name: /reuse this directory anyway/i }));
+    await waitFor(() => expect(createSpy).toHaveBeenCalledTimes(2));
+    expect(createSpy.mock.calls[1][0].allow_cross_area_cwd).toEqual({ folder_id: 2, area_id: 'area-other' });
+
+    await user.click(screen.getByRole('button', { name: /create task/i }));
+    await waitFor(() => expect(createSpy).toHaveBeenCalledTimes(3));
+    expect(createSpy.mock.calls[2][0].allow_cross_area_cwd).toBeUndefined();
+  });
 });
 
 describe('NewTaskForm — auto-match override', () => {

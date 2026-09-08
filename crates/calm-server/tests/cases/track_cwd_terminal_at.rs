@@ -562,6 +562,278 @@ async fn post_api_tracks_rejects_cwd_owned_by_another_area() {
     );
 }
 
+/// Cross-area reuse is an explicit, server-validated exception: the original
+/// claim remains the sole owner while the new area's track may reference the
+/// already-covered cwd.  The flag must not mint a second, overlapping claim.
+#[tokio::test]
+async fn post_api_tracks_explicitly_reuses_cwd_owned_by_another_area_without_rebinding() {
+    let boot = boot().await;
+    let other_claim = std::env::current_dir()
+        .expect("current test checkout")
+        .to_string_lossy()
+        .into_owned();
+    let cwd = other_claim.clone();
+    let claim = boot
+        .repo
+        .area_folder_create(&boot.other_area_id, &other_claim)
+        .await
+        .unwrap();
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        json!({
+            "area_id": boot.area_id,
+            "title": "w-explicit-cross-area",
+            "cwd": cwd.clone(),
+            "attach_folder": true,
+            "allow_cross_area_cwd": {"folder_id": claim.id, "area_id": boot.other_area_id},
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "explicit reuse must pass folder admission; got {status}, body={body}"
+    );
+
+    let tracks = boot.repo.tracks_by_area(&boot.area_id).await.unwrap();
+    assert_eq!(tracks.len(), 1);
+    assert_eq!(tracks[0].workspace.path, cwd);
+
+    let folders = boot.repo.area_folders_list_all().await.unwrap();
+    assert_eq!(folders.len(), 1, "reuse must not create or replace a claim");
+    assert_eq!(folders[0].area_id.as_str(), boot.other_area_id);
+    assert_eq!(folders[0].path, other_claim);
+}
+
+/// A confirmation is bound to the claim returned by the 409. If another
+/// request replaced that claim before retry, stale consent cannot authorize
+/// whichever owner happens to cover the cwd now.
+#[tokio::test]
+async fn post_api_tracks_rejects_stale_cross_area_cwd_authorization() {
+    let boot = boot().await;
+    let cwd = std::env::current_dir()
+        .expect("current test checkout")
+        .to_string_lossy()
+        .into_owned();
+    let claim = boot
+        .repo
+        .area_folder_create(&boot.other_area_id, &cwd)
+        .await
+        .unwrap();
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        json!({
+            "area_id": boot.area_id,
+            "title": "stale-consent",
+            "cwd": cwd,
+            "attach_folder": false,
+            "allow_cross_area_cwd": {
+                "folder_id": claim.id + 1,
+                "area_id": boot.other_area_id,
+            },
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["folder_id"], claim.id);
+    assert_eq!(body["area_id"], boot.other_area_id);
+    assert!(
+        boot.repo
+            .tracks_by_area(&boot.area_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A confirmation is not permission to claim a directory after its old owner
+/// disappears. Exercise the actual FE retry shape, including attach=true.
+#[tokio::test]
+async fn cross_area_cwd_authorization_rejects_deleted_claim_without_attaching() {
+    let boot = boot().await;
+    let cwd = attached_repo_fixture("cross-area-deleted-claim");
+    let claim = boot
+        .repo
+        .area_folder_create(&boot.other_area_id, &cwd)
+        .await
+        .unwrap();
+    boot.repo.area_folder_delete(claim.id).await.unwrap();
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        json!({
+            "area_id": boot.area_id,
+            "cwd": cwd,
+            "attach_folder": true,
+            "allow_cross_area_cwd": {"folder_id": claim.id, "area_id": boot.other_area_id},
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert!(
+        boot.repo
+            .tracks_by_area(&boot.area_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(boot.repo.area_folders_list_all().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cross_area_cwd_authorization_rejects_replacement_claim_in_target_area() {
+    let boot = boot().await;
+    let cwd = attached_repo_fixture("cross-area-reassigned-claim");
+    let claim = boot
+        .repo
+        .area_folder_create(&boot.other_area_id, &cwd)
+        .await
+        .unwrap();
+    boot.repo.area_folder_delete(claim.id).await.unwrap();
+    let replacement = boot
+        .repo
+        .area_folder_create(&boot.area_id, &cwd)
+        .await
+        .unwrap();
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        json!({
+            "area_id": boot.area_id,
+            "cwd": cwd,
+            "attach_folder": true,
+            "allow_cross_area_cwd": {"folder_id": claim.id, "area_id": boot.other_area_id},
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert!(
+        boot.repo
+            .tracks_by_area(&boot.area_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let folders = boot.repo.area_folders_list_all().await.unwrap();
+    assert_eq!(folders.len(), 1);
+    assert_eq!(folders[0].id, replacement.id);
+}
+
+#[tokio::test]
+async fn cross_area_cwd_authorization_rejects_claim_exempt_create_shapes() {
+    let boot = boot().await;
+    let (_, system) = post(boot.app.clone(), "/api/areas/system", json!({})).await;
+    let system_id = system["id"].as_str().unwrap();
+    let cwd = attached_repo_fixture("cross-area-exempt-shapes");
+    let claim = boot
+        .repo
+        .area_folder_create(&boot.other_area_id, &cwd)
+        .await
+        .unwrap();
+    for (area_id, requested_cwd) in [
+        (boot.area_id.as_str(), None),
+        (system_id, Some(cwd.as_str())),
+    ] {
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/tracks",
+            json!({
+                "area_id": area_id,
+                "cwd": requested_cwd,
+                "allow_cross_area_cwd": {"folder_id": claim.id, "area_id": boot.other_area_id},
+                "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+            }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "area={area_id}, body={body}"
+        );
+        assert!(boot.repo.tracks_by_area(area_id).await.unwrap().is_empty());
+    }
+}
+
+/// The authorization is narrow: it is evidence that the user accepted a
+/// concrete existing owner, not permission to create an unclaimed track.
+#[tokio::test]
+async fn cross_area_cwd_authorization_does_not_bypass_unclaimed_cwd_fence() {
+    let boot = boot().await;
+    let cwd = std::env::current_dir()
+        .expect("current test checkout")
+        .to_string_lossy()
+        .into_owned();
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        json!({
+            "area_id": boot.area_id,
+            "title": "not-actually-shared",
+            "cwd": cwd,
+            "attach_folder": false,
+            "allow_cross_area_cwd": {"folder_id": 999, "area_id": boot.other_area_id},
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert!(
+        boot.repo
+            .tracks_by_area(&boot.area_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(boot.repo.area_folders_list_all().await.unwrap().is_empty());
+}
+
+/// A narrower claim below the requested cwd is still an unsafe widening and
+/// cannot be converted into a reuse by the authorization flag.
+#[tokio::test]
+async fn cross_area_cwd_authorization_does_not_bypass_ancestor_conflict() {
+    let boot = boot().await;
+    let cwd_path = std::env::current_dir().expect("current test checkout");
+    let narrower = cwd_path.join("crates").to_string_lossy().into_owned();
+    let claim = boot
+        .repo
+        .area_folder_create(&boot.other_area_id, &narrower)
+        .await
+        .unwrap();
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        json!({
+            "area_id": boot.area_id,
+            "title": "unsafe-widening",
+            "cwd": cwd_path.to_string_lossy(),
+            "attach_folder": true,
+            "allow_cross_area_cwd": {"folder_id": claim.id, "area_id": boot.other_area_id},
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["conflict_kind"], "ancestor");
+    assert!(
+        boot.repo
+            .tracks_by_area(&boot.area_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let folders = boot.repo.area_folders_list_all().await.unwrap();
+    assert_eq!(folders.len(), 1);
+    assert_eq!(folders[0].area_id.as_str(), boot.other_area_id);
+    assert_eq!(folders[0].path, narrower);
+}
+
 /// System area (kernel-internal scaffolding) is exempt from the
 /// area_folders claim namespace: a track POST against it must not
 /// mint a area_folders row even when `attach_folder = true`, and

@@ -244,6 +244,9 @@ export type NewTrackBody = Readonly<{
    * `attach_folder` is `false`.
    */
   attach_folder?: boolean;
+  /** Single-use consent for the exact foreign folder claim returned by a
+   * create 409. The kernel revalidates both ids transactionally. */
+  allow_cross_area_cwd?: Readonly<{ folder_id: number; area_id: string }>;
   /**
    * The chosen template's key (#1209). Read as `template.id` from
    * `GET /api/track-templates`; the write side still spells it `template_id`
