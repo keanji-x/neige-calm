@@ -89,6 +89,14 @@ Invalid output leaves the consumer unstarted and publication failed; it does not
 A same-contract consumer recovery retains its original immutable input. Other files from its \
 previous execution are retained evidence and are not inherited.
 
+## Isolated multi-file delivery with machine checks
+
+When a downstream task needs related files such as code, README and tests, use the native candidate protocol. Declare two same-Track Codex tasks without ordinary depends_on or gate; explain the required candidate checks in no_gate_reason. The producer declares every required file and public machine-check obligation before execution.
+Candidate producer context: `{\"neige_execution\":{\"version\":\"isolated-codex-v1\",\"workspace\":\"empty\",\"file_delivery\":{\"role\":\"candidate_producer\",\"slot\":\"project\",\"paths\":[\"src/project.py\",\"README.md\",\"tests/test_project.py\"],\"policy\":{\"scope\":\"declared-checks-only\",\"timeout_secs\":60,\"steps\":[{\"name\":\"tests\",\"cmd\":\"PYTHONPATH=src python3 -c 'import unittest; s=unittest.defaultTestLoader.discover(\\\"tests\\\"); assert s.countTestCases()>0; assert unittest.TextTestRunner().run(s).wasSuccessful()'\"}]}}}}`.
+Candidate consumer context: `{\"neige_execution\":{\"version\":\"isolated-codex-v1\",\"workspace\":\"file-input\",\"file_delivery\":{\"role\":\"candidate_consumer\",\"producer\":\"produce\",\"slot\":\"project\",\"purpose\":\"verified-candidate-input\"}}}`.
+Adapt the producer key, bounded file list and named checks to the actual project. Commands must be single-line; explicitly check discovery/count where the acceptance requires tests. The kernel seals the files, runs the frozen checks in its own working copy, and supplies /workspace/inputs/source only after exact matching verification succeeds. Do not copy files, invent transport tasks, compute hashes or assemble content from a JSON manifest.
+Inspect calm.plan.list file_delivery for candidate, verification and input facts. Producer Done and verification Operation completion alone are not check success. Machine-qualified delivery covers declared checks only; review-required qualification and failed-candidate repair are unsupported. Do not silently downgrade either requirement or imply a completed review resolves its findings. Same-contract consumer recovery retains its original candidate input, not its failed output files.
+
 ## Interactive Terminal work
 
 For an existing task's Worker terminal, use `calm.terminal.resolve` with \
@@ -897,6 +905,46 @@ mod tests {
             PLANNER_SYSTEM_PROMPT_TEMPLATE
                 .contains("prefer `Recover(key, reason)` only when the tool is available")
         );
+    }
+
+    #[test]
+    fn planner_candidate_examples_use_the_native_execution_contract() {
+        use calm_types::task_execution::{FileDelivery, IsolatedCodexSelection};
+        let prompt =
+            crate::operation::planner_harness_start_adapter::render_planner_developer_instructions(
+                "track-delivery",
+                None,
+                None,
+            );
+        for (prefix, producer) in [
+            ("Candidate producer context: `", true),
+            ("Candidate consumer context: `", false),
+        ] {
+            let raw = prompt
+                .split_once(prefix)
+                .unwrap()
+                .1
+                .split('`')
+                .next()
+                .unwrap();
+            let context: serde_json::Value = serde_json::from_str(raw).unwrap();
+            let selection = IsolatedCodexSelection::from_context(&context)
+                .unwrap()
+                .unwrap();
+            selection
+                .validate_route(
+                    "codex",
+                    calm_types::task_recovery::TASK_IN_TRACK_ROUTE,
+                    false,
+                    false,
+                )
+                .unwrap();
+            assert!(matches!(
+                (producer, selection.file_delivery),
+                (true, Some(FileDelivery::CandidateProducer { .. }))
+                    | (false, Some(FileDelivery::CandidateConsumer { .. }))
+            ));
+        }
     }
 
     #[test]
