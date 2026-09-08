@@ -150,10 +150,16 @@ export function PendingQueue({
    *
    * Astryx's `clickAction` disables the control it is on while its promise is
    * unsettled, and that is all it does — which leaves every OTHER control
-   * live. A queue write is a compare-and-swap against a revision this page was
-   * read at, so two of them in flight together means the second is composed
-   * against a page the first has already invalidated. The write that is in
-   * flight is a fact about this card, so it is held for this card.
+   * live.
+   *
+   * **Not because one delete invalidates another's revision.** It does not:
+   * the kernel compares `queue[index].rev` per entry
+   * (`crates/calm-server/src/harness/queue.rs`), so deleting A leaves B's
+   * revision exactly as it was. The reason is this component's own state —
+   * `refusal` holds ONE entry's answer, and two writes settling together means
+   * the second silently replaces the first's notice, so one of the two
+   * refusals is never shown to the person who caused it. The write in flight
+   * is a fact about this card, so it is held for this card.
    *
    * **Raised in `onClick`, released in `clickAction`** — see the note on the
    * button.
@@ -182,10 +188,11 @@ export function PendingQueue({
             const refused = shown?.outcome ?? null;
             const rev = refused?.kind === 'stale' ? refused.rev : entry.rev;
             /* And the TEXT that goes with that revision. A stale refusal is
-               the server telling us what the entry says now; from that moment
-               the row shows the winner's words and a retry hands those back.
-               Reading `entry.text` here is how a retry deleted the new message
-               and returned the old one. */
+               the server telling us what the entry says now, so from that
+               moment the row shows the winner's words rather than the ones
+               this page was read at — which is what makes the notice's "it now
+               reads as shown" true, and what stops a reader deleting a message
+               on the strength of text the server has already replaced. */
             const text = refused?.kind === 'stale' ? refused.text : entry.text;
             return (
               <li key={entry.entry_id} data-nc-pending-entry={entry.entry_id}>

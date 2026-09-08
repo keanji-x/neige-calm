@@ -45,9 +45,18 @@
     transition: stroke-dasharray 240ms ease;
   }
 
-  /* Over its window: the one state that is a malfunction rather than a
-     measurement, so it is the one state that is not grey. */
-  .over .fill {
+  /*
+   * Over its window: the one state that is a malfunction rather than a
+   * measurement, so it is the one state that is not grey.
+   *
+   * The colour is on the TRACK, because that is the only circle with any ink
+   * in it here — the fill's dash length is zero in this state, deliberately
+   * (no percentage was stated, so no arc is drawn). Colouring the fill instead
+   * painted a shape of zero length: the ring rendered plain grey, exactly like
+   * a reading that is merely low, which is the opposite of what this state
+   * means. Introduced by the same change that stopped drawing the arc.
+   */
+  .over .track {
     stroke: var(--warn);
   }
 

@@ -143,14 +143,25 @@ export function ContextRing({ usage }: { usage: PlannerRunTokenUsage | null }) {
             cx={SIZE / 2} cy={SIZE / 2} r={RADIUS}
             fill="none" strokeWidth={STROKE}
           />
-          <circle
-            className={styles.fill}
-            cx={SIZE / 2} cy={SIZE / 2} r={RADIUS}
-            fill="none" strokeWidth={STROKE} strokeLinecap="round"
-            strokeDasharray={`${(CIRCUMFERENCE * percent) / 100} ${CIRCUMFERENCE}`}
-            /* Twelve o'clock, clockwise — the direction a dial is read. */
-            transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
-          />
+          {/*
+            * Drawn only when there is an arc to draw.
+            *
+            * `strokeLinecap: round` paints a DOT at a dash length of zero, so
+            * a zero-percent arc is not nothing — measured: the over-window
+            * ring came out as a red circle with a stray grey dot at twelve
+            * o'clock, which reads as a reading rather than as the absence of
+            * one. Same for a context that is genuinely empty.
+            */}
+          {percent > 0 && (
+            <circle
+              className={styles.fill}
+              cx={SIZE / 2} cy={SIZE / 2} r={RADIUS}
+              fill="none" strokeWidth={STROKE} strokeLinecap="round"
+              strokeDasharray={`${(CIRCUMFERENCE * percent) / 100} ${CIRCUMFERENCE}`}
+              /* Twelve o'clock, clockwise — the direction a dial is read. */
+              transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
+            />
+          )}
         </svg>
       </span>
     </Tooltip>

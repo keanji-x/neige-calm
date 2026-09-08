@@ -26,13 +26,15 @@ function ring(): HTMLElement | null {
  * arc. Asserting only the attribute let an implementation that hardcoded the
  * dasharray — or dropped the svg entirely — pass every test in this file.
  */
-function drawnFraction(): number | null {
+function drawnFraction(): number {
   const fill = document.querySelector('[data-nc-context-ring] circle + circle');
-  const dash = fill?.getAttribute('stroke-dasharray');
-  const radius = Number(fill?.getAttribute('r'));
-  if (dash == null || Number.isNaN(radius)) return null;
-  const drawn = Number(dash.split(' ')[0]);
-  return drawn / (2 * Math.PI * radius);
+  /* No second circle at all is the zero case, and it is a real rendering
+     rather than a missing one: a round line cap paints a dot at a dash length
+     of zero, so "no arc" has to mean no element. */
+  if (fill === null) return 0;
+  const dash = fill.getAttribute('stroke-dasharray') ?? '0';
+  const radius = Number(fill.getAttribute('r'));
+  return Number(dash.split(' ')[0]) / (2 * Math.PI * radius);
 }
 
 describe('context ring', () => {
@@ -100,6 +102,8 @@ describe('context ring', () => {
      * while a comment three lines away said it did not.
      */
     expect(drawnFraction()).toBe(0);
+    /* And no circle drawn at all — a zero-length round cap is a dot. */
+    expect(document.querySelectorAll('[data-nc-context-ring] circle')).toHaveLength(1);
     await userEvent.hover(screen.getByRole('img', { name: /more than the window holds/ }));
     expect(await screen.findByText(/more than the window holds/)).toBeTruthy();
   });

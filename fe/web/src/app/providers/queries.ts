@@ -329,8 +329,8 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     /*
      * #1505 PR4 — the queue write.
      *
-     * One, now: the strip's pencil takes a message back rather than editing it
-     * in place, and a take-back is this same delete. The edit route is
+     * One, now: the strip's only control removes the message, and editing a
+     * queued message in place has no front end. The edit route is
      * `PATCH /api/cards/{id}/planner/input/{entry_id}` — `routes/cards.rs`
      * mounts `patch(...).delete(...)` on that path, and `put` belongs to
      * `/planner/model`, which is a different route — and it is still served;

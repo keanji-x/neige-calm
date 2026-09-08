@@ -804,10 +804,10 @@ function plannerInputPath(cardId: string, entryId: string): string {
  *
  * `PATCH .../planner/input/{entry_id}` is still served and is not going
  * anywhere; what was removed is the browser's way of reaching it. The queue
- * strip's pencil takes a message BACK — deletes the entry and puts its words
- * in the composer — rather than editing it in place, so the only queue write
- * the front end makes is the delete below. Exported dead code invites the next
- * reader to wire it back up beside a take-back that would then race it.
+ * strip offers one control, and it removes the message — editing a queued
+ * message in place has no front end at all — so the only queue write this
+ * client makes is the delete below. Exported dead code invites the next reader
+ * to wire it back up under a UI that does not exist.
  *
  * Same shape as the missing `resetPlannerOperation` a few lines down: an
  * endpoint the server keeps and the client no longer calls.

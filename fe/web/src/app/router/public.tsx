@@ -321,14 +321,12 @@ export function useConversationStore(
      drains leaves this set and its echo becomes visible again. */
   /*
    * Entries this client has had a `done` DELETE for, and which the cached page
-   * has not caught up with yet.
+   * has not caught up with yet — so a confirmed delete does not leave its
+   * bubble on screen, still offering a control, until the refetch lands.
    *
    * Keyed by entry id and cleared when the page stops listing them, so it is a
    * catch-up window and not a second source of truth: the moment the server's
-   * own page agrees, the id leaves this set. Without it a confirmed take-back
-   * left the bubble on screen while its words sat in the composer — the one
-   * state the interaction promises never to produce — for as long as the
-   * refresh took, or forever if it failed.
+   * own page agrees, the id leaves this set.
    */
   /*
    * Entries this client has had a `done` DELETE for, and which the cached page
@@ -336,7 +334,7 @@ export function useConversationStore(
    *
    * **Keyed by card AND entry, not by entry.** Entry ids are unique per card
    * and this hook serves whichever card `scope` currently names, so a bare id
-   * is a mask over the wrong queue: take back A/x and B's own x disappears.
+   * is a mask over the wrong queue: delete A/x and B's own x disappears.
    * Clearing the set on every card change was the first attempt and it is not
    * the same thing — it leaves a window (a DELETE from A that answers after
    * the switch still writes a bare id into B's mask) and it throws away
@@ -943,10 +941,6 @@ export function useConversationStore(
          that actually happened means nothing more is coming. */
       if (outcome.kind === 'done') {
         retireQueuedEcho(entry.entry_id);
-        /* The same catch-up the take-back needs, for the same reason: until
-           the refetch lands, the cached page still lists an entry the server
-           has agreed is gone — so a confirmed delete left its bubble on
-           screen, still offering a pencil and a cross. */
         forgetQueuedEntry(entry.entry_id);
       }
       return outcome;

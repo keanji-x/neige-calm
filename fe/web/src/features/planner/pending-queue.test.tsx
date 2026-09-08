@@ -119,10 +119,10 @@ describe('PendingQueue', () => {
   /*
    * One lock for the strip, not one per button.
    *
-   * A queue write is a compare-and-swap against the revision this page was
-   * read at, so two in flight together means the second was composed against a
-   * page the first has already invalidated. Astryx's `clickAction` holds only
-   * the control it is on, so the other row's cross stayed live.
+   * `refusal` holds one entry's answer, so two writes settling together means
+   * the second replaces the first's notice and one refusal is never shown.
+   * Astryx's `clickAction` holds only the control it is on, so the other row's
+   * cross stayed live.
    */
   it('locks the other entry’s control while one delete is in flight', async () => {
     let settle!: (outcome: PlannerQueueWriteOutcome) => void;
@@ -156,7 +156,10 @@ describe('PendingQueue', () => {
     renderQueue({ entries: [], overflow: 3 });
     expect(screen.getByText('3 queued messages are waiting but cannot be shown or edited here.'))
       .toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Edit this message' })).toBeNull();
+    /* No CONTROLS at all, named by role rather than by one label: asserting
+       the absence of a button that no longer exists anywhere passes whatever
+       the component renders. */
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
 
   /* "more" only where there is something for them to be more than — with no

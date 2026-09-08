@@ -22,13 +22,13 @@
   }
 
   /*
-   * One bubble. Three tracks: the message, the pencil, the cross.
+   * One bubble. Two tracks: the message and the cross.
    *
    * `minmax(0, 1fr)` and not `auto` for the first, and this is load-bearing
    * rather than a preference: `Text maxLines={1}` truncates by going
    * `white-space: nowrap`, so its min-content is the WHOLE message. Any track
    * that respects content minimums gets blown out by it — measured at 712px
-   * inside a 290px composer, with both icon buttons pushed off the edge and
+   * inside a 290px composer, with the icon button pushed off the edge and
    * clipped away entirely. `min-inline-size: 0` on the item alone did not fix
    * it; the track has to be the thing that refuses.
    *
@@ -41,12 +41,12 @@
    */
   .bubble {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: var(--space-1);
     min-inline-size: 0;
     /* Asymmetric on purpose: the text needs an inset from the bubble's edge,
-       the icon buttons carry their own. */
+       the icon button carries its own. */
     padding: var(--space-px) var(--space-1) var(--space-px) var(--space-3);
     border-radius: var(--radius-pill);
     background: var(--surface-chip);
