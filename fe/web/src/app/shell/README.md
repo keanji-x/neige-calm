@@ -42,13 +42,11 @@ because it is per-row data. The running pulse is a token-timed animation
 
 ## Persistence
 
-**Nothing in the rail is persisted, deliberately.** Collapse state and per-area
-disclosure live in component state only. `core/keys/storage.ts` is frozen and
-holds exactly three keys — `SYNC_CURSOR_KEY`, `DB_INSTANCE_ID_KEY`, `THEME_KEY`
-— none of which mean "sidebar layout", and its `StorageAdapterPort` is
-`Promise`-based, so it could not seed the first render synchronously anyway.
-Inventing a key here would have been a workaround; the rail simply opens in its
-default shape each session.
+Area disclosure and the manual sidebar width choice are browser-local display
+preferences, injected through `app/providers/ui-preferences.tsx`. Explicit
+collapse survives Track navigation and refresh. Activating an Area initial
+still expands that Area and restores focus to its disclosure. With unavailable
+storage the choices remain in memory for the app instance.
 
 ## Test contract
 

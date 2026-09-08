@@ -15,6 +15,7 @@ import { logoutOperation, runOperation, serverVersionOperation } from '../provid
 import { createFetchTransport } from '../providers/transport.ts';
 import { createCardFilesPort } from '../providers/directory.ts';
 import { createAppRouter } from '../router/public.tsx';
+import { createUiPreferences } from '../providers/ui-preferences.tsx';
 import { createRecentFileHistory } from '../providers/recent-files.ts';
 import { createCardHost, createCardRegistry } from '../../systems/cards/public.js';
 import { bootCards } from '../cards.ts';
@@ -64,6 +65,7 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
     client,
     cards: { registry, host },
     recentFiles: createRecentFileHistory(browser.storage),
+    uiPreferences: createUiPreferences(browser.storage),
     onSignOut: () => {
       void runOperation(transport, logoutOperation(), unauthorized).finally(() => {
         clearSessionArtifacts(client, events.store, runtime);

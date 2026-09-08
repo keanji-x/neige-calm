@@ -95,6 +95,7 @@ import {
   RecipesPage, type RecipeDraft, type RecipeWriteOutcome,
 } from '../../features/report/recipe/public.tsx';
 import { useTheme } from '../theme/public.tsx';
+import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, type UiPreferences } from '../providers/ui-preferences.tsx';
 import { AppShell, useOpenMobileSection } from '../shell/public.tsx';
 import {
   ConversationProvider, useConversationRegistry,
@@ -1167,9 +1168,6 @@ function createEchoLine(text: string, atMs = 0): ConversationTurn {
   return { id: CREATE_ECHO_ID, author: 'you', text, atMs };
 }
 
-/** Which row is open, or the draft that has not become a row yet. */
-type OpenTarget = Readonly<{ kind: 'row'; id: string } | { kind: 'draft' }>;
-
 /** What a caller may change without touching the draft's identity. `key` and
  *  `sentText` are deliberately absent: they move together or not at all, which
  *  is why `rekeyDraft` and `markDraftSent` are the only doors to them. */
@@ -1189,6 +1187,7 @@ export type AppRouterDeps = Readonly<{
   onSignOut: () => void;
   cards: CardRuntime;
   recentFiles?: RecentFileHistory;
+  uiPreferences?: UiPreferences;
 }>;
 
 /** The component every settings route uses; see `settingsRoute` below. */
@@ -1197,7 +1196,12 @@ function renderNothing(): null { return null; }
 export function createRouteTree(deps: AppRouterDeps): AnyRoute {
   const { transport, unauthorized, client, onSignOut, cards } = deps;
   const recentFiles = deps.recentFiles ?? createRecentFileHistory();
-  const rootRoute = createRootRoute({ component: () => <ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /> });
+  const preferences = deps.uiPreferences ?? createUiPreferences();
+  const rootRoute = createRootRoute({ component: () => (
+    <UiPreferencesProvider preferences={preferences}>
+      <ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} />
+    </UiPreferencesProvider>
+  ) });
 
   const indexRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -1322,10 +1326,9 @@ function useConversationPanel(
   source: ConversationPanelSource,
   options?: { showTrack?: boolean },
 ) {
-  /* The drawer is route-local UI. The unfinished work it can show is not: a
-     failed draft lives in `ConversationProvider`, keyed by Track, so this
-     target can disappear on navigation without taking the retry key with it. */
-  const [openTarget, setOpenTarget] = useState<OpenTarget | null>(null);
+  /* Existing conversation selection survives navigation; unfinished drafts
+     retain their separate ConversationProvider lifecycle. */
+  const [openTarget, setOpenTarget] = useConversationViewTarget(source.scopeId);
   /*
    * The conversation whose composer this route was asked to put the caret in
    * — a just-created track's planner row (#1211 S2), and nothing else.
@@ -1391,7 +1394,7 @@ function useConversationPanel(
     if (!rows.some((row) => row.id === adoptedDraftId)) return;
     setOpenTarget({ kind: 'row', id: adoptedDraftId });
     registry.finishDraftAdoption(sourceScopeId, adoptedDraftId);
-  }, [adoptedDraftId, registry, rows, sourceScopeId]);
+  }, [adoptedDraftId, registry, rows, sourceScopeId, setOpenTarget]);
 
   /*
    * Every write to the draft goes through one of these three, and each is a
@@ -1456,7 +1459,7 @@ function useConversationPanel(
     setOpenTarget({ kind: 'row', id: requestedOpenId });
     if (focusComposer) setComposerFocusFor(requestedOpenId);
     registry.clearOpenRequest();
-  }, [registry, rows]);
+  }, [registry, rows, setOpenTarget]);
 
   useEffect(() => {
     if (open === null) return;

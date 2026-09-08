@@ -14,6 +14,7 @@ import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { Outlet } from '@tanstack/react-router';
 import { createContext, useContext, useEffect, useRef, type CSSProperties } from 'react';
 
+import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { Area, NewAreaBody } from '../../../../core/domain/area.ts';
@@ -133,7 +134,8 @@ export function AppShell({
    * Expand control changes the UI immediately and widening never inherits a
    * click that appeared to do nothing.
    */
-  const [manualRailCollapsed, setManualRailCollapsed] = useState<boolean | null>(null);
+  const preferences = useUiPreferences();
+  const manualRailCollapsed = preferences.railCollapsed();
   // The third copy of the compact-viewport subscription used to be inlined
   // right here, under a different name (#1191 §3.2).
   const narrowRail = useCompactViewport();
@@ -371,7 +373,7 @@ export function AppShell({
                two `narrowRail` tests that used to guard these were constants —
                one always false, one never reached (#1191 §2.3). */
             collapsed={railCollapsed}
-            onToggleCollapsed={() => setManualRailCollapsed(!railCollapsed)}
+            onToggleCollapsed={() => preferences.setRailCollapsed(!railCollapsed)}
             areas={workspace.areas}
             tracksByArea={workspace.tracksByArea}
             tracks={workspace.tracks}

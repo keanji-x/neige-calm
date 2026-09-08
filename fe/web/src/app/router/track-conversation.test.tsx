@@ -29,6 +29,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import { isQueuedConversationTurn, trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
+import { createUiPreferences, type UiPreferenceStorage } from '../providers/ui-preferences.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter, useConversationStore } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
@@ -113,7 +114,7 @@ function failure(status: number, code: string, error: string): ApiTransportRespo
 type Reply = (request: ApiRequest) => ApiTransportResponse | undefined
   | Promise<ApiTransportResponse | undefined>;
 
-function setup(reply?: Reply) {
+function setup(reply?: Reply, storage?: UiPreferenceStorage) {
   const requests: ApiRequest[] = [];
   const themeValues = new Map<string, string>();
   const themeStorage: Pick<Storage, 'getItem' | 'setItem'> = {
@@ -159,7 +160,7 @@ function setup(reply?: Reply) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, onSignOut: vi.fn(), cards: bootTestCardRuntime() });
+  const router = createAppRouter({ transport, unauthorized, client, onSignOut: vi.fn(), cards: bootTestCardRuntime(), uiPreferences: createUiPreferences(storage) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
@@ -2218,4 +2219,47 @@ it.each(['429', 'transport'])('[F5] does not retire a %s failure when a stale re
     expect(within(drawerElement()).getByText(text)).toBeTruthy();
   }
   expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
+});
+
+
+it('restores the open conversation after visiting another Track and remembers an explicit close', async () => {
+  const { router } = setup();
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await screen.findByRole('button', { name: 'Close conversation' });
+  await act(async () => { await router.navigate({ to: '/track/$trackId', params: { trackId: 'w2' } }); });
+  await screen.findAllByRole('heading', { name: 'Bare track', level: 1 });
+  expect(screen.queryByRole('button', { name: 'Close conversation' })).toBeNull();
+  await act(async () => { await router.navigate({ to: '/track/$trackId', params: { trackId: 'w1' } }); });
+  fireEvent.click(await screen.findByRole('button', { name: 'Close conversation' }));
+  await act(async () => { await router.navigate({ to: '/track/$trackId', params: { trackId: 'w2' } }); });
+  await screen.findAllByRole('heading', { name: 'Bare track', level: 1 });
+  await act(async () => { await router.navigate({ to: '/track/$trackId', params: { trackId: 'w1' } }); });
+  await screen.findByRole('button', { name: 'Conversation Assistant' });
+  expect(screen.queryByRole('button', { name: 'Close conversation' })).toBeNull();
+});
+
+
+it('restores conversation selection across a fresh router without persisting its contents', async () => {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); } };
+  const first = setup(undefined, storage);
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await screen.findByRole('button', { name: 'Close conversation' });
+  cleanup();
+  first.client.clear();
+  setup(undefined, storage);
+  expect(await screen.findByRole('complementary', { name: 'Assistant' })).toBeTruthy();
+  expect([...values.values()]).toEqual([JSON.stringify(ASSISTANT_CARD.id)]);
+});
+
+it('does not fetch a stored conversation absent from the current Track rows', async () => {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); } };
+  createUiPreferences(storage).setConversation('w1', 'foreign-or-deleted-card');
+  const { requests } = setup(undefined, storage);
+  await screen.findByRole('button', { name: 'Conversation Assistant' });
+  expect(screen.queryByRole('button', { name: 'Close conversation' })).toBeNull();
+  expect(requests.some((request) => request.path.includes('foreign-or-deleted-card'))).toBe(false);
 });

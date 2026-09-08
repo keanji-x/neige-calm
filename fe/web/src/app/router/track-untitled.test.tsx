@@ -331,9 +331,9 @@ describe('creating a track lands in its planner conversation', () => {
     await createATrack();
     await screen.findByRole('complementary', { name: 'Planner chat' });
 
-    /* Leaving the route takes the drawer with it — that is the "closed" state
-       this case needs, and it is one the reader reaches every time they walk
-       away. Coming back is then an ordinary visit, and it must stay one. */
+    // Navigation now remembers open drawers; an explicit close must still win
+    // over the already-consumed create intent on a later visit.
+    await userEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     await act(async () => { await router.navigate({ to: '/' }); });
     expect(router.state.location.pathname).toBe('/');
     expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();

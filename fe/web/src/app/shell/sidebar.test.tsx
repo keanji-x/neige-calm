@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
+import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { Sidebar } from './sidebar.tsx';
 
@@ -34,12 +35,12 @@ function track(overrides: Partial<Track> = {}): Track {
 
 type Props = Parameters<typeof Sidebar>[0];
 
-function renderSidebar(props: Partial<Props> = {}) {
+function renderSidebar(props: Partial<Props> = {}, preferences = createUiPreferences()) {
   const build = (overrides: Partial<Props>) => {
     const merged = { ...props, ...overrides };
     const tracks = merged.tracks ?? [];
     return (
-      <ThemeProvider storage={memoryStorage()}>
+      <UiPreferencesProvider preferences={preferences}><ThemeProvider storage={memoryStorage()}>
         <Sidebar
           areas={merged.areas ?? [area()]}
           tracksByArea={merged.tracksByArea ?? new Map([['c1', tracks]])}
@@ -63,7 +64,7 @@ function renderSidebar(props: Partial<Props> = {}) {
           readLoading={merged.readLoading}
           onRetryRead={merged.onRetryRead}
         />
-      </ThemeProvider>
+      </ThemeProvider></UiPreferencesProvider>
     );
   };
   const result = render(build({}));
@@ -107,24 +108,24 @@ describe('area disclosure', () => {
     expect(screen.getByRole('button', { name: /^Track Inside/ })).toBeTruthy();
   });
 
-  it('re-expands the area holding the track the user just opened', async () => {
+  it('keeps an area collapsed when opening a track in it', async () => {
     const tracks = [track({ id: 'w9', title: 'Inside' })];
     const { update } = renderSidebar({ tracks });
     await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
     expect(screen.queryByRole('button', { name: /^Track Inside/ })).toBeNull();
 
     update({ tracks, currentPath: '/track/w9' });
-    expect(screen.getByRole('button', { name: /^Track Inside/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Track Inside/ })).toBeNull();
   });
 
-  it('re-expands when navigation moves between two Tracks in the same Area', async () => {
+  it('keeps an area collapsed when moving between Tracks in it', async () => {
     const tracks = [track({ id: 'w1', title: 'First' }), track({ id: 'w2', title: 'Second' })];
     const { update } = renderSidebar({ tracks, currentPath: '/track/w1' });
     await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
     expect(screen.queryByRole('button', { name: /^Track Second/ })).toBeNull();
 
     update({ tracks, currentPath: '/track/w2' });
-    expect(screen.getByRole('button', { name: /^Track Second/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Track Second/ })).toBeNull();
   });
 });
 
@@ -473,4 +474,16 @@ describe('collapse toggle', () => {
     const count = screen.getByLabelText('1 waiting on you');
     expect(count.textContent).toBe('1');
   });
+});
+
+
+it('restores Area disclosure after the shell is remounted', async () => {
+  const storage = memoryStorage();
+  const tracks = [track({ title: 'Inside' })];
+  const first = renderSidebar({ tracks }, createUiPreferences(storage));
+  await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
+  first.unmount();
+  renderSidebar({ tracks, currentPath: '/track/w1' }, createUiPreferences(storage));
+  expect(screen.getByRole('button', { name: 'Expand area Work' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /^Track Inside/ })).toBeNull();
 });
