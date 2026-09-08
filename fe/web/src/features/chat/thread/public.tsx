@@ -2333,8 +2333,8 @@ export function ChatComposer({
          * This handler is on the composer's root and captures, which was
          * harmless while the field was the only focusable thing under it. The
          * `drawer` slot changed that: the queued-message bubbles live inside
-         * this root now, each with a pencil and a cross. Tab to one of them
-         * with an image picked and an empty draft, press Enter, and the
+         * this root now, each with its own control. Tab to one of them with
+         * an image picked and an empty draft, press Enter, and the
          * `allowEmptyText` branch below sent the image and called
          * `preventDefault()` — so the button a person was actually on never
          * fired. A key pressed on a button belongs to that button.

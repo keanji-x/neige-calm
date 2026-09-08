@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,34 +13,19 @@ afterEach(cleanup);
 const done: Promise<PlannerQueueWriteOutcome> = Promise.resolve({ kind: 'done' });
 
 function entry(overrides: Partial<PendingQueueEntry> = {}): PendingQueueEntry {
-  return {
-    entry_id: 'e1', text: 'look at the report', rev: 0, queued_at_ms: 10,
-    attachments: [], ...overrides,
-  };
+  return { entry_id: 'e1', text: 'look at the report', rev: 0, queued_at_ms: 10, ...overrides };
 }
 
-const IMAGE = {
-  id: 'att-1', contentType: 'image/png', size: 12, url: '/api/cards/c1/planner/attachments/att-1',
-};
-
 function renderQueue(props: Partial<PendingQueueProps> = {}) {
-  const onTakeBack = vi.fn<PendingQueueProps['onTakeBack']>(() => done);
   const onDelete = vi.fn<PendingQueueProps['onDelete']>(() => done);
-  const onEcho = vi.fn<PendingQueueProps['onEcho']>();
-  const onWithdraw = vi.fn<PendingQueueProps['onWithdraw']>();
   const view = render(<PendingQueue
     entries={[entry()]}
     overflow={0}
     busy={false}
-    composerBusy={false}
-    cardId="card-1"
-    onTakeBack={onTakeBack}
     onDelete={onDelete}
-    onEcho={onEcho}
-    onWithdraw={onWithdraw}
     {...props}
   />);
-  return { onTakeBack, onDelete, onEcho, onWithdraw, ...view };
+  return { onDelete, ...view };
 }
 
 function rows(): HTMLElement[] {
@@ -66,10 +51,6 @@ async function pressable(find: () => HTMLButtonElement): Promise<void> {
   });
 }
 
-function editButtons(): HTMLButtonElement[] {
-  return screen.getAllByRole<HTMLButtonElement>('button', { name: 'Edit this message' });
-}
-
 describe('PendingQueue', () => {
   it('shows the text of every queued message', () => {
     renderQueue({ entries: [entry(), entry({ entry_id: 'e2', text: 'and the diff' })] });
@@ -80,299 +61,6 @@ describe('PendingQueue', () => {
   it('renders nothing when there is no queue', () => {
     const { container } = renderQueue({ entries: [] });
     expect(container.querySelector('[data-nc-pending-queue]')).toBeNull();
-  });
-
-  /*
-   * The whole of the new interaction. Edit is a take-back: the entry leaves
-   * the queue and its words go to the composer, in that order, so the message
-   * is never in both places at once.
-   */
-  it('hands the words over BEFORE it deletes, not after', async () => {
-    /*
-     * The ordering is the design. Delete-then-echo leaves an asynchronous gap
-     * in which the reader can type (the echo then overwrites it or is dropped)
-     * or leave for another conversation (the echo arrives in the wrong
-     * composer). Echo-first has no gap: the composer is empty when the pencil
-     * is offered, so the write is immediate and destroys nothing.
-     */
-    const order: string[] = [];
-    const onEcho = vi.fn<PendingQueueProps['onEcho']>(() => { order.push('echo'); });
-    const onTakeBack = vi.fn<PendingQueueProps['onTakeBack']>(() => {
-      order.push('delete');
-      return done;
-    });
-    const { onDelete } = renderQueue({ onEcho, onTakeBack });
-    await userEvent.click(editButtons()[0]);
-    await waitFor(() => expect(onTakeBack).toHaveBeenCalledTimes(1));
-    expect(order).toEqual(['echo', 'delete']);
-    expect(onEcho).toHaveBeenCalledWith('card-1', 'look at the report');
-    expect(onTakeBack.mock.calls[0]?.[0]?.entry_id).toBe('e1');
-    /* A take-back is a delete of its own; it must not ALSO go through the
-       delete button's path, which would be two writes for one press. */
-    expect(onDelete).not.toHaveBeenCalled();
-  });
-
-  /*
-   * The ordering above is the invariant, and this is the half that can go
-   * wrong silently: echo the words after a REFUSED take-back and the message
-   * is in the queue and in the composer, so sending it posts it twice.
-   */
-  it('takes the words back out again when the message is still queued', async () => {
-    const { onWithdraw } = renderQueue({
-      onTakeBack: vi.fn<PendingQueueProps['onTakeBack']>(
-        () => Promise.resolve({ kind: 'stale', text: 'somebody else wrote this', rev: 7 }),
-      ),
-    });
-    await userEvent.click(editButtons()[0]);
-    await screen.findByText(/Nothing happened/);
-    /* Nothing happened to the entry, so a copy in the composer would be a
-       second copy of a message that is still going to be sent. */
-    await waitFor(() => expect(onWithdraw)
-      .toHaveBeenCalledWith('card-1', 'look at the report'));
-  });
-
-  /*
-   * `gone` KEEPS the words, and this is the cell that made the difference.
-   *
-   * It reads like "already sent" and it is not: the server returns it whenever
-   * the entry is no longer there, which includes another actor having deleted
-   * it. Withdrawing on that reading empties the composer for a message that
-   * was never delivered and no longer exists — in neither place, which is the
-   * outcome this ordering exists to prevent.
-   */
-  it('keeps the words when the message is merely no longer in the queue', async () => {
-    const { onWithdraw, onEcho } = renderQueue({
-      onTakeBack: vi.fn<PendingQueueProps['onTakeBack']>(() => Promise.resolve({ kind: 'gone' })),
-    });
-    await userEvent.click(editButtons()[0]);
-    await screen.findByText(/no longer in the queue/);
-    expect(onEcho).toHaveBeenCalledWith('card-1', 'look at the report');
-    expect(onWithdraw).not.toHaveBeenCalled();
-    /* And it says the ambiguity rather than asserting delivery. */
-    expect(screen.getByText(/the server does not say which/)).toBeTruthy();
-  });
-
-  /*
-   * Taking a message back REPLACES the composer's contents. Offering it over
-   * a half-written sentence is the one outcome that destroys something the
-   * person cannot get back, so it is refused before it happens rather than
-   * apologised for after.
-   */
-  it('refuses to take a message back over words already being written', async () => {
-    const { onTakeBack, onEcho } = renderQueue({ composerBusy: true });
-    const button = editButtons()[0];
-    expect(button.disabled || button.getAttribute('aria-disabled') === 'true').toBe(true);
-    await userEvent.hover(button);
-    expect(await screen.findByText(/Send or clear what you are writing first/)).toBeTruthy();
-    /*
-     * ACTIVATED, not merely hovered. Astryx switches a tooltipped disabled
-     * button to `aria-disabled` so the reason stays keyboard-reachable — which
-     * means the element is still clickable and still focusable, and an
-     * implementation that kept the attribute while letting the handler run
-     * would satisfy an assertion that only looked at the attribute.
-     * `fireEvent`, because a real pointer is stopped by the vendor's
-     * `pointer-events`, and what is under test is the handler behind it.
-     */
-    fireEvent.click(button);
-    button.focus();
-    fireEvent.keyDown(button, { key: 'Enter' });
-    fireEvent.keyDown(button, { key: ' ' });
-    await Promise.resolve();
-    expect(onTakeBack).not.toHaveBeenCalled();
-    expect(onEcho).not.toHaveBeenCalled();
-  });
-
-  /*
-   * The guard is re-asked when the words actually move, not only when the
-   * button was drawn. Start over an empty composer, type while the DELETE is
-   * in flight, and the answer used to land on top of what had just been typed.
-   */
-  it('cannot be overtaken by words typed while the take-back is in flight', async () => {
-    let settle!: (outcome: PlannerQueueWriteOutcome) => void;
-    const onTakeBack = vi.fn<PendingQueueProps['onTakeBack']>(
-      () => new Promise((resolve) => { settle = resolve; }),
-    );
-    const { onEcho, onWithdraw, rerender } = renderQueue({ onTakeBack });
-    await userEvent.click(editButtons()[0]);
-    await waitFor(() => expect(onTakeBack).toHaveBeenCalledTimes(1));
-
-    /* The composer gains words while the request is open. */
-    rerender(<PendingQueue
-      entries={[entry()]} overflow={0} busy={false} composerBusy
-      cardId="card-1" onTakeBack={onTakeBack} onDelete={vi.fn()} onEcho={onEcho}
-      onWithdraw={onWithdraw}
-    />);
-    settle({ kind: 'done' });
-    await Promise.resolve();
-    await Promise.resolve();
-    /*
-     * The words went in before the request did, so typing afterwards cannot
-     * race them — and nothing is withdrawn on `done`, so the message is in the
-     * box and out of the queue. The version this replaced discarded the words
-     * here and claimed a notice it never rendered.
-     */
-    expect(onEcho).toHaveBeenCalledTimes(1);
-    expect(onWithdraw).not.toHaveBeenCalled();
-  });
-
-  /*
-   * The echo happens before the request goes out.
-   *
-   * **This does NOT pin the thing that actually matters, and saying so is the
-   * point of this comment.** The reason the echo lives in `onClick` is that
-   * Astryx runs `clickAction` inside `startTransition` (`Button.tsx:593`), and
-   * a transition update is non-urgent — React may let a later urgent update
-   * supersede it, which is how typing during the request beat a deferred echo.
-   * That is a property of React's SCHEDULING, and this harness cannot observe
-   * it: `onEcho` here is a mock, not a state update, and `act()` flushes both
-   * kinds of update indiscriminately anyway. Measured, not assumed — moving
-   * the echo back inside `clickAction` leaves every test in this file green.
-   *
-   * So what is pinned is the weaker, checkable half: the call order. The
-   * placement is held by the comment on the component and by the vendor line
-   * cited above. **KNOWN GAP in coverage, deliberate** — the alternative was a
-   * test whose name claimed the scheduling property and whose body could not
-   * fail on it.
-   */
-  it('echoes before the request is issued', async () => {
-    const seen: string[] = [];
-    const onEcho = vi.fn<PendingQueueProps['onEcho']>(() => { seen.push('echo'); });
-    const onTakeBack = vi.fn<PendingQueueProps['onTakeBack']>(() => {
-      seen.push('request');
-      return done;
-    });
-    renderQueue({ onEcho, onTakeBack });
-    await userEvent.click(editButtons()[0]);
-    await waitFor(() => expect(onTakeBack).toHaveBeenCalled());
-    expect(seen[0]).toBe('echo');
-  });
-
-  /*
-   * A queued message is not only its words. The server ships the images with
-   * the entry; handing back the text alone drops them, and for an image-only
-   * message that is the whole message.
-   */
-  it('refuses to take back a message that carries images, and says why', async () => {
-    const { onTakeBack } = renderQueue({ entries: [entry({ attachments: [IMAGE] })] });
-    const button = editButtons()[0];
-    expect(button.disabled || button.getAttribute('aria-disabled') === 'true').toBe(true);
-    await userEvent.hover(button);
-    expect(await screen.findByText(/carries images/)).toBeTruthy();
-    fireEvent.click(button);
-    await Promise.resolve();
-    expect(onTakeBack).not.toHaveBeenCalled();
-    /* The cross still works: deleting a message with pictures loses the
-       pictures, which is what deleting means. */
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Delete this message' }).disabled)
-      .toBe(false);
-  });
-
-  /*
-   * One lock for the strip, not one per button. Astryx's `clickAction`
-   * disables only the control it is on, so two pencils pressed in quick
-   * succession issued two take-backs: both entries deleted, only the second
-   * answer's words kept.
-   */
-  it('locks every control while one write is in flight', async () => {
-    let settle!: (outcome: PlannerQueueWriteOutcome) => void;
-    const onTakeBack = vi.fn<PendingQueueProps['onTakeBack']>(
-      () => new Promise((resolve) => { settle = resolve; }),
-    );
-    renderQueue({
-      entries: [entry(), entry({ entry_id: 'e2', text: 'and the diff' })],
-      onTakeBack,
-    });
-    await userEvent.click(editButtons()[0]);
-    await waitFor(() => expect(onTakeBack).toHaveBeenCalledTimes(1));
-
-    /* The SECOND row. Astryx already holds the control that was pressed; what
-       this pins is that the untouched entry's controls went with it, which is
-       the part `clickAction` does not do and the part the two-take-backs bug
-       came through. */
-    await waitFor(() => {
-      const row = document.querySelectorAll('[data-nc-pending-entry]')[1] as HTMLElement;
-      const buttons = [...row.querySelectorAll('button')];
-      expect(buttons).toHaveLength(2);
-      for (const button of buttons) {
-        expect(button.disabled || button.getAttribute('aria-disabled') === 'true').toBe(true);
-      }
-    });
-    settle({ kind: 'done' });
-    await Promise.resolve();
-  });
-
-  /*
-   * The words go back to the conversation they were taken from. This drawer is
-   * reused across conversations, so a DELETE issued in A can answer while B is
-   * open; the id travels with the echo so the caller can refuse it.
-   */
-  it('names the conversation the words came from', async () => {
-    const { onEcho } = renderQueue({ cardId: 'card-7' });
-    await userEvent.click(editButtons()[0]);
-    await waitFor(() => expect(onEcho).toHaveBeenCalledWith('card-7', 'look at the report'));
-  });
-
-  /*
-   * A stale refusal is the server saying what the entry reads NOW. From then
-   * on the row shows those words and a retry hands those back — reading the
-   * page's own stale text deleted the new message and returned the old one.
-   */
-  it('shows and returns the winner’s words after a lost race, not the ones it was read with', async () => {
-    const onTakeBack = vi.fn<PendingQueueProps['onTakeBack']>()
-      .mockResolvedValueOnce({ kind: 'stale', text: 'they rewrote it', rev: 9 })
-      .mockResolvedValueOnce({ kind: 'done' });
-    const { onEcho } = renderQueue({ entries: [entry({ rev: 3 })], onTakeBack });
-
-    await userEvent.click(editButtons()[0]);
-    await screen.findByText(/Nothing happened/);
-    expect(screen.getByText('they rewrote it')).toBeTruthy();
-    expect(screen.queryByText('look at the report')).toBeNull();
-
-    await pressable(() => editButtons()[0]);
-    await userEvent.click(editButtons()[0]);
-    await waitFor(() => expect(onEcho).toHaveBeenCalledWith('card-1', 'they rewrote it'));
-    expect(onTakeBack.mock.calls[1]?.[0]?.rev).toBe(9);
-  });
-
-  /*
-   * The ambiguous outcome. A transport failure cannot tell "refused" from
-   * "deleted, answer lost on the way back". Withholding the words is right for
-   * the first and loses the message for the second, so it resolves toward the
-   * recoverable error: hand them over, and say the queue may still hold it.
-   */
-  it('keeps the words on an ambiguous failure, and says the queue may still hold it', async () => {
-    const { onEcho, onWithdraw } = renderQueue({
-      onTakeBack: vi.fn<PendingQueueProps['onTakeBack']>(
-        () => Promise.resolve({ kind: 'failed', message: 'the connection dropped.' }),
-      ),
-    });
-    await userEvent.click(editButtons()[0]);
-    await waitFor(() => expect(onEcho).toHaveBeenCalledWith('card-1', 'look at the report'));
-    expect(onWithdraw).not.toHaveBeenCalled();
-    expect(await screen.findByText(/check the queue above before sending them again/))
-      .toBeTruthy();
-  });
-
-  /* The cross hands nothing back, so its failure notice may not say it did.
-     One `noticeText` served both, and told the reader of a delete that their
-     words were "in the box" — a claim about a screen they are not looking at. */
-  it('does not tell a failed delete that its words are in the box', async () => {
-    renderQueue({
-      onDelete: vi.fn<PendingQueueProps['onDelete']>(
-        () => Promise.resolve({ kind: 'failed', message: 'the connection dropped.' }),
-      ),
-    });
-    await userEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
-    expect(await screen.findByText(/the connection dropped/)).toBeTruthy();
-    expect(screen.queryByText(/in the box/)).toBeNull();
-  });
-
-  it('deletes without echoing anything', async () => {
-    const { onDelete, onEcho, onTakeBack } = renderQueue();
-    await userEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
-    await waitFor(() => expect(onDelete).toHaveBeenCalledTimes(1));
-    expect(onEcho).not.toHaveBeenCalled();
-    expect(onTakeBack).not.toHaveBeenCalled();
   });
 
   /*
@@ -422,12 +110,37 @@ describe('PendingQueue', () => {
     expect(await screen.findByText(/the kernel is not accepting writes/)).toBeTruthy();
   });
 
-  it('blocks both controls while another write on this card is unanswered', () => {
+  it('blocks the control while another write on this card is unanswered', () => {
     renderQueue({ busy: true });
-    for (const name of ['Edit this message', 'Delete this message']) {
-      const button = screen.getByRole<HTMLButtonElement>('button', { name });
-      expect(button.disabled || button.getAttribute('aria-disabled') === 'true').toBe(true);
-    }
+    const button = screen.getByRole<HTMLButtonElement>('button', { name: 'Delete this message' });
+    expect(button.disabled || button.getAttribute('aria-disabled') === 'true').toBe(true);
+  });
+
+  /*
+   * One lock for the strip, not one per button.
+   *
+   * A queue write is a compare-and-swap against the revision this page was
+   * read at, so two in flight together means the second was composed against a
+   * page the first has already invalidated. Astryx's `clickAction` holds only
+   * the control it is on, so the other row's cross stayed live.
+   */
+  it('locks the other entry’s control while one delete is in flight', async () => {
+    let settle!: (outcome: PlannerQueueWriteOutcome) => void;
+    const onDelete = vi.fn<PendingQueueProps['onDelete']>(
+      () => new Promise((resolve) => { settle = resolve; }),
+    );
+    renderQueue({
+      entries: [entry(), entry({ entry_id: 'e2', text: 'and the diff' })],
+      onDelete,
+    });
+    await userEvent.click(screen.getAllByRole('button', { name: 'Delete this message' })[0]);
+    await waitFor(() => expect(onDelete).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const other = rows()[1].querySelector('button');
+      expect(other?.disabled || other?.getAttribute('aria-disabled') === 'true').toBe(true);
+    });
+    settle({ kind: 'done' });
+    await Promise.resolve();
   });
 
   /*

@@ -700,12 +700,12 @@ describe('planner conversation regressions', () => {
    * take-back silently removes a message somebody else already changed —
    * which is the whole reason the endpoint takes it.
    *
-   * It is a DELETE and no longer a PATCH: the pencil takes the message back
-   * rather than editing it in place, and a take-back is a delete plus a
-   * draft. The guarantee under test did not move — the revision the reader
-   * was shown is the revision the wire carries.
+   * It is a DELETE and no longer a PATCH: the strip's one control removes the
+   * message, and editing it in place was removed with the pencil. The
+   * guarantee under test did not move — the revision the reader was shown is
+   * the revision the wire carries.
    */
-  it('sends the listed revision as if_entry_rev when taking a queued message back', async () => {
+  it('sends the listed revision as if_entry_rev when removing a queued message', async () => {
     const entry = { entry_id: 'entry-9', text: 'first words', rev: 3, queued_at_ms: 5 };
     const { requests } = setup((request) => {
       if (request.path.endsWith('/planner/run')) {
@@ -721,7 +721,7 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
 
     await waitFor(() => {
       expect(requests.some((request) => request.method === 'DELETE')).toBe(true);
@@ -729,72 +729,6 @@ describe('planner conversation regressions', () => {
     const removal = requests.find((request) => request.method === 'DELETE');
     expect(removal?.path).toBe(`/api/cards/${CARD.id}/planner/input/entry-9`);
     expect(removal?.body).toEqual({ if_entry_rev: 3 });
-  });
-
-  /*
-   * #1505 PR4 review — a message taken back leaves NOTHING behind.
-   *
-   * The hazard this replaces was specific to editing in place: the echo is
-   * retired by TEXT (`userTextMatchesEcho`), so rewriting the queue entry
-   * without rewriting the echo left the reader looking at the edited message
-   * AND at a permanent pre-edit ghost.
-   *
-   * Taking the message back cannot produce that pair — there is no second
-   * text — but it can produce something worse, and this is what the test is
-   * for: the words land in the composer, and if the echo is not retired they
-   * are ALSO still in the transcript, so one message is on screen twice and
-   * sending it posts it twice. `takeBackQueuedEntry` retires the echo for
-   * exactly this reason; nothing else can, because the message never reached
-   * the model and no transcript row will ever arrive to reconcile it.
-   */
-  it('leaves no transcript ghost when a queued message is taken back', async () => {
-    const entry = { entry_id: 'entry-9', text: 'look at report', rev: 0, queued_at_ms: 5 };
-    let listed = false;
-    let takenBack = false;
-    setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({
-          ...PLANNER_RUN_IDLE, phase: 'turn_running',
-          pending: listed && !takenBack ? [entry] : [], pending_overflow: 0,
-        });
-      }
-      if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
-        listed = true;
-        return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: entry.entry_id });
-      }
-      if (request.method === 'DELETE' && request.path.includes('/planner/input/')) {
-        takenBack = true;
-        return ok({ card_id: CARD.id, entry_id: entry.entry_id, rev: 1, text: null });
-      }
-      return undefined;
-    });
-    await openConversation();
-    await screen.findByRole('button', { name: 'Stop' });
-    const field = messageField();
-    await typeInto(field, 'look at report');
-    await sendWithEnter(field);
-    await waitFor(() => {
-      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
-
-    // Out of the queue...
-    await waitFor(() => {
-      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
-    });
-    // ...into the composer, and nowhere else.
-    await waitFor(() => {
-      expect(messageField().textContent).toContain('look at report');
-    });
-    /* Exactly one copy on screen, and it is the one in the field. Counting
-       occurrences is the assertion — the ghost this guards against IS a second
-       copy — and naming where the survivor lives is what keeps the count from
-       passing for the wrong reason. */
-    const copies = screen.getAllByText('look at report');
-    expect(copies).toHaveLength(1);
-    expect(messageField().contains(copies[0] ?? null)).toBe(true);
-    expect(document.querySelector('[data-nc-queued]')).toBeNull();
   });
 
   /*

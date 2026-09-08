@@ -3,7 +3,7 @@ import styles from './icon.module.css';
 export type IconName =
   | 'chevron-left' | 'chevron-right' | 'arrow-left' | 'arrow-up'
   | 'plus' | 'close' | 'more' | 'chat' | 'notification' | 'folder' | 'file'
-  | 'paperclip' | 'pencil';
+  | 'paperclip';
 
 const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
   'chevron-right': Object.freeze(['M6 3.5 10.5 8 6 12.5']),
@@ -32,13 +32,6 @@ const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
      inside it merged into one dark mass — measured, not guessed. The clip is a
      single open stroke with no interior at all, so it survives the size it is
      actually used at, and it is the idiom for "attach" in any case. */
-  /* The queue strip's edit mark. A nib and its stroke, no barrel outline:
-     the same reason the paperclip below is one open path — at 16px an
-     enclosed shape with a 1.5 stroke has no interior left to be an interior. */
-  pencil: Object.freeze([
-    'M11.5 2.5 13.5 4.5 5.5 12.5 3 13 3.5 10.5z',
-    'M10 4 12 6',
-  ]),
   paperclip: Object.freeze([
     'M14.29 7.37l-6.13 6.13a4 4 0 0 1-5.66-5.66l6.13-6.13a2.67 2.67 0 0 1 3.77 3.77l-6.13 6.13a1.33 1.33 0 0 1-1.89-1.89l5.66-5.65',
   ]),

@@ -134,10 +134,6 @@ type ConversationStore = Readonly<{
   pendingQueue: readonly PendingQueueEntry[];
   /** Queued messages that exist but carry no id to address them by. */
   pendingQueueOverflow: number;
-  /** Remove a queued entry so its words can go back in the composer. The same
-   *  compare-and-swap delete `deleteQueuedEntry` performs; a separate name
-   *  because the caller does something different with a `done`. */
-  takeBackQueuedEntry: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
   deleteQueuedEntry: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
   historyReady: boolean;
   historyLoading: boolean;
@@ -940,31 +936,6 @@ export function useConversationStore(
       turns: knownTurns.filter((turn) => !isRetired(turn)),
     }));
   };
-  /*
-   * A take-back IS a delete. The entry leaves the queue and its echo is
-   * retired for the same reason a deleted one is — nothing more is coming for
-   * it from this harness — and the words then reappear as a draft, which is
-   * not a transcript row and must not leave one behind.
-   */
-  const takeBackQueuedEntry = (entry: PendingQueueEntry) =>
-    mutations.deleteQueued(entry.entry_id, entry.rev).then((outcome) => {
-      if (outcome.kind === 'done') {
-        retireQueuedEcho(entry.entry_id);
-        /*
-         * Drop the bubble now rather than when the page comes back.
-         *
-         * `refreshAfter` invalidates `planner-run`, and until that answers the
-         * cached page still lists the entry — so a confirmed take-back showed
-         * the message in the composer AND in the strip above it, which is the
-         * one state this interaction promises never to produce. If the refresh
-         * is slow, or fails, that state is where it stays. The server has
-         * already agreed the entry is gone; this is the cache catching up, not
-         * a guess about the server.
-         */
-        forgetQueuedEntry(entry.entry_id);
-      }
-      return outcome;
-    });
   const deleteQueuedEntry = (entry: PendingQueueEntry) =>
     mutations.deleteQueued(entry.entry_id, entry.rev).then((outcome) => {
       /* `gone` is not a retirement: the entry left the queue because it
@@ -1027,7 +998,6 @@ export function useConversationStore(
     sendBlocked,
     pendingQueue,
     pendingQueueOverflow,
-    takeBackQueuedEntry,
     deleteQueuedEntry,
     historyReady: history.data !== undefined,
     historyLoading: history.isFetching,
@@ -1422,11 +1392,6 @@ function useConversationPanel(
   const registry = useConversationRegistry();
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
-  /* Which conversation the composer on screen belongs to, readable from inside
-     a promise that started in a different one. See `onEcho` below. */
-  const openConversationId = useRef<string | null>(null);
-  openConversationId.current = open?.id ?? null;
-
 
   /*
    * The provider keeps independent drafts for other Tracks, but only this
@@ -2101,39 +2066,7 @@ function useConversationPanel(
                     entries={store.pendingQueue}
                     overflow={store.pendingQueueOverflow}
                     busy={store.sending}
-                    /* Taking a message back replaces the composer's contents,
-                       so it is offered only when there is nothing to destroy. */
-                    composerBusy={composerDraft.trim() !== ''}
-                    cardId={open.id}
-                    onTakeBack={store.takeBackQueuedEntry}
                     onDelete={store.deleteQueuedEntry}
-                    /*
-                     * The words go into the conversation they came from, or
-                     * nowhere.
-                     *
-                     * `openConversationId` is a REF, and that is the whole
-                     * correctness of it: comparing against the `open.id` this
-                     * callback closed over compares A's id with A's id and
-                     * passes every time, which is what the first version of
-                     * this guard did — it read like a check and was one only
-                     * for a reader who did not ask what both sides were.
-                     *
-                     * In practice the echo now happens before any `await`, so
-                     * the ids agree by construction; this is the belt to that
-                     * bracing, and it is cheap.
-                     */
-                    onEcho={(from, text) => {
-                      if (from !== openConversationId.current) return;
-                      setComposerDraft(text);
-                    }}
-                    /* Only if the box still holds exactly what was put there.
-                       A reader who has typed since owns it, and clearing their
-                       words to tidy up after a refused delete would be the
-                       loss this ordering exists to avoid. */
-                    onWithdraw={(from, text) => {
-                      if (from !== openConversationId.current) return;
-                      setComposerDraft((current) => (current === text ? '' : current));
-                    }}
                   />
                   <PlannerAttachmentDrawer attachments={attachments} />
                 </>

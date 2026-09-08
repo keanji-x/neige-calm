@@ -338,21 +338,6 @@ export type PendingQueueEntry = Readonly<{
   text: string;
   rev: number;
   queued_at_ms: number;
-  /**
-   * The images this queued message carries (`page_pending_entries`,
-   * `routes/cards.rs`).
-   *
-   * Read even though nothing draws them, because a queued message is not only
-   * its words: leaving this off the type let the composer's take-back restore
-   * the text and silently drop the pictures, and for an image-only message
-   * that is the whole message. What consumes it is
-   * `features/planner/pending-queue.tsx`, which refuses to take such an entry
-   * back rather than half-restoring it.
-   *
-   * Defaulted: a server older than #1505 S6 sends no such key, and an entry
-   * with no images sends an empty list — both mean "no pictures here".
-   */
-  attachments: readonly PlannerAttachment[];
 }>;
 
 const pendingQueueEntrySchema: z.ZodType<PendingQueueEntry> = z.object({
@@ -360,9 +345,6 @@ const pendingQueueEntrySchema: z.ZodType<PendingQueueEntry> = z.object({
   text: z.string(),
   rev: z.number(),
   queued_at_ms: z.number(),
-  /* The same schema the transcript's attachments use; there is one shape for
-     "an image the server is holding for this card" and this is it. */
-  attachments: z.array(plannerAttachmentSchema).optional().default([]),
 });
 
 export type PlannerRun = Readonly<{
