@@ -541,17 +541,21 @@ mod tests {
 
         // Let the wrapper get as far as forking and recording its grandchild,
         // so the drop below has a real descendant to reach.
+        // Redirection creates the file before echo publishes the PID. Wait for
+        // its complete line and keep the parsed value from that same read.
+        let mut recorded_pid = None;
         for _ in 0..200 {
-            if pidfile.exists() {
+            if let Ok(raw) = std::fs::read_to_string(&pidfile)
+                && raw.ends_with('\n')
+                && let Ok(pid) = raw.trim().parse::<i32>()
+                && pid > 0
+            {
+                recorded_pid = Some(pid);
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let gc: i32 = std::fs::read_to_string(&pidfile)
-            .expect("the wrapper must have recorded its grandchild")
-            .trim()
-            .parse()
-            .unwrap();
+        let gc = recorded_pid.expect("the wrapper must publish a complete positive grandchild PID");
         let gc_start_time = crate::proc_identity::read_proc_start_time(gc);
 
         drop(child);

@@ -1,0 +1,29 @@
+{
+  "neige_execution": {
+    "file_delivery": {
+      "paths": [
+        "src/score.py",
+        "README.md",
+        "tests/test_score.py"
+      ],
+      "policy": {
+        "scope": "declared-checks-only",
+        "steps": [
+          {
+            "cmd": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -c 'import pathlib,unittest; assert all(pathlib.Path(p).is_file() for p in [\"src/score.py\",\"README.md\",\"tests/test_score.py\"]); s=unittest.defaultTestLoader.discover(\"tests\"); flatten=lambda x: sum([flatten(t) if isinstance(t,unittest.TestSuite) else [t] for t in x], []); cases=flatten(s); assert s.countTestCases()==6; assert len({t.id() for t in cases})==6; assert {t._testMethodName for t in cases}=={\"test_empty\",\"test_single\",\"test_multiple\",\"test_zero\",\"test_negative\",\"test_boolean\"}; r=unittest.TextTestRunner(verbosity=2).run(s); assert r.testsRun==6 and r.wasSuccessful() and not r.skipped and not r.expectedFailures'",
+            "name": "六个独立测试全部通过"
+          },
+          {
+            "cmd": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -c 'from score import score; import unittest; t=unittest.TestCase(); t.assertEqual(score([2,3,5]),10); t.assertEqual(score([]),0); t.assertEqual(score([7]),7); t.assertEqual(score([0,0]),0); [t.assertRaises(ValueError,score,v) for v in [[-1],[2,-3],[True],[False],[2,True]]]; print(\"直接调用通过：total=10，负整数和布尔值均被拒绝\")'",
+            "name": "直接调用规则验证"
+          }
+        ],
+        "timeout_secs": 60
+      },
+      "role": "candidate_producer",
+      "slot": "project"
+    },
+    "version": "isolated-codex-v1",
+    "workspace": "empty"
+  }
+}

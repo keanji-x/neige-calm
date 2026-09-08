@@ -1,15 +1,14 @@
-//! Actual Planner declaration regression; no Worker is needed to author it.
+//! Captured execution-context regression through an explicitly authored task.
 use super::*;
 
 #[tokio::test]
-async fn candidate_authoring_accepts_exact_captured_unicode_policy_without_rewriting_commands() {
+async fn candidate_authoring_accepts_captured_execution_context_without_rewriting_commands() {
     use sha2::{Digest, Sha256};
-    let captured: Value = serde_json::from_str(include_str!(
-        "../fixtures/candidate_planner_unicode_declaration.json"
+    let context: Value = serde_json::from_str(include_str!(
+        "../fixtures/candidate_planner_unicode_execution_context.json"
     ))
     .unwrap();
-    let payload = captured["arguments"]["payload"].clone();
-    let steps = payload["context"]["neige_execution"]["file_delivery"]["policy"]["steps"]
+    let steps = context["neige_execution"]["file_delivery"]["policy"]["steps"]
         .as_array()
         .unwrap();
     let expected = [
@@ -28,13 +27,42 @@ async fn candidate_authoring_accepts_exact_captured_unicode_policy_without_rewri
         assert_eq!(command.len(), length);
         assert_eq!(format!("{:x}", Sha256::digest(command.as_bytes())), digest);
     }
+    use crate::mcp_track_report::{call_tool, planner_identity};
     let boot = crate::mcp_track_report::boot().await;
-    // Only the document revision precondition is obtained from this fresh report;
-    // the captured declaration payload goes unchanged through native authoring.
-    declare(&boot, payload.clone()).await;
+    // The fixture is only the captured execution context, not a partial task.
+    // Spell out the complete declaration and native request here; provenance is
+    // the existing author constant, never a missing-field fallback.
+    let payload = json!({
+        "key": "write-project",
+        "kind": "codex",
+        "goal": "在隔离工作区 /workspace 创建并交付三个真实文件，且只交付 src/score.py、README.md、tests/test_score.py。实现 score(values)：对非负整数列表求和，空列表返回 0；布尔值（True 与 False）或负整数抛 ValueError。README 用中文说明规则和从项目根运行的 Python 标准库 unittest 命令。tests/test_score.py 恰好六个独立 unittest 测试方法，命名 test_empty、test_single、test_multiple、test_zero、test_negative、test_boolean，分别覆盖空列表、单值、多值、零值、负整数拒绝、布尔值拒绝；禁止跳过、预期失败或模拟 score。真实运行测试。必须遵守已声明候选检查。不得联网、安装依赖、修改 Neige 源码、其他任务或服务；不得创建额外业务任务、计算 hash、手工搬运或猜宿主机目录。结果中报告这三个相对路径和测试结果。平台负责封存与交付，无需你提供主机路径。",
+        "acceptance": "三个真实文件组成候选；平台对其准确版本发现恰好六个独立测试并全部通过，直接验证 score([2,3,5])==10 以及负整数、布尔值抛 ValueError。仅机器验收。",
+        "no_gate_reason": "使用原生 candidate_producer 冻结的 declared-checks-only 检查替代普通 gate：六个测试全部通过并直接验证求和与异常；检查通过后平台交付同版本。不要求独立 Reviewer。",
+        "ready": true,
+        "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
+        "context": context.clone()
+    });
+    let report = call_tool(
+        &boot,
+        "calm.report.read",
+        planner_identity(&boot),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    call_tool(
+        &boot,
+        "calm.report.blocks.upsert",
+        planner_identity(&boot),
+        json!({
+            "if_doc_rev": report["docRev"], "kind":"task", "payload":payload
+        }),
+    )
+    .await
+    .unwrap();
     let task = current(&boot, "write-project").await;
     let stored: Value = serde_json::from_str(&task.context_json).unwrap();
-    assert_eq!(stored, payload["context"]);
+    assert_eq!(stored, context);
     assert_eq!(task.status, TaskStatus::Pending);
     assert!(task.worker_card_id.is_none());
 }
