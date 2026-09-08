@@ -94,11 +94,6 @@ impl Scheduler {
         ) {
             return Ok(());
         }
-        let Some(runtime) = self.operation_runtime.upgrade() else {
-            return Ok(());
-        };
-        let kind = crate::file_delivery::candidate_verify::KIND;
-        let key = format!("candidate:{publication}");
         let publication_id = publication.to_owned();
         let fallback = self.budget_default;
         let global_limit = self.candidate_verification_limit as i64;
@@ -120,6 +115,53 @@ impl Scheduler {
         let Some(operation_key) = operation_key else {
             return Ok(());
         };
+        self.submit_candidate_allocation(publication, operation_key, &source.track_id)
+            .await
+    }
+
+    /// Reservations are durable work even when their source was withdrawn or
+    /// canceled before submission. Replay through Operation admission to settle
+    /// the rejection; do not erase capacity or require a current Done task.
+    pub(super) async fn resume_candidate_allocations(self: &Arc<Self>, track: &str) -> Result<()> {
+        let pool = self
+            .repo
+            .sqlite_pool()
+            .ok_or_else(|| CalmError::Internal("candidate replay requires SQLite".into()))?;
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT a.publication_operation_id,a.operation_key FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE a.track_id=?1 AND o.id IS NULL")
+            .bind(track).fetch_all(&pool).await?;
+        for (publication, key) in rows {
+            let Some(guard) = InflightGuard::acquire(
+                &self.inflight,
+                &format!("candidate-reservation:{publication}"),
+            ) else {
+                continue;
+            };
+            let this = self.clone();
+            let track = track.to_owned();
+            tokio::spawn(async move {
+                let _guard = guard;
+                if let Err(error) = this
+                    .submit_candidate_allocation(&publication, key, &track)
+                    .await
+                {
+                    tracing::warn!(%error, %publication, "candidate reservation replay remains unresolved");
+                }
+            });
+        }
+        Ok(())
+    }
+
+    async fn submit_candidate_allocation(
+        self: &Arc<Self>,
+        publication: &str,
+        operation_key: String,
+        track: &str,
+    ) -> Result<()> {
+        let Some(runtime) = self.operation_runtime.upgrade() else {
+            return Ok(());
+        };
+        let kind = crate::file_delivery::candidate_verify::KIND;
+        let key = format!("candidate:{publication}");
         let id = if let Some(op) = runtime.find_by_kind_and_idempotency(kind, &key).await? {
             op.id
         } else {
@@ -150,7 +192,7 @@ impl Scheduler {
             &id,
         )
         .await?;
-        self.poke(source.track_id.clone().into());
+        self.poke(track.to_owned().into());
         Ok(())
     }
 }

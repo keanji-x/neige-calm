@@ -53,7 +53,7 @@ async fn source_scenario(command: &str, scenario: &str) -> (Fixture, Task, PathB
     (fx, task, path, publication)
 }
 async fn verification(fx: &Fixture, publication: &str) -> calm_server::operation::Operation {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    let observed = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(op) = fx
                 .state
@@ -70,8 +70,17 @@ async fn verification(fx: &Fixture, publication: &str) -> calm_server::operation
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .unwrap()
+    .await;
+    match observed {
+        Ok(op) => op,
+        Err(error) => {
+            let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as("SELECT a.operation_key,o.id,o.phase FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key WHERE a.publication_operation_id=?1")
+                .bind(publication).fetch_all(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
+            panic!(
+                "verification {publication} timed out: {error}; allocation/operation state: {rows:?}"
+            );
+        }
+    }
 }
 async fn verified(fx: &Fixture, publication: &str) -> Value {
     let op = verification(fx, publication).await;
@@ -209,7 +218,33 @@ async fn candidate_verification_capacity_waits_without_claiming_consumer_or_inve
         .execute(&fx.boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    schedule(&fx).await;
+    let admission = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            schedule(&fx).await;
+            if fx
+                .state
+                .operation_runtime
+                .find_by_kind_and_idempotency(
+                    "candidate-verify",
+                    &format!("candidate:{publication}"),
+                )
+                .await
+                .unwrap()
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if let Err(error) = admission {
+        let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as("SELECT a.operation_key,o.id,o.phase FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key WHERE a.publication_operation_id=?1")
+            .bind(&publication).fetch_all(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
+        panic!(
+            "budget increase did not admit verification after scheduler ticks: {error}; allocation/operation state: {rows:?}"
+        );
+    }
     assert_eq!(verified(&fx, &publication).await["verdict"]["passed"], true);
     schedule(&fx).await;
     let consumer = current(&fx.boot, "consume").await;
@@ -380,10 +415,10 @@ async fn candidate_verification_recovery_reexecutes_same_snapshot_and_policy_aft
                 continue;
             };
             let value: Value = serde_json::from_str(&raw).unwrap();
-            if let Some(path) = value["data"]["workspace"].as_str() {
-                if PathBuf::from(path).join("input/source/started").exists() {
-                    break value;
-                }
+            if let Some(path) = value["data"]["workspace"].as_str()
+                && PathBuf::from(path).join("input/source/started").exists()
+            {
+                break value;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -520,3 +555,6 @@ async fn candidate_verification_active_reservation_blocks_independent_worker_unt
     assert_eq!(worker.status, TaskStatus::Running);
     settle(&fx, &worker, true).await;
 }
+
+#[path = "candidate_verification_review.rs"]
+mod review;

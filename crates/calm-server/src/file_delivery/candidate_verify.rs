@@ -186,6 +186,11 @@ async fn complete(
     artifacts: &SpawnArtifacts,
     verdict: GateVerdict,
 ) -> Result<()> {
+    if !gate_process::group_stopped(artifacts)? {
+        return Err(conflict(
+            "candidate process-group cleanup remains unresolved",
+        ));
+    }
     let pool = ctx.operation_repo.sqlite_pool();
     let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
     let recorded: Option<String> = sqlx::query_scalar(
@@ -381,12 +386,21 @@ impl ProviderAdapter for CandidateVerifyAdapter {
         let op = op.clone();
         let ctx = ctx.clone();
         let observer = Box::pin(async move {
-            let verdict =
-                gate_process::wait_verdict(child, artifacts.clone(), frozen.log(), 1, timeout)
+            let observation =
+                gate_process::observe_verdict(child, artifacts.clone(), frozen.log(), 1, timeout)
                     .await;
-            if let Err(error) = complete(&ctx, &op, &frozen, &artifacts, verdict).await {
-                tracing::error!(%error, "candidate completion needs recovery");
+            // Keep the leader unreaped until its real wait verdict commits. A
+            // concurrent sweep must not replace it with exit-file inference.
+            loop {
+                match complete(&ctx, &op, &frozen, &artifacts, observation.verdict.clone()).await {
+                    Ok(()) => break,
+                    Err(error) => {
+                        tracing::error!(%error, "candidate completion retains owned wait status for retry");
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                }
             }
+            observation.reap().await;
         });
         Ok(SpawnOutcome::Parked {
             deadline_ms: crate::model::now_ms() + (timeout + 120) * 1000,
@@ -407,6 +421,9 @@ impl ProviderAdapter for CandidateVerifyAdapter {
                 .ok_or_else(|| conflict("candidate frozen input missing"))?,
         )?;
         if !alive {
+            if !gate_process::group_stopped(artifacts)? {
+                return Ok(ParkedRecovery::LeaveParked);
+            }
             let verdict = match gate_process::read_exit_file(&frozen.exit()) {
                 Ok(Some(code)) => gate_process::verdict_from_exit_code(code, &frozen.log(), 1),
                 _ => gate_process::infra_verdict(
@@ -495,11 +512,5 @@ impl ProviderAdapter for CandidateVerifyAdapter {
 
 async fn stop_recorded(artifacts: &SpawnArtifacts) -> Result<()> {
     gate_process::kill(artifacts);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .map_err(|_| conflict("candidate process stop remains unresolved"))
+    gate_process::wait_group_stopped(artifacts).await
 }

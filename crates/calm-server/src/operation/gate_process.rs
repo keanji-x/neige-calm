@@ -283,31 +283,144 @@ pub(crate) async fn spawn_held(
     Ok(child)
 }
 
-/// Observe only the owned wait status while a live Child is available.
+/// A kernel-observed verdict whose unreaped leader still fences recovery.
+/// Keep this value through candidate terminal settlement, then explicitly reap.
+pub(crate) struct GateObservation {
+    child: tokio::process::Child,
+    pub verdict: GateVerdict,
+}
+impl GateObservation {
+    pub async fn reap(mut self) {
+        let _ = self.child.wait().await;
+    }
+}
+
+/// Ordinary gate caller retains its existing result/adapter boundary.
 pub(crate) async fn wait_verdict(
-    mut child: tokio::process::Child,
+    child: tokio::process::Child,
     artifacts: super::SpawnArtifacts,
     log: std::path::PathBuf,
     attempt: i64,
     timeout_secs: i64,
 ) -> GateVerdict {
+    let observation = observe_verdict(child, artifacts, log, attempt, timeout_secs).await;
+    let verdict = observation.verdict.clone();
+    observation.reap().await;
+    verdict
+}
+
+/// Observe actual kernel status without releasing the leader's identity.
+pub(crate) async fn observe_verdict(
+    child: tokio::process::Child,
+    artifacts: super::SpawnArtifacts,
+    log: std::path::PathBuf,
+    attempt: i64,
+    timeout_secs: i64,
+) -> GateObservation {
     use std::time::Duration;
-    let wait = tokio::time::timeout(Duration::from_secs(timeout_secs as u64), child.wait()).await;
-    match wait {
-        Err(_) => {
-            kill(&artifacts);
-            let _ = child.wait().await;
-            timeout_verdict(&log, attempt, timeout_secs)
+    // Do not poll Child::wait/try_wait until group cleanup: Tokio reaps on
+    // poll/drop, losing the leader identity even when descendants still run.
+    // WNOWAIT keeps the zombie leader (and its PID) owned until we signal.
+    #[cfg(target_os = "linux")]
+    let wait = tokio::time::timeout(Duration::from_secs(timeout_secs as u64), async {
+        loop {
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: valid output pointer; this observes our retained Child only.
+            let rc = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    artifacts.pid as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if rc != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+            } else if unsafe { info.si_pid() } != 0 {
+                // si_status is a real wait result, not wrapper file evidence.
+                return Ok(if info.si_code == libc::CLD_EXITED {
+                    Some(unsafe { info.si_status() })
+                } else {
+                    None
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        Ok(Ok(status)) => match status.code() {
-            Some(code) => verdict_from_exit_code(code, &log, attempt),
-            None => infra_verdict("gate wrapper killed by signal", &log, attempt),
-        },
+    })
+    .await;
+    #[cfg(not(target_os = "linux"))]
+    let mut child = child;
+    #[cfg(not(target_os = "linux"))]
+    let wait = tokio::time::timeout(Duration::from_secs(timeout_secs as u64), async {
+        child.wait().await.map(|status| status.code())
+    })
+    .await;
+    kill(&artifacts);
+    // A signal being delivered is not proof of stop. Keep the leader until
+    // descendants have stopped; candidate completion independently rechecks.
+    let cleanup = wait_group_stopped(&artifacts).await;
+    if let Err(error) = cleanup {
+        tracing::warn!(%error, "gate group cleanup remains unresolved; preserving actual wait evidence");
+    }
+    let verdict = match wait {
+        Err(_) => timeout_verdict(&log, attempt, timeout_secs),
         Ok(Err(error)) => {
             infra_verdict(&format!("gate wrapper wait failed: {error}"), &log, attempt)
         }
-    }
+        Ok(Ok(Some(code))) => verdict_from_exit_code(code, &log, attempt),
+        Ok(Ok(None)) => infra_verdict("gate wrapper killed by signal", &log, attempt),
+    };
+    GateObservation { child, verdict }
 }
+
+/// Prove quiescence in the recorded group, even when its leader has disappeared.
+/// Never infer cleanup from a missing leader or signal an unauthenticated PGID.
+/// Zombies cannot execute; inability to inspect the group fails closed.
+pub(crate) fn group_stopped(artifacts: &super::SpawnArtifacts) -> Result<bool> {
+    let boot = crate::proc_identity::read_boot_id()
+        .ok_or_else(|| CalmError::Conflict("gate cleanup boot identity unavailable".into()))?;
+    if boot != artifacts.boot_id {
+        return Ok(true);
+    }
+    if artifacts.pgid <= 1 {
+        return Err(CalmError::Conflict(
+            "gate cleanup group identity invalid".into(),
+        ));
+    }
+    for entry in std::fs::read_dir("/proc")? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().parse::<i32>().is_err() {
+            continue;
+        }
+        let stat = match std::fs::read_to_string(entry.path().join("stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let fields = crate::proc_identity::parse_proc_stat_fields(&stat).ok_or_else(|| {
+            CalmError::Conflict("gate cleanup process identity unreadable".into())
+        })?;
+        if fields.pgrp == artifacts.pgid && fields.state != 'Z' && fields.state != 'X' {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub(crate) async fn wait_group_stopped(artifacts: &super::SpawnArtifacts) -> Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !group_stopped(artifacts)? {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| CalmError::Conflict("gate process-group cleanup remains unresolved".into()))?
+}
+
 pub(crate) fn kill(artifacts: &super::SpawnArtifacts) {
     if crate::proc_identity::verify_owned_pid(
         artifacts.pid,

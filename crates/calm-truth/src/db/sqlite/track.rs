@@ -490,8 +490,24 @@ pub async fn track_delete_tx(
     id: &str,
     track_area_cache: &TrackAreaCache,
 ) -> Result<()> {
+    track_require_candidate_verification_settled_tx(tx, id).await?;
     track_require_leaf_tx(tx, id).await?;
     track_delete_leaf_tx(tx, id, track_area_cache).await
+}
+
+/// Preserve capacity and cleanup ownership until every reserved verification settles.
+pub async fn track_require_candidate_verification_settled_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<()> {
+    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE a.track_id=?1 AND (o.id IS NULL OR o.phase NOT IN ('succeeded','failed')))")
+        .bind(id).fetch_one(&mut **tx).await?;
+    if active {
+        return Err(CalmError::Conflict(format!(
+            "track {id} has unresolved candidate verification; wait for verification or owned cleanup to settle, then retry deletion"
+        )));
+    }
+    Ok(())
 }
 
 /// Refuse deletion while a direct child exists. This is the authoritative

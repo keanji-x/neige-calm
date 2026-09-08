@@ -69,3 +69,45 @@ OWNERSHIP-CHANGE: fe/core/api/generated/wire.ts — generate approved candidate 
 OWNERSHIP-CHANGE: fe/core/events/invalidation-plan.ts — refresh candidate verification evidence (#1501)
 OWNERSHIP-CHANGE: fe/core/events/invalidation-plan.test.ts — pin candidate verification invalidation (#1501)
 ```
+
+## Bounded review fixes: deletion and process completion
+
+Track and Area deletion now refuse unresolved candidate-verification allocations,
+including reservations whose Operation has not yet been submitted. Both route
+preflights and repository transactions use the shared guard; migration 0103's
+allocation-delete trigger backs raw cascades. Terminal succeeded/failed Operations
+permit ordinary deletion. A scheduler sweep replays missing Operations independently
+of current task status and Track scheduling eligibility, so cancellation/withdrawal
+settles rejected reservations through admission rather than leaking capacity.
+
+Live gate observation retains the Tokio Child without polling its reaping wait:
+Linux `waitid(WEXITED | WNOHANG | WNOWAIT)` observes actual exit, then verified
+group cleanup runs before reaping. Candidate observation retains the Child through
+the terminal transaction, retrying failed writes with its real wait verdict held;
+only then does it reap. This prevents a concurrent dead-work sweep from replacing
+the actual verdict with exit-file inference. Tokio 1.52.3's Unix Reaper reaps on poll or drop,
+not merely on SIGCHLD notification while the handle is retained. Kernel wait status
+remains authoritative over completion files. The shared live wait mechanism also
+benefits ordinary gates; their existing timeout, extraction, and recovery tests
+remain required.
+
+Candidate terminal completion, dead boot recovery, and compensation separately
+require a successfully inspected recorded group with no executable members.
+Zombies are stopped; inability to inspect is unresolved. After observer drop or
+restart, a missing leader never authorizes a group signal. If live members remain,
+verification stays unresolved and retains capacity. If the group is proven stopped
+(or its recorded boot ended), recovery may use the existing dead-work exit evidence.
+This is a same-recorded-process-group contract, not a namespace sandbox or a claim
+about descendants which change groups.
+
+#1501 follow-up: ordinary task-verify's pre-existing dead-leader boot/recovery and
+compensation semantics have not acquired candidate's new quiescence fence. Do not
+claim all ordinary-gate descendant cleanup is solved. No host-wide subreaper or
+new process-supervision architecture is introduced in A1.
+
+Read projections preserve historical verification state/verdict while reporting
+current qualification and its authority-failure reason separately. Unexpected
+storage/serialization errors remain read errors. Candidate-consumer recovery
+inherits the immutable file-set and verification binding; JSON-consumer recovery
+inherits its JSON binding. Failed candidate outputs remain unsupported recovery
+inputs (F5).

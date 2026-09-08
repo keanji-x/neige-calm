@@ -1032,6 +1032,7 @@ impl Scheduler {
             return Ok(());
         };
         let tasks = self.repo.tasks_by_track(track_id.as_str()).await?;
+        self.resume_candidate_allocations(track_id.as_str()).await?;
         self.drive_file_producers(&tasks);
         // §6.2 trigger 2 — the emit-tx flip already moved gated rows to
         // `verifying`; this pass (poked by the `task.completed`
@@ -2048,6 +2049,13 @@ impl Scheduler {
                 .fetch_all(&pool).await {
                 Ok(tracks) => pending_tracks.extend(tracks),
                 Err(error) => tracing::warn!(%error, "file publication sweep failed"),
+            }
+        }
+        // Missing-operation reservations must replay even with no schedulable task.
+        if let Some(pool) = self.repo.sqlite_pool() {
+            match sqlx::query_scalar::<_, String>("SELECT DISTINCT a.track_id FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE o.id IS NULL").fetch_all(&pool).await {
+                Ok(tracks) => pending_tracks.extend(tracks),
+                Err(error) => tracing::warn!(%error, "candidate reservation sweep failed"),
             }
         }
         let tasks = match self.repo.tasks_nonterminal().await {

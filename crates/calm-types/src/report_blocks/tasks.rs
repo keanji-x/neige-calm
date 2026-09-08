@@ -899,20 +899,33 @@ pub fn project_task_declarations(
         let Ok(Some(selection)) = IsolatedCodexSelection::from_context(&declaration.context) else {
             continue;
         };
-        let Some(FileDelivery::Consumer { producer, slot, .. }) = selection.file_delivery else {
-            continue;
+        let (producer, slot, candidate) = match selection.file_delivery {
+            Some(FileDelivery::Consumer { producer, slot, .. }) => (producer, slot, false),
+            Some(FileDelivery::CandidateConsumer { producer, slot, .. }) => (producer, slot, true),
+            _ => continue,
         };
         let sources: Vec<_> = declarations
             .iter()
             .filter(|source| source.key == producer && !source.tombstone)
             .collect();
-        let valid = producer != declaration.key && sources.len() == 1 &&
-            IsolatedCodexSelection::from_context(&sources[0].context).ok().flatten()
-                .is_some_and(|source| matches!(source.file_delivery, Some(FileDelivery::Producer { slot: output, .. }) if output == slot));
+        let valid = producer != declaration.key
+            && sources.len() == 1
+            && IsolatedCodexSelection::from_context(&sources[0].context)
+                .ok()
+                .flatten()
+                .is_some_and(|source| match source.file_delivery {
+                    Some(FileDelivery::Producer { slot: output, .. }) => {
+                        !candidate && output == slot
+                    }
+                    Some(FileDelivery::CandidateProducer { slot: output, .. }) => {
+                        candidate && output == slot
+                    }
+                    _ => false,
+                });
         if !valid && let Some(index) = declaration.block_index {
             diagnostics[index].push(Diagnostic::new(
-                "context",
-                "file_delivery must select one declared producer and slot in this Track",
+                "payload",
+                "file_delivery must select one declared producer of the same family and slot in this Track",
             ));
         }
     }
@@ -955,6 +968,38 @@ pub fn project_task_declarations(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn file_delivery_relations_validate_both_families() {
+        for candidate in [true, false] {
+            for defect in ["valid", "self", "missing", "family", "slot"] {
+                let output = if candidate {
+                    json!({"role":"candidate_producer","slot":"project","paths":["main.py"],"policy":{"scope":"declared-checks-only","timeout_secs":20,"steps":[{"name":"check","cmd":"true"}]}})
+                } else {
+                    json!({"role":"producer","slot":"project","path":"result.json","policy":"json-document-v1"})
+                };
+                let input = json!({"role":if candidate {"candidate_consumer"} else {"consumer"},"producer":match defect {"self"=>"consume", "missing"=>"absent", _=>"produce"},"slot":if defect=="slot" {"wrong"} else {"project"},"purpose":if candidate {"verified-candidate-input"} else {"json-input"}});
+                let mut output = output;
+                if defect == "family" {
+                    output = if candidate {
+                        json!({"role":"producer","slot":"project","path":"result.json","policy":"json-document-v1"})
+                    } else {
+                        json!({"role":"candidate_producer","slot":"project","paths":["main.py"],"policy":{"scope":"declared-checks-only","timeout_secs":20,"steps":[{"name":"check","cmd":"true"}]}})
+                    };
+                }
+                let blocks = [("produce", "empty", output), ("consume", "file-input", input)].into_iter().enumerate().map(|(i,(key,workspace,delivery))| ReportBlock {
+                    id: format!("b_{i:04}"), kind: super::super::KIND_TASK.into(), rev:0,
+                    payload:json!({"key":key,"kind":"codex","goal":"Check files","ready":true,"declared_by":PLANNER_DECLARATION_AUTHOR,"no_gate_reason":"file policy","context":{"neige_execution":{"version":"isolated-codex-v1","workspace":workspace,"file_delivery":delivery}}}),
+                }).collect::<Vec<_>>();
+                let (_, diagnostics) = project_task_declarations(&blocks);
+                assert_eq!(
+                    diagnostics[1].is_empty(),
+                    defect == "valid",
+                    "candidate={candidate} defect={defect}: {diagnostics:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn task_recovery_source_retains_absent_and_empty_raw_fields() {

@@ -890,6 +890,15 @@ pub(crate) async fn delete_area(
     let pool = w.repo.sqlite_pool().ok_or_else(|| {
         CalmError::Internal("delete_area forge-action fence requires sqlite-backed repo".into())
     })?;
+    let mut preflight = pool.begin().await?;
+    for track_id in &track_ids {
+        crate::db::sqlite::track_require_candidate_verification_settled_tx(
+            &mut preflight,
+            track_id,
+        )
+        .await?;
+    }
+    preflight.rollback().await?;
     if any_track_has_active_forge_action(&pool, &track_ids).await? {
         return Err(CalmError::Conflict(format!(
             "area {id} has a child track with an in-flight forge-action; retry after it settles"

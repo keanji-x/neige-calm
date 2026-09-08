@@ -38,10 +38,16 @@ pub(super) async fn view_tx(tx: &mut Tx<'_>, task: &Task, role: &FileDelivery) -
         let verification: Option<(String,String,Option<String>,Option<String>)> = sqlx::query_as("SELECT id,phase,last_error,tx_output_json FROM operations WHERE kind='candidate-verify' AND idempotency_key=?1")
             .bind(format!("candidate:{publication}")).fetch_optional(&mut **tx).await?;
         if let Some((id, phase, error, output)) = verification {
-            let qualification = super::candidate_verify::qualified_tx(tx, &id, &candidate).await;
-            view["qualified"] = json!(qualification.is_ok());
+            let reason = match super::candidate_verify::qualified_tx(tx, &id, &candidate).await {
+                Ok(_) => None,
+                Err(CalmError::Conflict(reason) | CalmError::Forbidden(reason)) => Some(reason),
+                Err(error) => return Err(error),
+            };
+            view["qualified"] = json!(reason.is_none());
+            view["qualification"] = json!({"qualified":reason.is_none(),"reason":reason});
             let evidence = output
-                .and_then(|raw| serde_json::from_str::<crate::operation::TxOutput>(&raw).ok())
+                .map(|raw| serde_json::from_str::<crate::operation::TxOutput>(&raw))
+                .transpose()?
                 .map(|o| o.result);
             view["verification"] = json!({"operation_id":id,"state":phase,"failure":error,"passed":evidence.as_ref().and_then(|e|e["verdict"]["passed"].as_bool()),"policy":candidate.policy()?,
                 "failing_step":evidence.as_ref().and_then(|e|e["verdict"]["failing_step"].as_str()),

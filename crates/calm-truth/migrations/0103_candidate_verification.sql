@@ -39,3 +39,12 @@ CREATE TRIGGER task_candidate_verification_allocation_immutable BEFORE UPDATE ON
 BEGIN SELECT RAISE(ABORT, 'candidate verification allocation is immutable'); END;
 
 UPDATE events SET event_version = 20 WHERE kind = 'task.candidate_verification_settled';
+
+-- Backstop raw Track/Area cascades, including callers outside repository guards.
+CREATE TRIGGER task_candidate_verification_allocation_delete_guard
+BEFORE DELETE ON task_candidate_verification_allocations
+WHEN NOT EXISTS (SELECT 1 FROM operations o WHERE o.operation_key=OLD.operation_key
+  AND o.kind='candidate-verify' AND o.phase IN ('succeeded','failed'))
+BEGIN
+  SELECT RAISE(ABORT, 'unresolved candidate verification; wait for verification or owned cleanup to settle before deletion');
+END;
