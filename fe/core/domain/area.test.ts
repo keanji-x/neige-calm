@@ -143,6 +143,9 @@ describe('folder conflict decode', () => {
     // An unknown kind is not a fourth message; it is a body we cannot read.
     expect(asFolderConflict({ ...conflict, conflict_kind: 'sibling' })).toBeNull();
     expect(asFolderConflict({ ...conflict, area_id: 7 })).toBeNull();
+    expect(asFolderConflict({ ...conflict, folder_id: 1.5 })).toBeNull();
+    expect(asFolderConflict({ ...conflict, folder_id: Number.MAX_SAFE_INTEGER + 1 })).toBeNull();
+    expect(asFolderConflict({ ...conflict, folder_id: 0 })).toBeNull();
   });
 
   it('names the owning area, the path, and a different remedy per kind', () => {

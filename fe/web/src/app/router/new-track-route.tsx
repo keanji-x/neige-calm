@@ -56,7 +56,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
       ...(request.body.first_message === undefined ? {} : { openPlannerMessage: request.body.first_message }) });
   };
 
-  const submit = (draft: NewTrackDraft, targetAreaId = areaId, replacementKey?: string) => {
+  const submit = (draft: NewTrackDraft, authorization?: Readonly<{ folder_id: number; area_id: string }>, replacementKey?: string) => {
     // The provider owns the lease too: leaving and returning during a POST
     // must not enable a second request before the first settles.
     const current = store.get(areaId);
@@ -64,12 +64,13 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     const hadUnconfirmedRequest = replacementKey === undefined && current.request !== null;
     const attemptKey = replacementKey ?? current.key;
     const body = {
-      area_id: targetAreaId,
+      area_id: areaId,
       theme: readHostThemeRgb(),
       ...(draft.template_id === undefined ? {} : { template_id: draft.template_id }),
       ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
       ...(draft.recipe_id === undefined ? {} : { recipe_id: draft.recipe_id }),
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
+      ...(authorization === undefined ? {} : { allow_cross_area_cwd: authorization }),
     } satisfies NewTrackBodyWithoutFirstMessage;
     // The original wire body travels with the key. A retry after navigation,
     // theme changes or template refresh must not silently change its payload.
@@ -93,9 +94,9 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
         store.update(areaId, {
           request: hadUnconfirmedRequest ? request : null,
           error: folderConflictMessage(conflict, owner?.name ?? null),
-          folderConflict: !hadUnconfirmedRequest && owner !== undefined && owner.id !== targetAreaId
+          folderConflict: !hadUnconfirmedRequest && owner !== undefined && owner.id !== areaId
             && conflict.conflict_kind !== 'ancestor' && draft.cwd !== undefined
-            ? { areaId: owner.id, areaName: owner.name, cwd: draft.cwd } : null,
+            ? { ownerAreaId: owner.id, areaName: owner.name, folderId: conflict.folder_id, cwd: draft.cwd } : null,
         });
         return;
       }
@@ -124,7 +125,10 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     if (folderConflict === null || draft.cwd !== folderConflict.cwd) return;
     const key = mintIdempotencyKey();
     store.update(areaId, { key, request: null });
-    submit(draft, folderConflict.areaId, key);
+    submit(draft, {
+      folder_id: folderConflict.folderId,
+      area_id: folderConflict.ownerAreaId,
+    }, key);
   };
   const areaFailure = workspace.areasError !== null
     ? `Areas could not be refreshed. Your draft is kept here. ${workspace.areasError.message}`
@@ -144,7 +148,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     errorAction={createdTrackId !== null && session.request !== null
       ? { label: 'Open track', onClick: () => { if (session.request !== null) openCreated(createdTrackId, session.request); } }
       : folderConflict !== null
-        ? { label: `Create in ${folderConflict.areaName}`, isApplicable: (draft) => draft.cwd === folderConflict.cwd, onClick: recoverFolderConflict }
+        ? { label: `Reuse directory in ${session.area.name}`, isApplicable: (draft) => draft.cwd === folderConflict.cwd, onClick: recoverFolderConflict }
         : session.canRetryAsNewTrack ? { label: 'Start as a new track', onClick: retryAsNewTrack } : undefined}
     onManageRecipes={() => go({ name: 'recipes' })}
     initialTemplateId={session.area.defaultTemplateId}

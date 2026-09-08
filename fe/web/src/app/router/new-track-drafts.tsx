@@ -18,7 +18,9 @@ export type NewTrackSession = Readonly<{
   createdTrackId: string | null;
   error: string | null;
   canRetryAsNewTrack: boolean;
-  folderConflict: Readonly<{ areaId: string; areaName: string; cwd: string }> | null;
+  folderConflict: Readonly<{
+    ownerAreaId: string; areaName: string; folderId: number; cwd: string;
+  }> | null;
 }>;
 
 function createDraftStore() {

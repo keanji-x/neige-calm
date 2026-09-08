@@ -2439,10 +2439,10 @@
   # `onClose` the two Dialog-owned dismissals call); the three close paths are
   # implemented elsewhere and an anchor on the naming half alone survives
   # deleting any of them: `Area.tsx:549-556` hands the form its Cancel handler,
-  # `NewTaskForm.tsx:813-820` is the Cancel control that fires it, and
+  # `NewTaskForm.tsx:871-878` is the Cancel control that fires it, and
   # `Dialog.tsx:160-172` / `:340-349` are the Esc key handler and the overlay
   # mousedown that call `onClose` themselves.
-  source: web/src/pages/Area.tsx:475-486,549-556; web/src/shared/components/NewTaskForm.tsx:813-820; web/src/ui/Dialog/Dialog.tsx:160-172,340-349
+  source: web/src/pages/Area.tsx:475-486,549-556; web/src/shared/components/NewTaskForm.tsx:871-878; web/src/ui/Dialog/Dialog.tsx:160-172,340-349
   authoritative_test: web/src/pages/Area.test.tsx:493
   owner_slice: features/area/page
   intentional_omission: true
@@ -2496,7 +2496,7 @@
     In Chromium it still surfaces in the AX button tree NAMED BY the cloned option content — do NOT
     aria-hidden it (that risks stripping the subtree Chrome announces as the selected value); instead,
     in-dialog button locators must be specific (exact names)."
-  source: web/src/pages/Area.tsx:517-539 + web/src/shared/components/NewTaskForm.tsx:962-998
+  source: web/src/pages/Area.tsx:517-539 + web/src/shared/components/NewTaskForm.tsx:1020-1056
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: true
@@ -3291,7 +3291,7 @@
   why: >
     源码注释:"the server would 400 anyway, but inline rejection is cheaper than a round trip + read of an
     error toast."
-  source: web/src/shared/components/NewTaskForm.tsx:18-21,346-348,709-713,1031-1033
+  source: web/src/shared/components/NewTaskForm.tsx:18-21,366-368,747-751,1089-1091
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:90
   owner_slice: features/track/create
   intentional_omission: false
@@ -3309,8 +3309,8 @@
   why: >
     源码注释:"two overlapping resolves can land out-of-order and the stale one wins";专门有
     "NewTaskForm — race guard" 一组测试。
-  source: web/src/shared/components/NewTaskForm.tsx:133-135,267-344
-  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:495
+  source: web/src/shared/components/NewTaskForm.tsx:133-135,287-364
+  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:596
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -3325,7 +3325,7 @@
     打字过程中不得清空已有的自动匹配 —— resolveState 只在防抖窗口触发且拿到新答案时才转换。
   why: >
     源码注释:"that would flicker the 'auto-matched to X' banner mid-typing."
-  source: web/src/shared/components/NewTaskForm.tsx:275-278
+  source: web/src/shared/components/NewTaskForm.tsx:295-298
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:115
   owner_slice: features/track/create
   intentional_omission: true
@@ -3343,8 +3343,8 @@
   why: >
     源码注释逐字写明这个分工;测试 "respects the manual area choice after a subsequent cwd re-resolves to
     another hit"。
-  source: web/src/shared/components/NewTaskForm.tsx:206-215,304-312,727-746
-  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:358,425
+  source: web/src/shared/components/NewTaskForm.tsx:206-225,324-332,765-784
+  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:459,526
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -3361,7 +3361,7 @@
   why: >
     源码注释:"the server doesn't yet expose an atomic 'create area + first track' endpoint; if the track POST
     fails … the area is left in place and a retry reuses it"(带 TODO(#250) 收敛为原子端点)。
-  source: web/src/shared/components/NewTaskForm.tsx:22-44,420-448
+  source: web/src/shared/components/NewTaskForm.tsx:22-44,443-478
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:158,236
   owner_slice: features/track/create
   intentional_omission: true
@@ -3379,7 +3379,7 @@
   why: >
     文件头列出两种能触发 409 的场景;源码注释:"the user sees 'claimed by area Atlas' instead of an opaque
     UUID … If the area isn't in our local cache … we fall back to the generic phrasing."
-  source: web/src/shared/components/NewTaskForm.tsx:46-55,1091-1142
+  source: web/src/shared/components/NewTaskForm.tsx:46-55,1149-1200
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:284,316
   owner_slice: features/track/create
   intentional_omission: false
@@ -3396,7 +3396,7 @@
     conflict_kind 属于三值枚举),任一不符返回 null 走通用 message 兜底。
   why: >
     body 是 unknown(刻意不让 wire 类型泄漏到处都是);盲信形状会在服务端换 body 时崩掉错误提示本身。
-  source: web/src/shared/components/NewTaskForm.tsx:1144-1166
+  source: web/src/shared/components/NewTaskForm.tsx:1202-1226
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:284
   owner_slice: features/track/create
   intentional_omission: false
@@ -3413,7 +3413,7 @@
   why: >
     源码注释:"the Dialog's own rAF-deferred focus pass would race against this microtask and sometimes win
     (landing on the Dialog Close button), so the contract is 'Dialog focuses for us, we don't double-focus'."
-  source: web/src/shared/components/NewTaskForm.tsx:96-108,254-265
+  source: web/src/shared/components/NewTaskForm.tsx:96-108,274-285
   authoritative_test: web/src/pages/Area.test.tsx:530
   owner_slice: features/track/create
   intentional_omission: true
@@ -3432,7 +3432,7 @@
     源码注释(#891 review):"initial focus must be variant-appropriate";callback ref 是因为
     "a plain ref-object handoff would trip TS property variance"。isIssueDev 在一次挂载内固定
     (Area.tsx 用 key 重挂),所以每个 callback 最多绑一个元素。
-  source: web/src/shared/components/NewTaskForm.tsx:228-252
+  source: web/src/shared/components/NewTaskForm.tsx:248-272
   authoritative_test: web/src/pages/Area.test.tsx:530
   owner_slice: features/track/create
   intentional_omission: false
@@ -3450,8 +3450,8 @@
     源码注释:"Submit-on-Enter is wired per-field rather than at the form level because the title textarea
     must allow newlines" + "cwd is the required field that gates submit"。form 上的 Esc 监听带
     eslint-disable 注释说明这是有意为之。
-  source: web/src/shared/components/NewTaskForm.tsx:500-508,555-566,677-682
-  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:560,569
+  source: web/src/shared/components/NewTaskForm.tsx:538-546,593-604,715-720
+  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:661,670
   owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
@@ -3467,7 +3467,7 @@
   why: >
     源码注释:"Using `Math.random` here would (a) make tests flaky and (b) jitter the color each render for
     the same UI state."
-  source: web/src/shared/components/NewTaskForm.tsx:136-140,192-199,1035-1048
+  source: web/src/shared/components/NewTaskForm.tsx:136-140,192-199,1093-1106
   authoritative_test: NONE
   owner_slice: features/track/create
   intentional_omission: true
@@ -3485,8 +3485,8 @@
   why: >
     源码注释:"same affordance the codex card uses, no nested popover" + "warn once in dev and no-op so the
     visible Browse button doesn't appear to do anything (better than a confusing crash on click)."
-  source: web/src/shared/components/NewTaskForm.tsx:220-226,510-544
-  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:586
+  source: web/src/shared/components/NewTaskForm.tsx:240-246,548-582
+  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:687
   owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
@@ -3503,8 +3503,8 @@
   why: >
     源码注释:"so `getByLabel(/working directory/i)` on the surrounding field still uniquely resolves to the
     cwd input; `title` carries the contextual hint … without colliding with the field's label text."
-  source: web/src/shared/components/NewTaskForm.tsx:688-707
-  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:586
+  source: web/src/shared/components/NewTaskForm.tsx:726-745
+  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:687
   owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
@@ -3519,7 +3519,7 @@
     创建 track 时必须带上宿主主题 RGB(读 `<html data-theme>`,缺省 DARK_THEME_RGB)。
   why: >
     与 useTodayTerminal 同一套 #177 契约:planner daemon 首次绘制要拿到匹配配色。
-  source: web/src/shared/components/NewTaskForm.tsx:463-470,1084-1089
+  source: web/src/shared/components/NewTaskForm.tsx:494-504,1142-1147
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:158
   owner_slice: features/track/create
   intentional_omission: false
@@ -3537,7 +3537,7 @@
     new(名称输入框);label 文案在所有分支里恒为 "Area"。
   why: >
     源码注释:"The label text stays 'Area' across all branches so the visual structure doesn't jitter."
-  source: web/src/shared/components/NewTaskForm.tsx:715-747,843-1025
+  source: web/src/shared/components/NewTaskForm.tsx:753-785,901-1083
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:115,137
   owner_slice: features/track/create
   intentional_omission: false
@@ -3555,7 +3555,7 @@
   why: >
     源码注释(#891 design §6 F5):"If the git-forge plugin isn't running, the create POST 400s with a
     readable message that the normal submit-error path surfaces."
-  source: web/src/shared/components/NewTaskForm.tsx:118-122,456-462
+  source: web/src/shared/components/NewTaskForm.tsx:118-122,487-493
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:174
   owner_slice: features/track/create
   intentional_omission: true
@@ -3573,7 +3573,7 @@
   why: >
     源码注释:"kernel doesn't apply defaults (design F6), so the form always sends the value" +
     "#891 signoff r3 — kills the last OS dropdown popup"(用原生 checkbox 而非 select)。
-  source: web/src/shared/components/NewTaskForm.tsx:169,374-382,633-659
+  source: web/src/shared/components/NewTaskForm.tsx:169,394-402,671-697
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:112,207
   owner_slice: features/track/create
   intentional_omission: true
@@ -3601,7 +3601,7 @@
     #1148 第三轮:补登 174-203 —— :277 只证明 raw JSON 能带 notes,不锁「派生对象恰有四键、不含
     notes」;174-203 用 `toEqual` 钉死整个 create body(含 `template_input` 的四个键),才是这一句的
     精确断言。
-  source: web/src/shared/components/NewTaskForm.tsx:369-382,386-387,456-470,757-781
+  source: web/src/shared/components/NewTaskForm.tsx:389-402,406-407,487-504,795-819
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:77,174-203,277
   owner_slice: features/track/create
   intentional_omission: true
@@ -3618,7 +3618,7 @@
     程序化 setTitle 不触发 onChange,所以锁只会被真实输入触发。
   why: >
     源码注释逐字写明这条锁的语义;测试 "stops prefilling after the user edits the title (latch)"。
-  source: web/src/shared/components/NewTaskForm.tsx:175-177,360-367,608-619
+  source: web/src/shared/components/NewTaskForm.tsx:175-177,380-387,646-657
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:112,125
   owner_slice: features/track/create
   intentional_omission: false
@@ -3637,7 +3637,7 @@
     源码注释:"once the user edits the raw JSON and collapses the section, a stale raw blob would otherwise
     ship with no visible indicator that the form fields above are being ignored." 测试
     "a stale raw override outlives later form edits: the summary flags it and the OLD blob ships"。
-  source: web/src/shared/components/NewTaskForm.tsx:170-174,384-396,757-805
+  source: web/src/shared/components/NewTaskForm.tsx:170-174,404-416,795-843
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:256,341,360
   owner_slice: features/track/create
   intentional_omission: false
@@ -3654,7 +3654,7 @@
   why: >
     源码注释:"Gating it on validity would strand the user: the only way out of a broken raw edit would be
     hand-repairing the JSON."
-  source: web/src/shared/components/NewTaskForm.tsx:782-798
+  source: web/src/shared/components/NewTaskForm.tsx:820-836
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:307,341
   owner_slice: features/track/create
   intentional_omission: true
@@ -3672,7 +3672,7 @@
   why: >
     源码注释:"A valid raw override deliberately unblocks submit even with an unparsed URL — it's the escape
     hatch (server-side schema validation is the final arbiter)."
-  source: web/src/shared/components/NewTaskForm.tsx:398-410,1050-1082
+  source: web/src/shared/components/NewTaskForm.tsx:418-430,1108-1140
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:144,153,307,401
   owner_slice: features/track/create
   intentional_omission: true
@@ -3688,7 +3688,7 @@
     'task' 变体的提交 body 必须与 #891 之前逐字节一致 —— 不得出现任何 workflow_* 键。
   why: >
     测试名:"plain task variant sends no workflow keys at all (byte-identical body)"。变体是纯增量。
-  source: web/src/shared/components/NewTaskForm.tsx:450-470
+  source: web/src/shared/components/NewTaskForm.tsx:481-504
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:228
   owner_slice: features/track/create
   intentional_omission: true
@@ -3706,7 +3706,7 @@
     源码注释:"Some screen readers prefer aria-disabled over the native disabled attribute (which silently
     swallows focus and keystrokes). Both are set; the visual / pointer behaviour comes from native, the AT
     exposure from aria."
-  source: web/src/shared/components/NewTaskForm.tsx:821-832
+  source: web/src/shared/components/NewTaskForm.tsx:879-890
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:82
   owner_slice: features/track/create
   intentional_omission: true
@@ -3724,7 +3724,7 @@
   why: >
     文件头 A11y 段:"so a Playwright `getByRole('form', { name: 'New task' })` lookup is unambiguous in
     dense pages"。
-  source: web/src/shared/components/NewTaskForm.tsx:56-60,546-554
+  source: web/src/shared/components/NewTaskForm.tsx:56-60,584-592
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:77
   owner_slice: features/track/create
   intentional_omission: false
@@ -3742,7 +3742,7 @@
   why: >
     源码注释:"role='alert' is reserved for the submit/server error surface below." 满屏 alert 会让
     屏幕阅读器在打字过程中不停打断。
-  source: web/src/shared/components/NewTaskForm.tsx:585-593,684-713,776-803,807-811
+  source: web/src/shared/components/NewTaskForm.tsx:623-631,722-751,814-841,845-869
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:307,401
   owner_slice: features/track/create
   intentional_omission: true
@@ -3758,7 +3758,7 @@
     创建成功后必须额外 invalidate areas 查询键(在 useCreateTrackMutation 自带的 tracks 失效之外)。
   why: >
     源码注释:"a brand-new area also benefits from a areas-list refresh in case the WS event didn't land yet."
-  source: web/src/shared/components/NewTaskForm.tsx:471-476
+  source: web/src/shared/components/NewTaskForm.tsx:505-510
   authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:236
   owner_slice: features/track/create
   intentional_omission: false
@@ -4086,7 +4086,7 @@
   why: >
     "clicking Browse pushes a view whose title becomes the dialog accessible name" —— 这是嵌套视图不另开
     dialog 的补偿机制。
-  source: web/src/shared/components/DirectoryPicker.tsx:66-79 + web/src/shared/components/NewTaskForm.tsx:533-543
+  source: web/src/shared/components/DirectoryPicker.tsx:66-79 + web/src/shared/components/NewTaskForm.tsx:571-581
   authoritative_test: web/src/shared/components/DirectoryPicker.test.tsx:686
   owner_slice: ui/directory-browser
   intentional_omission: false
@@ -4535,7 +4535,7 @@
   why: >
     两处注释几乎逐字重复,并共同要求"in-dialog button locators must use exact names"
     (一个 substring /browse/i 曾与名为 "E2E browse area" 的 area 撞名)。**新架构应抽成一个 Select 原语。**
-  source: web/src/shared/components/NewTaskForm.tsx:962-998 + web/src/pages/Area.tsx:507-553
+  source: web/src/shared/components/NewTaskForm.tsx:1020-1056 + web/src/pages/Area.tsx:507-553
   authoritative_test: web/src/pages/Area.test.tsx:493
   owner_slice: ui/calm-select
   intentional_omission: false
@@ -4553,7 +4553,7 @@
   why: >
     Workflow 选择器不在 NewTaskForm 内部却穿它的皮,是为了让对话框读起来像一张卡;改类名会同时打断两处。
     **新架构应把 Workflow 字段并进表单本体或抽出共享字段原语。**
-  source: web/src/pages/Area.tsx:507-513 + web/src/shared/components/NewTaskForm.tsx:574-582,666-687
+  source: web/src/pages/Area.tsx:507-513 + web/src/shared/components/NewTaskForm.tsx:612-620,704-725
   authoritative_test: web/src/pages/Area.test.tsx:493
   owner_slice: ui/schema-form
   intentional_omission: false
@@ -4636,7 +4636,7 @@
   why: >
     两处都是 #177 契约的实现面(planner daemon / 终端 daemon 首次绘制配色);缺省 dark 镜像服务端
     `RequestTheme::default_dark()`。**新架构应抽成一个共享 helper。**
-  source: web/src/shared/components/NewTaskForm.tsx:1084-1089 + web/src/hooks/useTodayTerminal.ts:199-212
+  source: web/src/shared/components/NewTaskForm.tsx:1142-1147 + web/src/hooks/useTodayTerminal.ts:199-212
   authoritative_test: NONE
   owner_slice: app/theme/host-rgb
   intentional_omission: false

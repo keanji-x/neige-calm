@@ -6745,6 +6745,17 @@
           "theme"
         ],
         "properties": {
+          "allow_cross_area_cwd": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CrossAreaCwdAuthorization",
+                "description": "Explicit authorization to create this track in `area_id` while its cwd\nremains covered by the exact conflicting claim identified here. The\nids are checked inside the create transaction, so a concurrent claim\nchange fails closed. This never creates, moves, or deletes a claim."
+              }
+            ]
+          },
           "area_id": {
             "type": "string"
           },
@@ -6805,6 +6816,23 @@
           "title": {
             "type": "string",
             "description": "Issue #1211 — on this user-driven create path the title is no longer\nthe track's intent, so the client may omit it entirely. Omitting it\nstores the **empty string** — there is no server-side default; the\n`Untitled track` a user sees in a list is the frontend's display\nfallback (`fe/core/domain/track.ts` `UNTITLED_TRACK_LABEL`). The planner\nagent then names the track via `calm.track.rename`, which only succeeds\nwhile the stored title is still blank. The type\nstays `String`: the empty string has always been a legal title and the\nserver applies no non-empty validation."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CrossAreaCwdAuthorization": {
+        "type": "object",
+        "required": [
+          "folder_id",
+          "area_id"
+        ],
+        "properties": {
+          "area_id": {
+            "type": "string"
+          },
+          "folder_id": {
+            "type": "integer",
+            "format": "int64"
           }
         },
         "additionalProperties": false

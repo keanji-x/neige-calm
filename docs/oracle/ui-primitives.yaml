@@ -657,7 +657,7 @@
     这是 primitive 层唯一一条【向上暴露状态机】的出口：README "No business logic"
     规则禁止 primitive 依赖业务，但业务确实依赖这个 context。实测消费方位于
     web/src/shared/components/DirectoryPicker.tsx:32,50 与
-    web/src/shared/components/NewTaskForm.tsx:79,226 —— 换实现会同时打断三个调用方。
+    web/src/shared/components/NewTaskForm.tsx:79,246 —— 换实现会同时打断三个调用方。
   source: web/src/ui/Dialog/Dialog.tsx:84-98
   authoritative_test: web/src/ui/Dialog/Dialog.contract.test.tsx:38-68
   owner_slice: ui/dialog

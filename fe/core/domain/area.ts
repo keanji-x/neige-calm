@@ -191,7 +191,7 @@ export function sortedAreaFolders(folders: readonly AreaFolder[]): AreaFolder[] 
  * way this failure says anything at all.
  */
 export const folderConflictSchema = z.object({
-  folder_id: z.number(),
+  folder_id: z.number().int().safe().positive(),
   area_id: z.string(),
   conflict_path: z.string(),
   conflict_kind: z.enum(['equal', 'ancestor', 'descendant']),

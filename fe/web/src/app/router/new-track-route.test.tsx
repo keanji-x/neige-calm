@@ -725,7 +725,7 @@ describe('the new-track page is a route reached from Area groups', () => {
   });
 
   it.each(['equal', 'descendant'] as const)(
-    'creates in the owning Area for a %s conflict without losing the draft',
+    'explicitly reuses the claimed directory in the current Area for a %s conflict',
     async (conflictKind) => {
     const { sent } = harness({
       templates: TEMPLATES,
@@ -743,7 +743,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
     const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
-    await userEvent.click(within(alert).getByRole('button', { name: 'Create in Work' }));
+    await userEvent.click(within(alert).getByRole('button', { name: 'Reuse directory in Reading' }));
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
     const [failed, recovered] = createdTrackRequests(sent);
     expect(failed?.body).toMatchObject({
@@ -751,14 +751,43 @@ describe('the new-track page is a route reached from Area groups', () => {
       first_message: 'Read it', template_id: 'small-change',
     });
     expect(recovered?.body).toMatchObject({
-      area_id: 'c1', cwd: '/srv/app', attach_folder: true,
+      area_id: 'c2', cwd: '/srv/app', attach_folder: true,
       first_message: 'Read it', template_id: 'small-change',
+      allow_cross_area_cwd: { folder_id: 4, area_id: 'c1' },
     });
     expect(recovered?.headers?.['Idempotency-Key']).toBeDefined();
     expect(recovered?.headers?.['Idempotency-Key']).not.toBe(failed?.headers?.['Idempotency-Key']);
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
     },
   );
+
+  it('unlocks the draft when vanished directory consent is rejected as invalid input', async () => {
+    const { sent } = harness({
+      templates: [],
+      otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },
+      trackCreateSequence: [
+        { status: 409, statusText: 'Conflict', body: CONFLICT },
+        { status: 400, statusText: 'Bad Request', body: {
+          code: 'bad_request', error: 'The authorized folder claim no longer covers this cwd',
+        } },
+        { status: 201, statusText: 'Created', body: { ...TRACK_ROW, area_id: 'c2' } },
+      ],
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Original intent');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Reuse directory in Reading' }));
+    await screen.findByText('The authorized folder claim no longer covers this cwd');
+    const message = screen.getByLabelText(TASK_LABEL);
+    await userEvent.clear(message);
+    await userEvent.type(message, 'Current intent');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(3));
+    const request = createdTrackRequests(sent)[2];
+    expect(request?.body).toMatchObject({ area_id: 'c2', cwd: '/srv/app', first_message: 'Current intent' });
+    expect(request?.body).not.toHaveProperty('allow_cross_area_cwd');
+  });
 
   it('does not offer an owning-Area retry for an ancestor conflict that moving cannot resolve', async () => {
     harness({
@@ -775,7 +804,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
     const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
-    expect(within(alert).queryByRole('button', { name: 'Create in Work' })).toBeNull();
+    expect(within(alert).queryByRole('button', { name: 'Reuse directory in Reading' })).toBeNull();
   });
 
   it('uses the visible current draft when the owning-Area recovery is clicked', async () => {
@@ -800,11 +829,14 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.type(field, 'Current message');
     await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /^No template/ }));
-    await userEvent.click(within(alert).getByRole('button', { name: 'Create in Work' }));
+    await userEvent.click(within(alert).getByRole('button', { name: 'Reuse directory in Reading' }));
 
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
     const recovered = createdTrackRequests(sent)[1];
-    expect(recovered?.body).toMatchObject({ area_id: 'c1', first_message: 'Current message' });
+    expect(recovered?.body).toMatchObject({
+      area_id: 'c2', first_message: 'Current message',
+      allow_cross_area_cwd: { folder_id: 4, area_id: 'c1' },
+    });
     expect(recovered?.body).not.toHaveProperty('template_id');
     expect(recovered?.body).toMatchObject({ cwd: '/srv/app', attach_folder: true });
   });
@@ -824,9 +856,9 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
     const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
-    expect(within(alert).getByRole('button', { name: 'Create in Work' })).toBeTruthy();
+    expect(within(alert).getByRole('button', { name: 'Reuse directory in Reading' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Use a Neige workspace instead' }));
-    expect(within(alert).queryByRole('button', { name: 'Create in Work' })).toBeNull();
+    expect(within(alert).queryByRole('button', { name: 'Reuse directory in Reading' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
     await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
