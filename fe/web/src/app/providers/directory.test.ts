@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { createDirectoryLister, createTrackWorkspaceFilesPort } from './directory.ts';
+import { createCardFilesPort, createDirectoryLister, createTrackWorkspaceFilesPort } from './directory.ts';
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task: () => void) => task() });
 
@@ -35,7 +35,12 @@ describe('createDirectoryLister', () => {
     const { sent, listDirectory } = harness({
       path: '/home/kenji',
       parent: '/home',
-      entries: [{ name: 'code', is_dir: true }, { name: 'todo.txt', is_dir: false }],
+      entries: [
+        { name: '.config', is_dir: true },
+        { name: '.env', is_dir: false },
+        { name: 'code', is_dir: true },
+        { name: 'todo.txt', is_dir: false },
+      ],
     });
     const listing = await listDirectory('/home/kenji');
     expect(sent[0]?.path).toBe('/api/fs/listdir?path=%2Fhome%2Fkenji');
@@ -43,6 +48,8 @@ describe('createDirectoryLister', () => {
       path: '/home/kenji',
       parent: '/home',
       entries: [
+        { name: '.config', path: '/home/kenji/.config', isDirectory: true },
+        { name: '.env', path: '/home/kenji/.env', isDirectory: false },
         { name: 'code', path: '/home/kenji/code', isDirectory: true },
         { name: 'todo.txt', path: '/home/kenji/todo.txt', isDirectory: false },
       ],
@@ -64,6 +71,28 @@ describe('createDirectoryLister', () => {
   it('rejects with the API error the browser renders as its inline message', async () => {
     const { listDirectory } = harness({ error: 'path /nope is not a directory' }, 400);
     await expect(listDirectory('/nope')).rejects.toThrow('path /nope is not a directory');
+  });
+});
+
+describe('createCardFilesPort', () => {
+  it('uses the same default-visible listing contract as the directory picker', async () => {
+    const { sent, listDirectory } = harness({ path: '/repo', parent: '/', entries: [] });
+    await listDirectory('/repo');
+    expect(sent[0]?.path).toBe('/api/fs/listdir?path=%2Frepo');
+
+    const files = createCardFilesPort({
+      send(request) {
+        sent.push(request);
+        return Promise.resolve({
+          status: 200,
+          statusText: 'OK',
+          body: { path: '/repo', parent: '/', entries: [{ name: '.git', is_dir: true }] },
+        });
+      },
+    }, unauthorized);
+    const listing = await files.listDirectory('/repo');
+    expect(sent[1]?.path).toBe('/api/fs/listdir?path=%2Frepo');
+    expect(listing.entries).toEqual([{ name: '.git', is_dir: true }]);
   });
 });
 
