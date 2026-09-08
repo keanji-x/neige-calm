@@ -55,11 +55,65 @@ function openMenu(name: RegExp): HTMLElement {
 }
 
 describe('ModelPill', () => {
-  it('names the default it is actually following, not just the word', () => {
+  /*
+   * The trigger names the model and not the route to it: `gpt-5-codex`, never
+   * `Default (gpt-5-codex)`. "Default" is a fact about how the answer was
+   * arrived at, and the pill's job is the answer.
+   */
+  it('names the default it is actually following, and only the name', () => {
     render(
       <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
     );
-    expect(trigger(/^Model:/).textContent).toBe('Default (gpt-5-codex)');
+    expect(trigger(/^Model:/).textContent).toBe('gpt-5-codex');
+  });
+
+  /*
+   * What the visible label dropped, the accessible one keeps: whether this
+   * conversation has PINNED that model or is following whatever the
+   * installation uses is a real difference, and a person reading the pill can
+   * open the menu to see which row is ticked. A person hearing it cannot.
+   */
+  it('still says, to a screen reader, that it is following the default', () => {
+    const { rerender } = render(
+      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+    );
+    expect(trigger(/^Model:/).getAttribute('aria-label'))
+      .toBe("Model: gpt-5-codex (this installation's default)");
+
+    rerender(
+      <ModelPill
+        catalog={catalog()}
+        selection={{ model: 'gpt-5', reasoning_effort: null }}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(trigger(/^Model:/).getAttribute('aria-label')).toBe('Model: GPT-5');
+  });
+
+  /*
+   * And the menu keeps the word, because there it IS the distinction: its
+   * first row is "follow whatever this installation uses", the rows under it
+   * are that same model pinned by name, and without the word they would read
+   * as the same choice twice.
+   */
+  it('keeps the word in the menu, where it is the choice being offered', () => {
+    render(
+      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+    );
+    const menu = openMenu(/^Model:/);
+    expect(within(menu).getByText('Default (gpt-5-codex)')).toBeTruthy();
+  });
+
+  /*
+   * No chevron on either trigger (owner's call). Pinned because the control
+   * then has no visual affordance at rest at all — if this ever comes back it
+   * should be a decision, not a regression.
+   */
+  it('draws no chevron on the trigger', () => {
+    render(
+      <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
+    );
+    expect(trigger(/^Model:/).querySelector('svg')).toBeNull();
   });
 
   /*
@@ -161,7 +215,55 @@ describe('ModelPill', () => {
    * decided per model and never assumed.
    */
   describe('the effort control', () => {
-    it('is absent while no model is chosen', () => {
+    /*
+     * Following the installation default is still running a model, and this is
+     * the case that used to have no effort control at all — which is every
+     * conversation nobody has touched the pill on, i.e. the common one.
+     *
+     * The kernel takes it: `catalog_advice` (`routes/planner_model.rs`) stores
+     * `{model: null, reasoning_effort: "high"}` unjudged, and says why in as
+     * many words — with no model chosen there is no catalog entry to judge the
+     * effort against.
+     */
+    it('offers the followed model’s efforts while no model is chosen', () => {
+      render(
+        <ModelPill
+          catalog={catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } })}
+          selection={FOLLOW_INSTALLATION_DEFAULT}
+          onChange={vi.fn()}
+        />,
+      );
+      const effort = trigger(/^Reasoning effort:/);
+      /* The effort, not the route to it — same rule as the model trigger. */
+      expect(effort.textContent).toBe('low');
+      expect(effort.getAttribute('aria-label')).toBe('Reasoning effort: low (the default)');
+      const menu = openMenu(/^Reasoning effort:/);
+      expect(within(menu).getByText('Thinks longer.')).toBeTruthy();
+    });
+
+    it('sends the effort with a null model when the default is being followed', () => {
+      const onChange = vi.fn();
+      render(
+        <ModelPill
+          catalog={catalog({ default: { model: 'gpt-5', reasoning_effort: 'low' } })}
+          selection={FOLLOW_INSTALLATION_DEFAULT}
+          onChange={onChange}
+        />,
+      );
+      const menu = openMenu(/^Reasoning effort:/);
+      fireEvent.click(within(menu).getByText('high'));
+      /* `model: null` survives — choosing an effort must not silently pin the
+         conversation to whatever the default happens to be today. */
+      expect(onChange).toHaveBeenCalledWith({ model: null, reasoning_effort: 'high' });
+    });
+
+    /*
+     * And the limit of the above, which is the honest one: the control can
+     * only list efforts it has an entry for. A default this catalog does not
+     * carry gives it nothing to offer, and offering the *other* models' efforts
+     * would be a list about a model this conversation is not running.
+     */
+    it('is absent when the followed model is not in the catalog', () => {
       render(
         <ModelPill catalog={catalog()} selection={FOLLOW_INSTALLATION_DEFAULT} onChange={vi.fn()} />,
       );

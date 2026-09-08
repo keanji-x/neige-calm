@@ -1860,7 +1860,7 @@ function isThenable(value: unknown): value is Promise<SendOutcome> {
  */
 export function ChatComposer({
   onSend, onStop, onNewConversation, disabled = false, focusOnMount = false, draft: controlledDraft,
-  footerActions,
+  footerActions, sendAdornment,
   drawer, headerActions, allowEmptyText = false,
 }: {
   /** See `SendOutcome`. A caller with its own draft persistence returns `void`. */
@@ -1951,6 +1951,20 @@ export function ChatComposer({
    * edge where it is.
    */
   footerActions?: ReactNode;
+  /**
+   * #1255 S3 — something to stand immediately before Send, in the composer's
+   * `sendActions` slot.
+   *
+   * A slot and not a `contextUsage` prop, for the reason `footerActions` gives
+   * one line up: what goes there needs a query and a card id, both of which
+   * live in `app/router`, and `features/**` may not import `app/**`.
+   *
+   * It shares the slot with the one remaining send-door button below, which
+   * appears only in a state this one knows nothing about, so it is rendered
+   * *before* it rather than instead of it. Read the slot's contents as
+   * "everything that is not the send button", in reading order.
+   */
+  sendAdornment?: ReactNode;
   /**
    * #1505 S6 — the composer's two vendor slots, passed as nodes rather than as
    * attachment state.
@@ -2225,6 +2239,56 @@ export function ChatComposer({
     setSendCount((count) => count + 1);
   };
 
+  /*
+   * The send-door button for this state, or none.
+   *
+   * Lifted out of the `sendActions` attribute when the slot gained a second
+   * occupant (the context ring): the slot now holds "whatever is not Send",
+   * and a ternary nested inside a fragment inside an attribute is not a thing
+   * anybody should have to read.
+   */
+  /*
+   * ── The one send door this composer adds, and the one it no longer does ──
+   *
+   * **Gone: `Queue message`.** It stood beside Stop while a turn ran, because
+   * `ChatSendButton` is one button in two states and that state is Stop, so a
+   * person who had typed a sentence had no button to press. It is gone at the
+   * owner's call, and what it cost is exactly that: a *button*. Enter still
+   * queues — Astryx's `handleSubmit` refuses only an empty draft and
+   * `isDisabled`, never `isStopShown`, so the keyboard path is untouched and
+   * `POST /planner/input` is reached the same way it always was — held down by
+   * the `[F4]`/`[F5]`/`[F6]` cases in `track-conversation.test.tsx`, which
+   * drive it through Enter.
+   *
+   * **For anyone who cannot use a keyboard, that is the capability and not
+   * only the affordance**, and it is gone while a turn runs: with a draft
+   * typed there is only Stop, and with an image and no text there is not even
+   * `Send image` (it is suppressed by `!stopShown` below). Saying "the
+   * affordance, not the capability" would be true only of a reader who has
+   * both hands on a keyboard. **KNOWN GAP, accepted by the owner** in exchange
+   * for one control in that corner instead of two. The queue strip above the
+   * field is where a queued message is now visible, which is the half that was
+   * missing when that button was written.
+   *
+   * **Kept: `Send image`.** Different failure, and not a duplicate of
+   * anything: `ChatSendButton` takes its availability from the composer
+   * context's `canSend`, which is false on an empty draft, and an image-only
+   * message IS an empty draft. Without this there is no control at all —
+   * not a second one — and Enter is already handled a few lines up by the
+   * same `allowEmptyText` guard. It shows only while the vendor's own button
+   * is unavailable, so the two are never both live, and it is named
+   * `Send image` rather than `Send` so two controls never share one name.
+   */
+  const sendDoor = allowEmptyText && draft.trim() === '' && !stopShown ? (
+    <button
+      type="button"
+      className={styles.queueSend}
+      data-nc-send-attachment=""
+      disabled={disabled}
+      onClick={() => { submit(draft); }}
+    >Send image</button>
+  ) : undefined;
+
   return (
     <div
       ref={rootRef}
@@ -2263,6 +2327,20 @@ export function ChatComposer({
            submission. Keep unsent words while disabled, and
            let IME Enter accept its candidate without submitting. */
         if (event.key !== 'Enter' || event.shiftKey) return;
+        /*
+         * Only Enter pressed IN THE FIELD is a send.
+         *
+         * This handler is on the composer's root and captures, which was
+         * harmless while the field was the only focusable thing under it. The
+         * `drawer` slot changed that: the queued-message bubbles live inside
+         * this root now, each with its own control. Tab to one of them with
+         * an image picked and an empty draft, press Enter, and the
+         * `allowEmptyText` branch below sent the image and called
+         * `preventDefault()` — so the button a person was actually on never
+         * fired. A key pressed on a button belongs to that button.
+         */
+        if (!(event.target instanceof Element)
+          || event.target.closest('[contenteditable], textarea, input') === null) return;
         if (event.nativeEvent.isComposing) {
           event.stopPropagation();
           return;
@@ -2333,39 +2411,9 @@ export function ChatComposer({
          */
         {...(drawer === undefined ? {} : { drawer })}
         {...(headerActions === undefined ? {} : { headerActions })}
-        sendActions={stopShown ? (
-          <button
-            type="button"
-            className={styles.queueSend}
-            data-nc-send-queued=""
-            disabled={disabled || (draft.trim() === '' && !allowEmptyText)}
-            onClick={() => { submit(draft); }}
-          >Queue message</button>
-        ) : allowEmptyText && draft.trim() === '' ? (
-          /*
-           * ── The third door, and it exists for the same measured reason ────
-           *
-           * `ChatSendButton` takes its availability from the composer
-           * context's `canSend`, which is false on an empty draft. An
-           * image-only message is an empty draft, so with only the vendor
-           * button on screen a person who has picked an image and typed
-           * nothing has no control to press. This is that control, and it is
-           * shown only while the vendor's own is unavailable, so the two are
-           * never both live.
-           *
-           * Named `Send image` rather than `Send`: while it is on screen the
-           * vendor button is also on screen saying `Send`, and two controls
-           * with one name is the ambiguity the `Queue message` note above
-           * refuses for the same reason.
-           */
-          <button
-            type="button"
-            className={styles.queueSend}
-            data-nc-send-attachment=""
-            disabled={disabled}
-            onClick={() => { submit(draft); }}
-          >Send image</button>
-        ) : undefined}
+        sendActions={sendDoor === undefined && sendAdornment === undefined ? undefined : (
+          <>{sendAdornment}{sendDoor}</>
+        )}
         input={(
           <ChatComposerInput
             label="Message"

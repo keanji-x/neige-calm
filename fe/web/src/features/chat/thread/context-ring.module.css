@@ -1,0 +1,81 @@
+/* #1255 S3 — the context meter beside the send button. */
+
+@layer features {
+  /*
+   * `flex: none`, and the svg sized here rather than only by its attributes.
+   *
+   * This sits in the composer's send row, which is a flex line, and the
+   * reset's `svg { max-inline-size: 100% }` lets a squeezed flex item take the
+   * svg with it. Measured before the fix: the ring rendered 3.7px wide by 18
+   * tall — an ellipse the width of a hairline, which reads as a speck and not
+   * as a meter. Neither half is optional: `flex: none` keeps the span its own
+   * size, the explicit svg box keeps the drawing from being the thing that
+   * gives way if anything ever squeezes it again.
+   */
+  .ring {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    padding: var(--space-1);
+    border-radius: var(--radius-pill);
+    cursor: default;
+  }
+
+  .ring svg {
+    inline-size: 18px;
+    block-size: 18px;
+    max-inline-size: none;
+    flex: none;
+  }
+
+  .ring:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  /* The unfilled remainder. Faint on purpose: the ring is a glance, and at
+     16px beside a send button a full-strength circle would read as a control. */
+  .track {
+    stroke: var(--hairline-strong);
+  }
+
+  .fill {
+    stroke: var(--text-3);
+    transition: stroke-dasharray 240ms ease;
+  }
+
+  /*
+   * Over its window: the one state that is a malfunction rather than a
+   * measurement, so it is the one state that is not grey.
+   *
+   * The colour is on the TRACK, because that is the only circle with any ink
+   * in it here — the fill's dash length is zero in this state, deliberately
+   * (no percentage was stated, so no arc is drawn). Colouring the fill instead
+   * painted a shape of zero length: the ring rendered plain grey, exactly like
+   * a reading that is merely low, which is the opposite of what this state
+   * means. Introduced by the same change that stopped drawing the arc.
+   */
+  .over .track {
+    stroke: var(--warn);
+  }
+
+  /* Inside Astryx's inverted tooltip surface. Size and weight only — the
+     colour is the tooltip's, and anything set here would be the bug this
+     replaced. */
+  .tip {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-inline-size: 15rem;
+  }
+
+  .tipLead {
+    font-weight: var(--weight-medium);
+  }
+
+  .tipNote {
+    font-size: var(--text-xs);
+    opacity: 0.8;
+  }
+}

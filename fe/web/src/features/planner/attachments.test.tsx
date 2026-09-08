@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { UploadAttachmentResponse } from '../../../../core/api/generated/wire.ts';
@@ -41,8 +42,31 @@ function Harness({ upload, supported = true, card = 'card-1' }: {
   );
 }
 
+/**
+ * The hidden `<input type="file">`.
+ *
+ * Found by its type and not by an accessible name, because it deliberately has
+ * none: the `IconButton` beside it is the control a person operates, carries
+ * the name and the disabled state, and opens this by `click()`. Two announced
+ * file controls in one composer was the alternative.
+ */
 function picker(): HTMLInputElement {
-  return screen.getByLabelText<HTMLInputElement>('Attach an image');
+  const found = document.querySelector<HTMLInputElement>('input[type="file"]');
+  if (found === null) throw new Error('no file input rendered');
+  return found;
+}
+
+/** The control itself. */
+function attachButton(): HTMLButtonElement {
+  return screen.getByRole<HTMLButtonElement>('button', { name: 'Attach an image' });
+}
+
+/** True whether the button is natively disabled or `aria-disabled` (which is
+ *  what Astryx switches to when the button carries a tooltip, so that the
+ *  reason stays reachable by keyboard). */
+function attachBlocked(): boolean {
+  const button = attachButton();
+  return button.disabled || button.getAttribute('aria-disabled') === 'true';
 }
 
 async function pick(file: File) {
@@ -55,6 +79,22 @@ async function pick(file: File) {
 }
 
 describe('planner attachments', () => {
+  /*
+   * The control opens the picker.
+   *
+   * Every other test here dispatches `change` on the hidden input directly,
+   * which is the only way to simulate a file choice — and which means none of
+   * them execute the line that opens it. Delete `picker.current?.click()` and
+   * they all still pass while nobody can attach anything.
+   */
+  it('opens the file picker when the control is pressed', async () => {
+    render(<Harness upload={vi.fn<UploadAttachment>()} />);
+    const opened = vi.fn();
+    picker().addEventListener('click', opened);
+    await userEvent.click(attachButton());
+    expect(opened).toHaveBeenCalledTimes(1);
+  });
+
   it('uploads on pick and previews the server copy, not a local one', async () => {
     const upload = vi.fn<UploadAttachment>().mockResolvedValue(uploaded(0));
     render(<Harness upload={upload} />);
@@ -71,9 +111,8 @@ describe('planner attachments', () => {
      * bytes, and on this deployment (plain-http LAN) the secure-context-only
      * half of that family does not exist at runtime at all.
      */
-    const thumb = screen.getByRole('presentation', { hidden: true })
-      ?? screen.getAllByRole('img', { hidden: true })[0];
-    expect(thumb.getAttribute('src')).toBe(uploaded(0).url);
+    const thumb = document.querySelector('img');
+    expect(thumb?.getAttribute('src')).toBe(uploaded(0).url);
     expect(latest?.ids).toEqual([uploaded(0).attachmentId]);
   });
 
@@ -83,9 +122,9 @@ describe('planner attachments', () => {
     await pick(png());
     expect(latest?.ids).toHaveLength(1);
 
-    act(() => { fireEvent.click(screen.getByLabelText('Remove this image')); });
+    act(() => { fireEvent.click(screen.getByLabelText('Remove Image 1')); });
     expect(latest?.ids).toEqual([]);
-    expect(screen.queryByLabelText('Remove this image')).toBeNull();
+    expect(screen.queryByLabelText('Remove Image 1')).toBeNull();
   });
 
   it('refuses a file that is not one of the four formats without a round trip', async () => {
@@ -104,7 +143,7 @@ describe('planner attachments', () => {
     for (let index = 0; index < 8; index += 1) await pick(png(`shot-${index}.png`));
     expect(latest?.ids).toHaveLength(8);
     expect(latest?.atCapacity).toBe(true);
-    expect(picker().disabled).toBe(true);
+    expect(attachBlocked()).toBe(true);
 
     upload.mockClear();
     await pick(png('ninth.png'));
@@ -144,7 +183,7 @@ describe('planner attachments', () => {
       await Promise.resolve();
     });
     expect(latest?.ids).toEqual([]);
-    expect(screen.queryByLabelText('Remove this image')).toBeNull();
+    expect(screen.queryByLabelText('Remove Image 1')).toBeNull();
   });
 
   it('does adopt an upload that finished while the same card was still open', async () => {
@@ -165,9 +204,16 @@ describe('planner attachments', () => {
    * the person owns: the control says it is unavailable AND says why, rather
    * than looking live and answering 400.
    */
-  it('is unavailable with a reason on a track that cannot take attachments', () => {
+  it('is unavailable with a reason on a track that cannot take attachments', async () => {
     render(<Harness upload={vi.fn<UploadAttachment>()} supported={false} />);
-    expect(picker().disabled).toBe(true);
-    expect(screen.getByTitle(ATTACHED_WORKSPACE_REASON)).toBeTruthy();
+    expect(attachBlocked()).toBe(true);
+    /*
+     * The reason is a tooltip on the button rather than a `title` attribute,
+     * and the button stays focusable while disabled so the tooltip can be
+     * reached without a mouse — which is the half `title` never had. Asserted
+     * by actually opening it: a tooltip nobody can open is not a reason.
+     */
+    await userEvent.hover(attachButton());
+    expect(await screen.findByText(ATTACHED_WORKSPACE_REASON)).toBeTruthy();
   });
 });

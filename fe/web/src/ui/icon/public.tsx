@@ -2,7 +2,8 @@ import styles from './icon.module.css';
 
 export type IconName =
   | 'chevron-left' | 'chevron-right' | 'arrow-left' | 'arrow-up'
-  | 'plus' | 'close' | 'more' | 'chat' | 'notification' | 'folder' | 'file';
+  | 'plus' | 'close' | 'more' | 'chat' | 'notification' | 'folder' | 'file'
+  | 'paperclip';
 
 const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
   'chevron-right': Object.freeze(['M6 3.5 10.5 8 6 12.5']),
@@ -25,6 +26,15 @@ const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
      stays a real fold instead of a crease drawn over a rectangle. */
   folder: Object.freeze(['M2 12.5V3.5h4.2l1.6 2H14v7z']),
   file: Object.freeze(['M4 2.5h5l3 3v8H4z', 'M9 2.5v3h3']),
+  /* The attach control's mark (#1505 S6).
+     A paperclip and not a picture frame: a frame at 16px has about 7×5 of
+     interior left after its own 1.5 stroke, and the horizon and sun drawn
+     inside it merged into one dark mass — measured, not guessed. The clip is a
+     single open stroke with no interior at all, so it survives the size it is
+     actually used at, and it is the idiom for "attach" in any case. */
+  paperclip: Object.freeze([
+    'M14.29 7.37l-6.13 6.13a4 4 0 0 1-5.66-5.66l6.13-6.13a2.67 2.67 0 0 1 3.77 3.77l-6.13 6.13a1.33 1.33 0 0 1-1.89-1.89l5.66-5.65',
+  ]),
 });
 
 export function Icon({ name, size = 'md' }: { name: IconName; size?: 'sm' | 'md' }) {

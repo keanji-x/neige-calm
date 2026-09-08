@@ -1,0 +1,12 @@
+/* #1505 — the composer footer's left-hand group.
+   One rule, and it is the same one the pills need for the same reason: a flex
+   item's automatic minimum is its content's min-content, the model name inside
+   is `white-space: nowrap`, and every ancestor between the footer and that
+   label has to give way or none of them do. Measured before this existed: 392px
+   of content in a 364px drawer, with Send 36px outside it. */
+
+@layer features {
+  .group {
+    min-inline-size: 0;
+  }
+}

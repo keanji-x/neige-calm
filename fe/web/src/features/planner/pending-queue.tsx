@@ -1,18 +1,60 @@
-// #1505 PR4 — the messages a person typed while a turn was running, and the
-// two things they could never do with them: change one, or take one back.
+// #1505 PR4 — the messages a person typed while a turn was running.
 //
-// This is a pure presentation module. It is handed the queue page and two
-// write callbacks; it owns no query, no transport and no card id, so the same
-// component serves the drawer and any test that wants to drive one entry
-// through every outcome. The writes are compare-and-swap: each entry carries
-// the `rev` it was read at, and a refusal is reported to the reader rather
-// than retried, because a silent retry would overwrite text they never saw.
+// ── One bubble each, and one icon ─────────────────────────────────────────
+//
+// This used to be a stack of cards, each with the message in full, an inline
+// `TextArea` when you edited it, and four named buttons. In a 364px drawer,
+// directly above the thing you are typing into, that is a second composer
+// sitting on top of the first one. What a queued message needs is to be
+// recognisable — enough of its first line to know which one it is — and a way
+// out. So: one bubble, one line, ellipsis, a cross.
+//
+// **A bubble, and deliberately NOT the composer's drawer surface.** The
+// version before this one sat in `ChatComposerDrawer`, which tints, rounds and
+// tucks itself behind the field — it makes the strip read as the top of the
+// input box. These messages are not part of the box you are typing in; they
+// are things already said and waiting. Discrete bubbles floating above it say
+// that, and the composer keeps its own edges.
+//
+// There is no caption over them either. "3 messages are waiting to send when
+// this turn ends" was a sentence explaining a picture that explains itself.
+// What went with it is the words "when this turn ends", which is a real fact
+// and now goes unsaid — worth knowing that is the trade.
+//
+// ── There is no edit, and no take-back ────────────────────────────────────
+//
+// A pencil that pulled a queued message back into the composer was built,
+// reviewed three times, and removed. It is not hard because deleting is hard;
+// it is hard because the recovered words have nowhere to live. `composerDraft`
+// (`app/router/public.tsx`) is ONE string, shared across conversations and
+// cleared when the drawer closes, so a recovery has no owner: it can land in a
+// conversation it did not come from, or be wiped by a close, and the message
+// it came from is already deleted by then. Three rounds of review found five
+// distinct cells of that matrix, and the third round found them in the fixes
+// for the second.
+//
+// Binding drafts to conversations is the fix and it is a change to the
+// router's state model, not to this component. **Deferred on purpose, with the
+// owner's decision**: shipping a delete-only strip is a smaller thing that is
+// entirely true, and the alternative was an edit affordance that loses
+// messages in ways a person cannot see.
+//
+// The compare-and-swap stays: a delete carries the revision it was read at and
+// can be refused, and a refusal is shown rather than retried. `PATCH
+// .../planner/input/{id}` is still served and the browser no longer calls it,
+// the same way `POST /planner/reset` was left standing when #1139 removed its
+// last caller.
 
-import { Button } from '@astryxdesign/core/Button';
-import { TextArea } from '@astryxdesign/core/TextArea';
+import { Banner } from '@astryxdesign/core/Banner';
+import { IconButton } from '@astryxdesign/core/IconButton';
+import { List } from '@astryxdesign/core/List';
+import { Text } from '@astryxdesign/core/Text';
+import { VStack } from '@astryxdesign/core/VStack';
+
 import type {
   PendingQueueEntry, PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
+import { Icon } from '../../ui/icon/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import styles from './pending-queue.module.css';
 
@@ -34,231 +76,189 @@ export type PendingQueueProps = Readonly<{
   overflow: number;
   /** Blocks the controls while any write on this card is unanswered. */
   busy: boolean;
-  onEdit: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueWriteOutcome>;
   onDelete: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
 }>;
-
-/*
- * Two facts live here, they have different owners, and every bug this
- * component has had came from storing them in one place.
- *
- *   - {@link OpenEditor} — THE READER'S WORDS. Owned by the reader, keyed to
- *     the entry they opened. Nothing the server says may write it.
- *   - {@link Refusal} — WHAT THE SERVER LAST SAID about one entry, including
- *     the revision a 409 reported. Owned by the server, keyed to the entry the
- *     write was about, and true whether or not an editor happens to be open.
- *
- * The matrix this shape has to satisfy — {refusal on the open entry, on
- * another entry, with no editor open} × {the reader has typed, has not}:
- *
- * | refusal target | typed | draft        | wording     | "Use theirs" | next write's rev |
- * |----------------|-------|--------------|-------------|--------------|------------------|
- * | the open entry | yes   | kept         | editing     | offered      | server-reported  |
- * | the open entry | no    | kept         | editing     | offered      | server-reported  |
- * | another entry  | yes   | kept         | non-editing | no           | server-reported  |
- * | another entry  | no    | kept         | non-editing | no           | server-reported  |
- * | no editor open | yes   | UNREACHABLE — typing requires an open editor    |||
- * | no editor open | no    | none to keep | non-editing | no           | server-reported  |
- *
- * Five reachable cells, and they collapse to two rules once the ownership is
- * right: a refusal NEVER writes a draft, and a refusal ALWAYS records the
- * revision for its entry. Both are properties of where the values live, not of
- * branches in `settle`.
- *
- * The three defects, all the same mistake at different depths: the draft was
- * overwritten with the server's text; then kept but stored beside the notice,
- * so a refusal on another entry destroyed it; then separated, but with the
- * server's revision left INSIDE the editor — so a fact about an entry only
- * existed while the reader happened to be editing that entry, and a refused
- * delete with no editor open retried against a revision it already knew was
- * stale, forever. That last one is the cell with no test, which is why two
- * readings of the neighbouring cell could disagree without either being
- * obviously wrong.
- */
-type OpenEditor = Readonly<{ entryId: string; draft: string }>;
 
 /**
  * The last refusal, and which entry it was about.
  *
- * The `stale` variant carries the revision the server reported, and reading it
- * from HERE rather than from the editor is what makes the bottom row of the
- * matrix work: the page in the cache is behind by definition at that moment,
- * and the refresh that would fix it is fire-and-forget and may fail, so a
- * retry that re-sends `entry.rev` is guaranteed to lose again.
+ * The `stale` variant carries the revision the server reported, and the next
+ * write on that entry uses it: the page in the cache is behind by definition
+ * at that moment, and the refresh that would fix it is fire-and-forget and may
+ * fail, so a retry that re-sends `entry.rev` is guaranteed to lose again.
  */
 type Refusal = Readonly<{ entryId: string; outcome: PlannerQueueWriteOutcome }>;
 
 /**
- * What a refusal says, which depends on whether this reader has an editor open
- * on that entry.
+ * What a refusal says.
  *
- * With no editor open there is no "your text" to point at, and a 409 on a
- * delete did not fail to save anything — it failed to remove something. Saying
- * otherwise describes a screen the reader is not looking at.
+ * All three are now about something that did not happen to a message still
+ * sitting in the strip — there is no open editor left for a refusal to be
+ * about, so there is no second wording and no "your text is still below".
  */
-function noticeText(outcome: PlannerQueueWriteOutcome, editing: boolean): string | null {
+function noticeText(outcome: PlannerQueueWriteOutcome): string | null {
   if (outcome.kind === 'stale') {
-    return editing
-      ? 'This message changed while you were editing it, so your version was not saved. '
-        + 'Your text is still below — save it again to overwrite theirs, or use theirs instead.'
-      : 'This message changed before your change could be applied, so nothing happened to it. '
-        + 'It now reads as shown above; try again if you still want to.';
+    /* "as shown" is a promise about the bubble above this notice, and it is
+       kept: a stale refusal carries the winner's text and the row renders THAT
+       from then on (`text` below). It used to keep rendering the text this page
+       was read at, so the sentence pointed at words the server had already
+       replaced — and a retry then deleted the new message while handing back
+       the old one. */
+    return 'This message changed before your change could be applied, so nothing '
+      + 'happened to it. It now reads as shown; try again if you still want to.';
   }
   if (outcome.kind === 'gone') {
-    return 'This message already left the queue, so it could not be changed.';
+    /* NOT "already sent": another actor deleting it produces this same answer,
+       and the server does not say which happened. All that is known is that
+       the queue no longer has it. */
+    /* NOT "already sent": the same answer comes back when another actor
+       removed it, and the server does not say which happened. All that is
+       known is that the queue no longer has it. */
+    return 'This message is no longer in the queue — it has either been sent or '
+      + 'been removed somewhere else, and the server does not say which.';
   }
+  /* The server's own sentence and nothing added to it: a delete that failed
+     leaves the message exactly where it was, which the strip already shows. */
   if (outcome.kind === 'failed') return outcome.message;
   return null;
 }
 
-export function PendingQueue({ entries, overflow, busy, onEdit, onDelete }: PendingQueueProps) {
-  const [editor, setEditor] = useState<OpenEditor | null>(null);
-  const [refusal, setRefusal] = useState<Refusal | null>(null);
+function noticeHeading(outcome: PlannerQueueWriteOutcome): string {
+  if (outcome.kind === 'stale') return 'Nothing happened';
+  if (outcome.kind === 'gone') return 'No longer in the queue';
+  return 'Could not be changed';
+}
 
+/**
+ * `stale` is a race the reader can still win by trying again; `gone` is the
+ * queue having moved on without them, with nothing to retry; `failed` is the
+ * server refusing.
+ */
+function noticeStatus(outcome: PlannerQueueWriteOutcome): 'warning' | 'info' | 'error' {
+  if (outcome.kind === 'stale') return 'warning';
+  if (outcome.kind === 'gone') return 'info';
+  return 'error';
+}
+
+
+export function PendingQueue({
+  entries, overflow, busy, onDelete,
+}: PendingQueueProps) {
+  const [refusal, setRefusal] = useState<Refusal | null>(null);
+  /*
+   * One lock for the whole strip, not one per button.
+   *
+   * Astryx's `clickAction` disables the control it is on while its promise is
+   * unsettled, and that is all it does — which leaves every OTHER control
+   * live.
+   *
+   * **Not because one delete invalidates another's revision.** It does not:
+   * the kernel compares `queue[index].rev` per entry
+   * (`crates/calm-server/src/harness/queue.rs`), so deleting A leaves B's
+   * revision exactly as it was. The reason is this component's own state —
+   * `refusal` holds ONE entry's answer, and two writes settling together means
+   * the second silently replaces the first's notice, so one of the two
+   * refusals is never shown to the person who caused it. The write in flight
+   * is a fact about this card, so it is held for this card.
+   *
+   * **Raised in `onClick`, released in `clickAction`** — see the note on the
+   * button.
+   */
+  const [writing, setWriting] = useState(false);
   if (entries.length === 0 && overflow === 0) return null;
 
   const settle = (entryId: string, outcome: PlannerQueueWriteOutcome): void => {
-    /*
-     * Every refusal is recorded against its own entry — that is the whole of
-     * the bottom matrix row, and it is why this is not a branch.
-     */
     setRefusal(outcome.kind === 'done' ? null : { entryId, outcome });
-    /*
-     * The editor is closed only by a write that SUCCEEDED, and only its own.
-     * A refusal never touches it, so no cell of the matrix can reach a
-     * reader's unsaved sentence.
-     */
-    if (outcome.kind === 'done') {
-      setEditor((current) => current?.entryId === entryId ? null : current);
-    }
   };
 
+  const blocked = busy || writing;
   return (
     <section className={styles.queue} data-nc-pending-queue="" aria-label="Queued messages">
-      <p className={styles.caption} data-nc-pending-queue-caption="">
-        {entries.length + overflow === 1
-          ? 'One message is waiting to send when this turn ends.'
-          : `${entries.length + overflow} messages are waiting to send when this turn ends.`}
-      </p>
-      <ul className={styles.list}>
-        {entries.map((entry) => {
-          /* Whether THIS reader is editing THIS entry. A presentation
-             question, and the only thing that question decides. */
-          const draft = editor?.entryId === entry.entry_id ? editor.draft : null;
-          /* What the server last said about THIS entry. Independent of the
-             above, which is the point — see the matrix on `OpenEditor`. */
-          const shown = refusal?.entryId === entry.entry_id ? refusal.outcome : null;
-          const noticeLine = shown === null ? null : noticeText(shown, draft !== null);
-          /* The winner's text is offered as a REPLACEMENT, so it is only
-             offered where there is something to replace. With no editor open
-             the notice quotes the entry itself, which the row already shows. */
-          const lostRace = shown?.kind === 'stale' && draft !== null ? shown : null;
-          /* The revision the next write carries, edit or delete alike: the one
-             the server reported if it has spoken about this entry, otherwise
-             the one this page was read at. Read from the refusal and NOT from
-             the editor — a refused delete has no editor, and taking it from
-             there is how a retry ended up re-sending a revision it already
-             knew was stale, forever. */
-          const saveRev = shown?.kind === 'stale' ? shown.rev : entry.rev;
-          return (
-            <li key={entry.entry_id} className={styles.item} data-nc-pending-entry={entry.entry_id}>
-              {draft === null
-                ? <p className={styles.text}>{entry.text}</p>
-                : (
-                  <TextArea
-                    label="Edit queued message"
-                    isLabelHidden
-                    rows={3}
-                    value={draft}
-                    isDisabled={busy}
-                    onChange={(value: string) => {
-                      setEditor((current) => current?.entryId === entry.entry_id
-                        ? { ...current, draft: value } : current);
-                    }}
-                  />
-                )}
-              {noticeLine !== null && (
-                <p className={styles.notice} role="status" data-nc-pending-entry-notice="">
-                  {noticeLine}
-                </p>
-              )}
-              {lostRace !== null && (
-                <div className={styles.theirs} data-nc-pending-entry-theirs="">
-                  <p className={styles.text}>{lostRace.text}</p>
-                  <Button
-                    label="Use their version"
+      <VStack gap={1}>
+        <List className={styles.list}>
+          {entries.map((entry) => {
+            const shown = refusal?.entryId === entry.entry_id ? refusal : null;
+            const noticeLine = shown === null
+              ? null
+              : noticeText(shown.outcome);
+            /* The revision the next write carries: the one the server reported
+               if it has spoken about this entry, otherwise the one this page
+               was read at. Without this a refused write retried against a
+               revision it already knew was stale, forever. */
+            const refused = shown?.outcome ?? null;
+            const rev = refused?.kind === 'stale' ? refused.rev : entry.rev;
+            /* And the TEXT that goes with that revision. A stale refusal is
+               the server telling us what the entry says now, so from that
+               moment the row shows the winner's words rather than the ones
+               this page was read at — which is what makes the notice's "it now
+               reads as shown" true, and what stops a reader deleting a message
+               on the strength of text the server has already replaced. */
+            const text = refused?.kind === 'stale' ? refused.text : entry.text;
+            return (
+              <li key={entry.entry_id} data-nc-pending-entry={entry.entry_id}>
+                <div className={styles.bubble}>
+                  {/* One line and an ellipsis. `hasTruncateTooltip` gives the
+                      whole message back on hover, and only when it was
+                      actually shortened — so a short one gets no hover that
+                      repeats what is already on screen. */}
+                  <Text
+                    className={styles.text}
+                    maxLines={1}
+                    hasTruncateTooltip
+                    data-nc-pending-entry-text=""
+                  >
+                    {text}
+                  </Text>
+                  <IconButton
+                    label="Delete this message"
+                    icon={<Icon name="close" size="sm" />}
                     variant="ghost"
                     size="sm"
-                    isDisabled={busy}
-                    onClick={() => {
-                      setEditor((current) => current?.entryId === entry.entry_id
-                        ? { ...current, draft: lostRace.text } : current);
+                    isDisabled={blocked}
+                    /*
+                     * The lock is raised in `onClick` and released in
+                     * `clickAction`. Astryx runs `clickAction` inside
+                     * `startTransition` (`Button.tsx`), and a state update made
+                     * in a transition is non-urgent — measured: setting it
+                     * there produced no locked render at all while the request
+                     * was open, which is precisely the window it exists to
+                     * cover. `onClick` runs before that transition starts.
+                     */
+                    onClick={() => { setWriting(true); }}
+                    clickAction={async () => {
+                      try {
+                        settle(entry.entry_id, await onDelete({ ...entry, text, rev }));
+                      } finally {
+                        setWriting(false);
+                      }
                     }}
                   />
                 </div>
-              )}
-              <div className={styles.actions}>
-                {draft === null
-                  ? (
-                    <>
-                      <Button
-                        label="Edit"
-                        variant="ghost"
-                        size="sm"
-                        isDisabled={busy}
-                        /* `onClick`, not `clickAction`: opening an editor is
-                           local state, and Astryx's action slot shows a
-                           spinner and disables the control until its promise
-                           settles, which is a lie about a synchronous
-                           toggle. The two writes below do use it. */
-                        onClick={() => {
-                          setEditor({ entryId: entry.entry_id, draft: entry.text });
-                          setRefusal(null);
-                        }}
-                      />
-                      <Button
-                        label="Delete"
-                        variant="ghost"
-                        size="sm"
-                        isDisabled={busy}
-                        clickAction={async () => {
-                          settle(entry.entry_id, await onDelete({ ...entry, rev: saveRev }));
-                        }}
-                      />
-                    </>
-                  )
-                  : (
-                    <>
-                      <Button
-                        label="Save"
-                        variant="primary"
-                        size="sm"
-                        isDisabled={busy || draft.trim() === ''}
-                        clickAction={async () => {
-                          settle(entry.entry_id, await onEdit({ ...entry, rev: saveRev }, draft));
-                        }}
-                      />
-                      <Button
-                        label="Cancel"
-                        variant="ghost"
-                        size="sm"
-                        isDisabled={busy}
-                        onClick={() => { setEditor(null); setRefusal(null); }}
-                      />
-                    </>
-                  )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-      {overflow > 0 && (
-        <p className={styles.overflow} role="status" data-nc-pending-overflow="">
-          {overflow === 1
-            ? '1 more queued message is waiting but cannot be shown or edited here.'
-            : `${overflow} more queued messages are waiting but cannot be shown or edited here.`}
-        </p>
-      )}
+                {noticeLine !== null && refused !== null && (
+                  <div className={styles.notice} data-nc-pending-entry-notice="">
+                    <Banner
+                      status={noticeStatus(refused)}
+                      title={noticeHeading(refused)}
+                      description={noticeLine}
+                    />
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </List>
+        {overflow > 0 && (
+          /* The one line of prose left, and it earns its place: these are real
+             messages that will really be sent and that nothing here can
+             address, so without it a person who typed eleven and sees three
+             has been misinformed. "more" only when there is something for them
+             to be more THAN. */
+          <Text as="p" type="supporting" role="status" data-nc-pending-overflow="">
+            {`${overflow} ${entries.length > 0 ? 'more ' : ''}queued message`
+              + `${overflow === 1 ? ' is' : 's are'} waiting but cannot be shown or edited here.`}
+          </Text>
+        )}
+      </VStack>
     </section>
   );
 }

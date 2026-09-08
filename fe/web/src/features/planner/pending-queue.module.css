@@ -1,66 +1,64 @@
+/* #1505 PR4 — the queued-message bubbles that float above the composer.
+
+   Not a surface of their own and not the composer's: each message is its own
+   chip on the page ground, which is what says "already said, still waiting"
+   rather than "the top of the box you are typing in". */
+
 @layer features {
   .queue {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    margin-block-start: var(--space-3);
-    padding: var(--space-3);
-    border-radius: var(--radius-md);
-    background: var(--surface-chip);
+    /* Sits in the composer's `drawer` slot, so the only spacing it owes is the
+       gap between the last bubble and the field's top edge. */
+    padding-block-end: var(--space-2);
+    min-inline-size: 0;
   }
 
-  .caption {
-    margin: 0;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-medium);
-    color: var(--text-3);
+  .queue ul,
+  .queue li {
+    min-inline-size: 0;
   }
 
   .list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    margin: 0;
-    padding: 0;
-    list-style: none;
+    gap: var(--space-1);
   }
 
-  .item {
-    display: flex;
-    flex-direction: column;
+  /*
+   * One bubble. Two tracks: the message and the cross.
+   *
+   * `minmax(0, 1fr)` and not `auto` for the first, and this is load-bearing
+   * rather than a preference: `Text maxLines={1}` truncates by going
+   * `white-space: nowrap`, so its min-content is the WHOLE message. Any track
+   * that respects content minimums gets blown out by it — measured at 712px
+   * inside a 290px composer, with the icon button pushed off the edge and
+   * clipped away entirely. `min-inline-size: 0` on the item alone did not fix
+   * it; the track has to be the thing that refuses.
+   *
+   * Full width, matched to the field below it. A bubble that hugged its text
+   * gave every queued message a different length, so a stack of them was a
+   * ragged edge over a straight one — and the two icons landed in a different
+   * place on every row, which is the half that costs something: they are the
+   * controls, and a control that moves has to be looked for. Same width as the
+   * composer, icons in one column, text ellipsing where the field ends.
+   */
+  .bubble {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
     gap: var(--space-1);
+    min-inline-size: 0;
+    /* Asymmetric on purpose: the text needs an inset from the bubble's edge,
+       the icon button carries its own. */
+    padding: var(--space-px) var(--space-1) var(--space-px) var(--space-3);
+    border-radius: var(--radius-pill);
+    background: var(--surface-chip);
   }
 
   .text {
-    margin: 0;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    font-size: var(--text-sm);
+    min-inline-size: 0;
   }
 
+  /* A refusal is about one bubble, so it hangs under that bubble rather than
+     over the whole strip. */
   .notice {
-    margin: 0;
-    font-size: var(--text-xs);
-    color: var(--text-warning, var(--text-3));
-  }
-
-  .actions {
-    display: flex;
-    gap: var(--space-1);
-  }
-
-  .theirs {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    padding: var(--space-2);
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border-2, var(--surface-chip));
-  }
-
-  .overflow {
-    margin: 0;
-    font-size: var(--text-xs);
-    color: var(--text-3);
+    padding-block: var(--space-1);
   }
 }

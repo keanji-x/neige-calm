@@ -1325,14 +1325,46 @@ describe('ChatComposer', () => {
    * issues it as the next turn. These two say the refusal is gone in both
    * directions a person can send.
    */
-  it('sends while a turn is running, from the control that is on screen for it', async () => {
+  /*
+   * There used to be a `Queue message` button beside Stop and a test here that
+   * pressed it. The button is gone (owner's call, #1505 review): while a turn
+   * runs the one send door is Enter, and it is the door that was always doing
+   * the work — the button called the same `submit`. What a mouse-only reader
+   * lost is the affordance; what nobody lost is this.
+   */
+  it('offers no second send button beside Stop', () => {
+    render(<ChatComposer onSend={vi.fn()} onStop={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Queue message' })).toBeNull();
+    const buttons = screen.getAllByRole('button')
+      .map((button) => button.getAttribute('aria-label') ?? button.textContent);
+    expect(buttons).toEqual(['Stop']);
+  });
+
+  /*
+   * Enter belongs to the control it was pressed on.
+   *
+   * The composer's key handler is on its root and captures, which was harmless
+   * while the field was the only focusable thing under it. The `drawer` slot
+   * changed that — the queued-message bubbles live inside this root now, each
+   * with its own buttons — and the `allowEmptyText` branch then sent the
+   * picked image and called `preventDefault()`, so the button the person was
+   * actually on never fired.
+   */
+  it('does not send when Enter is pressed on something else in the composer', () => {
     const onSend = vi.fn();
-    render(<ChatComposer onSend={onSend} onStop={vi.fn()} />);
-    await userEvent.type(messageField(), 'while it works');
-    /* Named for what it does, not "Send": Send is the *other* state of the one
-       button that is currently Stop, and two buttons cannot both be Send. */
-    await userEvent.click(screen.getByRole('button', { name: 'Queue message' }));
-    expect(onSend).toHaveBeenCalledWith('while it works');
+    const pressed = vi.fn();
+    render(
+      <ChatComposer
+        onSend={onSend}
+        allowEmptyText
+        drawer={<button type="button" onKeyDown={pressed}>Delete this message</button>}
+      />,
+    );
+    const button = screen.getByRole('button', { name: 'Delete this message' });
+    button.focus();
+    fireEvent.keyDown(button, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(pressed).toHaveBeenCalledTimes(1);
   });
 
   it('sends with Enter while a turn is running', async () => {
@@ -1345,25 +1377,26 @@ describe('ChatComposer', () => {
   });
 
   /*
-   * The queue control exists *because* the send button is showing Stop, so it
-   * has no business being there when Send is available — two controls doing
-   * the same thing, one of them describing the wrong mechanism. And while a
-   * turn does run it obeys the same emptiness rule Send does: nothing to send
-   * is nothing to queue.
+   * Emptiness still governs, and it governs the surviving door.
+   *
+   * The rule this used to state about the queue button — nothing to send is
+   * nothing to queue — was never the button's; it is Astryx's `handleSubmit`,
+   * which refuses an empty draft before it calls `onSubmit`. Removing the
+   * button removed a restatement of the rule, not the rule.
    */
-  it('offers the queue control only while a turn is running, and never over an empty draft', async () => {
+  it('sends nothing over an empty draft, turn running or not', async () => {
     const onSend = vi.fn();
     const { rerender } = render(<ChatComposer onSend={onSend} />);
-    expect(screen.queryByRole('button', { name: 'Queue message' })).toBeNull();
+    fireEvent.keyDown(messageField(), { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
 
     rerender(<ChatComposer onSend={onSend} onStop={vi.fn()} />);
-    const queue = screen.getByRole('button', { name: 'Queue message' });
-    expect(queue.hasAttribute('disabled')).toBe(true);
-    await userEvent.click(queue);
+    fireEvent.keyDown(messageField(), { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
 
     await userEvent.type(messageField(), 'now there is something');
-    expect(screen.getByRole('button', { name: 'Queue message' }).hasAttribute('disabled')).toBe(false);
+    fireEvent.keyDown(messageField(), { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('now there is something');
   });
 
   /*
@@ -1382,10 +1415,6 @@ describe('ChatComposer', () => {
        this one, not before the reader started typing. */
     rerender(<ChatComposer onSend={onSend} onStop={vi.fn()} disabled />);
     fireEvent.keyDown(messageField(), { key: 'Enter' });
-    /* `fireEvent`, not `userEvent`: Astryx's disabled root sets
-       `pointer-events: none`, and a real pointer therefore never reaches the
-       button at all. What is under test is the handler behind it. */
-    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
     expect(onSend).not.toHaveBeenCalled();
   });
 

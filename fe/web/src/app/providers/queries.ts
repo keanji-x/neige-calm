@@ -53,7 +53,7 @@ import {
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptPlannerOperation, sendPlannerInputOperation,
   plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
-  createSerialWriter, deletePlannerInputOperation, editPlannerInputOperation,
+  createSerialWriter, deletePlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
   uploadPlannerAttachmentOperation,
   type Conversation, type ModelSelection, type ModelSelectionResult,
@@ -327,9 +327,17 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     send: (text: string, attachments: readonly string[] = []) => runOperation(transport, sendPlannerInputOperation(cardId, text, attachments), unauthorized).then(refreshAfter),
     interrupt: () => runOperation(transport, interruptPlannerOperation(cardId), unauthorized).then(refreshAfter),
     /*
-     * #1505 PR4 — the two queue writes.
+     * #1505 PR4 — the queue write.
      *
-     * They resolve rather than reject on a refusal, and that is the point: a
+     * One, now: the strip's only control removes the message, and editing a
+     * queued message in place has no front end. The edit route is
+     * `PATCH /api/cards/{id}/planner/input/{entry_id}` — `routes/cards.rs`
+     * mounts `patch(...).delete(...)` on that path, and `put` belongs to
+     * `/planner/model`, which is a different route — and it is still served;
+     * nothing in the browser calls it any more, the way `POST /planner/reset`
+     * was left standing when #1139 removed its last caller.
+     *
+     * It resolves rather than rejects on a refusal, and that is the point: a
      * lost compare-and-swap and a drained entry are answers the reader has to
      * be shown, not errors to be swallowed by a generic mutation error
      * channel. Only the classification happens here; `core/domain` owns which
@@ -338,14 +346,6 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
      * The refresh runs on every path including the refusals — a 409 proves the
      * cached page is behind, and a 404 proves the entry is not there at all.
      */
-    editQueued: (entryId: string, text: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
-      runOperation(transport, editPlannerInputOperation(cardId, entryId, text, ifEntryRev), unauthorized)
-        .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
-        .catch((error: unknown) => plannerQueueWriteFailure(
-          error instanceof ApiError ? error.failure : null,
-          queueWriteMessage(error, 'Could not change the queued message.'),
-        ))
-        .then(refreshAfter),
     deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
       runOperation(transport, deletePlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
         .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))

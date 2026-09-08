@@ -108,9 +108,9 @@ function Card() {
   );
 }
 
-/** The same card with a turn in flight, which is the only state that renders
- *  Stop and therefore the only one that renders the queue control beside it. */
-function RunningCard() {
+/** A card with an image picked and nothing typed, which is the one state that
+ *  renders the composer's own send door beside Astryx's. */
+function ImageOnlyCard() {
   return (
     <div style={{ position: 'absolute', insetBlock: 20, insetInlineEnd: 24, inlineSize: 396 }}>
       <div
@@ -119,7 +119,7 @@ function RunningCard() {
           ['--nc-card-radius' as string]: '16px',
         }}
       >
-        <ChatComposer onSend={vi.fn()} onStop={vi.fn()} onNewConversation={vi.fn()} />
+        <ChatComposer onSend={vi.fn()} allowEmptyText onNewConversation={vi.fn()} />
       </div>
     </div>
   );
@@ -261,7 +261,7 @@ describe('the / command menu, as the engine lays it out', () => {
   });
 
   /*
-   * ── #1505's queue control, on the same terms as Send above ───────────────
+   * ── #1505's own send door, on the same terms as Send above ──────────────
    *
    * `.queueSend` is a CSS-Module rule on a button that lives inside Astryx's
    * `sendActions` slot, i.e. inside the vendor's compiled StyleX subtree. It
@@ -272,22 +272,26 @@ describe('the / command menu, as the engine lays it out', () => {
    *   1. it is filled with `--surface-chip`, the same material the Send rule
    *      above gives Astryx's own button, so the two read as one thing; and
    *   2. it is 32px tall, which is Astryx's `.footer { min-height: 32px }`, so
-   *      it sits on Stop's baseline instead of growing the row.
+   *      it sits on the send button's baseline instead of growing the row.
    *
    * Both are compared against the engine rather than against a literal: the
    * fill against a probe carrying the token (so "connected" is distinguishable
-   * from "fell back"), and the height against **Stop's own measured box** (so
-   * this is the claim actually being made — same baseline — rather than the
-   * number 32 written down twice).
+   * from "fell back"), and the height against **the send button's own measured
+   * box** (so this is the claim actually being made — same baseline — rather
+   * than the number 32 written down twice).
    */
-  it('paints the queue control in Send\'s material and on Stop\'s baseline', async () => {
+  it('paints the composer\'s own send door in Send\'s material and on its baseline', async () => {
     await page.viewport(1400, 900);
-    render(<RunningCard />);
-    await typeInto(field(), 'while it works');
+    render(<ImageOnlyCard />);
 
-    const queue = document.querySelector<HTMLElement>('[data-nc-send-queued]')!;
-    const stop = document.querySelector<HTMLElement>('button[aria-label="Stop"]')!;
-    const painted = getComputedStyle(queue);
+    /* `Send image`, not `Queue message`: the latter stood beside Stop while a
+       turn ran and was removed (#1505 review). The rule under test never
+       belonged to that button — both doors share `.queueSend` and the same
+       slot — so the claim survives its removal and is made here against the
+       door that is left. */
+    const door = document.querySelector<HTMLElement>('[data-nc-send-attachment]')!;
+    const send = document.querySelector<HTMLElement>('button[aria-label="Send"]')!;
+    const painted = getComputedStyle(door);
 
     const probe = document.createElement('div');
     probe.style.backgroundColor = 'var(--surface-chip)';
@@ -299,14 +303,14 @@ describe('the / command menu, as the engine lays it out', () => {
     expect(painted.backgroundColor).not.toBe(getComputedStyle(probe).backgroundColor);
     probe.remove();
 
-    const queueBox = queue.getBoundingClientRect();
-    const stopBox = stop.getBoundingClientRect();
-    expect(queueBox.height).toBe(stopBox.height);
+    const doorBox = door.getBoundingClientRect();
+    const sendBox = send.getBoundingClientRect();
+    expect(doorBox.height).toBe(sendBox.height);
     /* Same row, not merely the same height: a wrapped footer would satisfy the
        line above and still be the layout this rule exists to prevent. */
-    expect(Math.abs(queueBox.top - stopBox.top)).toBeLessThan(1);
-    /* Left of Stop, which is what the `sendActions` slot means. */
-    expect(queueBox.right).toBeLessThanOrEqual(stopBox.left + 1);
+    expect(Math.abs(doorBox.top - sendBox.top)).toBeLessThan(1);
+    /* Left of it, which is what the `sendActions` slot means. */
+    expect(doorBox.right).toBeLessThanOrEqual(sendBox.left + 1);
   });
 
   /*

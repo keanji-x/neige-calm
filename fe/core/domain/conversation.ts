@@ -388,7 +388,48 @@ export type PlannerRun = Readonly<{
    * server is older than the feature.
    */
   attachments_supported: boolean;
+  /**
+   * #1255 S3 — how full the model's context is, or `null` when the harness has
+   * never reported it (a dormant card, a thread that has not had a response
+   * yet, a server older than the feature).
+   */
+  token_usage: PlannerRunTokenUsage | null;
 }>;
+
+/**
+ * The context-occupancy reading, exactly as the server ships it.
+ *
+ * **`percent` is the server's number and the only thing a meter may be drawn
+ * from.** It is not `used_tokens / context_window`: the kernel subtracts the
+ * prompt-and-tools floor every thread starts with from *both* sides, so the
+ * two ratios differ and only one of them is the one upstream's own bar shows.
+ * `crates/calm-server/src/harness/token_usage.rs` states the rule and holds
+ * the constant; nothing here re-derives it, and nothing here should.
+ *
+ * `percent` is `null` when no honest percentage exists — no known window, a
+ * window at or below that floor, or a count that overshot the window (a real,
+ * measured, 0.002%-of-frames anomaly the kernel refuses to clamp into a
+ * plausible-looking full bar). A reader that wants to distinguish the last
+ * case can: it has both numbers.
+ */
+export type PlannerRunTokenUsage = Readonly<{
+  /** Tokens in the model's context as of its most recent response. */
+  used_tokens: number;
+  /** The model's context window, or `null` when codex has never named one. */
+  context_window: number | null;
+  /** Context occupancy in `0..=100`, or `null` — see above. */
+  percent: number | null;
+  /** Wall clock of the codex frame this came from. The reading survives a
+   *  reboot, so a rehydrated one can be months old and says so. */
+  at_ms: number;
+}>;
+
+const plannerRunTokenUsageSchema: z.ZodType<PlannerRunTokenUsage> = z.object({
+  used_tokens: z.number(),
+  context_window: z.number().nullable(),
+  percent: z.number().nullable(),
+  at_ms: z.number(),
+});
 
 export const HARNESS_ITEMS_PAGE_LIMIT = 300;
 
@@ -421,6 +462,11 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
       /* Absent on a server older than #1505 S6, and false is the safe read:
          a control that looks live and then refuses is the worse wrong. */
       attachments_supported: z.boolean().optional().default(false),
+      /* Absent on a server older than #1255 S3, and absent on this one
+         whenever the harness has never reported a usage frame — a dormant
+         card, or a thread nothing has answered in yet. `null` is the reading
+         for all of those, and it is the one that draws no meter. */
+      token_usage: plannerRunTokenUsageSchema.nullable().optional().default(null),
     }),
   };
 }
@@ -753,23 +799,19 @@ function plannerInputPath(cardId: string, entryId: string): string {
   return `/api/cards/${encodeURIComponent(cardId)}/planner/input/${encodeURIComponent(entryId)}`;
 }
 
-/**
- * Rewrite one queued message, refusing if somebody moved it first.
+/*
+ * There is no `editPlannerInputOperation`, and that is deliberate.
  *
- * `ifEntryRev` is the revision the reader was shown. The kernel compares it
- * under the same lock that applies the write, so a 409 means the text on the
- * server is not the text this edit was composed against — see
- * {@link plannerInputStaleFrom}.
+ * `PATCH .../planner/input/{entry_id}` is still served and is not going
+ * anywhere; what was removed is the browser's way of reaching it. The queue
+ * strip offers one control, and it removes the message — editing a queued
+ * message in place has no front end at all — so the only queue write this
+ * client makes is the delete below. Exported dead code invites the next reader
+ * to wire it back up under a UI that does not exist.
+ *
+ * Same shape as the missing `resetPlannerOperation` a few lines down: an
+ * endpoint the server keeps and the client no longer calls.
  */
-export function editPlannerInputOperation(
-  cardId: string, entryId: string, text: string, ifEntryRev: number,
-): ApiOperation<PlannerInputMutation> {
-  return {
-    method: 'PATCH', path: plannerInputPath(cardId, entryId),
-    body: { text, if_entry_rev: ifEntryRev },
-    responseSchema: plannerInputMutationSchema,
-  };
-}
 
 /** Remove one queued message, refusing if somebody moved it first. */
 export function deletePlannerInputOperation(

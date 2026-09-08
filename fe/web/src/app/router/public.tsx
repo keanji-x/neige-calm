@@ -11,6 +11,7 @@ import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
 } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { HStack } from '@astryxdesign/core/HStack';
 import { onlineManager, useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -32,6 +33,7 @@ import {
   cardAddMenuEntries, isAssistantHarnessPayload, isPlannerHarnessPayload, partitionTrackCards,
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
+import footerStyles from './composer-footer.module.css';
 import { TodayPage } from '../../features/today/public.tsx';
 import { nameTodaySummaryConversation } from '../../../../core/domain/today.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
@@ -43,6 +45,7 @@ import {
   ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
 } from '../../features/chat/thread/public.tsx';
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
+import { ContextRing } from '../../features/chat/thread/context-ring.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { useIndependentTaskLaunch } from './independent-task.tsx';
@@ -68,7 +71,7 @@ import {
   FOLLOW_INSTALLATION_DEFAULT,
   type Conversation, type ConversationKind, type ConversationMessage, type ConversationState,
   type ConversationTurn, type ModelCatalog, type ModelSelection,
-  type OptimisticConversationTurn, type PendingQueueEntry,
+  type OptimisticConversationTurn, type PendingQueueEntry, type PlannerRunTokenUsage,
   type PlannerQueueWriteOutcome, type SendOutcome, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
@@ -132,7 +135,6 @@ type ConversationStore = Readonly<{
   pendingQueue: readonly PendingQueueEntry[];
   /** Queued messages that exist but carry no id to address them by. */
   pendingQueueOverflow: number;
-  editQueuedEntry: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueWriteOutcome>;
   deleteQueuedEntry: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
   historyReady: boolean;
   historyLoading: boolean;
@@ -153,6 +155,9 @@ type ConversationStore = Readonly<{
   send: (conversationId: string, text: string, attachments?: readonly PlannerAttachment[]) => Promise<SendOutcome>;
   /** Whether this card's track can take image attachments at all. */
   attachmentsSupported: boolean;
+  /** #1255 S3 — how full this conversation's context is; `null` when the
+   *  harness has never said. */
+  contextUsage: PlannerRunTokenUsage | null;
   /** Upload one image for this card. See `UploadAttachment`. */
   uploadAttachment: UploadAttachment;
   interrupt: () => void;
@@ -315,7 +320,57 @@ export function useConversationStore(
      below: an entry the queue region is drawing must not also be drawn in the
      transcript. It is recomputed on every read, never latched — an entry that
      drains leaves this set and its echo becomes visible again. */
-  const pendingQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
+  /*
+   * Entries this client has had a `done` DELETE for, and which the cached page
+   * has not caught up with yet — so a confirmed delete does not leave its
+   * bubble on screen, still offering a control, until the refetch lands.
+   *
+   * Keyed by entry id and cleared when the page stops listing them, so it is a
+   * catch-up window and not a second source of truth: the moment the server's
+   * own page agrees, the id leaves this set.
+   */
+  /*
+   * Entries this client has had a `done` DELETE for, and which the cached page
+   * has not caught up with yet.
+   *
+   * **Keyed by card AND entry, not by entry.** Entry ids are unique per card
+   * and this hook serves whichever card `scope` currently names, so a bare id
+   * is a mask over the wrong queue: delete A/x and B's own x disappears.
+   * Clearing the set on every card change was the first attempt and it is not
+   * the same thing — it leaves a window (a DELETE from A that answers after
+   * the switch still writes a bare id into B's mask) and it throws away
+   * tombstones that are still needed (leave A and come back before its page
+   * refreshes, and the deleted bubble is there again). A composite key needs
+   * neither the reset nor the window: an entry from another card simply never
+   * matches.
+   */
+  const [forgotten, setForgotten] = useState<ReadonlySet<string>>(() => new Set());
+  const forgottenKey = (card: string, entryId: string): string => `${card}\u0000${entryId}`;
+  const servedQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
+  const pendingQueue = useMemo(
+    () => (forgotten.size === 0
+      ? servedQueue
+      : servedQueue.filter((entry) => !forgotten.has(forgottenKey(cardId, entry.entry_id)))),
+    [servedQueue, forgotten, cardId],
+  );
+  useEffect(() => {
+    if (forgotten.size === 0) return;
+    /* A tombstone is retired only when the page that owns it says the entry is
+       gone. Keys for OTHER cards are left alone: this card's page says nothing
+       about them, and dropping them here is how a tombstone was lost while its
+       own card was not on screen. */
+    const served = new Set(servedQueue.map((entry) => forgottenKey(cardId, entry.entry_id)));
+    const mine = (key: string) => key.startsWith(`${cardId}\u0000`);
+    /* Only when there is something to drop — an unconditional `setForgotten`
+       here re-renders forever. */
+    if (![...forgotten].some((key) => mine(key) && !served.has(key))) return;
+    setForgotten((current) => new Set(
+      [...current].filter((key) => !mine(key) || served.has(key)),
+    ));
+  }, [servedQueue, forgotten, cardId]);
+  const forgetQueuedEntry = (entryId: string): void => {
+    setForgotten((current) => new Set([...current, forgottenKey(cardId, entryId)]));
+  };
   const pendingQueueOverflow = run.data?.pending_overflow ?? 0;
   const pendingQueueIds = useMemo(
     () => new Set(pendingQueue.map((entry) => entry.entry_id)), [pendingQueue],
@@ -880,44 +935,15 @@ export function useConversationStore(
       turns: knownTurns.filter((turn) => !isRetired(turn)),
     }));
   };
-  /**
-   * Carry an accepted edit onto the echo that is standing in for it.
-   *
-   * The echo is retired by TEXT: `reconcileOptimisticConversationTurns` asks
-   * `userTextMatchesEcho` whether a persisted row is this echo coming back
-   * (`core/domain/conversation.ts`). Rewriting the queue entry and leaving the
-   * echo alone therefore breaks the only retirement route it has — the row
-   * that eventually lands says the NEW text, the echo still says the old one,
-   * they never match, and once the entry drains out of `pending` the `:448`
-   * filter stops hiding it. The reader is then looking at the edited message
-   * AND at a permanent pre-edit ghost captioned "sends when this turn ends",
-   * re-merged from the registry on every remount.
-   *
-   * So this is not cosmetic text-keeping: it is what keeps an edited message
-   * reconcilable at all. `retireQueuedEcho` is the wrong tool here — the
-   * message has not been withdrawn, it is still going to be sent and still
-   * going to come back — which is exactly why the two paths differ.
-   */
-  const rewriteQueuedEcho = (entryId: string, text: string): void => {
-    const claims = (turn: TranscriptEntry) =>
-      isOptimisticConversationTurn(turn) && turn.entryId === entryId;
-    setEchoes((current) => current.map((turn) => claims(turn) ? { ...turn, text } : turn));
-    registry.updateExisting(cardId, ({ conversation: known, turns: knownTurns }) => ({
-      conversation: known,
-      turns: knownTurns.map((turn) => claims(turn) ? { ...turn, text } : turn),
-    }));
-  };
-  const editQueuedEntry = (entry: PendingQueueEntry, text: string) =>
-    mutations.editQueued(entry.entry_id, text, entry.rev).then((outcome) => {
-      if (outcome.kind === 'done') rewriteQueuedEcho(entry.entry_id, text);
-      return outcome;
-    });
   const deleteQueuedEntry = (entry: PendingQueueEntry) =>
     mutations.deleteQueued(entry.entry_id, entry.rev).then((outcome) => {
       /* `gone` is not a retirement: the entry left the queue because it
          drained, and the transcript row for it is on its way. Only a delete
          that actually happened means nothing more is coming. */
-      if (outcome.kind === 'done') retireQueuedEcho(entry.entry_id);
+      if (outcome.kind === 'done') {
+        retireQueuedEcho(entry.entry_id);
+        forgetQueuedEntry(entry.entry_id);
+      }
       return outcome;
     });
 
@@ -967,7 +993,6 @@ export function useConversationStore(
     sendBlocked,
     pendingQueue,
     pendingQueueOverflow,
-    editQueuedEntry,
     deleteQueuedEntry,
     historyReady: history.data !== undefined,
     historyLoading: history.isFetching,
@@ -1002,6 +1027,7 @@ export function useConversationStore(
     send: (conversationId, text, attachments) => failedSend === null || failedSend.delivery === 'refused'
       ? send(conversationId, text, attachments) : Promise.resolve('not-sent'),
     attachmentsSupported: run.data?.attachments_supported ?? false,
+    contextUsage: run.data?.token_usage ?? null,
     uploadAttachment: mutations.uploadAttachment,
     interrupt,
     retryHistory: () => { void history.refetch().catch(() => undefined); },
@@ -1341,7 +1367,6 @@ function useConversationPanel(
   const [composerFocusFor, setComposerFocusFor] = useState<string | null>(null);
   const [resendConfirmation, setResendConfirmation] = useState<string | null>(null);
   const [composerDraft, setComposerDraft] = useState('');
-
   const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
   useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
   const scope: PlannerConversationScope | null = openRowId !== null
@@ -2012,17 +2037,43 @@ function useConversationPanel(
                 });
               }}
               allowEmptyText={attachments.items.length > 0}
-              drawer={<PlannerAttachmentDrawer attachments={attachments} />}
-              headerActions={(
-                <PlannerAttachButton
-                  attachments={attachments}
-                  support={{
-                    available: store.attachmentsSupported,
-                    reason: ATTACHED_WORKSPACE_REASON,
-                  }}
-                  disabled={store.sendBlocked || !store.historyReady}
-                />
+              /*
+               * #1505 PR4 — the queue lives INSIDE the composer, above the
+               * field, and not at the foot of the transcript.
+               *
+               * It was under the transcript, which put it in the column that
+               * says "this is what was said in this conversation". These
+               * messages were not said in it: they have not reached the model,
+               * they have no transcript row, and half of them may be taken
+               * back before they ever do. Rendering them there answered a
+               * question nobody asked — "did I say this?" — with a yes.
+               *
+               * Above the field is where they belong, and it is what Astryx's
+               * `drawer` slot is documented for ("attachments, context chips,
+               * etc."): things that are attached to the message you are about
+               * to send rather than part of the conversation behind it. The
+               * two occupants are ordered by how close they are to that
+               * message — the queue is what is already committed and waiting,
+               * the attachment strip is what the sentence you are typing right
+               * now will carry, so the strip sits nearer the field.
+               */
+              drawer={(
+                <>
+                  <PendingQueue
+                    entries={store.pendingQueue}
+                    overflow={store.pendingQueueOverflow}
+                    busy={store.sending}
+                    onDelete={store.deleteQueuedEntry}
+                  />
+                  <PlannerAttachmentDrawer attachments={attachments} />
+                </>
               )}
+              /* #1255 S3 — the ring stands immediately before Send, where the
+                 question it answers ("is there room for what I am about to
+                 say?") is being asked. It renders nothing at all until the
+                 harness has reported a usage frame, so a dormant card's
+                 composer is unchanged. */
+              sendAdornment={<ContextRing usage={store.contextUsage} />}
               /* `stopping` keeps Stop *shown* while the interrupt is in flight;
                  it is not passed down as a prop of its own, because the composer
                  cannot make Astryx's Stop unavailable and `interrupt()` above
@@ -2046,13 +2097,32 @@ function useConversationPanel(
                  The control stays available throughout, because choosing what
                  the next message runs with is a reasonable thing to do while
                  waiting. */
+              /*
+               * The footer row holds every per-conversation control, in one
+               * line with Send. The attach button used to have the composer's
+               * header row to itself — one control, its own row, above the
+               * field — which spent a whole band of a 364px drawer on a
+               * paperclip. With `headerActions` unset that row does not render
+               * at all (Astryx draws it only when one of its two slots is
+               * filled), so this is a row removed, not a row moved.
+               */
               footerActions={(
-                <ModelPill
-                  catalog={store.modelCatalog}
-                  selection={store.model}
-                  onChange={store.setModel}
-                  isDisabled={!store.historyReady}
-                />
+                <HStack gap={1} align="center" className={footerStyles.group}>
+                  <PlannerAttachButton
+                    attachments={attachments}
+                    support={{
+                      available: store.attachmentsSupported,
+                      reason: ATTACHED_WORKSPACE_REASON,
+                    }}
+                    disabled={store.sendBlocked || !store.historyReady}
+                  />
+                  <ModelPill
+                    catalog={store.modelCatalog}
+                    selection={store.model}
+                    onChange={store.setModel}
+                    isDisabled={!store.historyReady}
+                  />
+                </HStack>
               )}
             />
           </>
@@ -2129,16 +2199,6 @@ function useConversationPanel(
                 pending={store.pending.has(open.id)}
               />
             )}
-            {/* #1505 PR4 — the queue region, directly under the transcript and
-              * above the composer, because that is where the messages it holds
-              * were typed and where they will appear once they send. */}
-            <PendingQueue
-              entries={store.pendingQueue}
-              overflow={store.pendingQueueOverflow}
-              busy={store.sending}
-              onEdit={store.editQueuedEntry}
-              onDelete={store.deleteQueuedEntry}
-            />
             {/*
               * Nothing else follows the transcript.
               *

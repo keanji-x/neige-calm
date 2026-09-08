@@ -3,17 +3,60 @@
     display: contents;
   }
 
-  .trigger {
-    max-inline-size: 14rem;
+  /*
+   * Both triggers, smaller and quieter than the field above them.
+   *
+   * These name a *setting* — what the next message will run with — and a
+   * setting is something you check, not something you read. At body size in
+   * full-strength text they were the loudest thing in the footer, on a row
+   * whose actual subject is the send button. Size and colour are the two
+   * properties overridden on the vendor button; both are tokens, and neither
+   * re-implements anything the button does.
+   *
+   * `--text-3` is the app's secondary text, which `check-contrast.mjs` already
+   * holds to AA on every surface in the stylesheet.
+   */
+  .trigger,
+  .effort {
+    font-size: var(--text-xs);
+    color: var(--text-3);
   }
 
-  /* A standing explanation, not a menu row: it must not look pressable. */
+  /*
+   * A ceiling AND a floor of zero.
+   *
+   * 9rem, and the number is measured rather than chosen.
+   *
+   * With the old 14rem and a long name
+   * (`gpt-5.1-codex-max-experimental-preview-2026`), the footer's content came
+   * to 392px inside a 364px drawer and the send button's right edge landed
+   * 36px OUTSIDE it — the send button, not the pill, because Astryx's own
+   * `footerLeft` keeps `min-width: auto` and pushes its sibling out rather
+   * than shrinking. `min-inline-size: 0` on this control and on the row it
+   * sits in is necessary and was not sufficient: the box that refuses is the
+   * vendor's, and reaching into it by its generated class names would be a
+   * fixture around somebody else's internals.
+   *
+   * So the ceiling does the work instead. 9rem measured zero escaping boxes at
+   * 364px; 14rem measured six. It is ~24 characters at `--text-xs`, which
+   * holds every name in the catalog this was measured against
+   * (`gpt-6-astra`, `gpt-5.1-codex-max`) uncut, and truncates the rest with
+   * the ellipsis and hover this control already had.
+   */
+  .group {
+    min-inline-size: 0;
+  }
+
+  .trigger {
+    max-inline-size: 9rem;
+    min-inline-size: 0;
+  }
+
+  /* A standing explanation, not a menu row: it must not look pressable. The
+     type is `Text type="supporting"`; what is left here is the box. */
   .note {
-    max-inline-size: 20rem;
+    max-inline-size: 9rem;
     padding: var(--space-1) var(--space-2);
-    color: var(--text-3);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
     user-select: none;
   }
 }

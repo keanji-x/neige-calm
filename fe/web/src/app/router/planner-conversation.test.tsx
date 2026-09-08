@@ -351,8 +351,17 @@ describe('planner conversation regressions', () => {
      * property of the *chosen model* — it renders only when that model offers
      * more than one — so with no catalog there is nothing to offer, and a
      * second trigger appearing here would be the regression.
+     *
+     * `Attach an image` joined the list when the attach control became an
+     * `IconButton` — the composer's `headerActions` slot is specified to hold
+     * icon-only buttons, and the version before it was a `<label>` wrapping a
+     * file input, which is why the inventory never saw it. It is one control
+     * either way; what changed is that it is now announced, focusable and
+     * disable-able as one.
      */
-    expect([...names].sort()).toEqual(['Close conversation', 'Model: Default', 'Send']);
+    expect([...names].sort()).toEqual([
+      'Attach an image', 'Close conversation', 'Model: Default', 'Send',
+    ]);
     expect(screen.queryByRole('button', { name: /reset/i })).toBeNull();
   });
 
@@ -687,18 +696,23 @@ describe('planner conversation regressions', () => {
    * #1505 PR4 — the compare-and-swap reaches the wire.
    *
    * The revision is the entry's, read from the page the reader was shown, not
-   * a constant and not the client's guess. Sending the wrong one is how an
-   * edit silently overwrites text somebody else already changed — which is
-   * the whole reason the endpoint takes it.
+   * a constant and not the client's guess. Sending the wrong one is how a
+   * take-back silently removes a message somebody else already changed —
+   * which is the whole reason the endpoint takes it.
+   *
+   * It is a DELETE and no longer a PATCH: the strip's one control removes the
+   * message, and editing it in place was removed with the pencil. The
+   * guarantee under test did not move — the revision the reader was shown is
+   * the revision the wire carries.
    */
-  it('sends the listed revision as if_entry_rev when editing a queued message', async () => {
+  it('sends the listed revision as if_entry_rev when removing a queued message', async () => {
     const entry = { entry_id: 'entry-9', text: 'first words', rev: 3, queued_at_ms: 5 };
     const { requests } = setup((request) => {
       if (request.path.endsWith('/planner/run')) {
         return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 });
       }
-      if (request.method === 'PATCH' && request.path.includes('/planner/input/')) {
-        return ok({ card_id: CARD.id, entry_id: entry.entry_id, rev: 4, text: 'second words' });
+      if (request.method === 'DELETE' && request.path.includes('/planner/input/')) {
+        return ok({ card_id: CARD.id, entry_id: entry.entry_id, rev: 4, text: null });
       }
       return undefined;
     });
@@ -707,79 +721,14 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Edit queued message' }), {
-      target: { value: 'second words' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
 
     await waitFor(() => {
-      expect(requests.some((request) => request.method === 'PATCH')).toBe(true);
+      expect(requests.some((request) => request.method === 'DELETE')).toBe(true);
     });
-    const patch = requests.find((request) => request.method === 'PATCH');
-    expect(patch?.path).toBe(`/api/cards/${CARD.id}/planner/input/entry-9`);
-    expect(patch?.body).toEqual({ text: 'second words', if_entry_rev: 3 });
-  });
-
-  /*
-   * #1505 PR4 review — an EDITED queued message survives the drain exactly once.
-   *
-   * The echo is retired by TEXT (`userTextMatchesEcho`). Rewriting the queue
-   * entry without rewriting the echo therefore breaks its only retirement
-   * route: the row that eventually lands says the new text, the echo still
-   * says the old one, they never match, and once the entry leaves `pending`
-   * the visibility filter stops hiding it. The reader is then looking at the
-   * edited message AND at a permanent pre-edit ghost.
-   *
-   * This test drains after the edit, which is what the original PR4 tests
-   * never did — they stopped at the 200.
-   */
-  it('does not leave a pre-edit ghost after an edited message drains', async () => {
-    const entry = { entry_id: 'entry-9', text: 'look at report', rev: 0, queued_at_ms: 5 };
-    let listed = false;
-    let edited = false;
-    setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({
-          ...PLANNER_RUN_IDLE, phase: 'turn_running',
-          // The drain: after the edit the entry leaves the queue.
-          pending: listed && !edited ? [entry] : [], pending_overflow: 0,
-        });
-      }
-      if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
-        listed = true;
-        return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: entry.entry_id });
-      }
-      if (request.method === 'PATCH' && request.path.includes('/planner/input/')) {
-        edited = true;
-        return ok({ card_id: CARD.id, entry_id: entry.entry_id, rev: 1, text: 'look at the diff' });
-      }
-      return undefined;
-    });
-    await openConversation();
-    await screen.findByRole('button', { name: 'Stop' });
-    const field = messageField();
-    await typeInto(field, 'look at report');
-    await sendWithEnter(field);
-    await waitFor(() => {
-      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Edit queued message' }), {
-      target: { value: 'look at the diff' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-    // Drained: the queue region lets go, and the echo comes back carrying the
-    // text that was actually saved.
-    await waitFor(() => {
-      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
-    });
-    await waitFor(() => {
-      expect(screen.getAllByText('look at the diff')).toHaveLength(1);
-    });
-    expect(screen.queryAllByText('look at report')).toHaveLength(0);
+    const removal = requests.find((request) => request.method === 'DELETE');
+    expect(removal?.path).toBe(`/api/cards/${CARD.id}/planner/input/entry-9`);
+    expect(removal?.body).toEqual({ if_entry_rev: 3 });
   });
 
   /*
@@ -821,7 +770,7 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
 
     await waitFor(() => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
@@ -996,7 +945,6 @@ describe('planner conversation regressions', () => {
         expect(messageField().getAttribute('contenteditable')).toBe('false');
         expect((await screen.findByRole('alert')).textContent).toContain('This conversation is stuck');
         expect(screen.getByRole('button', { name: 'Start a new conversation' })).toBeTruthy();
-        expect(screen.queryByRole('button', { name: 'Queue message' })).toBeNull();
         await sendWithEnter(messageField());
         expect(input()).toHaveLength(0);
         expect(document.querySelector('[data-nc-queued]')).toBeNull();
@@ -1019,15 +967,22 @@ describe('planner conversation regressions', () => {
     },
   );
 
-  /* And Stop is untouched by all of the above: the second control was added
-     beside it, not in place of it. */
-  it('keeps Stop working while the queue control is on screen', async () => {
+  /*
+   * Stop is the only control in that corner now.
+   *
+   * `Queue message` used to stand beside it so a mouse had a way to send
+   * during a turn; it is gone, and this pins the half that matters: Stop is
+   * still there and still stops. That queuing itself survives its removal is
+   * held down by the `[F4]`/`[F5]`/`[F6]` cases in `track-conversation.test.tsx`,
+   * which drive the same `POST /planner/input` through Enter.
+   */
+  it('keeps Stop working, and offers nothing else beside it', async () => {
     const { requests } = setup((request) => request.path.endsWith('/planner/run')
       ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
       : undefined);
     await openConversation();
     const stop = await screen.findByRole('button', { name: 'Stop' });
-    expect(screen.getByRole('button', { name: 'Queue message' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Queue message' })).toBeNull();
     fireEvent.click(stop);
     await waitFor(() => {
       expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
