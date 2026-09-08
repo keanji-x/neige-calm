@@ -226,6 +226,17 @@ async fn candidate_review_qualification_raw_event_cannot_forge_or_replay_accepta
     )
     .await
     .unwrap();
+    let view = listed(&fx).await;
+    let producer_view = view["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["key"] == "produce")
+        .unwrap();
+    assert_eq!(
+        producer_view["file_delivery"]["qualified"], false,
+        "an unreceipted event must not qualify the public read, even when foreign keys block claim: {view}"
+    );
     schedule(&fx).await;
     assert_eq!(
         current(&fx.boot, "consume").await.status,
