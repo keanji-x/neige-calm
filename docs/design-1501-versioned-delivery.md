@@ -81,19 +81,22 @@ JSON 可以是系统生成的清单或引用入口；它不是把源码编码进
 不能在 publication 内另写不可恢复的 shell subprocess，也不能为了验证而放宽
 终态任务重新开工的守卫。
 
-接入方向选择独立的、只执行真实检查的 verifier 任务：producer 保持现有无 gate
-隔离执行及 Done 后封存；verifier claim 固定 C1，再进入现有 `TaskVerify`。
-不启动空 Worker，不用 `true` 等占位命令触发验证。候选物化到 verifier 独立目录，
-该模式拒绝外部 `gate.cwd`；`FrozenVerify` 必须携带准确候选和策略依据。
-普通任务的 gate 语义不变。新声明的类型表示、claim/release 事务和持久化兼容
-映射必须在 A1 编码前确定，不能用缺省候选 ID 解释旧验证。
+接入方向选择封存后的独立 `candidate-verify` Operation。producer 保持现有无
+普通 gate 的隔离执行及 Done 后封存；验证操作固定 C1 和验收策略，复用抽出的
+现有 gate 进程执行机制，在自己的工作副本执行真实检查。不新增 TaskKind、
+不启动空 Worker，也不使用占位 Terminal 任务。该模式拒绝外部 `gate.cwd`。
 
+该 Operation 必须完整记录准备、物化、发布执行与完成事实：精确候选和冻结策略、
+当前授权、操作租约、release 前已记录的进程身份、退出/重启恢复和有界并发。
+验证证据写入 Operation 结果，不改写 producer 的 Task 状态或 gate 状态；
+Done 后的验证权限不构成再次启动 Worker 的权限。声明与持久化映射在 A1 编码前
+确定，不能用缺省候选 ID 解释旧验证。
 现有 host gate 的环境白名单不构成文件系统隔离。A1 沿用已有 gate 的受信执行
 权限和边界，不宣称能够安全运行恶意 verifier；封存对象不得提供给 gate 作为
 可写工作根。若验收要求防范主动越界写入，则必须另行接入明确隔离的 launcher，
 不能仅靠 cwd 或只读约定声称满足。
 
-A2 的 Reviewer 从 verifier 已固定的输入关系取得 C1，不重新选择 producer 的
+A2 的 Reviewer 从验证 Operation 已固定的输入关系取得 C1，不重新选择 producer 的
 最新版本。其结构化复核结果须明确是否通过及未决阻塞问题，subject 由内核输入
 绑定和报告来源推导。扩展现有 Planner verdict 写入链与 consumer claim 校验，
 要求 gate、复核、冻结策略、候选全部匹配，并记录精确证据；不得新建可独立改写
@@ -127,7 +130,7 @@ A2 的 Reviewer 从 verifier 已固定的输入关系取得 C1，不重新选择
 只有一个当前产品切片；库级前置工作合入该产品切片，不独立宣称交付体验完成。
 
 - [ ] A1：多文件候选 → 真实同版本 gate → 明确机器验收策略 → 下游精确接收。
-  采用上述 gate-only verifier 方向；先确定声明/claim/release/持久化映射。
+  采用上述 candidate-verify Operation 方向；先确定声明和持久化映射。
   要求 Reviewer 的合同在 A2 前明确不支持，不作为机器通过的同义词。
 - [ ] A2：同版本 Reviewer → 问题与结构化复核 → 现有验收事务校验全部证据 →
   下游精确接收。A1 与 A2 完成后才声称完整 gate/Reviewer 交付闭环。
