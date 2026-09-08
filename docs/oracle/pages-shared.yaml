@@ -3310,7 +3310,7 @@
     源码注释:"two overlapping resolves can land out-of-order and the stale one wins";专门有
     "NewTaskForm — race guard" 一组测试。
   source: web/src/shared/components/NewTaskForm.tsx:133-135,287-364
-  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:495
+  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:596
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -3344,7 +3344,7 @@
     源码注释逐字写明这个分工;测试 "respects the manual area choice after a subsequent cwd re-resolves to
     another hit"。
   source: web/src/shared/components/NewTaskForm.tsx:206-225,324-332,765-784
-  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:358,425
+  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:459,526
   owner_slice: features/track/create
   intentional_omission: false
   runtime_layer: features
@@ -3451,7 +3451,7 @@
     must allow newlines" + "cwd is the required field that gates submit"。form 上的 Esc 监听带
     eslint-disable 注释说明这是有意为之。
   source: web/src/shared/components/NewTaskForm.tsx:538-546,593-604,715-720
-  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:560,569
+  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:661,670
   owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
@@ -3486,7 +3486,7 @@
     源码注释:"same affordance the codex card uses, no nested popover" + "warn once in dev and no-op so the
     visible Browse button doesn't appear to do anything (better than a confusing crash on click)."
   source: web/src/shared/components/NewTaskForm.tsx:240-246,548-582
-  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:586
+  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:687
   owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
@@ -3504,7 +3504,7 @@
     源码注释:"so `getByLabel(/working directory/i)` on the surrounding field still uniquely resolves to the
     cwd input; `title` carries the contextual hint … without colliding with the field's label text."
   source: web/src/shared/components/NewTaskForm.tsx:726-745
-  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:586
+  authoritative_test: web/src/shared/components/NewTaskForm.test.tsx:687
   owner_slice: features/track/create
   intentional_omission: true
   runtime_layer: features
