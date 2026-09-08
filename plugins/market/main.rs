@@ -255,7 +255,7 @@ const ASSET_SYNTAX_ERROR: &str = "`asset` must be a name like \"BTC\", or a \
     (Shanghai) and SZ (Shenzhen) — for example \"CRYPTO:BTC\", \"US:NVDA\", \
     \"HK:1810\", \"SH:600519\", \"SZ:000001\". A name with no venue is a \
     crypto asset. Each of those five venues has its own price source, quoting \
-    in its own currency, with nothing converted between them. \"CN:\" also \
+    in its own currency; portfolio values are converted separately. \"CN:\" also \
     parses, but only so that a holding stored under the retired mainland \
     venue can still be read back — it is never priced, and has to be recorded \
     again under the exchange that lists the code: \"SH:<code>\" for a Shanghai \
@@ -425,10 +425,10 @@ struct Config {
     ///
     /// It is not a pricing input. Each source quotes in its own currency
     /// (Binance in `USDT`, Sina in USD/HKD/CNY) and that currency travels with
-    /// the number; nothing in this slice converts between them, because this
-    /// slice has no exchange rates. So a total is stated only when the priced
-    /// holdings already share one currency, and this value is what a later
-    /// slice will convert INTO. It used to be three things at once — display
+    /// the price. Portfolio values are converted into the currency selected
+    /// by [`Currency::settlement`]. An unsupported value leaves each holding
+    /// in its native currency, so only counted holdings sharing one currency
+    /// can total. It used to be three things at once — display
     /// unit, Binance's quote leg, and "this asset is the unit, worth 1" — and
     /// the last two have moved to [`binance_spot`], where they are facts about
     /// that exchange rather than about the operator's preference.
@@ -651,7 +651,7 @@ impl Currency {
     /// `USDT` settles as `USD`. It is this plugin's default and the value
     /// every existing install already has written down, and refusing it would
     /// take the total away from every crypto-only portfolio that has one
-    /// today. What it costs is [`USDT_USD_ASSUMED_PARITY`]'s 3.2 basis points;
+    /// today. Its approximation is documented at [`USDT_USD_ASSUMED_PARITY`];
     /// what it changes for such an install is the LABEL on a total it already
     /// had — `USD` rather than `USDT`, on the same number.
     fn settlement(quote: &str) -> Option<Self> {
@@ -1459,9 +1459,9 @@ impl FxPath {
 /// `Err` is the honest answer to a rate that did not come back, and it is what
 /// leaves a holding's converted value `null`. There is deliberately no
 /// fallback: no cached rate from an earlier pass, no rate assumed between
-/// currencies whose names look related, no total assembled out of the rows
-/// that did convert. A rate this plugin could not read this pass is a rate it
-/// does not have.
+/// currencies whose names look related. Converted rows can contribute to a
+/// labelled partial total, but an incomplete pass writes no history point.
+/// A rate this plugin could not read this pass is a rate it does not have.
 ///
 /// The one number here that is not read from a source is
 /// [`USDT_USD_ASSUMED_PARITY`], and every exit that publishes a conversion

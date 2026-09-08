@@ -15,9 +15,10 @@
 //! priceable portfolio be built offline.
 //!
 //! A price now carries the currency its SOURCE quoted it in — `USDT` off
-//! Binance, `USD`/`HKD`/`CNY` off Sina, decided from the venue and code range — rather than the configured settlement
-//! currency, and a portfolio whose priced rows span two of them gets no total
-//! at all until exchange rates land.
+//! Binance, `USD`/`HKD`/`CNY` off Sina, decided from the venue and code range.
+//! Values are converted into the configured settlement currency. A missing
+//! price or rate leaves its holding out of the total and skips the history
+//! point; every new history point records its currency.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
