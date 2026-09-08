@@ -573,3 +573,33 @@ fn file_set_extension_preserves_single_file_manifest_and_request_bytes() {
             .replayed
     );
 }
+
+#[test]
+fn file_set_cumulative_byte_cap_stops_before_opening_later_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("store");
+    let store = ArtifactStore::open_files(
+        &root,
+        Limits {
+            max_file_bytes: 4,
+            max_total_bytes: 7,
+            ..limits()
+        },
+    )
+    .unwrap();
+    let source = temp.path().join("source");
+    fs::write(&source, b"four").unwrap();
+    let declared = paths(&["a", "b", "c"]);
+    let mut opened = Vec::new();
+    let result = store.capture_files(request(&declared), |path| {
+        opened.push(path.as_str().to_owned());
+        open(&source)
+    });
+    assert!(matches!(result, Err(Error::Limit(_))));
+    assert_eq!(
+        opened,
+        ["a", "b"],
+        "the cumulative streaming cap must reject b before opening c"
+    );
+    unpublished(&root);
+}
