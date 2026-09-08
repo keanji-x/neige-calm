@@ -132,7 +132,7 @@ A2 的 Reviewer 从验证 Operation 已固定的输入关系取得 C1，不重�
 - [x] A1：多文件候选 → 真实同版本 gate → 明确机器验收策略 → 下游精确接收。
   [#1584](https://github.com/keanji-x/neige-calm/pull/1584) 已合入；
   [实际实现与验收记录](design-1501-candidate-verification.md)说明范围和限制。
-  采用上述 candidate-verify Operation 方向；先确定声明和持久化映射。
+  采用上述 candidate-verify Operation；声明与持久化映射已在实现文档记录。
   要求 Reviewer 的合同在 A2 前明确不支持，不作为机器通过的同义词。
 - [ ] A2：同版本 Reviewer → 问题与结构化复核 → 现有验收事务校验全部证据 →
   下游精确接收。A1 与 A2 完成后才声称完整 gate/Reviewer 交付闭环。
