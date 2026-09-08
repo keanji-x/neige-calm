@@ -83,7 +83,11 @@ projection still loads track runs; changing that reader is outside this fix.
 Only a matching execution identity, report/error payload, and queued event ID
 qualify the locator, which also names the recorded event ID for rechecking.
 Legacy observations without envelope IDs require exact identity and payload
-equality. A missing or advanced record receives an explicit
+equality, and name only the current matching record. Their turn text explicitly
+states that original event identity and original artifact version cannot be
+confirmed: a later event can have the same result/reason but different
+artifacts/details. Modern receipts retain the explicit exact event-ID requirement.
+A missing or nonmatching advanced record receives an explicit
 unavailable-details statement instead of a guessed location. No current-task
 lookup can substitute a newer attempt. The advertised interface is
 `calm.track.cat({"path":"runs/<validated original execution>.json"})`; these are

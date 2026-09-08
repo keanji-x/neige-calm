@@ -80,7 +80,8 @@ pub(super) async fn enrich(
                 let event = &run["events"][kind];
                 // A run projection can advance. Only advertise it when it still
                 // contains the queued event, or (legacy queues lack envelope IDs)
-                // the exact recorded payload and identity. Never substitute latest.
+                // the exact recorded payload and identity. Legacy matching does
+                // not establish original event identity or artifact version.
                 if run["idempotency_key"].as_str() == Some(&identity)
                     && event["payload"]["idempotency_key"].as_str() == Some(&identity)
                     && event["payload"].get(field) == Some(&report)
@@ -92,8 +93,12 @@ pub(super) async fn enrich(
             }
         }
         segments[index].text.push_str(&match detail {
-            Some((path, event_id)) => format!(
+            Some((path, event_id)) if envelope_id.is_some() => format!(
                 "\nRecorded execution details: calm.track.cat({}). This virtual JSON record contains the recorded events and any artifact claims; it is not a worker report file or independent verification. Read events.{kind} and require event_id={event_id}; do not substitute another event or attempt.",
+                serde_json::json!({"path": path}),
+            ),
+            Some((path, event_id)) => format!(
+                "\nRecorded execution details: calm.track.cat({}). This virtual JSON record contains the recorded events and any artifact claims; it is not a worker report file or independent verification. Current matching record: events.{kind}, event_id={event_id}. Only execution identity and report value match; this legacy receipt has no queued event ID. Original event identity and original artifact version cannot be confirmed. Retain the original queued report preview.",
                 serde_json::json!({"path": path}),
             ),
             None => "\nExact execution details unavailable through the current track reader. No worker report file is asserted to exist; retain the original queued receipt.".into(),

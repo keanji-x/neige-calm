@@ -238,6 +238,10 @@ async fn completed_receipt_details_resolve_exact_event_and_artifacts_as_data() {
     assert!(!text.contains("operation_id"));
     let detail = read_details(&fx, &text).await;
     assert_eq!(detail["events"]["completed"]["event_id"], id);
+    assert!(text.contains(&format!("Read events.completed and require event_id={id}; do not substitute another event or attempt.")));
+    assert!(
+        !text.contains("Original event identity and original artifact version cannot be confirmed")
+    );
     assert_eq!(
         detail["events"]["completed"]["payload"]["artifacts"][0],
         artifact
@@ -303,6 +307,12 @@ async fn receipt_empty_completion_and_failure_without_report_are_honest() {
         }
         let detail = read_details(&fx, &text).await;
         assert_eq!(detail["events"]["failed"]["event_id"], id);
+        assert!(text.contains(&format!("Read events.failed and require event_id={id}; do not substitute another event or attempt.")));
+        assert!(
+            !text.contains(
+                "Original event identity and original artifact version cannot be confirmed"
+            )
+        );
         assert!(detail["events"]["completed"].is_null());
         assert!(detail["worker_card_id"].is_null());
     }
@@ -616,36 +626,93 @@ async fn receipt_optional_track_absence_and_read_error_preserve_segments() {
 }
 
 #[tokio::test]
-async fn legacy_receipt_without_envelope_resolves_only_matching_execution_payload() {
-    let fx = Fixture::new().await;
-    record(
-        &fx,
-        &Event::TaskDispatched {
-            idempotency_key: "legacy-attempt".into(),
-            kind: "codex".into(),
-            agent_message: None,
-        },
-    )
-    .await;
-    let event = Event::TaskCompleted {
-        idempotency_key: "legacy-attempt".into(),
-        result: json!("legacy persisted report"),
-        artifacts: vec![],
-        agent_message: None,
-    };
-    let id = record(&fx, &event).await;
-    let observation = crate::dispatcher::resolve_harness_observation(
-        fx.repo.as_ref(),
-        &fx.harness.inner.track_id,
-        &event,
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    fx.enqueue(vec![QueueEntry::system(observation, None).unwrap()])
+async fn legacy_receipt_without_envelope_discloses_unconfirmed_original_event_and_artifacts() {
+    for failed in [false, true] {
+        let fx = Fixture::new().await;
+        record(
+            &fx,
+            &Event::TaskDispatched {
+                idempotency_key: "legacy-attempt".into(),
+                kind: "codex".into(),
+                agent_message: None,
+            },
+        )
         .await;
-    let text = turn(&fx).await;
-    let detail = read_details(&fx, &text).await;
-    assert_eq!(detail["events"]["completed"]["event_id"], id);
-    assert!(text.contains(&format!("require event_id={id}")));
+        let report = "legacy original report";
+        let original = if failed {
+            Event::TaskFailed {
+                idempotency_key: "legacy-attempt".into(),
+                reason: report.into(),
+                details: Some(json!({"artifact": "original-artifact"})),
+                agent_message: None,
+            }
+        } else {
+            Event::TaskCompleted {
+                idempotency_key: "legacy-attempt".into(),
+                result: json!(report),
+                artifacts: vec!["original-artifact".into()],
+                agent_message: None,
+            }
+        };
+        let original_id = record(&fx, &original).await;
+        let observation = crate::dispatcher::resolve_harness_observation(
+            fx.repo.as_ref(),
+            &fx.harness.inner.track_id,
+            &original,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        fx.enqueue(vec![QueueEntry::system(observation, None).unwrap()])
+            .await;
+        assert_eq!(fx.stored().await.pending_entries()[0].envelope_id(), None);
+        let mut later = original.clone();
+        match &mut later {
+            Event::TaskCompleted { artifacts, .. } => {
+                *artifacts = vec!["later-artifact".into()];
+            }
+            Event::TaskFailed { details, .. } => {
+                *details = Some(json!({"artifact": "later-artifact"}));
+            }
+            _ => unreachable!(),
+        }
+        let later_id = record(&fx, &later).await;
+        assert_ne!(original_id, later_id);
+        let text = turn(&fx).await;
+        let detail = read_details(&fx, &text).await;
+        let kind = if failed { "failed" } else { "completed" };
+        let event = &detail["events"][kind];
+        assert_eq!(event["event_id"], later_id);
+        assert_eq!(
+            if failed {
+                &event["payload"]["details"]["artifact"]
+            } else {
+                &event["payload"]["artifacts"][0]
+            },
+            "later-artifact"
+        );
+        let preview = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Report preview: "))
+            .unwrap();
+        let preview: serde_json::Value = serde_json::from_str(preview).unwrap();
+        assert_eq!(preview["text"], report);
+        assert_eq!(preview["truncated"], false);
+        assert!(!text.contains("later-artifact"));
+        assert!(text.contains("untrusted"));
+        assert!(
+            text.contains("Only execution identity and report value match"),
+            "legacy uncertainty missing from actual turn: {text}"
+        );
+        assert!(
+            text.contains(
+                "Original event identity and original artifact version cannot be confirmed"
+            )
+        );
+        assert!(text.contains(&format!(
+            "Current matching record: events.{kind}, event_id={later_id}"
+        )));
+        assert!(!text.contains("require event_id="));
+        assert!(!text.contains("do not substitute another event"));
+    }
 }
