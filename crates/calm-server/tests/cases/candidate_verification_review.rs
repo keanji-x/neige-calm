@@ -174,6 +174,37 @@ async fn candidate_verification_recovery_retains_capacity_when_leader_missing_gr
     let active: i64 = sqlx::query_scalar("SELECT count(*) FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE o.id IS NULL OR o.phase NOT IN ('succeeded','failed')")
         .fetch_one(&pool).await.unwrap();
     assert_eq!(active, 1, "boot must retain unresolved group capacity");
+    // Both deadline funnels must retain an unowned-but-live recorded group.
+    for boot in [false, true] {
+        sqlx::query("UPDATE operations SET parked_deadline_ms=0,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
+            .bind(&op.id).execute(&pool).await.unwrap();
+        if boot {
+            fx.state
+                .operation_runtime
+                .apply_recovery(fx.state.operation_runtime.recover_on_boot().await.unwrap())
+                .await
+                .unwrap();
+        } else {
+            fx.state.operation_runtime.sweep_parked().await.unwrap();
+        }
+        let active: i64 = sqlx::query_scalar("SELECT count(*) FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE o.id IS NULL OR o.phase NOT IN ('succeeded','failed')")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            active, 1,
+            "expired deadline must retain unresolved group capacity; boot={boot}"
+        );
+        let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id=?1")
+            .bind(&op.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            phase, "parked",
+            "deadline must not force terminal settlement; boot={boot}"
+        );
+        let (status, body) = delete_http(&fx, &format!("/api/tracks/{}", fx.boot.track_id)).await;
+        assert_eq!(status, axum::http::StatusCode::CONFLICT, "{body}");
+    }
     let live = calm_server::proc_identity::scan_process_group_members(artifacts.pgid);
     assert!(
         live.iter().any(|m| !m.is_zombie),
@@ -471,4 +502,122 @@ async fn candidate_verification_parked_delete_preserves_global_count_and_owned_p
             .iter()
             .all(|m| m.is_zombie)
     );
+}
+
+struct CandidateTestGroup {
+    artifacts: calm_server::operation::SpawnArtifacts,
+    workspace: PathBuf,
+}
+impl Drop for CandidateTestGroup {
+    fn drop(&mut self) {
+        let a = &self.artifacts;
+        if calm_server::proc_identity::verify_owned_pid(a.pid, a.start_time, &a.boot_id) {
+            calm_server::proc_identity::signal_process_group(a.pgid, libc::SIGKILL);
+        }
+    }
+}
+async fn parked_test_group(fx: &Fixture, id: &str) -> CandidateTestGroup {
+    let pool = fx.boot.repo.sqlite_pool().unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let row: Option<(String, String)> = sqlx::query_as("SELECT spawn_artifacts_json,tx_output_json FROM operations WHERE id=?1 AND phase='parked'")
+                .bind(id).fetch_optional(&pool).await.unwrap();
+            if let Some((artifacts, output)) = row {
+                let output: Value = serde_json::from_str(&output).unwrap();
+                return CandidateTestGroup {
+                    artifacts: serde_json::from_str(&artifacts).unwrap(),
+                    workspace: PathBuf::from(output["data"]["workspace"].as_str().unwrap()),
+                };
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn candidate_verification_owned_deadline_kills_verified_group_then_records_timeout() {
+    for boot in [false, true] {
+        let (fx, _, _, publication) = source("sleep 25").await;
+        schedule(&fx).await;
+        let op = verification(&fx, &publication).await;
+        let group = parked_test_group(&fx, &op.id).await;
+        let pool = fx.boot.repo.sqlite_pool().unwrap();
+        sqlx::query("UPDATE operations SET parked_deadline_ms=0,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
+            .bind(&op.id).execute(&pool).await.unwrap();
+        if boot {
+            fx.state
+                .operation_runtime
+                .apply_recovery(fx.state.operation_runtime.recover_on_boot().await.unwrap())
+                .await
+                .unwrap();
+        } else {
+            fx.state.operation_runtime.sweep_parked().await.unwrap();
+        }
+        let evidence = verified(&fx, &publication).await;
+        assert_eq!(
+            evidence["verdict"]["passed"], false,
+            "boot={boot}: {evidence}"
+        );
+        assert_eq!(
+            evidence["verdict"]["status_detail"], "gate-timeout",
+            "boot={boot}: {evidence}"
+        );
+        assert!(
+            calm_server::proc_identity::scan_process_group_members(group.artifacts.pgid)
+                .iter()
+                .all(|m| m.is_zombie)
+        );
+        let active: i64 = sqlx::query_scalar("SELECT count(*) FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE o.id IS NULL OR o.phase NOT IN ('succeeded','failed')")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(active, 0);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn candidate_verification_live_observer_respects_parked_lease_before_committing_wait_status()
+{
+    let (fx, _, _, publication) = source("while [ ! -e allow-finish ]; do sleep 0.02; done").await;
+    schedule(&fx).await;
+    let op = verification(&fx, &publication).await;
+    let group = parked_test_group(&fx, &op.id).await;
+    let pool = fx.boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "UPDATE operations SET lease_owner='test-replacement',lease_until_ms=?1 WHERE id=?2",
+    )
+    .bind(calm_server::model::now_ms() + 60_000)
+    .bind(&op.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    std::fs::write(group.workspace.join("input/source/allow-finish"), b"go").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while calm_server::proc_identity::scan_process_group_members(group.artifacts.pgid)
+            .iter()
+            .any(|m| !m.is_zombie)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(1),
+        fx.state.operation_runtime.wait(&op.id),
+    )
+    .await;
+    assert!(
+        outcome.is_err(),
+        "observer wrote through another parked lease: {outcome:?}"
+    );
+    let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id=?1")
+        .bind(&op.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(phase, "parked");
+    sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1 AND lease_owner='test-replacement'")
+        .bind(&op.id).execute(&pool).await.unwrap();
+    let evidence = verified(&fx, &publication).await;
+    assert_eq!(evidence["verdict"]["passed"], true, "{evidence}");
+    assert_eq!(evidence["verdict"]["exit_code"], 0);
 }

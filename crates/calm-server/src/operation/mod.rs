@@ -749,8 +749,8 @@ pub trait ProviderAdapter: Send + Sync {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome>;
 
-    /// Adapter-owned resources have no host process-group artifact. Their
-    /// private receipt and stop proof are reconciled before saga completion.
+    /// Adapter-owned resources require private stop/quiescence proof before
+    /// saga completion, including resources with recorded process-group artifacts.
     fn owns_parked_resource(&self) -> bool {
         false
     }

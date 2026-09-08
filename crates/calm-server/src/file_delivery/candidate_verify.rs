@@ -191,32 +191,45 @@ async fn complete(
             "candidate process-group cleanup remains unresolved",
         ));
     }
+    let Some(owned) = ctx.operation_repo.claim_parked(&op.id).await? else {
+        let current = ctx.operation_repo.get_operation(&op.id).await?;
+        return if current.is_some_and(|current| matches!(current.phase, Phase::Parked)) {
+            Err(conflict("candidate completion awaits parked lease"))
+        } else {
+            Ok(())
+        };
+    };
+    let owner = owned
+        .lease_owner
+        .as_deref()
+        .ok_or_else(|| conflict("candidate completion lease missing"))?;
     let pool = ctx.operation_repo.sqlite_pool();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-    let recorded: Option<String> = sqlx::query_scalar(
-        "SELECT spawn_artifacts_json FROM operations WHERE id=?1 AND phase='parked'",
-    )
-    .bind(&op.id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some(recorded) = recorded else {
-        return Ok(());
-    };
-    let recorded: SpawnArtifacts = serde_json::from_str(&recorded)?;
-    if ProcessIdentity::from(&recorded) != ProcessIdentity::from(artifacts) {
-        return Ok(());
-    }
-    // A previous observer cannot settle a re-driven execution of this Operation.
-    let outcome = ParkedOutcome::Succeeded {
-        result: serde_json::to_value(frozen.evidence(&op.id, artifacts, verdict))?,
-    };
-    let completion = complete_parked_tx(&mut tx, &op.id, &outcome).await?;
-    tx.commit().await?;
-    if let ParkedCompletion::Completed(result) = completion {
-        ctx.completion.complete(result);
-    }
-    Ok(())
+    let result = async {
+        let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
+        let recorded: Option<String> = sqlx::query_scalar(
+            "SELECT spawn_artifacts_json FROM operations WHERE id=?1 AND phase='parked' AND lease_owner=?2",
+        ).bind(&op.id).bind(owner).fetch_optional(&mut *tx).await?;
+        let recorded: SpawnArtifacts = serde_json::from_str(&recorded.ok_or_else(|| conflict("candidate completion lost parked lease"))?)?;
+        if ProcessIdentity::from(&recorded) != ProcessIdentity::from(artifacts) {
+            return Ok(());
+        }
+        // A previous observer cannot settle a re-driven execution, or race a
+        // replacement lease. The Child stays unreaped until this write commits.
+        let outcome = ParkedOutcome::Succeeded {
+            result: serde_json::to_value(frozen.evidence(&op.id, artifacts, verdict))?,
+        };
+        let completion = complete_parked_tx(&mut tx, &op.id, &outcome).await?;
+        tx.commit().await?;
+        if let ParkedCompletion::Completed(result) = completion {
+            ctx.completion.complete(result);
+        }
+        Ok(())
+    }.await;
+    sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1 AND lease_owner=?2 AND phase='parked'")
+        .bind(&op.id).bind(owner).execute(&pool).await?;
+    result
 }
+
 #[async_trait]
 impl ProviderAdapter for CandidateVerifyAdapter {
     fn kind(&self) -> &'static str {
@@ -230,6 +243,9 @@ impl ProviderAdapter for CandidateVerifyAdapter {
             PhaseTag::Parked,
             PhaseTag::Succeeded,
         ]
+    }
+    fn owns_parked_resource(&self) -> bool {
+        true
     }
     async fn validate(&self, input: &Value) -> Result<()> {
         let payload: Payload = serde_json::from_value(input.clone())?;
@@ -407,66 +423,70 @@ impl ProviderAdapter for CandidateVerifyAdapter {
             observer,
         })
     }
-    async fn recover_parked(
+    async fn recover_owned_parked(
         &self,
         op: &Operation,
-        artifacts: &SpawnArtifacts,
-        alive: bool,
         mode: RecoveryMode,
-        ctx: &SpawnCtx,
+        _: &SpawnCtx,
     ) -> Result<ParkedRecovery> {
         let frozen = Frozen::from_output(
             op.tx_output
                 .as_ref()
                 .ok_or_else(|| conflict("candidate frozen input missing"))?,
         )?;
-        if !alive {
+        let artifacts = op
+            .spawn_artifacts
+            .as_ref()
+            .ok_or_else(|| conflict("candidate process identity missing"))?;
+        let alive = verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id);
+        let verdict = if alive {
+            if !matches!(mode, RecoveryMode::PastDeadline) {
+                // The existing periodic owned-resource sweep observes exit;
+                // boot must not spawn an unfenced duplicate completion observer.
+                return Ok(ParkedRecovery::LeaveParked);
+            }
+            // Owned reconciliation never turns LeaveParked/cleanup errors into
+            // terminal failure. Kill only with identity proof, then prove stop.
+            stop_recorded(artifacts).await?;
+            gate_process::timeout_verdict(&frozen.log(), 1, i64::from(frozen.policy.timeout_secs))
+        } else {
             if !gate_process::group_stopped(artifacts)? {
                 return Ok(ParkedRecovery::LeaveParked);
             }
-            let verdict = match gate_process::read_exit_file(&frozen.exit()) {
+            match gate_process::read_exit_file(&frozen.exit()) {
                 Ok(Some(code)) => gate_process::verdict_from_exit_code(code, &frozen.log(), 1),
                 _ => gate_process::infra_verdict(
                     "candidate execution interrupted without exit evidence",
                     &frozen.log(),
                     1,
                 ),
-            };
-            return Ok(ParkedRecovery::Complete(ParkedOutcome::Succeeded {
-                result: serde_json::to_value(frozen.evidence(&op.id, artifacts, verdict))?,
-            }));
-        }
-        match mode {
-            RecoveryMode::Boot => {
-                let artifacts = artifacts.clone();
-                let ctx = ctx.clone();
-                let op = op.clone();
-                tokio::spawn(async move {
-                    while verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id)
-                    {
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                    }
-                    let verdict = match gate_process::read_exit_file(&frozen.exit()) {
-                        Ok(Some(code)) => {
-                            gate_process::verdict_from_exit_code(code, &frozen.log(), 1)
-                        }
-                        _ => gate_process::infra_verdict(
-                            "candidate reattached execution has no exit evidence",
-                            &frozen.log(),
-                            1,
-                        ),
-                    };
-                    if let Err(error) = complete(&ctx, &op, &frozen, &artifacts, verdict).await {
-                        tracing::error!(%error, "candidate recovered completion failed");
-                    }
-                });
-                Ok(ParkedRecovery::LeaveParked)
             }
-            RecoveryMode::PreDeadlineProbe => Ok(ParkedRecovery::LeaveParked),
-            RecoveryMode::PastDeadline => Ok(ParkedRecovery::Fail {
-                reason: "candidate verification timeout".into(),
-            }),
+        };
+        Ok(ParkedRecovery::Complete(ParkedOutcome::Succeeded {
+            result: serde_json::to_value(frozen.evidence(&op.id, artifacts, verdict))?,
+        }))
+    }
+    async fn complete_owned_parked_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        op: &Operation,
+    ) -> Result<Vec<crate::event::BroadcastEnvelope>> {
+        let expected = op
+            .spawn_artifacts
+            .as_ref()
+            .ok_or_else(|| conflict("candidate process identity missing"))?;
+        let raw: String =
+            sqlx::query_scalar("SELECT spawn_artifacts_json FROM operations WHERE id=?1")
+                .bind(&op.id)
+                .fetch_one(&mut **tx)
+                .await?;
+        let recorded: SpawnArtifacts = serde_json::from_str(&raw)?;
+        if ProcessIdentity::from(&recorded) != ProcessIdentity::from(expected) {
+            return Err(conflict(
+                "candidate owned completion process identity changed",
+            ));
         }
+        Ok(Vec::new())
     }
     async fn plan_compensation(
         &self,

@@ -111,3 +111,24 @@ storage/serialization errors remain read errors. Candidate-consumer recovery
 inherits the immutable file-set and verification binding; JSON-consumer recovery
 inherits its JSON binding. Failed candidate outputs remain unsupported recovery
 inputs (F5).
+
+## R2: adapter-owned deadline settlement
+
+Candidate verification opts into the existing `owns_parked_resource` contract.
+Boot, periodic probing, and past-deadline enforcement use `owned_parked::reconcile`
+under a parked lease. A missing leader with live recorded-group members returns
+`LeaveParked` even after expiry; the generic deadline path that force-fails such
+an outcome is therefore unreachable for this adapter. A verified live group at
+expiry is killed by its recorded identity and must pass `wait_group_stopped`
+before the adapter returns a timeout outcome. If stop remains unproven, the error
+stays unresolved under owned reconciliation and releases only the parked lease,
+not the verification allocation. This also covers survivors after a delivered kill:
+`stop_recorded` must return successfully before any timeout completion is built.
+
+Boot recovery no longer spawns duplicate completion observers. The periodic owned
+reconciler handles recovered work. The live observer keeps its real wait verdict
+and unreaped Child while waiting for a parked lease, then rechecks that lease and
+recorded ProcessIdentity in the completion transaction. Owned recovery's completion
+callback also verifies ProcessIdentity inside the existing lease-fenced transaction.
+Cancellation continues through the existing compensation stop proof. No generic
+Operation driver behavior or new Operation kind is introduced.
