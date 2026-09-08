@@ -5,6 +5,7 @@ pub mod observation;
 pub mod queue;
 mod recovery_briefing;
 pub mod registry;
+mod result_receipt;
 pub mod run_loop;
 pub mod snapshot;
 pub mod state;

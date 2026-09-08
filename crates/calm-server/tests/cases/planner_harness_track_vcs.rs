@@ -1017,7 +1017,7 @@ async fn unchanged_head_after_completed_turn_has_no_diff_block() {
         !text.contains("Track state changes since your last turn"),
         "unchanged head must not include diff block: {text}"
     );
-    assert!(text.contains("idempotency_key=same-head"));
+    assert_receipt_identity(&text, "same-head");
     boot.harness.shutdown().await.unwrap();
 }
 
@@ -1040,7 +1040,7 @@ async fn diff_failure_from_bogus_stored_head_does_not_wedge_harness() {
         !text.contains("Track state changes since your last turn"),
         "bad baseline must degrade to no diff block: {text}"
     );
-    assert!(text.contains("idempotency_key=bogus-head"));
+    assert_receipt_identity(&text, "bogus-head");
     let issued_head = wait_for_runtime_snapshot(&boot, |s| s.issued_turn_head.is_some())
         .await
         .issued_turn_head
@@ -1077,7 +1077,7 @@ async fn transcript_refresh_failure_from_corrupt_card_payload_does_not_wedge_har
         !text.contains("Track state changes since your last turn"),
         "corrupt refresh source must degrade to no diff block: {text}"
     );
-    assert!(text.contains("idempotency_key=corrupt-refresh-payload"));
+    assert_receipt_identity(&text, "corrupt-refresh-payload");
     let issued_head = wait_for_runtime_snapshot(&boot, |s| s.issued_turn_head.is_some())
         .await
         .issued_turn_head
@@ -1122,7 +1122,7 @@ async fn next_turn_prepends_diff_since_completed_turn_head() {
     assert!(text.contains("@@"));
     assert!(text.contains("\n+# 概要"));
     assert!(text.contains("\n\n---\n\n"));
-    assert!(text.contains("idempotency_key=report-write"));
+    assert_receipt_identity(&text, "report-write");
     boot.harness.shutdown().await.unwrap();
 }
 
@@ -1170,7 +1170,7 @@ async fn turn_issuance_refreshes_hook_transcripts_before_diff() {
         text.matches(&format!("{conversation_path} edited")).count(),
         1
     );
-    assert!(text.contains("idempotency_key=hook-transcript-refresh"));
+    assert_receipt_identity(&text, "hook-transcript-refresh");
 
     let issued_record = track_vcs::commit_record(boot.repo.pool(), &issued_head)
         .await
@@ -1455,7 +1455,7 @@ async fn mid_turn_changes_remain_visible_on_next_turn() {
         short(&turn_three_issued_head)
     )));
     assert!(third_text.contains("report.md new"));
-    assert!(third_text.contains("idempotency_key=turn-three"));
+    assert_receipt_identity(&third_text, "turn-three");
     boot.harness.shutdown().await.unwrap();
 }
 
@@ -1493,7 +1493,7 @@ async fn planner_card_own_payload_path_is_suppressed_from_turn_observation() {
         "planner card payload path should be internal observation noise: {text}"
     );
     assert!(text.contains(&format!("cards/{}/.meta.json edited", boot.planner_card_id)));
-    assert!(text.contains("idempotency_key=planner-payload-only"));
+    assert_receipt_identity(&text, "planner-payload-only");
     boot.harness.shutdown().await.unwrap();
 }
 
@@ -1536,7 +1536,7 @@ async fn runtime_status_flip_current_schema_has_no_payload_diff_entry() {
         !text.contains(&format!("cards/{}/.payload.json", worker.id.as_str())),
         "current-schema runtime re-render must not create payload diff noise: {text}"
     );
-    assert!(text.contains("idempotency_key=runtime-status-current-schema"));
+    assert_receipt_identity(&text, "runtime-status-current-schema");
     boot.harness.shutdown().await.unwrap();
 }
 
@@ -1608,6 +1608,16 @@ async fn batched_observations_get_one_diff_block_covering_all_changes() {
     assert!(text.contains(&format!("cards/{}/.payload.json new", first.id)));
     assert!(text.contains(second.id.as_str()));
     assert!(text.contains(third.id.as_str()));
-    assert_eq!(text.matches("A dispatched task completed").count(), 3);
+    assert_eq!(text.matches("Task completion report received").count(), 3);
     boot.harness.shutdown().await.unwrap();
+}
+
+fn assert_receipt_identity(text: &str, expected: &str) {
+    let receipt = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Original execution idempotency_key: "))
+        .expect("receipt execution identity");
+    let identity: Value = serde_json::from_str(receipt).unwrap();
+    assert_eq!(identity["text"], expected);
+    assert_eq!(identity["truncated"], false);
 }
