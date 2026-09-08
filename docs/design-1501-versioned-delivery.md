@@ -134,8 +134,10 @@ A2 的 Reviewer 从验证 Operation 已固定的输入关系取得 C1，不重�
   [实际实现与验收记录](design-1501-candidate-verification.md)说明范围和限制。
   采用上述 candidate-verify Operation；声明与持久化映射已在实现文档记录。
   要求 Reviewer 的合同在 A2 前明确不支持，不作为机器通过的同义词。
-- [ ] A2：同版本 Reviewer → 问题与结构化复核 → 现有验收事务校验全部证据 →
-  下游精确接收。A1 与 A2 完成后才声称完整 gate/Reviewer 交付闭环。
+- [x] A2：同版本 Reviewer → 问题与结构化复核 → 现有验收事务校验全部证据 →
+  下游精确接收。[实现与本地验收记录](design-1501-candidate-review.md)包含真实三任务
+  演练、可靠结束通知和精确决定绑定；发布仍遵循双路复审及 CI 门禁。
+  初版 Reviewer 等待机器检查通过，拒收候选的修复仍属于 B。
 - [ ] B：保留被拒候选/问题 → 一次显式修复 → 新候选重新验收 → 精确交付。
   不并发铺开通用恢复、计划编辑、全局 Finding 或 Provider 重构。
 

@@ -3,7 +3,8 @@
 A1 adds explicit candidate producer/consumer roles to frozen task context. The
 producer declares a bounded ordinary-file set and required machine checks. The
 policy states declared-checks-only scope; successful commands do not establish
-test discovery or semantic review. Reviewer-required and repair are unsupported.
+test discovery or semantic review. A1 alone does not support Reviewer-required policy
+or repair; [A2](design-1501-candidate-review.md) adds same-candidate review and acceptance.
 Existing JSON contracts, receipts, bindings and artifact manifests remain unchanged.
 
 The publication Operation retains a candidate after exact execution stop. Migration
@@ -202,8 +203,9 @@ of that parent and the reviewed branch. The live trial above remains attributed 
 its actual source rather than relabeled as a run of the squash commit. All private
 experimental services were stopped after evidence collection.
 
-Next work stays sequential: A2 binds Reviewer disposition to the same candidate and
-required acceptance policy; B adds explicit rejected-candidate repair with preserved
+The [A2 implementation](design-1501-candidate-review.md) binds Reviewer disposition
+to the same candidate and required acceptance policy. Next, B adds explicit
+rejected-candidate repair with preserved
 inputs/findings and fresh verification. Dynamic file discovery, multi-source merge,
 physical GC and the documented ordinary-gate recovery limitations remain follow-ups
 in #1501. The user deployment on port 4140 was inspected but not redeployed here.

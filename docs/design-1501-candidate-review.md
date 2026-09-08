@@ -1,6 +1,7 @@
 # A2 candidate review qualification
 
-Status: implementation in progress; baseline 37d890e43, 2026-09-08.
+Status: implemented and locally exercised; baseline 37d890e43, 2026-09-08.
+Release remains subject to the repository review and CI workflow.
 Parent approved this bounded contract and persistence design on 2026-09-08.
 
 ## Contract
@@ -93,3 +94,34 @@ is unchanged; this is not a machine-verification event or new acceptance authori
 
 Fixture reset deletes candidate decision bindings and receipts before their events.
 Normal Track teardown and the production verification/stop guards are unchanged.
+
+## Local acceptance evidence
+
+A bounded native Planner trial at release source `158e168e3` completed three business
+tasks and three attempts: write, independently review, then use. The kernel produced
+one candidate publication, one machine verification, two exact input bindings and
+one consumer decision binding. The Planner received a natural-language goal, declared
+the contracts itself, read the evidence and accepted the producer before releasing
+the consumer. No transport task or external task correction was used.
+
+Independent inspection matched all declared source/README/test bytes and executable
+bits across producer, seal, machine working copy, Reviewer and consumer. Six discovered
+tests passed; the consumer imported the delivered implementation and returned `10`.
+The authenticated review report, durable review-settlement notice and acceptance
+decision were ordered and linked to that same candidate. All three namespace-stop
+proofs were checked, then the private server and daemon were stopped. Port 4140 was
+not redeployed; this was an API-based native dialogue trial, not a Tier 2 suite.
+
+Qualification uses the immutable authenticated structured report event. Optional
+detailed report attachments use existing attempt file access; they are separate
+from the source candidate seal. The trial observed a separate detailed review file.
+Failed-candidate repair remains B, and review of machine-failed candidates remains
+unsupported in this slice.
+
+Focused production regressions and full independent source reviews cover authority,
+replay, withdrawal, settlement notifications and reset ordering. Exact-prediction
+mutations cover unreceipted qualification reads and Reviewer settlement notifications,
+with original source restored and green controls. The initial receipt mutation left
+the launch tests green because the foreign key also blocked claim; that result was
+invalid, prompted the public-read assertion, and is not counted as successful proof.
+The later integration-test assertion does not change the runtime source used above.
