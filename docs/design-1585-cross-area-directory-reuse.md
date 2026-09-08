@@ -28,11 +28,16 @@ OWNERSHIP-CHANGE: fe/core/api/generated/openapi.json — expose explicit cross-a
   sole original folder claim remains unchanged.
 - Deleted, replaced or mismatched claims reject stale authorization, including
   requests carrying `attach_folder: true`; rejection creates no track or claim.
+- A vanished claim returns an invalid-input response for either attachment flag,
+  so a definitive refusal unlocks the frontend draft instead of trapping it in
+  retries with obsolete consent. An earlier unconfirmed request remains locked.
 - Authorization cannot widen an ancestor claim or authorize an unclaimed path.
 - Requests without authorization retain their pre-upgrade fingerprint. Both
   message-less and first-message requests replay the same track after upgrade.
 - Both frontends require a distinct confirmation, preserve the chosen target
   Area and send the exact conflicting claim identity.
+- Editing the legacy form's Area selection or directory invalidates pending
+  consent; a delayed conflict response cannot restore an action for old input.
 
 The regression tests exercise production HTTP entry points, including an old
 persisted fingerprint, rather than reproducing the admission logic in fixtures.
