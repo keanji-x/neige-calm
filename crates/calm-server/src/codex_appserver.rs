@@ -1230,19 +1230,33 @@ impl CodexAppServer {
     /// `turn/interrupt` — cancel a running turn. Both `thread_id` and the
     /// running `turn_id` are required.
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
-        let _: Value = self
+        let response: Result<Value> = self
             .request(
                 "turn/interrupt",
                 json!({ "threadId": thread_id, "turnId": turn_id }),
             )
-            .await?;
-        Ok(())
+            .await;
+        match response {
+            Ok(_) => Ok(()),
+            // Interrupt is a cancellation request, so a turn which completed
+            // between our active-turn snapshot and the daemon handling this
+            // request is already in the requested state. Codex reports that
+            // race as this exact invalid-request response.
+            Err(CalmError::CodexRefused(message))
+                if message
+                    == "turn/interrupt failed: no active turn to interrupt (code -32600)" =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Core request/response round-trip: assign an id, register a oneshot,
     /// write the frame, await the correlated response, deserialize the
-    /// `result` into `T`. A JSON-RPC `error` frame, a transport failure, or
-    /// the reader task dying all map to [`CalmError::CodexAppServer`].
+    /// `result` into `T`. A JSON-RPC `error` frame maps to
+    /// [`CalmError::CodexRefused`]; transport failures and a dead reader map
+    /// to [`CalmError::CodexAppServer`].
     async fn request<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
@@ -1903,6 +1917,77 @@ mod tests {
         });
         assert_eq!(req_fut.await.unwrap().thread_id(), Some("without-prompt"));
         let _server = server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn turn_interrupt_treats_an_already_finished_turn_as_success() {
+        let mut h = harness().await;
+        let client = h.client.with_request_timeout(Duration::from_secs(5));
+        let interrupt = client.turn_interrupt("thread-1", "turn-1");
+
+        let server_task = tokio::spawn(async move {
+            let req = server_recv_json(&mut h.server).await;
+            assert_eq!(
+                req.get("method").and_then(Value::as_str),
+                Some("turn/interrupt")
+            );
+            let id = req.get("id").cloned().unwrap();
+            server_send_json(
+                &mut h.server,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32600, "message": "no active turn to interrupt" },
+                }),
+            )
+            .await;
+            h.server
+        });
+
+        interrupt
+            .await
+            .expect("interrupt is idempotent when the named turn already finished");
+        let _server = server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn turn_interrupt_propagates_other_rpc_errors() {
+        let cases = [
+            (-32600, "expected active turn id turn-1 but found turn-2"),
+            (-32601, "no active turn to interrupt"),
+        ];
+        for (code, message) in cases {
+            let mut h = harness().await;
+            let client = h.client.with_request_timeout(Duration::from_secs(5));
+            let interrupt = client.turn_interrupt("thread-1", "turn-1");
+
+            let server_task = tokio::spawn(async move {
+                let req = server_recv_json(&mut h.server).await;
+                let id = req.get("id").cloned().unwrap();
+                server_send_json(
+                    &mut h.server,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": code, "message": message },
+                    }),
+                )
+                .await;
+                h.server
+            });
+
+            let error = interrupt
+                .await
+                .expect_err("only Codex's exact no-active-turn response may be ignored");
+            let CalmError::CodexRefused(actual) = error else {
+                panic!("RPC refusals must retain their error type: {error}");
+            };
+            assert_eq!(
+                actual,
+                format!("turn/interrupt failed: {message} (code {code})")
+            );
+            let _server = server_task.await.unwrap();
+        }
     }
 
     /// Fix #1: a request whose response never arrives times out, returns the
