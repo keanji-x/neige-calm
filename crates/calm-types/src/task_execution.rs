@@ -103,24 +103,44 @@ pub enum CandidateInputPurpose {
 }
 impl CandidateMachinePolicy {
     pub fn validate(&self) -> Result<(), String> {
-        if !(1..=7200).contains(&self.timeout_secs)
-            || self.steps.is_empty()
-            || self.steps.len() > 32
-            || self.steps.iter().any(|step| {
-                !valid_slot(&step.name)
-                    || step.cmd.trim().is_empty()
-                    || step.cmd.len() > 16384
-                    || step.cmd.chars().any(|c| c.is_ascii_control())
-            })
-            || self
-                .steps
-                .iter()
-                .map(|step| &step.name)
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                != self.steps.len()
-        {
-            return Err("invalid candidate machine checks".into());
+        const PATH: &str = "neige_execution.file_delivery.policy";
+        if !(1..=7200).contains(&self.timeout_secs) {
+            return Err(format!("{PATH}.timeout_secs must be between 1 and 7200"));
+        }
+        if self.steps.is_empty() || self.steps.len() > 32 {
+            return Err(format!("{PATH}.steps must contain between 1 and 32 checks"));
+        }
+        let mut names = std::collections::BTreeMap::new();
+        for (index, step) in self.steps.iter().enumerate() {
+            let path = format!("{PATH}.steps[{index}]");
+            if step.name.trim().is_empty() {
+                return Err(format!("{path}.name must be non-empty"));
+            }
+            if step.name.len() > 128 {
+                return Err(format!("{path}.name must be at most 128 UTF-8 bytes"));
+            }
+            if step.name.chars().any(char::is_control) {
+                return Err(format!("{path}.name must not contain control characters"));
+            }
+            if step.cmd.trim().is_empty() {
+                return Err(format!("{path}.cmd must be non-empty"));
+            }
+            if step.cmd.len() > 16384 {
+                return Err(format!("{path}.cmd must be at most 16384 UTF-8 bytes"));
+            }
+            if step.cmd.chars().any(|c| c.is_ascii_control()) {
+                return Err(format!(
+                    "{path}.cmd must not contain ASCII control characters"
+                ));
+            }
+            // The shared gate log reader trims sentinel labels. Reject names
+            // that would become ambiguous there, without rewriting either name
+            // or command bytes in the frozen policy.
+            if let Some(previous) = names.insert(step.name.trim(), index) {
+                return Err(format!(
+                    "{path}.name duplicates {PATH}.steps[{previous}].name"
+                ));
+            }
         }
         Ok(())
     }
@@ -243,6 +263,76 @@ fn valid_slot(slot: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn candidate_policy_human_names_and_indexed_errors() {
+        let base = json!({"scope":"declared-checks-only","timeout_secs":60,"steps":[
+            {"name":"first","cmd":"true"},{"name":"second","cmd":"true"}
+        ]});
+        for name in [
+            "六个独立测试全部通过".to_owned(),
+            "直接调用规则验证".into(),
+            "中文 user's \"quoted\" $HOME $(true)".into(),
+            "é".repeat(64),
+        ] {
+            let mut value = base.clone();
+            value["steps"][0]["name"] = json!(name);
+            serde_json::from_value::<CandidateMachinePolicy>(value)
+                .unwrap()
+                .validate()
+                .unwrap();
+        }
+        let cases = [
+            ("/timeout_secs", json!(0), "policy.timeout_secs"),
+            ("/timeout_secs", json!(7201), "policy.timeout_secs"),
+            ("/steps", json!([]), "policy.steps"),
+            (
+                "/steps",
+                json!(
+                    (0..33)
+                        .map(|i| json!({"name":format!("step-{i}"),"cmd":"true"}))
+                        .collect::<Vec<_>>()
+                ),
+                "policy.steps",
+            ),
+            ("/steps/1/name", json!(""), "policy.steps[1].name"),
+            ("/steps/1/name", json!(" \u{2003} "), "policy.steps[1].name"),
+            (
+                "/steps/1/name",
+                json!("é".repeat(65)),
+                "policy.steps[1].name",
+            ),
+            ("/steps/1/name", json!("bad\0name"), "policy.steps[1].name"),
+            ("/steps/1/name", json!("bad\nname"), "policy.steps[1].name"),
+            (
+                "/steps/1/name",
+                json!("bad\u{0085}name"),
+                "policy.steps[1].name",
+            ),
+            ("/steps/1/cmd", json!(" "), "policy.steps[1].cmd"),
+            ("/steps/1/cmd", json!("echo\0bad"), "policy.steps[1].cmd"),
+            ("/steps/1/cmd", json!("echo\nbad"), "policy.steps[1].cmd"),
+            (
+                "/steps/1/cmd",
+                json!("x".repeat(16385)),
+                "policy.steps[1].cmd",
+            ),
+            ("/steps/1/name", json!("first"), "policy.steps[1].name"),
+            ("/steps/1/name", json!(" first "), "policy.steps[1].name"),
+        ];
+        for (pointer, replacement, expected_path) in cases {
+            let mut value = base.clone();
+            *value.pointer_mut(pointer).unwrap() = replacement;
+            let error = serde_json::from_value::<CandidateMachinePolicy>(value)
+                .unwrap()
+                .validate()
+                .unwrap_err();
+            assert!(error.contains(expected_path), "{pointer}: {error}");
+            if pointer == "/steps/1/name" && error.contains("duplicates") {
+                assert!(error.contains("policy.steps[0].name"), "{error}");
+            }
+        }
+    }
+
     #[test]
     fn candidate_contract_bounds_structural_entries_and_requires_machine_policy() {
         let value = json!({"version":"isolated-codex-v1","workspace":"empty","file_delivery":{"role":"candidate_producer","slot":"project","paths":["src/main.py","README.md","tests/test_main.py"],"policy":{"scope":"declared-checks-only","timeout_secs":20,"steps":[{"name":"test","cmd":"python3 -m unittest"}]}}});

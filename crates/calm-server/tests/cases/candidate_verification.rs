@@ -558,3 +558,6 @@ async fn candidate_verification_active_reservation_blocks_independent_worker_unt
 
 #[path = "candidate_verification_review.rs"]
 mod review;
+
+#[path = "candidate_authoring.rs"]
+mod authoring;
