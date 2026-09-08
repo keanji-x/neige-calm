@@ -445,9 +445,20 @@ impl ProviderAdapter for CandidateVerifyAdapter {
                 // boot must not spawn an unfenced duplicate completion observer.
                 return Ok(ParkedRecovery::LeaveParked);
             }
-            // Owned reconciliation never turns LeaveParked/cleanup errors into
-            // terminal failure. Kill only with identity proof, then prove stop.
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", artifacts.pid))?;
+            let leader = parse_proc_stat_fields(&stat)
+                .ok_or_else(|| conflict("candidate deadline process state unavailable"))?;
+            if leader.start_time != artifacts.start_time || leader.pgrp != artifacts.pgid {
+                return Err(conflict("candidate deadline process identity changed"));
+            }
+            // Identity survives exit while the live observer retains its Child.
+            // Cleanup is still required, but an exited leader cannot acquire a
+            // new timeout verdict while its actual wait result awaits the lease.
+            let exited = matches!(leader.state, 'Z' | 'X');
             stop_recorded(artifacts).await?;
+            if exited {
+                return Ok(ParkedRecovery::LeaveParked);
+            }
             gate_process::timeout_verdict(&frozen.log(), 1, i64::from(frozen.policy.timeout_secs))
         } else {
             if !gate_process::group_stopped(artifacts)? {

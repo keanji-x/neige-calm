@@ -210,11 +210,7 @@ async fn candidate_verification_recovery_retains_capacity_when_leader_missing_gr
         live.iter().any(|m| !m.is_zombie),
         "must not signal an unowned group"
     );
-    fx.state
-        .operation_runtime
-        .cancel_parked(&op.id, "test cancellation")
-        .await
-        .unwrap();
+    cancel_candidate_when_claimable(&fx, &op.id, "test cancellation").await;
     let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id=?1")
         .bind(&op.id)
         .fetch_one(&pool)
@@ -254,6 +250,31 @@ async fn candidate_verification_consumer_recovery_describes_file_set() {
         reason.contains("file-set") && !reason.contains("JSON"),
         "{reason}"
     );
+}
+
+// A periodic owned reconcile may hold the parked lease briefly. False means
+// cancellation was not accepted; exercise the public retry contract explicitly.
+async fn cancel_candidate_when_claimable(
+    fx: &Fixture,
+    id: &calm_server::operation::OperationId,
+    reason: &str,
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if fx
+                .state
+                .operation_runtime
+                .cancel_parked(id, reason)
+                .await
+                .unwrap()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("candidate cancellation could not acquire the parked lease");
 }
 
 async fn delete_http(fx: &Fixture, path: &str) -> (axum::http::StatusCode, String) {
@@ -486,11 +507,7 @@ async fn candidate_verification_parked_delete_preserves_global_count_and_owned_p
     let active: i64 = sqlx::query_scalar("SELECT count(*) FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE o.id IS NULL OR o.phase NOT IN ('succeeded','failed')")
         .fetch_one(&pool).await.unwrap();
     assert_eq!(active, 1);
-    fx.state
-        .operation_runtime
-        .cancel_parked(&op.id, "test owned cancellation")
-        .await
-        .unwrap();
+    cancel_candidate_when_claimable(&fx, &op.id, "test owned cancellation").await;
     let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id=?1")
         .bind(&op.id)
         .fetch_one(&pool)
@@ -576,48 +593,70 @@ async fn candidate_verification_owned_deadline_kills_verified_group_then_records
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn candidate_verification_live_observer_respects_parked_lease_before_committing_wait_status()
 {
-    let (fx, _, _, publication) = source("while [ ! -e allow-finish ]; do sleep 0.02; done").await;
-    schedule(&fx).await;
-    let op = verification(&fx, &publication).await;
-    let group = parked_test_group(&fx, &op.id).await;
-    let pool = fx.boot.repo.sqlite_pool().unwrap();
-    sqlx::query(
-        "UPDATE operations SET lease_owner='test-replacement',lease_until_ms=?1 WHERE id=?2",
-    )
-    .bind(calm_server::model::now_ms() + 60_000)
-    .bind(&op.id)
-    .execute(&pool)
-    .await
-    .unwrap();
-    std::fs::write(group.workspace.join("input/source/allow-finish"), b"go").unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while calm_server::proc_identity::scan_process_group_members(group.artifacts.pgid)
-            .iter()
-            .any(|m| !m.is_zombie)
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(1),
-        fx.state.operation_runtime.wait(&op.id),
-    )
-    .await;
-    assert!(
-        outcome.is_err(),
-        "observer wrote through another parked lease: {outcome:?}"
-    );
-    let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id=?1")
+    for boot in [true, false] {
+        let (fx, _, _, publication) =
+            source("while [ ! -e allow-finish ]; do sleep 0.02; done").await;
+        schedule(&fx).await;
+        let op = verification(&fx, &publication).await;
+        let group = parked_test_group(&fx, &op.id).await;
+        let pool = fx.boot.repo.sqlite_pool().unwrap();
+        sqlx::query(
+            "UPDATE operations SET lease_owner='test-replacement',lease_until_ms=?1 WHERE id=?2",
+        )
+        .bind(calm_server::model::now_ms() + 60_000)
         .bind(&op.id)
-        .fetch_one(&pool)
+        .execute(&pool)
         .await
         .unwrap();
-    assert_eq!(phase, "parked");
-    sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1 AND lease_owner='test-replacement'")
-        .bind(&op.id).execute(&pool).await.unwrap();
-    let evidence = verified(&fx, &publication).await;
-    assert_eq!(evidence["verdict"]["passed"], true, "{evidence}");
-    assert_eq!(evidence["verdict"]["exit_code"], 0);
+        std::fs::write(group.workspace.join("input/source/allow-finish"), b"go").unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while calm_server::proc_identity::scan_process_group_members(group.artifacts.pgid)
+                .iter()
+                .any(|m| !m.is_zombie)
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(1),
+            fx.state.operation_runtime.wait(&op.id),
+        )
+        .await;
+        assert!(
+            outcome.is_err(),
+            "observer wrote through another parked lease: {outcome:?}"
+        );
+        let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id=?1")
+            .bind(&op.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(phase, "parked");
+        // The retained kernel status is authoritative even if the hint is forged.
+        std::fs::write(group.workspace.join("gate.exit"), b"7\n").unwrap();
+        // Keep the completed Child under a foreign lease while expiry is recorded.
+        // Boot's force-claim guarantees recovery gets the first settlement chance;
+        // the steady-state case also exercises the normal production sweep.
+        sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?1")
+            .bind(&op.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        if boot {
+            fx.state
+                .operation_runtime
+                .apply_recovery(fx.state.operation_runtime.recover_on_boot().await.unwrap())
+                .await
+                .unwrap();
+        } else {
+            sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1 AND lease_owner='test-replacement'")
+            .bind(&op.id).execute(&pool).await.unwrap();
+            fx.state.operation_runtime.sweep_parked().await.unwrap();
+        }
+        let evidence = verified(&fx, &publication).await;
+        assert_eq!(evidence["verdict"]["passed"], true, "{evidence}");
+        assert_eq!(evidence["verdict"]["exit_code"], 0);
+    }
 }

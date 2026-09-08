@@ -132,3 +132,13 @@ recorded ProcessIdentity in the completion transaction. Owned recovery's complet
 callback also verifies ProcessIdentity inside the existing lease-fenced transaction.
 Cancellation continues through the existing compensation stop proof. No generic
 Operation driver behavior or new Operation kind is introduced.
+
+An identity-present leader is not necessarily executing: a retained exited Child
+still has its PID/start-time/boot identity. At an expired deadline, candidate
+recovery now reads and rechecks that leader's proc state and identity before
+cleanup. If it was already Z/X, cleanup must still be proven, but recovery leaves
+the Operation parked so the live observer can commit its actual wait result.
+It does not invent a new timeout or consult an exit file for that retained leader.
+An executing leader still follows the verified-kill/proven-stop timeout path;
+reaped leaders retain the existing dead-work recovery rules. No new state machine
+or boot observer is introduced.
