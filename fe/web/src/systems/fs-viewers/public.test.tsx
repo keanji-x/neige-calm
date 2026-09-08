@@ -128,6 +128,19 @@ describe('FileViewer', () => {
     expect(screen.getByRole('button', { name: /notes\.txt/ })).toBeTruthy();
   });
 
+  it('shows hidden files and directories in the Grid file browser by default', async () => {
+    renderViewer(port({
+      listDirectory: () => Promise.resolve({
+        path: '/repo',
+        parent: '/',
+        entries: [{ name: '.config', is_dir: true }, { name: '.env', is_dir: false }],
+      }),
+    }));
+
+    expect(await screen.findByRole('button', { name: /\.config/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /\.env/ })).toBeTruthy();
+  });
+
   it('opens a file into the code pane, and a folder into the listing instead', async () => {
     const listDirectory = vi.fn((requested: string) => Promise.resolve({
       path: requested,

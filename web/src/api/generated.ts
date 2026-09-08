@@ -2237,7 +2237,7 @@ export interface components {
         ListdirResponse: {
             /**
              * @description Children, sorted: directories first, then case-insensitive alpha.
-             *     Hidden entries (leading dot) are filtered out.
+             *     Conventional Unix dotfiles are included; `.` and `..` are excluded.
              */
             entries: components["schemas"]["DirEntry"][];
             /** @description Canonical absolute path of the parent directory, or `null` at root. */

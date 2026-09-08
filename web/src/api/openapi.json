@@ -7389,7 +7389,7 @@
             "items": {
               "$ref": "#/components/schemas/DirEntry"
             },
-            "description": "Children, sorted: directories first, then case-insensitive alpha.\nHidden entries (leading dot) are filtered out."
+            "description": "Children, sorted: directories first, then case-insensitive alpha.\nConventional Unix dotfiles are included; `.` and `..` are excluded."
           },
           "parent": {
             "type": [

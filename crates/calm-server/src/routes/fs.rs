@@ -12,9 +12,9 @@
 //!     symlinks resolve and `..` segments collapse — the response always
 //!     carries the canonical absolute path the frontend should treat as
 //!     "current".
-//!   * Entries are sorted directories-first, then case-insensitive
-//!     alphabetic. Hidden entries (leading dot) are filtered out — there's
-//!     no toggle yet by design (keep the surface small).
+//!   * Entries include conventional Unix dotfiles and are sorted
+//!     directories-first, then case-insensitive alphabetic. Navigation
+//!     pseudo-entries `.` and `..` are never returned.
 //!   * 200 with `{ path, parent, entries }` on success.
 //!   * 400 if the resolved path doesn't exist or isn't a directory.
 //!   * 403 if read permission is denied at the OS level.
@@ -103,7 +103,7 @@ pub struct ListdirResponse {
     /// Canonical absolute path of the parent directory, or `null` at root.
     pub parent: Option<String>,
     /// Children, sorted: directories first, then case-insensitive alpha.
-    /// Hidden entries (leading dot) are filtered out.
+    /// Conventional Unix dotfiles are included; `.` and `..` are excluded.
     pub entries: Vec<DirEntry>,
 }
 
@@ -185,19 +185,32 @@ pub(crate) async fn listdir(
         )));
     }
 
-    let mut rd = tokio::fs::read_dir(&canon)
-        .await
-        .map_err(|e| map_io_err(&canon, e))?;
+    let entries = list_directory_entries(&canon).await?;
 
-    let mut entries: Vec<DirEntry> = Vec::new();
+    let parent = canon
+        .parent()
+        .filter(|p| *p != canon)
+        .map(|p| p.to_string_lossy().to_string());
+
+    Ok(Json(ListdirResponse {
+        path: canon.to_string_lossy().to_string(),
+        parent,
+        entries,
+    }))
+}
+
+async fn list_directory_entries(path: &Path) -> Result<Vec<DirEntry>> {
+    let mut rd = tokio::fs::read_dir(path)
+        .await
+        .map_err(|e| map_io_err(path, e))?;
+    let mut entries = Vec::new();
     loop {
         match rd.next_entry().await {
             Ok(Some(entry)) => {
                 let name = entry.file_name().to_string_lossy().to_string();
-                // Filter hidden — leading dot, conventional Unix hidden.
-                // Includes `.` and `..` (read_dir on Linux doesn't yield
-                // them, but be defensive on other platforms).
-                if name.starts_with('.') {
+                // `read_dir` does not normally yield these, but never admit
+                // navigation pseudo-entries even if a platform does.
+                if !directory_entry_visible(&name) {
                     continue;
                 }
                 // `file_type()` is cheap (no extra stat on most platforms).
@@ -226,7 +239,7 @@ pub(crate) async fn listdir(
                 // Mid-iteration EACCES on a child shouldn't kill the whole
                 // listing — log and skip. A genuinely unreadable directory
                 // would have failed at `read_dir` above.
-                tracing::debug!(error = %e, path = %canon.display(), "skip unreadable child");
+                tracing::debug!(error = %e, path = %path.display(), "skip unreadable child");
                 continue;
             }
         }
@@ -238,16 +251,11 @@ pub(crate) async fn listdir(
         _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
-    let parent = canon
-        .parent()
-        .filter(|p| *p != canon)
-        .map(|p| p.to_string_lossy().to_string());
+    Ok(entries)
+}
 
-    Ok(Json(ListdirResponse {
-        path: canon.to_string_lossy().to_string(),
-        parent,
-        entries,
-    }))
+fn directory_entry_visible(name: &str) -> bool {
+    name != "." && name != ".."
 }
 
 #[utoipa::path(
@@ -1357,43 +1365,43 @@ mod tests {
     ];
 
     #[tokio::test]
-    async fn lists_temp_dir_sorted_dirs_first() {
+    async fn listdir_includes_hidden_entries_and_sorts_directories_first() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         std::fs::create_dir(root.join("zeta")).unwrap();
         std::fs::create_dir(root.join("alpha")).unwrap();
         std::fs::write(root.join("beta.txt"), b"x").unwrap();
         std::fs::write(root.join("aaa.txt"), b"y").unwrap();
-        // Hidden — must be filtered.
         std::fs::write(root.join(".secret"), b"z").unwrap();
+        std::fs::create_dir(root.join(".config")).unwrap();
 
-        // Skip the AppState dance — exercise the meat by hand so the test
-        // doesn't need to construct a full server harness.
-        let mut rd = tokio::fs::read_dir(root).await.unwrap();
-        let mut names: Vec<(String, bool)> = Vec::new();
-        while let Some(entry) = rd.next_entry().await.unwrap() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
-                continue;
-            }
-            let is_dir = entry.file_type().await.unwrap().is_dir();
-            names.push((name, is_dir));
-        }
-        names.sort_by(|a, b| match (a.1, b.1) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.0.to_lowercase().cmp(&b.0.to_lowercase()),
-        });
+        let names = list_directory_entries(root)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entry| (entry.name, entry.is_dir))
+            .collect::<Vec<_>>();
 
         assert_eq!(
             names,
             vec![
+                (".config".to_string(), true),
                 ("alpha".to_string(), true),
                 ("zeta".to_string(), true),
+                (".secret".to_string(), false),
                 ("aaa.txt".to_string(), false),
                 ("beta.txt".to_string(), false),
             ]
         );
+    }
+
+    #[test]
+    fn listdir_only_rejects_navigation_pseudo_entries() {
+        assert!(directory_entry_visible(".env"));
+        assert!(directory_entry_visible(".config"));
+        assert!(directory_entry_visible("visible.md"));
+        assert!(!directory_entry_visible("."));
+        assert!(!directory_entry_visible(".."));
     }
 
     #[tokio::test]
@@ -1515,6 +1523,29 @@ mod tests {
             read_workspace_file_response(exact).await.unwrap().text,
             "exact target"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn workspace_file_opens_hidden_files_and_files_in_hidden_directories() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join(".notes.md"), "dotfile\n").unwrap();
+        std::fs::create_dir(workspace.path().join(".docs")).unwrap();
+        std::fs::write(workspace.path().join(".docs/plan.md"), "nested\n").unwrap();
+
+        for (path, expected) in [(".notes.md", "dotfile\n"), (".docs/plan.md", "nested\n")] {
+            let opened = open_workspace_regular_file(
+                workspace.path(),
+                path,
+                WorkspaceSymlinks::FollowedInsideRoot,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                read_workspace_file_response(opened).await.unwrap().text,
+                expected
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]
