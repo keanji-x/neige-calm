@@ -626,6 +626,11 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         Arc::new(crate::file_delivery::adapter::FilePublicationAdapter::new(
             input.route_repo.clone(),
         )),
+        Arc::new(
+            crate::file_delivery::candidate_verify::CandidateVerifyAdapter::new(
+                input.route_repo.clone(),
+            ),
+        ),
         claude_adapter,
         claude_worker_adapter,
         claude_restart_adapter,

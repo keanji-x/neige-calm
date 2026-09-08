@@ -1061,3 +1061,14 @@ describe('#1209 pre-rename template keys on the track shape', () => {
     expect(parsed.template_input).toBeNull();
   });
 });
+
+// Candidate verification is separate from immutable-file publication.
+describe('candidate verification settlement', () => {
+  it('requires exact task and verification operation identities', () => {
+    const event = { ev: 'task.candidate_verification_settled', data: { task_id: 'attempt', operation_id: 'verification' } };
+    expect(wireEventSchema.parse(event)).toEqual(event);
+    for (const data of [{ task_id: 'attempt' }, { operation_id: 'verification' }]) {
+      expect(wireEventSchema.safeParse({ ...event, data }).success).toBe(false);
+    }
+  });
+});

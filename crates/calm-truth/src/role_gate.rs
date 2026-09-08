@@ -397,7 +397,9 @@ pub fn enforce_role(
 
     if matches!(
         event,
-        Event::TaskExecutionSettled { .. } | Event::TaskFilePublicationSettled { .. }
+        Event::TaskExecutionSettled { .. }
+            | Event::TaskCandidateVerificationSettled { .. }
+            | Event::TaskFilePublicationSettled { .. }
     ) && !matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
     {
         return Err(RoleViolation::NotKernelForTaskExecutionSettled {
@@ -1914,6 +1916,32 @@ mod tests {
         let event = Event::TaskFilePublicationSettled {
             task_id: "a".into(),
             operation_id: "publication".into(),
+        };
+        for actor in [ActorId::Kernel, ActorId::KernelDispatcher] {
+            enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).unwrap();
+        }
+        for actor in [
+            ActorId::User,
+            ActorId::Plugin("p".into()),
+            ActorId::AiPlanner("p".into()),
+            ActorId::AiCodex("w".into()),
+            ActorId::AiPlannerSession("p".into()),
+            ActorId::AiCodexSession("w".into()),
+        ] {
+            assert!(
+                enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).is_err(),
+                "{actor:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn task_candidate_verification_settled_is_kernel_only() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let event = Event::TaskCandidateVerificationSettled {
+            task_id: "a".into(),
+            operation_id: "verification".into(),
         };
         for actor in [ActorId::Kernel, ActorId::KernelDispatcher] {
             enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).unwrap();

@@ -18,8 +18,8 @@ import { isCompatible, WEB_COMPAT_VERSION } from './version';
 
 describe('isCompatible', () => {
   it('refuses bundles predating file-publication events', () => {
-    expect(WEB_COMPAT_VERSION).toBeGreaterThan(24);
-    expect(isCompatible({ minWebCompatVersion: WEB_COMPAT_VERSION }, 24)).toBe(false);
+    expect(WEB_COMPAT_VERSION).toBeGreaterThan(25);
+    expect(isCompatible({ minWebCompatVersion: WEB_COMPAT_VERSION }, 25)).toBe(false);
   });
 
   it('returns true when server min equals frontend version', () => {

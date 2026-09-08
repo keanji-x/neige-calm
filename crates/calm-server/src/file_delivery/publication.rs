@@ -39,7 +39,10 @@ pub(crate) async fn source_tx(
     if current.attempt_id != task.id
         || task.track_id != payload.track_id
         || task.status != TaskStatus::Done
-        || !matches!(selection(&task)?, Some(FileDelivery::Producer { .. }))
+        || !matches!(
+            selection(&task)?,
+            Some(FileDelivery::Producer { .. } | FileDelivery::CandidateProducer { .. })
+        )
     {
         return Err(conflict("file producer is obsolete or not completed"));
     }

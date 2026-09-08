@@ -17,6 +17,7 @@ pub mod claude_adapter;
 pub mod claude_restart_adapter;
 pub mod codex_adapter;
 pub mod forge_action_adapter;
+pub(crate) mod gate_process;
 pub mod planner_harness_interrupt_adapter;
 pub mod planner_harness_shutdown_adapter;
 pub mod planner_harness_start_adapter;
@@ -77,7 +78,8 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
 /// Kept explicit so the registry coverage test fails when a new production
 /// adapter has not been classified on either side of the context fence.
 /// Retained artifact actions require completed-task authority, never start admission.
-pub const POST_EXECUTION_TASK_BOUND_ADAPTER_KINDS: [&str; 1] = ["task-file-publication"];
+pub const POST_EXECUTION_TASK_BOUND_ADAPTER_KINDS: [&str; 2] =
+    ["task-file-publication", "candidate-verify"];
 
 pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 8] = [
     "terminal-create",

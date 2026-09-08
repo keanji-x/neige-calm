@@ -80,6 +80,7 @@ type TrackFilesDerivedEvent =
   | EventOf<'task.failed'>
   | EventOf<'task.execution_settled'>
   | EventOf<'task.file_publication_settled'>
+  | EventOf<'task.candidate_verification_settled'>
   | EventOf<'task.gate_result'>
   | EventOf<'terminal.deleted'>;
 
@@ -245,6 +246,10 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     reason: 'Failed execution cleanup changes the current recovery capability.',
   },
   'task.file_publication_settled': {
+    requiresContext: trackFilesDerivedEventKeys,
+    reason: 'Sealed file qualification changes the evidence available to the Planner.',
+  },
+  'task.candidate_verification_settled': {
     requiresContext: trackFilesDerivedEventKeys,
     reason: 'Sealed file qualification changes the evidence available to the Planner.',
   },

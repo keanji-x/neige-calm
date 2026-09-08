@@ -55,6 +55,12 @@ describe('invalidation plan behavior', () => {
       invalidate: [['track-files'], ['track-report']], remove: [], writeThrough: [],
     });
   });
+  it('refreshes evidence after candidate verification without parsing opaque task IDs', () => {
+    const settled = wireEventSchema.parse({ ev: 'task.candidate_verification_settled', data: { task_id: 'opaque-attempt', operation_id: 'verification' } });
+    expect(invalidationPlanFor(settled)).toEqual({
+      invalidate: [['track-files'], ['track-report']], remove: [], writeThrough: [],
+    });
+  });
 
   it('refreshes task evidence after execution settlement without guessing an opaque attempt ID', () => {
     const settled = wireEventSchema.parse({

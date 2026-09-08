@@ -1,8 +1,13 @@
 //! One isolated producer, one sealed JSON document, one claim-bound consumer.
 pub mod adapter;
+pub(crate) mod candidate;
+pub(crate) mod candidate_input;
+pub(crate) mod candidate_verify;
+mod candidate_view;
 mod input;
 mod publication;
 pub(crate) mod settlement;
+pub(crate) mod verification_settlement;
 mod view;
 use crate::{
     error::{CalmError, Result},
@@ -69,3 +74,8 @@ pub(crate) fn limits() -> Limits {
 pub(crate) fn store(root: &Path) -> Result<ArtifactStore> {
     ArtifactStore::open_files(root, limits()).map_err(artifact_error)
 }
+
+#[cfg(any(test, feature = "fixtures"))]
+mod test_hooks;
+#[cfg(any(test, feature = "fixtures"))]
+pub use test_hooks::{CandidateReleaseHook, install_candidate_release_hook};

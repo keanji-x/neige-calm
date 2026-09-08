@@ -93,6 +93,13 @@ impl ProviderAdapter for FilePublicationAdapter {
             })
         })
         .await?;
+        if matches!(
+            selection(&task)?,
+            Some(FileDelivery::CandidateProducer { .. })
+        ) {
+            super::candidate::capture(self.repo.as_ref(), op, task, source).await?;
+            return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
+        }
         let owned = op.clone();
         let receipt =
             tokio::task::spawn_blocking(move || publication::capture(owned, task, source))
@@ -122,7 +129,7 @@ impl ProviderAdapter for FilePublicationAdapter {
     }
 }
 
-async fn require_owner_tx(tx: &mut Tx<'_>, op: &Operation) -> Result<()> {
+pub(super) async fn require_owner_tx(tx: &mut Tx<'_>, op: &Operation) -> Result<()> {
     let owner = op
         .lease_owner
         .as_deref()

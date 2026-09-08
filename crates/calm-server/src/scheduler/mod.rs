@@ -552,6 +552,8 @@ pub struct Scheduler {
     /// The dispatcher's global spawn semaphore (§5.3): per-track budgets
     /// cap per-track parallelism, this caps total cross-track spawn work.
     semaphore: Arc<Semaphore>,
+    /// Existing launch capacity, frozen at scheduler construction for durable reservations.
+    candidate_verification_limit: usize,
     /// Deployment fallback (`NEIGE_TRACK_TASK_BUDGET`, default 1). The live
     /// `task_budget_default` setting overrides it, and `tracks.task_budget`
     /// overrides both per track.
@@ -679,6 +681,7 @@ impl Scheduler {
             events,
             write,
             operation_runtime,
+            candidate_verification_limit: semaphore.available_permits(),
             semaphore,
             budget_default: task_budget_default,
             task_run_timeout,
@@ -1139,6 +1142,7 @@ impl Scheduler {
             crate::file_delivery::selection(&frozen),
             Ok(Some(
                 calm_types::task_execution::FileDelivery::Consumer { .. }
+                    | calm_types::task_execution::FileDelivery::CandidateConsumer { .. }
             ))
         ) {
             // Claim/budget remain serialized; file IO and the existing Operation
@@ -1368,7 +1372,8 @@ impl Scheduler {
                                 )
                             })
                             .count() as i64;
-                        if in_flight > budget {
+                        let active_candidates = crate::file_delivery::candidate_verify::active_tx(tx,track_id.as_str()).await?;
+                        if in_flight + active_candidates > budget {
                             return Err(race_lost_err());
                         }
                         let mut events = vec![
@@ -2039,7 +2044,7 @@ impl Scheduler {
         // A declared output is publication intent even before a consumer exists.
         // Repair a crash between Operation settlement and durable Planner notification.
         if let Some(pool) = self.repo.sqlite_pool() {
-            match sqlx::query_scalar::<_, String>("SELECT DISTINCT t.track_id FROM current_tasks t WHERE t.status='done' AND json_extract(t.context_json,'$.neige_execution.file_delivery.role')='producer' AND NOT EXISTS(SELECT 1 FROM events e WHERE e.kind='task.file_publication_settled' AND json_extract(e.payload,'$.task_id')=t.id)")
+            match sqlx::query_scalar::<_, String>("SELECT DISTINCT t.track_id FROM current_tasks t WHERE t.status='done' AND ((json_extract(t.context_json,'$.neige_execution.file_delivery.role')='producer' AND NOT EXISTS(SELECT 1 FROM events e WHERE e.kind='task.file_publication_settled' AND json_extract(e.payload,'$.task_id')=t.id)) OR (json_extract(t.context_json,'$.neige_execution.file_delivery.role')='candidate_producer' AND NOT EXISTS(SELECT 1 FROM events e WHERE e.kind='task.candidate_verification_settled' AND json_extract(e.payload,'$.task_id')=t.id)))")
                 .fetch_all(&pool).await {
                 Ok(tracks) => pending_tracks.extend(tracks),
                 Err(error) => tracing::warn!(%error, "file publication sweep failed"),

@@ -1,0 +1,4 @@
+{
+  "description": "Kernel candidate verification settlement identifies the producer attempt and exact verification Operation; its outcome must be read before claiming qualification.",
+  "wire": {"ev":"task.candidate_verification_settled","data":{"task_id":"attempt-1","operation_id":"verification-1"}}
+}

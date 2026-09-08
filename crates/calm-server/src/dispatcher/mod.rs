@@ -96,7 +96,9 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // tasks-row lookup and lives with the async callers — see
         // `is_gated_self_report`).
         Event::TaskGateResult { .. } => true,
-        Event::TaskExecutionSettled { .. } | Event::TaskFilePublicationSettled { .. } => {
+        Event::TaskExecutionSettled { .. }
+        | Event::TaskCandidateVerificationSettled { .. }
+        | Event::TaskFilePublicationSettled { .. } => {
             matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
         }
         // Issue #955 §5.7 — plugin-authored report edits (the accept
@@ -367,6 +369,11 @@ fn dispatcher_operation_runtime(
             Arc::new(crate::file_delivery::adapter::FilePublicationAdapter::new(
                 route_repo.clone(),
             )),
+            Arc::new(
+                crate::file_delivery::candidate_verify::CandidateVerifyAdapter::new(
+                    route_repo.clone(),
+                ),
+            ),
             claude_adapter,
             claude_worker_adapter,
             claude_restart_adapter,
@@ -839,6 +846,7 @@ impl Dispatcher {
             "task.failed".into(),
             "task.execution_settled".into(),
             "task.file_publication_settled".into(),
+            "task.candidate_verification_settled".into(),
             // Issue #644 PR-C — the gate runner's verdict: pushed to
             // the planner (hard-fire) and a scheduler trigger (a gate
             // verdict terminalizes the task — budget freed / deps
@@ -1082,7 +1090,7 @@ impl Inner {
             Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
             | Event::TaskGateResult { .. }
-            | Event::TaskExecutionSettled { .. } | Event::TaskFilePublicationSettled { .. } => {
+            | Event::TaskExecutionSettled { .. } | Event::TaskCandidateVerificationSettled { .. } | Event::TaskFilePublicationSettled { .. } => {
                 // Issue #644 PR-C (§6.5) — gated self-report
                 // suppression: a `task.completed` whose key resolves
                 // to a tasks row WITH a gate is a claim, not evidence;
@@ -1390,7 +1398,9 @@ impl Inner {
         }
         if matches!(
             event,
-            Event::TaskExecutionSettled { .. } | Event::TaskFilePublicationSettled { .. }
+            Event::TaskExecutionSettled { .. }
+                | Event::TaskCandidateVerificationSettled { .. }
+                | Event::TaskFilePublicationSettled { .. }
         ) {
             let preceding = match crate::harness::catch_up::observations_since(
                 self.repo.as_ref(),
@@ -1513,6 +1523,19 @@ pub(crate) async fn resolve_harness_observation(
         )
         .await;
     }
+    if let Event::TaskCandidateVerificationSettled {
+        task_id,
+        operation_id,
+    } = event
+    {
+        return crate::file_delivery::verification_settlement::observation(
+            repo,
+            track_id,
+            task_id,
+            operation_id,
+        )
+        .await;
+    }
     if let Event::TaskExecutionSettled {
         task_id,
         operation_id,
@@ -1568,7 +1591,8 @@ pub(crate) fn harness_observation_from_event(
     task_key: Option<&str>,
 ) -> Option<HarnessObservation> {
     match event {
-        Event::TaskFilePublicationSettled { .. } => None, // requires the retained Operation read above
+        Event::TaskCandidateVerificationSettled { .. }
+        | Event::TaskFilePublicationSettled { .. } => None, // requires the retained Operation read above
         Event::TaskCompleted {
             idempotency_key,
             result,

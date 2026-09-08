@@ -20,6 +20,12 @@ pub(crate) async fn view_tx(tx: &mut Tx<'_>, task: &Task) -> Result<Value> {
             );
         }
     };
+    if matches!(
+        role,
+        FileDelivery::CandidateProducer { .. } | FileDelivery::CandidateConsumer { .. }
+    ) {
+        return super::candidate_view::view_tx(tx, task, &role).await;
+    }
     let binding: Option<(String, String)> = sqlx::query_as(
         "SELECT binding_json,state FROM task_file_input_bindings WHERE attempt_id=?1",
     )
@@ -37,6 +43,9 @@ pub(crate) async fn view_tx(tx: &mut Tx<'_>, task: &Task) -> Result<Value> {
         })
         .transpose()?;
     let producer_id = match &role {
+        FileDelivery::CandidateProducer { .. } | FileDelivery::CandidateConsumer { .. } => {
+            unreachable!("routed above")
+        }
         FileDelivery::Producer { .. } => Some(task.id.clone()),
         FileDelivery::Consumer { producer, .. } => {
             sqlx::query_scalar("SELECT id FROM current_tasks WHERE track_id=?1 AND key=?2")

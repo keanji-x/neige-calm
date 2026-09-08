@@ -122,7 +122,7 @@
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 25;
+export const WEB_COMPAT_VERSION = 26;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

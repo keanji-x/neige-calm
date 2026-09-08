@@ -1446,6 +1446,56 @@ async fn planner_push_publication_fixture() -> (crate::db::sqlite::SqlxRepo, Eve
     )
 }
 
+/// Failed verification has retained candidate identity, but no qualifying evidence.
+async fn planner_push_candidate_fixture() -> (crate::db::sqlite::SqlxRepo, Event) {
+    use crate::operation::{OperationKey, OperationRepo, PhaseTag, SqlxOperationRepo};
+    let (
+        repo,
+        Event::TaskFilePublicationSettled {
+            task_id,
+            operation_id: publication,
+        },
+    ) = planner_push_publication_fixture().await
+    else {
+        unreachable!()
+    };
+    let contract = serde_json::json!({"role":"candidate_producer","slot":"project","paths":["README.md"],"policy":{"scope":"declared-checks-only","timeout_secs":1,"steps":[{"name":"check","cmd":"true"}]}});
+    sqlx::query("UPDATE tasks SET context_json=json_set(context_json,'$.neige_execution.file_delivery',json(?1)) WHERE id=?2").bind(contract.to_string()).bind(&task_id).execute(repo.pool()).await.unwrap();
+    let candidate = serde_json::json!({"publication_operation_id":publication,"source":{"task_id":task_id,"track_id":"w","source_operation_id":"source-op"},"contract":contract,"snapshot":"0".repeat(64),"store_root":"/unused-candidate-wiring"});
+    sqlx::query("INSERT INTO task_file_candidates(operation_id,track_id,producer_attempt_id,slot,candidate_json) VALUES(?1,'w',?2,'project',?3)").bind(&publication).bind(&task_id).bind(candidate.to_string()).execute(repo.pool()).await.unwrap();
+    let operations = SqlxOperationRepo::new(repo.pool().clone());
+    let payload = serde_json::json!({"publication_operation_id":publication});
+    let operation_id = operations
+        .insert_operation(
+            "candidate-verify",
+            OperationKey {
+                operation_key: "candidate-wiring".into(),
+                idempotency_key: Some(format!("candidate:{publication}")),
+                payload_hash: crate::routes::terminal_cards::stable_payload_hash(&payload).unwrap(),
+            },
+            payload,
+        )
+        .await
+        .unwrap();
+    let claimed = operations.claim_drive_batch(1).await.unwrap();
+    operations
+        .mark_failed(
+            &claimed[0],
+            "candidate authority withdrawn".into(),
+            PhaseTag::Pending,
+            Some("conflict".into()),
+        )
+        .await
+        .unwrap();
+    (
+        repo,
+        Event::TaskCandidateVerificationSettled {
+            task_id,
+            operation_id,
+        },
+    )
+}
+
 /// Canonical census of every `Event` kind tag, derived from the
 /// derived deserializer's unknown-variant diagnostic: serde lists the
 /// complete accepted-tag set when asked to parse an unknown `ev`, so
@@ -2234,6 +2284,14 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
         rows.push(row(publication_event.clone(), actor, expect_push, true));
     }
 
+    let (candidate_repo, candidate_event) = planner_push_candidate_fixture().await;
+    for (actor, expect_push) in [
+        (ActorId::Kernel, true),
+        (ActorId::KernelDispatcher, true),
+        (ActorId::User, false),
+    ] {
+        rows.push(row(candidate_event.clone(), actor, expect_push, true));
+    }
     let mut covered = std::collections::BTreeSet::new();
     for row in &rows {
         let kind = row.event.kind_tag();
@@ -2265,6 +2323,17 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
                 matches!(&resolved, Some(HarnessObservation::SystemContext { text })
                 if text.contains(operation_id) && text.contains("failed")
                     && text.contains("file producer has no accepted completion report"))
+            );
+            resolved
+        } else if let Event::TaskCandidateVerificationSettled { .. } = &row.event {
+            assert!(
+                harness_observation_from_event(&track, &row.event, Some("impl-parser")).is_none()
+            );
+            let resolved = resolve_harness_observation(&candidate_repo, &track, &row.event)
+                .await
+                .expect("retained candidate resolves");
+            assert!(
+                matches!(&resolved,Some(HarnessObservation::SystemContext { text }) if text.contains("failed") && text.contains("candidate authority withdrawn"))
             );
             resolved
         } else {
