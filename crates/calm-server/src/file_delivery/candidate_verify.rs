@@ -333,7 +333,7 @@ impl ProviderAdapter for CandidateVerifyAdapter {
         }
         let steps = frozen
             .policy
-            .steps
+            .steps()
             .iter()
             .map(|step| GateStep {
                 name: step.name.clone(),
@@ -398,7 +398,7 @@ impl ProviderAdapter for CandidateVerifyAdapter {
                 });
             }
         };
-        let timeout = i64::from(frozen.policy.timeout_secs);
+        let timeout = i64::from(frozen.policy.timeout_secs());
         let op = op.clone();
         let ctx = ctx.clone();
         let observer = Box::pin(async move {
@@ -471,7 +471,7 @@ impl ProviderAdapter for CandidateVerifyAdapter {
             if exited {
                 return Ok(ParkedRecovery::LeaveParked);
             }
-            gate_process::timeout_verdict(&frozen.log(), 1, i64::from(frozen.policy.timeout_secs))
+            gate_process::timeout_verdict(&frozen.log(), 1, i64::from(frozen.policy.timeout_secs()))
         } else {
             if !gate_process::group_stopped(artifacts)? {
                 return Ok(ParkedRecovery::LeaveParked);

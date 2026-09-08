@@ -53,7 +53,7 @@ impl IsolatedCodexSelection {
     }
 }
 
-/// A bounded two-node protocol, separate from ordering dependencies and gates.
+/// Bounded same-Track file delivery, separate from ordering dependencies and gates.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FileDelivery {
@@ -61,6 +61,11 @@ pub enum FileDelivery {
         slot: String,
         paths: Vec<String>,
         policy: CandidateMachinePolicy,
+    },
+    CandidateReviewer {
+        producer: String,
+        slot: String,
+        purpose: CandidateReviewPurpose,
     },
     CandidateConsumer {
         producer: String,
@@ -79,11 +84,19 @@ pub enum FileDelivery {
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CandidateMachinePolicy {
-    pub scope: CandidateCheckScope,
-    pub timeout_secs: u32,
-    pub steps: Vec<CandidateCheck>,
+#[serde(tag = "scope", deny_unknown_fields)]
+pub enum CandidateMachinePolicy {
+    #[serde(rename = "declared-checks-only")]
+    DeclaredChecksOnly {
+        timeout_secs: u32,
+        steps: Vec<CandidateCheck>,
+    },
+    #[serde(rename = "review-required")]
+    ReviewRequired {
+        reviewer: String,
+        timeout_secs: u32,
+        steps: Vec<CandidateCheck>,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -92,26 +105,77 @@ pub struct CandidateCheck {
     pub cmd: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CandidateCheckScope {
-    #[serde(rename = "declared-checks-only")]
-    DeclaredChecksOnly,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CandidateInputPurpose {
     #[serde(rename = "verified-candidate-input")]
     VerifiedCandidateInput,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CandidateReviewPurpose {
+    #[serde(rename = "candidate-review-input")]
+    CandidateReviewInput,
+}
+/// Findings belong to this exact report and candidate, not a global finding registry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateReviewResult {
+    pub passed: bool,
+    pub blocking_findings: Vec<String>,
+}
+impl CandidateReviewResult {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.blocking_findings.len() > 32
+            || self
+                .blocking_findings
+                .iter()
+                .any(|s| s.trim().is_empty() || s.len() > 4096)
+            || (self.passed != self.blocking_findings.is_empty())
+        {
+            return Err("review: inconsistent pass or invalid blocking findings".into());
+        }
+        Ok(())
+    }
+}
 impl CandidateMachinePolicy {
+    pub fn reviewer(&self) -> Option<&str> {
+        match self {
+            Self::DeclaredChecksOnly { .. } => None,
+            Self::ReviewRequired { reviewer, .. } => Some(reviewer),
+        }
+    }
+    pub fn scope(&self) -> &str {
+        match self {
+            Self::DeclaredChecksOnly { .. } => "declared-checks-only",
+            Self::ReviewRequired { .. } => "review-required",
+        }
+    }
+    pub fn timeout_secs(&self) -> u32 {
+        match self {
+            Self::DeclaredChecksOnly { timeout_secs, .. }
+            | Self::ReviewRequired { timeout_secs, .. } => *timeout_secs,
+        }
+    }
+    pub fn steps(&self) -> &[CandidateCheck] {
+        match self {
+            Self::DeclaredChecksOnly { steps, .. } | Self::ReviewRequired { steps, .. } => steps,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         const PATH: &str = "neige_execution.file_delivery.policy";
-        if !(1..=7200).contains(&self.timeout_secs) {
+        if self
+            .reviewer()
+            .is_some_and(|key| !crate::report_blocks::tasks::key_is_valid(key))
+        {
+            return Err(format!("{PATH}.reviewer must be a valid task key"));
+        }
+        if !(1..=7200).contains(&self.timeout_secs()) {
             return Err(format!("{PATH}.timeout_secs must be between 1 and 7200"));
         }
-        if self.steps.is_empty() || self.steps.len() > 32 {
+        if self.steps().is_empty() || self.steps().len() > 32 {
             return Err(format!("{PATH}.steps must contain between 1 and 32 checks"));
         }
         let mut names = std::collections::BTreeMap::new();
-        for (index, step) in self.steps.iter().enumerate() {
+        for (index, step) in self.steps().iter().enumerate() {
             let path = format!("{PATH}.steps[{index}]");
             if step.name.trim().is_empty() {
                 return Err(format!("{path}.name must be non-empty"));
@@ -218,7 +282,10 @@ impl IsolatedCodexSelection {
             }
             (
                 IsolatedWorkspace::FileInput,
-                Some(FileDelivery::CandidateConsumer { producer, slot, .. }),
+                Some(
+                    FileDelivery::CandidateConsumer { producer, slot, .. }
+                    | FileDelivery::CandidateReviewer { producer, slot, .. },
+                ),
             ) if crate::report_blocks::tasks::key_is_valid(producer) && valid_slot(slot) => Ok(()),
             (IsolatedWorkspace::Empty, Some(FileDelivery::Producer { slot, path, .. })) => {
                 if !valid_slot(slot) || !valid_delivery_path(path) {
@@ -263,6 +330,33 @@ fn valid_slot(slot: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn candidate_review_required_contract_is_explicit_and_bounded() {
+        let policy = json!({"scope":"review-required","reviewer":"review","timeout_secs":20,"steps":[{"name":"checks","cmd":"true"}]});
+        serde_json::from_value::<CandidateMachinePolicy>(policy.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        for field in ["reviewer", "timeout_secs", "steps"] {
+            let mut invalid = policy.clone();
+            invalid.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<CandidateMachinePolicy>(invalid).is_err());
+        }
+        for purpose in ["candidate-review-input", "unknown"] {
+            let invalid = json!({"version":"isolated-codex-v1","workspace":"file-input","file_delivery":{"role":"candidate_consumer","producer":"produce","slot":"project","purpose":purpose}});
+            assert!(
+                serde_json::from_value::<IsolatedCodexSelection>(invalid)
+                    .and_then(|s| s.validate_delivery().map_err(serde::de::Error::custom))
+                    .is_err()
+            );
+        }
+        let reviewer = json!({"version":"isolated-codex-v1","workspace":"file-input","file_delivery":{"role":"candidate_reviewer","producer":"produce","slot":"project","purpose":"candidate-review-input"}});
+        serde_json::from_value::<IsolatedCodexSelection>(reviewer)
+            .unwrap()
+            .validate_delivery()
+            .unwrap();
+    }
+
     #[test]
     fn candidate_policy_human_names_and_indexed_errors() {
         let base = json!({"scope":"declared-checks-only","timeout_secs":60,"steps":[

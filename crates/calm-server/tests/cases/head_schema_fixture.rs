@@ -41,6 +41,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0101_planner_recovery_bindings.sql",
     "0102_task_file_delivery.sql",
     "0103_candidate_verification.sql",
+    "0104_candidate_review.sql",
 ];
 
 #[test]

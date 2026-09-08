@@ -1144,6 +1144,7 @@ impl Scheduler {
             Ok(Some(
                 calm_types::task_execution::FileDelivery::Consumer { .. }
                     | calm_types::task_execution::FileDelivery::CandidateConsumer { .. }
+                    | calm_types::task_execution::FileDelivery::CandidateReviewer { .. }
             ))
         ) {
             // Claim/budget remain serialized; file IO and the existing Operation

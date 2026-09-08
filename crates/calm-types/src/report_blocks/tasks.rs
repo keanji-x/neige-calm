@@ -899,9 +899,16 @@ pub fn project_task_declarations(
         let Ok(Some(selection)) = IsolatedCodexSelection::from_context(&declaration.context) else {
             continue;
         };
+        let is_reviewer = matches!(
+            &selection.file_delivery,
+            Some(FileDelivery::CandidateReviewer { .. })
+        );
         let (producer, slot, candidate) = match selection.file_delivery {
             Some(FileDelivery::Consumer { producer, slot, .. }) => (producer, slot, false),
-            Some(FileDelivery::CandidateConsumer { producer, slot, .. }) => (producer, slot, true),
+            Some(
+                FileDelivery::CandidateConsumer { producer, slot, .. }
+                | FileDelivery::CandidateReviewer { producer, slot, .. },
+            ) => (producer, slot, true),
             _ => continue,
         };
         let sources: Vec<_> = declarations
@@ -917,8 +924,14 @@ pub fn project_task_declarations(
                     Some(FileDelivery::Producer { slot: output, .. }) => {
                         !candidate && output == slot
                     }
-                    Some(FileDelivery::CandidateProducer { slot: output, .. }) => {
-                        candidate && output == slot
+                    Some(FileDelivery::CandidateProducer {
+                        slot: output,
+                        policy,
+                        ..
+                    }) => {
+                        candidate
+                            && output == slot
+                            && (!is_reviewer || policy.reviewer() == Some(declaration.key.as_str()))
                     }
                     _ => false,
                 });
