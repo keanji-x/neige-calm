@@ -277,7 +277,7 @@ async fn cancel_candidate_when_claimable(
     .expect("candidate cancellation could not acquire the parked lease");
 }
 
-async fn delete_http(fx: &Fixture, path: &str) -> (axum::http::StatusCode, String) {
+pub(super) async fn delete_http(fx: &Fixture, path: &str) -> (axum::http::StatusCode, String) {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
     let app = calm_server::routes::router()

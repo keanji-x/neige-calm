@@ -74,3 +74,22 @@ producer's exact attempt via `calm.task.verdict` after inspecting verification a
 review facts. Repeating acceptance of the same evidence preserves the original
 decision ID (and its original wording); an intervening rejection requires a new
 acceptance and never rewrites an existing consumer binding.
+
+## R1: report and Operation settlement are distinct notifications
+
+TaskCompleted can reach the Planner while the Reviewer's parked lease still holds
+cleanup. It remains insufficient for acceptance. TaskExecutionSettled now also
+records a Done CandidateReviewer's exact succeeded/failed Operation after confirmed
+namespace stop. Successful owned-parked completion records this in its terminal
+transaction; the existing boot/periodic scheduler repairs the compensation-to-notice
+window. Both paths share the event-ID dedupe and retained stop check. Ordinary Done
+workers remain quiet; obsolete or withdrawn Reviewers do not imply current readiness.
+
+Review settlement has its own delivery-time briefing, recomputing current authority
+and showing report outcome separately from Operation outcome. It binds no Recover
+operation, including when the report is Done but the Operation failed. Failed-only
+require_stopped_tx and recovery admission remain unchanged. The existing Event shape
+is unchanged; this is not a machine-verification event or new acceptance authority.
+
+Fixture reset deletes candidate decision bindings and receipts before their events.
+Normal Track teardown and the production verification/stop guards are unchanged.

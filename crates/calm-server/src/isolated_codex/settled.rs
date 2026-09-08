@@ -1,4 +1,4 @@
-//! A durable wake after failed execution cleanup, independent of live session rows.
+//! Durable wakes after failed execution or completed Reviewer cleanup.
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::Result;
 use crate::event::{BroadcastEnvelope, Event, EventScope};
@@ -14,14 +14,24 @@ pub(super) async fn record_tx(tx: &mut Tx<'_>, op: &Operation) -> Result<Vec<Bro
     else {
         return Ok(Vec::new());
     };
-    if task.status != TaskStatus::Failed {
+    let review = super::review_settled::is_review(&task)?;
+    if task.status != TaskStatus::Failed && !review {
         return Ok(Vec::new());
     }
     let current = crate::db::sqlite::task_attempt_current_tx(tx, &task.track_id, &task.key).await?;
     if current.is_none_or(|allocation| allocation.attempt_id != task.id) {
         return Ok(Vec::new());
     }
-    super::recovery::require_stopped_tx(tx, &task, &op.id).await?;
+    if review {
+        super::review_settled::outcome_tx(tx, &task, &op.id).await?;
+    } else {
+        super::recovery::require_stopped_tx(tx, &task, &op.id).await?;
+    }
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM events WHERE kind='task.execution_settled' AND json_extract(payload,'$.operation_id')=?1)")
+        .bind(&op.id).fetch_one(&mut **tx).await?;
+    if exists {
+        return Ok(Vec::new());
+    }
     let track = crate::track_lifecycle::track_get_tx(tx, &task.track_id.clone().into()).await?;
     let actor = ActorId::KernelDispatcher;
     let scope = EventScope::Track {
@@ -43,9 +53,9 @@ pub(super) async fn record_tx(tx: &mut Tx<'_>, op: &Operation) -> Result<Vec<Bro
     }])
 }
 
-/// Shared by live delivery and boot replay. This hint is useful when a User
-/// could request recovery, even if the Planner needs that User's authorization.
-/// Never turn an obsolete/withdrawn execution into a claim of current readiness.
+/// Shared by live delivery and boot replay. Failed executions retain their User
+/// recovery predicate. Done Reviewers expose terminal outcomes under current input
+/// authority without granting recovery. Obsolete/withdrawn hints remain quiet.
 pub(crate) async fn relevant(
     repo: &dyn RepoEventWrite,
     track_id: &TrackId,
@@ -60,7 +70,13 @@ pub(crate) async fn relevant(
             let Some(task) = crate::db::sqlite::task_get_tx(tx, &task_id).await? else {
                 return Ok(false);
             };
-            if task.track_id != track_id.as_str() || task.status != TaskStatus::Failed {
+            if task.track_id != track_id.as_str() {
+                return Ok(false);
+            }
+            if super::review_settled::is_review(&task)? {
+                return super::review_settled::relevant_tx(tx, &task, &operation_id).await;
+            }
+            if task.status != TaskStatus::Failed {
                 return Ok(false);
             }
             let Some(current) =
@@ -92,4 +108,66 @@ pub(crate) async fn relevant(
         })
     })
     .await
+}
+
+/// Live and replay share the same typed review settlement notice.
+pub(crate) async fn review_observation(
+    repo: &dyn RepoEventWrite,
+    track: &TrackId,
+    task: &str,
+    op: &str,
+) -> Result<Option<crate::harness::Observation>> {
+    let track = track.clone();
+    let task = task.to_owned();
+    let op = op.to_owned();
+    write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let Some(task) = crate::db::sqlite::task_get_tx(tx, &task).await? else {
+                return Ok(None);
+            };
+            if task.track_id != track.as_str() || !super::review_settled::is_review(&task)? {
+                return Ok(None);
+            }
+            let briefing = super::review_settled::briefing_tx(tx, &task, &op).await?;
+            Ok(Some(crate::harness::Observation::SystemContext {
+                text: super::review_settled::render(&briefing)?,
+            }))
+        })
+    })
+    .await
+}
+
+/// Compensation completes outside owned-parked's callback. Repair that durable
+/// terminal-to-notice gap on the existing boot/periodic scheduler sweep, only for
+/// Done Reviewers; no ordinary Done wake or new retry authority is introduced.
+pub(crate) async fn backfill_reviews(
+    repo: &dyn crate::db::Repo,
+    bus: &crate::event::EventBus,
+) -> Result<()> {
+    use crate::operation::{OperationRepo, SqlxOperationRepo};
+    let Some(pool) = repo.sqlite_pool() else {
+        return Ok(());
+    };
+    let ids: Vec<String> = sqlx::query_scalar("SELECT o.id FROM operations o JOIN current_tasks t ON t.id=o.idempotency_key WHERE o.kind='codex-isolated-worker' AND o.phase IN ('succeeded','failed') AND t.status='done' AND json_extract(t.context_json,'$.neige_execution.file_delivery.role')='candidate_reviewer' AND NOT EXISTS(SELECT 1 FROM events e WHERE e.kind='task.execution_settled' AND json_extract(e.payload,'$.operation_id')=o.id)").fetch_all(&pool).await?;
+    let operations = SqlxOperationRepo::new(pool);
+    for id in ids {
+        let Some(op) = operations.get_operation(&id).await? else {
+            continue;
+        };
+        let result = write_in_tx_typed(repo, move |tx| {
+            Box::pin(async move { record_tx(tx, &op).await })
+        })
+        .await;
+        match result {
+            Ok(events) => {
+                for event in events {
+                    bus.emit_envelope(event);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(operation_id=%id,%error,"review settlement backfill remains unresolved")
+            }
+        }
+    }
+    Ok(())
 }

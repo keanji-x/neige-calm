@@ -17,8 +17,17 @@ async fn review_source_scenario(scenario: &str) -> (Fixture, Task, String, Value
     review_source_check(scenario, CHECK).await
 }
 async fn review_source_check(scenario: &str, check: &str) -> (Fixture, Task, String, Value) {
+    review_source_listener(scenario, check, false).await
+}
+async fn review_source_listener(
+    scenario: &str,
+    check: &str,
+    live: bool,
+) -> (Fixture, Task, String, Value) {
     let fx = fixture(scenario).await;
-    fx.state.dispatcher.abort_event_listener_for_test();
+    if !live {
+        fx.state.dispatcher.abort_event_listener_for_test();
+    }
     let mut task = producer(check);
     task["context"]["neige_execution"]["file_delivery"]["policy"]["scope"] =
         json!("review-required");
@@ -551,3 +560,6 @@ async fn candidate_review_qualification_receipt_failure_rolls_back_decision_even
             .is_err()
     );
 }
+
+#[path = "candidate_review_settlement.rs"]
+mod settlement;

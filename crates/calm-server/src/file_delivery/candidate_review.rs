@@ -84,10 +84,12 @@ pub(crate) async fn evidence_tx(
             "review report operation does not own prepared input",
         ));
     }
-    let stopped: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM operations WHERE id=?1 AND kind='codex-isolated-worker' AND phase='succeeded')")
-        .bind(&evidence.operation_id).fetch_one(&mut **tx).await?;
-    if !stopped {
-        return Err(conflict("review operation has not settled"));
+    if crate::isolated_codex::review_settled::outcome_tx(tx, &task, &evidence.operation_id).await?
+        != "succeeded"
+    {
+        return Err(conflict(
+            "review Operation failed; candidate is not qualified",
+        ));
     }
     let crate::routes::isolated_tasks::AcceptedTaskReport::Completed { result, .. } =
         evidence.report
@@ -189,6 +191,12 @@ pub(crate) async fn view_tx(
         );
     };
     let mut view = json!({"reviewer":key,"review_attempt_id":attempt,"review_operation_id":evidence.operation_id,"report_event_id":evidence.event_id});
+    let operation: (String, Option<String>) =
+        sqlx::query_as("SELECT phase,last_error FROM operations WHERE id=?1")
+            .bind(&evidence.operation_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    view["operation"] = json!({"state":operation.0,"failure":operation.1});
     match evidence.report {
         crate::routes::isolated_tasks::AcceptedTaskReport::Completed { result, .. } => {
             match serde_json::from_value::<CandidateReviewResult>(result) {
