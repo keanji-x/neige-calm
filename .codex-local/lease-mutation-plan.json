@@ -1,0 +1,11 @@
+{
+  "production_file": "crates/calm-server/src/operation/driver.rs",
+  "single_factor_mutation": "Replace the sole 'if !eligible {' with 'if false && !eligible {'; keep computing the real hint and all test hooks/checks intact.",
+  "selection": "cargo nextest run --locked -p calm-server --test mcp_integration_suite candidate_lease_defers --test-threads 8 --no-fail-fast",
+  "complete_predicted_red_set": [
+    "candidate_verification::review::lease::candidate_lease_defers_pre_deadline",
+    "candidate_verification::review::lease::candidate_lease_defers_past_deadline"
+  ],
+  "required_failure": "Both fail the SQLite audit zero-claim assertion, after verifying the real exit-0 verdict and cleanup. No other selected tests exist.",
+  "restoration": "Exclusive writer; original file bytes retained in memory and backup, verify mutation applied, run once, restore in finally, compare bytes/hash, rerun same selection green. No concurrent review or writer during mutation."
+}

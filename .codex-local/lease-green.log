@@ -1,0 +1,15 @@
+   Compiling calm-server v0.1.0 (/mnt/data2/kenji/neige-calm/.codex-local/worktrees/issue-1501-candidate-verification/crates/calm-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 10s
+────────────
+ Nextest run ID ae4fed10-289a-45ff-a1f3-b3020d1764b5 with nextest profile: default
+    Starting 8 tests across 1 binary (332 tests skipped)
+        PASS [   2.832s] (1/8) calm-server::mcp_integration_suite candidate_verification::review::lease::candidate_lease_defers_past_deadline
+        PASS [   2.877s] (2/8) calm-server::mcp_integration_suite candidate_verification::review::lease::candidate_lease_defers_pre_deadline
+        PASS [   4.404s] (3/8) calm-server::mcp_integration_suite candidate_verification::candidate_verification_recovery_reexecutes_same_snapshot_and_policy_after_recorded_interruption
+        PASS [   5.008s] (4/8) calm-server::mcp_integration_suite candidate_verification::review::candidate_verification_owned_deadline_kills_verified_group_then_records_timeout
+        PASS [   5.348s] (5/8) calm-server::mcp_integration_suite candidate_verification::review::lease::candidate_lease_read_hint_races_remain_advisory
+        PASS [   5.356s] (6/8) calm-server::mcp_integration_suite candidate_verification::review::lease::candidate_lease_boot_and_cancel_bypass_deferral
+        PASS [   9.224s] (7/8) calm-server::mcp_integration_suite candidate_verification::review::candidate_verification_live_observer_respects_parked_lease_before_committing_wait_status
+        PASS [  12.700s] (8/8) calm-server::mcp_integration_suite candidate_verification::review::candidate_verification_recovery_retains_capacity_when_leader_missing_group_live
+────────────
+     Summary [  12.702s] 8 tests run: 8 passed, 332 skipped

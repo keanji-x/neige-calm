@@ -78,4 +78,8 @@ pub(crate) fn store(root: &Path) -> Result<ArtifactStore> {
 #[cfg(any(test, feature = "fixtures"))]
 mod test_hooks;
 #[cfg(any(test, feature = "fixtures"))]
-pub use test_hooks::{CandidateReleaseHook, install_candidate_release_hook};
+pub use test_hooks::{
+    CandidateCompletionHook, CandidateRecoveryHintHook, CandidateReleaseHook,
+    install_candidate_completion_hook, install_candidate_recovery_hint_hook,
+    install_candidate_release_hook,
+};

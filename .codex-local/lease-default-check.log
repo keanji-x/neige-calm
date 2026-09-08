@@ -1,0 +1,6 @@
+    Checking calm-types v0.1.0 (/mnt/data2/kenji/neige-calm/.codex-local/worktrees/issue-1501-candidate-verification/crates/calm-types)
+   Compiling calm-truth v0.1.0 (/mnt/data2/kenji/neige-calm/.codex-local/worktrees/issue-1501-candidate-verification/crates/calm-truth)
+    Checking calm-exec v0.1.0 (/mnt/data2/kenji/neige-calm/.codex-local/worktrees/issue-1501-candidate-verification/crates/calm-exec)
+    Checking calm-provider v0.1.0 (/mnt/data2/kenji/neige-calm/.codex-local/worktrees/issue-1501-candidate-verification/crates/calm-provider)
+    Checking calm-server v0.1.0 (/mnt/data2/kenji/neige-calm/.codex-local/worktrees/issue-1501-candidate-verification/crates/calm-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 45.83s

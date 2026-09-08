@@ -660,3 +660,6 @@ async fn candidate_verification_live_observer_respects_parked_lease_before_commi
         assert_eq!(evidence["verdict"]["exit_code"], 0);
     }
 }
+
+#[path = "candidate_verification_lease.rs"]
+mod lease;

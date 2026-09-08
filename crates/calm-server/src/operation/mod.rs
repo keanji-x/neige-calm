@@ -755,6 +755,14 @@ pub trait ProviderAdapter: Send + Sync {
         false
     }
 
+    /// Read-only hint for steady sweeps before claiming an owned parked resource.
+    /// False defers this sweep only; true never authorizes recovery or settlement.
+    /// Decisions may race exit/reaping or row changes: all claimed checks still apply.
+    /// Boot, explicit cancellation, and compensation do not consult this hint.
+    async fn owned_parked_recovery_eligible(&self, _op: &Operation) -> bool {
+        true
+    }
+
     async fn recover_owned_parked(
         &self,
         _op: &Operation,

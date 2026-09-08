@@ -405,6 +405,12 @@ impl ProviderAdapter for CandidateVerifyAdapter {
             let observation =
                 gate_process::observe_verdict(child, artifacts.clone(), frozen.log(), 1, timeout)
                     .await;
+            #[cfg(any(test, feature = "fixtures"))]
+            super::test_hooks::before_completion(
+                &frozen.candidate.publication_operation_id,
+                frozen.workspace.clone(),
+            )
+            .await;
             // Keep the leader unreaped until its real wait verdict commits. A
             // concurrent sweep must not replace it with exit-file inference.
             loop {
@@ -422,6 +428,12 @@ impl ProviderAdapter for CandidateVerifyAdapter {
             deadline_ms: crate::model::now_ms() + (timeout + 120) * 1000,
             observer,
         })
+    }
+    async fn owned_parked_recovery_eligible(&self, op: &Operation) -> bool {
+        let eligible = !retains_quiescent_leader(op);
+        #[cfg(any(test, feature = "fixtures"))]
+        super::test_hooks::after_recovery_hint(&op.id, eligible).await;
+        eligible
     }
     async fn recover_owned_parked(
         &self,
@@ -544,4 +556,25 @@ impl ProviderAdapter for CandidateVerifyAdapter {
 async fn stop_recorded(artifacts: &SpawnArtifacts) -> Result<()> {
     gate_process::kill(artifacts);
     gate_process::wait_group_stopped(artifacts).await
+}
+
+/// Deferral requires positive proof; uncertainty leaves normal claimed recovery
+/// responsible for validation and cleanup. This observation grants no authority.
+fn retains_quiescent_leader(op: &Operation) -> bool {
+    let Some(artifacts) = &op.spawn_artifacts else {
+        return false;
+    };
+    if !verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id) {
+        return false;
+    }
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", artifacts.pid)) else {
+        return false;
+    };
+    let Some(leader) = parse_proc_stat_fields(&stat) else {
+        return false;
+    };
+    leader.start_time == artifacts.start_time
+        && leader.pgrp == artifacts.pgid
+        && matches!(leader.state, 'Z' | 'X')
+        && matches!(gate_process::group_stopped(artifacts), Ok(true))
 }

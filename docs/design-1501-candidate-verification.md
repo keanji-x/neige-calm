@@ -142,3 +142,31 @@ It does not invent a new timeout or consult an exit file for that retained leade
 An executing leader still follows the verified-kill/proven-stop timeout path;
 reaped leaders retain the existing dead-work recovery rules. No new state machine
 or boot observer is introduced.
+
+## Held-wait settlement liveness
+
+Steady recovery consults a default-allow, read-only adapter eligibility hint before
+claiming an owned parked resource, for both pre-deadline and overdue sweeps.
+Candidate verification alone defers when the exact recorded boot/PID/start-time
+leader is retained in Z/X state, its process group matches, and the recorded group
+is proven stopped. Missing identity, unreadable state, or uncertain group cleanup
+allows the existing claimed recovery path; the hint never authorizes a write,
+signal, verdict, or settlement. Other adapters retain their default behavior.
+
+This applies to `OperationRuntime::wait` (25ms recovery polling, also used by the
+candidate scheduler), `sweep_parked` (scheduler periodic/backstop sweeps), and their
+shared steady sweep funnel. Boot `VerifyParked` and the final boot sweep still
+force-claim and release stale leases. Explicit `cancel_parked`, compensation, and
+post-claim identity, authority, and group checks are unchanged.
+
+The hint is intentionally racy: an allow decision followed by exit can cause one
+unnecessary claim, whose existing recovery checks still govern; a defer decision
+followed by reaping/settlement or changed state skips only this sweep and the next
+sweep reads again. No hint is cached or persisted. Only the retained live observer
+commits its actual kernel wait verdict before reaping; a forged exit file cannot
+replace that verdict. A barrier after real wait observation plus SQLite claim audit
+pins zero unnecessary steady claims for a quiescent retained leader, in both
+modes. Race, boot, cancellation, and live overdue cleanup tests protect the bypass
+boundaries. The historical 30s timeout itself was not reproduced in diagnosis;
+eight repeated denials were correlated to recovery owner UUIDs returning
+`LeaveParked`, establishing the contention mechanism without a timeout increase.
