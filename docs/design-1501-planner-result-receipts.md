@@ -4,9 +4,9 @@
 
 Ordinary task completion and failure must reach the internal Planner's real
 harness turn input with a bounded, readable result or error and an accurate
-detail locator for the original execution attempt. Today the dispatcher retains
-`TaskCompleted.result`, but `Observation::to_turn_text` discards it and asks the
-Planner to reread global state.
+detail locator for the original execution attempt. At baseline `faba6fff7`, the
+dispatcher retained `TaskCompleted.result`, but `Observation::to_turn_text` discarded
+it and asked the Planner to reread global state.
 
 Reuse the existing observation queue, persistence, replay, and execution identity.
 Do not add events, migrations, frontend contracts, dispatch/send commands, an
@@ -177,3 +177,29 @@ fixture Unix socket permitted, exact gate replay, the regenerated prompt golden
 and the decisive deep same-batch regression. All 8 observation vocabulary tests
 passed. The generator's intentional post-write panic is separately logged in
 `/tmp/neige-1501-r1-regen-prompt.log`; the subsequent normal golden test is green.
+
+## Bounded native acceptance
+
+A private native Planner trial at clean release source `d5c252044` completed one
+`receipt-probe` task and one execution attempt. The Worker reported `total=10`,
+`count=3` and a newly generated nonce. Independent inspection matched the exact
+small result in the actual `system_task_completed` input segment to the authenticated
+completion event, and verified its run/event locator. The final Planner answer
+reproduced the same nonce; the execution's namespace-stop proof was checked.
+
+The recorded post-receipt actions included report maintenance, one `neige state`
+read and the explicit verdict/lifecycle transition. There was no run or directory
+lookup to recover the result. The report/state reads did not contain the nonce.
+This demonstrates result handoff, not elimination of all mechanical calls; its
+single-task call count is not compared as a reduction against the earlier,
+different three-task delivery experiment. Both private service processes were
+stopped and the port closure verified. Port 4140 was not redeployed.
+
+A single-factor production mutation removed the modern envelope/event-ID equality
+check. Exactly the predicted superseded-event test failed among all eleven receipt
+tests, and all eleven passed after byte-exact source restoration. This pins exact
+modern-event references; it does not upgrade the explicitly limited legacy guarantee.
+
+Semantic dispatch, external CLI waiting/subscription, in-flight messages and
+rejected-candidate repair remain subsequent slices. The existing report declaration
+truth and A2 acceptance rules continue to govern them.
