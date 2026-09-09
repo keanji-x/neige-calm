@@ -11,7 +11,8 @@ afterEach(() => { document.body.replaceChildren(); });
 describe('Settings mobile presentation', () => {
   it('keeps one row shape and one trailing edge at phone width', async () => {
     await page.viewport(390, 844);
-    const { container } = render(<NetworkPane
+    render(<NetworkPane
+      onOpenMobile={vi.fn()}
       settings={{}}
       loadError={null}
       onSave={vi.fn()}
@@ -26,7 +27,8 @@ describe('Settings mobile presentation', () => {
     await expect.element(page.getByRole('textbox', { name: 'HTTP proxy' })).toBeInTheDocument();
     await expect.element(page.getByRole('textbox', { name: 'HTTPS proxy' })).toBeInTheDocument();
     // No Save button: a proxy commits when its field is left (see `public.tsx`).
-    expect(container.querySelectorAll('button')).toHaveLength(0);
+    await expect.element(page.getByRole('button', { name: 'Save', exact: true })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: /Mobile connection/ })).toBeInTheDocument();
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     await page.screenshot({ path: '../../../../test-results/mobile-settings.png' });
   });
@@ -45,6 +47,7 @@ describe('Settings confirmation and example text', () => {
   it('confirms with a tick whose word is only in the live region', async () => {
     await page.viewport(1180, 640);
     render(<NetworkPane
+      onOpenMobile={vi.fn()}
       settings={{}} loadError={null} onSave={() => Promise.resolve()} onRetryLoad={vi.fn()}
     />);
     // Driven through real user events: the commit is a React `onBlur`, and a
@@ -84,6 +87,7 @@ describe('Settings confirmation and example text', () => {
   it('paints an example lighter than a value', async () => {
     await page.viewport(1180, 640);
     render(<NetworkPane
+      onOpenMobile={vi.fn()}
       settings={{ http_proxy: 'http://typed:3128' }} loadError={null}
       onSave={vi.fn()} onRetryLoad={vi.fn()}
     />);

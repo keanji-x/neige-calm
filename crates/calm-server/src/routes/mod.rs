@@ -8,6 +8,7 @@ use utoipa::OpenApi;
 
 mod application;
 pub use application::application_router;
+pub use application::public_mobile_router;
 
 pub mod area_folders;
 pub mod areas;

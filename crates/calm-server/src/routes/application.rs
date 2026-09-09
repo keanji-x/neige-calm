@@ -9,6 +9,29 @@ use axum::Router;
 /// Assemble authenticated REST/WS, loopback-only worker hooks and public routes.
 /// CORS and static frontend serving are added by the binary outside this boundary.
 pub fn application_router(state: AppState, auth_state: AuthState) -> Router {
+    let management = crate::mobile_access::routes::management_router()
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            auth::require_session,
+        ))
+        .with_state(auth_state.clone());
+    let internal = routes::internal_router()
+        .layer(axum::middleware::from_fn(actor_middleware))
+        .layer(axum::middleware::from_fn(require_loopback_connect_info))
+        .with_state(state.clone());
+    shared_router(state, auth_state.clone())
+        .merge(internal)
+        .merge(management)
+        .merge(auth::router().with_state(auth_state))
+}
+
+/// Explicit public surface: worker hooks, management, and password login are
+/// never registered. A loopback proxy must not inherit local-worker authority.
+pub fn public_mobile_router(state: AppState, auth_state: AuthState) -> Router {
+    shared_router(state, auth_state.clone()).merge(auth::session_router().with_state(auth_state))
+}
+
+fn shared_router(state: AppState, auth_state: AuthState) -> Router {
     // Scope G — REST routes carry the `X-Calm-Actor` middleware so handler
     // writes get a declared actor (user / ai:<id>).
     //
@@ -28,9 +51,6 @@ pub fn application_router(state: AppState, auth_state: AuthState) -> Router {
     // subprocesses. They carry `X-Calm-Actor` but no browser session cookie,
     // so they get actor + loopback validation and stay outside the human
     // session gate.
-    let internal_rest = routes::internal_router()
-        .layer(axum::middleware::from_fn(actor_middleware))
-        .layer(axum::middleware::from_fn(require_loopback_connect_info));
 
     // WS routes — issue #189 — every upgrade handshake must carry a valid
     // session cookie (cookies are sent automatically with the WS upgrade
@@ -49,13 +69,12 @@ pub fn application_router(state: AppState, auth_state: AuthState) -> Router {
     // Auth routes — login/whoami/logout. Public; mounted as a
     // separately-stated router because they consume `AuthState`, not
     // `AppState`.
-    let auth_router = auth::router().with_state(auth_state.clone());
+    let pairing_router = crate::mobile_access::routes::public_router().with_state(auth_state);
 
     axum::Router::new()
         .merge(protected_rest)
-        .merge(internal_rest)
         .merge(protected_ws)
         .merge(public_rest)
         .with_state(state)
-        .merge(auth_router)
+        .merge(pairing_router)
 }

@@ -1382,6 +1382,12 @@ jobs:
       - name: stack e2e tier 1
         run: ./e2e/run.sh --tier 1
 
+      - name: mobile QR pairing closed loop
+        run: |
+          npm --prefix mobile ci
+          (cd mobile && npx playwright install --with-deps chromium)
+          npm --prefix mobile run test:pairing -- "$PWD/target/release/calm-server" "$PWD/fe/web/dist"
+
       - name: upload stack e2e artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4

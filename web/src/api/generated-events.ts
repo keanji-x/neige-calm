@@ -327,6 +327,8 @@ export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" |
  */
 export type HarnessQueueChange = "edited" | "deleted" | "steered" | "dropped";
 
+export type MobileStatus = { available: boolean, publicUrl: string | null, pending: Array<PendingPair>, devices: Array<PairedDevice>, };
+
 export type Overlay = { id: string, plugin_id: string, 
 /**
  * `"track"` or `"card"`.
@@ -341,6 +343,18 @@ kind: string,
  * explicit `unknown` override.
  */
 payload: unknown, updated_at: number, };
+
+export type PairedDevice = { id: string, deviceName: string, };
+
+export type PairingClaim = { ticket: string, deviceName: string, };
+
+export type PairingClaimed = { id: string, secret: string, verificationCode: string, };
+
+export type PairingCreated = { id: string, qrPayload: string, qrImage: string, expiresInSeconds: number, };
+
+export type PairingRedeem = { id: string, secret: string, };
+
+export type PendingPair = { id: string, deviceName: string, verificationCode: string, };
 
 /**
  * One attachment as the frontend sees it in a queue entry or a transcript

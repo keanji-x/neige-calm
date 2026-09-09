@@ -148,6 +148,10 @@ pub struct Config {
     #[arg(long, env = "CALM_DEV_AUTOLOGIN", default_value_t = false)]
     pub auth_dev_autologin: bool,
 
+    /// Opt-in server-side Funnel configuration for mobile QR pairing.
+    #[arg(long)]
+    pub mobile_access_config: Option<PathBuf>,
+
     /// Initial delay before restarting the shared codex app-server after a crash.
     #[arg(
         long,

@@ -35,7 +35,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-async fn fresh_state() -> AppState {
+pub(super) async fn fresh_state() -> AppState {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     AppState::from_parts(
         repo.clone(),
@@ -59,7 +59,7 @@ async fn fresh_state() -> AppState {
     )
 }
 
-fn live_auth_state(user: &str, pass: &str) -> AuthState {
+pub(super) fn live_auth_state(user: &str, pass: &str) -> AuthState {
     AuthState::new(AuthConfig {
         username: Some(user.into()),
         password: Some(pass.into()),

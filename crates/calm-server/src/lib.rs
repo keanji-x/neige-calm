@@ -31,6 +31,7 @@ pub mod card_kind;
 pub mod forge_trust;
 pub mod harness;
 pub mod liveness_feeder;
+pub mod mobile_access;
 pub mod plain_chat;
 pub mod provider_registry;
 pub mod reaper;

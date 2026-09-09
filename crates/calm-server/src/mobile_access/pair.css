@@ -1,0 +1,11 @@
+:root { font: 16px/1.7 system-ui, sans-serif; color: #292a32; background: #f6f5f2; }
+body { margin: 0; }
+main { max-width: 420px; margin: 12vh auto; padding: 24px; }
+.brand { font-size: 12px; letter-spacing: 3px; }
+h1 { font-size: 28px; }
+#server { overflow-wrap: anywhere; color: #555; }
+#code { font: bold 36px/1.5 ui-monospace, monospace; letter-spacing: 8px; }
+#error { color: #ac3434; }
+button { border: 0; border-radius: 12px; padding: 16px; font: inherit; background: #5553a2; color: white; width: 100%; }
+button:focus-visible { outline: 3px solid #292a32; outline-offset: 3px; }
+.hint { font-size: 14px; color: #555; }

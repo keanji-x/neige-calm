@@ -25,6 +25,7 @@ afterEach(() => {
 
 function props(overrides: Partial<NetworkPaneProps> = {}): NetworkPaneProps {
   return {
+    onOpenMobile: vi.fn(),
     settings: {},
     loadError: null,
     onSave: vi.fn(),

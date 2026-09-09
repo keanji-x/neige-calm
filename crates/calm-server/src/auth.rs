@@ -42,8 +42,10 @@
 //!   - cookies are `SameSite=Strict` (cross-site requests can't carry them),
 //!   - sessions live in memory and die on server restart.
 //!
-//! When we open neige-calm to external surfaces we'll layer signing /
-//! rotation / idle expiry on top, but that's out of scope here.
+//! Optional mobile access uses a separate HTTPS ingress, owner-approved
+//! one-time pairing, Secure cookies, and transport revocation. It never mounts
+//! password login, local worker hooks, or access-management endpoints. See
+//! `mobile_access` for that bounded session lifecycle.
 
 use crate::config::Config;
 use crate::error::{CalmError, Result};
@@ -195,13 +197,16 @@ impl SessionStore {
 pub struct AuthState {
     pub config: Arc<AuthConfig>,
     pub sessions: SessionStore,
+    pub mobile: crate::mobile_access::MobileAccess,
 }
 
 impl AuthState {
     pub fn new(config: AuthConfig) -> Self {
+        let sessions = SessionStore::new();
         Self {
             config: Arc::new(config),
-            sessions: SessionStore::new(),
+            mobile: crate::mobile_access::MobileAccess::new(sessions.clone()),
+            sessions,
         }
     }
 }
@@ -344,8 +349,12 @@ impl From<&Principal> for WhoamiBody {
 /// applied to the protected routes; the routes here must remain reachable
 /// without a prior login (otherwise nobody could ever log in).
 pub fn router() -> Router<AuthState> {
+    session_router().route("/api/auth/login", post(login_handler))
+}
+
+/// The public mobile ingress offers pairing rather than password login.
+pub fn session_router() -> Router<AuthState> {
     Router::new()
-        .route("/api/auth/login", post(login_handler))
         .route("/api/auth/whoami", get(whoami_handler))
         .route("/api/auth/logout", post(logout_handler))
 }
@@ -431,7 +440,7 @@ async fn logout_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Re
 /// happen) sit behind https terminators that can layer `Secure` on at the
 /// proxy edge if needed. (Setting `Secure` here would silently break local
 /// dev with no signal — the cookie just wouldn't be sent.)
-fn build_session_cookie(value: &str) -> Cookie<'static> {
+pub(crate) fn build_session_cookie(value: &str) -> Cookie<'static> {
     let mut c = Cookie::new(SESSION_COOKIE, value.to_string());
     c.set_http_only(true);
     c.set_same_site(SameSite::Strict);
@@ -502,6 +511,7 @@ mod tests {
             auth_username: None,
             auth_password: None,
             auth_dev_autologin: false,
+            mobile_access_config: None,
             shared_codex_appserver_restart_initial_delay_ms: 250,
             shared_codex_appserver_restart_max_delay_ms: 10_000,
             shared_codex_appserver_start_timeout_secs: 120,
@@ -536,6 +546,7 @@ mod tests {
             auth_username: None,
             auth_password: None,
             auth_dev_autologin: true,
+            mobile_access_config: None,
             shared_codex_appserver_restart_initial_delay_ms: 250,
             shared_codex_appserver_restart_max_delay_ms: 10_000,
             shared_codex_appserver_start_timeout_secs: 120,
