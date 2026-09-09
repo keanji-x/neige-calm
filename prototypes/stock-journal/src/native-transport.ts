@@ -1,5 +1,6 @@
 import type { ApiTransportPort, ApiTransportResponse } from '../../../fe/core/api/types.ts';
 import { createPreviewTracks, previewArea, sourceFiles } from './native-data';
+import { portfolioOverlays } from './native-template';
 
 /** Fixture responses only. This adapter never contacts an API or launches an agent. */
 export function createInvestmentPreviewTransport(): ApiTransportPort {
@@ -19,7 +20,7 @@ export function createInvestmentPreviewTransport(): ApiTransportPort {
       const item = tracks.find(candidate => candidate.track.id === match[1]);
       if (!item) return { status: 404, statusText: 'Not found', body: { error: '示例档案不存在。', code: 'not_found' } };
       const tail = match[2];
-      if (tail === '') return ok({ track: item.track, can_resume: false, overlays: [], cards: [{
+      if (tail === '') return ok({ track: item.track, can_resume: false, overlays: item.track.id === 'portfolio' ? portfolioOverlays() : [], cards: [{
         id: `report-${item.track.id}`, track_id: item.track.id, kind: 'track-report', title: null,
         sort: 0, deletable: false, created_at: item.track.created_at, updated_at: item.track.updated_at,
         payload: item.report,

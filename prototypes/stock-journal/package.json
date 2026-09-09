@@ -6,19 +6,11 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5194 --strictPort",
     "build": "tsc --noEmit && vite build",
-    "test": "playwright test",
-    "test:model": "node --experimental-strip-types tests/portfolio-framework.test.mjs",
-    "update:quotes": "node --experimental-strip-types scripts/update-quotes.mjs",
-    "test:market": "node --experimental-strip-types tests/market-adapter.test.mjs"
+    "test": "playwright test"
   },
   "dependencies": {
-    "@tailwindcss/vite": "4.3.3",
-    "clsx": "2.1.1",
     "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "recharts": "3.10.1",
-    "tailwind-merge": "3.6.0",
-    "tailwindcss": "4.3.3"
+    "react-dom": "19.2.4"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",

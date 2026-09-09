@@ -1,5 +1,4 @@
-import { portfolioReportBlocks } from './portfolio-framework';
-import { portfolioSnapshot } from './portfolio-state';
+import { portfolioTemplateBlocks } from './native-template';
 import type { ReportBlock } from '../../../fe/core/domain/report.ts';
 import type { TrackWire } from '../../../fe/core/domain/track.ts';
 
@@ -20,7 +19,7 @@ function track(id: string, title: string, sort: number, blocks: ReportBlock[]): 
 
 export function createPreviewTracks(): PreviewTrack[] {
   return [
-    track('portfolio', '个人投资 · 管理总览', 0, portfolioReportBlocks(portfolioSnapshot, '/next/portfolio-demo.html')),
+    track('portfolio', '个人投资 · 管理总览', 0, portfolioTemplateBlocks()),
     track('pine', '青松科技 · 投资档案', 1, [
       prose('pine-thesis', '# 投资逻辑\n\n**从一次性交付走向持续性收入，续费业务的质量比短期利润增速更值得关注。**\n\n当前仓位 18%，示例市值 ¥36,000。我的判断是继续持有，等待经营现金流进一步验证。\n\n[返回持仓总览](neige://wave/portfolio#holdings-heading) · [查看本次决策记录](neige://wave/journal#decision-log)\n\n> 以下公司、财务数据与报告均为虚构，用于演示 Neige Report 的阅读、引用与资料打开流程。'),
       prose('pine-report', '# 半年报精读\n\n## 收入的确定性，正在提高\n\n本期续费收入占比由 58% 提高至 64%，核心客户续费率由 88% 提高至 89%。业务结构的变化提高了收入的可预测性，但单个报告期还不足以确认长期趋势。\n\n## 好的利润，需要现金流验证\n\n经营现金流与净利润的比值由 81% 降至 76%。应收款的增加需要进一步解释：这是季节性结算，还是客户账期正在拉长？下一季度先看回款，不单独外推利润增长。'),

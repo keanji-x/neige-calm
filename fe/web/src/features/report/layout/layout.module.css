@@ -1,0 +1,21 @@
+@layer features {
+  .layout { display: grid; min-inline-size: 0; font-family: var(--font-sans); }
+  .compact { gap: var(--space-3); }
+  .normal { gap: var(--space-6); }
+  .wide { gap: var(--space-10); }
+  .plain { background: transparent; }
+  .muted { background: var(--surface-code); padding: var(--space-4); border-radius: var(--radius-sm); }
+  .item { min-inline-size: 0; }
+  .title { margin: 0 0 var(--space-2); color: var(--text); font-family: var(--font-sans); font-size: var(--text-base); font-weight: 500; }
+  .caption { margin-block: var(--space-3) 0; color: var(--text-2); font-size: var(--text-xs); overflow-wrap: anywhere; }
+  .notice { color: var(--text-2); font-size: var(--text-base); padding-block: var(--space-4); }
+  .scroll { overflow-x: auto; }
+  .table { inline-size: 100%; border-collapse: collapse; font-size: var(--text-base); }
+  .table th { font-weight: 500; color: var(--text-2); text-align: start; white-space: nowrap; }
+  .table th, .table td { border-block-end: 1px solid var(--hairline); padding: var(--space-3) var(--space-2); }
+  .table th.numeric, .table td.numeric { text-align: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .link { color: var(--text); text-decoration: underline; text-underline-offset: .2em; background: transparent; border: 0; padding: 0; font: inherit; text-align: inherit; cursor: pointer; }
+  @media (width < 60rem) {
+    .layout { display: flex; flex-direction: column; }
+  }
+}

@@ -73,7 +73,7 @@ different things:
 ````
 
 * The **block kind** is always `task` for a task. (Other block kinds exist —
-  `chart.candles`, `table`, `app` — but a recipe is normally all prose and
+  `chart.candles`, `table`, `app`, `layout` — but a recipe is normally all prose and
   tasks.)
 * The **task kind** says who runs the task: `"codex"`, `"claude"` or
   `"terminal"`.
@@ -93,7 +93,7 @@ and all.
 
 (If the opener *is* a `neige-block` opener but the block kind is misspelled —
 ```` ```neige-block tasks ```` — you do get a 400: ``unknown block kind `tasks`
-— known data kinds: chart.candles, table, app, task``.)
+— known data kinds: chart.candles, table, app, task, layout``.)
 
 **Getting the inner one wrong is a clean 400.** `"kind": "gpt"`, or no `kind`
 at all, is rejected at save with an exact message:

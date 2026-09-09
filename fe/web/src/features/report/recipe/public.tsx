@@ -77,6 +77,7 @@ import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { RecipeBodyEditor, type RecipeEditorTheme } from './body-editor.tsx';
+import portfolioRecipeBody from './examples/portfolio.md?raw';
 import { ProseBlock } from '../document/public.tsx';
 import styles from './recipe.module.css';
 
@@ -147,6 +148,7 @@ export type RecipesPageProps = Readonly<{
 export function RecipesPage({ recipes, loaded, error, theme, onWrite, onDelete }: RecipesPageProps) {
   /** `null` = the list. `''` = a recipe being composed that has no row yet. */
   const [open, setOpen] = useState<string | null>(null);
+  const [initialDraft, setInitialDraft] = useState<Readonly<{ title: string; body: string }> | undefined>();
   /*
    * The row a create resolved to, held here because the list cannot be relied
    * on to have it. `onCreated` moves `open` to the new id in the same event
@@ -173,6 +175,7 @@ export function RecipesPage({ recipes, loaded, error, theme, onWrite, onDelete }
     return (
       <RecipeEditor
         recipe={null}
+        initialDraft={initialDraft}
         theme={theme}
         onWrite={(draft) => onWrite(draft, null)}
         onDelete={null}
@@ -205,7 +208,10 @@ export function RecipesPage({ recipes, loaded, error, theme, onWrite, onDelete }
     <section className={styles.page} aria-labelledby="nc-recipes-title">
       <header className={styles.head}>
         <h1 className={styles.title} id="nc-recipes-title" data-nc-page-title="" tabIndex={-1}>Recipes</h1>
-        <Button type="button" variant="primary" size="sm" label="New recipe" onClick={() => setOpen('')} />
+        <div className={styles.actions}>
+          <Button type="button" variant="secondary" size="sm" label="投资组合模板" onClick={() => { setInitialDraft({ title: '投资组合', body: portfolioRecipeBody }); setOpen(''); }} />
+          <Button type="button" variant="primary" size="sm" label="New recipe" onClick={() => { setInitialDraft(undefined); setOpen(''); }} />
+        </div>
       </header>
       <p className={styles.lede}>
         A recipe is a report you keep: its heading becomes the new track&apos;s summary, and its
@@ -249,9 +255,10 @@ export function RecipesPage({ recipes, loaded, error, theme, onWrite, onDelete }
  * and thereafter replaced only by what a save resolved to. That is the whole
  * post-save contract of this module: see the file header.
  */
-export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCreated }: Readonly<{
+export function RecipeEditor({ recipe, initialDraft, theme, onWrite, onDelete, onClose, onCreated }: Readonly<{
   /** `null` composes a recipe that has no row yet. */
   recipe: TrackRecipe | null;
+  initialDraft?: Readonly<{ title: string; body: string }>;
   theme: RecipeEditorTheme;
   onWrite: (draft: RecipeDraft) => Promise<RecipeWriteOutcome>;
   /** `null` when there is no row to delete yet. */
@@ -263,8 +270,8 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
   const fieldId = useId();
   const [current, setCurrent] = useState<TrackRecipe | null>(recipe);
   const [editing, setEditing] = useState(recipe === null);
-  const [title, setTitle] = useState(recipe?.title ?? NEW_RECIPE_TITLE);
-  const [body, setBody] = useState(recipe?.body ?? '');
+  const [title, setTitle] = useState(recipe?.title ?? initialDraft?.title ?? NEW_RECIPE_TITLE);
+  const [body, setBody] = useState(recipe?.body ?? initialDraft?.body ?? '');
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);

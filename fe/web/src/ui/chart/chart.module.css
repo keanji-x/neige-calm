@@ -1,0 +1,16 @@
+@layer ui {
+  .root { min-inline-size: 0; font-family: var(--font-sans); }
+  .controls { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); min-block-size: 2rem; color: var(--text-2); font-size: var(--text-xs); }
+  .ranges { display: flex; gap: var(--space-1); }
+  .ranges button { border: 0; border-radius: var(--radius-sm); background: transparent; padding: var(--space-1) var(--space-2); color: inherit; font: inherit; cursor: pointer; }
+  .ranges button[aria-pressed='true'] { color: var(--text); background: var(--surface-chip); }
+  .canvas { min-inline-size: 0; inline-size: 100%; font-size: var(--text-xs); }
+  .line { min-inline-size: 0; }
+  .donut { min-inline-size: 0; }
+  .legend { display: grid; gap: var(--space-1); }
+  .legend button { display: flex; justify-content: space-between; gap: var(--space-3); padding: var(--space-1) var(--space-2); border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: var(--text-xs); cursor: pointer; text-align: start; }
+  .legend button[aria-pressed='true'] { color: var(--text); background: var(--surface-chip); }
+  .legend strong { font-weight: 500; font-variant-numeric: tabular-nums; }
+  .tooltip { display: grid; gap: var(--space-1); padding: var(--space-3); border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-card); color: var(--text); font-size: var(--text-xs); box-shadow: var(--shadow-float); }
+  .notice { color: var(--text-2); font-size: var(--text-base); padding-block: var(--space-8); }
+}

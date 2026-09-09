@@ -41,6 +41,7 @@ import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
 import { ReportCandlesBlock } from '../candles/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
+import { ReportLayoutBlock } from '../layout/public.tsx';
 import { ReportTaskBlock } from '../task/public.tsx';
 import styles from './document.module.css';
 
@@ -307,7 +308,7 @@ function BlockSlot({
               fileRoot={fileRoot}
               fileBasePath={fileBasePath}
             />
-          : <BlockBody block={block} resolveLiveTable={resolveLiveTable} />}
+          : <BlockBody block={block} resolveLiveTable={resolveLiveTable} onOpenLink={onOpenLink} />}
       </div>
       {backlinks > 0 && (
         // In the trailing gutter, aligned to the block's first line. Inside the
@@ -323,12 +324,14 @@ function BlockSlot({
 
 /** One bad block may not cost the page: an unknown kind, or a known kind whose
  *  payload did not parse, degrades to one line and the document goes on. */
-function BlockBody({ block, task, renderTaskExecution, resolveLiveTable }: {
+function BlockBody({ block, task, renderTaskExecution, resolveLiveTable, onOpenLink }: {
   block: ReportBlock; task?: ReportTaskRow; renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
   resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
+  onOpenLink?: ReportDocumentProps['onOpenLink'];
 }): ReactNode {
   switch (block.kind) {
     case 'table': return <ReportTableBlock payload={block.payload} resolveLive={resolveLiveTable} />;
+    case 'layout': return <ReportLayoutBlock payload={block.payload} resolveLive={resolveLiveTable} onOpenLink={onOpenLink} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
     case 'task': return <ReportTaskBlock payload={block.payload} blockId={block.id} task={task} renderExecution={renderTaskExecution} />;
     case 'app': return <ReportAppBlock payload={block.payload} />;

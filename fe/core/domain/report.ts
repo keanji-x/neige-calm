@@ -21,6 +21,7 @@
 // build does not know about, and that must not cost the reader the page.
 
 import { z } from 'zod';
+import { reportLayoutSchema, type ReportLayout } from './report-layout.js';
 
 import type { CurrentTaskExecution } from './task-execution.js';
 import type { ApiOperation } from '../api/types.js';
@@ -231,6 +232,7 @@ export type ReportBlock =
   | Readonly<{ id: string; kind: 'prose'; payload: ProseBlockPayload }>
   | Readonly<{ id: string; kind: 'chart.candles'; payload: ChartCandlesPayload }>
   | Readonly<{ id: string; kind: 'table'; payload: TableBlockPayload }>
+  | Readonly<{ id: string; kind: 'layout'; payload: ReportLayout }>
   | Readonly<{ id: string; kind: 'app'; payload: AppBlockPayload }>
   | Readonly<{ id: string; kind: 'task'; payload: TaskBlockPayload }>
   | Readonly<{ id: string; kind: 'unsupported'; declaredKind: string }>;
@@ -249,6 +251,7 @@ function payloadSchemaFor(kind: string): z.ZodType | null {
     case 'prose': return proseBlockPayloadSchema;
     case 'chart.candles': return chartCandlesPayloadSchema;
     case 'table': return tableBlockPayloadSchema;
+    case 'layout': return reportLayoutSchema;
     case 'app': return appBlockPayloadSchema;
     case 'task': return taskBlockPayloadSchema;
     default: return null;
@@ -344,6 +347,7 @@ export type ReportOutlineItem = Readonly<{
  */
 function blockLabel(block: ReportBlock): string {
   if (block.kind === 'unsupported') return block.declaredKind;
+  if (block.kind === 'layout') return block.payload.items.map(item => item.title).filter(Boolean).join(' · ') || '布局';
   if (block.kind === 'task') return block.payload.key;
   const payload: Record<string, unknown> = block.payload;
   for (const key of ['symbol', 'src', 'caption', 'title']) {

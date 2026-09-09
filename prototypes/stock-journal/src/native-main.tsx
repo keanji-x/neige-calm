@@ -10,15 +10,10 @@ import { createCardHost, createCardRegistry } from '../../../fe/web/src/systems/
 import { bootCards } from '../../../fe/web/src/app/cards.ts';
 import { createInvestmentPreviewTransport } from './native-transport';
 import { mountLivePortfolio } from './live-app';
-import { PORTFOLIO_MODE_KEY, SELECTED_PORTFOLIO_KEY } from './portfolio-keys';
+import { PORTFOLIO_MODE_KEY } from './portfolio-keys';
 
 const requestedMode = new URL(location.href).searchParams.get('market');
 if (requestedMode !== null) localStorage.setItem(PORTFOLIO_MODE_KEY, requestedMode === '1' ? 'live' : 'demo');
-if (requestedMode === '1') {
-  const selected = /^\/next\/track\/([^/]+)$/.exec(location.pathname);
-  if (selected) localStorage.setItem(SELECTED_PORTFOLIO_KEY, decodeURIComponent(selected[1]));
-  else localStorage.removeItem(SELECTED_PORTFOLIO_KEY);
-}
 const liveMode = localStorage.getItem(PORTFOLIO_MODE_KEY) === 'live';
 const modeLabel = document.getElementById('portfolio-mode-label');
 if (modeLabel) modeLabel.textContent = liveMode ? 'Market data 模式 · 在侧栏选择组合 Track' : '示例数据';

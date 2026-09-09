@@ -8,34 +8,33 @@ test('renders the production Neige shell, Report document, outline and formatted
   await expect(page.getByRole('navigation', { name: 'Workspace', exact: true })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Outline', exact: true })).toBeVisible();
   await expect(page.locator('[data-nc-report]')).toHaveClass(/calm-prose/);
-  const figure = page.frameLocator('iframe[title="组合概览图表"]');
+  const figure = page;
   await expect(figure.getByRole('region', { name: '持仓权重', exact: true })).toBeVisible();
   await expect(figure.getByRole('region', { name: '因子暴露示意', exact: true })).toHaveCount(0);
   await expect(figure.locator('.recharts-area-curve')).toBeVisible();
   await expect(figure.locator('.recharts-pie-sector')).toHaveCount(4);
   await expect(figure.locator('.recharts-bar-rectangle')).toHaveCount(0);
-  expect(await figure.locator('body').evaluate(() => document.documentElement.scrollHeight <= innerHeight)).toBe(true);
+  await expect(page.locator('iframe')).toHaveCount(0);
   const table = page.getByRole('table').first();
-  await expect(table).toContainText('+1.35%');
-  await expect(table).toContainText('−0.82%');
-  await expect(table).toContainText('18%');
+  await expect(table).toContainText('1.35%');
+  await expect(table).toContainText('-0.82%');
+  await expect(table).toContainText('18.0%');
   await expect(table).not.toContainText('+18.00%');
   expect(apiRequests).toEqual([]);
 });
 
 test('shadcn chart controls change the time range, highlight holdings, and show a tooltip', async ({ page }) => {
   await page.goto('/next/track/portfolio');
-  const figure = page.frameLocator('iframe[title="组合概览图表"]');
+  const figure = page;
   const fullPath = await figure.locator('.recharts-area-curve').getAttribute('d');
-  await figure.getByRole('button', { name: '1M', exact: true }).click();
+  await figure.getByRole('button', { name: '30天', exact: true }).click();
   await expect(figure.locator('.recharts-area-curve')).not.toHaveAttribute('d', fullPath!);
-  await expect(figure.getByRole('button', { name: '1M', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await figure.getByRole('button', { name: '青松科技 18%', exact: true }).click();
-  await expect(figure.locator('.pie-center')).toContainText('18%');
-  await expect(figure.locator('.pie-center')).toContainText('青松科技');
-  await figure.getByRole('button', { name: '6M', exact: true }).click();
-  await figure.locator('.performance-chart .recharts-surface').hover({ position: { x: 160, y: 90 } });
-  await expect(figure.locator('.performance-chart .tooltip-value')).toContainText('CNY');
+  await expect(figure.getByRole('button', { name: '30天', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await figure.getByRole('button', { name: /^青松科技\s*18\.0%$/ }).click();
+  await expect(figure.getByRole('button', { name: /^青松科技\s*18\.0%$/ })).toHaveAttribute('aria-pressed', 'true');
+  await figure.getByRole('button', { name: '180天', exact: true }).click();
+  await figure.getByRole('img', { name: '组合走势', exact: true }).locator('svg').hover({ position: { x: 160, y: 90 } });
+  await expect(figure.getByRole('img', { name: '组合走势', exact: true }).locator('.recharts-tooltip-wrapper')).toContainText('CNY');
 });
 
 test('native report citations navigate stocks and retain decision-source anchors', async ({ page }) => {
@@ -72,9 +71,12 @@ test('native mobile Report contains tables and opens each stock dossier', async 
     await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     if (id === 'portfolio') {
-      const figure = page.frameLocator('iframe[title="组合概览图表"]');
+      const figure = page;
       await expect(figure.getByRole('region', { name: '持仓权重', exact: true })).toBeVisible();
-      expect(await figure.locator('body').evaluate(() => document.documentElement.scrollHeight <= innerHeight && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      const bounds = await page.getByRole('img', { name: '组合走势', exact: true }).boundingBox();
+      expect(bounds!.width).toBeGreaterThan(300);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     }
   }
 });
