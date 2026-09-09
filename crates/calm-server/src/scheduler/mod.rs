@@ -586,6 +586,8 @@ pub struct Scheduler {
     post_claim_drive_test_hook: std::sync::Mutex<Option<PostClaimDriveTestHook>>,
     #[cfg(feature = "fixtures")]
     reconcile_child_reopen_after_snapshot_test_hook: AtomicBool,
+    #[cfg(feature = "fixtures")]
+    poke_count: std::sync::atomic::AtomicUsize,
 }
 
 /// Deterministic integration-test rendezvous after closure resolution and
@@ -695,6 +697,8 @@ impl Scheduler {
             post_claim_drive_test_hook: std::sync::Mutex::new(None),
             #[cfg(feature = "fixtures")]
             reconcile_child_reopen_after_snapshot_test_hook: AtomicBool::new(false),
+            #[cfg(feature = "fixtures")]
+            poke_count: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -797,6 +801,8 @@ impl Scheduler {
     /// Fire-and-forget trigger: schedule the track on a fresh task. Used
     /// by the dispatcher's envelope arms.
     pub fn poke(self: &Arc<Self>, track_id: TrackId) {
+        #[cfg(feature = "fixtures")]
+        self.poke_count.fetch_add(1, Ordering::SeqCst);
         let this = Arc::clone(self);
         tokio::spawn(async move {
             this.schedule_track(track_id).await;

@@ -3,6 +3,24 @@ use super::*;
 use crate::db::write_in_tx_typed;
 use calm_types::task_execution::FileDelivery;
 impl Scheduler {
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn poke_count_for_test(&self) -> usize {
+        self.poke_count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn file_source_inflight_for_test(&self, task_id: &str) -> bool {
+        self.inflight.contains_key(&format!("file:{task_id}"))
+    }
+
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub async fn drive_file_source_for_test(self: &Arc<Self>, source: &Task) -> Result<()> {
+        self.drive_file_source(source).await
+    }
+
     pub(super) fn drive_file_producers(self: &Arc<Self>, tasks: &[Task]) {
         for source in tasks.iter().filter(|task| task.status == TaskStatus::Done) {
             if !matches!(
@@ -185,14 +203,18 @@ impl Scheduler {
                 .await?
         };
         runtime.wait(&id).await?;
-        crate::file_delivery::verification_settlement::record(
+        let new_notice = crate::file_delivery::verification_settlement::record(
             self.repo.as_ref(),
             &self.events,
             &self.write,
             &id,
         )
         .await?;
-        self.poke(track.to_owned().into());
+        // Replaying settled evidence is not another scheduling event. A poke on
+        // every completed allocation would keep this same Track dirty forever.
+        if new_notice {
+            self.poke(track.to_owned().into());
+        }
         Ok(())
     }
 }

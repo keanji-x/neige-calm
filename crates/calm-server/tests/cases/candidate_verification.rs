@@ -213,6 +213,23 @@ async fn candidate_verification_capacity_waits_without_claiming_consumer_or_inve
             .unwrap()
             .is_none()
     );
+    // Fix the production ordering: settlement is committed while capacity is zero.
+    // Merely calling schedule does not await its fire-and-forget publication driver.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let recorded: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM events WHERE kind='task.file_publication_settled' AND json_extract(payload,'$.operation_id')=?1)")
+                .bind(&publication).fetch_one(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
+            if recorded && !fx.state.dispatcher.scheduler().file_source_inflight_for_test(&task.id) { break; }
+            if !recorded { schedule(&fx).await; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("publication settlement must be recorded at zero capacity");
+    let reserved: i64 = sqlx::query_scalar("SELECT count(*) FROM task_candidate_verification_allocations WHERE publication_operation_id=?1")
+        .bind(&publication).fetch_one(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
+    assert_eq!(
+        reserved, 0,
+        "zero capacity cannot reserve verification either"
+    );
     sqlx::query("UPDATE tracks SET task_budget=1 WHERE id=?1")
         .bind(&task.track_id)
         .execute(&fx.boot.repo.sqlite_pool().unwrap())
@@ -241,8 +258,33 @@ async fn candidate_verification_capacity_waits_without_claiming_consumer_or_inve
     if let Err(error) = admission {
         let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as("SELECT a.operation_key,o.id,o.phase FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key WHERE a.publication_operation_id=?1")
             .bind(&publication).fetch_all(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
+        let pool = fx.boot.repo.sqlite_pool().unwrap();
+        let budget: (String, Option<i64>) =
+            sqlx::query_as("SELECT lifecycle,task_budget FROM tracks WHERE id=?1")
+                .bind(&task.track_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let source: (String, Option<String>, Option<i64>) = sqlx::query_as(
+            "SELECT status,status_detail,context_stale_at_ms FROM tasks WHERE id=?1",
+        )
+        .bind(&task.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let publication_state: String =
+            sqlx::query_scalar("SELECT phase FROM operations WHERE id=?1")
+                .bind(&publication)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let settlements: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE kind='task.file_publication_settled' AND json_extract(payload,'$.operation_id')=?1").bind(&publication).fetch_one(&pool).await.unwrap();
         panic!(
-            "budget increase did not admit verification after scheduler ticks: {error}; allocation/operation state: {rows:?}"
+            "budget increase did not admit verification after scheduler ticks: {error}; allocation/operation state: {rows:?}; track={budget:?}; source={source:?}; publication={publication_state}; publication settlements={settlements}; source driver inflight={}",
+            fx.state
+                .dispatcher
+                .scheduler()
+                .file_source_inflight_for_test(&task.id)
         );
     }
     assert_eq!(verified(&fx, &publication).await["verdict"]["passed"], true);
@@ -250,6 +292,38 @@ async fn candidate_verification_capacity_waits_without_claiming_consumer_or_inve
     let consumer = current(&fx.boot, "consume").await;
     assert_eq!(consumer.status, TaskStatus::Running);
     settle(&fx, &consumer, true).await;
+    // Replay the real source driver after both notices exist: both recorder
+    // no-ops must succeed, and completed verification must not re-poke forever.
+    let scheduler = fx.state.dispatcher.scheduler();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while scheduler.file_source_inflight_for_test(&task.id) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("completed source driver must release its inflight slot");
+    for _ in 0..2 {
+        let pokes = scheduler.poke_count_for_test();
+        scheduler
+            .drive_file_source_for_test(&task)
+            .await
+            .expect("settlement replay must not stop the source driver");
+        schedule(&fx).await;
+        assert_eq!(
+            scheduler.poke_count_for_test(),
+            pokes,
+            "replaying completed notices must not invoke another scheduler poke"
+        );
+    }
+    let notices: Vec<(String, i64)> = sqlx::query_as("SELECT kind,count(*) FROM events WHERE kind IN ('task.file_publication_settled','task.candidate_verification_settled') GROUP BY kind ORDER BY kind")
+        .fetch_all(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
+    assert_eq!(
+        notices,
+        vec![
+            ("task.candidate_verification_settled".into(), 1),
+            ("task.file_publication_settled".into(), 1)
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
