@@ -1,30 +1,31 @@
 import { lazy, Suspense } from 'react';
 
-import { parseReportLink, type ReportLinkTarget } from '../../../../../core/domain/report.ts';
+import type { ReportLinkTarget } from '../../../../../core/domain/report.ts';
+import { resolveReportLinkTarget, type ReportAppLinkResolver } from '../../../../../core/domain/report-link-target.ts';
 import type { LayoutItem, LayoutTable, ReportLayout } from '../../../../../core/domain/report-layout.ts';
 import { layoutCell, layoutCellTrack, layoutChartData, layoutShareTotal, resolveLayoutData, type LayoutData } from '../../../../../core/domain/report-layout-data.ts';
 import styles from './layout.module.css';
 
 const Chart = lazy(() => import('../../../ui/chart/public.tsx').then(module => ({ default: module.Chart })));
 
-export function ReportLayoutBlock({ payload, resolveLive, onOpenLink }: {
-  payload: ReportLayout; resolveLive?: (source: string) => unknown; onOpenLink?: (target: ReportLinkTarget) => void;
+export function ReportLayoutBlock({ payload, resolveLive, onOpenLink, resolveAppLink }: {
+  payload: ReportLayout; resolveLive?: (source: string) => unknown; onOpenLink?: (target: ReportLinkTarget) => void; resolveAppLink?: ReportAppLinkResolver;
 }) {
   return <div className={`${styles.layout} ${styles[payload.gap]} ${styles[payload.surface]}`} style={{ gridTemplateColumns: `repeat(${payload.columns}, minmax(0, 1fr))` }}>
     {payload.items.map((item, index) => <section key={index} className={styles.item} style={{ gridColumn: `span ${item.span}` }} aria-label={item.title || undefined}>
       {item.title !== '' && <h3 className={styles.title}>{item.title}</h3>}
-      <LayoutContent key={JSON.stringify(item)} item={item} resolveLive={resolveLive} onOpenLink={onOpenLink}/>
+      <LayoutContent key={JSON.stringify(item)} item={item} resolveLive={resolveLive} onOpenLink={onOpenLink} resolveAppLink={resolveAppLink}/>
     </section>)}
   </div>;
 }
 
-function LayoutContent({ item, resolveLive, onOpenLink }: {
-  item: LayoutItem; resolveLive?: (source: string) => unknown; onOpenLink?: (target: ReportLinkTarget) => void;
+function LayoutContent({ item, resolveLive, onOpenLink, resolveAppLink }: {
+  item: LayoutItem; resolveLive?: (source: string) => unknown; onOpenLink?: (target: ReportLinkTarget) => void; resolveAppLink?: ReportAppLinkResolver;
 }) {
   const data = resolveLayoutData(item, resolveLive);
   const chart = item.kind === 'chart' ? layoutChartData(item, data) : null;
   return <>
-    {item.kind === 'table' ? <LayoutTableContent item={item} data={data} onOpenLink={onOpenLink}/>
+    {item.kind === 'table' ? <LayoutTableContent item={item} data={data} onOpenLink={onOpenLink} resolveAppLink={resolveAppLink}/>
         : chart !== null ? <Suspense fallback={<p role="status" className={styles.notice}>正在加载图表…</p>}>
             <Chart kind={item.chart} label={item.title || '图表'} points={chart.kind === 'ready' ? chart.points : []}
               unit={chart.kind === 'ready' ? chart.unit : item.unit?.equals ?? ''} color={item.color}
@@ -35,8 +36,8 @@ function LayoutContent({ item, resolveLive, onOpenLink }: {
   </>;
 }
 
-function LayoutTableContent({ item, data, onOpenLink }: {
-  item: LayoutTable; data: LayoutData; onOpenLink?: (target: ReportLinkTarget) => void;
+function LayoutTableContent({ item, data, onOpenLink, resolveAppLink }: {
+  item: LayoutTable; data: LayoutData; onOpenLink?: (target: ReportLinkTarget) => void; resolveAppLink?: ReportAppLinkResolver;
 }) {
   // Columns belong to the saved template, so missing live data changes only
   // the body. Readers can still see what this table will contain.
@@ -51,7 +52,7 @@ function LayoutTableContent({ item, data, onOpenLink }: {
       </td></tr> : rows.map((row, index) => <tr key={index}>{item.columns.map((column, columnIndex) => {
         const text = layoutCell(column, row, totals[columnIndex] ?? null);
         const track = layoutCellTrack(column, row);
-        const target = track === null ? null : parseReportLink(`neige://wave/${encodeURIComponent(track)}`);
+        const target = track === null ? null : resolveReportLinkTarget(track, resolveAppLink);
         const content = target !== null && onOpenLink !== undefined ? <button className={styles.link} type="button" onClick={() => onOpenLink(target)}>{text}</button> : text;
         return <td key={column.key} className={column.format === 'text' ? undefined : styles.numeric}>
           {column.format === 'text' ? <span className={styles.text}>{content}</span> : content}

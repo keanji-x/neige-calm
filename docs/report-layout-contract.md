@@ -64,7 +64,15 @@ it is unavailable if any selected row's value is missing/negative, or the total
 is missing/nonpositive, or selected values fail to sum to it within independent
 cent rounding. `total` required iff any column uses share.
 Total: `{row:Selector,key:nonempty string}`; select exactly one source row before
-exclude. linkKey names a row field containing a Track ID, opened only through
+exclude. linkKey names a row field containing an opaque Track ID, a standard
+`neige://wave/<id>#<block>` citation, or a copied same-origin Track page URL
+(including a root-relative app route such as `/next/track/<id>` under
+the current deployment base; page-relative paths such as `../track/<id>`
+are not supported). URL inputs must match the current
+application origin and Track route; other origins/ports, credentials, malformed
+URLs and unknown schemes remain plain text rather than becoming IDs. The Track
+id and valid URL anchor are decoded once; view query parameters are discarded.
+Recipe preview never enables navigation. Accepted destinations open only through
 the native Report callback. It is not an arbitrary URL. Numeric suffix values
 are display-only labels (e.g. native price currency), not conversion rules.
 
@@ -74,7 +82,8 @@ The portfolio Recipe uses a two-column layout with line and donut, then a
 one-column layout containing an enriched holdings table, then an inline table
 layout for the transaction log. Headings and ordering remain ordinary Report
 body/blocks. Each component's configuration belongs to the Recipe/Report.
-Annotations hold optional research Track IDs, display names and next events;
+Annotations hold optional research Track targets (the same linkKey formats),
+display names and next events;
 empty template annotations carry no investor data. Trade rows start empty.
 No migration, no special portfolio route, no browser-selected portfolio ID.
 Demo fixtures will exercise this same native renderer; live preview will use

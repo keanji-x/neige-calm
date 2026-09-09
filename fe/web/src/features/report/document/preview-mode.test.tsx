@@ -40,3 +40,19 @@ it('preview shows only saved task declarations and never calls an execution rend
   expect(execute).not.toHaveBeenCalled();
   expect(container.querySelector('[data-nc-task-state]')?.getAttribute('data-nc-task-state')).toBe('not-ready');
 });
+
+it('preview never resolves or enables copied research URLs even when navigation is supplied', () => {
+  const resolveAppLink = vi.fn(() => ({ trackId: 'private-study', blockId: null }));
+  const onOpenLink = vi.fn();
+  const report: TrackReport = { summary: '', body: '', blocks: [{ id: 'table', kind: 'layout', payload: {
+    version: 1, columns: 1, gap: 'normal', surface: 'plain', items: [{ kind: 'table', title: 'Research', span: 1,
+      data: { rows: [{ name: 'Saved research', track: 'https://app.example/next/track/private-study' }] },
+      columns: [{ key: 'name', label: 'Research', format: 'text', digits: 0, linkKey: 'track' }],
+    }],
+  } }] };
+  render(<ReportDocument mode="preview" report={report} empty={null} resolveAppLink={resolveAppLink} onOpenLink={onOpenLink}/>);
+  expect(screen.getByRole('cell', { name: 'Saved research' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Saved research' })).toBeNull();
+  expect(resolveAppLink).not.toHaveBeenCalled();
+  expect(onOpenLink).not.toHaveBeenCalled();
+});

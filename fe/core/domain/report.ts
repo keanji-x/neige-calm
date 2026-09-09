@@ -1274,6 +1274,11 @@ const BLOCK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export type ReportLinkTarget = Readonly<{ trackId: string; blockId: string | null }>;
 
+/** Validate a decoded report fragment using the existing block-id grammar. */
+export function parseReportBlockId(fragment: string | undefined): string | null {
+  return fragment !== undefined && BLOCK_ID_PATTERN.test(fragment) ? fragment : null;
+}
+
 export function parseReportLink(destination: string): ReportLinkTarget | null {
   const match = NEIGE_WAVE_LINK.exec(destination);
   if (match === null) return null;
@@ -1288,6 +1293,6 @@ export function parseReportLink(destination: string): ReportLinkTarget | null {
   }
   return {
     trackId: decodedTrackId,
-    blockId: blockId !== undefined && BLOCK_ID_PATTERN.test(blockId) ? blockId : null,
+    blockId: parseReportBlockId(blockId),
   };
 }

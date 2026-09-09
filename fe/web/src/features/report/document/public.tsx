@@ -36,6 +36,7 @@ import {
 import {
   parseReportFileLink, reportFilePathRelativeToRoot, type ReportFileLinkTarget,
 } from '../../../../../core/domain/report-file.ts';
+import type { ReportAppLinkResolver } from '../../../../../core/domain/report-link-target.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
@@ -48,6 +49,8 @@ import styles from './document.module.css';
 export type ReportDocumentProps = Readonly<{
   /** Saved-definition view: no external context, execution or embedded apps. */
   mode?: 'document' | 'preview';
+  /** Resolve copied same-origin Track URLs with browser deployment context. */
+  resolveAppLink?: ReportAppLinkResolver;
   /** The track's report. `null` when it has none. */
   report: TrackReport | null;
   /** What the empty state should offer, which differs per route. */
@@ -96,10 +99,10 @@ export function ReportDocument(props: ReportDocumentProps) {
   // supplies a live Track context. The saved report is the only input retained.
   const {
     report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, fileRoot, fileBasePath,
-    resolveLiveTable, arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
+    resolveLiveTable, resolveAppLink, arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
   } = allowApps ? props : { ...props, rail: undefined, byline: undefined, backlinkCounts: undefined,
     onOpenLink: undefined, onOpenFileLink: undefined, fileRoot: undefined, fileBasePath: undefined,
-    resolveLiveTable: undefined, arrivalAnchorId: undefined, taskVerdicts: undefined, taskRows: undefined,
+    resolveLiveTable: undefined, resolveAppLink: undefined, arrivalAnchorId: undefined, taskVerdicts: undefined, taskRows: undefined,
     renderTaskExecution: undefined };
   useEffect(() => {
     if (arrivalAnchorId === null || arrivalAnchorId === undefined) return;
@@ -171,7 +174,7 @@ export function ReportDocument(props: ReportDocumentProps) {
                   onOpenFileLink={onOpenFileLink}
                   fileRoot={fileRoot}
                   fileBasePath={fileBasePath}
-                  resolveLiveTable={resolveLiveTable}
+                  resolveLiveTable={resolveLiveTable} resolveAppLink={resolveAppLink}
                 />
               ))}
               {/* §6.1 — a section with zero rows is not rendered. A report that
@@ -296,7 +299,7 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution, a
  * each renderer having to remember to carry one.
  */
 function BlockSlot({
-  block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fileBasePath, resolveLiveTable, allowApps,
+  block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fileBasePath, resolveLiveTable, resolveAppLink, allowApps,
 }: {
   allowApps: boolean;
   block: ReportBlock;
@@ -306,6 +309,7 @@ function BlockSlot({
   fileRoot?: string;
   fileBasePath?: string;
   resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
+  resolveAppLink?: ReportAppLinkResolver;
 }) {
   return (
     <div className={styles.row}>
@@ -319,7 +323,7 @@ function BlockSlot({
               fileRoot={fileRoot}
               fileBasePath={fileBasePath}
             />
-          : <BlockBody block={block} resolveLiveTable={resolveLiveTable} onOpenLink={onOpenLink} allowApps={allowApps} />}
+          : <BlockBody block={block} resolveLiveTable={resolveLiveTable} resolveAppLink={resolveAppLink} onOpenLink={onOpenLink} allowApps={allowApps} />}
       </div>
       {backlinks > 0 && (
         // In the trailing gutter, aligned to the block's first line. Inside the
@@ -335,15 +339,16 @@ function BlockSlot({
 
 /** One bad block may not cost the page: an unknown kind, or a known kind whose
  *  payload did not parse, degrades to one line and the document goes on. */
-function BlockBody({ block, task, renderTaskExecution, resolveLiveTable, onOpenLink, allowApps }: {
+function BlockBody({ block, task, renderTaskExecution, resolveLiveTable, resolveAppLink, onOpenLink, allowApps }: {
   allowApps: boolean;
   block: ReportBlock; task?: ReportTaskRow; renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
   resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
+  resolveAppLink?: ReportAppLinkResolver;
   onOpenLink?: ReportDocumentProps['onOpenLink'];
 }): ReactNode {
   switch (block.kind) {
     case 'table': return <ReportTableBlock payload={block.payload} resolveLive={resolveLiveTable} />;
-    case 'layout': return <ReportLayoutBlock payload={block.payload} resolveLive={resolveLiveTable} onOpenLink={onOpenLink} />;
+    case 'layout': return <ReportLayoutBlock payload={block.payload} resolveLive={resolveLiveTable} onOpenLink={onOpenLink} resolveAppLink={resolveAppLink} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
     case 'task': return <ReportTaskBlock payload={block.payload} blockId={block.id} task={task} renderExecution={renderTaskExecution} />;
     case 'app': return <ReportAppBlock payload={block.payload} load={allowApps} />;

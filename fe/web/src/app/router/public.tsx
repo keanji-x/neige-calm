@@ -47,6 +47,7 @@ import {
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { ContextRing } from '../../features/chat/thread/context-ring.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
+import { resolveAppReportLink } from './report-links.ts';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { useIndependentTaskLaunch } from './independent-task.tsx';
 import { useTaskArtifactFiles } from './task-artifact-files.tsx';
@@ -3423,6 +3424,7 @@ function TrackRouteBody({
         rail={<ReportOutline items={outline} />}
         backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
         onOpenLink={openReportLink}
+        resolveAppLink={destination => resolveAppReportLink(destination, { origin: window.location.origin, basePath: APP_BASEPATH })}
         onOpenFileLink={openReportFile}
         fileRoot={track.cwd}
         arrivalAnchorId={arrivalAnchorId}
