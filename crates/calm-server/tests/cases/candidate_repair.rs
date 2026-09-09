@@ -171,6 +171,12 @@ async fn candidate_repair_exact_c1_to_c2_delivery_with_fresh_review_and_stable_p
     );
     assert_eq!(c2machine["verdict"]["passed"], true);
     assert!(verdict(&fx, &c2, "accepted").await.is_err());
+    std::fs::write(
+        workspace(&fx, &r2).await.join("report-result.json"),
+        passed().to_string(),
+    )
+    .unwrap();
+    settle(&fx, &r2, true).await;
     let view = listed(&fx).await;
     let c2view = view["tasks"]
         .as_array()
@@ -187,12 +193,6 @@ async fn candidate_repair_exact_c1_to_c2_delivery_with_fresh_review_and_stable_p
         publication
     );
     assert_eq!(c2view["file_delivery"]["qualified"], false);
-    std::fs::write(
-        workspace(&fx, &r2).await.join("report-result.json"),
-        passed().to_string(),
-    )
-    .unwrap();
-    settle(&fx, &r2, true).await;
     verdict(&fx, &r2, "accepted").await.unwrap();
     let mut consume = consumer();
     consume["key"] = json!("consume-c2");
@@ -222,6 +222,11 @@ async fn candidate_repair_exact_c1_to_c2_delivery_with_fresh_review_and_stable_p
         std::fs::read(path.join("inputs/source/project.py")).unwrap(),
         REPAIRED.as_bytes()
     );
+    eprintln!(
+        "repair stage: C2 delivered; settling {} ({}) before read audits",
+        consumer.key, consumer.id
+    );
+    settle(&fx, &consumer, true).await;
     // C1 input remains the original exact bytes after repair and consumer delivery.
     for (name, bytes) in FILES {
         assert_eq!(
@@ -256,7 +261,34 @@ async fn candidate_repair_exact_c1_to_c2_delivery_with_fresh_review_and_stable_p
         .await
         .is_err()
     );
-    settle(&fx, &consumer, true).await;
+    // Already-saved consumer acceptance must still recheck original C1/R1 authority.
+    for withdrawn in [&producer.id, &r1.id] {
+        sqlx::query("UPDATE tasks SET context_stale_at_ms=1 WHERE id=?1")
+            .bind(withdrawn)
+            .execute(&fx.boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+        let view = listed(&fx).await;
+        let bound = view["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["key"] == "consume-c2")
+            .unwrap();
+        assert_eq!(
+            bound["file_delivery"]["qualified"], false,
+            "original authority withdrawn: {withdrawn}"
+        );
+        assert!(
+            bound["file_delivery"]["input"]["decision_event_id"].is_i64(),
+            "saved acceptance must remain visible"
+        );
+        sqlx::query("UPDATE tasks SET context_stale_at_ms=NULL WHERE id=?1")
+            .bind(withdrawn)
+            .execute(&fx.boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -382,6 +414,23 @@ async fn candidate_repair_r2_report_requires_exact_complete_responses_and_fresh_
         .await
         .is_err()
     );
+    // Fault injection at the persisted current task: deleting the optional reference
+    // cannot turn this registered R2 into an ordinary two-field reviewer.
+    let pool = fx.boot.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE tasks SET context_json=json_remove(context_json,'$.neige_execution.repair') WHERE id=?1")
+        .bind(&r2.id).execute(&pool).await.unwrap();
+    let downgrade = call_tool(&fx.boot,"calm.task.complete",identity.clone(),json!({"idempotency_key":r2.id,"result":{"passed":true,"blocking_findings":[]},"artifacts":[]})).await.unwrap_err();
+    assert!(
+        downgrade.message.contains("repair reference"),
+        "{downgrade:?}"
+    );
+    assert_eq!(current(&fx.boot, &r2.key).await.status, TaskStatus::Running);
+    sqlx::query("UPDATE tasks SET context_json=?1 WHERE id=?2")
+        .bind(&r2.context_json)
+        .bind(&r2.id)
+        .execute(&pool)
+        .await
+        .unwrap();
     // An old R1 replay is still an R1 report and cannot qualify C2.
     call_tool(&fx.boot,"calm.task.complete",review_identity(&fx,&r1).await,json!({"idempotency_key":r1.id,"result":{"passed":false,"blocking_findings":FINDINGS},"artifacts":[]})).await.unwrap();
     assert!(verdict(&fx, &c2, "accepted").await.is_err());
@@ -589,11 +638,15 @@ async fn candidate_repair_preturn_revalidates_receipt_authority_and_exact_input_
     ] {
         let (fx, producer, r1, _, _) = rejected_scenario("candidate-repair-preturn").await;
         let pair = request(&fx, "Fix findings").await.unwrap();
-        fx.state
-            .dispatcher
-            .scheduler()
-            .schedule_track(fx.boot.track_id.clone())
-            .await;
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            fx.state
+                .dispatcher
+                .scheduler()
+                .schedule_track(fx.boot.track_id.clone()),
+        )
+        .await
+        .expect("preturn setup scheduling must be bounded");
         let task = current(&fx.boot, pair["receipt"]["repair_key"].as_str().unwrap()).await;
         let path = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
@@ -694,3 +747,6 @@ async fn candidate_repair_done_report_without_successful_settlement_cannot_admit
     settle(&fx, &r2, true).await;
     verdict(&fx, &c2, "accepted").await.unwrap();
 }
+
+#[path = "candidate_repair_review.rs"]
+mod review_fixes;

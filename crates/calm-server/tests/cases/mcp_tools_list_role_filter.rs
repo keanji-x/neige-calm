@@ -27,6 +27,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.report.write_markdown",
         "calm.review.round",
         "calm.task.dispatch",
+        "calm.task.repair",
         "calm.task.verdict",
         "calm.terminal.control",
         "calm.terminal.input",

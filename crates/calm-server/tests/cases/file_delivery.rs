@@ -146,7 +146,9 @@ pub(super) async fn settle(fx: &Fixture, task: &Task, success: bool) {
     assert_eq!(
         matches!(result.outcome, OperationOutcome::Succeeded { .. }),
         success,
-        "{result:?}"
+        "task {} ({}): {result:?}",
+        task.key,
+        task.id
     );
 }
 async fn source(scenario: &str, bytes: &[u8]) -> (Fixture, Task, PathBuf) {

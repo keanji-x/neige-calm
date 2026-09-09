@@ -18,7 +18,19 @@ pub(super) async fn view_tx(tx: &mut Tx<'_>, task: &Task, role: &FileDelivery) -
             .bind(&task.track_id).bind(key).fetch_optional(&mut **tx).await?
     };
     let mut view = json!({"contract":role,"candidate":{"state":"waiting"},"verification":{"state":"waiting"},"qualified":false,"scope":"declared-checks-only"});
-    if let Some(receipt) = super::repair::for_task_tx(tx, task).await? {
+    let repair = match super::repair::for_task_tx(tx, task).await {
+        Ok(repair) => repair,
+        Err(CalmError::Conflict(reason) | CalmError::Forbidden(reason)) => {
+            // A bad declaration is a local read diagnostic, never authority to execute.
+            // Storage/decoding failures remain errors rather than silently missing data.
+            view["state"] = json!("invalid");
+            view["repair"] = json!({"state":"invalid","reason":reason});
+            view["qualification"] = json!({"qualified":false,"reason":reason});
+            return Ok(view);
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(receipt) = repair {
         view["repair"] = super::repair_view::view_tx(tx, &receipt).await?;
     } else if let Some(receipt) = super::repair::lookup_tx(
         tx,

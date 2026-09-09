@@ -42,6 +42,9 @@ async fn authority_tx(tx: &mut Tx<'_>, task: &Task, id: &str) -> Result<()> {
         return Err(CalmError::Conflict("review attempt is obsolete".into()));
     }
     crate::task_recovery::validate_frozen_contract_tx(tx, task).await?;
+    // Notice replay and queued delivery are authority boundaries too. Validate
+    // original C1/R1 here once, without widening nested source/freeze readers.
+    crate::file_delivery::repair::validate_task_tx(tx, task).await?;
     let (binding, state, prepared) = crate::file_delivery::candidate_input::load_tx(tx, &task.id)
         .await?
         .ok_or_else(|| CalmError::Conflict("review input missing".into()))?;

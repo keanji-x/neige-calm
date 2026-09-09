@@ -5,10 +5,10 @@ use calm_server::{
     harness::{Observation, PlannerHarness},
     operation::{OperationRepo, SqlxOperationRepo},
 };
-fn notices(snapshot: &calm_server::harness::HarnessSnapshot, id: &str) -> usize {
+pub(super) fn notices(snapshot: &calm_server::harness::HarnessSnapshot, id: &str) -> usize {
     snapshot.pending_observations().iter().filter(|o| matches!(o, Observation::SystemContext { text } if text.contains(id) && text.contains("settled") && text.contains("calm.plan.list"))).count()
 }
-async fn observed(handle: &PlannerHarness, id: &str, settled: bool) -> bool {
+pub(super) async fn observed(handle: &PlannerHarness, id: &str, settled: bool) -> bool {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let snapshot = handle.snapshot().await;

@@ -75,6 +75,7 @@
 //! | [`rest_user_start`] | `routes::isolated_tasks::start` | `User`, fixed |
 //! | [`agent_report_op`] | `decision_sink::CardDecisionSink::commit_report_op` | caller-supplied; that caller derives it from `identity.role` |
 //! | [`planner_dispatch`] | `decision_sink::CardDecisionSink::commit_task_dispatch` | fixed Planner; current session and recorder checked in the transaction, including replay |
+//! | [`planner_repair`] | `decision_sink::CardDecisionSink::commit_task_repair` | fixed Planner; same current session/recorder authorization, bounded repair pair and immutable receipt in the transaction |
 //! | [`structural_init_report_tx`] | `routes::tracks::create_track_structure` | **none — no parameter of it names one, pinned by name *and* written type in `fork_guard_exemption_invariant`** |
 //!
 //! The sixth row is a different kind of entry from the first five and the

@@ -101,7 +101,7 @@ set -euo pipefail
 #      is the export surface: R3 counts `fn` declarations, so a `pub use`
 #      carrying some *other* item out of this file is an export R3 never sees.
 #
-#   R3 The exported entry set is exactly the seven pinned `visibility|name`
+#   R3 The exported entry set is exactly the eight pinned `visibility|name`
 #      pairs. Adding an eighth door is a legitimate thing to do — it just has to
 #      be done in front of a reviewer, which is the same contract the census
 #      had, now over seven lines instead of the repository.
@@ -160,6 +160,7 @@ pub(crate)|rest_user_block_op
 pub(crate)|rest_user_start
 pub(crate)|agent_report_op
 pub(crate)|planner_dispatch
+pub(crate)|planner_repair
 pub(crate)|structural_init_report_tx
 pub|persist_report"
 
@@ -349,4 +350,4 @@ if [ "$failures" -ne 0 ]; then
   exit 1
 fi
 
-echo "OK: the track-report write boundary in $BOUNDARY_FILE holds its four pinned shapes (private writer, no module escape hatch, seven exported entries, test entry cfg-gated)"
+echo "OK: the track-report write boundary in $BOUNDARY_FILE holds its four pinned shapes (private writer, no module escape hatch, eight exported entries, test entry cfg-gated)"

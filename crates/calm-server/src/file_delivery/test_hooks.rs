@@ -1,4 +1,4 @@
-//! Fixture-only pauses at the actual release fence; never a replacement launcher.
+//! Fixture-only entry points at actual release and notice fences; no replacement logic.
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -81,4 +81,15 @@ pub(super) async fn after_recovery_hint(op: &str, eligible: bool) {
     if let Some(hook) = hook {
         hook(eligible).await;
     }
+}
+
+/// Exercise the real notice relevance reader independently of Dispatcher prefix/dedup.
+/// Fixture-only visibility; no replacement authorization or synthetic result.
+pub async fn candidate_review_notice_relevant(
+    repo: &dyn crate::db::RepoEventWrite,
+    track: &crate::ids::TrackId,
+    task: &str,
+    operation: &str,
+) -> crate::error::Result<bool> {
+    crate::isolated_codex::settled::relevant(repo, track, task, operation).await
 }
