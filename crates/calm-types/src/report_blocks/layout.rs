@@ -216,6 +216,7 @@ impl Validator<'_> {
                 "unit",
                 "ranges",
                 "defaultRange",
+                "labelSuffixKey",
             ]),
             Some("table") => fields.extend(["columns", "total"]),
             _ => {}
@@ -241,6 +242,19 @@ impl Validator<'_> {
         let chart = self.enumeration(map.get("chart"), &join(path, "chart"), &["line", "donut"]);
         self.text(map.get("x"), &join(path, "x"), true);
         self.text(map.get("y"), &join(path, "y"), true);
+        if map.contains_key("labelSuffixKey") {
+            self.text(
+                map.get("labelSuffixKey"),
+                &join(path, "labelSuffixKey"),
+                true,
+            );
+            if chart != Some("donut") {
+                self.error(
+                    &join(path, "labelSuffixKey"),
+                    "only donut charts accept a label suffix",
+                );
+            }
+        }
         self.integer(map.get("height"), &join(path, "height"), 160, 640);
         if let Some(color) = self.text(map.get("color"), &join(path, "color"), false)
             && !(color.len() == 7

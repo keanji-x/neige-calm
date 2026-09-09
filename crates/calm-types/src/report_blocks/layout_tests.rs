@@ -148,3 +148,30 @@ fn layout_join_tuples_are_typed_and_delimiter_safe() {
     ]);
     assert_eq!(validate_payload("layout", &payload), Ok(()));
 }
+
+#[test]
+fn layout_donut_label_suffix_is_a_saved_nonempty_key_only_for_donuts() {
+    let mut payload = chart();
+    let item = payload["items"][0].as_object_mut().unwrap();
+    item.insert("chart".into(), json!("donut"));
+    item.remove("ranges");
+    item.remove("defaultRange");
+    item.insert("labelSuffixKey".into(), json!("venue"));
+    let fence = super::render_data_block("layout", &payload)
+        .expect("donut venue suffix is saved configuration");
+    assert_eq!(super::parse_fence(&fence).unwrap().payload, payload);
+    for suffix in [json!(""), json!(null), json!(42), json!("字".repeat(2049))] {
+        let mut invalid = payload.clone();
+        invalid["items"][0]["labelSuffixKey"] = suffix;
+        assert!(validate_payload("layout", &invalid).is_err());
+    }
+    payload["items"][0]["chart"] = json!("line");
+    assert!(
+        validate_payload("layout", &payload)
+            .unwrap_err()
+            .contains("labelSuffixKey")
+    );
+    let mut table = table();
+    table["items"][0]["labelSuffixKey"] = json!("venue");
+    assert!(validate_payload("layout", &table).is_err());
+}

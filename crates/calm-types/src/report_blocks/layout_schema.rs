@@ -30,15 +30,16 @@ pub fn schema() -> Value {
     let total = json!({"type":"object","additionalProperties":false,"required":["row","key"],"properties":{"row":selector,"key":key},"description":"Exactly one source row before exclude must match. Required iff any column uses share (server-enforced)."});
     let mut chart = json!({"type":"object","additionalProperties":false,"required":["kind","title","span","data","chart","x","y","height","color"],"properties":{
         "kind":{"const":"chart"},"title":text,"span":{"type":"integer","minimum":1,"maximum":3},"data":data,"exclude":selector,
-        "chart":{"enum":["line","donut"]},"x":key,"y":key,"height":{"type":"integer","minimum":160,"maximum":640},"color":{"type":"string","pattern":"^#[A-Fa-f0-9]{6}$","minLength":7,"maxLength":7},"unit":unit,
+        "chart":{"enum":["line","donut"]},"x":key,"y":key,"labelSuffixKey":key,"height":{"type":"integer","minimum":160,"maximum":640},"color":{"type":"string","pattern":"^#[A-Fa-f0-9]{6}$","minLength":7,"maxLength":7},"unit":unit,
         "ranges":{"type":"array","minItems":1,"maxItems":8,"uniqueItems":true,"items":{"type":"integer","minimum":1,"maximum":3660}},"defaultRange":{"type":"integer","minimum":1,"maximum":3660}
     }});
     chart["allOf"] = json!([
         {"if":{"required":["ranges"]},"then":{"required":["defaultRange"],"properties":{"chart":{"const":"line"}}}},
-        {"if":{"required":["defaultRange"]},"then":{"required":["ranges"]}}
+        {"if":{"required":["defaultRange"]},"then":{"required":["ranges"]}},
+        {"if":{"required":["labelSuffixKey"]},"then":{"properties":{"chart":{"const":"donut"}}}}
     ]);
     chart["description"] = json!(
-        "Ranges are ascending trailing days from latest x; defaultRange must occur in ranges (server-enforced). Line: x is epoch milliseconds or a parseable date, stable timestamp order including duplicates; invalid x is an error, missing/invalid y a gap; at least two usable observations. Donut: every selected y must be finite and nonnegative, every x a non-null scalar, or unavailable; empty/all-zero stays empty. Exclude summary rows explicitly. Producer caption is preserved separately from title."
+        "Ranges are ascending trailing days from latest x; defaultRange must occur in ranges (server-enforced). Line: x is epoch milliseconds or a parseable date, stable timestamp order including duplicates; invalid x is an error, missing/invalid y a gap; at least two usable observations. Donut: every selected y must be finite and nonnegative, every x a non-null scalar, or unavailable; empty/all-zero stays empty. Optional labelSuffixKey is donut-only: labels become x · suffix, with a required non-null scalar suffix in every selected row; missing/invalid suffix makes the chart unavailable. Exclude summary rows explicitly. Producer caption is preserved separately from title."
     );
     let table = json!({"type":"object","additionalProperties":false,"required":["kind","title","span","data","columns"],"properties":{
         "kind":{"const":"table"},"title":text,"span":{"type":"integer","minimum":1,"maximum":3},"data":data,"exclude":selector,
