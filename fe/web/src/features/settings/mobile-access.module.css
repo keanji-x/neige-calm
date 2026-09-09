@@ -4,7 +4,7 @@
     justify-items: center;
     padding-block: var(--space-4);
   }
-  
+
   .qr {
     inline-size: 16rem;
     max-inline-size: 100%;
