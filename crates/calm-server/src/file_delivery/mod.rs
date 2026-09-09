@@ -8,6 +8,9 @@ pub(crate) mod candidate_verify;
 mod candidate_view;
 mod input;
 mod publication;
+pub(crate) mod repair;
+mod repair_report;
+pub(crate) mod repair_view;
 pub(crate) mod settlement;
 pub(crate) mod verification_settlement;
 mod view;
@@ -82,6 +85,6 @@ mod test_hooks;
 #[cfg(any(test, feature = "fixtures"))]
 pub use test_hooks::{
     CandidateCompletionHook, CandidateRecoveryHintHook, CandidateReleaseHook,
-    install_candidate_completion_hook, install_candidate_recovery_hint_hook,
-    install_candidate_release_hook,
+    candidate_review_notice_relevant, install_candidate_completion_hook,
+    install_candidate_recovery_hint_hook, install_candidate_release_hook,
 };

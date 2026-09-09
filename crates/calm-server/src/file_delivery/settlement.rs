@@ -16,22 +16,31 @@ async fn terminal_tx(tx: &mut Tx<'_>, op_id: &str) -> Result<Option<(Publication
     row.map(|(payload, phase)| Ok((serde_json::from_str(&payload)?, phase)))
         .transpose()
 }
+// No-event replay rolls back through the domain sentinel, preserving the shared
+// event writer's nonempty-batch invariant. The boolean reports a new notice only.
+const ALREADY_RECORDED: &str = "file publication settlement already recorded";
+
 pub(crate) async fn record(
     repo: &dyn RepoEventWrite,
     events: &EventBus,
     write: &WriteContext,
     op_id: &str,
-) -> Result<()> {
+) -> Result<bool> {
     let op_id = op_id.to_owned();
-    write_with_actor_events_typed(repo, None, events, write, move |tx| Box::pin(async move {
+    let result = write_with_actor_events_typed(repo, None, events, write, move |tx| Box::pin(async move {
         let Some((payload, _)) = terminal_tx(tx, &op_id).await? else { return Err(conflict("publication has not settled")) };
         let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM events WHERE kind='task.file_publication_settled' AND json_extract(payload,'$.operation_id')=?1)")
             .bind(&op_id).fetch_one(&mut **tx).await?;
-        if exists { return Ok(((), vec![])) }
+        if exists { return Err(conflict(ALREADY_RECORDED)); }
         let track = crate::track_lifecycle::track_get_tx(tx, &payload.track_id.clone().into()).await?;
         let event = Event::TaskFilePublicationSettled { task_id: payload.task_id, operation_id: op_id };
         Ok(((), vec![(ActorId::KernelDispatcher, EventScope::Track { track: track.id, area: track.area_id }, event)]))
-    })).await.map(|_| ())
+    })).await;
+    match result {
+        Ok(_) => Ok(true),
+        Err(CalmError::Conflict(reason)) if reason == ALREADY_RECORDED => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 /// Revalidate the event's retained identity for live pushes and missed-event replay.
 pub(crate) async fn observation(

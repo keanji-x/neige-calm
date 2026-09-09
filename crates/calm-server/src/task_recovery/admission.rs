@@ -116,7 +116,9 @@ pub(crate) async fn validate_frozen_contract_tx(tx: &mut Tx<'_>, task: &Task) ->
         return Err(conflict("frozen task context is stale"));
     }
     let constraint = claim_constraint_tx(tx, task).await?;
-    check_constraint_tx(tx, &track, &task.key, &constraint).await
+    check_constraint_tx(tx, &track, &task.key, &constraint).await?;
+    Box::pin(crate::file_delivery::repair::validate_contract_tx(tx, task)).await?;
+    Ok(())
 }
 
 async fn claim_constraint_tx(tx: &mut Tx<'_>, task: &Task) -> Result<TaskRecoveryConstraint> {

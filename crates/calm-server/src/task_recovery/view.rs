@@ -151,7 +151,12 @@ pub(crate) async fn task_recovery_view_tx(
                 Ok(_) => TaskRecoveryCapability {
                     allowed: true,
                     code: "available".into(),
-                    reason: if matches!(
+                    reason: if crate::file_delivery::repair::for_task_tx(tx, task)
+                        .await?
+                        .is_some()
+                    {
+                        "Retry this linked repair execution with its exact original receipt-bound input; no extra repair round is created and failed output files are not inherited.".into()
+                    } else if matches!(
                         crate::file_delivery::selection(task)?,
                         Some(
                             calm_types::task_execution::FileDelivery::CandidateConsumer { .. }

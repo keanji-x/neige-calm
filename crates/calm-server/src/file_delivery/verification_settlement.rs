@@ -20,20 +20,29 @@ async fn terminal_tx(tx: &mut Tx<'_>, id: &str) -> Result<Option<(candidate::Can
         phase,
     )))
 }
+// No-event replay rolls back through the domain sentinel, preserving the shared
+// event writer's nonempty-batch invariant. The boolean reports a new notice only.
+const ALREADY_RECORDED: &str = "candidate verification settlement already recorded";
+
 pub(crate) async fn record(
     repo: &dyn RepoEventWrite,
     events: &EventBus,
     write: &WriteContext,
     id: &str,
-) -> Result<()> {
+) -> Result<bool> {
     let id = id.to_owned();
-    write_with_actor_events_typed(repo,None,events,write,move |tx| Box::pin(async move {
+    let result = write_with_actor_events_typed(repo,None,events,write,move |tx| Box::pin(async move {
         let Some((candidate,_)) = terminal_tx(tx,&id).await? else { return Err(conflict("candidate verification has not settled")); };
         let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM events WHERE kind='task.candidate_verification_settled' AND json_extract(payload,'$.operation_id')=?1)").bind(&id).fetch_one(&mut **tx).await?;
-        if exists { return Ok(((),vec![])); }
+        if exists { return Err(conflict(ALREADY_RECORDED)); }
         let track = crate::track_lifecycle::track_get_tx(tx,&candidate.source.track_id.clone().into()).await?;
         Ok(((),vec![(ActorId::KernelDispatcher,EventScope::Track { track:track.id,area:track.area_id },Event::TaskCandidateVerificationSettled { task_id:candidate.source.task_id,operation_id:id })]))
-    })).await.map(|_| ())
+    })).await;
+    match result {
+        Ok(_) => Ok(true),
+        Err(CalmError::Conflict(reason)) if reason == ALREADY_RECORDED => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 pub(crate) async fn observation(
     repo: &dyn RepoEventWrite,

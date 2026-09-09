@@ -157,6 +157,15 @@ run_case "R2: include! of another file" red \
 include!("../elsewhere.rs");'
 
 # R3 — a fourth production entry appears. Legitimate, and must be seen.
+
+# The approved bounded repair door remains an exact named entry, not a wildcard.
+run_case "R3: Planner repair door removed" red \
+  "R3: the exported write-entry set changed" \
+  's/^pub(crate) async fn planner_repair(/async fn planner_repair(/'
+run_case "R3: Planner repair door replaced by arbitrary writer" red \
+  "R3: the exported write-entry set changed" \
+  's/^pub(crate) async fn planner_repair(/pub(crate) async fn arbitrary_writer(/'
+
 run_case "R3: a new pub(crate) entry" red \
   "R3: the exported write-entry set changed" \
   '/^use super::\*;$/a\

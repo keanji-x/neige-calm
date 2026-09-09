@@ -3,7 +3,9 @@ use crate::operation::Tx;
 use serde_json::{Value, json};
 pub(super) async fn view_tx(tx: &mut Tx<'_>, task: &Task, role: &FileDelivery) -> Result<Value> {
     let binding = super::candidate_input::load_tx(tx, &task.id).await?;
-    let publication = if let Some((binding, _, _)) = &binding {
+    let publication = if let Some((binding, _, _)) = &binding
+        && !matches!(role, FileDelivery::CandidateProducer { .. })
+    {
         Some(binding.candidate.publication_operation_id.clone())
     } else {
         let key = match role {
@@ -16,6 +18,32 @@ pub(super) async fn view_tx(tx: &mut Tx<'_>, task: &Task, role: &FileDelivery) -
             .bind(&task.track_id).bind(key).fetch_optional(&mut **tx).await?
     };
     let mut view = json!({"contract":role,"candidate":{"state":"waiting"},"verification":{"state":"waiting"},"qualified":false,"scope":"declared-checks-only"});
+    let repair = match super::repair::for_task_tx(tx, task).await {
+        Ok(repair) => repair,
+        Err(CalmError::Conflict(reason) | CalmError::Forbidden(reason)) => {
+            // A bad declaration is a local read diagnostic, never authority to execute.
+            // Storage/decoding failures remain errors rather than silently missing data.
+            view["state"] = json!("invalid");
+            view["repair"] = json!({"state":"invalid","reason":reason});
+            view["qualification"] = json!({"qualified":false,"reason":reason});
+            return Ok(view);
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(receipt) = repair {
+        view["repair"] = super::repair_view::view_tx(tx, &receipt).await?;
+    } else if let Some(receipt) = super::repair::lookup_tx(
+        tx,
+        &task.track_id,
+        match role {
+            FileDelivery::CandidateReviewer { producer, .. } => producer,
+            _ => &task.key,
+        },
+    )
+    .await?
+    {
+        view["repair"] = super::repair_view::view_tx(tx, &receipt).await?;
+    }
     let producer_key = match role {
         FileDelivery::CandidateProducer { .. } => &task.key,
         FileDelivery::CandidateConsumer { producer, .. }
@@ -43,7 +71,9 @@ pub(super) async fn view_tx(tx: &mut Tx<'_>, task: &Task, role: &FileDelivery) -
             .bind(format!("candidate:{publication}")).fetch_optional(&mut **tx).await?;
         if let Some((id, phase, error, output)) = verification {
             view["review"] = super::candidate_review::view_tx(tx, &candidate, &id).await?;
-            let qualification = if let Some((binding, _, _)) = &binding {
+            let qualification = if let Some((binding, _, _)) = &binding
+                && !matches!(role, FileDelivery::CandidateProducer { .. })
+            {
                 if matches!(role, FileDelivery::CandidateConsumer { .. }) {
                     super::candidate_input::validate_tx(tx, task, binding).await
                 } else {

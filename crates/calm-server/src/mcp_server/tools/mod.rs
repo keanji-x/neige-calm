@@ -16,6 +16,7 @@ pub mod plan;
 pub mod report_links;
 pub mod review;
 pub mod task_dispatch;
+pub mod task_repair;
 pub mod terminal;
 pub mod track_file;
 pub mod track_history;
@@ -37,6 +38,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     emit::register_into(registry);
     plan::register_into(registry);
     task_dispatch::register_into(registry);
+    task_repair::register_into(registry);
     report_links::register_into(registry);
     review::register_into(registry);
     track_rename::register_into(registry);

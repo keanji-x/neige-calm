@@ -31,17 +31,32 @@ fn consumer() -> Value {
         json!({"role":"consumer","producer":"produce","slot":"result","purpose":"json-input"}),
     )
 }
+type OperationDiagnostic = (String, String, String, Option<String>, Option<String>);
+
 pub(super) async fn schedule(fx: &Fixture) {
     let scheduler = fx.state.dispatcher.scheduler();
     scheduler.mark_boot_sweep_complete();
     scheduler.mark_context_sweep_boot_complete();
-    tokio::time::timeout(
+    let scheduled = tokio::time::timeout(
         Duration::from_secs(20),
         scheduler.schedule_track(fx.boot.track_id.clone()),
     )
-    .await
-    .unwrap();
-    tokio::time::timeout(Duration::from_secs(20), async {
+    .await;
+    if scheduled.is_err() {
+        let tasks: Vec<(String, String, String, Option<String>)> =
+            sqlx::query_as("SELECT id,key,status,status_detail FROM tasks WHERE track_id=?1")
+                .bind(fx.boot.track_id.as_str())
+                .fetch_all(&fx.boot.repo.sqlite_pool().unwrap())
+                .await
+                .unwrap();
+        let operations: Vec<OperationDiagnostic> =
+            sqlx::query_as("SELECT id,kind,phase,idempotency_key,last_error FROM operations")
+                .fetch_all(&fx.boot.repo.sqlite_pool().unwrap())
+                .await
+                .unwrap();
+        panic!("schedule_track did not quiesce: tasks={tasks:?}; operations={operations:?}");
+    }
+    let running = tokio::time::timeout(Duration::from_secs(20), async {
         while fx
             .boot
             .repo
@@ -54,8 +69,23 @@ pub(super) async fn schedule(fx: &Fixture) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .unwrap();
+    .await;
+    if running.is_err() {
+        let tasks: Vec<(String, String, String, Option<String>)> =
+            sqlx::query_as("SELECT id,key,status,status_detail FROM tasks WHERE track_id=?1")
+                .bind(fx.boot.track_id.as_str())
+                .fetch_all(&fx.boot.repo.sqlite_pool().unwrap())
+                .await
+                .unwrap();
+        let operations: Vec<OperationDiagnostic> =
+            sqlx::query_as("SELECT id,kind,phase,idempotency_key,last_error FROM operations")
+                .fetch_all(&fx.boot.repo.sqlite_pool().unwrap())
+                .await
+                .unwrap();
+        panic!(
+            "waiting for claimed tasks to leave dispatched (expected running or terminal): tasks={tasks:?}; operations={operations:?}"
+        );
+    }
     for task in fx
         .boot
         .repo
@@ -118,7 +148,9 @@ pub(super) async fn settle(fx: &Fixture, task: &Task, success: bool) {
     assert_eq!(
         matches!(result.outcome, OperationOutcome::Succeeded { .. }),
         success,
-        "{result:?}"
+        "task {} ({}): {result:?}",
+        task.key,
+        task.id
     );
 }
 async fn source(scenario: &str, bytes: &[u8]) -> (Fixture, Task, PathBuf) {

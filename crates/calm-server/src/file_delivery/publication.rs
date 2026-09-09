@@ -72,7 +72,9 @@ pub(super) async fn authorize_tx(
     {
         return Err(conflict("file publication operation identity changed"));
     }
-    source_tx(tx, &payload).await
+    let (task, source) = source_tx(tx, &payload).await?;
+    super::repair::validate_task_tx(tx, &task).await?;
+    Ok((task, source))
 }
 
 pub(super) fn capture(

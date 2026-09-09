@@ -107,6 +107,10 @@ pub(crate) async fn authorize_tx(tx: &mut Tx<'_>, op: &Operation, frozen: &Froze
         ));
     }
     candidate::authorize_tx(tx, &frozen.candidate).await?;
+    let task = crate::db::sqlite::task_get_tx(tx, &frozen.candidate.source.task_id)
+        .await?
+        .ok_or_else(|| conflict("candidate source missing"))?;
+    super::repair::validate_task_tx(tx, &task).await?;
     let reserved: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM task_candidate_verification_allocations WHERE publication_operation_id=?1 AND track_id=?2 AND operation_key=?3)")
         .bind(&payload.publication_operation_id).bind(&frozen.candidate.source.track_id).bind(&op.operation_key).fetch_one(&mut **tx).await?;
     if !reserved {

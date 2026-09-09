@@ -25,7 +25,8 @@ pub fn run() {
                     "permissionProfile/list"=>json!({"data":[{"id":"neige-delivery-v1","allowed":true,"description":null}],"nextCursor":null}),
                     "thread/start"=>{assert!(!started,"duplicate thread/start");started=true;
                         prompt=request["params"]["developerInstructions"].as_str().unwrap().to_string();
-                        if scenario=="candidate-review-preturn" && prompt.contains("Read the exact sealed files") {
+                        if (scenario=="candidate-review-preturn" && prompt.contains("Read the exact sealed files"))
+                            || (scenario=="candidate-repair-preturn" && prompt.contains("Repair the exact C1 files")) {
                             std::fs::write("/workspace/await-preturn",b"").unwrap();
                             while !std::path::Path::new("/workspace/resume-preturn").exists() {
                                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;

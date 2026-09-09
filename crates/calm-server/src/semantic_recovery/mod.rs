@@ -22,7 +22,7 @@ use std::time::Duration;
 pub(crate) const TOOL: &str = "Recover";
 pub(crate) fn descriptor() -> Value {
     json!({"type":"function", "name":TOOL,
-        "description":"Recover the task from this turn's kernel recovery briefing using only key and reason. Use only when that briefing permits recovery. The kernel binds the original execution and checks current permission. Receipt means accepted/allotted, not Worker started; retained files are not inherited. Retry unchanged reason after response loss.",
+        "description":"Recover the task from this turn's kernel recovery briefing using only key and reason. Use only when that briefing permits recovery. The kernel binds the original execution and checks current permission. Receipt means accepted/allotted, not Worker started. New workspace; declared immutable inputs retain their binding. Previous Worker outputs are not implicitly inherited. Retry unchanged reason after response loss.",
         "inputSchema":{"type":"object","additionalProperties":false,"required":["key","reason"],
         "properties":{"key":{"type":"string","minLength":1,"maxLength":200},"reason":{"type":"string","minLength":1,"maxLength":4000}}}})
 }
@@ -185,7 +185,7 @@ impl RecoveryService {
         )
         .await?;
         Ok(
-            json!({"status":"accepted","receipt":receipt,"limitations":"Accepted/allotted does not prove Worker startup. New empty workspace; retained files are not inherited."}),
+            json!({"status":"accepted","receipt":receipt,"limitations":"Accepted/allotted does not prove Worker startup. New workspace; declared immutable inputs retain their binding. Previous Worker outputs are not implicitly inherited."}),
         )
     }
 }
