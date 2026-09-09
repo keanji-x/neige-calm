@@ -10,3 +10,10 @@ test-results/
 playwright-report/
 artifacts/
 *.local.json
+
+# The icon generator also emits assets for platforms this Android client does not ship.
+src-tauri/icons/ios/
+src-tauri/icons/icon.icns
+src-tauri/icons/icon.ico
+src-tauri/icons/StoreLogo.png
+src-tauri/icons/Square*Logo.png
