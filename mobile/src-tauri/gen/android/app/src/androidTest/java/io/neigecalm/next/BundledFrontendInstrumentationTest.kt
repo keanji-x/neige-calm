@@ -108,7 +108,7 @@ class BundledFrontendInstrumentationTest {
   @Test fun localFrontendUsesRealBackendAndWebsocketWithoutAssetDownloads() {
     login()
     val identity = api("/api/auth/whoami")
-    assertEquals("admin", identity.getString("role"))
+    assertEquals("owner", identity.getString("role"))
     waitFor("WebSocket connection did not complete", "typeof window.__TAURI__.core.invoke==='function'")
     var stats = api("/_test/stats")
     val deadline = SystemClock.elapsedRealtime() + 15000
@@ -148,7 +148,7 @@ class BundledFrontendInstrumentationTest {
     activity.onActivity { webView.goBack() }
     waitFor("Back navigation did not restore the paired origin", "location.origin===" + JSONObject.quote(origin))
     assertNativeDenied()
-    navigate("http://tauri.localhost/")
+    activity.onActivity { webView.goBack() }
     waitFor("Launcher did not return", "location.host==='tauri.localhost' && !!document.querySelector('#server')")
     assertTrue(asyncValue("window.__TAURI__.core.invoke('plugin:bundled-frontend|bind_server',{origin:" + JSONObject.quote(origin) + "})").getBoolean("ok"))
   }

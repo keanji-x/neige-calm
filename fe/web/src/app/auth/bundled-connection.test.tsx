@@ -10,11 +10,12 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 function mount(fetchVersion: () => Promise<ServerVersionInfo>) {
   vi.stubGlobal('__NC_BUNDLED__', true);
-  const runtime: ProviderRuntime = { fetchVersion, reload: vi.fn(), deleteDatabase: vi.fn(),
+  const reload = vi.fn();
+  const runtime: ProviderRuntime = { fetchVersion, reload, deleteDatabase: vi.fn(),
     idbDatabaseName: IDB_DB_NAME, storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<AppProviders client={client} runtime={runtime} cursorStore={{ clear: vi.fn() }}><span>workspace</span></AppProviders>);
-  return runtime;
+  return { reload };
 }
 
 it('shows connection progress and withholds the workspace until compatibility is known', () => {
@@ -24,12 +25,12 @@ it('shows connection progress and withholds the workspace until compatibility is
 });
 
 it('requests an APK update rather than promising a browser refresh can update bundled code', async () => {
-  const runtime = mount(() => Promise.resolve({ webCompatVersion: WEB_COMPAT_VERSION + 1,
+  const { reload } = mount(() => Promise.resolve({ webCompatVersion: WEB_COMPAT_VERSION + 1,
     minWebCompatVersion: WEB_COMPAT_VERSION + 1, syncEventVersion: 20, dbInstanceId: 'bundled-test' }));
   expect(await screen.findByRole('heading', { name: '请更新 Neige App' })).toBeTruthy();
   expect(screen.queryByText('workspace')).toBeNull();
   expect(screen.getByRole('link', { name: '返回连接页' }).getAttribute('href')).toBe('http://tauri.localhost/');
-  expect(runtime.reload).not.toHaveBeenCalled();
+  expect(reload).not.toHaveBeenCalled();
 });
 
 it('requests a server update when an independently updated APK is newer than its server', async () => {
