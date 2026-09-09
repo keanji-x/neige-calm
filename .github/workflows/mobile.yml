@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  NPM_CONFIG_AUDIT: 'false'
+
 concurrency:
   group: android-client-${{ github.ref }}
   cancel-in-progress: true
@@ -23,7 +26,6 @@ jobs:
       run:
         working-directory: mobile
     env:
-      NPM_CONFIG_AUDIT: 'false'
       CARGO_BUILD_JOBS: '4'
       RUSTC_WRAPPER: ''
     steps:
