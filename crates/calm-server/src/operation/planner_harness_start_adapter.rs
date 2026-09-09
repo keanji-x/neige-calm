@@ -3057,11 +3057,13 @@ mod tests {
 
         assert_eq!(out, expected);
         assert!(
-            expected.contains(
-                "Before you write anything to the report in a session, call `calm.report.read` once"
-            ),
-            "base prompt must mandate an unconditional first read (#1185 §1.5 A) — the \
-             document's own maintenance contract is only reachable by reading it"
+            expected.contains(concat!(
+                "Before you directly edit the report in a session, call `calm.report.read` once: ",
+                "the report carries its own structure and its own maintenance contract, and ",
+                "you may not directly edit a document you have not read. ",
+                "The bounded `calm.task.dispatch` creation below does not require this report read."
+            )),
+            "base prompt must require the report read before direct edits and explicitly exempt bounded Dispatch"
         );
         assert!(expected.contains("authoritative pre-set plan"));
         assert!(expected.contains("Do not mint duplicate tasks"));
