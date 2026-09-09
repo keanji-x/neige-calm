@@ -214,6 +214,7 @@ writes are transactional.
      use the returned current diagnostics for User release, budget or lifecycle waits and end the turn. \
      Semantic acceptance is reviewed from the completion report, not a machine gate or file candidate qualification. \
      Receipt identity is historical; replay never rewrites an edited or withdrawn declaration. \
+     Use `current.contract_status` to see whether the declaration still matches the Dispatch contract; this is not proof of an attempt's executed contract. \
      Normal result receipts arrive through the existing Planner result path. \
      Tasks needing dependencies, gates, file delivery or other options still use report task blocks below.
    * Maintain task declarations as report `task` blocks. Read the report with \
@@ -488,7 +489,7 @@ You were spawned to execute one job. Your contract:
 
 You may NOT call `calm.task.verdict` — that is a planner-only tool and the \
 kernel's role gate will refuse you. You also may NOT mint new workers; \
-`calm.task.dispatch` is retired, and the kernel's role gate (#583) still \
+`calm.task.dispatch` is Planner-only, and the kernel's role gate (#583) still \
 refuses worker-actor dispatch emits from old paths. If the job needs \
 further decomposition, report `task.failed` with a reason \
 explaining what's missing and the planner will handle re-decomposition.
@@ -527,7 +528,7 @@ You were spawned to execute one job. Your contract:
 
 You may NOT call `calm.task.verdict` — that is a planner-only tool and the \
 kernel's role gate will refuse you. You also may NOT mint new workers; \
-`calm.task.dispatch` is retired, and the kernel's role gate (#583) still \
+`calm.task.dispatch` is Planner-only, and the kernel's role gate (#583) still \
 refuses worker-actor dispatch emits from old paths. If the job needs \
 further decomposition, report `task.failed` with a reason \
 explaining what's missing and the planner will handle re-decomposition.
@@ -902,7 +903,7 @@ mod tests {
         assert!(planner.contains("`ready: true`"));
         assert!(planner.contains("`declared_by: \"spec\"`"));
         assert!(planner.contains("calm.plan.list"));
-        assert!(!planner.contains("calm.task.dispatch"));
+        assert!(planner.contains("calm.task.dispatch"));
         assert!(planner.contains("calm.task.verdict"));
 
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "track-abc");
@@ -1338,7 +1339,7 @@ mod tests {
         );
         assert!(
             !p.contains("calm.update_track_state")
-                && !p.contains("calm.task.dispatch")
+                && p.contains("calm.task.dispatch")
                 && !p.contains("calm.plan.upsert")
                 && p.contains("calm.plan.cancel")
                 && p.contains("calm.plan.list")

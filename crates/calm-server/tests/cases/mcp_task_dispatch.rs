@@ -6,7 +6,7 @@ use calm_server::mcp_server::tools::task_dispatch::TOOL_TASK_DISPATCH;
 use calm_server::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 
-async fn boot() -> Boot {
+pub(super) async fn boot() -> Boot {
     let b = report_boot().await;
     // This older report fixture seeds session rows only. Exercise the production
     // runtime mirror to establish the current-card link required by dispatch.
@@ -48,14 +48,17 @@ async fn bind_planner(b: &Boot, id: &str, supersede: bool) {
     tx.commit().await.unwrap();
 }
 
-fn args() -> Value {
+pub(super) fn args() -> Value {
     json!({"name":"Summarize release scope", "goal":"Write a concise release scope summary", "acceptance":"The completion report names the supported scope and exclusions", "executor":"codex", "workspace":"empty"})
 }
 
-async fn dispatch(b: &Boot, args: Value) -> Result<Value, calm_server::plugin_host::mcp::RpcError> {
+pub(super) async fn dispatch(
+    b: &Boot,
+    args: Value,
+) -> Result<Value, calm_server::plugin_host::mcp::RpcError> {
     call_tool(b, TOOL_TASK_DISPATCH, planner_identity(b), args).await
 }
-async fn payload(b: &Boot) -> TrackReportPayload {
+pub(super) async fn payload(b: &Boot) -> TrackReportPayload {
     serde_json::from_value(
         b.repo
             .card_get(b.report_card_id.as_str())
@@ -66,11 +69,11 @@ async fn payload(b: &Boot) -> TrackReportPayload {
     )
     .unwrap()
 }
-async fn counts(b: &Boot) -> (i64, i64, i64) {
+pub(super) async fn counts(b: &Boot) -> (i64, i64, i64) {
     sqlx::query_as("SELECT (SELECT count(*) FROM planner_dispatch_receipts),(SELECT count(*) FROM events),(SELECT count(*) FROM task_attempt_allocations)")
         .fetch_one(&b.repo.sqlite_pool().unwrap()).await.unwrap()
 }
-async fn policy(b: &Boot, policy: &str, budget: i64) {
+pub(super) async fn policy(b: &Boot, policy: &str, budget: i64) {
     sqlx::query("UPDATE tracks SET automation_policy=?1,task_budget=?2 WHERE id=?3")
         .bind(policy)
         .bind(budget)
@@ -100,7 +103,10 @@ async fn dispatch_creates_planner_declaration_and_replays_exact_contract_without
         .find(|block| block.id == first["receipt"]["block_id"])
         .unwrap();
     assert_eq!(block.payload["key"], first["receipt"]["task_key"]);
-    assert_eq!(block.payload["declared_by"], "spec");
+    assert_eq!(
+        block.payload["declared_by"],
+        calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR
+    );
     assert_eq!(block.payload["ready"], true);
     assert_eq!(block.payload["acceptance"], args()["acceptance"]);
     assert_eq!(
@@ -341,6 +347,10 @@ async fn dispatch_replay_after_declaration_edit_or_removal_preserves_original_id
     );
     assert_eq!(counts(&b).await, saved);
     assert_eq!(payload(&b).await, edited);
+    assert_eq!(
+        dispatch(&b, args()).await.unwrap()["current"]["contract_status"],
+        "differs_from_dispatch"
+    );
     let block = edited
         .blocks
         .unwrap()
@@ -359,6 +369,7 @@ async fn dispatch_replay_after_declaration_edit_or_removal_preserves_original_id
     let replay = dispatch(&b, args()).await.unwrap();
     assert_eq!(replay["receipt"], original["receipt"]);
     assert_eq!(replay["current"]["declaration_unavailable"], true);
+    assert_eq!(replay["current"]["contract_status"], "unavailable");
     assert_eq!(counts(&b).await, saved);
 }
 

@@ -886,7 +886,7 @@ async fn persist(
                 if let PersistPurpose::Dispatch { args, task_budget_default, .. } = &purpose
                     && let Some(receipt) = super::dispatch::lookup_tx(tx, &track_id, args).await?
                 {
-                    let response = super::dispatch::snapshot_tx(tx, &track_id, &receipt, *task_budget_default).await?;
+                    let response = super::dispatch::snapshot_tx(tx, &track_id, &receipt, args, *task_budget_default).await?;
                     let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
                         "SELECT id,track_id,kind,sort,payload,title,deletable,created_at,updated_at FROM cards WHERE id=?1"
                     ).bind(&id).fetch_one(&mut **tx).await?;
@@ -1020,7 +1020,7 @@ async fn persist(
                         created_at_ms: crate::model::now_ms(),
                     };
                     super::dispatch::insert_tx(tx, &track_id, args, &receipt).await?;
-                    Some(super::dispatch::snapshot_tx(tx, &track_id, &receipt, *task_budget_default).await?)
+                    Some(super::dispatch::snapshot_tx(tx, &track_id, &receipt, args, *task_budget_default).await?)
                 } else { None };
                 //    Then two events tagged with the same card scope. Order
                 //    matters here too: `CardUpdated` first so an existing

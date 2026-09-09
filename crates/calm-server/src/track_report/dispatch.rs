@@ -132,13 +132,21 @@ pub(super) async fn lookup_tx(
         .bind(track.as_str()).bind(&args.name).fetch_one(&mut **tx).await?))
 }
 
-pub(super) fn prepare(doc: &ReportDoc, args: &DispatchArgs, task_key: &str) -> Result<ReportDocOp> {
-    let content = report_blocks::render_data_block(report_blocks::KIND_TASK, &json!({
+fn declaration_payload(args: &DispatchArgs, task_key: &str) -> Value {
+    json!({
         "key": task_key, "kind": "codex", "goal": args.goal,
-        "acceptance": args.acceptance, "ready": true, "declared_by": "spec",
+        "acceptance": args.acceptance, "ready": true, "declared_by": report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
         "no_gate_reason": "Semantic acceptance is reviewed from the completion report; it is not a machine gate or file candidate qualification.",
         "context": {"neige_execution": {"version": "isolated-codex-v1", "workspace": "empty"}}
-    })).map_err(CalmError::BadRequest)?;
+    })
+}
+
+pub(super) fn prepare(doc: &ReportDoc, args: &DispatchArgs, task_key: &str) -> Result<ReportDocOp> {
+    let content = report_blocks::render_data_block(
+        report_blocks::KIND_TASK,
+        &declaration_payload(args, task_key),
+    )
+    .map_err(CalmError::BadRequest)?;
     Ok(ReportDocOp::UpsertBlock {
         id: None,
         kind: report_blocks::KIND_TASK.into(),
@@ -169,10 +177,52 @@ pub(super) async fn snapshot_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track: &TrackId,
     receipt: &DispatchReceipt,
+    args: &DispatchArgs,
     task_budget_default: i64,
 ) -> Result<Value> {
+    let configured_default: Option<String> =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key=?1")
+            .bind(crate::routes::settings::TASK_BUDGET_DEFAULT_KEY)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let task_budget_default = crate::routes::settings::effective_task_budget_default(
+        configured_default.as_deref(),
+        task_budget_default,
+    );
     let (_, blocks) = super::report_blocks_snapshot_tx(tx, track.as_str()).await?;
     let (declarations, local) = report_blocks::tasks::project_task_declarations(&blocks);
+    // Compare only the existing execution-root contract fields. Readiness,
+    // User release and other admission controls do not change this contract.
+    // This describes the current declaration, never the frozen attempt.
+    let current_block = blocks
+        .iter()
+        .enumerate()
+        .find(|(_, block)| block.id == receipt.block_id);
+    let contract_status = match current_block {
+        Some((index, block))
+            if declarations
+                .iter()
+                .filter(|d| d.key == receipt.task_key)
+                .count()
+                == 1
+                && declarations.iter().any(|d| {
+                    d.block_id == receipt.block_id && d.key == receipt.task_key && !d.tombstone
+                })
+                && local[index].is_empty() =>
+        {
+            if calm_types::task_recovery::task_root_hash_preimage(&block.payload)
+                == calm_types::task_recovery::task_root_hash_preimage(&declaration_payload(
+                    args,
+                    &receipt.task_key,
+                ))
+            {
+                "matches_dispatch"
+            } else {
+                "differs_from_dispatch"
+            }
+        }
+        _ => "unavailable",
+    };
     let verdicts = crate::db::sqlite::evaluate_schedulability_with_task_budget_default(
         tx,
         track.as_str(),
@@ -214,7 +264,7 @@ pub(super) async fn snapshot_tx(
     Ok(json!({
         "receipt": receipt,
         "current": {
-            "as_of_ms": now_ms(),
+            "as_of_ms": now_ms(), "contract_status": contract_status,
             "track": {"lifecycle": track_state.lifecycle, "archived_at": track_state.archived_at, "lifecycle_allows_scheduling": crate::scheduler::lifecycle_allows_scheduling(track_state.lifecycle)},
             "blocking_reason": blocking_reason, "declaration_present": declaration_present,
             "declaration_unavailable": !declaration_present, "declaration_withdrawn": declaration_withdrawn, "diagnostics": verdicts,

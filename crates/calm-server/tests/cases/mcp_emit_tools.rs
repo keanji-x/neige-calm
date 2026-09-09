@@ -1,5 +1,5 @@
 //! PR7a.1 (#136 followup) — integration tests for the three PR7a emit
-//! tools (`calm.task.dispatch`, `calm.task.complete`,
+//! tools (legacy `calm.dispatch_request`, `calm.task.complete`,
 //! `calm.task.fail`) over the real MCP server transport.
 //!
 //! Each test:
@@ -71,7 +71,7 @@ async fn recv_bus(
 
 fn retired_dispatch_payload() -> serde_json::Value {
     json!({
-        "error": "calm.task.dispatch was retired (#644); no task was dispatched",
+        "error": "calm.dispatch_request was retired (#644); no task was dispatched",
         "migration": {
             "use": "calm.report.blocks.upsert",
             "shape": "{ kind: \"task\", payload: { key, kind, goal (codex/claude) | command (terminal), acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" }, if_doc_rev }",
@@ -93,7 +93,7 @@ fn tools_call_frame_no_thread(id: i64, name: &str, args: serde_json::Value) -> s
 }
 
 #[tokio::test]
-async fn dispatch_request_returns_retired_refusal_without_emitting() {
+async fn canonical_dispatch_rejects_legacy_arguments_without_emitting() {
     let b = boot_with_role(CardRole::Planner).await;
     let mut rx = b.events.subscribe();
     let (mut rd, mut wr) = connect(&b.socket_path).await;
@@ -115,23 +115,16 @@ async fn dispatch_request_returns_retired_refusal_without_emitting() {
     )
     .await;
     let resp = recv_frame(&mut rd).await;
-    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
-    assert_eq!(resp["result"]["isError"], json!(false), "{resp:#?}");
-    assert_eq!(
-        resp["result"]["structuredContent"],
-        retired_dispatch_payload()
-    );
-    let text = resp["result"]["content"][0]["text"]
-        .as_str()
-        .expect("text content");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(text).expect("text payload is json"),
-        retired_dispatch_payload()
-    );
+    assert_eq!(resp["error"]["code"], -32602, "{resp:#?}");
+    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM planner_dispatch_receipts")
+        .fetch_one(&b.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(receipts, 0);
     let no_more = timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(
         no_more.is_err(),
-        "dispatch shim must emit no event: {no_more:?}"
+        "rejected canonical arguments must emit no event: {no_more:?}"
     );
     let _ = (&b.server, &b.repo);
 }
@@ -164,6 +157,19 @@ async fn legacy_dispatch_alias_inherits_retired_refusal() {
         resp["result"]["structuredContent"],
         retired_dispatch_payload()
     );
+    // Even the new supported shape must not turn the retired alias into a writer.
+    send_frame(&mut wr, tools_call_frame(12, "calm.dispatch_request", &b.thread_id,
+        json!({"name":"Do not create", "goal":"Do not run", "acceptance":"No writes", "executor":"codex", "workspace":"empty"}))).await;
+    let resp = recv_frame(&mut rd).await;
+    assert_eq!(
+        resp["result"]["structuredContent"],
+        retired_dispatch_payload()
+    );
+    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM planner_dispatch_receipts")
+        .fetch_one(&b.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(receipts, 0);
     let no_event = timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(
         no_event.is_err(),

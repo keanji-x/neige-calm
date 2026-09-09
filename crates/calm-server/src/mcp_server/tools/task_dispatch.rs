@@ -12,7 +12,7 @@ pub const TOOL_TASK_DISPATCH: &str = "calm.task.dispatch";
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(ToolDescriptor {
         name: TOOL_TASK_DISPATCH.into(),
-        description: "Declare one independent Codex task in an empty isolated workspace. name is a Track-local business identity for Dispatch-created tasks: only surrounding whitespace is trimmed; case and Unicode are exact. Same name and exact typed contract replays the original task key and block, even after report changes or session replacement; a different contract conflicts. Use a new meaningful name for new work, existing recovery for repair. goal and acceptance are required. Semantic acceptance is reviewed from the completion report, not a machine gate or file candidate qualification. Receipt creation does not mean running: current diagnostics preserve User release, lifecycle and budget controls. No dependencies or other options. Normal result receipts arrive through the existing Planner result path.".into(),
+        description: "Declare one independent Codex task in an empty isolated workspace. name is a Track-local business identity for Dispatch-created tasks: only surrounding whitespace is trimmed; case and Unicode are exact. Same name and exact typed contract replays the original task key and block, even after report changes or session replacement; a different contract conflicts. Use a new meaningful name for new work, existing recovery for repair. goal and acceptance are required. Semantic acceptance is reviewed from the completion report, not a machine gate or file candidate qualification. Receipt creation does not mean running: current diagnostics preserve User release, lifecycle and budget controls. current.contract_status compares the current declaration with the original Dispatch contract; it does not prove an attempt executed that contract. No dependencies or other options. Normal result receipts arrive through the existing Planner result path.".into(),
         input_schema: json!({
             "type":"object", "additionalProperties":false,
             "required":["name","goal","acceptance","executor","workspace"],
@@ -61,5 +61,27 @@ fn map_error(error: CalmError) -> RpcError {
         CalmError::Forbidden(m) => RpcError::custom(-32403, m),
         CalmError::Conflict(m) => RpcError::custom(-32409, m),
         other => RpcError::internal(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semantic_dispatch_registration_is_independent_of_legacy_emit_order() {
+        let mut registry = ToolRegistry::default();
+        register_into(&mut registry);
+        super::super::emit::register_into(&mut registry);
+        let descriptor = registry
+            .descriptors()
+            .into_iter()
+            .find(|d| d.name == TOOL_TASK_DISPATCH)
+            .unwrap();
+        assert_eq!(descriptor.visible_to_roles, &[CardRole::Planner]);
+        assert_eq!(
+            descriptor.input_schema["required"],
+            json!(["name", "goal", "acceptance", "executor", "workspace"])
+        );
     }
 }
