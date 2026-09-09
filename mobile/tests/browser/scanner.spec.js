@@ -61,3 +61,21 @@ test('cancel settles locally when native scan remains pending and ignores its la
   await page.evaluate(() => window.finishOldScan({ content: `https://old.example.ts.net/mobile/pair#v1.${'a'.repeat(64)}` }));
   await expect(page.getByRole('region', { name: '确认配对服务器' })).toContainText('new.example.ts.net');
 });
+
+test('ignores scan results while cancellation is in flight', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__TAURI__ = { core: { invoke: async (command) => {
+      if (command.endsWith('request_permissions')) return { camera: 'granted' };
+      if (command.endsWith('|cancel')) return new Promise((resolve) => { window.finishCancel = resolve; });
+      return new Promise((resolve) => { window.finishScan = resolve; });
+    } } };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '扫码连接' }).click();
+  await page.getByRole('button', { name: '取消扫码' }).click();
+  await page.evaluate(() => window.finishScan({ content: `https://old.example.ts.net/mobile/pair#v1.${'a'.repeat(64)}` }));
+  await expect(page.getByRole('region', { name: '确认配对服务器' })).not.toBeVisible();
+  await expect(page.getByRole('button', { name: '扫码连接', includeHidden: true })).toBeDisabled();
+  await page.evaluate(() => window.finishCancel());
+  await expect(page.getByRole('button', { name: '扫码连接' })).toBeEnabled();
+});

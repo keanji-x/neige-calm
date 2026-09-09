@@ -47,17 +47,19 @@ scan.addEventListener('click', async () => {
 });
 
 cancelScan.addEventListener('click', async () => {
-  const attempt = generation;
+  const attempt = ++generation;
   const settle = settleCancel;
+  settleCancel = null;
+  candidate = null;
+  confirm.hidden = true;
+  // Invalidate at cancellation intent, before awaiting the native callback.
+  settle?.();
   cancelScan.disabled = true;
   try {
     await window.__TAURI__?.core?.invoke('plugin:barcode-scanner|cancel');
     if (attempt === generation) {
       // Plugin 2.4.6 can destroy its saved invocation without rejecting scan.
       // Settle our operation independently and fence any late native result.
-      generation += 1;
-      settleCancel = null;
-      settle?.();
       restoreLauncher();
     }
   }

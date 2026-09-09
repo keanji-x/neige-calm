@@ -496,3 +496,23 @@ async fn mobile_pairing_disable_fences_redemption_and_old_claims_after_reenable(
     );
     f.auth.mobile.disable().await.unwrap();
 }
+
+#[tokio::test]
+async fn mobile_pairing_dev_autologin_is_not_remote_access_authority() {
+    let state = super::auth::fresh_state().await;
+    let auth = AuthState::new(calm_server::auth::AuthConfig {
+        username: None,
+        password: None,
+        dev_autologin: true,
+        display_name: "Development owner".into(),
+    });
+    let app = routes::application_router(state, auth);
+    for method in ["GET", "POST", "DELETE"] {
+        assert_eq!(
+            request(&app, method, "/api/mobile/access", None, json!({}))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+}
