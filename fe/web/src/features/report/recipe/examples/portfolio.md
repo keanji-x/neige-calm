@@ -1,4 +1,4 @@
-<!-- 通过聊天维护这份 Report。布局、字段与样式保存在 layout 区块，现金和证券数量保存在当前 Track 的 Market data 插件中。登记当前现金余额使用 market.cash.set，确认保存使用 market.cash.list；这是绝对余额，支持 CNY/USD/HKD、最多两位小数，零余额也保留。登记证券使用 market.holdings.set/list。普通金额或数量录入只调用数据工具，不改 Report 布局、添加现金说明段落或写交易日志；不要将现金伪装成证券，也不要因登记交易而自动扣减现金。只有用户明确要求修改布局、研究链接、事件或日志时才使用真实区块版本修改 Report。研究链接和下次事件填写证券表 annotations，keys 为 venue + asset。图表展示包含已登记现金的组合，默认计价 CNY；不为单个 Track 的登记请求修改插件全局计价设置，不转换或编造旧历史。新增模板保留空 annotations/交易 rows，不复制私人现金、持仓或 Track ID。 -->
+<!-- 通过聊天维护这份 Report。布局、字段与样式保存在 layout 区块，现金和证券数量保存在当前 Track 的 Market data 插件中。登记当前现金余额使用 market.cash.set，amount 传不带货币符号或千位分隔符的十进制字符串；确认保存使用 market.cash.list。这是绝对余额，支持 CNY/USD/HKD、最多两位小数，零余额也保留。登记证券使用 market.holdings.set/list。普通金额或数量录入只调用数据工具，不改 Report 布局、添加现金说明段落或写交易日志；不要将现金伪装成证券，也不要因登记交易而自动扣减现金。只有用户明确要求修改布局、研究链接、事件或日志时才使用真实区块版本修改 Report。研究链接和下次事件填写证券表 annotations，keys 为 venue + asset。图表展示包含已登记现金的组合，默认计价 CNY；不为单个 Track 的登记请求修改插件全局计价设置，不转换或编造旧历史。新增模板保留空 annotations/交易 rows，不复制私人现金、持仓或 Track ID。 -->
 
 # 组合概览
 
