@@ -54,7 +54,7 @@ jobs:
           rustup show active-toolchain
           rustup target add aarch64-linux-android
           cargo fmt --manifest-path src-tauri/Cargo.toml --check
-          sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865'
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865'
           echo "NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
       - name: Build and verify ARM64 APK
         run: |
