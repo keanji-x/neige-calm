@@ -24,8 +24,7 @@ function LayoutContent({ item, resolveLive, onOpenLink }: {
   const data = resolveLayoutData(item, resolveLive);
   const chart = item.kind === 'chart' ? layoutChartData(item, data) : null;
   return <>
-    {data.kind === 'unavailable' ? <p role="status" className={styles.notice}>{data.message}</p>
-      : item.kind === 'table' ? <LayoutTableContent item={item} data={data} onOpenLink={onOpenLink}/>
+    {item.kind === 'table' ? <LayoutTableContent item={item} data={data} onOpenLink={onOpenLink}/>
         : chart?.kind === 'unavailable' ? <p role="status" className={styles.notice}>{chart.message}</p>
           : chart?.kind === 'ready' ? <Suspense fallback={<p role="status" className={styles.notice}>正在加载图表…</p>}>
             <Chart kind={item.chart} label={item.title || '图表'} points={chart.points} unit={chart.unit} color={item.color}
@@ -36,23 +35,29 @@ function LayoutContent({ item, resolveLive, onOpenLink }: {
 }
 
 function LayoutTableContent({ item, data, onOpenLink }: {
-  item: LayoutTable; data: Extract<LayoutData, { kind: 'ready' }>; onOpenLink?: (target: ReportLinkTarget) => void;
+  item: LayoutTable; data: LayoutData; onOpenLink?: (target: ReportLinkTarget) => void;
 }) {
+  // Columns belong to the saved template, so missing live data changes only
+  // the body. Readers can still see what this table will contain.
+  const rows = data.kind === 'ready' ? data.rows : [];
+  const emptyMessage = data.kind === 'unavailable' ? data.message : '暂无记录。';
   const totals = item.columns.map(column => column.format === 'share' ? layoutShareTotal(item, column, data) : null);
   return <div className={styles.scroll}>
     <table className={styles.table}>
       <thead><tr>{item.columns.map(column => <th key={column.key} scope="col" className={column.format === 'text' ? undefined : styles.numeric}>{column.label}</th>)}</tr></thead>
-      <tbody>{data.rows.map((row, index) => <tr key={index}>{item.columns.map((column, columnIndex) => {
+      <tbody>{rows.length === 0 ? <tr><td colSpan={item.columns.length}>
+        <p role="status" className={styles.notice}>{emptyMessage}</p>
+      </td></tr> : rows.map((row, index) => <tr key={index}>{item.columns.map((column, columnIndex) => {
         const text = layoutCell(column, row, totals[columnIndex] ?? null);
         const track = layoutCellTrack(column, row);
         const target = track === null ? null : parseReportLink(`neige://wave/${encodeURIComponent(track)}`);
+        const content = target !== null && onOpenLink !== undefined ? <button className={styles.link} type="button" onClick={() => onOpenLink(target)}>{text}</button> : text;
         return <td key={column.key} className={column.format === 'text' ? undefined : styles.numeric}>
-          {target !== null && onOpenLink !== undefined ? <button className={styles.link} type="button" onClick={() => onOpenLink(target)}>{text}</button> : text}
+          {column.format === 'text' ? <span className={styles.text}>{content}</span> : content}
         </td>;
       })}</tr>)}</tbody>
     </table>
-    {data.rows.length === 0 && <p role="status" className={styles.notice}>暂无记录。</p>}
-    {totals.some((total, index) => item.columns[index]?.format === 'share' && total === null) && data.rows.length > 0
+    {totals.some((total, index) => item.columns[index]?.format === 'share' && total === null) && rows.length > 0
       && <p role="status" className={styles.notice}>估值不完整或总额不一致，暂不显示占比。</p>}
   </div>;
 }

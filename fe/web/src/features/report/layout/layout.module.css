@@ -13,6 +13,9 @@
   .table { inline-size: 100%; border-collapse: collapse; font-size: var(--text-base); }
   .table th { font-weight: 500; color: var(--text-2); text-align: start; white-space: nowrap; }
   .table th, .table td { border-block-end: 1px solid var(--hairline); padding: var(--space-3) var(--space-2); }
+  /* Short values keep their natural width, including dates and identifiers.
+     Bound longer prose instead of reserving the same width for every cell. */
+  .text { display: block; inline-size: max-content; max-inline-size: 16ch; overflow-wrap: anywhere; word-break: normal; }
   .table th.numeric, .table td.numeric { text-align: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .link { color: var(--text); text-decoration: underline; text-underline-offset: .2em; background: transparent; border: 0; padding: 0; font: inherit; text-align: inherit; cursor: pointer; }
   @media (width < 60rem) {
