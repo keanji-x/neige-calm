@@ -56,12 +56,17 @@ Both schemas forbid extra arguments; neither accepts a Track id. Runtime typed
 argument parsing must enforce the same rule. Currency is explicitly `CNY`,
 `USD` or `HKD` (normalize case at input); unsupported codes are errors, not a
 currency guess. USDT remains the existing crypto holding/settlement-alias
-contract, not fiat cash in this first slice. `amount` is a required finite JSON
-number >= 0, following the plugin's existing numeric representation. Keep the
-accepted native amount in storage; apply existing cent rounding to valuation
-outputs/display, not an unannounced rewrite of the saved input. Reject strings,
-null, missing/negative/nonfinite amounts. Repeating an absolute set is safe;
-there is no additive “deposit” command or transaction side effect.
+contract, not fiat cash in this first slice. **Owner precision decision:**
+`amount` is a required finite JSON number >= 0, representing whole cents for
+these three fiat currencies. Accept 0, 0.01, 0.29, 1.20 and 1e2; reject 0.001
+and 1.005 with no write. Preserve accepted native amounts; never silently round
+an input into an acceptable balance. Reject strings, null, missing, negative,
+nonfinite and out-of-range amounts. Validate decimal scale/exponent with checked
+cent conversion and safe numeric round-trip bounds; binary `amount * 100` being
+exactly integral is not a valid test (it can reject 0.29). Scientific notation,
+large-number boundaries and overflow must have explicit acceptance/rejection
+fixtures. Repeating an absolute set is safe; there is no additive “deposit”
+command or transaction side effect.
 
 New plugin-owned key: `cash/<track_id>` containing
 `{version:1, balances:[{currency:"CNY",amount:100000}]}`. One typed, unique entry
@@ -96,6 +101,25 @@ These are derived views, not four balance stores. Only cash KV and holdings KV
 own current inputs; the two history keys persist different observations. Keep
 `market.holdings.list`'s existing security scope. cash.list reads native saved
 balances without networking; combined valuation lives in the projections.
+
+**New projection arithmetic:** quantize each converted item to its public cent
+value first, sum those cent values for the new combined Total (checked integer
+cent arithmetic to avoid floating accumulation), and compute each position/cash
+weight as `100 × item_cents / total_cents`. Allocation rows, positions/cash values,
+combined history and Total must share that exact public-value basis. The donut
+normalizes displayed row values, so this keeps its ratios equal to the producer
+weights. A public Total <=0 means every weight is null, even if the pre-rounding
+sum was a small positive number. Overflow or unsafe numeric representation is
+unavailable, not wrapped, clamped or silently rounded into a different total.
+Do not change the old security-only aggregate algorithm.
+
+Executable small-FX fixtures (synthetic rates, not market claims): USD 0.01 and
+HKD 0.01 each converted at fixture rate 0.6 CNY yield raw values 0.006 and 0.006.
+Publish 0.01 and 0.01 CNY, new Total 0.02, and weights 50%/50%; do not round raw
+sum 0.012 into Total 0.01 and report 100% each. A sole USD 0.01 converted at
+fixture rate 0.4 yields 0.004: public value/Total 0.00, null weight and empty
+donut, while native cash remains USD 0.01. These cases also pin accumulation
+across multiple items and the public-cent history value.
 
 - Existing settlement policy remains: CNY and USD settle; config USDT settles
   as USD under its already disclosed assumption. Do not change install-wide
@@ -166,12 +190,17 @@ Refresh holds REFRESH_LOCK across these finite phases:
    snapshot, release. Preserve the distinction between absent cash and explicit
    zero. No parse-error row is silently discarded.
 2. **Price:** quote/convert outside the state mutex. Read both needed history
-   documents outside it too; REFRESH_LOCK serializes their writers.
+   documents independently outside it too; REFRESH_LOCK serializes their writers.
+   A history read/parse failure is not an empty series. Do not overwrite or
+   publish that series; the other series may proceed if its own read and
+   valuation criteria pass.
 3. **Recheck:** reacquire state mutex and re-read both current documents. If a
    read fails, publish no derived candidate/history. If values differ, discard
    the candidate completely and wake the next pass; no stale partial publish.
 4. **Commit:** if values still equal, retain state mutex across every accepted
-   current projection and history write/publish. Each history is stored before
+   current projection and history write/publish. Unavailable/null error
+   projections use this same commit barrier too; never release it and then
+   publish an obsolete error over a newer successful balance. Each history is stored before
    its overlay. Then release locks. A setter either invalidates a candidate
    before this phase, or writes/ACKs after it. Different old inputs therefore
    cannot publish/append after a newer successful set ACK.
@@ -190,9 +219,18 @@ has the same semantics. Restart loses no ordering counter because none exists.
 
 **Failures:** failed/indeterminate KV writes do not claim success or trigger a
 compensating overwrite. A callback timeout may follow a committed host write;
-cash.list/next refresh re-reads actual KV before any retry. Failed recheck means
-no old candidate commit. Where host publication is available, use a visible
-unavailable status rather than presenting a failed-read balance as current.
+cash.list/next refresh re-reads actual KV before any retry. This relies on the
+existing per-process FIFO in `plugin_host/mod.rs::spawn_neige_router`: its loop
+awaits each `callbacks::dispatch` before handling the next request. A delayed
+write/publication is therefore completed before a later read-back or setter
+callback can succeed, even when the plugin's 15s reply wait already expired.
+Pin that production ordering with a delayed-callback regression: timeout an old
+callback, queue read-back/new set, release the old callback, and prove read-back
+sees its result and an old success/error projection cannot land after the newer
+set ACK. Do not add host CAS or assume timeout cancelled a write. Failed recheck
+means no old candidate commit. Where host publication is available, use a visible
+unavailable status under the same state/commit lock rather than presenting a
+failed-read balance as current.
 Failure midway through the six overlays is not an atomic multi-overlay commit:
 report which projections failed, preserve valid persisted histories, skip any
 unpersisted history overlay, and retry through the next fresh snapshot. Give new
@@ -252,8 +290,9 @@ and `mcp_plugin_tools_assistant.rs`; all quote/FX sources in tests are loopback.
 | Set cash 80,000; repeat | Absolute replacement, not subtraction/addition; Total 80,032.46, no duplicate currency, unrelated holdings/log/annotations/layout untouched. |
 | Reload/restart, cash only | Same KV and displayed balance; cash key alone rediscovers the Track and resumes history, no empty-holdings early exit. |
 | Zero versus missing | Zero persists, shows 0, Total 0 in a known currency, no spurious weight; absent cash with no securities retains old empty semantics. |
+| Input/public-cent arithmetic | Accept 0/0.01/0.29/1.20/1e2; reject sub-cent/unsafe inputs without writes. Two converted 0.006 values publish Total 0.02 and 50% each; one 0.004 publishes 0.00 and null weight. |
 | Currency failures | Unknown input rejected without writes; current-pass missing FX retains native balance, no fake value/rate or history; mixed unsupported units have no summed total. |
-| Races/failures | Pause quote before set; ACK new cash or securities; release old quote: old snapshot cannot publish/append. Force KV/publish failure: no false saved/refreshed claim or unpersisted history. |
+| Races/failures | Pause quote before set; ACK new cash or securities; release old quote: old snapshot cannot publish/append. Delay a real callback past timeout and verify FIFO read-back/ACK ordering. Error projections obey the same commit lock; fail either history read independently without replacing it by []. No false success or unpersisted history. |
 | Isolation/compatibility | Missing/spoofed Track, other Track's cash, unopted tool caller, old security-only Track, invalid cash KV, quota failure; no schema/migration or old-template rewrite. |
 | Real GUI final pass | New seed → chat cash → numeric row/weight/total → add security → replace cash → refresh. Compare full Report/layout, transaction rows and unrelated Track records before/after. |
 
@@ -273,8 +312,7 @@ Cargo target during this design phase. Root owns any later real chat/service use
 
 - Approve the two cash tools, separate KV/source names and explicit-only new seed
   adoption; independently verify the bounded quota increase and refusal coverage.
-- Cash input precision currently follows existing finite-number storage and
-  cent valuation. Decide whether to reject sub-cent fiat inputs or retain their
-  precision explicitly; never silently round the authoritative saved balance.
+- Verify the owner-decided whole-cent input rule and public-cent sum/weight
+  arithmetic with the stated decimal, exponent, overflow and small-FX fixtures.
 - Confirm snapshot-value/ABA semantics and the short commit barrier, including
   no false success after indeterminate writes and measured local callback cost.
