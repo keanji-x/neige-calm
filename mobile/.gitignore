@@ -1,0 +1,19 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/schemas/
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/.idea/
+src-tauri/gen/android/**/build/
+src-tauri/gen/android/local.properties
+src-tauri/gen/android/app/src/main/jniLibs/
+test-results/
+playwright-report/
+artifacts/
+*.local.json
+
+# The icon generator also emits assets for platforms this Android client does not ship.
+src-tauri/icons/ios/
+src-tauri/icons/icon.icns
+src-tauri/icons/icon.ico
+src-tauri/icons/StoreLogo.png
+src-tauri/icons/Square*Logo.png
