@@ -18,7 +18,8 @@ pub(crate) struct Acceptance {
     pub review: ReviewEvidence,
 }
 
-/// Only CardDecisionSink's Planner verdict transaction calls this before appending.
+/// Read-only acceptance preflight, shared by Planner verdict admission and R2 briefings.
+/// Only CardDecisionSink appends the resulting event and records decision provenance.
 pub(crate) async fn prepare_verdict_tx(
     tx: &mut Tx<'_>,
     track: &str,

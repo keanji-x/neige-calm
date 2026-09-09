@@ -93,3 +93,13 @@ pub async fn candidate_review_notice_relevant(
 ) -> crate::error::Result<bool> {
     crate::isolated_codex::settled::relevant(repo, track, task, operation).await
 }
+
+/// Exercise the actual transaction-backed settlement reader without turn scheduling.
+pub async fn candidate_review_notice_observation(
+    repo: &dyn crate::db::RepoEventWrite,
+    track: &crate::ids::TrackId,
+    task: &str,
+    operation: &str,
+) -> crate::error::Result<Option<crate::harness::Observation>> {
+    crate::isolated_codex::settled::review_observation(repo, track, task, operation).await
+}
