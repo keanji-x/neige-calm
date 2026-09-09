@@ -6,7 +6,6 @@ on:
   push:
     branches: [main]
     paths: ['mobile/**', '.github/workflows/mobile.yml', 'rust-toolchain.toml']
-  workflow_dispatch:
 
 permissions:
   contents: read
