@@ -32,6 +32,9 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   // calm-server/routes/task_artifacts.rs is outside calm-types' wire generator;
   // core/domain/task-artifact-file.ts owns the strict response decoder (#1501).
   'TaskArtifactFileResponse',
+  // calm-server/routes/track_recipes.rs is outside calm-types' wire generator;
+  // core/domain/recipe-preview.ts decodes this response via readReportPayload (#1595).
+  'RecipePreviewResponse',
   'ViewCatalogEntry', 'TrackBacklinksResponse', 'TrackDetail', 'TrackFsContent', 'TrackFsEntry',
   'TrackReportReadResponse', 'TrackTemplate',
 ]);
@@ -192,7 +195,7 @@ describe('generated OpenAPI integrity', () => {
       .toThrow('operation has no responses');
   });
 
-  it.each(['StartIsolatedTaskResponse', 'TaskAttemptReportResponse', 'TaskArtifactFileResponse'])(
+  it.each(['StartIsolatedTaskResponse', 'TaskAttemptReportResponse', 'TaskArtifactFileResponse', 'RecipePreviewResponse'])(
     'accepts only the exact server-local %s response exception', (name) => {
       const responseDocument = (schemaName: string) => ({
         paths: {

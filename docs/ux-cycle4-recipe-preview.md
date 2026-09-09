@@ -56,11 +56,20 @@ Final acceptance of `30e489bde`:
   archive: 23/23 passed. Their independent frontend, browser and capability
   checks also passed. The archive SHA256 is
   `85c24fb1d361f1663a9b641b1e3e67a52edf434fd2e4cd6efd8a11e990ba22b6`.
-- Author gates passed: 3113 frontend tests (one existing skip), 415 browser tests,
-  lint/build, both real API generators, generated-consumer typechecks, and final
-  quick Rust preflight with no OpenAPI drift. A lazy-chart browser assertion
-  now waits up to five seconds; its assertion and production behavior were
-  unchanged, and the changed case was independently rerun.
+- The author ran 3113 frontend tests (one existing skip) before API generation.
+  After both real generators, 99 API/domain/router regressions, consumer
+  typechecks, lint/build and quick Rust preflight passed, with no OpenAPI drift.
+  The complete frontend suite and its OpenAPI wire-coverage guard were not rerun
+  after generation. Cycle 5's complete suite exposed that gap: the server-local
+  RecipePreviewResponse lacked its required exact response exception. A separate
+  validation correction registers that DTO under the guard's existing rule,
+  documents its actual core/domain/recipe-preview.ts decoder and checks both the
+  exact name and a rejected Unexpected suffix. The validator, schema and
+  generators are unchanged; this was a missed post-generation gate, not a new
+  research-link regression.
+  The 415 browser tests passed. A lazy-chart assertion now waits up to five
+  seconds; its assertion and production behavior were unchanged, and the changed
+  case was independently rerun.
 - Five mutation checks produced exactly the predicted failures: preview-mode
   capability protection (three), Edit-draft protection (one), response identity
   validation (three), saved revision validation (one), and compiled block output
