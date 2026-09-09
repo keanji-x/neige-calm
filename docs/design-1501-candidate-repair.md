@@ -1,6 +1,6 @@
 # B: one rejected-candidate repair and renewed delivery
 
-Status: approved implementation scope; behavior is not yet implemented. Baseline: 00851939d.
+Status: implemented in [#1596](https://github.com/keanji-x/neige-calm/pull/1596), with two independent final reviews, passing PR CI and a verified five-task native repair/delivery experiment. Design baseline: 00851939d.
 Related: #1501, A1 candidate verification, A2 candidate review, #1594 semantic dispatch.
 
 ## Outcome and scope
