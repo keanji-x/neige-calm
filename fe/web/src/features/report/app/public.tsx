@@ -43,8 +43,13 @@ function isSameOrigin(src: string): boolean {
   }
 }
 
-export function ReportAppBlock({ payload }: { payload: AppBlockPayload }) {
+export function ReportAppBlock({ payload, load = true }: { payload: AppBlockPayload; load?: boolean }) {
   const title = payload.title != null && payload.title.trim() !== '' ? payload.title : payload.src;
+
+  if (!load) return <figure className={styles.figure}>
+    <div className={styles.refused} style={{ minBlockSize: clampHeight(payload.height) }} role="note">嵌入应用在此预览中不加载。</div>
+    <figcaption className={styles.caption}>{title}</figcaption>
+  </figure>;
 
   if (!isSameOrigin(payload.src)) {
     return (

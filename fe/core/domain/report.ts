@@ -289,6 +289,11 @@ export const trackReportPayloadSchema = z.object({
   blocks: z.unknown().nullish(),
 });
 
+/** A compiled response always carries both projections; no legacy defaults. */
+export const compiledReportPayloadSchema = z.object({
+  summary: z.string(), body: z.string(), blocks: z.array(blockWireSchema),
+});
+
 export type TrackReport = Readonly<{
   summary: string;
   /** Markdown source — the flat projection, and the only content a v1 row has. */
@@ -308,7 +313,12 @@ export type TrackReport = Readonly<{
 export function readTrackReport(cards: readonly CardWire[]): TrackReport | null {
   const card = cards.find((candidate) => candidate.kind === TRACK_REPORT_CARD_KIND);
   if (card === undefined) return null;
-  const parsed = trackReportPayloadSchema.safeParse(card.payload);
+  return readReportPayload(card.payload);
+}
+
+/** Decode a report projection directly, without inventing a carrier Card. */
+export function readReportPayload(payload: unknown): TrackReport | null {
+  const parsed = trackReportPayloadSchema.safeParse(payload);
   if (!parsed.success) return null;
   const summary = parsed.data.summary.trim();
   const body = parsed.data.body.trim();

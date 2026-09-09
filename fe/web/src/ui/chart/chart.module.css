@@ -13,4 +13,5 @@
   .legend strong { font-weight: 500; font-variant-numeric: tabular-nums; }
   .tooltip { display: grid; gap: var(--space-1); padding: var(--space-3); border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-card); color: var(--text); font-size: var(--text-xs); box-shadow: var(--shadow-float); }
   .notice { color: var(--text-2); font-size: var(--text-base); padding-block: var(--space-8); }
+  .placeholder { margin: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; min-inline-size: 0; color: var(--text-2); font-size: var(--text-xs); }
 }

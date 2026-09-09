@@ -32,13 +32,19 @@ describe('the recipe body editor in a browser', () => {
     /* Typed by its parameter rather than by a cast on `mock.calls`: the draft
        is the assertion's subject, and an `as` there would let the shape drift
        without the test noticing. `draft` is read below, so nothing is unused. */
-    const onWrite = vi.fn((draft: RecipeDraft) =>
-      Promise.resolve({ kind: 'saved' as const, recipe: { ...RECIPE, body: draft.body } }));
+    let saved = RECIPE;
+    const onWrite = vi.fn((draft: RecipeDraft) => {
+      saved = { ...RECIPE, body: draft.body, revision: 4 };
+      return Promise.resolve({ kind: 'saved' as const, recipe: saved });
+    });
     render(
       <RecipeEditor
         recipe={RECIPE}
         theme="light"
         onWrite={onWrite}
+        onPreview={() => Promise.resolve({ kind: 'ready', preview: { id: saved.id, revision: saved.revision,
+          report: { summary: saved.title, body: saved.body, blocks: [{ id: 'body', kind: 'prose', payload: { markdown: saved.body } }] },
+        } })}
         onDelete={null}
         onClose={() => {}}
         onCreated={null}

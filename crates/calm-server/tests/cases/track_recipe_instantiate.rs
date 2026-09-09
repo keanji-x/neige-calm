@@ -1224,3 +1224,6 @@ async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
 
 #[path = "track_recipe_layout.rs"]
 mod layout;
+
+#[path = "track_recipe_preview.rs"]
+mod preview;

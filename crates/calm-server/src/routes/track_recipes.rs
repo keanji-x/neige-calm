@@ -43,15 +43,15 @@ use crate::state::{AppState, RouteState};
 use crate::task_privilege::normalize_task_privilege_fields;
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::get,
 };
 use calm_types::model::{NewTrackRecipe, TrackRecipe};
 use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -60,6 +60,61 @@ pub fn router() -> Router<AppState> {
             "/api/track-recipes/{id}",
             get(get_recipe).put(update_recipe).delete(delete_recipe),
         )
+        .route("/api/track-recipes/{id}/preview", get(preview_recipe))
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RecipePreviewResponse {
+    pub id: String,
+    pub revision: i64,
+    pub payload: crate::track_report::TrackReportPayload,
+}
+
+#[derive(Deserialize, IntoParams)]
+pub struct RecipePreviewQuery {
+    /// Refuse to preview a different saved revision than the editor displays.
+    pub if_revision: Option<i64>,
+}
+
+#[utoipa::path(
+    get, path = "/api/track-recipes/{id}/preview", tag = "track-recipes",
+    params(("id" = String, Path, description = "Saved recipe id"), RecipePreviewQuery),
+    responses(
+        (status = 200, description = "Compiled saved report; no runtime state is created", body = RecipePreviewResponse),
+        (status = 400, description = "Stored recipe content is invalid or unsupported", body = ErrorBody),
+        (status = 404, description = "No such recipe", body = ErrorBody),
+        (status = 409, description = "Saved revision differs from if_revision", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn preview_recipe(
+    State(s): State<RouteState>,
+    Path(id): Path<String>,
+    Query(query): Query<RecipePreviewQuery>,
+) -> Result<Json<RecipePreviewResponse>> {
+    // One saved row owns the title, body and revision. Never re-read one half
+    // after compiling the other, and never create a temporary Track to render it.
+    let recipe = s
+        .repo
+        .track_recipe_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("track recipe {id}")))?;
+    if query
+        .if_revision
+        .is_some_and(|revision| revision != recipe.revision)
+    {
+        return Err(CalmError::Conflict(
+            "track recipe changed since it was opened".into(),
+        ));
+    }
+    validate_title(&recipe.title)?;
+    validate_recipe_body(&recipe.body)?;
+    let payload = super::tracks::preview_recipe_report(&recipe.id, recipe.title, recipe.body)?;
+    Ok(Json(RecipePreviewResponse {
+        id: recipe.id,
+        revision: recipe.revision,
+        payload,
+    }))
 }
 
 /// Bring a body into the canonical shape a recipe is allowed to hold.

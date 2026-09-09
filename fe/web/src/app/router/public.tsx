@@ -87,7 +87,7 @@ import {
   modelCatalogQueryOptions,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
   usePlannerMutations, useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
-  useTrackConversationMutations, useTrackMutations, useTrackRecipeMutations, useTrackRecipes,
+  useTrackConversationMutations, useTrackMutations, useTrackRecipeMutations, useTrackRecipes, useRecipePreview,
   useWorkspace,
   trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
   trackTaskVerdictsQueryOptions,
@@ -97,6 +97,7 @@ import { NewTrackDraftProvider } from './new-track-drafts.tsx';
 import {
   RecipesPage, type RecipeDraft, type RecipeWriteOutcome,
 } from '../../features/report/recipe/public.tsx';
+import type { RecipePreviewOutcome } from '../../features/report/recipe/preview.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, type UiPreferences } from '../providers/ui-preferences.tsx';
 import { AppShell, useOpenMobileSection } from '../shell/public.tsx';
@@ -2602,6 +2603,15 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
 function RecipesRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const recipes = useTrackRecipes(transport, unauthorized);
   const mutations = useTrackRecipeMutations(transport, unauthorized);
+  const readPreview = useRecipePreview(transport, unauthorized);
+  const preview = useCallback(async (id: string, revision: number, signal: AbortSignal): Promise<RecipePreviewOutcome> => {
+    try {
+      return { kind: 'ready', preview: await readPreview(id, revision, signal) };
+    } catch (error) {
+      if (error instanceof ApiError && error.failure.kind === 'http' && error.failure.status === 409) return { kind: 'conflict' };
+      return { kind: 'failed', message: error instanceof Error ? error.message : '无法读取模板预览。' };
+    }
+  }, [readPreview]);
   const { resolved } = useTheme();
 
   const write = async (draft: RecipeDraft, recipeId: string | null): Promise<RecipeWriteOutcome> => {
@@ -2632,6 +2642,7 @@ function RecipesRoute({ transport, unauthorized }: { transport: ApiTransportPort
       theme={resolved}
       onWrite={write}
       onDelete={mutations.remove}
+      onPreview={preview}
     />
   );
 }

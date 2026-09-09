@@ -46,6 +46,8 @@ import { ReportTaskBlock } from '../task/public.tsx';
 import styles from './document.module.css';
 
 export type ReportDocumentProps = Readonly<{
+  /** Saved-definition view: no external context, execution or embedded apps. */
+  mode?: 'document' | 'preview';
   /** The track's report. `null` when it has none. */
   report: TrackReport | null;
   /** What the empty state should offer, which differs per route. */
@@ -88,11 +90,17 @@ export type ReportDocumentProps = Readonly<{
  * That keeps this surface consistent with every other one in the app rather
  * than making the document the single place a native link exists.
  */
-export function ReportDocument({
-  report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, fileRoot, fileBasePath,
-  resolveLiveTable,
-  arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
-}: ReportDocumentProps) {
+export function ReportDocument(props: ReportDocumentProps) {
+  const allowApps = props.mode !== 'preview';
+  // Preview capabilities are enforced here, even if a caller accidentally
+  // supplies a live Track context. The saved report is the only input retained.
+  const {
+    report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, fileRoot, fileBasePath,
+    resolveLiveTable, arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
+  } = allowApps ? props : { ...props, rail: undefined, byline: undefined, backlinkCounts: undefined,
+    onOpenLink: undefined, onOpenFileLink: undefined, fileRoot: undefined, fileBasePath: undefined,
+    resolveLiveTable: undefined, arrivalAnchorId: undefined, taskVerdicts: undefined, taskRows: undefined,
+    renderTaskExecution: undefined };
   useEffect(() => {
     if (arrivalAnchorId === null || arrivalAnchorId === undefined) return;
     revealReportAnchor(arrivalAnchorId);
@@ -157,6 +165,7 @@ export function ReportDocument({
                 <BlockSlot
                   key={block.id}
                   block={block}
+                  allowApps={allowApps}
                   backlinks={backlinkCounts?.get(block.id) ?? 0}
                   onOpenLink={onOpenLink}
                   onOpenFileLink={onOpenFileLink}
@@ -169,7 +178,7 @@ export function ReportDocument({
                   declared no tasks has no machinery to account for, and a
                   permanent empty appendix would make that look like a gap. */}
               {processBlocks.length > 0 && (
-                <ReportReference blocks={processBlocks} backlinkCounts={backlinkCounts}
+                <ReportReference blocks={processBlocks} allowApps={allowApps} backlinkCounts={backlinkCounts}
                   tasks={taskRows ?? deriveReportTasks(report.blocks, taskVerdicts)} renderTaskExecution={renderTaskExecution} />
               )}
             </>
@@ -213,7 +222,8 @@ function isProcessBlock(block: ReportBlock): boolean {
  * lands inside before it measures where to scroll, so arriving here unfolds
  * the section and the row together.
  */
-function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }: {
+function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution, allowApps }: {
+  allowApps: boolean;
   blocks: readonly ReportBlock[];
   backlinkCounts?: ReadonlyMap<string, number>;
   tasks: readonly ReportTaskRow[];
@@ -261,7 +271,7 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
           const backlinks = backlinkCounts?.get(block.id) ?? 0;
           return (
             <div key={block.id} className={styles.referenceItem} id={block.id}>
-              <BlockBody block={block} task={tasksByBlock.get(block.id)} renderTaskExecution={renderTaskExecution} />
+              <BlockBody block={block} task={tasksByBlock.get(block.id)} renderTaskExecution={renderTaskExecution} allowApps={allowApps} />
               {backlinks > 0 && (
                 <span
                   className={styles.referenceSidenote}
@@ -286,8 +296,9 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
  * each renderer having to remember to carry one.
  */
 function BlockSlot({
-  block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fileBasePath, resolveLiveTable,
+  block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fileBasePath, resolveLiveTable, allowApps,
 }: {
+  allowApps: boolean;
   block: ReportBlock;
   backlinks: number;
   onOpenLink?: (target: ReportLinkTarget) => void;
@@ -308,7 +319,7 @@ function BlockSlot({
               fileRoot={fileRoot}
               fileBasePath={fileBasePath}
             />
-          : <BlockBody block={block} resolveLiveTable={resolveLiveTable} onOpenLink={onOpenLink} />}
+          : <BlockBody block={block} resolveLiveTable={resolveLiveTable} onOpenLink={onOpenLink} allowApps={allowApps} />}
       </div>
       {backlinks > 0 && (
         // In the trailing gutter, aligned to the block's first line. Inside the
@@ -324,7 +335,8 @@ function BlockSlot({
 
 /** One bad block may not cost the page: an unknown kind, or a known kind whose
  *  payload did not parse, degrades to one line and the document goes on. */
-function BlockBody({ block, task, renderTaskExecution, resolveLiveTable, onOpenLink }: {
+function BlockBody({ block, task, renderTaskExecution, resolveLiveTable, onOpenLink, allowApps }: {
+  allowApps: boolean;
   block: ReportBlock; task?: ReportTaskRow; renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
   resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
   onOpenLink?: ReportDocumentProps['onOpenLink'];
@@ -334,7 +346,7 @@ function BlockBody({ block, task, renderTaskExecution, resolveLiveTable, onOpenL
     case 'layout': return <ReportLayoutBlock payload={block.payload} resolveLive={resolveLiveTable} onOpenLink={onOpenLink} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
     case 'task': return <ReportTaskBlock payload={block.payload} blockId={block.id} task={task} renderExecution={renderTaskExecution} />;
-    case 'app': return <ReportAppBlock payload={block.payload} />;
+    case 'app': return <ReportAppBlock payload={block.payload} load={allowApps} />;
     case 'unsupported':
       return (
         <div className={styles.unsupported} role="note">

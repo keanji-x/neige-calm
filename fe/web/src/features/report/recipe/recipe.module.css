@@ -103,5 +103,7 @@
 
   .rendered {
     margin: 0;
+    --document-start: 0px;
+    --document-measure: 100%;
   }
 }

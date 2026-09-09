@@ -6,9 +6,8 @@
 //
 // ## Why it lives in `features/report/`
 //
-// The "rendered body" half of this screen is `ProseBlock` from
-// `../document/public.tsx` — `core/markdown`'s `parse` plus
-// `sanitizeAstPolicy`, the exact picture a recipe view wants. Two rules
+// The rendered half uses the native ReportDocument over a server-compiled
+// saved projection. There is no client fence parser or duplicate renderer. Two rules
 // bracket the placement and together they leave one option:
 //
 //   * `features-no-cross-domain` (`.dependency-cruiser.cjs`) forbids any other
@@ -54,8 +53,8 @@
 // the response makes the rewrite the thing they see the moment it happens.
 //
 // That is why `RecipeEditor` holds the loaded row in state and replaces it
-// with the value the save resolved to, rather than reading a prop the list
-// happens to refetch.
+// with the value the save resolved to. A strictly newer list row may advance
+// the saved view, but never replace an open draft or its revision.
 //
 // ## Conflicts: 409, and the draft survives
 //
@@ -70,7 +69,7 @@
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { TextInput } from '@astryxdesign/core/TextInput';
-import { useId } from 'react';
+import { useEffect, useId } from 'react';
 
 import type { TrackRecipe } from '../../../../../core/domain/track.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
@@ -78,7 +77,7 @@ import { useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { RecipeBodyEditor, type RecipeEditorTheme } from './body-editor.tsx';
 import portfolioRecipeBody from './examples/portfolio.md?raw';
-import { ProseBlock } from '../document/public.tsx';
+import { RecipePreview, type RecipePreviewLoader } from './preview.tsx';
 import styles from './recipe.module.css';
 
 export type { RecipeEditorTheme };
@@ -135,6 +134,7 @@ export type RecipesPageProps = Readonly<{
   theme: RecipeEditorTheme;
   onWrite: (draft: RecipeDraft, recipeId: string | null) => Promise<RecipeWriteOutcome>;
   onDelete: (recipeId: string) => Promise<void>;
+  onPreview: RecipePreviewLoader;
 }>;
 
 /**
@@ -145,7 +145,7 @@ export type RecipesPageProps = Readonly<{
  * artefact, not a thing you send someone a link to. The moment that changes,
  * `open` becomes a route parameter and nothing else here moves.
  */
-export function RecipesPage({ recipes, loaded, error, theme, onWrite, onDelete }: RecipesPageProps) {
+export function RecipesPage({ recipes, loaded, error, theme, onWrite, onDelete, onPreview }: RecipesPageProps) {
   /** `null` = the list. `''` = a recipe being composed that has no row yet. */
   const [open, setOpen] = useState<string | null>(null);
   const [initialDraft, setInitialDraft] = useState<Readonly<{ title: string; body: string }> | undefined>();
@@ -176,6 +176,7 @@ export function RecipesPage({ recipes, loaded, error, theme, onWrite, onDelete }
       <RecipeEditor
         recipe={null}
         initialDraft={initialDraft}
+        onPreview={onPreview}
         theme={theme}
         onWrite={(draft) => onWrite(draft, null)}
         onDelete={null}
@@ -188,13 +189,11 @@ export function RecipesPage({ recipes, loaded, error, theme, onWrite, onDelete }
   if (current !== undefined) {
     return (
       <RecipeEditor
-        /* Keyed by id so switching recipes builds a fresh editor. Without it
-           the `current` state below would keep the previously opened row —
-           the editor deliberately does not follow its `recipe` prop after
-           mount, because following it is how a save response gets overwritten
-           by the list's refetch. */
+        /* Switching recipes resets editor state; newer revisions of the same
+           recipe advance the saved view only while outside Edit. */
         key={current.id}
         recipe={current}
+        onPreview={onPreview}
         theme={theme}
         onWrite={(draft) => onWrite(draft, current.id)}
         onDelete={() => onDelete(current.id)}
@@ -251,13 +250,13 @@ export function RecipesPage({ recipes, loaded, error, theme, onWrite, onDelete }
 /**
  * One recipe: rendered, or open for editing.
  *
- * `current` is the row this editor is showing, seeded from the prop **once**
- * and thereafter replaced only by what a save resolved to. That is the whole
- * post-save contract of this module: see the file header.
+ * Save responses seed the view; a strictly newer server row may advance it
+ * only outside Edit. A draft keeps its original revision until save or cancel.
  */
-export function RecipeEditor({ recipe, initialDraft, theme, onWrite, onDelete, onClose, onCreated }: Readonly<{
+export function RecipeEditor({ recipe, initialDraft, theme, onWrite, onDelete, onClose, onCreated, onPreview }: Readonly<{
   /** `null` composes a recipe that has no row yet. */
   recipe: TrackRecipe | null;
+  onPreview: RecipePreviewLoader;
   initialDraft?: Readonly<{ title: string; body: string }>;
   theme: RecipeEditorTheme;
   onWrite: (draft: RecipeDraft) => Promise<RecipeWriteOutcome>;
@@ -275,6 +274,17 @@ export function RecipeEditor({ recipe, initialDraft, theme, onWrite, onDelete, o
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  // Adopt only a strictly newer saved row, and never while editing. This
+  // resolves preview conflicts without letting a stale list undo Save or
+  // replacing the revision/body underlying an unsaved draft.
+  useEffect(() => {
+    if (!editing && recipe !== null && current !== null && recipe.id === current.id && recipe.revision > current.revision) {
+      setCurrent(recipe);
+      setTitle(recipe.title);
+      setBody(recipe.body);
+    }
+  }, [recipe, current, editing, setCurrent, setTitle, setBody]);
+
   /* The delete runs through the shared confirm/feedback primitive rather than
      `onDelete().then(onClose)`: a rejected delete has to be *said*. Closing
      first and swallowing the rejection would leave the reader on a list still
@@ -401,12 +411,9 @@ export function RecipeEditor({ recipe, initialDraft, theme, onWrite, onDelete, o
           </div>
         )
         : (
-          <article className={`calm-prose ${styles.rendered}`} data-nc-recipe-rendered="">
-            {/* The server's body — see the file header. `blockId` is `null`
-                because a recipe has no block ids to anchor to: it is not a
-                track report and nothing deep-links into it. */}
-            <ProseBlock markdown={current?.body ?? ''} blockId={null} />
-          </article>
+          <div className={styles.rendered} data-nc-recipe-rendered="">
+            {current !== null && <RecipePreview key={`${current.id}:${current.revision}`} recipe={current} load={onPreview}/>}
+          </div>
         )}
 
       {onDelete !== null && (

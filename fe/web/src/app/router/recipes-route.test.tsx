@@ -74,7 +74,7 @@ type Options = Readonly<{
    * refetch that write queued lands. `recipes` is the constant-answer form of
    * the same thing; a test gives one or the other.
    */
-  recipeList?: (call: number) => ApiTransportResponse;
+  recipeList?: (call: number) => ApiTransportResponse | Promise<ApiTransportResponse>;
   templates?: unknown;
   /** What `PUT /api/track-recipes/{id}` answers. */
   put?: ApiTransportResponse;
@@ -82,28 +82,58 @@ type Options = Readonly<{
   post?: ApiTransportResponse;
   /** What `DELETE /api/track-recipes/{id}` answers. */
   remove?: ApiTransportResponse;
+  /** Server-compiled snapshot; structured preview tests supply it explicitly. */
+  preview?: ApiTransportResponse | ((request: ApiRequest) => ApiTransportResponse | Promise<ApiTransportResponse>);
 }>;
 
 function harness(options: Options = {}) {
   const sent: ApiRequest[] = [];
   let listReads = 0;
+  const saved = new Map<string, { id: string; title: string; body: string; revision: number }>();
+  const remember = (value: unknown) => {
+    if (value !== null && typeof value === 'object' && 'id' in value && typeof value.id === 'string'
+      && 'title' in value && typeof value.title === 'string' && 'body' in value && typeof value.body === 'string'
+      && 'revision' in value && typeof value.revision === 'number') {
+      const previous = saved.get(value.id);
+      if (previous === undefined || previous.revision <= value.revision) saved.set(value.id, { id: value.id, title: value.title, body: value.body, revision: value.revision });
+    }
+  };
   const transport: ApiTransportPort = {
     send(request: ApiRequest): Promise<ApiTransportResponse> {
       sent.push(request);
+      if (request.method === 'GET' && request.path.includes('/preview?')) {
+        if (options.preview !== undefined) return Promise.resolve(typeof options.preview === 'function' ? options.preview(request) : options.preview);
+        const url = new URL(request.path, 'http://fixture.local');
+        const recipe = saved.get(decodeURIComponent(url.pathname.split('/')[3]));
+        if (recipe === undefined) return Promise.resolve({ status: 404, statusText: 'Not Found', body: { error: 'Recipe gone' } });
+        if (Number(url.searchParams.get('if_revision')) !== recipe.revision) return Promise.resolve({ status: 409, statusText: 'Conflict', body: { error: 'Recipe changed' } });
+        // Existing cases use prose-only bodies. Structured cases provide an
+        // explicit compiled response; this is not a fence parser.
+        return Promise.resolve({ status: 200, statusText: 'OK', body: { id: recipe.id, revision: recipe.revision,
+          payload: { summary: recipe.title, body: recipe.body, blocks: [{ id: `body-${recipe.revision}`, kind: 'prose', payload: { markdown: recipe.body } }] },
+        } });
+      }
       if (request.method === 'PUT' && request.path.startsWith('/api/track-recipes/')) {
-        return Promise.resolve(options.put ?? { status: 200, statusText: 'OK', body: RECIPE });
+        const response = options.put ?? { status: 200, statusText: 'OK', body: RECIPE };
+        if (response.status === 200) remember(response.body);
+        return Promise.resolve(response);
       }
       if (request.method === 'DELETE' && request.path.startsWith('/api/track-recipes/')) {
         return Promise.resolve(options.remove ?? { status: 204, statusText: 'No Content', body: null });
       }
       if (request.method === 'POST' && request.path === '/api/track-recipes') {
-        return Promise.resolve(options.post ?? { status: 200, statusText: 'OK', body: RECIPE });
+        const response = options.post ?? { status: 200, statusText: 'OK', body: RECIPE };
+        if (response.status === 200 || response.status === 201) remember(response.body);
+        return Promise.resolve(response);
       }
       if (request.path === '/api/track-recipes') {
         const call = listReads;
         listReads += 1;
-        if (options.recipeList !== undefined) return Promise.resolve(options.recipeList(call));
-        return Promise.resolve({ status: 200, statusText: 'OK', body: options.recipes ?? [RECIPE] });
+        return Promise.resolve(options.recipeList?.(call) ?? { status: 200, statusText: 'OK', body: options.recipes ?? [RECIPE] })
+          .then(response => {
+            if (response.status === 200 && Array.isArray(response.body)) response.body.forEach(remember);
+            return response;
+          });
       }
       if (request.path === '/api/track-templates') {
         return Promise.resolve({ status: 200, statusText: 'OK', body: options.templates ?? [] });
@@ -168,6 +198,94 @@ const CREATED = {
 };
 
 const OK = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
+
+function prosePreview(recipe: typeof RECIPE) {
+  return OK({ id: recipe.id, revision: recipe.revision, payload: { summary: recipe.title, body: recipe.body,
+    blocks: [{ id: 'saved-prose', kind: 'prose', payload: { markdown: recipe.body } }],
+  } });
+}
+
+it('advances a preview conflict to the latest saved revision without reopening the editor', async () => {
+  const user = userEvent.setup();
+  const latest = { ...RECIPE, revision: 9, title: 'New saved title', body: 'Revision nine content.' };
+  const { sent } = atRecipes({ recipeList: call => OK(call === 0 ? [RECIPE] : [latest]),
+    preview: request => request.path.endsWith('=9') ? prosePreview(latest)
+      : { status: 409, statusText: 'Conflict', body: { error: 'Recipe changed' } },
+  });
+  await user.click(await screen.findByRole('button', { name: 'Ship checklist' }));
+  expect(await screen.findByRole('heading', { name: 'New saved title', level: 1 })).toBeTruthy();
+  expect(await screen.findByText('Revision nine content.')).toBeTruthy();
+  expect(sent.some(request => request.path.endsWith('/preview?if_revision=9'))).toBe(true);
+  expect(screen.queryByText(/请重试读取最新版本/)).toBeNull();
+});
+
+it('keeps the editing baseline when conflict refresh finishes after Edit was entered', async () => {
+  const user = userEvent.setup();
+  const latest = { ...RECIPE, revision: 9, title: 'New saved title', body: 'Revision nine content.' };
+  let finishList!: (response: ApiTransportResponse) => void;
+  const refreshed = new Promise<ApiTransportResponse>(resolve => { finishList = resolve; });
+  const { sent, client, listReads } = atRecipes({ recipeList: call => call === 0 ? OK([RECIPE]) : refreshed,
+    preview: request => request.path.endsWith('=9') ? prosePreview(latest)
+      : { status: 409, statusText: 'Conflict', body: { error: 'Recipe changed' } },
+    put: { status: 409, statusText: 'Conflict', body: { error: 'stale if_revision' } },
+  });
+  await user.click(await screen.findByRole('button', { name: 'Ship checklist' }));
+  await waitFor(() => expect(listReads()).toBeGreaterThan(1));
+  await user.click(screen.getByRole('button', { name: 'Edit' }));
+  const field = screen.getByRole('textbox', { name: BODY_FIELD });
+  await user.clear(field);
+  await user.type(field, 'Keep my unfinished draft.');
+  await act(async () => { finishList(OK([latest])); await refreshed; });
+  await waitFor(() => expect(client.getQueryData(queryKeys.trackRecipes())).toEqual([latest]));
+  expect(field).toHaveProperty('value', 'Keep my unfinished draft.');
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(lastPut(sent)?.body).toMatchObject({ if_revision: 7, body: 'Keep my unfinished draft.' }));
+  expect(field).toHaveProperty('value', 'Keep my unfinished draft.');
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(await screen.findByText('Revision nine content.')).toBeTruthy();
+});
+
+it('aborts a pending preview retry and preserves draft text and revision on Edit', async () => {
+  const user = userEvent.setup();
+  let retry = false;
+  const pending: { request: ApiRequest; resolve: (response: ApiTransportResponse) => void }[] = [];
+  const { sent } = atRecipes({ preview: request => retry
+    ? new Promise<ApiTransportResponse>(resolve => { pending.push({ request, resolve }); })
+    : { status: 503, statusText: 'Unavailable', body: { error: 'Preview temporarily unavailable' } },
+    put: { status: 409, statusText: 'Conflict', body: { error: 'stale if_revision' } },
+  });
+  await user.click(await screen.findByRole('button', { name: 'Ship checklist' }));
+  expect(await screen.findByText('Preview temporarily unavailable')).toBeTruthy();
+  retry = true;
+  await user.click(screen.getByRole('button', { name: '重试预览' }));
+  await waitFor(() => expect(pending.length).toBeGreaterThan(0));
+  await user.click(screen.getByRole('button', { name: 'Edit' }));
+  const field = screen.getByRole('textbox', { name: BODY_FIELD });
+  await user.clear(field);
+  await user.type(field, 'Draft while preview was loading.');
+  expect(pending.every(item => item.request.signal?.aborted)).toBe(true);
+  await act(async () => { pending.forEach(item => item.resolve(prosePreview(RECIPE))); await Promise.resolve(); });
+  expect(field).toHaveProperty('value', 'Draft while preview was loading.');
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(lastPut(sent)?.body).toMatchObject({ if_revision: 7, body: 'Draft while preview was loading.' }));
+});
+
+it('renders a saved recipe through its server-compiled native Report preview', async () => {
+  const user = userEvent.setup();
+  const layout = { version: 1, columns: 1, gap: 'normal', surface: 'plain', items: [{
+    kind: 'table', title: 'Saved table', span: 1, data: { rows: [] },
+    columns: [{ key: 'asset', label: 'Saved asset column', format: 'text', digits: 0 }],
+  }] };
+  const recipe = { ...RECIPE, body: `\`\`\`neige-block layout\n${JSON.stringify(layout)}\n\`\`\`\n` };
+  const { sent } = atRecipes({ recipes: [recipe], preview: OK({
+    id: recipe.id, revision: recipe.revision,
+    payload: { summary: recipe.title, body: recipe.body, blocks: [{ id: 'compiled-layout', rev: 1, kind: 'layout', payload: layout }] },
+  }) });
+  await user.click(await screen.findByRole('button', { name: 'Ship checklist' }));
+  expect(await screen.findByRole('columnheader', { name: 'Saved asset column' })).toBeTruthy();
+  expect(document.querySelector('[data-nc-recipe-rendered] pre')).toBeNull();
+  expect(sent.some(request => request.path === '/api/track-recipes/r-ship/preview?if_revision=7')).toBe(true);
+});
 
 /** Compose a recipe and save it. Leaves the screen wherever the save put it. */
 async function composeAndSave(user: ReturnType<typeof userEvent.setup>) {

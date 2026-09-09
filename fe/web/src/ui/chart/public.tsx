@@ -11,6 +11,7 @@ type Point = Readonly<{ x: number | string; value: number | null }>;
 export type ChartProps = Readonly<{
   kind: 'line' | 'donut'; label: string; points: readonly Point[]; color: string; height: number; unit: string;
   ranges?: readonly number[]; defaultRange?: number;
+  emptyMessage?: string;
 }>;
 
 function amount(value: number) {
@@ -20,7 +21,7 @@ function dateLabel(value: number, intraday: boolean) {
   return new Date(value).toISOString().slice(intraday ? 11 : 5, intraday ? 16 : 10);
 }
 
-export function Chart({ kind, label, points, color, height, unit, ranges, defaultRange }: ChartProps) {
+export function Chart({ kind, label, points, color, height, unit, ranges, defaultRange, emptyMessage }: ChartProps) {
   const gradient = `fill-${useId().replace(/:/g, '')}`;
   const [range, setRange] = useState(defaultRange);
   const [selected, setSelected] = useState<string | number | null>(null);
@@ -45,7 +46,10 @@ export function Chart({ kind, label, points, color, height, unit, ranges, defaul
         {ranges.map(days => <button key={days} type="button" aria-pressed={range === days} onClick={() => setRange(days)}>{days}天</button>)}
       </div>}
     </div>
-    {empty ? <p className={styles.notice} role="status">暂无足够数据。</p> :
+    {empty ? <figure className={styles.placeholder} style={{ blockSize: height }} aria-label={`${label} · ${kind === 'line' ? '折线图' : '环形图'}`}>
+      <figcaption>{kind === 'line' ? '折线图' : '环形图'}</figcaption>
+      <p className={styles.notice} role="status">{emptyMessage ?? '暂无足够数据。'}</p>
+    </figure> :
       <div className={kind === 'donut' ? styles.donut : styles.line}>
         <div className={styles.canvas} style={{ blockSize: height }} role="img" aria-label={label}>
           <ResponsiveContainer width="100%" height="100%" minWidth={0}>

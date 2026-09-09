@@ -25,9 +25,10 @@ function LayoutContent({ item, resolveLive, onOpenLink }: {
   const chart = item.kind === 'chart' ? layoutChartData(item, data) : null;
   return <>
     {item.kind === 'table' ? <LayoutTableContent item={item} data={data} onOpenLink={onOpenLink}/>
-        : chart?.kind === 'unavailable' ? <p role="status" className={styles.notice}>{chart.message}</p>
-          : chart?.kind === 'ready' ? <Suspense fallback={<p role="status" className={styles.notice}>正在加载图表…</p>}>
-            <Chart kind={item.chart} label={item.title || '图表'} points={chart.points} unit={chart.unit} color={item.color}
+        : chart !== null ? <Suspense fallback={<p role="status" className={styles.notice}>正在加载图表…</p>}>
+            <Chart kind={item.chart} label={item.title || '图表'} points={chart.kind === 'ready' ? chart.points : []}
+              unit={chart.kind === 'ready' ? chart.unit : item.unit?.equals ?? ''} color={item.color}
+              emptyMessage={chart.kind === 'unavailable' ? chart.message : undefined}
               height={item.height} ranges={item.ranges} defaultRange={item.defaultRange}/>
           </Suspense> : null}
     {data.caption !== '' && <p className={styles.caption}>{data.caption}</p>}

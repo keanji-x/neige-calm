@@ -4023,6 +4023,90 @@
         }
       }
     },
+    "/api/track-recipes/{id}/preview": {
+      "get": {
+        "tags": [
+          "track-recipes"
+        ],
+        "operationId": "preview_recipe",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Saved recipe id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "if_revision",
+            "in": "query",
+            "description": "Refuse to preview a different saved revision than the editor displays.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Compiled saved report; no runtime state is created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecipePreviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Stored recipe content is invalid or unsupported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such recipe",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Saved revision differs from if_revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/track-templates": {
       "get": {
         "tags": [
@@ -8758,6 +8842,26 @@
           "reasoning_effort": {
             "type": "string",
             "description": "A bare string, never a closed enum: codex's `ReasoningEffort` carries a\n`Custom(String)` variant and accepts any non-empty string on the wire."
+          }
+        }
+      },
+      "RecipePreviewResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "revision",
+          "payload"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/TrackReportPayload"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

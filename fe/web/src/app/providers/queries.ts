@@ -10,12 +10,13 @@
 import {
   onlineManager, useMutation, useQueries, useQuery, useQueryClient, type QueryClient,
 } from '@tanstack/react-query';
-import { useRef } from 'react';
+import { useCallback, useRef } from 'react';
 import { z } from 'zod';
 
 import { performApiRequest } from '../../../../core/api/client.ts';
 import type { ApiFailure, ApiOperation, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { recipePreviewOperation } from '../../../../core/domain/recipe-preview.ts';
 import {
   asFolderConflict, areaListOperation, areaCreationCapabilityOperation, createAreaOperation, deleteAreaOperation,
   newestArea, sortedAreas, toArea, updateAreaOperation, visibleAreas,
@@ -830,6 +831,21 @@ export function useTrackRecipes(transport: ApiTransportPort, unauthorized: Unaut
     error: query.isError ? 'Could not load your recipes.' : null,
     loaded: !query.isPending && !query.isError,
   };
+}
+
+/** Preview reads are scoped to the editor's saved revision, not a live Track. */
+export function useRecipePreview(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+  const client = useQueryClient();
+  return useCallback(async (id: string, revision: number, signal: AbortSignal) => {
+    try {
+      return await runOperation(transport, recipePreviewOperation(id, revision, signal), unauthorized);
+    } catch (error) {
+      if (!signal.aborted && error instanceof ApiError && error.failure.kind === 'http' && error.failure.status === 409) {
+        void client.invalidateQueries({ queryKey: queryKeys.trackRecipes() });
+      }
+      throw error;
+    }
+  }, [transport, unauthorized, client]);
 }
 
 export type TrackRecipeMutations = Readonly<{

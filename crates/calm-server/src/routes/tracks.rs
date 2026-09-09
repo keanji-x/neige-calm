@@ -972,6 +972,17 @@ pub(super) fn compile_template(template: &Template) -> Result<InitialReportSnaps
     prepare_initial_report_payload(template.key(), template.recipe())
 }
 
+/// Read-only projection through the same in-memory compiler used by Track
+/// instantiation. The preview consumer receives no task/runtime write handle.
+pub(super) fn preview_recipe_report(
+    id: &str,
+    title: String,
+    body: String,
+) -> Result<TrackReportPayload> {
+    prepare_initial_report_payload(id, TrackReportPayload::new(title, body))
+        .map(|snapshot| snapshot.payload)
+}
+
 /// The recipe-to-snapshot core, taking the payload rather than the key.
 ///
 /// Production reaches this only through [`prepare_template_report`], so it is

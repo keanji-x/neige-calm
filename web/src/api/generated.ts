@@ -1147,6 +1147,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/track-recipes/{id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["preview_recipe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/track-templates": {
         parameters: {
             query?: never;
@@ -2995,6 +3011,12 @@ export interface components {
              *     `Custom(String)` variant and accepts any non-empty string on the wire.
              */
             reasoning_effort: string;
+        };
+        RecipePreviewResponse: {
+            id: string;
+            payload: components["schemas"]["TrackReportPayload"];
+            /** Format: int64 */
+            revision: number;
         };
         /** @description A derived, addressable slice of a track report. */
         ReportBlock: {
@@ -7399,6 +7421,68 @@ export interface operations {
             };
             /** @description No such recipe */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    preview_recipe: {
+        parameters: {
+            query?: {
+                /** @description Refuse to preview a different saved revision than the editor displays. */
+                if_revision?: number | null;
+            };
+            header?: never;
+            path: {
+                /** @description Saved recipe id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Compiled saved report; no runtime state is created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecipePreviewResponse"];
+                };
+            };
+            /** @description Stored recipe content is invalid or unsupported */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description No such recipe */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Saved revision differs from if_revision */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
