@@ -81,12 +81,12 @@ pub(crate) async fn briefing_tx(tx: &mut Tx<'_>, task: &Task, id: &str) -> Resul
     };
     let binding = crate::file_delivery::candidate_input::load_tx(tx, &task.id).await?;
     let subject=binding.map(|(binding,_,_)|json!({"producer_attempt_id":binding.candidate.source.task_id,"publication_operation_id":binding.candidate.publication_operation_id,"verification_operation_id":binding.verification_operation_id}));
-    Ok(
-        json!({"review_attempt_id":task.id,"review_operation_id":id,"operation_state":outcome,
+    let mut briefing = json!({"review_attempt_id":task.id,"review_operation_id":id,"operation_state":outcome,
         "current_authority":reason.is_none() && outcome.is_some(),"authority_reason":reason,"subject":subject,
         "delivery":crate::file_delivery::view_tx(tx,task).await?,
-        "decision":"Read calm.plan.list for the exact machine, review and Operation outcomes. A successful settled review may now be considered for the producer's explicit calm.task.verdict; a failed Operation cannot qualify the candidate. Recheck current authority and all evidence. If delivery.repair exists, use its linked repair_key/review_key: this original R1 notice neither creates another round nor accepts C2. C2 needs its own fresh checks, settled complete R2 and explicit producer acceptance. Do not recover this Done Reviewer: settlement grants neither Recover nor code acceptance."}),
-    )
+        "decision":"Read calm.plan.list for the exact machine, review and Operation outcomes. A successful settled review may now be considered for the producer's explicit calm.task.verdict; a failed Operation cannot qualify the candidate. Recheck current authority and all evidence. If delivery.repair exists, use its linked repair_key/review_key: this original R1 notice neither creates another round nor accepts C2. C2 needs its own fresh checks, settled complete R2 and explicit producer acceptance. Do not recover this Done Reviewer: settlement grants neither Recover nor code acceptance."});
+    repair_acceptance::enrich_tx(tx, task, &mut briefing).await?;
+    Ok(briefing)
 }
 pub(crate) fn render(briefing: &Value) -> Result<String> {
     Ok(format!(
@@ -94,3 +94,6 @@ pub(crate) fn render(briefing: &Value) -> Result<String> {
         serde_json::to_string_pretty(briefing)?
     ))
 }
+
+#[path = "repair_acceptance.rs"]
+mod repair_acceptance;
