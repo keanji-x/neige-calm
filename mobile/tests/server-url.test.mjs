@@ -1,10 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { nextUrl } from '../www/server-url.js';
-import { httpOrigins } from '../www/server-config.js';
 
-test('allows only configured local HTTP origins and ports', () => {
-  for (const origin of httpOrigins) assert.equal(nextUrl(origin), `${origin}/next/`);
+test('default build rejects unconfigured HTTP origins and ports', () => {
   for (const input of ['http://192.0.2.20:4141', 'http://192.0.2.21:4140',
     'http://127.0.0.1:4141', 'http://example.com:4140', 'http://192.0.2.20.example.com:4140']) {
     assert.throws(() => nextUrl(input), Error, input);

@@ -60,8 +60,16 @@ regenerating it deliberately, preserve the cleartext/backup restrictions, Gradle
 worker limit, and MainActivity behavior. App icons come from
 `../fe/web/src/ui/brand/neige-mark.svg`; the bundled copy is `www/neige-mark.svg`.
 Regenerate icon assets with `npm run tauri -- icon www/neige-mark.svg`.
+The generator also emits iOS, macOS, and Windows icons; those unused platform
+assets are ignored. Keep the Android resources and PNG icons referenced by the
+Tauri configuration in version control.
 
 ## Verification
+
+The `Android client` workflow runs the profile tests, Chromium connection tests,
+and an ARM64 APK build on an ephemeral GitHub-hosted runner. Successful runs
+provide a debug APK and connection-page screenshot as a seven-day artifact.
+CI builds use the committed HTTPS-only profile and contain no private endpoints.
 
 ```sh
 npm test
