@@ -230,5 +230,4 @@ impl PairingState {
 }
 
 #[cfg(test)]
-#[path = "pairing_tests.rs"]
 mod tests;
