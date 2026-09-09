@@ -25,3 +25,39 @@ test('camera denial preserves manual connection', async ({ page }) => {
   await expect(page.getByLabel('服务器地址', { exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: '扫码连接' })).toBeEnabled();
 });
+
+test('keeps the cancellation control above the native camera preview', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__TAURI__ = { core: { invoke: async (command, options) => {
+      if (command.endsWith('request_permissions')) return { camera: 'granted' };
+      window.scanOptions = options;
+      return new Promise(() => {});
+    } } };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '扫码连接' }).click();
+  await expect(page.getByRole('button', { name: '取消扫码' })).toBeVisible();
+  expect(await page.evaluate(() => window.scanOptions.windowed)).toBe(true);
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+});
+
+test('cancel settles locally when native scan remains pending and ignores its late result', async ({ page }) => {
+  await page.addInitScript(() => {
+    let scans = 0;
+    window.__TAURI__ = { core: { invoke: async (command) => {
+      if (command.endsWith('request_permissions')) return { camera: 'granted' };
+      if (command.endsWith('|cancel')) return;
+      if (++scans === 1) return new Promise((resolve) => { window.finishOldScan = resolve; });
+      return { content: `https://new.example.ts.net/mobile/pair#v1.${'b'.repeat(64)}` };
+    } } };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '扫码连接' }).click();
+  await page.getByRole('button', { name: '取消扫码' }).click();
+  await expect(page.getByRole('button', { name: '扫码连接' })).toBeEnabled();
+  await expect(page.getByLabel('服务器地址', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '扫码连接' }).click();
+  await expect(page.getByRole('region', { name: '确认配对服务器' })).toContainText('new.example.ts.net');
+  await page.evaluate(() => window.finishOldScan({ content: `https://old.example.ts.net/mobile/pair#v1.${'a'.repeat(64)}` }));
+  await expect(page.getByRole('region', { name: '确认配对服务器' })).toContainText('new.example.ts.net');
+});
