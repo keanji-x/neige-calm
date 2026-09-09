@@ -5,6 +5,8 @@ const config = JSON.parse(await readFile(new URL('../src-tauri/tauri.conf.json',
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
   ['/app.js', ['app.js', 'text/javascript']],
+  ['/scanner.js', ['scanner.js', 'text/javascript']],
+  ['/pairing-url.js', ['pairing-url.js', 'text/javascript']],
   ['/server-url.js', ['server-url.js', 'text/javascript']],
   ['/server-config.js', ['server-config.js', 'text/javascript']],
   ['/style.css', ['style.css', 'text/css']],

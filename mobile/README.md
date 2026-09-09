@@ -1,6 +1,11 @@
 # Neige Calm Next for Android
 
 A Tauri 2 Android client for the existing Neige Calm **Next** app at `/next/`.
+Use **扫码连接** to scan a QR created in web Settings → Network → Mobile connection.
+Confirm the server hostname and compare the verification code on both screens;
+the owner approves the phone in the web page. The phone then signs in over HTTPS
+without a Tailscale app. See [server setup and scope](../docs/mobile-qr-pairing.md).
+
 The APK contains a connection page. Enter the HTTPS address of your Neige Calm
 server and sign in using the existing Next login. The server supplies the actual
 Next UI; the Linux server, workers, and Codex runtime continue running remotely.
@@ -93,6 +98,8 @@ release signing configuration. Never commit a signing key or password.
 ## Security and scope
 
 Remote pages receive no Tauri native capabilities or custom commands. Android
+camera access is granted only to the packaged launcher, when the user starts a
+scan. Permission refusal/cancellation preserves manual connection. Android
 cleartext traffic is restricted to the profile's explicit hosts; app backup is
 disabled, including for the test APK. The
 connection page's CSP is local to that page; the loaded server applies its own

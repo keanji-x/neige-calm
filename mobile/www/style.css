@@ -7,6 +7,7 @@
   -webkit-text-size-adjust: 100%;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; min-width: 280px; }
 main {
   max-width: 460px;
@@ -36,6 +37,10 @@ button {
 }
 button:active { background: #454385; }
 .footer { margin-top: 30px; text-align: center; }
+#scan-error { color: #ac3434; font-size: 13px; }
+.hint { color: #666773; font-size: 13px; margin-block: 20px; }
+#pair-host { overflow-wrap: anywhere; }
+#pair-cancel, #cancel-scan { margin-top: 10px; }
 @media (prefers-color-scheme: dark) {
   :root { color-scheme: dark; color: #efeff4; background: #1b1b21; }
   .intro, .eyebrow, #hint, .footer { color: #b5b4c1; }

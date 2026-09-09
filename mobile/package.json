@@ -9,10 +9,12 @@
     "android:init": "tauri android init",
     "android:apk": "tauri android build --debug --apk --target aarch64",
     "test": "node --test tests/*.test.mjs",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "test:pairing": "node tests/closed-loop.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "1.60.0",
     "@tauri-apps/cli": "^2.0.0",
-    "@playwright/test": "1.60.0"
+    "jsqr": "1.4.0"
   }
 }

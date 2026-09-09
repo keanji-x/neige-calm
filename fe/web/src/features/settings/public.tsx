@@ -395,6 +395,7 @@ export function GeneralPane({
 // ---------------------------------------------------------------------------
 
 export type NetworkPaneProps = Readonly<{
+  onOpenMobile: () => void;
   /** `undefined` means "still loading" — never render an empty form for it. */
   settings: Readonly<Record<string, string>> | undefined;
   loadError: string | null;
@@ -473,7 +474,7 @@ function useRetiringNotice(
 }
 
 export function NetworkPane({
-  settings, loadError, onSave, onRetryLoad, savedNoticeMs = SAVED_NOTICE_MS,
+  settings, loadError, onSave, onRetryLoad, onOpenMobile, savedNoticeMs = SAVED_NOTICE_MS,
 }: NetworkPaneProps) {
   const loaded = settings !== undefined;
   const incoming: Draft = {
@@ -718,13 +719,16 @@ export function NetworkPane({
   return (
     <SettingsPane
       title="Network"
-      lede="Proxies used when launching new agent cards. Changes save when you leave the field; running cards keep the proxy they started with."
+      lede="Connect your phone and configure proxies used when launching new agent cards. Proxy changes save when you leave the field."
     >
       {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
       {/* INV-SETTINGS-002 — a loading line, never an empty field: an empty form
           would let the reader save blanks over real values. */}
       {!loaded && loadError === null && <AstryxText as="p" color="secondary">Loading settings…</AstryxText>}
-      {loaded && <SettingsList>{PROXY_FIELDS.map((field) => proxyRow(field))}</SettingsList>}
+      {loaded && <SettingsList>
+        {PROXY_FIELDS.map((field) => proxyRow(field))}
+        <SettingRow title="Mobile connection" description="Pair your phone by scanning a QR code." onOpen={onOpenMobile} />
+      </SettingsList>}
     </SettingsPane>
   );
 }

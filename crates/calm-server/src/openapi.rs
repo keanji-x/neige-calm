@@ -71,6 +71,14 @@ use utoipa::OpenApi;
         description = "Wire-format contract between calm-server (Rust) and web-calm (TS). Source of truth for generated TypeScript types.",
     ),
     paths(
+        crate::mobile_access::routes::status,
+        crate::mobile_access::routes::enable,
+        crate::mobile_access::routes::disable,
+        crate::mobile_access::routes::create,
+        crate::mobile_access::routes::approve,
+        crate::mobile_access::routes::revoke,
+        crate::mobile_access::routes::claim,
+        crate::mobile_access::routes::redeem,
         // ---- areas ----
         crate::routes::areas::list_areas,
         crate::routes::areas::create_area,
@@ -184,6 +192,14 @@ use utoipa::OpenApi;
         crate::routes::version::get_version,
     ),
     components(schemas(
+        crate::mobile_access::MobileStatus,
+        calm_types::mobile_access::PendingPair,
+        calm_types::mobile_access::PairedDevice,
+        calm_types::mobile_access::PairingCreated,
+        calm_types::mobile_access::PairingClaim,
+        calm_types::mobile_access::PairingClaimed,
+        calm_types::mobile_access::PairingRedeem,
+        crate::mobile_access::routes::MobileAction,
         // domain models
         Area,
         AreaKind,

@@ -261,6 +261,7 @@ blake3 = "1.8"
 # Already in Cargo.lock (v0.1.3) through axum/hyper, so promoting it adds a
 # direct dependency, not a compilation unit.
 http-body-util = "0.1"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 # Plugin host (Slice B): unix-only — used by `plugin_host::process` to send a
 # real SIGTERM before falling back to SIGKILL. `tokio::process::Child::kill()`

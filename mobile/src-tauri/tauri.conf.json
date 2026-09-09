@@ -7,6 +7,7 @@
     "frontendDist": "../www"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Neige Calm",
@@ -17,7 +18,7 @@
       }
     ],
     "security": {
-      "capabilities": [],
+      "capabilities": ["launcher-camera"],
       "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
     }
   },

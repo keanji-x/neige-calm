@@ -37,6 +37,8 @@ mod frozen_gate_vectors_transport;
 mod head_schema_fixture;
 #[path = "cases/in_process_renderer_e2e.rs"]
 mod in_process_renderer_e2e;
+#[path = "cases/mobile_pairing.rs"]
+mod mobile_pairing;
 #[path = "cases/neige_cli_task_report.rs"]
 mod neige_cli_task_report;
 #[path = "cases/openapi.rs"]

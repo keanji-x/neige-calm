@@ -138,6 +138,28 @@ async fn main() -> anyhow::Result<()> {
     }
     let auth_state = AuthState::new(auth_config);
 
+    let _mobile_router = if let Some(path) = &cfg.mobile_access_config {
+        anyhow::ensure!(
+            !auth_state.config.dev_autologin,
+            "Mobile access cannot use dev autologin"
+        );
+        anyhow::ensure!(cfg.fe_dist.is_some(), "Mobile access requires --fe-dist");
+        let mobile_config = calm_server::mobile_access::funnel::FunnelConfig::load(path)?;
+        let public_router = Arc::new(mount_frontends(
+            routes::public_mobile_router(state.clone(), auth_state.clone()),
+            None,
+            cfg.fe_dist.as_deref(),
+        ));
+        auth_state
+            .mobile
+            .configure(mobile_config, public_router.clone())
+            .await;
+        Some(public_router)
+    } else {
+        None
+    };
+    let mobile_shutdown = auth_state.mobile.clone();
+
     let mut app = routes::application_router(state, auth_state).layer(cors);
 
     app = mount_frontends(app, cfg.web_dist.as_deref(), cfg.fe_dist.as_deref());
@@ -160,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
     // takeover (#953 re-stamp). This is why `SharedCodexAppServer` has no
     // `Drop` impl (#954) — one would fire right here, after serve returns,
     // and silently defeat takeover.
-    serve_until_shutdown(
+    let served = serve_until_shutdown(
         std::future::IntoFuture::into_future(
             axum::serve(
                 listener,
@@ -171,7 +193,17 @@ async fn main() -> anyhow::Result<()> {
         shutdown_signal(),
         SHUTDOWN_DRAIN_MAX,
     )
-    .await?;
+    .await;
+
+    // Keep total drain below neige-app's five-second stop grace. Parent-death
+    // ownership also kills the tunnel helper if shutdown is abrupt.
+    if !matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), mobile_shutdown.disable()).await,
+        Ok(Ok(()))
+    ) {
+        tracing::warn!("mobile ingress cleanup exceeded its shutdown window");
+    }
+    served?;
 
     Ok(())
 }

@@ -23,3 +23,6 @@ tauri = { version = "2.11.3", features = [] }
 [profile.dev]
 debug = 1
 incremental = false
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2"

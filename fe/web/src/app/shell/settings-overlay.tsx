@@ -46,6 +46,7 @@ import {
 } from '../providers/queries.ts';
 import { useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
 import { useTheme } from '../theme/public.tsx';
+import { MobileAccessHost } from './mobile-access-host.tsx';
 
 /**
  * Which pane the path asks for, or `null` when the reader is not in Settings.
@@ -146,10 +147,13 @@ function AppearancePaneHost() {
 }
 
 function NetworkPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
+  const [mobileOpen, setMobileOpen] = useState(false);
   const save = useSettingsMutation(transport, unauthorized);
   const settings = useQuery(settingsQueryOptions(transport, unauthorized));
+  if (mobileOpen) return <MobileAccessHost transport={transport} unauthorized={unauthorized} onBack={() => setMobileOpen(false)} />;
   return (
     <NetworkPane
+      onOpenMobile={() => setMobileOpen(true)}
       settings={settings.data?.settings}
       loadError={settings.error instanceof Error ? settings.error.message : null}
       onRetryLoad={() => { void settings.refetch(); }}

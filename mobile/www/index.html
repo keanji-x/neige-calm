@@ -7,6 +7,7 @@
     <title>Neige Calm</title>
     <link rel="stylesheet" href="./style.css">
     <script type="module" src="./app.js"></script>
+    <script type="module" src="./scanner.js"></script>
   </head>
   <body>
     <main>
@@ -14,6 +15,15 @@
       <p class="eyebrow">NEIGE CALM</p>
       <h1>你的工作，<br>随时继续。</h1>
       <p class="intro">连接你的 Neige Calm，<br>在手机上打开 Next 工作空间。</p>
+      <button id="scan" type="button">扫码连接 <span aria-hidden="true">⌁</span></button>
+      <button id="cancel-scan" type="button" hidden>取消扫码</button>
+      <p id="scan-error" role="alert"></p>
+      <section id="pair-confirm" hidden aria-label="确认配对服务器">
+        <p>连接到 <strong id="pair-host"></strong></p>
+        <button id="pair-connect" type="button">继续配对</button>
+        <button id="pair-cancel" type="button">取消</button>
+      </section>
+      <p class="hint">或手动输入服务器地址</p>
       <form novalidate>
         <label for="server">服务器地址</label>
         <input id="server" name="server" type="url" inputmode="url" autocomplete="url"
@@ -21,7 +31,7 @@
           aria-describedby="hint error" required>
         <p id="hint">填写手机可访问的服务器地址。</p>
         <label class="remember"><input id="remember" type="checkbox" checked>记住服务器地址</label>
-        <p id="error" role="alert"></p>
+        <p id="error" role="alert" aria-label="地址错误"></p>
         <button type="submit">进入工作空间 <span aria-hidden="true">→</span></button>
       </form>
       <p class="footer">连接后使用原有账号登录 · 需要网络连接</p>

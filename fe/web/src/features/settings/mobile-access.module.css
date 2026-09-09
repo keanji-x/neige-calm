@@ -1,0 +1,13 @@
+@layer features {
+  .invitation {
+    display: grid;
+    justify-items: center;
+    padding-block: var(--space-4);
+  }
+  
+  .qr {
+    inline-size: 16rem;
+    max-inline-size: 100%;
+    block-size: auto;
+  }
+}
