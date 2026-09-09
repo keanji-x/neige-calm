@@ -172,20 +172,18 @@ pub(crate) async fn report_read(
     .await
     .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
     let text = if with_markers {
-        snapshot
-            .blocks
-            .iter()
-            .map(|block| {
-                // flat_text: markdown for prose, canonical fence for
-                // non-prose (#960 PR3) — the same bytes the block
-                // contributes to `body`.
-                format!(
+        let mut text = String::new();
+        for block in &snapshot.blocks {
+            calm_types::report_blocks::append_block_text(
+                &mut text,
+                &format!(
                     "{}{}",
                     calm_types::report_blocks::marker_line(&block.id),
                     calm_types::report_blocks::flat_text(block)
-                )
-            })
-            .collect::<String>()
+                ),
+            );
+        }
+        text
     } else {
         snapshot.body.clone()
     };

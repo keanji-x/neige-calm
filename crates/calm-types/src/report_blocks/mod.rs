@@ -19,6 +19,9 @@ pub mod tasks;
 
 mod align;
 
+#[cfg(test)]
+mod projection_tests;
+
 pub use align::{mint_id, reassign_ids, reassign_ids_with_hints};
 pub use fence::{NonProseFence, canonical_json, neige_open_kind, parse_fence, render_fence};
 pub use kinds::{
@@ -243,6 +246,17 @@ pub fn flat_text(block: &ReportBlock) -> String {
     } else {
         fence::render_fence(&block.kind, &block.payload)
     }
+}
+
+/// Append an independent block to a flat projection, keeping its first line
+/// separate from an unterminated preceding block. Stored content is unchanged;
+/// unlike `flatten`, this composes independently authored blocks, not slices.
+/// Already line-terminated boundaries and the final block remain byte-exact.
+pub fn append_block_text(body: &mut String, text: &str) {
+    if !text.is_empty() && !body.is_empty() && !body.ends_with('\n') {
+        body.push('\n');
+    }
+    body.push_str(text);
 }
 
 fn is_h1_or_h2(line: &str) -> bool {

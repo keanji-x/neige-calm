@@ -16,10 +16,11 @@
 //!
 //! The block map is the **authoritative source** for the report body.
 //! `body` no longer exists at the doc root — it is a pure projection:
-//! [`ReportDoc::project`] concatenates each block's `text` in `order`
-//! order, which by the `flatten(blocks) == body` invariant of
-//! `calm_types::report_blocks` reproduces the flat markdown byte for
-//! byte. Prose markdown is stored as `Text`, but changed block text is
+//! [`ReportDoc::project`] joins each block's `text` in `order`, adding
+//! a line ending between independently authored unterminated blocks.
+//! Blocks split from flat markdown already have line boundaries, so
+//! their projection reproduces the input byte for byte. Prose markdown is
+//! stored as `Text`, but changed block text is
 //! replaced with a fresh child object to keep writes linear. That replacement
 //! loses one side when two replicas concurrently edit the same block; it is
 //! safe only while production never merges two `body_crdt` documents (the
@@ -31,7 +32,7 @@
 //! exactly the bytes it contributes to the flat projection; the JSON
 //! payload the wire mirrors is recovered by parsing that fence
 //! ([`Self::blocks_snapshot`]). Storing the projection bytes keeps
-//! `project()` a plain per-block concatenation for every kind.
+//! `project()` a per-block projection with line boundaries for every kind.
 //!
 //! ## Legacy layout + lazy migration
 //!
@@ -347,9 +348,10 @@ impl ReportDoc {
     }
 
     /// Read the current `(summary, body)` projection out of the doc,
-    /// where `body` is the in-`order` concatenation of every block's
-    /// text (`flatten` semantics — byte-identical to the flat
-    /// markdown the blocks were split from). The caller must thread
+    /// where `body` joins block text in `order`, inserting a line ending
+    /// after an unterminated non-final block. Text split from a flat
+    /// document already has these boundaries and stays byte-identical.
+    /// The caller must thread
     /// these back into the `TrackReportPayload` it writes to the
     /// `payload` JSON column — the CRDT is authoritative, the JSON is
     /// a cache.
@@ -369,7 +371,8 @@ impl ReportDoc {
                 let entry = self.entry_at(&blocks_id, &id)?.with_context(|| {
                     format!("malformed report doc: order id {id} has no blocks entry")
                 })?;
-                body.push_str(
+                calm_types::report_blocks::append_block_text(
+                    &mut body,
                     &self
                         .text_at(&entry, KEY_TEXT)
                         .with_context(|| format!("malformed report doc: block {id} text field"))?,

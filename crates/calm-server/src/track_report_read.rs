@@ -69,10 +69,14 @@ pub async fn load_report_read_snapshot(
         calm_types::report_blocks::reassign_ids(&[], &calm_types::report_blocks::split_body(body))
     };
     let flatten = |blocks: &[ReportBlock]| {
-        blocks
-            .iter()
-            .map(calm_types::report_blocks::flat_text)
-            .collect::<String>()
+        let mut body = String::new();
+        for block in blocks {
+            calm_types::report_blocks::append_block_text(
+                &mut body,
+                &calm_types::report_blocks::flat_text(block),
+            );
+        }
+        body
     };
     // Pure legacy row (no CRDT yet): doc_rev is zero and the seed will run `reassign_ids`
     //     over the same body with the same (absent) hints.
