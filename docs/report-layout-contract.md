@@ -53,8 +53,11 @@ caption separately from template title. Empty/all-zero data stays empty.
 
 Table item adds required `columns:[Column;1..32]`, optional `total:Total`.
 Column: `{key:nonempty string,label:string,format:"text"|"number"|"percent"|"share",
-digits:integer 0..8, fallbackKey?:nonempty string, suffixKey?:nonempty string,
+digits:integer 0..8, minDigits?:integer 0..digits, fallbackKey?:nonempty string, suffixKey?:nonempty string,
 linkKey?:nonempty string}`. Column keys unique. Missing values display a dash.
+Numeric formats use `digits` as maximum decimal places. Optional `minDigits`
+trims trailing zeroes beyond that minimum; absent means exactly `digits`
+decimal places, preserving previously saved templates. Text ignores both.
 Percent displays the supplied percentage (does not multiply by 100).
 Share divides the numeric column value by the explicitly selected total *100;
 it is unavailable if any selected row's value is missing/negative, or the total

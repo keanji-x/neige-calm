@@ -2,6 +2,78 @@
 use super::*;
 
 #[tokio::test]
+async fn layout_price_precision_chat_edit_preserves_rows_and_rejects_invalid_limits() {
+    let boot = boot().await;
+    let legacy = json!({"version":1,"columns":1,"gap":"normal","surface":"plain","items":[{
+        "kind":"table","title":"Prices","span":1,"data":{"rows":[{"price":4.637,"value":32.46}]},
+        "columns":[{"key":"price","label":"Price","format":"number","digits":2},
+                   {"key":"value","label":"Value","format":"number","digits":2}]
+    }]});
+    let before = read(&boot, json!({})).await;
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        planner_identity(&boot),
+        json!({"kind":"layout","payload":legacy,"if_doc_rev":before["docRev"]}),
+    )
+    .await
+    .unwrap();
+    let original = current_payload(&boot).await;
+    let block = original
+        .blocks
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|block| block.kind == "layout")
+        .unwrap();
+    let layout_id = block.id.clone();
+    let mut edited = block.payload.clone();
+    edited["items"][0]["columns"][0]["digits"] = json!(8);
+    edited["items"][0]["columns"][0]["minDigits"] = json!(2);
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        crate::mcp_track_report::assistant_identity(&boot),
+        json!({"id":block.id,"kind":"layout","payload":edited,"if_rev":block.rev}),
+    )
+    .await
+    .expect("chat may configure optional precision on the current saved report");
+    let saved = current_payload(&boot).await;
+    let current = saved
+        .blocks
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|block| block.id == layout_id)
+        .unwrap();
+    assert_eq!(current.payload, edited);
+    assert_eq!(
+        current.payload["items"][0]["data"],
+        legacy["items"][0]["data"]
+    );
+    assert_eq!(
+        current.payload["items"][0]["columns"][1],
+        legacy["items"][0]["columns"][1]
+    );
+    let mut invalid = edited;
+    invalid["items"][0]["columns"][0]["digits"] = json!(1);
+    let error = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        crate::mcp_track_report::assistant_identity(&boot),
+        json!({"id":current.id,"kind":"layout","payload":invalid,"if_rev":current.rev}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, -32602);
+    assert!(error.message.contains("minDigits"));
+    assert_eq!(
+        serde_json::to_value(current_payload(&boot).await).unwrap(),
+        serde_json::to_value(saved).unwrap()
+    );
+}
+
+#[tokio::test]
 async fn layout_block_write_persists_edits_and_fences_stale_revisions() {
     let boot = boot().await;
     let payload = json!({"version":1,"columns":1,"gap":"normal","surface":"plain","items":[{

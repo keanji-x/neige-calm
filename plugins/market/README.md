@@ -29,6 +29,10 @@ See [Assets and sources](#assets-and-sources).
 | `market.holdings.list` | what this Track holds, with current price and value |
 | `market.quote` | the price of one asset, without touching any holding |
 
+Unit prices retain the quote's numeric precision in both holdings replies and
+overlays, including when FX is unavailable. Position values and portfolio totals
+still round to cents. Display precision is selected by the Report template.
+
 ### Why `set` does not price
 
 Because a tool that prices touches the network, and a tool that touches the

@@ -24,9 +24,19 @@ pub fn schema() -> Value {
     let unit = json!({"type":"object","additionalProperties":false,"required":["key","equals"],"properties":{"key":key,"equals":key,"row":selector},
         "description":"Without row, observations must match equals: mismatches create line gaps and prevent donut normalization. With row, exactly one row before exclude must match, with unit key equal to equals, or the whole chart is unavailable. The template declares the currency; no implicit conversion or relabeling."
     });
-    let column = json!({"type":"object","additionalProperties":false,"required":["key","label","format","digits"],"properties":{
-        "key":key,"label":text,"format":{"enum":["text","number","percent","share"]},"digits":{"type":"integer","minimum":0,"maximum":8},"fallbackKey":key,"suffixKey":key,"linkKey":key
-    },"description":"Column keys must be unique (server-enforced). Missing values are a dash. Percent uses supplied percentage without multiplying. Share requires a complete nonnegative column whose selected values sum to the positive selected total within independent cent rounding; no fallback values in share arithmetic. linkKey contains a Track ID opened through native navigation, never an arbitrary URL. suffixKey is a display label only, never conversion."});
+    let mut column = json!({"type":"object","additionalProperties":false,"required":["key","label","format","digits"],"properties":{
+        "key":key,"label":text,"format":{"enum":["text","number","percent","share"]},"digits":{"type":"integer","minimum":0,"maximum":8},"minDigits":{"type":"integer","minimum":0,"maximum":8},"fallbackKey":key,"suffixKey":key,"linkKey":key
+    },"description":"Column keys must be unique (server-enforced). Numeric formats use digits as maximum decimal places and optional minDigits as minimum; minDigits must not exceed digits. Without minDigits, use exactly digits places, preserving fixed-decimal templates. Missing values are a dash. Percent uses supplied percentage without multiplying. Share requires a complete nonnegative column whose selected values sum to the positive selected total within independent cent rounding; no fallback values in share arithmetic. linkKey contains a Track ID opened through native navigation, never an arbitrary URL. suffixKey is a display label only, never conversion."});
+    column["allOf"] = Value::Array(
+        (0..=8)
+            .map(|digits| {
+                json!({
+                    "if":{"required":["digits"],"properties":{"digits":{"const":digits}}},
+                    "then":{"properties":{"minDigits":{"maximum":digits}}}
+                })
+            })
+            .collect(),
+    );
     let total = json!({"type":"object","additionalProperties":false,"required":["row","key"],"properties":{"row":selector,"key":key},"description":"Exactly one source row before exclude must match. Required iff any column uses share (server-enforced)."});
     let mut chart = json!({"type":"object","additionalProperties":false,"required":["kind","title","span","data","chart","x","y","height","color"],"properties":{
         "kind":{"const":"chart"},"title":text,"span":{"type":"integer","minimum":1,"maximum":3},"data":data,"exclude":selector,

@@ -37,7 +37,12 @@ const data = z.union([
 const unit = z.strictObject({ key, equals: key, row: selector.optional() });
 const column = z.strictObject({
   key, label: text, format: z.enum(['text', 'number', 'percent', 'share']), digits: z.number().int().min(0).max(8),
+  minDigits: z.number().int().min(0).max(8).optional(),
   fallbackKey: key.optional(), suffixKey: key.optional(), linkKey: key.optional(),
+}).superRefine((value, ctx) => {
+  if (value.minDigits !== undefined && value.minDigits > value.digits) {
+    ctx.addIssue({ code: 'custom', path: ['minDigits'], message: 'Minimum digits must not exceed digits' });
+  }
 });
 const dayRange = z.number().int().min(1).max(3660);
 

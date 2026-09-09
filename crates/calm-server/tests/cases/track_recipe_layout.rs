@@ -118,6 +118,7 @@ async fn layout_shipped_portfolio_recipe_instantiates_every_saved_component() {
         3,
         "three saved sections in the offered template"
     );
+    let mut price_columns = 0;
     for fence in &expected {
         assert_eq!(fence.kind, "layout");
         assert!(stored.contains(&calm_types::report_blocks::render_fence(
@@ -125,6 +126,20 @@ async fn layout_shipped_portfolio_recipe_instantiates_every_saved_component() {
             &fence.payload
         )));
         for item in fence.payload["items"].as_array().unwrap() {
+            if let Some(columns) = item["columns"].as_array() {
+                for column in columns {
+                    if column["key"] == "price" {
+                        price_columns += 1;
+                        assert_eq!(column["digits"], 8);
+                        assert_eq!(column["minDigits"], 2);
+                    } else {
+                        assert!(
+                            column.get("minDigits").is_none(),
+                            "only starter prices opt into flexible precision"
+                        );
+                    }
+                }
+            }
             for rows in [
                 item.pointer("/data/rows"),
                 item.pointer("/data/annotations/rows"),
@@ -140,6 +155,10 @@ async fn layout_shipped_portfolio_recipe_instantiates_every_saved_component() {
             }
         }
     }
+    assert_eq!(
+        price_columns, 2,
+        "holdings and journal unit prices share the configuration"
+    );
     let (status, created) = send(
         boot.app.clone(),
         "POST",

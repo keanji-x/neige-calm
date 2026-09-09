@@ -110,7 +110,8 @@
           "key": "price",
           "label": "现价",
           "format": "number",
-          "digits": 2,
+          "digits": 8,
+          "minDigits": 2,
           "suffixKey": "currency"
         },
         {
@@ -183,7 +184,8 @@
           "key": "price",
           "label": "成交价",
           "format": "number",
-          "digits": 2,
+          "digits": 8,
+          "minDigits": 2,
           "suffixKey": "currency"
         },
         {

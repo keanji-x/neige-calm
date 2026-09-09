@@ -48,6 +48,9 @@ const QUIET_WINDOW: Duration = Duration::from_millis(1_500);
 const TRACK: &str = "trk_caller";
 const OTHER_TRACK: &str = "trk_someone_else";
 
+#[path = "market_plugin_precision.rs"]
+mod precision;
+
 /// A four-line HTTP server that answers every request with one fixed price.
 ///
 /// It exists so the *successful* path is exercised somewhere other than a

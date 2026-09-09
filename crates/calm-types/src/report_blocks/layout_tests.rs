@@ -28,6 +28,48 @@ fn layout_validates_complete_chart_and_table_configuration() {
         );
     }
 }
+
+#[test]
+fn layout_optional_min_digits_roundtrips_without_rewriting_legacy_columns() {
+    let legacy = table();
+    assert_eq!(validate_payload("layout", &legacy), Ok(()));
+    let mut flexible = legacy.clone();
+    flexible["items"][0]["columns"][0]["digits"] = json!(8);
+    flexible["items"][0]["columns"][0]["minDigits"] = json!(2);
+    let fence = super::render_data_block("layout", &flexible)
+        .expect("optional precision is saved configuration");
+    assert_eq!(super::parse_fence(&fence).unwrap().payload, flexible);
+    for digits in [0, 8] {
+        let mut boundary = flexible.clone();
+        boundary["items"][0]["columns"][0]["digits"] = json!(digits);
+        boundary["items"][0]["columns"][0]["minDigits"] = json!(digits);
+        assert_eq!(validate_payload("layout", &boundary), Ok(()));
+    }
+    let old_fence = super::render_data_block("layout", &legacy).unwrap();
+    assert_eq!(super::parse_fence(&old_fence).unwrap().payload, legacy);
+    for minimum in [
+        json!(-1),
+        json!(9),
+        json!(1.5),
+        json!(null),
+        json!("2"),
+        json!(false),
+    ] {
+        let mut invalid = flexible.clone();
+        invalid["items"][0]["columns"][0]["minDigits"] = minimum;
+        assert!(
+            validate_payload("layout", &invalid)
+                .unwrap_err()
+                .contains("minDigits")
+        );
+    }
+    flexible["items"][0]["columns"][0]["digits"] = json!(1);
+    assert!(
+        validate_payload("layout", &flexible)
+            .unwrap_err()
+            .contains("minDigits")
+    );
+}
 #[test]
 fn layout_rejects_unknown_fields_and_invalid_boundaries() {
     let cases = [

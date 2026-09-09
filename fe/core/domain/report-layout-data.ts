@@ -113,7 +113,7 @@ export function layoutCell(column: LayoutColumn, row: LayoutRow, shareTotal: num
     if (column.format === 'share' && shareTotal === null) return '—';
     const number = column.format === 'share' ? raw / shareTotal! * 100 : raw;
     if (!Number.isFinite(number)) return '—';
-    result = number.toLocaleString('zh-CN', { minimumFractionDigits: column.digits, maximumFractionDigits: column.digits });
+    result = number.toLocaleString('zh-CN', { minimumFractionDigits: column.minDigits ?? column.digits, maximumFractionDigits: column.digits });
     if (column.format === 'percent' || column.format === 'share') result += '%';
   }
   const suffix = column.suffixKey === undefined ? null : field(row, column.suffixKey);

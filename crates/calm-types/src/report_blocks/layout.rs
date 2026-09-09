@@ -327,6 +327,7 @@ impl Validator<'_> {
                         "label",
                         "format",
                         "digits",
+                        "minDigits",
                         "fallbackKey",
                         "suffixKey",
                         "linkKey",
@@ -344,7 +345,16 @@ impl Validator<'_> {
                     &join(&p, "format"),
                     &["text", "number", "percent", "share"],
                 ) == Some("share");
-                self.integer(column.get("digits"), &join(&p, "digits"), 0, 8);
+                let digits = self.integer(column.get("digits"), &join(&p, "digits"), 0, 8);
+                if column.contains_key("minDigits") {
+                    let minimum =
+                        self.integer(column.get("minDigits"), &join(&p, "minDigits"), 0, 8);
+                    if let (Some(minimum), Some(maximum)) = (minimum, digits)
+                        && minimum > maximum
+                    {
+                        self.error(&join(&p, "minDigits"), "must not exceed digits");
+                    }
+                }
                 for key in ["fallbackKey", "suffixKey", "linkKey"] {
                     if column.contains_key(key) {
                         self.text(column.get(key), &join(&p, key), true);

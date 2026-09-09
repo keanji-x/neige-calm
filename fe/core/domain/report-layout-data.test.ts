@@ -111,3 +111,38 @@ describe('annotated live tables', () => {
     expect(layoutShareTotal(item, column, read([{ asset: 'A', value: 70 }, { asset: 'Total', value: 70 }, { asset: 'Total', value: 70 }]))).toBeNull();
   });
 });
+
+describe('configured numeric precision', () => {
+  it('preserves legacy fixed digits and trims only optional trailing decimals', () => {
+    const fixed = { key: 'price', label: 'Price', format: 'number' as const, digits: 8 };
+    expect(layoutCell(fixed, { price: 4.637 }, null)).toBe('4.63700000');
+    const flexible = { ...fixed, minDigits: 2 };
+    expect(layoutCell(flexible, { price: 4.637 }, null)).toBe('4.637');
+    expect(layoutCell(flexible, { price: 4.6 }, null)).toBe('4.60');
+    expect(layoutCell(flexible, { price: 4 }, null)).toBe('4.00');
+    expect(layoutCell(flexible, { price: 0.123456789 }, null)).toBe('0.12345679');
+    expect(layoutCell(flexible, { price: null }, null)).toBe('—');
+    expect(layoutCell(flexible, { price: '4.637' }, null)).toBe('—');
+    expect(layoutCell({ ...flexible, minDigits: 0 }, { price: 4 }, null)).toBe('4');
+    expect(layoutCell({ ...flexible, format: 'percent' }, { price: 1.2345 }, null)).toBe('1.2345%');
+    expect(layoutCell({ ...flexible, format: 'share', digits: 3, minDigits: 1 }, { price: 1 }, 3)).toBe('33.333%');
+    expect(layoutCell({ ...flexible, format: 'share' }, { price: 1 }, null)).toBe('—');
+    expect(layoutCell({ ...flexible, format: 'text' }, { price: 4 }, null)).toBe('4');
+  });
+
+  it('accepts an optional minimum without changing or backfilling saved configuration', () => {
+    const item = { ...table(), total: undefined, columns: [{ key: 'price', label: 'Price', format: 'number', digits: 8, minDigits: 2 }] };
+    const accepted = parse(item);
+    expect(accepted.success).toBe(true);
+    if (!accepted.success) throw new Error('Expected valid minimum');
+    expect(accepted.data.items[0]).toEqual(item);
+    for (const digits of [0, 8]) {
+      expect(parse({ ...item, columns: [{ ...item.columns[0], digits, minDigits: digits }] }).success).toBe(true);
+    }
+    for (const minDigits of [-1, 9, 2.5, null, '2', false]) {
+      expect(parse({ ...item, columns: [{ ...item.columns[0], minDigits }] }).success).toBe(false);
+    }
+    expect(parse({ ...item, columns: [{ ...item.columns[0], digits: 1 }] }).success).toBe(false);
+    expect(parse(table()).success).toBe(true);
+  });
+});

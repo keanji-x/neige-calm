@@ -1753,7 +1753,7 @@ fn price_holdings(cfg: &Config, holdings: &[Holding], cache: &mut PassCache) -> 
                     "asset": holding.asset.symbol,
                     "venue": holding.asset.venue.prefix(),
                     "qty": round_to(holding.quantity, 8),
-                    "price": round_to(price, 2),
+                    "price": price,
                     "currency": currency.code(),
                     "value": round_to(value, 2),
                 });
@@ -1775,7 +1775,7 @@ fn price_holdings(cfg: &Config, holdings: &[Holding], cache: &mut PassCache) -> 
                 // and no value overflowed, a row with neither had no rate.
                 let (price, currency, rate) = match priced {
                     Some((price, currency, rate)) => (
-                        json!(round_to(price, 2)),
+                        json!(price),
                         json!(currency.code()),
                         rate.map_or(Value::Null, |rate| json!(round_to(rate, 8))),
                     ),

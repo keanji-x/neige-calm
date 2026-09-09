@@ -297,6 +297,24 @@ async fn kinds_returns_all_six_schemas() {
     );
     assert_eq!(layout["schema"]["properties"]["items"]["maxItems"], 12);
     assert!(layout["usage"].as_str().unwrap().contains("Recipe"));
+    let column = &layout["schema"]["properties"]["items"]["items"]["oneOf"][1]["properties"]["columns"]
+        ["items"];
+    assert_eq!(
+        column["properties"]["minDigits"],
+        json!({"type":"integer","minimum":0,"maximum":8})
+    );
+    assert!(
+        !column["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("minDigits"))
+    );
+    for digits in 0..=8 {
+        assert!(column["allOf"].as_array().unwrap().contains(&json!({
+            "if":{"required":["digits"],"properties":{"digits":{"const":digits}}},
+            "then":{"properties":{"minDigits":{"maximum":digits}}}
+        })));
+    }
     let prose = &kinds[0];
     assert_eq!(
         prose.pointer("/schema/required/0").and_then(Value::as_str),
