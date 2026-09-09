@@ -1,0 +1,19 @@
+/* Match fe/web/index.html: establish production CSS layers before components load. */
+@import '../../../fe/web/src/styles/entry.css';
+
+/* This preview figure is part of the paper, not an elevated app card. */
+[data-nc-report] iframe[title='组合概览图表'] {
+  background: transparent;
+  border-radius: 0;
+}
+
+.portfolio-modebar {
+  height: 32px; display: flex; align-items: center; gap: 16px;
+  padding: 0 16px; background: var(--bg); color: var(--text-3);
+  border-bottom: 1px solid var(--border); font: 11px var(--font-sans);
+}
+.portfolio-modebar span { margin-right: auto; }
+.portfolio-modebar button { color: var(--accent); cursor: pointer; white-space: nowrap; }
+#root { height: calc(100% - 32px); }
+#root > div:has(nav[aria-label='Workspace']) { min-block-size: calc(100dvh - 32px); }
+@media (max-width: 600px) { .portfolio-modebar { gap: 9px; padding: 0 10px; } .portfolio-modebar span { display: none; } }

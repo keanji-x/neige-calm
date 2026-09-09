@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "source": "demo",
+  "asOf": "2026-09-09T08:00:00Z",
+  "currency": "CNY",
+  "cash": 120000,
+  "holdings": [
+    {
+      "id": "pine",
+      "symbol": "DEMO:PINE",
+      "name": "青松科技",
+      "quantity": 800,
+      "trackId": "pine",
+      "nextEvent": {
+        "date": "2026-09-12",
+        "title": "半年报复盘"
+      },
+      "quote": {
+        "price": 45,
+        "previousClose": 44.40059200789344,
+        "currency": "CNY",
+        "fxToBase": 1,
+        "asOf": "2026-09-09T08:00:00Z",
+        "status": "current"
+      }
+    },
+    {
+      "id": "bay",
+      "symbol": "DEMO:BAY",
+      "name": "海湾消费",
+      "quantity": 800,
+      "trackId": "bay",
+      "nextEvent": {
+        "date": "2026-09-18",
+        "title": "渠道跟踪"
+      },
+      "quote": {
+        "price": 30,
+        "previousClose": 30.248033877797944,
+        "currency": "CNY",
+        "fxToBase": 1,
+        "asOf": "2026-09-09T08:00:00Z",
+        "status": "current"
+      }
+    },
+    {
+      "id": "river",
+      "symbol": "DEMO:RIVER",
+      "name": "远川工业",
+      "quantity": 1000,
+      "trackId": "river",
+      "nextEvent": {
+        "date": "2026-09-25",
+        "title": "订单核查"
+      },
+      "quote": {
+        "price": 20,
+        "previousClose": 20.0,
+        "currency": "CNY",
+        "fxToBase": 1,
+        "asOf": "2026-09-09T08:00:00Z",
+        "status": "current"
+      }
+    }
+  ],
+  "history": [
+    {
+      "date": "2026-03-09",
+      "value": 184000
+    },
+    {
+      "date": "2026-03-16",
+      "value": 185100
+    },
+    {
+      "date": "2026-03-23",
+      "value": 183700
+    },
+    {
+      "date": "2026-03-31",
+      "value": 186000
+    },
+    {
+      "date": "2026-04-07",
+      "value": 188000
+    },
+    {
+      "date": "2026-04-14",
+      "value": 185900
+    },
+    {
+      "date": "2026-04-22",
+      "value": 182400
+    },
+    {
+      "date": "2026-04-29",
+      "value": 180000
+    },
+    {
+      "date": "2026-05-06",
+      "value": 183000
+    },
+    {
+      "date": "2026-05-14",
+      "value": 187300
+    },
+    {
+      "date": "2026-05-21",
+      "value": 185800
+    },
+    {
+      "date": "2026-05-28",
+      "value": 189000
+    },
+    {
+      "date": "2026-06-05",
+      "value": 191000
+    },
+    {
+      "date": "2026-06-12",
+      "value": 189100
+    },
+    {
+      "date": "2026-06-20",
+      "value": 192200
+    },
+    {
+      "date": "2026-06-27",
+      "value": 190300
+    },
+    {
+      "date": "2026-07-04",
+      "value": 195100
+    },
+    {
+      "date": "2026-07-12",
+      "value": 194000
+    },
+    {
+      "date": "2026-07-19",
+      "value": 197000
+    },
+    {
+      "date": "2026-07-26",
+      "value": 195900
+    },
+    {
+      "date": "2026-08-03",
+      "value": 198000
+    },
+    {
+      "date": "2026-08-10",
+      "value": 195200
+    },
+    {
+      "date": "2026-08-17",
+      "value": 199100
+    },
+    {
+      "date": "2026-08-25",
+      "value": 197000
+    },
+    {
+      "date": "2026-09-01",
+      "value": 201200
+    },
+    {
+      "date": "2026-09-09",
+      "value": 200000
+    }
+  ],
+  "trades": [
+    {
+      "id": "trade-pine",
+      "symbol": "DEMO:PINE",
+      "name": "青松科技",
+      "date": "2026-08-18",
+      "trackId": "pine",
+      "side": "buy",
+      "quantity": 800,
+      "price": 42.8,
+      "currency": "CNY",
+      "fee": 0,
+      "reason": "续费收入增加，持续跟踪现金流"
+    },
+    {
+      "id": "trade-bay",
+      "symbol": "DEMO:BAY",
+      "name": "海湾消费",
+      "date": "2026-08-22",
+      "trackId": "bay",
+      "side": "buy",
+      "quantity": 800,
+      "price": 28.5,
+      "currency": "CNY",
+      "fee": 0,
+      "reason": "库存改善，等待自然复购验证"
+    },
+    {
+      "id": "trade-river",
+      "symbol": "DEMO:RIVER",
+      "name": "远川工业",
+      "date": "2026-09-01",
+      "trackId": "river",
+      "side": "buy",
+      "quantity": 1000,
+      "price": 16.2,
+      "currency": "CNY",
+      "fee": 0,
+      "reason": "设备更新需求，先建立观察仓位"
+    }
+  ],
+  "reportedValues": null,
+  "notes": [],
+  "reportedTotal": null
+}
