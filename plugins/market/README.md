@@ -3,7 +3,7 @@
 Prices what a Track says it holds, on its own clock, and pushes the result at
 that Track.
 
-You tell the Planner what you hold. It calls this plugin. Nothing goes in
+You tell the current Track’s Assistant or Planner what you hold. It calls this plugin. Nothing goes in
 Settings, nothing needs a restart, and no report is rewritten when the price
 moves.
 
@@ -11,7 +11,7 @@ moves.
 
 > **"I have 100 BTC"**
 
-The Planner calls `market.holdings.set { asset: "BTC", quantity: 100 }`. The
+The Assistant or Planner calls `market.holdings.set { asset: "BTC", quantity: 100 }`. The
 holding is stored against **that Track**, priced immediately, and published.
 Say "I sold 40" and it calls the same tool with `60`; say "I sold it all" and
 it calls it with `0`, which removes the holding.

@@ -847,7 +847,7 @@ include!("../../../../plugins/market/sina_fixture.rs");
 /// depends on: the body is **GBK**, and a request with no `Referer` header is
 /// answered `403 Forbidden` — not with an empty list, not with JSON. The name
 /// field carries real GBK bytes so the decode is exercised here too.
-fn sina_server() -> String {
+pub(super) fn sina_server() -> String {
     sina_server_with_rows(sina_fixture_all_rows())
 }
 

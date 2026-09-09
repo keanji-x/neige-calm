@@ -386,6 +386,8 @@ pub fn materialize_http_tools(
         }
         out.push(ExposedTool {
             name: wanted.clone(),
+            // Remote metadata cannot grant access to a local Assistant.
+            assistant_access: false,
             description: tool
                 .get("description")
                 .and_then(|d| d.as_str())
@@ -417,6 +419,7 @@ pub fn materialize_cli_tools(plugin_id: &str, block: &CliQueryBlock) -> Vec<Expo
         }
         out.push(ExposedTool {
             name: tool.name.clone(),
+            assistant_access: false,
             description: tool.description.clone(),
             // `kind` stays `None` for the same reason as the HTTP path (D6): a
             // forge action would hand this tool the forge credential
@@ -445,7 +448,7 @@ mod tests {
     #[test]
     fn http_materialization_filters_by_allowlist() {
         let upstream = vec![
-            json!({ "name": "list_reports", "description": "d",
+            json!({ "name": "list_reports", "description": "d", "assistant_access": true,
                     "inputSchema": { "type": "object" } }),
             json!({ "name": "secret_admin_tool" }),
         ];
@@ -453,6 +456,7 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "list_reports");
         assert_eq!(tools[0].description.as_deref(), Some("d"));
+        assert!(!tools[0].assistant_access, "remote opt-in must be ignored");
         assert_eq!(tools[0].input_schema, Some(json!({ "type": "object" })));
     }
 
@@ -461,7 +465,7 @@ mod tests {
         let block: crate::plugin_host::manifest::CliQueryBlock = serde_json::from_value(json!({
             "command": "/usr/bin/longbridge",
             "tools": [
-                { "name": "quote", "description": "Get a quote",
+                { "name": "quote", "description": "Get a quote", "assistant_access": true,
                   "input_schema": { "type": "object",
                                     "properties": { "symbol": { "type": "string" } } },
                   "args": ["quote", "{{symbol}}"] },
@@ -474,6 +478,10 @@ mod tests {
         assert_eq!(tools.len(), 1, "{tools:?}");
         assert_eq!(tools[0].name, "quote");
         assert_eq!(tools[0].description.as_deref(), Some("Get a quote"));
+        assert!(
+            !tools[0].assistant_access,
+            "CLI metadata must not grant access"
+        );
         assert!(
             tools[0].kind.is_none(),
             "connector tools are never forge actions"

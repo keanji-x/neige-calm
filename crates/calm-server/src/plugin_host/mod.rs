@@ -22,6 +22,7 @@ pub mod process;
 pub mod registry;
 pub mod resources;
 pub mod template_input;
+mod tool_snapshot;
 pub mod version;
 
 use std::collections::{BTreeSet, HashMap};

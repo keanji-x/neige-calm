@@ -45,7 +45,21 @@ const TRUSTED_TOOL_NAME: &str = "wf.tool";
 /// identity failure rather than a bound-card fallback).
 const DAEMON_TOKEN: &str = "mcp-plugin-tools-daemon-token";
 
+#[path = "mcp_plugin_tools_assistant.rs"]
+mod assistant_access;
+
+#[path = "mcp_plugin_tools_reload.rs"]
+mod reload_access;
+
+#[derive(Default)]
+struct FixtureOptions {
+    assistant_access: bool,
+    duplicate_tool_name: bool,
+    market_sina_endpoint: Option<String>,
+}
+
 struct Fixture {
+    repo: Arc<dyn Repo>,
     _server: Arc<McpServer>,
     plugin_host: Arc<PluginHost>,
     socket_path: PathBuf,
@@ -71,6 +85,8 @@ struct Fixture {
     /// between the caller and the plugin is `PLUGIN_TOOL_ROLES`.
     assistant_raw_token: String,
     assistant_thread_id: String,
+    bound_assistant_raw_token: String,
+    bound_assistant_thread_id: String,
     _tmp: TempDir,
 }
 
@@ -229,12 +245,11 @@ async fn worker_mcp_discovers_and_routes_colliding_dotted_plugin_tools() {
 /// router when the kernel registry misses, and those names are not in
 /// `build_default_registry().descriptors()` — so the
 /// allow/deny-partition meta-test in `mcp_assistant_tool_gate` is closed
-/// only over the built-in surface. What actually keeps an assistant off
-/// every plugin tool is the single `require_role_any(&identity,
-/// PLUGIN_TOOL_ROLES)` line in `transport.rs`, and adding `Assistant` to
-/// that constant would turn none of the other #1189 tests red.
+/// only over the built-in surface. An ordinary plugin tool without explicit
+/// `assistant_access` must retain the Planner/Worker role gate. Widening the
+/// default roles would turn none of the built-in #1189 tests red.
 ///
-/// This is that counterexample: a real running plugin tool, an Assistant
+/// This is that counterexample: a real running unmarked tool, an Assistant
 /// token in the UNBOUND track (so plugin scope allows it and the role gate
 /// is the only thing left), called on the wire by name. The worker control
 /// below proves the tool is genuinely reachable — otherwise the refusal
@@ -715,6 +730,10 @@ fn socket_safe_tempdir() -> std::io::Result<TempDir> {
 }
 
 async fn boot_fixture() -> Fixture {
+    boot_fixture_with_options(FixtureOptions::default()).await
+}
+
+async fn boot_fixture_with_options(options: FixtureOptions) -> Fixture {
     let tmp = socket_safe_tempdir().expect("tempdir");
     let socket_path = tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
@@ -795,6 +814,14 @@ async fn boot_fixture() -> Fixture {
     )
     .await;
 
+    let (bound_assistant_raw_token, bound_assistant_thread_id) = mint_card_with_thread(
+        &sqlx_repo,
+        &card_role_cache,
+        bound_track.id.clone(),
+        CardRole::Assistant,
+    )
+    .await;
+
     let trusted_exposed_name = format!("plugin.{trusted_plugin_id}_{TRUSTED_TOOL_NAME}");
     let plugin_host = boot_plugin_host(
         repo.clone(),
@@ -803,6 +830,7 @@ async fn boot_fixture() -> Fixture {
         events.clone(),
         calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
         &trusted_plugin_id,
+        &options,
     )
     .await;
     plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
@@ -817,6 +845,14 @@ async fn boot_fixture() -> Fixture {
         .await
         .expect("spawn trusted template plugin");
     wait_for_running(&plugin_host, &trusted_plugin_id).await;
+
+    if options.market_sina_endpoint.is_some() {
+        plugin_host
+            .spawn("dev-neige-market")
+            .await
+            .expect("spawn market");
+        wait_for_running(&plugin_host, "dev-neige-market").await;
+    }
 
     let plugin_host_cell = Arc::new(OnceCell::new());
     assert!(
@@ -840,6 +876,7 @@ async fn boot_fixture() -> Fixture {
     .expect("spawn McpServer");
 
     Fixture {
+        repo: sqlx_repo,
         _server: server,
         plugin_host,
         socket_path,
@@ -853,6 +890,8 @@ async fn boot_fixture() -> Fixture {
         bound_thread_id,
         assistant_raw_token,
         assistant_thread_id,
+        bound_assistant_raw_token,
+        bound_assistant_thread_id,
         _tmp: tmp,
     }
 }
@@ -924,27 +963,8 @@ async fn mint_card_with_thread(
     (raw_token, thread_id)
 }
 
-async fn boot_plugin_host(
-    repo: Arc<dyn Repo>,
-    plugins_dir: PathBuf,
-    plugins_data_dir: PathBuf,
-    events: EventBus,
-    write: calm_server::state::WriteContext,
-    trusted_plugin_id: &str,
-) -> Arc<PluginHost> {
-    let install_dir = plugins_dir.join(PLUGIN_ID);
-    let bin_dir = install_dir.join("bin");
-    std::fs::create_dir_all(&bin_dir).expect("create plugin bin dir");
-    std::fs::create_dir_all(&plugins_data_dir).expect("create plugin data dir");
-    std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), bin_dir.join("stub"))
-        .expect("symlink stub plugin");
-    let colliding_install_dir = plugins_dir.join(COLLIDING_PLUGIN_ID);
-    let colliding_bin_dir = colliding_install_dir.join("bin");
-    std::fs::create_dir_all(&colliding_bin_dir).expect("create colliding plugin bin dir");
-    std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), colliding_bin_dir.join("stub"))
-        .expect("symlink colliding stub plugin");
-
-    let manifest_json = json!({
+fn echo_manifest(options: &FixtureOptions) -> Value {
+    let mut manifest_json = json!({
         "manifest_version": 1,
         "id": PLUGIN_ID,
         "version": "0.1.0",
@@ -958,10 +978,43 @@ async fn boot_plugin_host(
             }
         },
         "exposes_tools": [
-            { "name": TOOL_NAME, "description": "noop" }
+            { "name": TOOL_NAME, "description": "noop", "assistant_access": options.assistant_access }
         ],
         "permissions": {}
     });
+    if options.duplicate_tool_name {
+        manifest_json["exposes_tools"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "name": TOOL_NAME, "assistant_access": true,
+            }));
+    }
+    manifest_json
+}
+
+async fn boot_plugin_host(
+    repo: Arc<dyn Repo>,
+    plugins_dir: PathBuf,
+    plugins_data_dir: PathBuf,
+    events: EventBus,
+    write: calm_server::state::WriteContext,
+    trusted_plugin_id: &str,
+    options: &FixtureOptions,
+) -> Arc<PluginHost> {
+    let install_dir = plugins_dir.join(PLUGIN_ID);
+    let bin_dir = install_dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create plugin bin dir");
+    std::fs::create_dir_all(&plugins_data_dir).expect("create plugin data dir");
+    std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), bin_dir.join("stub"))
+        .expect("symlink stub plugin");
+    let colliding_install_dir = plugins_dir.join(COLLIDING_PLUGIN_ID);
+    let colliding_bin_dir = colliding_install_dir.join("bin");
+    std::fs::create_dir_all(&colliding_bin_dir).expect("create colliding plugin bin dir");
+    std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), colliding_bin_dir.join("stub"))
+        .expect("symlink colliding stub plugin");
+
+    let manifest_json = echo_manifest(options);
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
     // #1196 S0a — build-time seeding: three manifests, one consuming builder.
     let registry_builder = PluginRegistry::builder().with(manifest, Some(install_dir.clone()));
@@ -1018,9 +1071,23 @@ async fn boot_plugin_host(
     });
     let trusted_manifest: Manifest =
         Manifest::parse(&trusted_manifest_json.to_string()).expect("manifest parses");
-    let registry = registry_builder
-        .with(trusted_manifest, Some(trusted_install_dir.clone()))
-        .build();
+    let mut registry_builder =
+        registry_builder.with(trusted_manifest, Some(trusted_install_dir.clone()));
+    if let Some(endpoint) = &options.market_sina_endpoint {
+        let market = Manifest::parse(include_str!("../../../../plugins/market/manifest.json"))
+            .expect("market manifest");
+        let install = plugins_dir.join(&market.id);
+        std::fs::create_dir_all(install.join("bin")).unwrap();
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_market"), install.join("bin/market"))
+            .unwrap();
+        repo.plugin_install(NewPlugin {
+            id: market.id.clone(), version: market.version.clone(),
+            install_path: install.display().to_string(), manifest: market.to_json(), enabled: true,
+            user_config: json!({"quote": "CNY", "poll_seconds": 3600, "sina_endpoint": endpoint, "binance_endpoint": "http://127.0.0.1:1"}),
+        }).await.expect("install market");
+        registry_builder = registry_builder.with(market, Some(install));
+    }
+    let registry = registry_builder.build();
 
     repo.plugin_install(NewPlugin {
         id: PLUGIN_ID.into(),

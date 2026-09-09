@@ -50,7 +50,7 @@ use crate::operation::forge_action_adapter::{
 };
 use crate::operation::{OperationKey, OperationOutcome, OperationResult, OperationRuntime};
 use crate::plugin_host::ConnectorClient;
-use crate::plugin_host::manifest::ToolKind;
+use crate::plugin_host::manifest::{ConnectorKind, ExposedTool, ToolKind};
 use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
 use calm_truth::track_vcs_repo::SqlxTrackVcsRepo;
@@ -86,6 +86,31 @@ const SOCKET_MODE: u32 = 0o600;
 /// reclaim path, same as `ECONNREFUSED`.
 const LIVE_LISTENER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 const PLUGIN_TOOL_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Worker];
+const ASSISTANT_PLUGIN_TOOL_ROLES: &[CardRole] =
+    &[CardRole::Planner, CardRole::Worker, CardRole::Assistant];
+
+/// Shared discovery/dispatch eligibility. Materialized connector tools cannot
+/// self-grant access, even if a future materializer accidentally copies a flag.
+fn plugin_tool_roles(kind: ConnectorKind, tool: &ExposedTool) -> &'static [CardRole] {
+    if kind.is_app() && tool.kind.is_none() && tool.assistant_access {
+        ASSISTANT_PLUGIN_TOOL_ROLES
+    } else {
+        PLUGIN_TOOL_ROLES
+    }
+}
+
+fn plugin_role_has_track(role: CardRole, track_id: Option<&str>) -> bool {
+    role != CardRole::Assistant || track_id.is_some_and(|id| !id.trim().is_empty())
+}
+
+struct PluginToolRoute {
+    plugin_id: String,
+    tool_name: String,
+}
+
+#[cfg(test)]
+#[path = "plugin_tool_access_tests.rs"]
+mod plugin_tool_access_tests;
 
 /// Configuration the codex daemon needs to know about the kernel's MCP
 /// server, including the shim binary and Unix socket path.
@@ -441,6 +466,7 @@ async fn dispatch_request(
                                 ctx,
                                 &mut descriptors,
                                 identity.role,
+                                identity.track_id.as_deref(),
                                 &scope,
                             )
                             .await;
@@ -488,6 +514,7 @@ async fn dispatch_request(
                                 ctx,
                                 &mut descriptors,
                                 identity.role,
+                                identity.track_id.as_deref(),
                                 &scope,
                             )
                             .await;
@@ -510,6 +537,7 @@ async fn dispatch_request(
                             ctx,
                             &mut descriptors,
                             bound.role,
+                            Some(card.track_id.as_str()),
                             &scope,
                         )
                         .await;
@@ -548,10 +576,16 @@ async fn extend_plugin_tool_descriptors_for_role(
     ctx: &Arc<AppContext>,
     descriptors: &mut Vec<ToolDescriptor>,
     role: CardRole,
+    track_id: Option<&str>,
     scope: &TrackPluginScope,
 ) {
-    if PLUGIN_TOOL_ROLES.contains(&role) {
-        descriptors.extend(plugin_tool_descriptors(ctx, scope).await);
+    if plugin_role_has_track(role, track_id) {
+        descriptors.extend(
+            plugin_tool_descriptors(ctx, scope)
+                .await
+                .into_iter()
+                .filter(|descriptor| descriptor.visible_to_roles.contains(&role)),
+        );
     }
 }
 
@@ -589,6 +623,7 @@ fn plugin_tool_descriptors_from(
             continue;
         }
         for entry in manifest.exposes_tools {
+            let roles = plugin_tool_roles(manifest.kind, &entry);
             descriptors.push(ToolDescriptor {
                 // Plugin ids exclude `_` (is_valid_plugin_id), so `_` is an
                 // unambiguous id↔tool boundary; tool names may contain `.`/`_`
@@ -599,7 +634,7 @@ fn plugin_tool_descriptors_from(
                     .input_schema
                     .unwrap_or_else(|| json!({ "type": "object" })),
                 annotations: entry.annotations,
-                visible_to_roles: PLUGIN_TOOL_ROLES,
+                visible_to_roles: roles,
             });
         }
     }
@@ -680,6 +715,13 @@ async fn dispatch_plugin_tools_call(
     // of whether `name` exists. (Kernel `calm.*` tools return earlier in
     // `dispatch_tools_call` and already resolve identity before running.)
     let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+    // The current Track is part of Assistant identity, so reject its absence
+    // before route lookup can reveal whether a tool exists.
+    if !plugin_role_has_track(identity.role, identity.track_id.as_deref()) {
+        return Err(RpcError::invalid_params(
+            "Assistant plugin tools require a current Track",
+        ));
+    }
 
     // Single shared construction for EVERY existence-shaped rejection below
     // (no plugin host, unknown route, out-of-scope plugin) so the error
@@ -690,8 +732,10 @@ async fn dispatch_plugin_tools_call(
         return Err(unknown_tool());
     };
     let running_ids = plugin_host.running_plugin_ids().await;
-    let Some((plugin_id, tool_name, kind)) =
-        plugin_tool_route(plugin_host.registry(), name, &running_ids)?
+    let Some(PluginToolRoute {
+        plugin_id,
+        tool_name,
+    }) = plugin_tool_route(plugin_host.registry(), name, &running_ids)?
     else {
         return Err(unknown_tool());
     };
@@ -707,21 +751,14 @@ async fn dispatch_plugin_tools_call(
     {
         return Err(unknown_tool());
     }
-    require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
-    match kind {
+    let snapshot = plugin_host
+        .tool_call_snapshot(&plugin_id, &tool_name)
+        .map_err(|error| RpcError::custom(-32002, error.to_string()))?
+        .ok_or_else(unknown_tool)?;
+    require_role_any(&identity, plugin_tool_roles(snapshot.kind, &snapshot.tool))?;
+    match snapshot.tool.kind {
         None => {
-            // #1164 §2.7 — ordinary tool dispatch is kind-agnostic and so goes
-            // through `connector_client()`, not the narrowed `mcp_client()`.
-            // Connector tools materialize into `exposes_tools` with
-            // `kind: None`, so without this arm they would fall through to the
-            // stdio-only accessor and get a spurious `-32002 not running`.
-            let client = plugin_host
-                .connector_client(&plugin_id)
-                .await
-                .ok_or_else(|| {
-                    RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
-                })?;
-            let result = match &client {
+            let result = match &snapshot.client {
                 // The Track rides along only to LOCAL plugins. A remote
                 // `mcp-http` connector is somebody else's service: it has no
                 // per-Track state the kernel vouches for, and sending our
@@ -746,11 +783,9 @@ async fn dispatch_plugin_tools_call(
                     "plugin not trusted to submit forge actions",
                 ));
             }
-            // Deliberately still `mcp_client()`: forge actions are stdio-only
-            // (D6/D12). A connector cannot reach this arm anyway — its
-            // materialized tools always carry `kind: None`.
-            let client = plugin_host.mcp_client(&plugin_id).await.ok_or_else(|| {
-                RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
+            // Forge dispatch also stays on the exact authorized generation.
+            let client = snapshot.client.as_stdio().cloned().ok_or_else(|| {
+                RpcError::custom(-32002, format!("plugin `{plugin_id}` is not a local App"))
             })?;
             dispatch_forge_action_plugin_tool(
                 ctx, client, &plugin_id, &tool_name, arguments, identity,
@@ -772,7 +807,7 @@ fn plugin_tool_route(
     registry: &crate::plugin_host::PluginRegistry,
     name: &str,
     running_ids: &BTreeSet<String>,
-) -> Result<Option<(String, String, Option<ToolKind>)>, RpcError> {
+) -> Result<Option<PluginToolRoute>, RpcError> {
     let Some(rest) = name.strip_prefix("plugin.") else {
         return Ok(None);
     };
@@ -785,28 +820,28 @@ fn plugin_tool_route(
         }
         let prefix = format!("{plugin_id}_");
         if let Some(tool_name) = rest.strip_prefix(&prefix)
-            && let Some(entry) = manifest
+            && manifest
                 .exposes_tools
                 .iter()
-                .find(|entry| entry.name == tool_name)
+                .any(|entry| entry.name == tool_name)
         {
-            candidates.push((plugin_id, tool_name.to_string(), entry.kind));
+            candidates.push(PluginToolRoute {
+                plugin_id,
+                tool_name: tool_name.to_string(),
+            });
         }
     }
 
     match candidates.len() {
         0 => Ok(None),
-        1 => {
-            let (plugin_id, tool_name, kind) = candidates.remove(0);
-            Ok(Some((plugin_id, tool_name, kind)))
-        }
+        1 => Ok(Some(candidates.remove(0))),
         _ => {
             // Unreachable by construction: plugin ids cannot contain `_`, so
             // the `_` id/tool boundary guarantees at most one running manifest
             // can match. Keep this as defense-in-depth against future changes.
             let mut matches = candidates
                 .into_iter()
-                .map(|(plugin_id, tool_name, _kind)| format!("plugin.{plugin_id}_{tool_name}"))
+                .map(|route| format!("plugin.{}_{}", route.plugin_id, route.tool_name))
                 .collect::<Vec<_>>();
             matches.sort();
             Err(RpcError::custom(
@@ -1346,11 +1381,10 @@ mod connector_tool_routing_tests {
         let route = plugin_tool_route(&registry, &minted, &running(&[CONNECTOR_ID]))
             .expect("route resolution must not be ambiguous")
             .expect("minted name must route");
-        assert_eq!(route.0, CONNECTOR_ID);
-        assert_eq!(route.1, UNDERSCORE_TOOL);
-        // Connector tools are never forge actions (D6) — a `Some(ForgeAction)`
-        // here would hand them the forge credential passthrough.
-        assert!(route.2.is_none(), "connector tools must carry kind: None");
+        assert_eq!(route.plugin_id, CONNECTOR_ID);
+        assert_eq!(route.tool_name, UNDERSCORE_TOOL);
+        // Execution kind and authorization come from the later client
+        // snapshot, never from this name-only routing probe.
     }
 
     /// The uniqueness guarantee under maximal adversarial pressure: a second
@@ -1401,7 +1435,7 @@ mod connector_tool_routing_tests {
             .expect("must not be ambiguous")
             .expect("must route");
         assert_eq!(
-            (route.0.as_str(), route.1.as_str()),
+            (route.plugin_id.as_str(), route.tool_name.as_str()),
             (CONNECTOR_ID, UNDERSCORE_TOOL)
         );
 
@@ -1409,7 +1443,10 @@ mod connector_tool_routing_tests {
             .expect("must not be ambiguous")
             .expect("must route");
         assert_eq!(
-            (sibling_route.0.as_str(), sibling_route.1.as_str()),
+            (
+                sibling_route.plugin_id.as_str(),
+                sibling_route.tool_name.as_str()
+            ),
             (sibling, near_miss.as_str())
         );
     }

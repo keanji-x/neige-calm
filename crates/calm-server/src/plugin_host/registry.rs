@@ -954,6 +954,7 @@ mod tests {
     fn tool(name: &str) -> super::super::manifest::ExposedTool {
         super::super::manifest::ExposedTool {
             name: name.to_string(),
+            assistant_access: false,
             description: None,
             kind: None,
             input_schema: None,

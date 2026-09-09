@@ -3,7 +3,7 @@
 //! Every plugin ships a `manifest.json` at the root of its install directory.
 //! This module owns its typed shape, validation, and shared error surface.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::mcp_server::tools::plan::key_is_valid;
@@ -753,6 +753,11 @@ pub enum ToolKind {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ExposedTool {
     pub name: String,
+    /// Explicitly permit a Track-bound Assistant to call this ordinary local
+    /// App tool. Legacy tools stay Planner/Worker-only. Connector and
+    /// execution-backed tools cannot opt in.
+    #[serde(default)]
+    pub assistant_access: bool,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
@@ -1009,6 +1014,21 @@ impl Manifest {
         // #1164 §2.1 — kind ↔ block consistency. Exactly one connector block
         // may be present, and it must be the one the `kind` names.
         self.validate_connector_blocks()?;
+        let mut exposed_names = HashSet::new();
+        for (index, tool) in self.exposes_tools.iter().enumerate() {
+            if !exposed_names.insert(&tool.name) {
+                return Err(ManifestError::invalid(
+                    format!("exposes_tools[{index}].name"),
+                    format!("duplicate exposed tool name `{}`", tool.name),
+                ));
+            }
+            if tool.assistant_access && (!self.kind.is_app() || tool.kind.is_some()) {
+                return Err(ManifestError::invalid(
+                    format!("exposes_tools[{index}].assistant_access"),
+                    "only ordinary local App tools without an execution kind may opt in",
+                ));
+            }
+        }
         // #1164 §3 — and the app-only surfaces are refused at PARSE time for
         // connectors, which is what §4's interception table rests on.
         self.reject_app_only_surfaces()?;
@@ -4841,3 +4861,7 @@ mod connector_kind_tests {
         assert!(validate_connector_tool_name(" pad ", "f").is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "manifest_assistant_access_tests.rs"]
+mod assistant_access_tests;

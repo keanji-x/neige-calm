@@ -10,6 +10,7 @@
   "exposes_tools": [
     {
       "name": "market.quote",
+      "assistant_access": true,
       "description": "Current price of one asset, in the currency this plugin determined that price is in. This tool never converts: it answers one asset's price in one market's currency, and conversion happens only where a portfolio is totalled. Callers name the asset AND its venue; which source answers a venue, at which URL, is chosen by this plugin. Neither source states a currency, so it is determined from the venue and the code range: CRYPTO in USDT, US in USD, HK in HKD below code 80000, and in CNY the Shanghai 6xxxxx (A shares and STAR) and 5xxxxx (funds) codes and the Shenzhen 00xxxx (main board), 30xxxx (ChiNext) and 15xxxx/16xxxx (fund) codes. Codes outside those ranges — B shares, Hong Kong's renminbi and US-dollar counters, and the mainland bond and index ranges — are refused with the reason rather than priced under a guessed currency.",
       "input_schema": {
         "type": "object",
@@ -32,6 +33,7 @@
     },
     {
       "name": "market.holdings.set",
+      "assistant_access": true,
       "description": "Record how much of an asset this Track holds. Replaces any existing quantity for that asset; 0 removes it. Records only — the price is fetched by the plugin's own refresh, which this call wakes. Each venue is priced in its own currency, and the total is stated in the settlement currency the install configures (USD or CNY), converted at rates read from the same quote source. A holding whose rate could not be read this pass keeps its own price but has no converted value, is left out of the total, and stops that tick contributing a history point.",
       "input_schema": {
         "type": "object",
@@ -60,6 +62,7 @@
     },
     {
       "name": "market.holdings.list",
+      "assistant_access": true,
       "description": "What this Track currently holds, with the venue, the latest price in its own market's currency, the rate applied and the value in the settlement currency. When every holding priced and converted, the reply states the total; when some did not, it states a partial total and says it covers only the holdings that did. If the configured settlement currency is unsupported, values remain in their native currencies: counted holdings in one currency still have a total, while counted holdings spanning currencies do not. There is also no total when nothing could be valued or when the values do not sum to a finite number — the reply says which. The rate behind each conversion is named in the prose and in `conversions`, including the one step that is an assumption rather than a quote (USDT is taken as 1 USD); the per-row `rate` is a bare number and does not distinguish the two.",
       "input_schema": {
         "type": "object",
