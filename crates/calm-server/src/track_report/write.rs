@@ -74,9 +74,10 @@
 //! | [`rest_user_block_op`] | `routes::track_report_blocks::commit` | `User`, fixed |
 //! | [`rest_user_start`] | `routes::isolated_tasks::start` | `User`, fixed |
 //! | [`agent_report_op`] | `decision_sink::CardDecisionSink::commit_report_op` | caller-supplied; that caller derives it from `identity.role` |
+//! | [`planner_dispatch`] | `decision_sink::CardDecisionSink::commit_task_dispatch` | fixed Planner; current session and recorder checked in the transaction, including replay |
 //! | [`structural_init_report_tx`] | `routes::tracks::create_track_structure` | **none — no parameter of it names one, pinned by name *and* written type in `fork_guard_exemption_invariant`** |
 //!
-//! The fifth row is a different kind of entry from the first four and the
+//! The sixth row is a different kind of entry from the first five and the
 //! table would mislead without this sentence: it does not reach [`persist`],
 //! and it is not an edit. It is #1252 S2's **structural door** — track creation
 //! laying a forked or templated report onto the card it just INSERTed, inside
@@ -108,8 +109,8 @@
 //! Read the claim precisely, because the boundary closes one half of it and
 //! not the other, and the old census's mistake was letting the two blur:
 //!
-//! * *only four* — **closed for the boundary's own signature set**: four is
-//!   the number of `pub(crate)` doors that reach [`persist`], and a fifth such
+//! * *only five* — **closed for the boundary's own signature set**: five is
+//!   the number of `pub(crate)` doors that reach [`persist`], and a sixth such
 //!   door has to be cut in this file because nothing else can reach it.
 //!   The separate [`structural_init_report_tx`] entry does not reach [`persist`]
 //!   and performs no edit. This does *not* bound the set of
@@ -124,7 +125,7 @@
 //! ## What is still not closed, stated plainly
 //!
 //! 1. **Who may call these entries is not bounded, and through
-//!    [`agent_report_op`] neither is what they may say.** All four edit entries are
+//!    [`agent_report_op`] neither is what they may say.** All five edit entries are
 //!    `pub(crate)`, so any sibling can call any of them — exactly as any
 //!    sibling could call the old `pub(crate) persist_report_with_shadow`:
 //!
@@ -195,6 +196,11 @@
 //!    difficulty: `card_update_with_crdt_tx` is shared truth-layer code with
 //!    callers outside this module, so narrowing it is its own change with its
 //!    own caller sweep. `current_payload` has no comparison at all.
+//!
+//! Dispatch adds a bounded fifth edit purpose. Its receipt replay performs no edit
+//! or event emission; its current snapshot and authority checks share the transaction.
+//! Existing edit purposes keep their original behavior. This core writer remains over
+//! 800 lines to retain its private boundary and existing structural-door ratchet.
 //!
 //! ## The test-only escape hatch
 //!
@@ -321,7 +327,7 @@ pub(crate) async fn rest_user_replace(
     next: TrackReportPayload,
     if_doc_rev: u64,
 ) -> Result<Card, CalmError> {
-    let (updated, _block) = persist(
+    let ((updated, _block), _) = persist(
         repo,
         events,
         write,
@@ -370,6 +376,7 @@ pub(crate) async fn rest_user_block_op(
         None,
     )
     .await
+    .map(|(edit, _)| edit)
 }
 
 /// The explicit User start purpose. Attribution, lifecycle intent, and task
@@ -402,11 +409,17 @@ pub(crate) async fn rest_user_start(
         None,
     )
     .await
+    .map(|(edit, _)| edit)
 }
 
 #[derive(Clone)]
 enum PersistPurpose {
     Edit(ReportDocOp),
+    Dispatch {
+        identity: crate::mcp_server::registry::ToolCallIdentity,
+        args: super::dispatch::DispatchArgs,
+        task_budget_default: i64,
+    },
     UserStart {
         key: String,
         goal: String,
@@ -462,6 +475,40 @@ pub(crate) async fn agent_report_op(
         Some(recorder_shadow),
     )
     .await
+    .map(|(edit, _)| edit)
+}
+
+/// Planner-only semantic dispatch; authorization and replay stay inside persist.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn planner_dispatch(
+    repo: &dyn RouteRepo,
+    events: &EventBus,
+    write: &WriteContext,
+    identity: crate::mcp_server::registry::ToolCallIdentity,
+    target: ReportEditTarget,
+    args: super::dispatch::DispatchArgs,
+    task_budget_default: i64,
+    recorder_shadow: Arc<dyn RecorderShadowProbe>,
+) -> Result<serde_json::Value, CalmError> {
+    let (_, response) = persist(
+        repo,
+        events,
+        write,
+        identity.to_actor_id(),
+        EditAuthor::Planner,
+        target,
+        PersistPurpose::Dispatch {
+            identity,
+            args: args.normalize()?,
+            task_budget_default,
+        },
+        None,
+        None,
+        false,
+        Some(recorder_shadow),
+    )
+    .await?;
+    response.ok_or_else(|| CalmError::Internal("dispatch snapshot missing".into()))
 }
 
 /// #1252 S2 — the **structural door**: track creation laying a forked or
@@ -632,7 +679,7 @@ pub async fn persist_report(
     lifecycle: Option<TrackLifecycle>,
     auto_promote_draft: bool,
 ) -> Result<Card, CalmError> {
-    let (updated, _block) = persist(
+    let ((updated, _block), _) = persist(
         repo,
         events,
         write,
@@ -755,7 +802,12 @@ async fn persist(
     lifecycle: Option<TrackLifecycle>,
     auto_promote_draft: bool,
     recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
-) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
+) -> Result<((Card, Option<BlockOpOutcome>), Option<serde_json::Value>), CalmError> {
+    // Match task_recovery's zero-event replay: authorize/read in the same
+    // transaction, then roll it back without weakening the event writer.
+    const DISPATCH_REPLAY: &str = "planner dispatch receipt replay";
+    let replay = Arc::new(std::sync::Mutex::new(None));
+    let replay_out = replay.clone();
     let ReportEditTarget {
         track,
         report_card,
@@ -775,7 +827,7 @@ async fn persist(
     };
     let report_card_id_inner = report_card_id.clone();
     let track_id_for_event = track_id.clone();
-    let (updated, _ids) = write_with_actor_events_typed::<(Card, Option<BlockOpOutcome>), _>(
+    let result = write_with_actor_events_typed::<_, _>(
         repo,
         None,
         events,
@@ -793,6 +845,9 @@ async fn persist(
             let recorder_shadow = recorder_shadow.clone();
             Box::pin(async move {
                 let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
+                if let PersistPurpose::Dispatch { identity, .. } = &purpose {
+                    super::dispatch::authorize_tx(tx, identity, &track_id, &id).await?;
+                }
                 if auto_promote_draft
                     && let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id).await?
                 {
@@ -827,6 +882,24 @@ async fn persist(
                     probe
                         .record(tx, RecorderShadowDecisionKind::ReportWrite)
                         .await?;
+                }
+                if let PersistPurpose::Dispatch { args, task_budget_default, .. } = &purpose
+                    && let Some(receipt) = super::dispatch::lookup_tx(tx, &track_id, args).await?
+                {
+                    let response = super::dispatch::snapshot_tx(tx, &track_id, &receipt, *task_budget_default).await?;
+                    let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
+                        "SELECT id,track_id,kind,sort,payload,title,deletable,created_at,updated_at FROM cards WHERE id=?1"
+                    ).bind(&id).fetch_one(&mut **tx).await?;
+                    *replay_out.lock().map_err(|_| CalmError::Internal("dispatch replay lock poisoned".into()))? = Some((Card::from(card), response));
+                    return Err(CalmError::Conflict(DISPATCH_REPLAY.into()));
+                }
+                // A new Planner declaration preserves the existing Draft promotion.
+                // Receipt replay returned above and cannot promote or resume work.
+                if let PersistPurpose::Dispatch { .. } = &purpose
+                    && let Some(auto_events) = auto_promote_draft_in_tx(tx, &track_id).await?
+                {
+                    events.extend(auto_events.into_iter().map(|event|
+                        (ActorId::Kernel, track_scope.clone(), event)));
                 }
                 // 1. Load (or lazy-init) the CRDT doc for this card.
                 //    Loaded docs may still carry the pre-#960 layout
@@ -874,8 +947,12 @@ async fn persist(
                 let (summary_before, body_before) = doc.project().map_err(|e| {
                     CalmError::Internal(format!("track_report: project CRDT for card {id}: {e}"))
                 })?;
-                let op = match purpose {
+                let dispatch_key = format!("dispatch-{}", uuid::Uuid::new_v4().simple());
+                let op = match purpose.clone() {
                     PersistPurpose::Edit(op) => op,
+                    PersistPurpose::Dispatch { args, .. } => {
+                        super::dispatch::prepare(&doc, &args, &dispatch_key)?
+                    }
                     PersistPurpose::UserStart { key, goal, if_doc_rev } => {
                         let op = super::user_start::prepare_tx(
                             tx, &track_id, &doc, &key, &goal, if_doc_rev,
@@ -935,6 +1012,16 @@ async fn persist(
                     &block_diagnostics,
                 )
                 .await?;
+                let dispatch_response = if let PersistPurpose::Dispatch { args, task_budget_default, .. } = &purpose {
+                    let block = outcome.as_ref().ok_or_else(|| CalmError::Internal("dispatch block outcome missing".into()))?;
+                    let receipt = super::dispatch::DispatchReceipt {
+                        name: args.name.clone(), task_key: dispatch_key,
+                        report_card_id: id.clone(), block_id: block.id.clone(),
+                        created_at_ms: crate::model::now_ms(),
+                    };
+                    super::dispatch::insert_tx(tx, &track_id, args, &receipt).await?;
+                    Some(super::dispatch::snapshot_tx(tx, &track_id, &receipt, *task_budget_default).await?)
+                } else { None };
                 //    Then two events tagged with the same card scope. Order
                 //    matters here too: `CardUpdated` first so an existing
                 //    subscriber that processes both events sees the generic
@@ -973,12 +1060,23 @@ async fn persist(
                     ));
                 }
                 events.extend(task_projection.kernel_events);
-                Ok(((updated, outcome), events))
+                Ok((((updated, outcome), dispatch_response), events))
             })
         },
     )
-    .await?;
-    Ok(updated)
+    .await;
+    match result {
+        Ok((updated, _ids)) => Ok(updated),
+        Err(CalmError::Conflict(message)) if message == DISPATCH_REPLAY => {
+            let (card, response) = replay
+                .lock()
+                .map_err(|_| CalmError::Internal("dispatch replay lock poisoned".into()))?
+                .take()
+                .ok_or_else(|| CalmError::Internal("dispatch replay lost its receipt".into()))?;
+            Ok(((card, None), Some(response)))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -222,7 +222,7 @@ pub(crate) async fn task_recovery_view_tx(
     })
 }
 
-async fn current_blocking_reason_tx(
+pub(crate) async fn current_blocking_reason_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track: &crate::model::Track,
     allocation: &TaskAttemptAllocation,

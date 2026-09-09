@@ -777,6 +777,7 @@ impl ReportEditTarget {
     }
 }
 
+pub(crate) mod dispatch;
 mod user_start;
 /// #1318 §1 — the writer and the complete set of ways to reach it.
 ///

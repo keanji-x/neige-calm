@@ -8,6 +8,7 @@ pub(crate) use admission::{
     validate_isolated_start_tx,
 };
 pub use calm_types::task_recovery::{TaskAttemptView, TaskRecoveryCapability, TaskRecoveryView};
+pub(crate) use view::current_blocking_reason_tx;
 pub use view::task_recovery_view;
 pub(crate) use view::task_recovery_view_tx;
 
