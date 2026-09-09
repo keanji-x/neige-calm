@@ -176,7 +176,7 @@ pub(crate) async fn prepare_tx(
         json!(review_key);
     let mut review_payload = derive(&reviewer_payload, &review_key);
     review_payload["context"]["neige_execution"]["file_delivery"]["producer"] = json!(repair_key);
-    input.purpose = BindingPurpose::CandidateRepairInput;
+    input.purpose = BindingPurpose::Repair;
     Ok(Receipt {
         id,
         track_id: track.into(),

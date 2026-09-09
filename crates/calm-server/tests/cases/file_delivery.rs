@@ -31,6 +31,8 @@ fn consumer() -> Value {
         json!({"role":"consumer","producer":"produce","slot":"result","purpose":"json-input"}),
     )
 }
+type OperationDiagnostic = (String, String, String, Option<String>, Option<String>);
+
 pub(super) async fn schedule(fx: &Fixture) {
     let scheduler = fx.state.dispatcher.scheduler();
     scheduler.mark_boot_sweep_complete();
@@ -47,7 +49,7 @@ pub(super) async fn schedule(fx: &Fixture) {
                 .fetch_all(&fx.boot.repo.sqlite_pool().unwrap())
                 .await
                 .unwrap();
-        let operations: Vec<(String, String, String, Option<String>, Option<String>)> =
+        let operations: Vec<OperationDiagnostic> =
             sqlx::query_as("SELECT id,kind,phase,idempotency_key,last_error FROM operations")
                 .fetch_all(&fx.boot.repo.sqlite_pool().unwrap())
                 .await
@@ -75,7 +77,7 @@ pub(super) async fn schedule(fx: &Fixture) {
                 .fetch_all(&fx.boot.repo.sqlite_pool().unwrap())
                 .await
                 .unwrap();
-        let operations: Vec<(String, String, String, Option<String>, Option<String>)> =
+        let operations: Vec<OperationDiagnostic> =
             sqlx::query_as("SELECT id,kind,phase,idempotency_key,last_error FROM operations")
                 .fetch_all(&fx.boot.repo.sqlite_pool().unwrap())
                 .await

@@ -23,7 +23,7 @@ pub(crate) enum BindingPurpose {
     #[serde(rename = "candidate-review-input")]
     CandidateReviewInput,
     #[serde(rename = "candidate-repair-input")]
-    CandidateRepairInput,
+    Repair,
 }
 impl From<CandidateInputPurpose> for BindingPurpose {
     fn from(value: CandidateInputPurpose) -> Self {
@@ -51,7 +51,7 @@ async fn input_contract_tx(
         return Ok(Some((
             receipt.args.producer,
             receipt.input.candidate.slot()?.into(),
-            BindingPurpose::CandidateRepairInput,
+            BindingPurpose::Repair,
             true,
         )));
     }
@@ -76,7 +76,7 @@ pub(crate) async fn validate_source_tx(
         .await?
         .ok_or_else(|| conflict("candidate input contract missing"))?;
     let reviewer = purpose == BindingPurpose::CandidateReviewInput;
-    if purpose == BindingPurpose::CandidateRepairInput {
+    if purpose == BindingPurpose::Repair {
         let receipt = super::repair::for_task_tx(tx, task)
             .await?
             .ok_or_else(|| conflict("repair receipt missing"))?;
@@ -132,7 +132,7 @@ pub(crate) async fn bind_claim_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
             .await?
             .ok_or_else(|| conflict("candidate recovery input missing"))?
             .0
-    } else if purpose == BindingPurpose::CandidateRepairInput {
+    } else if purpose == BindingPurpose::Repair {
         super::repair::for_task_tx(tx, task)
             .await?
             .ok_or_else(|| conflict("repair receipt missing"))?
