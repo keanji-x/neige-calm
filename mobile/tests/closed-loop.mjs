@@ -38,8 +38,13 @@ const child = spawn(binary, [
   '--data-dir', join(root, 'data'), '--workspace-root', join(root, 'workspaces'),
   '--plugins-dir', join(root, 'plugins'), '--plugins-data-dir', join(root, 'plugin-data'),
   '--codex-bin', '/bin/false', '--claude-bin', '/bin/false', '--fe-dist', frontend,
+  '--shared-codex-appserver-start-timeout-secs', '1', '--shared-codex-appserver-stop-grace-secs', '1',
   '--mobile-access-config', join(root, 'funnel.json'),
-], { env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', CALM_AUTH_PASSWORD: password, RUST_LOG: 'off' }, stdio: 'ignore' });
+], { env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', CALM_AUTH_PASSWORD: password, RUST_LOG: 'warn' }, stdio: ['ignore', 'pipe', 'pipe'] });
+let serverOutput = '';
+const collectOutput = (chunk) => { serverOutput = (serverOutput + chunk.toString()).slice(-65_536); };
+child.stdout.on('data', collectOutput);
+child.stderr.on('data', collectOutput);
 
 let browser;
 let proxy;
@@ -58,7 +63,9 @@ try {
   await expect.poll(async () => {
     if (child.exitCode !== null) throw new Error('Test server exited during startup');
     try { return (await fetch(`${local}/api/version`)).status; } catch { return 0; }
-  }, { timeout: 20_000 }).toBe(200);
+  }, { timeout: 20_000 }).toBe(200).catch((cause) => {
+    throw new Error(`Test server did not become ready: ${serverOutput.replaceAll(password, '[redacted]')}`, { cause });
+  });
 
   browser = await chromium.launch({ args: ['--no-proxy-server', '--host-resolver-rules=MAP pair.example.ts.net 127.0.0.1'] });
   const owner = await browser.newContext({ viewport: { width: 1280, height: 960 } });
