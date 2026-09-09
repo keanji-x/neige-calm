@@ -7,7 +7,12 @@ fn independent_blocks_have_line_boundaries_without_rewriting_content() {
         (vec!["a\n", "b"], "a\nb"),
         (vec!["a\r\n", "b"], "a\r\nb"),
         (vec!["a\n\n", "b"], "a\n\nb"),
-        (vec!["", "a", "", "b", ""], "a\nb"),
+        (vec!["", "a", "", "b", ""], "a\nb\n"),
+        (vec!["a", ""], "a\n"),
+        (vec!["a", "", ""], "a\n"),
+        (vec!["", "a"], "a"),
+        (vec!["a", "", "b"], "a\nb"),
+        (vec!["", ""], ""),
         (vec!["last block"], "last block"),
     ] {
         let mut body = String::new();
@@ -32,5 +37,25 @@ fn projections_of_imported_slices_remain_byte_exact() {
             append_block_text(&mut body, &slice.raw);
         }
         assert_eq!(body, source);
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn independent_projection_of_flat_import_is_lossless(source in proptest::prelude::any::<String>()) {
+        let mut projected = String::new();
+        for slice in split_body(&source) {
+            append_block_text(&mut projected, &slice.raw);
+        }
+        proptest::prop_assert_eq!(projected, source);
+    }
+
+    #[test]
+    fn single_block_text_never_gains_projection_separators(source in proptest::prelude::any::<String>()) {
+        let block = crate::track_report::ReportBlock {
+            id: "b_0001".into(), kind: "prose".into(), rev: 1,
+            payload: serde_json::json!({"markdown": source}),
+        };
+        proptest::prop_assert_eq!(flat_text(&block), source);
     }
 }

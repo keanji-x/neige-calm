@@ -383,6 +383,26 @@ async fn report_edit(
     let if_doc_rev = required_doc_rev(obj, "calm.report.edit")?;
 
     let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
+    // Match exactly the projection served by read, including old rows whose
+    // body cache predates independent-block separators. Never construct the
+    // replacement from that obsolete cache. The snapshot revision check binds
+    // this input to the caller's read; the write still checks CAS in-tx.
+    let snapshot = load_report_read_snapshot(
+        ctx.repo.as_ref(),
+        report_card.id.as_str(),
+        ctx.task_budget_default,
+    )
+    .await
+    .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
+    if snapshot.doc_rev != if_doc_rev {
+        return Err(RpcError::custom(
+            crate::mcp_server::tools::track_report_blocks::RPC_REV_CONFLICT,
+            format!(
+                "document revision conflict: current doc_rev is {}, expected if_doc_rev {if_doc_rev}",
+                snapshot.doc_rev
+            ),
+        ));
+    }
 
     // Issue #247 PR2 review: removed the `old_string == new_string`
     // short-circuit so this handler always falls through to the
@@ -393,7 +413,7 @@ async fn report_edit(
     // special-case one persist path. We still validate `old_string`
     // is present in the body — substring-not-found stays a hard
     // error, *only* the equal-strings branch is gone.
-    let occurrences = count_matches(&current.body, &old_string);
+    let occurrences = count_matches(&snapshot.body, &old_string);
     if occurrences == 0 {
         return Err(RpcError::invalid_params(
             "calm.report.edit: old_string not found in body",
@@ -409,12 +429,12 @@ async fn report_edit(
     // occurrences > 1 && replace_all (codex semantics: replace every
     // occurrence left-to-right).
     let new_body = if replace_all || occurrences > 1 {
-        current.body.replace(&old_string, &new_string)
+        snapshot.body.replace(&old_string, &new_string)
     } else {
         // Single-match path. `replacen(.., 1)` is the safe choice;
         // `replace` would also work since we already know there's
         // exactly one match.
-        current.body.replacen(&old_string, &new_string, 1)
+        snapshot.body.replacen(&old_string, &new_string, 1)
     };
 
     // `edit` never touches the summary: `None` keeps whatever the doc

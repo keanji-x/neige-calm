@@ -251,9 +251,14 @@ pub fn flat_text(block: &ReportBlock) -> String {
 /// Append an independent block to a flat projection, keeping its first line
 /// separate from an unterminated preceding block. Stored content is unchanged;
 /// unlike `flatten`, this composes independently authored blocks, not slices.
-/// Already line-terminated boundaries and the final block remain byte-exact.
+/// Every real block starts on a line boundary, including an empty block:
+/// `["a", ""]` projects as `"a\n"`, while `["a"]` stays `"a"`. The former
+/// LF separates an existing trailing empty block; it is not stored in either
+/// block. Further empties add no extra LF. Already terminated boundaries and
+/// single-block `flat_text` are unchanged. Slices from `split_body` already
+/// have boundaries, so importing flat Markdown remains byte-exact.
 pub fn append_block_text(body: &mut String, text: &str) {
-    if !text.is_empty() && !body.is_empty() && !body.ends_with('\n') {
+    if !body.is_empty() && !body.ends_with('\n') {
         body.push('\n');
     }
     body.push_str(text);

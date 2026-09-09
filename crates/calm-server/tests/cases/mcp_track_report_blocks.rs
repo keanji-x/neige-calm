@@ -1848,3 +1848,6 @@ async fn write_markdown_changing_one_section_leaves_the_contract_byte_identical(
 
 #[path = "report_block_boundaries.rs"]
 mod boundaries;
+
+#[path = "report_block_upgrade.rs"]
+mod upgrade;
