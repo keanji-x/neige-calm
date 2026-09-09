@@ -54,6 +54,7 @@ pub(crate) async fn evidence_tx(
     let task = task_get_tx(tx, &allocation.attempt_id)
         .await?
         .ok_or_else(|| conflict("reviewer missing"))?;
+    super::repair::validate_task_tx(tx, &task).await?;
     let (binding, state, prepared) = candidate_input::load_tx(tx, &task.id)
         .await?
         .ok_or_else(|| conflict("reviewer input missing"))?;
@@ -96,9 +97,8 @@ pub(crate) async fn evidence_tx(
     else {
         return Err(conflict("candidate review failed"));
     };
-    let report: CandidateReviewResult = serde_json::from_value(result)
-        .map_err(|_| conflict("candidate review report is malformed"))?;
-    report.validate().map_err(conflict)?;
+    // Re-read the authenticated full result for this exact event, including repair responses.
+    let report = super::repair_report::parse_tx(tx, &task, result).await?;
     Ok(ReviewEvidence {
         review_attempt_id: task.id,
         review_operation_id: evidence.operation_id,
@@ -122,6 +122,7 @@ pub(crate) async fn validate_report_tx(tx: &mut Tx<'_>, track: &str, event: &Eve
     let Some(task) = task_get_tx(tx, idempotency_key).await? else {
         return Ok(());
     };
+    super::repair::validate_task_tx(tx, &task).await?;
     if !matches!(
         selection(&task)?,
         Some(FileDelivery::CandidateReviewer { .. })
@@ -131,9 +132,7 @@ pub(crate) async fn validate_report_tx(tx: &mut Tx<'_>, track: &str, event: &Eve
     if task.track_id != track {
         return Err(conflict("review report Track mismatch"));
     }
-    let report: CandidateReviewResult = serde_json::from_value(result.clone())
-        .map_err(|_| conflict("candidate review requires passed and blocking_findings"))?;
-    report.validate().map_err(conflict)?;
+    super::repair_report::parse_tx(tx, &task, result.clone()).await?;
     let current = task_attempt_current_tx(tx, track, &task.key)
         .await?
         .ok_or_else(|| conflict("review attempt missing"))?;
@@ -199,8 +198,15 @@ pub(crate) async fn view_tx(
     view["operation"] = json!({"state":operation.0,"failure":operation.1});
     match evidence.report {
         crate::routes::isolated_tasks::AcceptedTaskReport::Completed { result, .. } => {
-            match serde_json::from_value::<CandidateReviewResult>(result) {
-                Ok(report) if report.validate().is_ok() => {
+            let task = task_get_tx(tx, &attempt)
+                .await?
+                .ok_or_else(|| conflict("reviewer missing"))?;
+            let responses = result.get("finding_responses").cloned();
+            match super::repair_report::parse_history_tx(tx, &task, result).await {
+                Ok(report) => {
+                    if let Some(responses) = responses {
+                        view["finding_responses"] = responses;
+                    }
                     view["state"] = json!(if report.passed { "passed" } else { "blocking" });
                     view["passed"] = json!(report.passed);
                     view["blocking_findings"] = json!(report.blocking_findings);

@@ -79,6 +79,12 @@ async fn validate_binding_tx(tx: &mut Tx<'_>, task: &Task, binding: &Binding) ->
 }
 /// Runs in the existing claim transaction. Recovery only inherits its predecessor.
 pub(crate) async fn bind_claim_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
+    if super::repair::validate_contract_tx(tx, task)
+        .await?
+        .is_some()
+    {
+        return super::candidate_input::bind_claim_tx(tx, task).await;
+    }
     if matches!(
         selection(task)?,
         Some(FileDelivery::CandidateConsumer { .. } | FileDelivery::CandidateReviewer { .. })
@@ -258,6 +264,12 @@ async fn is_candidate_tx(tx: &mut Tx<'_>, op: &Operation) -> Result<bool> {
     )
     .await?
     .ok_or_else(|| conflict("input task missing"))?;
+    if super::repair::validate_contract_tx(tx, &task)
+        .await?
+        .is_some()
+    {
+        return Ok(true);
+    }
     Ok(matches!(
         selection(&task)?,
         Some(FileDelivery::CandidateConsumer { .. } | FileDelivery::CandidateReviewer { .. })
@@ -266,6 +278,12 @@ async fn is_candidate_tx(tx: &mut Tx<'_>, op: &Operation) -> Result<bool> {
 
 /// Recovery admission must not promise a continuation whose original input is missing.
 pub(crate) async fn require_recovery_input_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
+    if super::repair::validate_contract_tx(tx, task)
+        .await?
+        .is_some()
+    {
+        return super::candidate_input::require_recovery(tx, task).await;
+    }
     if matches!(
         selection(task)?,
         Some(FileDelivery::CandidateConsumer { .. } | FileDelivery::CandidateReviewer { .. })

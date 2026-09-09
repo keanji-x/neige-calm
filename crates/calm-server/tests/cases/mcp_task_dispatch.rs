@@ -14,7 +14,7 @@ pub(super) async fn boot() -> Boot {
     b
 }
 
-async fn bind_planner(b: &Boot, id: &str, supersede: bool) {
+pub(super) async fn bind_planner(b: &Boot, id: &str, supersede: bool) {
     use calm_server::db::sqlite::{
         begin_immediate_tx, session_start_runtime_tx, session_supersede_and_start_tx,
     };

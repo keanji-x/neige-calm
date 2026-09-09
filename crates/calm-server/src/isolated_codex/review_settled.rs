@@ -82,7 +82,7 @@ pub(crate) async fn briefing_tx(tx: &mut Tx<'_>, task: &Task, id: &str) -> Resul
         json!({"review_attempt_id":task.id,"review_operation_id":id,"operation_state":outcome,
         "current_authority":reason.is_none() && outcome.is_some(),"authority_reason":reason,"subject":subject,
         "delivery":crate::file_delivery::view_tx(tx,task).await?,
-        "decision":"Read calm.plan.list for the exact machine, review and Operation outcomes. A successful settled review may now be considered for the producer's explicit calm.task.verdict; a failed Operation cannot qualify the candidate. Recheck current authority and all evidence. Do not recover this Done Reviewer: settlement grants neither Recover nor code acceptance."}),
+        "decision":"Read calm.plan.list for the exact machine, review and Operation outcomes. A successful settled review may now be considered for the producer's explicit calm.task.verdict; a failed Operation cannot qualify the candidate. Recheck current authority and all evidence. If delivery.repair exists, use its linked repair_key/review_key: this original R1 notice neither creates another round nor accepts C2. C2 needs its own fresh checks, settled complete R2 and explicit producer acceptance. Do not recover this Done Reviewer: settlement grants neither Recover nor code acceptance."}),
     )
 }
 pub(crate) fn render(briefing: &Value) -> Result<String> {

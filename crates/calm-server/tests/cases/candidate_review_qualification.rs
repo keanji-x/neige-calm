@@ -574,3 +574,6 @@ async fn candidate_review_qualification_receipt_failure_rolls_back_decision_even
 
 #[path = "candidate_review_settlement.rs"]
 mod settlement;
+
+#[path = "candidate_repair.rs"]
+mod repair;

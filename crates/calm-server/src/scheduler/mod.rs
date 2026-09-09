@@ -1139,14 +1139,17 @@ impl Scheduler {
             hook.claimed.notify_one();
             hook.resume.notified().await;
         }
-        if matches!(
-            crate::file_delivery::selection(&frozen),
-            Ok(Some(
-                calm_types::task_execution::FileDelivery::Consumer { .. }
-                    | calm_types::task_execution::FileDelivery::CandidateConsumer { .. }
-                    | calm_types::task_execution::FileDelivery::CandidateReviewer { .. }
-            ))
-        ) {
+        if crate::file_delivery::repair::reference(&frozen)
+            .is_ok_and(|reference| reference.is_some())
+            || matches!(
+                crate::file_delivery::selection(&frozen),
+                Ok(Some(
+                    calm_types::task_execution::FileDelivery::Consumer { .. }
+                        | calm_types::task_execution::FileDelivery::CandidateConsumer { .. }
+                        | calm_types::task_execution::FileDelivery::CandidateReviewer { .. }
+                ))
+            )
+        {
             // Claim/budget remain serialized; file IO and the existing Operation
             // wait must not hold the Track lock. Keep the same permit/singleflight.
             let this = self.clone();

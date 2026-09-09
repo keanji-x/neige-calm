@@ -420,6 +420,11 @@ enum PersistPurpose {
         args: super::dispatch::DispatchArgs,
         task_budget_default: i64,
     },
+    Repair {
+        identity: crate::mcp_server::registry::ToolCallIdentity,
+        args: crate::file_delivery::repair::RepairArgs,
+        task_budget_default: i64,
+    },
     UserStart {
         key: String,
         goal: String,
@@ -509,6 +514,39 @@ pub(crate) async fn planner_dispatch(
     )
     .await?;
     response.ok_or_else(|| CalmError::Internal("dispatch snapshot missing".into()))
+}
+
+/// Planner-only single-round candidate repair; authorization and replay stay inside persist.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn planner_repair(
+    repo: &dyn RouteRepo,
+    events: &EventBus,
+    write: &WriteContext,
+    identity: crate::mcp_server::registry::ToolCallIdentity,
+    target: ReportEditTarget,
+    args: crate::file_delivery::repair::RepairArgs,
+    task_budget_default: i64,
+    recorder_shadow: Arc<dyn RecorderShadowProbe>,
+) -> Result<serde_json::Value, CalmError> {
+    let (_, response) = persist(
+        repo,
+        events,
+        write,
+        identity.to_actor_id(),
+        EditAuthor::Planner,
+        target,
+        PersistPurpose::Repair {
+            identity,
+            args,
+            task_budget_default,
+        },
+        None,
+        None,
+        false,
+        Some(recorder_shadow),
+    )
+    .await?;
+    response.ok_or_else(|| CalmError::Internal("repair snapshot missing".into()))
 }
 
 /// #1252 S2 — the **structural door**: track creation laying a forked or
@@ -845,7 +883,7 @@ async fn persist(
             let recorder_shadow = recorder_shadow.clone();
             Box::pin(async move {
                 let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
-                if let PersistPurpose::Dispatch { identity, .. } = &purpose {
+                if let PersistPurpose::Dispatch { identity, .. } | PersistPurpose::Repair { identity, .. } = &purpose {
                     super::dispatch::authorize_tx(tx, identity, &track_id, &id).await?;
                 }
                 if auto_promote_draft
@@ -892,6 +930,19 @@ async fn persist(
                     ).bind(&id).fetch_one(&mut **tx).await?;
                     *replay_out.lock().map_err(|_| CalmError::Internal("dispatch replay lock poisoned".into()))? = Some((Card::from(card), response));
                     return Err(CalmError::Conflict(DISPATCH_REPLAY.into()));
+                }
+                if let PersistPurpose::Repair { args, task_budget_default, .. } = &purpose {
+                    args.validate()?;
+                    if let Some(receipt) = crate::file_delivery::repair::lookup_tx(tx, track_id.as_str(), &args.producer).await? {
+                        if receipt.args != *args { return Err(CalmError::Conflict("repair source already has a different reason".into())); }
+                        crate::file_delivery::repair::validate_lineage_tx(tx, &receipt).await?;
+                        let response = super::repair::snapshot_tx(tx, &receipt, *task_budget_default).await?;
+                        let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
+                            "SELECT id,track_id,kind,sort,payload,title,deletable,created_at,updated_at FROM cards WHERE id=?1"
+                        ).bind(&id).fetch_one(&mut **tx).await?;
+                        *replay_out.lock().map_err(|_|CalmError::Internal("repair replay lock poisoned".into()))? = Some((Card::from(card), response));
+                        return Err(CalmError::Conflict(DISPATCH_REPLAY.into()));
+                    }
                 }
                 // A new Planner declaration preserves the existing Draft promotion.
                 // Receipt replay returned above and cannot promote or resume work.
@@ -948,7 +999,17 @@ async fn persist(
                     CalmError::Internal(format!("track_report: project CRDT for card {id}: {e}"))
                 })?;
                 let dispatch_key = format!("dispatch-{}", uuid::Uuid::new_v4().simple());
+                let mut repair_receipt = None;
                 let op = match purpose.clone() {
+                    PersistPurpose::Repair { args, .. } => {
+                        let mut receipt = crate::file_delivery::repair::prepare_tx(tx, track_id.as_str(), &id, &args).await?;
+                        let first = super::repair::prepare(&doc, &receipt.repair)?;
+                        let (created, _) = apply_persisted_report_op(&mut doc, &first, author)?;
+                        receipt.repair.block_id = created.ok_or_else(||CalmError::Internal("repair block outcome missing".into()))?.id;
+                        let second = super::repair::prepare(&doc, &receipt.reviewer)?;
+                        repair_receipt = Some(receipt);
+                        second
+                    }
                     PersistPurpose::Edit(op) => op,
                     PersistPurpose::Dispatch { args, .. } => {
                         super::dispatch::prepare(&doc, &args, &dispatch_key)?
@@ -1021,6 +1082,11 @@ async fn persist(
                     };
                     super::dispatch::insert_tx(tx, &track_id, args, &receipt).await?;
                     Some(super::dispatch::snapshot_tx(tx, &track_id, &receipt, args, *task_budget_default).await?)
+                } else if let PersistPurpose::Repair { task_budget_default, .. } = &purpose {
+                    let receipt = repair_receipt.as_mut().ok_or_else(||CalmError::Internal("repair receipt missing".into()))?;
+                    receipt.reviewer.block_id = outcome.as_ref().ok_or_else(||CalmError::Internal("repair review block outcome missing".into()))?.id.clone();
+                    crate::file_delivery::repair::insert_tx(tx, receipt).await?;
+                    Some(super::repair::snapshot_tx(tx, receipt, *task_budget_default).await?)
                 } else { None };
                 //    Then two events tagged with the same card scope. Order
                 //    matters here too: `CardUpdated` first so an existing

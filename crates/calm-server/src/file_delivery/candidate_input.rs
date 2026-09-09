@@ -22,6 +22,8 @@ pub(crate) enum BindingPurpose {
     VerifiedCandidateInput,
     #[serde(rename = "candidate-review-input")]
     CandidateReviewInput,
+    #[serde(rename = "candidate-repair-input")]
+    CandidateRepairInput,
 }
 impl From<CandidateInputPurpose> for BindingPurpose {
     fn from(value: CandidateInputPurpose) -> Self {
@@ -39,22 +41,49 @@ pub(crate) async fn load_tx(
     row.map(|(raw, state, op)| Ok((serde_json::from_str(&raw)?, state, op)))
         .transpose()
 }
+async fn input_contract_tx(
+    tx: &mut Tx<'_>,
+    task: &Task,
+) -> Result<Option<(String, String, BindingPurpose, bool)>> {
+    if let Some(receipt) = super::repair::validate_contract_tx(tx, task).await?
+        && task.key == receipt.repair.key
+    {
+        return Ok(Some((
+            receipt.args.producer,
+            receipt.input.candidate.slot()?.into(),
+            BindingPurpose::CandidateRepairInput,
+            true,
+        )));
+    }
+    Ok(match selection(task)? {
+        Some(FileDelivery::CandidateConsumer {
+            producer,
+            slot,
+            purpose,
+        }) => Some((producer, slot, purpose.into(), false)),
+        Some(FileDelivery::CandidateReviewer { producer, slot, .. }) => {
+            Some((producer, slot, BindingPurpose::CandidateReviewInput, true))
+        }
+        _ => None,
+    })
+}
 pub(crate) async fn validate_source_tx(
     tx: &mut Tx<'_>,
     task: &Task,
     binding: &Binding,
 ) -> Result<()> {
-    let (producer, slot, purpose, reviewer) = match selection(task)? {
-        Some(FileDelivery::CandidateConsumer {
-            producer,
-            slot,
-            purpose,
-        }) => (producer, slot, BindingPurpose::from(purpose), false),
-        Some(FileDelivery::CandidateReviewer { producer, slot, .. }) => {
-            (producer, slot, BindingPurpose::CandidateReviewInput, true)
+    let (producer, slot, purpose, _) = input_contract_tx(tx, task)
+        .await?
+        .ok_or_else(|| conflict("candidate input contract missing"))?;
+    let reviewer = purpose == BindingPurpose::CandidateReviewInput;
+    if purpose == BindingPurpose::CandidateRepairInput {
+        let receipt = super::repair::for_task_tx(tx, task)
+            .await?
+            .ok_or_else(|| conflict("repair receipt missing"))?;
+        if receipt.input != *binding {
+            return Err(conflict("repair input differs from exact C1 receipt"));
         }
-        _ => return Err(conflict("candidate input contract missing")),
-    };
+    }
     let (source, _) = source_tx(tx, &binding.candidate.source).await?;
     if source.track_id != task.track_id
         || source.key != producer
@@ -76,20 +105,14 @@ pub(crate) async fn validate_tx(tx: &mut Tx<'_>, task: &Task, binding: &Binding)
         Some(FileDelivery::CandidateConsumer { .. })
     ) {
         super::candidate_qualification::validate_binding_tx(tx, task, binding).await?;
+    } else {
+        super::repair::validate_task_tx(tx, task).await?;
     }
     Ok(())
 }
 pub(crate) async fn bind_claim_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
-    let (producer, slot, purpose, reviewer) = match selection(task)? {
-        Some(FileDelivery::CandidateConsumer {
-            producer,
-            slot,
-            purpose,
-        }) => (producer, slot, BindingPurpose::from(purpose), false),
-        Some(FileDelivery::CandidateReviewer { producer, slot, .. }) => {
-            (producer, slot, BindingPurpose::CandidateReviewInput, true)
-        }
-        _ => return Ok(()),
+    let Some((producer, slot, purpose, reviewer)) = input_contract_tx(tx, task).await? else {
+        return Ok(());
     };
     if let Some((binding, _, _)) = load_tx(tx, &task.id).await? {
         return validate_tx(tx, task, &binding).await;
@@ -109,6 +132,11 @@ pub(crate) async fn bind_claim_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
             .await?
             .ok_or_else(|| conflict("candidate recovery input missing"))?
             .0
+    } else if purpose == BindingPurpose::CandidateRepairInput {
+        super::repair::for_task_tx(tx, task)
+            .await?
+            .ok_or_else(|| conflict("repair receipt missing"))?
+            .input
     } else {
         let mut binding =
             super::candidate_review::select_input_tx(tx, &task.track_id, &producer, &slot).await?;
@@ -177,13 +205,32 @@ pub(crate) async fn verify(tx: &mut Tx<'_>, op: &Operation, workspace: &Path) ->
         .map_err(|_| conflict("candidate preturn check interrupted"))?
 }
 pub(crate) async fn prompt(tx: &mut Tx<'_>, task: &Task) -> Result<String> {
+    if let Some(receipt) = super::repair::validate_contract_tx(tx, task).await? {
+        let (binding, _, _) = load_tx(tx, &task.id)
+            .await?
+            .ok_or_else(|| conflict("repair input missing"))?;
+        validate_tx(tx, task, &binding).await?;
+        let lineage = serde_json::to_string(&receipt.public())?;
+        if task.key == receipt.repair.key {
+            return Ok(format!(
+                "Repair the exact C1 files at /workspace/inputs/source. Keep these inputs unchanged. Write every complete declared C2 output under /workspace, including unchanged files. Original goal: {}. Original acceptance: {}. Exact original review findings and lineage: {}. Inherited output contract and machine checks: {}. C2 needs fresh checks, its new Reviewer and explicit Planner acceptance.",
+                receipt.source_payload["goal"],
+                receipt.source_payload["acceptance"],
+                lineage,
+                serde_json::to_string(&selection(task)?)?
+            ));
+        }
+        return Ok(format!(
+            "Review exact C2 at /workspace/inputs/source against this task's acceptance and every original R1 finding. Original findings and kernel lineage: {lineage}. Complete with exactly passed (boolean), blocking_findings (array), finding_responses (array). Each finding_responses entry requires finding_index (original zero-based array index), status (resolved or unresolved), evidence (nonempty specific explanation). Answer every original finding exactly once, no duplicates or extra indices. passed=true requires all resolved and no blockers; passed=false requires blockers. The kernel binds original report_event_id and exact C2; do not supply identities. Report acceptance does not accept the implementation."
+        ));
+    }
     match selection(task)? {
         Some(FileDelivery::CandidateProducer {
             slot,
             paths,
             policy,
         }) => Ok(format!(
-            "Write every declared ordinary file for output `{slot}` under /workspace: {}. After confirmed stop the kernel seals these files and runs these exact machine checks against a working copy: {}. Machine scope is declared check exit status only. A review-required policy additionally waits for its named Reviewer and Planner acceptance; repair is unsupported.",
+            "Write every declared ordinary file for output `{slot}` under /workspace: {}. After confirmed stop the kernel seals these files and runs these exact machine checks against a working copy: {}. Machine scope is declared check exit status only. A review-required policy additionally waits for its named Reviewer and Planner acceptance; a settled blocking review may be eligible for one Planner-requested linked repair.",
             serde_json::to_string(&paths)?,
             serde_json::to_string(&policy)?
         )),

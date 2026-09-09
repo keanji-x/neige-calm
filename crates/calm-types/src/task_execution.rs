@@ -21,6 +21,8 @@ pub struct IsolatedCodexSelection {
     pub workspace: IsolatedWorkspace,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_delivery: Option<FileDelivery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair: Option<CandidateRepairReference>,
 }
 impl IsolatedCodexSelection {
     /// Missing reserved field is legacy. A present invalid field is never legacy.
@@ -51,6 +53,13 @@ impl IsolatedCodexSelection {
         }
         Ok(())
     }
+}
+
+/// Kernel-issued lineage. Every present field is required.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateRepairReference {
+    pub receipt_id: String,
 }
 
 /// Bounded same-Track file delivery, separate from ordering dependencies and gates.
@@ -222,16 +231,37 @@ pub enum JsonInputPurpose {
 impl IsolatedCodexSelection {
     pub fn validate_delivery(&self) -> Result<(), String> {
         let invalid = || "neige_execution: invalid single-file delivery contract".to_string();
+        if self
+            .repair
+            .as_ref()
+            .is_some_and(|r| r.receipt_id.is_empty())
+        {
+            return Err(invalid());
+        }
+        if self.repair.is_some()
+            && !matches!(
+                (&self.workspace, &self.file_delivery),
+                (
+                    IsolatedWorkspace::FileInput,
+                    Some(
+                        FileDelivery::CandidateProducer { .. }
+                            | FileDelivery::CandidateReviewer { .. }
+                    )
+                )
+            )
+        {
+            return Err(invalid());
+        }
         match (&self.workspace, &self.file_delivery) {
             (IsolatedWorkspace::Empty, None) => Ok(()),
             (
-                IsolatedWorkspace::Empty,
+                workspace,
                 Some(FileDelivery::CandidateProducer {
                     slot,
                     paths,
                     policy,
                 }),
-            ) => {
+            ) if *workspace == IsolatedWorkspace::Empty || self.repair.is_some() => {
                 if paths.is_empty() || paths.len() > 64 {
                     return Err(invalid());
                 }
