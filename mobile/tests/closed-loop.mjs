@@ -73,7 +73,12 @@ try {
   await desktop.goto(`${local}/next/`);
   await desktop.getByLabel('Username', { exact: true }).fill('owner');
   await desktop.getByLabel('Password', { exact: true }).fill(password);
-  await desktop.getByRole('button', { name: 'Sign in', exact: true }).click();
+  // Login reloads the document after setting the cookie. A successful whoami
+  // can precede that reload; wait for it before starting another navigation.
+  await Promise.all([
+    desktop.waitForEvent('load'),
+    desktop.getByRole('button', { name: 'Sign in', exact: true }).click(),
+  ]);
   await expect.poll(async () => (await owner.request.get(`${local}/api/auth/whoami`)).status()).toBe(200);
   await desktop.goto(`${local}/next/settings/network`);
   await desktop.getByRole('button', { name: /Mobile connection/ }).click();
