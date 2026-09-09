@@ -44,6 +44,7 @@
         "value": "Total"
       },
       "chart": "donut",
+      "labelSuffixKey": "venue",
       "x": "asset",
       "y": "value",
       "height": 220,
@@ -102,6 +103,7 @@
           "format": "text",
           "digits": 0,
           "fallbackKey": "asset",
+          "suffixKey": "venue",
           "linkKey": "track"
         },
         {

@@ -5,7 +5,17 @@ import { z } from 'zod';
 const text = z.string().refine(value => [...value].length <= 2048, 'Text exceeds 2048 code points');
 const key = z.string().min(1).refine(value => [...value].length <= 2048, 'Key exceeds 2048 code points');
 const scalar = z.union([text, z.number().finite(), z.null()]);
-const row = z.record(key, scalar).refine(value => Object.keys(value).length <= 32, 'Too many fields');
+// z.record strips an own __proto__ key. Report rows are scalar JSON records:
+// validate every entry and define own properties so accepted keys roundtrip.
+const row = z.custom<Record<string, z.infer<typeof scalar>>>(value => value !== null && typeof value === 'object' && !Array.isArray(value))
+  .superRefine((value, ctx) => {
+    const entries = Object.entries(value);
+    if (entries.length > 32) ctx.addIssue({ code: 'custom', message: 'Too many fields' });
+    for (const [name, item] of entries) {
+      if (!key.safeParse(name).success) ctx.addIssue({ code: 'custom', path: [name], message: 'Invalid row key' });
+      if (!scalar.safeParse(item).success) ctx.addIssue({ code: 'custom', path: [name], message: 'Row values must be bounded scalar values' });
+    }
+  }).transform(value => Object.fromEntries(Object.entries(value)));
 const selector = z.strictObject({ key, value: scalar });
 const annotations = z.strictObject({ keys: z.array(key).min(1).max(4), rows: z.array(row).max(500) })
   .superRefine((value, ctx) => {
@@ -34,9 +44,11 @@ const dayRange = z.number().int().min(1).max(3660);
 export const layoutChartSchema = z.strictObject({
   kind: z.literal('chart'), title: text, span: z.number().int().min(1).max(3), data, exclude: selector.optional(),
   chart: z.enum(['line', 'donut']), x: key, y: key, height: z.number().int().min(160).max(640),
+  labelSuffixKey: key.optional(),
   color: z.string().length(7).regex(/^#[0-9A-Fa-f]{6}$/), unit: unit.optional(),
   ranges: z.array(dayRange).min(1).max(8).optional(), defaultRange: dayRange.optional(),
 }).superRefine((value, ctx) => {
+  if (value.labelSuffixKey !== undefined && value.chart !== 'donut') ctx.addIssue({ code: 'custom', message: 'Only donut labels accept a suffix' });
   if ((value.ranges === undefined) !== (value.defaultRange === undefined)
     || (value.ranges !== undefined && (value.chart !== 'line' || !value.ranges.includes(value.defaultRange!)
       || value.ranges.some((entry, index) => index > 0 && entry <= value.ranges![index - 1])))) {
@@ -69,4 +81,4 @@ export type LayoutSelector = z.infer<typeof selector>;
 
 // A live producer uses a native table-shaped overlay; presentation columns are
 // not reinterpreted here. Strict row bounds and scalar values still apply.
-export const layoutLiveDataSchema = z.object({ rows: z.array(row).max(500), caption: text.optional() });
+export const layoutLiveDataSchema = z.object({ rows: z.array(row).max(500), caption: text.nullish() });

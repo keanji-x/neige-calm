@@ -28,7 +28,7 @@ join keys. Invalid/ambiguous joins produce a visible data error at rendering.
 
 Chart item adds required `chart:"line"|"donut"`, `x:nonempty string`,
 `y:nonempty string`, `height:integer 160..640`, `color:"#RRGGBB"`;
-optional `unit:Unit`, `ranges:[integer days 1..3660;1..8]`,
+optional `unit:Unit`, `labelSuffixKey:nonempty string` (donut only), `ranges:[integer days 1..3660;1..8]`,
 `defaultRange:integer days 1..3660`. Ranges unique, ascending; defaultRange must
 be present iff ranges is present and must occur in it; only line accepts ranges.
 Unit: `{key:nonempty string,equals:nonempty string,row?:Selector}`.
@@ -43,6 +43,9 @@ Line x accepts finite epoch milliseconds or parseable date strings. Sort stably,
 including duplicate timestamps. Invalid/missing y stays a gap; invalid x makes
 the dataset visibly invalid. Zero is data. Render a line only with >=2 usable
 observations. Ranges are trailing calendar-independent days from latest x.
+When labelSuffixKey is present, append its non-null scalar value to the donut
+label as `x · suffix`; a missing suffix makes the chart unavailable. This lets
+a template distinguish codes across markets without a domain-specific adapter.
 Donut x is a non-null scalar label; y must be finite and nonnegative in EVERY
 selected row. A missing/negative y prevents normalization of the whole chart.
 Exclude summary rows through explicit template selectors. Preserve producer

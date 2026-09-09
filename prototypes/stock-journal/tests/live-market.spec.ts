@@ -64,7 +64,7 @@ test('saved layouts and two portfolios render independently and recipe writes re
   await expect(page.locator('.recharts-area-curve')).toBeVisible();
   await expect(page.locator('.recharts-pie-sector')).toHaveCount(2);
   await expect(page.locator('iframe')).toHaveCount(0);
-  await page.getByRole('button', { name: '研究资产', exact: true }).click();
+  await page.getByRole('button', { name: '研究资产 US', exact: true }).click();
   await expect(page.getByRole('heading', { name: '原有投资逻辑', exact: true })).toBeVisible();
   await expect(page.locator('.recharts-pie-sector')).toHaveCount(0);
   await page.goto('/next/track/second?market=1');

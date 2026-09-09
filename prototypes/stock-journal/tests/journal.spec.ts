@@ -30,8 +30,8 @@ test('shadcn chart controls change the time range, highlight holdings, and show 
   await figure.getByRole('button', { name: '30天', exact: true }).click();
   await expect(figure.locator('.recharts-area-curve')).not.toHaveAttribute('d', fullPath!);
   await expect(figure.getByRole('button', { name: '30天', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await figure.getByRole('button', { name: /^青松科技\s*18\.0%$/ }).click();
-  await expect(figure.getByRole('button', { name: /^青松科技\s*18\.0%$/ })).toHaveAttribute('aria-pressed', 'true');
+  await figure.getByRole('button', { name: /^青松科技\s*·\s*DEMO\s*18\.0%$/ }).click();
+  await expect(figure.getByRole('button', { name: /^青松科技\s*·\s*DEMO\s*18\.0%$/ })).toHaveAttribute('aria-pressed', 'true');
   await figure.getByRole('button', { name: '180天', exact: true }).click();
   await figure.getByRole('img', { name: '组合走势', exact: true }).locator('svg').hover({ position: { x: 160, y: 90 } });
   await expect(figure.getByRole('img', { name: '组合走势', exact: true }).locator('.recharts-tooltip-wrapper')).toContainText('CNY');
@@ -39,7 +39,7 @@ test('shadcn chart controls change the time range, highlight holdings, and show 
 
 test('native report citations navigate stocks and retain decision-source anchors', async ({ page }) => {
   await page.goto('/next/track/portfolio');
-  await page.getByRole('table').first().getByRole('button', { name: '青松科技', exact: true }).click();
+  await page.getByRole('table').first().getByRole('button', { name: '青松科技 DEMO', exact: true }).click();
   await expect(page).toHaveURL(/\/next\/track\/pine$/);
   await expect(page.getByRole('heading', { name: '半年报精读', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '查看本次决策记录', exact: true }).click();

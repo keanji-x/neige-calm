@@ -1,15 +1,18 @@
-# Portfolio template workflow review
+# Portfolio template workflow review — baseline and follow-up
 
 Reviewed on 2026-09-09. Implementation: `4b33f0b10`, based on main
 `b7bdad97c`. Scope: `prototypes/stock-journal` and its production Report,
 Recipe, Track creation, and market overlay call paths.
 
-## Decision
+## Baseline decision (4b33f0b10 only)
 
-**Changes required.** The prototype demonstrates the visual layout and market
+**Historical result: changes required.** The prototype demonstrates the visual layout and market
 read path; it does not implement a reusable, chat-maintained dashboard. Do not
-merge it as that feature. The findings below remain open; this document is a
-review and implementation design, not a claim that the feature is fixed.
+merge it as that feature. The findings below describe that baseline. Implementation cef4cbbe1 replaces
+the read-only projection with native persisted layout components. Two independent
+agents confirmed all four baseline findings resolved; their new P2 findings
+(selection identity, market label clarity, nullable captions) are being fixed
+and re-reviewed before the final convergence record is appended.
 
 The acceptance outcome is: a user saves a dashboard Recipe, creates two Tracks
 from it, changes one dashboard through chat, and can reload both in the normal
@@ -104,8 +107,8 @@ The first sandboxed model run failed to spawn its importer child process
 No product assertion remained unexplained. These green tests establish the
 prototype's existing read-only behavior, not the new template workflow.
 No real AI execution, template persistence, or private account integration was
-exercised. No runtime implementation changed during this review. The review
-has not converged for a production feature: the four findings remain open.
+exercised. No runtime implementation changed during this review. At the baseline review date, this had not converged: the four findings were
+open. See the follow-up status above for the subsequent implementation.
 
 ## Implementation design
 

@@ -77,10 +77,12 @@ export function layoutChartData(item: LayoutChart, data: LayoutData): LayoutChar
       if (!Number.isFinite(x) || !Number.isFinite(new Date(x).getTime())) return { kind: 'unavailable', message: '时间字段缺失或无效。' };
       points.push({ x, value: matchingUnit && typeof rawY === 'number' && Number.isFinite(rawY) ? rawY : null });
     } else {
+      const suffix = item.labelSuffixKey === undefined ? undefined : field(row, item.labelSuffixKey);
+      if (item.labelSuffixKey !== undefined && (suffix === null || suffix === undefined)) return { kind: 'unavailable', message: '标签补充字段缺失。' };
       if (!matchingUnit || rawX === null || rawX === undefined || !nonnegative(rawY)) {
         return { kind: 'unavailable', message: '等待完整数值与一致的计价单位，暂不显示占比。' };
       }
-      points.push({ x: String(rawX), value: rawY });
+      points.push({ x: suffix === undefined ? String(rawX) : `${String(rawX)} · ${String(suffix)}`, value: rawY });
     }
   }
   if (item.chart === 'line') points.sort((a, b) => Number(a.x) - Number(b.x));

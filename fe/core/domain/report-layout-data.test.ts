@@ -17,11 +17,23 @@ function parse(item: unknown) {
 }
 
 describe('layout contract', () => {
+  it('preserves own scalar row keys without interpreting prototype names', () => {
+    const input = JSON.parse('{"__proto__":"own value","constructor":"own constructor","value":1}') as Record<string, string | number>;
+    const result = parse(chart({ data: { rows: [input] } }));
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error('Expected valid row');
+    const data = result.data.items[0].data;
+    if (!('rows' in data)) throw new Error('Expected inline data');
+    expect(Object.hasOwn(data.rows[0], '__proto__')).toBe(true);
+    expect(data.rows[0]['__proto__']).toBe('own value');
+    expect(Object.getPrototypeOf(data.rows[0])).toBe(Object.prototype);
+  });
   it('rejects malformed, executable, ambiguous and incomplete configuration', () => {
     expect(parse(chart()).success).toBe(true);
     for (const item of [chart({ span: 2 }), { ...chart(), html: '<script/>' }, chart({ color: '#123456\n' }),
       chart({ data: { source: 'neige://plugin/market/history\n' } }), chart({ ranges: [30, 30], defaultRange: 30 }),
       chart({ ranges: [30] }), chart({ defaultRange: 30 }), chart({ chart: 'donut', ranges: [30], defaultRange: 30 }),
+      chart({ labelSuffixKey: 'venue' }), chart({ chart: 'donut', labelSuffixKey: '' }),
       chart({ data: { source: 'neige://plugin/market/history', annotations: { keys: ['asset'], rows: [{ asset: 'A' }, { asset: 'A' }] } } }),
       chart({ data: { source: 'neige://plugin/market/history', annotations: { keys: ['asset'], rows: [{}] } } }),
       { ...table(), total: undefined },
@@ -30,6 +42,21 @@ describe('layout contract', () => {
 });
 
 describe('source-backed chart observations', () => {
+  it('distinguishes identical asset codes with a template-selected label suffix', () => {
+    const item = { ...chart({ chart: 'donut', x: 'asset', data: { rows: [
+      { asset: 'W', venue: 'US', value: 10 }, { asset: 'W', venue: 'CRYPTO', value: 20 },
+    ] } }), labelSuffixKey: 'venue' };
+    expect(layoutChartData(item, resolveLayoutData(item))).toMatchObject({ kind: 'ready', points: [
+      { x: 'W · US', value: 10 }, { x: 'W · CRYPTO', value: 20 },
+    ] });
+    const missing = { ...item, data: { rows: [{ asset: 'W', value: 10 }] } };
+    expect(layoutChartData(missing, resolveLayoutData(missing)).kind).toBe('unavailable');
+  });
+  it('accepts absent live-table captions just like the native table reader', () => {
+    const item = chart({ data: { source: 'neige://plugin/market/history' } });
+    expect(resolveLayoutData(item, () => ({ rows: [{ at: '2026-09-09', value: 10 }], caption: null })))
+      .toMatchObject({ kind: 'ready', caption: '' });
+  });
   it('keeps same-time observations and creates currency/null gaps without relabeling', () => {
     const item = chart({ unit: { key: 'currency', equals: 'CNY' }, data: { rows: [
       { at: '2026-09-09T00:00:00Z', value: 10, currency: 'CNY' },

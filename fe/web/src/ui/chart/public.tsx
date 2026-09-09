@@ -23,7 +23,14 @@ function dateLabel(value: number, intraday: boolean) {
 export function Chart({ kind, label, points, color, height, unit, ranges, defaultRange }: ChartProps) {
   const gradient = `fill-${useId().replace(/:/g, '')}`;
   const [range, setRange] = useState(defaultRange);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useState<string | number | null>(null);
+  // A live update may reorder/delete observations. Selection follows a unique
+  // label identity; missing or ambiguous identities never select another row.
+  const selectedPoint = points.filter(point => point.x === selected).length === 1 ? selected : null;
+  const toggle = (index: number) => {
+    const identity = points[index]?.x;
+    if (identity !== undefined) setSelected(current => current === identity ? null : identity);
+  };
   const latest = points.at(-1);
   const visible = kind === 'line' && range !== undefined && latest !== undefined
     ? points.filter(point => Number(point.x) >= Number(latest.x) - range * 86_400_000) : points;
@@ -58,14 +65,14 @@ export function Chart({ kind, label, points, color, height, unit, ranges, defaul
                 <span>{String(payload[0]?.name)}</span><strong>{money(Number(payload[0]?.value))}</strong>
               </div> : null}/>
               <Pie data={[...points]} dataKey="value" nameKey="x" innerRadius="65%" outerRadius="88%" stroke="none" paddingAngle={2}
-                isAnimationActive={false} onClick={(_entry, index) => setSelected(value => value === index ? null : index)}>
-                {points.map((_point, index) => <Cell key={index} fill={color} fillOpacity={selected !== null && selected !== index ? .12 : 1 - (index % 5) * .15}/>)}
+                isAnimationActive={false} onClick={(_entry, index) => toggle(index)}>
+                {points.map((point, index) => <Cell key={index} fill={color} fillOpacity={selectedPoint !== null && selectedPoint !== point.x ? .12 : 1 - (index % 5) * .15}/>)}
               </Pie>
             </PieChart>}
           </ResponsiveContainer>
         </div>
         {kind === 'donut' && <div className={styles.legend} aria-label={`${label}明细`}>
-          {points.map((point, index) => <button key={index} type="button" aria-pressed={selected === index} onClick={() => setSelected(value => value === index ? null : index)}>
+          {points.map((point, index) => <button key={index} type="button" aria-pressed={selectedPoint === point.x} onClick={() => toggle(index)}>
             <span>{String(point.x)}</span><strong>{((point.value ?? 0) / total * 100).toFixed(1)}%</strong>
           </button>)}
         </div>}
