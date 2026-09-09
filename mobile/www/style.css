@@ -1,0 +1,45 @@
+:root {
+  font-family: system-ui, -apple-system, "Noto Sans CJK SC", sans-serif;
+  color: #292a32;
+  background: #f6f5f2;
+  color-scheme: light;
+  font-synthesis: none;
+  -webkit-text-size-adjust: 100%;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 280px; }
+main {
+  max-width: 460px;
+  margin: 0 auto;
+  padding: max(48px, env(safe-area-inset-top)) 28px max(24px, env(safe-area-inset-bottom));
+}
+.brand { display: block; }
+.eyebrow { margin: 20px 0 24px; font-size: 11px; letter-spacing: 3px; color: #666773; }
+h1 { font-size: 34px; font-weight: 650; letter-spacing: -1px; line-height: 1.4; margin: 0; }
+.intro { color: #666773; font-size: 15px; line-height: 1.8; margin: 18px 0 36px; }
+label { display: block; font-size: 14px; font-weight: 550; }
+input[type="url"] {
+  width: 100%; margin-top: 10px; padding: 15px 12px; font: inherit; font-size: 16px;
+  border: 1px solid #c6c5ce; border-radius: 12px; background: #fff; color: inherit;
+}
+input::placeholder { color: #74747e; }
+:focus-visible { outline: 3px solid #6563bd; outline-offset: 3px; }
+input[aria-invalid="true"] { border-color: #ac3434; }
+#hint, .footer { font-size: 12px; color: #666773; line-height: 1.7; }
+.remember { display: flex; align-items: center; gap: 8px; margin-top: 20px; font-weight: 400; min-height: 44px; }
+input[type="checkbox"] { width: 18px; height: 18px; accent-color: #5553a2; }
+#error { min-height: 24px; margin: 8px 0 12px; color: #ac3434; font-size: 13px; line-height: 1.7; }
+button {
+  display: flex; align-items: center; justify-content: space-between; width: 100%;
+  border: 0; border-radius: 12px; padding: 17px 18px; font: inherit; font-weight: 600;
+  color: #fff; background: #5553a2; cursor: pointer;
+}
+button:active { background: #454385; }
+.footer { margin-top: 30px; text-align: center; }
+@media (prefers-color-scheme: dark) {
+  :root { color-scheme: dark; color: #efeff4; background: #1b1b21; }
+  .intro, .eyebrow, #hint, .footer { color: #b5b4c1; }
+  input[type="url"] { background: #282830; border-color: #686774; }
+  input::placeholder { color: #a6a5b3; }
+  #error { color: #ffa5a5; }
+}

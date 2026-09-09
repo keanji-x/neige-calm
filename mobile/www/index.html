@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <title>Neige Calm</title>
+    <link rel="stylesheet" href="./style.css">
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <main>
+      <img class="brand" src="./neige-mark.svg" width="48" height="48" alt="">
+      <p class="eyebrow">NEIGE CALM</p>
+      <h1>你的工作，<br>随时继续。</h1>
+      <p class="intro">连接你的 Neige Calm，<br>在手机上打开 Next 工作空间。</p>
+      <form novalidate>
+        <label for="server">服务器地址</label>
+        <input id="server" name="server" type="url" inputmode="url" autocomplete="url"
+          autocapitalize="none" spellcheck="false" placeholder="https://calm.example.com"
+          aria-describedby="hint error" required>
+        <p id="hint">填写手机可访问的服务器地址。</p>
+        <label class="remember"><input id="remember" type="checkbox" checked>记住服务器地址</label>
+        <p id="error" role="alert"></p>
+        <button type="submit">进入工作空间 <span aria-hidden="true">→</span></button>
+      </form>
+      <p class="footer">连接后使用原有账号登录 · 需要网络连接</p>
+    </main>
+  </body>
+</html>
