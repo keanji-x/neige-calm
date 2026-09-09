@@ -60,9 +60,9 @@ fn publish_history(
     kind: &str,
     history: Result<Vec<Value>, String>,
     at: &str,
-    total: f64,
-    currency: &str,
+    observation: (f64, &str),
 ) -> Result<(), String> {
+    let (total, currency) = observation;
     let mut points = history?;
     points.push(json!({"at":at,"total":round_to(total,2),"currency":currency}));
     if points.len() > MAX_HISTORY_POINTS {
@@ -187,35 +187,32 @@ pub(super) fn refresh(rpc: &Rpc, cfg: &Config, track: &str, cache: &mut PassCach
             failures.push(format!("{kind} could not be published"));
         }
     }
-    if let (true, Some(history), Some((total, unit))) = (old_published, old_history, old_total) {
-        if let Err(error) = publish_history(
+    if let (true, Some(history), Some((total, unit))) = (old_published, old_history, old_total)
+        && let Err(error) = publish_history(
             rpc,
             track,
             &history_key(track),
             "portfolio.history",
             history,
             &at,
-            total,
-            &unit,
-        ) {
-            failures.push(format!("security history: {error}"));
-        }
+            (total, &unit),
+        )
+    {
+        failures.push(format!("security history: {error}"));
     }
     if let (true, Some(history), Some((total, unit))) =
         (new_published, new_history, &combined.total)
-    {
-        if let Err(error) = publish_history(
+        && let Err(error) = publish_history(
             rpc,
             track,
             &new_key,
             "portfolio.total_history",
             history,
             &at,
-            *total,
-            unit,
-        ) {
-            failures.push(format!("combined history: {error}"));
-        }
+            (*total, unit),
+        )
+    {
+        failures.push(format!("combined history: {error}"));
     }
     if !old_complete {
         failures.push("some securities could not be priced or converted".into());
