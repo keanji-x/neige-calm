@@ -316,3 +316,30 @@ Cargo target during this design phase. Root owns any later real chat/service use
   arithmetic with the stated decimal, exponent, overflow and small-FX fixtures.
 - Confirm snapshot-value/ABA semantics and the short commit barrier, including
   no false success after indeterminate writes and measured local callback cost.
+
+## Implementation checkpoint
+
+The owner authorized implementation after both design reviews. Market code is
+split into cash parsing/storage, combined valuation and snapshot/publication
+modules. The only additional host production support is an owner-approved,
+params-free `trace!` inside `callbacks::dispatch` (plugin id and method only),
+used to prove the existing FIFO after an actual 15-second callback timeout.
+It changes no host dispatch order, authorization, schema or CAS behavior.
+
+The first actual-process and Assistant-host cash tests were red (unknown cash
+set tool / absent discovery). The affected Market binary, process and Assistant
+surface subsequently ran 91 tests green, including old security assertions,
+real Track isolation, blocked provider/commit/error ordering, ABA, restart,
+independent history failures and quota refusal. The host capacity fixture uses
+12 real Tracks with two 500-point series, 20 securities and three cash balances
+each; including its caller it measured 791,785 / 1,048,576 bytes. This measured
+fixture is not a promise of unlimited capacity or a bound on arbitrary inputs.
+Mutation verification, final gates and independent implementation reviews still
+follow this checkpoint; no live service or user data was modified by the author.
+
+Build isolation uses a new `/tmp/neige-ux-cash-target-20260909`, not a copy of any
+old target. All Rust commands unset `NEIGE_CODEX_BIN`, set `RUSTC_WRAPPER=`,
+`CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_PROFILE_TEST_DEBUG=0`, `CARGO_INCREMENTAL=0`,
+and cap `CARGO_BUILD_JOBS` at six (or two while independent builders run).
+The focused run selects `-p calm-server --bin market --test mcp_integration_suite`
+and only Market/Assistant cash tests; broad workspace/real Codex E2E was not run.

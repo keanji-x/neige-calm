@@ -187,6 +187,7 @@ pub async fn dispatch(
     method: &str,
     params: Value,
 ) -> Result<Value, RpcError> {
+    tracing::trace!(target: "plugin_host::callback_dispatch", plugin_id = ctx.plugin_id, method, "dispatching plugin callback");
     match method {
         "neige.overlay.set" => overlay_set(ctx, params).await,
         "neige.overlay.delete" => overlay_delete(ctx, params).await,

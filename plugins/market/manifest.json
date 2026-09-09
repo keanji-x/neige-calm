@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "id": "dev-neige-market",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "min_kernel_version": "0.0.1",
   "display_name": "Market data",
   "entrypoint": {
@@ -74,13 +74,63 @@
         "readOnlyHint": true,
         "openWorldHint": true
       }
+    },
+    {
+      "name": "market.cash.set",
+      "assistant_access": true,
+      "description": "Record this Track's current absolute fiat cash balance. Replaces the amount for one currency; zero remains a recorded zero. Whole cents only; never a deposit, trade or automatic cash deduction. Saves only and queues a portfolio refresh; no pricing/network in this tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "enum": [
+              "CNY",
+              "USD",
+              "HKD"
+            ]
+          },
+          "amount": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Current absolute balance in whole cents, e.g. 0.29 or 100000. Sub-cent or unsafe-range values are refused without rounding."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "currency",
+          "amount"
+        ]
+      },
+      "annotations": {
+        "title": "Set Cash Balance",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "market.cash.list",
+      "assistant_access": true,
+      "description": "Read this Track's saved native cash balances without fetching prices or exchange rates. Empty means no cash recorded; an explicit zero is retained. Use to confirm the outcome after an indeterminate write.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "List Cash Balances",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
     }
   ],
   "permissions": {
     "overlays_write": [
       "track"
     ],
-    "kv_quota_bytes": 262144
+    "kv_quota_bytes": 1048576
   },
   "config_schema": {
     "type": "object",

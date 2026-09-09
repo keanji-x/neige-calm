@@ -48,6 +48,9 @@ const QUIET_WINDOW: Duration = Duration::from_millis(1_500);
 const TRACK: &str = "trk_caller";
 const OTHER_TRACK: &str = "trk_someone_else";
 
+#[path = "market_plugin_cash.rs"]
+mod cash;
+
 #[path = "market_plugin_precision.rs"]
 mod precision;
 
@@ -105,6 +108,7 @@ struct FakeKernel {
     /// also refuse the holdings write, and then the tick under test would
     /// never reach the history step it is about.
     refuse_kv_set: Option<String>,
+    refuse_kv_get: Option<String>,
     /// Applied to the KV immediately after answering a `neige.kv.list`, to
     /// open exactly the window a stale-snapshot bug would fall into.
     mutate_after_list: Option<(String, Value)>,
@@ -163,6 +167,7 @@ impl FakeKernel {
             pushes: Vec::new(),
             methods: Vec::new(),
             refuse_kv_set: None,
+            refuse_kv_get: None,
             mutate_after_list: None,
         };
         kernel.send(json!({
@@ -246,6 +251,14 @@ impl FakeKernel {
         let result = match method.as_str() {
             "neige.kv.get" => {
                 let key = params["key"].as_str().unwrap_or_default();
+                if self
+                    .refuse_kv_get
+                    .as_deref()
+                    .is_some_and(|prefix| key.starts_with(prefix))
+                {
+                    self.send(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"read unavailable"}}));
+                    return;
+                }
                 json!({ "value": self.kv.get(key).cloned().unwrap_or(Value::Null) })
             }
             "neige.kv.set" => {
@@ -410,9 +423,13 @@ fn setting_a_holding_prices_it_now_and_publishes_to_the_callers_track() {
         kernel.kinds_pushed(),
         vec![
             format!("portfolio.holdings@{TRACK}"),
+            format!("portfolio.allocation@{TRACK}"),
+            format!("portfolio.positions@{TRACK}"),
+            format!("portfolio.cash@{TRACK}"),
             format!("portfolio.history@{TRACK}"),
+            format!("portfolio.total_history@{TRACK}"),
         ],
-        "both tables, both on the caller's Track"
+        "all six projections, all on the caller's Track"
     );
     let total = kernel.pushes[0]
         .1
@@ -645,10 +662,15 @@ fn a_tick_that_cannot_price_everything_writes_no_history_point() {
 
     assert_eq!(
         kernel.pushes_since(before),
-        vec![format!("portfolio.holdings@{TRACK}")],
-        "holdings only — no history read, no history write, no history overlay"
+        vec![
+            format!("portfolio.holdings@{TRACK}"),
+            format!("portfolio.allocation@{TRACK}"),
+            format!("portfolio.positions@{TRACK}"),
+            format!("portfolio.cash@{TRACK}")
+        ],
+        "current projections only — neither history advances"
     );
-    let rows = kernel.pushes.last().unwrap().1["rows"]
+    let rows = last_holdings_table(&kernel, TRACK)["rows"]
         .as_array()
         .expect("rows")
         .clone();
@@ -683,8 +705,14 @@ fn a_history_point_that_cannot_be_stored_is_not_published() {
 
     assert_eq!(
         kernel.pushes_since(before),
-        vec![format!("portfolio.holdings@{TRACK}")],
-        "the refused write must end the pass — no history overlay follows it"
+        vec![
+            format!("portfolio.holdings@{TRACK}"),
+            format!("portfolio.allocation@{TRACK}"),
+            format!("portfolio.positions@{TRACK}"),
+            format!("portfolio.cash@{TRACK}"),
+            format!("portfolio.total_history@{TRACK}")
+        ],
+        "no unpersisted security history; the independent combined series may advance"
     );
     assert!(kernel.is_responsive());
 }
@@ -814,10 +842,15 @@ fn removing_the_last_holding_publishes_an_empty_table() {
     );
     assert_eq!(
         kernel.pushes_since(before),
-        vec![format!("portfolio.holdings@{TRACK}")],
+        vec![
+            format!("portfolio.holdings@{TRACK}"),
+            format!("portfolio.allocation@{TRACK}"),
+            format!("portfolio.positions@{TRACK}"),
+            format!("portfolio.cash@{TRACK}")
+        ],
         "the emptied table is republished, and no history point goes with it"
     );
-    let rows = kernel.pushes.last().unwrap().1["rows"]
+    let rows = last_holdings_table(&kernel, TRACK)["rows"]
         .as_array()
         .expect("rows")
         .clone();
@@ -827,7 +860,7 @@ fn removing_the_last_holding_publishes_an_empty_table() {
         Some(0.0),
         "an empty portfolio's total really is zero"
     );
-    let caption = kernel.pushes.last().unwrap().1["caption"]
+    let caption = last_holdings_table(&kernel, TRACK)["caption"]
         .as_str()
         .expect("caption")
         .to_string();
@@ -937,7 +970,11 @@ fn a_hong_kong_holding_is_priced_in_hkd_and_settled_in_usd() {
         kernel.kinds_pushed(),
         vec![
             format!("portfolio.holdings@{TRACK}"),
+            format!("portfolio.allocation@{TRACK}"),
+            format!("portfolio.positions@{TRACK}"),
+            format!("portfolio.cash@{TRACK}"),
             format!("portfolio.history@{TRACK}"),
+            format!("portfolio.total_history@{TRACK}"),
         ],
         "a fully-priced, fully-converted tick publishes both tables"
     );
@@ -1011,7 +1048,11 @@ fn a_portfolio_across_two_currencies_totals_and_writes_a_history_point() {
         kernel.pushes_since(before),
         vec![
             format!("portfolio.holdings@{TRACK}"),
+            format!("portfolio.allocation@{TRACK}"),
+            format!("portfolio.positions@{TRACK}"),
+            format!("portfolio.cash@{TRACK}"),
             format!("portfolio.history@{TRACK}"),
+            format!("portfolio.total_history@{TRACK}"),
         ],
         "the history overlay goes out too: this tick HAS a total",
     );
@@ -1131,8 +1172,13 @@ fn a_holding_whose_rate_is_unavailable_writes_no_history_point() {
 
     assert_eq!(
         kernel.kinds_pushed(),
-        vec![format!("portfolio.holdings@{TRACK}")],
-        "holdings only — no history read, no history write, no history overlay"
+        vec![
+            format!("portfolio.holdings@{TRACK}"),
+            format!("portfolio.allocation@{TRACK}"),
+            format!("portfolio.positions@{TRACK}"),
+            format!("portfolio.cash@{TRACK}")
+        ],
+        "current projections only — neither history advances"
     );
     let table = last_holdings_table(&kernel, TRACK);
     let rows = table["rows"].as_array().expect("rows");

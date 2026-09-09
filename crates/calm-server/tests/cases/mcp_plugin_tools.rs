@@ -48,6 +48,9 @@ const DAEMON_TOKEN: &str = "mcp-plugin-tools-daemon-token";
 #[path = "mcp_plugin_tools_assistant.rs"]
 mod assistant_access;
 
+#[path = "mcp_plugin_cash_host.rs"]
+mod cash_host;
+
 #[path = "mcp_plugin_tools_reload.rs"]
 mod reload_access;
 

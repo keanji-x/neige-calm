@@ -1,7 +1,7 @@
 //! Market portfolio plugin — the kernel's first *pushing* plugin.
 //!
 //! It owns no UI and writes no report. Every refresh it prices the holdings
-//! named in its configuration and pushes two overlays at the configured
+//! recorded for each Track and pushes security-only and cash-aware overlays at that
 //! track through the `neige.*` host-callback channel:
 //!
 //! | overlay `kind` | payload |
@@ -43,6 +43,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+mod cash;
+mod portfolio_state;
+mod portfolio_value;
+
 /// Callback ids start high enough that a forensic reader never confuses one of
 /// ours with a kernel-originated request id.
 const FIRST_CALLBACK_ID: u64 = 1_000;
@@ -51,7 +55,8 @@ const FIRST_CALLBACK_ID: u64 = 1_000;
 /// we would rather log and retry on the next tick than block the poller.
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(15);
 /// Ceiling on retained history points. 500 × ~60 bytes stays far inside the
-/// 64 KiB KV quota the manifest asks for, with room for the JSON envelope.
+/// 1 MiB plugin-wide quota. The separate combined series uses the same cap;
+/// quota failures are surfaced without pruning another Track's data.
 const MAX_HISTORY_POINTS: usize = 500;
 /// The lowest poll interval we honour, whatever the configuration says. The
 /// market-data endpoint is public and unauthenticated; hammering it is how a
@@ -553,18 +558,26 @@ fn store_holdings(rpc: &Rpc, track_id: &str, holdings: &[Holding]) -> Result<(),
 /// taken — the values in the listing are a snapshot, and [`refresh`] re-reads
 /// each Track's own document under the lock rather than trusting one.
 fn portfolios(rpc: &Rpc) -> Result<Vec<String>, String> {
-    let result = rpc.call("neige.kv.list", json!({ "prefix": HOLDINGS_PREFIX }))?;
-    let entries = result
-        .get("entries")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("neige.kv.list returned no `entries` array: {result}"))?;
-    Ok(entries
-        .iter()
-        .filter_map(|entry| entry.get("key").and_then(Value::as_str))
-        .filter_map(|key| key.strip_prefix(HOLDINGS_PREFIX))
-        .filter(|track_id| !track_id.is_empty())
-        .map(str::to_string)
-        .collect())
+    let mut tracks = Vec::new();
+    for prefix in [HOLDINGS_PREFIX, cash::PREFIX] {
+        let result = rpc.call("neige.kv.list", json!({"prefix":prefix}))?;
+        let entries = result
+            .get("entries")
+            .and_then(Value::as_array)
+            .ok_or("portfolio key listing returned no entries")?;
+        for track in entries
+            .iter()
+            .filter_map(|entry| entry.get("key").and_then(Value::as_str))
+            .filter_map(|key| key.strip_prefix(prefix))
+            .filter(|track| !track.is_empty())
+        {
+            if !tracks.iter().any(|old| old == track) {
+                tracks.push(track.to_string());
+            }
+        }
+    }
+    tracks.sort();
+    Ok(tracks)
 }
 
 // ---------------------------------------------------------------------------
@@ -2060,19 +2073,6 @@ fn push_overlay(rpc: &Rpc, track_id: &str, kind: &str, payload: Value) -> bool {
     }
 }
 
-fn load_history(rpc: &Rpc, track_id: &str) -> Result<Vec<Value>, String> {
-    let result = rpc.call("neige.kv.get", json!({ "key": history_key(track_id) }))?;
-    // A key that was never written answers `{"value": null}`, which is an
-    // empty history. A *failed* read is a different answer and must not reach
-    // the writer below as `[]` — that would truncate the series on a transient
-    // error, so the `?` above turns it into a skipped tick instead.
-    Ok(result
-        .get("value")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default())
-}
-
 /// Serializes [`refresh`]. The poll thread and a tool call can arrive at once,
 /// and the history cycle is a read-modify-write against a single KV key:
 /// interleaving two of them loses whichever point lands first.
@@ -2092,6 +2092,8 @@ enum Refreshed {
     Partially(String),
     /// Nothing to do — this Track holds nothing.
     NothingHeld,
+    /// Inputs changed while pricing; discard and promptly capture a new pass.
+    Stale,
 }
 
 /// One refresh of one Track: price, push the holdings table, and — only when
@@ -2105,124 +2107,7 @@ enum Refreshed {
 /// happened. The holdings table still goes out — it names the missing prices
 /// row by row, which is the honest form of that same information.
 fn refresh(rpc: &Rpc, cfg: &Config, track_id: &str, cache: &mut PassCache) -> Refreshed {
-    let _serialized = REFRESH_LOCK.lock();
-    // Read the holdings HERE, inside the lock, rather than taking them from
-    // the caller. A poll pass lists every portfolio up front and then prices
-    // them one at a time; by the time a slow pass reaches this Track, a tool
-    // call may already have changed and re-published it. Publishing the
-    // caller's snapshot would overwrite that newer state with an older one and
-    // append its obsolete total to the history — a portfolio appearing to
-    // revert on its own. Re-reading costs one round trip and removes the
-    // window entirely.
-    let holdings = match load_holdings(rpc, track_id) {
-        Ok(holdings) => holdings,
-        Err(e) => {
-            eprintln!("market: reading {track_id}'s holdings failed: {e}");
-            return Refreshed::Partially("this Track's holdings could not be read".into());
-        }
-    };
-    let at = now_rfc3339();
-
-    // An empty portfolio still publishes. Returning early would leave the
-    // last non-empty table on screen for a Track that now holds nothing —
-    // someone who has just sold out would keep seeing their old position,
-    // which is a worse lie than an empty table. No history point: the series
-    // is about a portfolio's value, and there is no portfolio to value.
-    if holdings.is_empty() {
-        return if push_overlay(
-            rpc,
-            track_id,
-            "portfolio.holdings",
-            holdings_table(price_holdings(cfg, &[], &mut PassCache::new()), &at),
-        ) {
-            Refreshed::NothingHeld
-        } else {
-            Refreshed::Partially("the (now empty) holdings table could not be published".into())
-        };
-    }
-
-    let priced = price_holdings(cfg, &holdings, cache);
-    let complete = priced.complete;
-
-    // Each row's `price × qty × rate` was checked for finiteness, but the sum
-    // of finite values can still overflow — and a settlement currency this
-    // plugin does not settle in leaves the rows in currencies that do not
-    // sum. Either way there is no total, and the per-asset rows are exactly
-    // what a reader needs when there is none.
-    if let Some(why) = priced.total.no_total_reason() {
-        eprintln!("market: no total for {track_id} — {why}; publishing the rows without one");
-    }
-    // Taken before the payload consumes the priced portfolio, so that the
-    // number appended to the series below and the number published above are
-    // one value rather than two computations of it.
-    let stated = priced
-        .total
-        .stated()
-        .map(|(amount, currency)| (amount, currency.to_string()));
-    let no_total_reason = priced.total.no_total_reason();
-    if !push_overlay(
-        rpc,
-        track_id,
-        "portfolio.holdings",
-        holdings_table(priced, &at),
-    ) {
-        return Refreshed::Partially("the holdings table could not be published".into());
-    }
-    if !complete {
-        return Refreshed::Partially(
-            "some holdings could not be priced or converted; the history point was skipped".into(),
-        );
-    }
-    // A history point is a number over time, so it needs a total. A portfolio
-    // that has none contributes NO points, exactly as a Track with an
-    // unpriceable holding does, and its series stands still until it has one
-    // again. Publishing a figure assembled out of the rows that happened to
-    // work would keep the series moving with a number that is not the
-    // portfolio's value — the failure this whole layer exists to prevent.
-    let Some((total, currency)) = stated else {
-        return Refreshed::Partially(format!(
-            "there is no portfolio total — {}; the history point was skipped",
-            no_total_reason.unwrap_or_else(|| "no reason recorded".into()),
-        ));
-    };
-
-    let mut points = match load_history(rpc, track_id) {
-        Ok(points) => points,
-        Err(e) => {
-            eprintln!("market: reading {track_id}'s history failed, leaving it untouched: {e}");
-            return Refreshed::Partially("the history could not be read".into());
-        }
-    };
-    // **The unit goes into the document with the number.** A point used to be
-    // `{at, total}`, and a Track that changed the currency it totals in wrote
-    // two series into one document with nothing to tell them apart; the
-    // difference between two such points is a move the portfolio never made.
-    // What is stored here is what the number is in, so `history_table` can
-    // refuse to subtract across the boundary rather than guess where one is.
-    //
-    // This fixes new points only. Points already in the store record no
-    // currency, and what unit each of them used is not recoverable from
-    // anything this plugin kept — see [`point_currency`].
-    points.push(json!({ "at": at, "total": round_to(total, 2), "currency": currency }));
-    if points.len() > MAX_HISTORY_POINTS {
-        let drop = points.len() - MAX_HISTORY_POINTS;
-        points.drain(0..drop);
-    }
-    // Persist BEFORE publishing. Publishing a series that was not stored puts
-    // a point on screen that the next tick — which reloads from the store —
-    // silently deletes, and a point that vanishes reads as data loss rather
-    // than as the failed write it was.
-    if let Err(e) = rpc.call(
-        "neige.kv.set",
-        json!({ "key": history_key(track_id), "value": points }),
-    ) {
-        eprintln!("market: persisting {track_id}'s history failed: {e}");
-        return Refreshed::Partially("the history point could not be persisted".into());
-    }
-    if !push_overlay(rpc, track_id, "portfolio.history", history_table(&points)) {
-        return Refreshed::Partially("the history table could not be published".into());
-    }
-    Refreshed::Fully
+    portfolio_state::refresh(rpc, cfg, track_id, cache)
 }
 
 /// One pass over every Track that holds something.
@@ -2230,20 +2115,26 @@ fn refresh(rpc: &Rpc, cfg: &Config, track_id: &str, cache: &mut PassCache) -> Re
 /// The listing is only used to name the Tracks; each one's holdings are read
 /// again under the lock (see [`refresh`]). One price cache spans the pass, so
 /// an asset several Tracks hold is fetched once.
-fn refresh_all(rpc: &Rpc, cfg: &Config) {
+fn refresh_all(rpc: &Rpc, cfg: &Config) -> bool {
     let track_ids = match portfolios(rpc) {
         Ok(portfolios) => portfolios,
         Err(e) => {
             eprintln!("market: listing portfolios failed; skipping this pass: {e}");
-            return;
+            return false;
         }
     };
     let mut cache = PassCache::new();
+    let mut stale = false;
     for track_id in track_ids {
-        if let Refreshed::Partially(why) = refresh(rpc, cfg, &track_id, &mut cache) {
-            eprintln!("market: incomplete refresh of {track_id} — {why}");
+        match refresh(rpc, cfg, &track_id, &mut cache) {
+            Refreshed::Partially(why) => {
+                eprintln!("market: incomplete refresh of {track_id} — {why}")
+            }
+            Refreshed::Stale => stale = true,
+            _ => {}
         }
     }
+    stale
 }
 
 /// RFC-3339 UTC to the second, without pulling `chrono` into a plugin that
@@ -2431,6 +2322,7 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
     };
 
     match name {
+        "market.cash.set" | "market.cash.list" => cash::call(rpc, wake, &track_id, name, &args),
         "market.holdings.set" => {
             let raw = args
                 .get("asset")
@@ -2444,6 +2336,10 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
             };
             let Some(quantity) = quantity.filter(|q| q.is_finite() && *q >= 0.0) else {
                 return tool_error("`quantity` must be a finite number of zero or more.");
+            };
+            let _state = match portfolio_state::STATE.lock() {
+                Ok(lock) => lock,
+                Err(_) => return tool_error("portfolio state lock unavailable"),
             };
             let mut holdings = match load_holdings(rpc, &track_id) {
                 Ok(holdings) => holdings,
@@ -2482,6 +2378,7 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
             // (`openWorldHint: false`), the reader still gets a fresh table
             // within a second or two, and nothing has to lie about what it
             // touches.
+            drop(_state);
             let _ = wake.send(());
             let canonical = asset.canonical();
             let summary = if quantity > 0.0 {
@@ -2675,7 +2572,10 @@ fn main() {
                     std::thread::spawn(move || {
                         loop {
                             let cfg = config.lock().map(|cfg| cfg.clone()).unwrap_or_default();
-                            refresh_all(&rpc, &cfg);
+                            if refresh_all(&rpc, &cfg) {
+                                while wake_rx.try_recv().is_ok() {}
+                                continue;
+                            }
                             // Sleep, but wake early when a tool records a
                             // holding. Draining the backlog afterwards keeps a
                             // burst of edits to one pass instead of one pass

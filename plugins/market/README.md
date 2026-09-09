@@ -33,6 +33,28 @@ Unit prices retain the quote's numeric precision in both holdings replies and
 overlays, including when FX is unavailable. Position values and portfolio totals
 still round to cents. Display precision is selected by the Report template.
 
+### Current fiat cash balances
+
+`market.cash.set { currency: "CNY", amount: 100000 }` records an absolute current
+balance for this Track; `market.cash.list {}` reads it back without any network
+request. CNY, USD and HKD cash are separate from quoted securities. Amounts must
+be finite, nonnegative whole cents in the safe numeric range: 0.29 and 1e2 work;
+0.001 and 1.005 are rejected without rounding or writing. Zero stays recorded.
+An absent cash document means no cash recorded, not a guessed bank balance.
+
+Cash uses one versioned `cash/<track_id>` document. The plugin never fakes a
+cash ticker, venue or unit quote. It converts native balances using the same
+current-pass FX policy as securities; missing rates preserve native balances
+but withhold the new combined total, all weights and that history observation.
+A set only persists and wakes pricing. A timed-out write is indeterminate; read
+cash.list before retrying an absolute set. Cash and trading logs never adjust
+each other automatically.
+
+The new portfolio starter explicitly selects the cash-aware projections below.
+Old saved templates and the existing security-only sources keep their original
+scope. Ask to rebuild a layout or create a new starter to adopt cash; recording
+cash itself does not rewrite a Report.
+
 ### Why `set` does not price
 
 Because a tool that prices touches the network, and a tool that touches the
@@ -63,12 +85,44 @@ therefore keep two independent portfolios.
 
 ## What it writes
 
-Two overlays per Track, both shaped as report `table` block payloads:
+The two existing security-only overlays keep their report `table` shapes and
+original valuation/history scope:
 
 | overlay kind | contents |
 | --- | --- |
 | `portfolio.holdings` | one row per asset — quantity, price, the currency it is priced in, the rate applied and the value in the settlement currency — plus a `Total` row |
 | `portfolio.history` | the total over time, newest first, each point with its own currency, and the change against the previous point where the two share one |
+
+The same snapshot also derives four cash-aware table projections:
+
+| overlay kind | contents |
+| --- | --- |
+| `portfolio.allocation` | all recorded assets with `id`, `label`, `kind`, `value`, `currency`, plus one `kind: total` row |
+| `portfolio.positions` | security rows plus `value_currency` and combined `weight` (percentage, not fraction) |
+| `portfolio.cash` | native `currency`/`amount`, converted `value`/`value_currency`, rate when obtained and combined `weight` |
+| `portfolio.total_history` | forward combined totals in a separate `total_history/<track_id>` series |
+
+New totals sum each published cent value using checked cent arithmetic; weights
+use that same total, matching the donut's displayed values. Two converted
+0.006 values therefore display 0.01 each, total 0.02 and 50% each. A displayed
+total of zero has null weights, even when the raw conversion was tiny-positive.
+Any incomplete combined valuation has null Total value/currency and weights,
+never a percentage calculated from only the known subset. Old security-only
+rounding/partial-total behavior is unchanged.
+
+Cash-only and explicit-zero portfolios are found through the cash key prefix,
+including after restart. Both series retain at most 500 observations and grow
+only from complete, successfully persisted samples. A failed read of one series
+never becomes an empty replacement or prevents an independently valid other
+series. History records value changes including balance edits, not investment
+returns. The manifest's explicit KV capacity is 1 MiB for the entire plugin;
+quota failures are surfaced and do not silently prune other data.
+
+The short state/commit lock is shared by both setters and refresh snapshots.
+Provider HTTP runs outside it; a changed snapshot is discarded before publication.
+The lock also covers unavailable/error projections and history publication.
+Host callback FIFO (including after a plugin-side timeout) preserves write/read
+ordering; a params-free dispatch trace supports its real-process regression.
 
 Name them from a report and the numbers keep moving under a document that does
 not change:

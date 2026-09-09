@@ -259,3 +259,52 @@ async fn assistant_market_sets_lists_and_quotes_only_its_own_track() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn assistant_cash_tools_dispatch_to_only_the_resolved_track() {
+    let fx = boot_fixture_with_options(FixtureOptions {
+        assistant_access: false,
+        duplicate_tool_name: false,
+        market_sina_endpoint: Some(crate::market_plugin_process::sina_server()),
+    })
+    .await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &fx.assistant_raw_token).await;
+    send_frame(&mut wr, tools_list_frame(2, &fx.assistant_thread_id)).await;
+    let names = tool_names_from_response(&recv_frame(&mut rd).await);
+    for name in ["market.cash.set", "market.cash.list"] {
+        assert!(
+            names.contains(&format!("plugin.dev-neige-market_{name}")),
+            "{names:?}"
+        );
+    }
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            3,
+            "plugin.dev-neige-market_market.cash.set",
+            &fx.assistant_thread_id,
+            json!({"currency":"CNY","amount":100000}),
+        ),
+    )
+    .await;
+    let reply = recv_frame(&mut rd).await;
+    assert!(
+        reply.get("error").is_none() && reply["result"]["isError"] != true,
+        "{reply}"
+    );
+    assert_eq!(
+        fx.repo
+            .plugin_kv_get("dev-neige-market", &format!("cash/{}", fx.track_id))
+            .await
+            .unwrap(),
+        Some(json!({"version":1,"balances":[{"currency":"CNY","amount":100000.0}]}))
+    );
+    assert!(
+        fx.repo
+            .plugin_kv_get("dev-neige-market", &format!("cash/{}", fx.bound_track_id))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
