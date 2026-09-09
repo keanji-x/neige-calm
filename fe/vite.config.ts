@@ -21,12 +21,13 @@ try {
   // Not a git checkout (a tarball build); 'dev' is the documented fallback.
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   // `vite <root>` resolves its config file *inside* that root, so passing the
   // root on the command line silently dropped this file — and the React plugin
   // with it. Declaring the root here keeps dev and build on this config.
   root: 'web',
   base: '/next/',
+  build: { target: mode === 'android' ? 'chrome111' : undefined },
   plugins: [react()],
   resolve: {
     dedupe: ['react', 'react-dom'],
@@ -35,8 +36,11 @@ export default defineConfig({
     include: [...OPTIMIZED_DEPENDENCIES],
   },
   define: {
-    __NC_VERSION__: JSON.stringify(version),
+    __NC_VERSION__: JSON.stringify(mode === 'android'
+      ? (JSON.parse(readFileSync(new URL('../mobile/package.json', import.meta.url), 'utf8')) as { version: string }).version
+      : version),
     __NC_BUILD__: JSON.stringify(build),
+    __NC_BUNDLED__: JSON.stringify(mode === 'android'),
   },
   server: {
     host: devHost,
@@ -44,4 +48,4 @@ export default defineConfig({
     strictPort: true,
     proxy: { '/api': { target: apiProxyTarget, changeOrigin: true, ws: true } },
   },
-});
+}));

@@ -9,6 +9,8 @@ src-tauri/gen/android/app/src/main/jniLibs/
 test-results/
 playwright-report/
 artifacts/
+bundled-frontend/
+src-tauri/gen/android/app/src/instrumented/res/raw/
 *.local.json
 
 # The icon generator also emits assets for platforms this Android client does not ship.

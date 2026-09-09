@@ -1,9 +1,10 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Neige Calm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "io.neigecalm.next",
   "build": {
+    "beforeBuildCommand": "node scripts/build-bundled-frontend.mjs",
     "frontendDist": "../www"
   },
   "app": {
@@ -18,7 +19,10 @@
       }
     ],
     "security": {
-      "capabilities": ["launcher-camera"],
+      "capabilities": [
+        "launcher-camera",
+        "launcher-bundled-frontend"
+      ],
       "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
     }
   },

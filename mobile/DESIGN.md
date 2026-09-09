@@ -1,5 +1,8 @@
 # Next Android client
 
+This records the original 0.1 launcher-only slice. For the current bundled
+frontend, see [the 0.2 design](../docs/mobile-bundled-frontend.md).
+
 Outcome: install a Tauri 2 Android APK, enter a Neige Calm server's HTTPS origin,
 and use its existing `/next/` application, session cookies, and event WebSocket.
 The committed profile has no preselected server or HTTP exceptions. A private

@@ -7,3 +7,4 @@
  */
 declare const __NC_VERSION__: string;
 declare const __NC_BUILD__: string;
+declare const __NC_BUNDLED__: boolean;

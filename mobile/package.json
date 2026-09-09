@@ -1,9 +1,11 @@
 {
   "name": "neige-calm-next-android",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
+    "build:frontend": "node scripts/build-bundled-frontend.mjs",
+    "verify:apk": "node scripts/verify-bundled-apk.mjs",
     "tauri": "tauri",
     "configure": "node scripts/configure-server.mjs",
     "android:init": "tauri android init",
