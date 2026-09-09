@@ -14,7 +14,8 @@ function holdingsLayout(): ReportLayout {
   // columns. Backend recipe parsing/instantiation is covered by its route test.
   const layouts = [...portfolioBody.matchAll(/```neige-block layout\n([\s\S]*?)\n```/g)]
     .map(match => reportLayoutSchema.parse(JSON.parse(match[1])));
-  const holdings = layouts.find(layout => layout.items.some(item => item.kind === 'table' && 'source' in item.data));
+  const holdings = layouts.find(layout => layout.items.some(item => item.kind === 'table'
+    && item.columns.some(column => column.key === 'price')));
   if (holdings === undefined) throw new Error('Starter holdings layout missing');
   return holdings;
 }
@@ -25,7 +26,6 @@ it('shows quoted precision through the starter table and preserves a saved fixed
   const source = { rows: [
     { asset: '510300', venue: 'SH', price: 4.637, currency: 'CNY', value: 32.46 },
     { asset: 'EXAMPLE', venue: 'US', price: 200, currency: 'USD', value: 100 },
-    { asset: 'Total', currency: 'CNY', value: 132.46 },
   ] };
   const body = (payload: ReportLayout) => <ReportDocument empty={null} resolveLiveTable={() => source}
     report={{ summary: '', body: '', blocks: [{ id: 'holdings', kind: 'layout', payload }] }}/>;

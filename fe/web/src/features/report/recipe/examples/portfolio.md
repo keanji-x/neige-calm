@@ -1,4 +1,4 @@
-<!-- 通过聊天维护这份 Report 的 layout 区块。布局、字段与样式配置保存在 Report 中；行情引用当前 Track 的 Market data 插件。登记持仓调用现有 market 工具；交易日志只记录用户说明的已发生交易。使用真实区块版本修改，不用行情覆盖 Report。研究链接和下次事件填写持仓表 annotations；其 keys 为 venue + asset。计价币种默认 CNY，改币种时同步图表 unit.equals，不转换或编造历史。新增模板时保留空 annotations/交易 rows，不复制私人持仓和 Track ID。 -->
+<!-- 通过聊天维护这份 Report。布局、字段与样式保存在 layout 区块，现金和证券数量保存在当前 Track 的 Market data 插件中。登记当前现金余额使用 market.cash.set，确认保存使用 market.cash.list；这是绝对余额，支持 CNY/USD/HKD、最多两位小数，零余额也保留。登记证券使用 market.holdings.set/list。普通金额或数量录入只调用数据工具，不改 Report 布局、添加现金说明段落或写交易日志；不要将现金伪装成证券，也不要因登记交易而自动扣减现金。只有用户明确要求修改布局、研究链接、事件或日志时才使用真实区块版本修改 Report。研究链接和下次事件填写证券表 annotations，keys 为 venue + asset。图表展示包含已登记现金的组合，默认计价 CNY；不为单个 Track 的登记请求修改插件全局计价设置，不转换或编造旧历史。新增模板保留空 annotations/交易 rows，不复制私人现金、持仓或 Track ID。 -->
 
 # 组合概览
 
@@ -14,7 +14,7 @@
       "title": "组合走势",
       "span": 1,
       "data": {
-        "source": "neige://plugin/dev-neige-market/portfolio.history"
+        "source": "neige://plugin/dev-neige-market/portfolio.total_history"
       },
       "chart": "line",
       "x": "at",
@@ -37,15 +37,14 @@
       "title": "持仓权重",
       "span": 1,
       "data": {
-        "source": "neige://plugin/dev-neige-market/portfolio.holdings"
+        "source": "neige://plugin/dev-neige-market/portfolio.allocation"
       },
       "exclude": {
-        "key": "asset",
-        "value": "Total"
+        "key": "kind",
+        "value": "total"
       },
       "chart": "donut",
-      "labelSuffixKey": "venue",
-      "x": "asset",
+      "x": "label",
       "y": "value",
       "height": 220,
       "color": "#4a5f9b",
@@ -53,10 +52,45 @@
         "key": "currency",
         "equals": "CNY",
         "row": {
-          "key": "asset",
-          "value": "Total"
+          "key": "kind",
+          "value": "total"
         }
       }
+    },
+    {
+      "kind": "table",
+      "title": "现金余额",
+      "span": 2,
+      "data": {
+        "source": "neige://plugin/dev-neige-market/portfolio.cash"
+      },
+      "columns": [
+        {
+          "key": "currency",
+          "label": "币种",
+          "format": "text",
+          "digits": 0
+        },
+        {
+          "key": "amount",
+          "label": "余额",
+          "format": "number",
+          "digits": 2
+        },
+        {
+          "key": "value",
+          "label": "折合金额",
+          "format": "number",
+          "digits": 2,
+          "suffixKey": "value_currency"
+        },
+        {
+          "key": "weight",
+          "label": "仓位",
+          "format": "percent",
+          "digits": 1
+        }
+      ]
     }
   ]
 }
@@ -76,7 +110,7 @@
       "title": "",
       "span": 1,
       "data": {
-        "source": "neige://plugin/dev-neige-market/portfolio.holdings",
+        "source": "neige://plugin/dev-neige-market/portfolio.positions",
         "annotations": {
           "keys": [
             "venue",
@@ -84,17 +118,6 @@
           ],
           "rows": []
         }
-      },
-      "exclude": {
-        "key": "asset",
-        "value": "Total"
-      },
-      "total": {
-        "row": {
-          "key": "asset",
-          "value": "Total"
-        },
-        "key": "value"
       },
       "columns": [
         {
@@ -121,9 +144,9 @@
           "digits": 2
         },
         {
-          "key": "value",
+          "key": "weight",
           "label": "仓位",
-          "format": "share",
+          "format": "percent",
           "digits": 1
         },
         {
