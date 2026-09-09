@@ -11,8 +11,8 @@ read path; it does not implement a reusable, chat-maintained dashboard. Do not
 merge it as that feature. The findings below describe that baseline. Implementation cef4cbbe1 replaces
 the read-only projection with native persisted layout components. Two independent
 agents confirmed all four baseline findings resolved; their new P2 findings
-(selection identity, market label clarity, nullable captions) are being fixed
-and re-reviewed before the final convergence record is appended.
+(selection identity, market label clarity, nullable captions) were fixed
+and independently re-reviewed; see the final convergence record below.
 
 The acceptance outcome is: a user saves a dashboard Recipe, creates two Tracks
 from it, changes one dashboard through chat, and can reload both in the normal
@@ -203,3 +203,65 @@ Keep released migrations unchanged. Run focused Rust/API tests, relevant fronten
 gates and browser E2E; mutation-verify the load-bearing revision/isolation tests.
 Review the final implementation through two independent channels and repeat
 after fixes. The current read-only prototype tests cannot replace these gates.
+
+## Final convergence record — 2026-09-09
+
+Both independent agents (`review_template`, `review_data`) re-reviewed the full
+feature after fixes and reported no remaining actionable or blocking findings.
+They reviewed commit `4c2d960f1`, tree
+`c425fd2cc32cb6b19c9b35a4a277bb42b3bcf086`. Ownership-required commit trailers were
+then repaired without changing any source bytes; implementation commit
+`07e4ea52e` has that exact same tree. This section supersedes the historical
+baseline decision and the pending-follow-up text above.
+
+Resolved classes: synthetic Report/card replacement, denied normal authoring,
+preview iframe dependency, browser-selected portfolio identity, rejected
+same-time history, index-based live selection, cross-market label ambiguity,
+null captions, and silent loss of own scalar keys. Composition is the persisted
+Recipe/Report. No unrelated worktree changes were merged into this implementation.
+
+Final verification actually completed:
+
+- `fe`: `npm run lint` and `npm run build` passed; the ownership gate passed
+  after the required package/inventory trailers were added.
+- `fe`: `npm test` passed 3094 tests; 1 existing test remains skipped.
+- `fe`: `npm run test:browser` passed 407 tests in 49 files.
+- Prototype: `npm run build`, 7 Playwright development flows, and 3 built-preview
+  flows passed, including desktop/mobile chart interactions and research links.
+- `playwright-native.config.ts`: 2 flows against the actual `fe/web/dist`
+  production entry passed (authentication, two portfolios, persisted layout
+  refresh, normal Recipe creation). HTTP data is fixture-backed; its unused
+  WebSocket proxy logged connection refusal because no fixture backend listens
+  on 4041. This was not a failed test or an authenticated private-data check.
+- Backend agent: 7 focused layout tests and 5 real route/MCP integration tests
+  passed after the suffix extension; actual `portfolio.md` was normalized,
+  saved and instantiated through the existing server path. Earlier full
+  `calm-types` Report coverage passed 62 tests before that bounded extension.
+- `scripts/local-rust-gates.sh --quick` passed after the final backend change,
+  with concurrency capped and real Codex disabled. Both OpenAPI specs had no
+  drift. The broad workspace Rust suite was intentionally not run.
+- Real desktop and fresh-mobile previews were inspected. Mobile chart bounds
+  stayed inside the 390px viewport; charts render without an iframe.
+- Final `git diff --check` passed, with no source mutation residue.
+
+Mutation verification: in the exclusive implementation worktree, removing only
+`!nonnegative(rawY)` from the production donut validation was predicted to fail
+exactly `does not normalize a partial allocation to a misleading 100 percent`.
+The complete actual failing set matched; restoring the original bytes passed
+all 10 data tests. Evidence is in `/tmp/neige-layout-allocation-mutation.json`
+and `/tmp/neige-layout-allocation-restored.log`. The backend agent separately
+mutation-verified duplicate annotation rejection, likewise with an exact
+predicted failing set and green restoration.
+
+Independent checks: reviewer A ran 11 core tests successfully. Its optional
+browser rerun could not import Recharts because its dependency link pointed to
+old main; no test executed in that attempt. The implementation worktree's
+correctly installed browser gates above passed. Reviewer B independently
+executed the fixed schema/data modules against safe own-key roundtrips, invalid
+row shapes, suffix rules, joins and null captions; all probes passed.
+
+Deployment boundary: the existing running Neige backend was not replaced or
+restarted, and no real user Recipe/portfolio was written during tests. To use
+these templates with real data, run this version of both frontend and backend.
+The preview's sample mode is already built from the canonical Recipe and native
+components. No real AI E2E or brokerage execution was performed on this host.
