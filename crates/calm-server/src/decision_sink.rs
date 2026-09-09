@@ -395,6 +395,34 @@ impl CardDecisionSink {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn commit_task_dispatch(
+        &self,
+        identity: &ToolCallIdentity,
+        track: Track,
+        card: Card,
+        payload: TrackReportPayload,
+        args: crate::track_report::dispatch::DispatchArgs,
+        task_budget_default: i64,
+    ) -> Result<serde_json::Value, CalmError> {
+        let recorder_shadow: Arc<dyn RecorderShadowProbe> =
+            Arc::new(CardDecisionSinkRecorderShadowProbe {
+                principal: identity.to_principal(),
+                track_id: track.id.clone(),
+            });
+        track_report::write::planner_dispatch(
+            self.repo.as_ref(),
+            &self.events,
+            &self.write,
+            identity.clone(),
+            ReportEditTarget::for_resolved_parts(track, card, payload)?,
+            args,
+            task_budget_default,
+            recorder_shadow,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn commit_report_write(
         &self,
         identity: &ToolCallIdentity,

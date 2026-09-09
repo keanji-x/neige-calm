@@ -1,6 +1,6 @@
-//! Emit tools for dispatching workers and recording worker outcomes.
+//! Worker outcome tools and the retired legacy dispatch-request shim.
 //!
-//! All three lower a JSON `arguments` object to a single eventized
+//! Outcome tools lower a JSON `arguments` object to a single eventized
 //! write. The kernel translates the per-call [`ToolCallIdentity`]
 //! into an [`ActorId`] (Planner → `AiPlanner`, Worker → `AiCodex`) and emits
 //! through `write_with_event_typed`, which runs the role gate, persists
@@ -8,7 +8,7 @@
 //!
 //! ## Tool surface
 //!
-//! * `calm.task.dispatch` — retired #644 compatibility shim. Hidden
+//! * `calm.dispatch_request` — retired #644 compatibility shim. Hidden
 //!   from tools/list; persisted pre-cutover planner threads can still call
 //!   it and receive a structured migration payload. It performs no write.
 //!
@@ -53,16 +53,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-pub const TOOL_TASK_DISPATCH: &str = "calm.task.dispatch";
+const TOOL_DISPATCH_REQUEST: &str = "calm.dispatch_request";
 pub const TOOL_TASK_COMPLETE: &str = "calm.task.complete";
 pub const TOOL_TASK_FAIL: &str = "calm.task.fail";
 const GIT_FORGE_PLUGIN_ID: &str = "dev.neige.git-forge";
 
 pub fn register_into(registry: &mut ToolRegistry) {
-    registry.register(task_dispatch_descriptor(), wrap(task_dispatch));
+    registry.register(dispatch_request_descriptor(), wrap(dispatch_request));
     registry.register(task_complete_descriptor(), wrap(task_complete));
     registry.register(task_fail_descriptor(), wrap(task_fail));
-    register_deprecated_alias(registry, "calm.dispatch_request", TOOL_TASK_DISPATCH);
     register_deprecated_alias(registry, "calm.task_completed", TOOL_TASK_COMPLETE);
     register_deprecated_alias(registry, "calm.task_failed", TOOL_TASK_FAIL);
 }
@@ -86,13 +85,13 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// calm.task.dispatch
+// Retired calm.dispatch_request
 // ---------------------------------------------------------------------------
 
-fn task_dispatch_descriptor() -> ToolDescriptor {
+fn dispatch_request_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_TASK_DISPATCH.into(),
-        description: "Deprecated compatibility shim: `calm.task.dispatch` was \
+        name: TOOL_DISPATCH_REQUEST.into(),
+        description: "Deprecated compatibility shim: `calm.dispatch_request` was \
              retired in #644. Create `task` blocks with \
              `calm.report.blocks.upsert`; the kernel schedules ready tasks and \
              runs gates."
@@ -116,14 +115,14 @@ fn task_dispatch_descriptor() -> ToolDescriptor {
     }
 }
 
-async fn task_dispatch(
+async fn dispatch_request(
     _ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Planner)?;
     Ok(json!({
-        "error": "calm.task.dispatch was retired (#644); no task was dispatched",
+        "error": "calm.dispatch_request was retired (#644); no task was dispatched",
         "migration": {
             "use": "calm.report.blocks.upsert",
             "shape": "{ kind: \"task\", payload: { key, kind, goal (codex/claude) | command (terminal), acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" }, if_doc_rev }",

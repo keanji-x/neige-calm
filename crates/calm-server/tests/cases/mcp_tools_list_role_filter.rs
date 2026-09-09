@@ -26,6 +26,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.report.write",
         "calm.report.write_markdown",
         "calm.review.round",
+        "calm.task.dispatch",
         "calm.task.verdict",
         "calm.terminal.control",
         "calm.terminal.input",
@@ -88,7 +89,6 @@ async fn tools_list_for_planner_role_does_not_leak_aliases() {
     let names = tools_list_names_for_role(CardRole::Planner).await;
     for hidden_name in [
         "calm.dispatch_request",
-        "calm.task.dispatch",
         "calm.task_completed",
         "calm.task_failed",
         "calm.get_track_state",
@@ -195,8 +195,8 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
 
     let names = tool_names_from_response(&resp);
     assert!(
-        !names.contains(&"calm.task.dispatch".to_string()),
-        "daemon-trust tools/list without threadId must hide retired task.dispatch, got: {names:?}"
+        names.contains(&"calm.task.dispatch".to_string()),
+        "daemon-trust tools/list without threadId must advertise Planner task.dispatch, got: {names:?}"
     );
     assert!(
         !names.contains(&"calm.plan.upsert".to_string()),

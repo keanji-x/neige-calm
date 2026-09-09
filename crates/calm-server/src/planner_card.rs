@@ -157,10 +157,11 @@ writes are transactional.
    track/card metadata; results are in `runs/*` views, not in `neige state`). \
    This is your ground truth — do NOT keep \
    a private model of track state across turns. \
-   Before you write anything to the report in a session, call \
+   Before you directly edit the report in a session, call \
    `calm.report.read` once: the report carries its own structure and its own \
-   maintenance contract, and you may not write to a document you have not \
-   read. `report_startup_read_required` tells you whether it already holds \
+   maintenance contract, and you may not directly edit a document you have not \
+   read. The bounded `calm.task.dispatch` creation below does not require this report read. \
+   `report_startup_read_required` tells you whether it already holds \
    content beyond the default skeleton. If the read returns `task` blocks, \
    treat them as the authoritative pre-set plan. Activate authorized, eligible tasks by replacing \
    those blocks and setting `ready: true` (decision-dependent tasks wait as below). \
@@ -204,6 +205,18 @@ writes are transactional.
      If the key has no entry, read `calm.report.read` and its `taskDiagnostics`; \
      the declaration may be unready, invalid, or awaiting User release before any attempt is allocated. \
      Explain the recorded prerequisite or preparation failure; do not invent an attempt or claim startup from a write receipt.
+   * For one independent Codex task with an empty isolated workspace and semantic acceptance, use \
+     `calm.task.dispatch(name, goal, acceptance, executor: \"codex\", workspace: \"empty\")`. \
+     Choose a readable business name: Dispatch names are unique within this Track, trim surrounding whitespace only, \
+     and preserve exact case and Unicode. Same name and exact contract replays the original identity across calls or sessions; \
+     a changed contract conflicts. Use a new meaningful name for new work and existing recovery for execution repair. \
+     No report read, revision or task key generation is needed. This creates a Planner declaration, not a running Worker: \
+     use the returned current diagnostics for User release, budget or lifecycle waits and end the turn. \
+     Semantic acceptance is reviewed from the completion report, not a machine gate or file candidate qualification. \
+     Receipt identity is historical; replay never rewrites an edited or withdrawn declaration. \
+     Use `current.contract_status` to see whether the declaration still matches the Dispatch contract; this is not proof of an attempt's executed contract. \
+     Normal result receipts arrive through the existing Planner result path. \
+     Tasks needing dependencies, gates, file delivery or other options still use report task blocks below.
    * Maintain task declarations as report `task` blocks. Read the report with \
      `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while \
      replace passes the target block's `rev` as `if_rev`. Use \
@@ -476,7 +489,7 @@ You were spawned to execute one job. Your contract:
 
 You may NOT call `calm.task.verdict` — that is a planner-only tool and the \
 kernel's role gate will refuse you. You also may NOT mint new workers; \
-`calm.task.dispatch` is retired, and the kernel's role gate (#583) still \
+`calm.task.dispatch` is Planner-only, and the kernel's role gate (#583) still \
 refuses worker-actor dispatch emits from old paths. If the job needs \
 further decomposition, report `task.failed` with a reason \
 explaining what's missing and the planner will handle re-decomposition.
@@ -515,7 +528,7 @@ You were spawned to execute one job. Your contract:
 
 You may NOT call `calm.task.verdict` — that is a planner-only tool and the \
 kernel's role gate will refuse you. You also may NOT mint new workers; \
-`calm.task.dispatch` is retired, and the kernel's role gate (#583) still \
+`calm.task.dispatch` is Planner-only, and the kernel's role gate (#583) still \
 refuses worker-actor dispatch emits from old paths. If the job needs \
 further decomposition, report `task.failed` with a reason \
 explaining what's missing and the planner will handle re-decomposition.
@@ -890,7 +903,7 @@ mod tests {
         assert!(planner.contains("`ready: true`"));
         assert!(planner.contains("`declared_by: \"spec\"`"));
         assert!(planner.contains("calm.plan.list"));
-        assert!(!planner.contains("calm.task.dispatch"));
+        assert!(planner.contains("calm.task.dispatch"));
         assert!(planner.contains("calm.task.verdict"));
 
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "track-abc");
@@ -1239,7 +1252,7 @@ mod tests {
         );
     }
 
-    /// #1185 §1.5 A — the first-turn read is UNCONDITIONAL.
+    /// #1185 §1.5 A — direct report edits require an unconditional first read.
     ///
     /// The policy that governs a report now travels inside the report, so an
     /// agent that has not read the document does not know the rules it is
@@ -1247,15 +1260,18 @@ mod tests {
     /// `report_startup_read_required`, which is false for every default track —
     /// exactly the tracks that only learn their contract by reading.
     #[test]
-    fn planner_prompt_mandates_an_unconditional_first_read() {
+    fn planner_prompt_mandates_first_read_for_direct_edits_and_exempts_dispatch() {
         let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
+        assert!(p.contains(
+            "The bounded `calm.task.dispatch` creation below does not require this report read."
+        ));
         let step1 = p
             .find("1. A kernel recovery decision briefing")
             .expect("step 1 permits deciding from the kernel recovery snapshot");
         assert!(p.contains("When that is sufficient for the recovery decision, act on it without a preliminary state or plan-list read"));
         assert!(p.contains("Run `neige state` for state-dependent decisions"));
         let read = p
-            .find("Before you write anything to the report in a session, call `calm.report.read` once")
+            .find("Before you directly edit the report in a session, call `calm.report.read` once")
             .expect("unconditional first-read sentence is present");
         let step2 = p
             .find("2. Decide what to do next and act:")
@@ -1323,7 +1339,7 @@ mod tests {
         );
         assert!(
             !p.contains("calm.update_track_state")
-                && !p.contains("calm.task.dispatch")
+                && p.contains("calm.task.dispatch")
                 && !p.contains("calm.plan.upsert")
                 && p.contains("calm.plan.cancel")
                 && p.contains("calm.plan.list")

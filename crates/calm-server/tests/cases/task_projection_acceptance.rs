@@ -73,7 +73,7 @@ async fn upsert(boot: &Boot, id_rev: Option<(&str, u64)>, payload: Value) -> (St
     )
 }
 
-async fn user_upsert(boot: &Boot, id: &str, rev: u64, payload: Value) -> (u64, u64) {
+pub(super) async fn user_upsert(boot: &Boot, id: &str, rev: u64, payload: Value) -> (u64, u64) {
     let state = route_state(boot).await;
     update_block(
         State(RouteState::from_ref(&state)),

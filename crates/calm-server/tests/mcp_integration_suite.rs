@@ -52,3 +52,9 @@ mod isolated_activity;
 mod candidate_verification;
 #[path = "cases/file_delivery.rs"]
 mod file_delivery;
+
+#[path = "cases/mcp_task_dispatch.rs"]
+mod mcp_task_dispatch;
+
+#[path = "cases/mcp_task_dispatch_regressions.rs"]
+mod mcp_task_dispatch_regressions;

@@ -1840,8 +1840,8 @@ async fn fork_fails_closed_on_a_tombstone_carrying_released_by_user() {
 }
 
 /// INV-1110-002: a forked track's `neige state` / `calm.track.state` bit is
-/// true, and the planner developer instructions (first-turn prompt) tell the
-/// agent to `calm.report.read` when that bit is set. This is not a live
+/// true, and the actual planner instructions require a report read before
+/// direct edits while explicitly exempting bounded Dispatch. This is not a live
 /// Codex turn; the fixture's planner harness uses a nonexistent binary.
 #[tokio::test]
 async fn inv_1110_002_forked_track_requires_report_startup_read() {
@@ -1894,15 +1894,25 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
 
     let prompt =
         render_planner_developer_instructions_for_test(target_track_id.as_str(), None, None);
-    // #1185 §1.5 A — the read is unconditional now. The bit above still
+    let source_prompt =
+        render_planner_developer_instructions_for_test(boot.source_track_id.as_str(), None, None);
+    assert_eq!(
+        prompt,
+        source_prompt.replace(boot.source_track_id.as_str(), target_track_id.as_str()),
+        "fork and source renderers must preserve the same complete instructions apart from Track identity"
+    );
+    // #1185 §1.5 A — direct edits require a read regardless of this bit. It still
     // matters, and matters more: its meaning narrowed from "must you read" to
     // "does this document already hold content beyond the default skeleton",
     // which is exactly what a forked report is.
     assert!(
-        prompt.contains(
-            "Before you write anything to the report in a session, call `calm.report.read` once"
-        ),
-        "planner first-turn prompt must mandate an unconditional first read"
+        prompt.contains(concat!(
+            "Before you directly edit the report in a session, call `calm.report.read` once: ",
+            "the report carries its own structure and its own maintenance contract, and ",
+            "you may not directly edit a document you have not read. ",
+            "The bounded `calm.task.dispatch` creation below does not require this report read."
+        )),
+        "forked planner must require the report read before direct edits and explicitly exempt bounded Dispatch"
     );
     assert!(prompt.contains("authoritative pre-set plan"));
     assert!(prompt.contains("Do not mint duplicate tasks"));
