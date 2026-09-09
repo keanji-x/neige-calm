@@ -255,7 +255,7 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn kinds_returns_all_five_schemas() {
+async fn kinds_returns_all_six_schemas() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
@@ -273,7 +273,10 @@ async fn kinds_returns_all_five_schemas() {
         .iter()
         .map(|k| k.get("kind").and_then(Value::as_str).unwrap())
         .collect();
-    assert_eq!(names, ["prose", "chart.candles", "table", "app", "task"]);
+    assert_eq!(
+        names,
+        ["prose", "chart.candles", "table", "app", "task", "layout"]
+    );
     for kind in kinds {
         assert_eq!(
             kind.pointer("/schema/type").and_then(Value::as_str),
@@ -287,6 +290,13 @@ async fn kinds_returns_all_five_schemas() {
             "{kind}"
         );
     }
+    let layout = &kinds[5];
+    assert_eq!(
+        layout["schema"],
+        calm_types::report_blocks::layout_schema::schema()
+    );
+    assert_eq!(layout["schema"]["properties"]["items"]["maxItems"], 12);
+    assert!(layout["usage"].as_str().unwrap().contains("Recipe"));
     let prose = &kinds[0];
     assert_eq!(
         prose.pointer("/schema/required/0").and_then(Value::as_str),
@@ -1851,3 +1861,6 @@ mod boundaries;
 
 #[path = "report_block_upgrade.rs"]
 mod upgrade;
+
+#[path = "mcp_report_layout.rs"]
+mod layout;

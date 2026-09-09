@@ -17,7 +17,8 @@ pub(super) fn kinds_descriptor() -> ToolDescriptor {
              where `schema` is the JSON Schema of that kind's payload. \
              Kinds: `prose` (markdown), `chart.candles` (inline candle \
              chart), `table` (comparison table), `app` (embedded \
-             same-origin mini-app), `task` (validated task declaration; \
+             same-origin mini-app), `layout` (saved chart/table composition), \
+             `task` (validated task declaration; \
              projection lands in a later slice). Creating or moving blocks \
              requires `if_doc_rev`; read `docRev` from `calm.report.read`."
             .into(),
@@ -291,6 +292,11 @@ pub(super) fn kinds_table() -> Value {
                     "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}."
                 },
                 "usage": "Task declaration block. Set `ready: true` to opt into projection once task projection ships in slice 3b; this slice validates and stores declarations but does not project or schedule them. Use `goal` for codex/claude and `command` for terminal; the two fields are mutually exclusive. The terminal runner passes `command` verbatim to `/bin/sh -c`. Every string nested anywhere in `context` is limited to 2048 characters."
+            },
+            {
+                "kind": "layout",
+                "schema": report_blocks::layout_schema::schema(),
+                "usage": "Compose saved native chart/table components. A Recipe body may contain a ```neige-block layout fence; new Tracks inherit its configuration, and normal report block writes edit the persisted arrangement. Minimal payload: {\"version\":1,\"columns\":1,\"gap\":\"normal\",\"surface\":\"plain\",\"items\":[{\"kind\":\"table\",\"title\":\"Journal\",\"span\":1,\"data\":{\"rows\":[]},\"columns\":[{\"key\":\"note\",\"label\":\"Note\",\"format\":\"text\",\"digits\":0}]}]}. For live data use data.source with a current-Track plugin overlay; optional annotations add research Track IDs or event text without replacing producer values. See schema descriptions for joins, currency and partial-allocation behavior."
             }
         ]
     })
@@ -319,7 +325,7 @@ pub(super) fn upsert_descriptor() -> ToolDescriptor {
             "required": ["kind"],
             "properties": {
                 "id": { "type": "string", "description": "Existing block id to replace. Omit to create a new block." },
-                "kind": { "type": "string", "enum": ["prose", "chart.candles", "table", "app", "task"], "description": "Block kind." },
+                "kind": { "type": "string", "enum": ["prose", "chart.candles", "table", "app", "task", "layout"], "description": "Block kind." },
                 "markdown": { "type": "string", "description": "Prose content (kind=prose only)." },
                 "payload": { "type": "object", "description": "Kind-specific payload: required for data kinds; for prose, `{ markdown }` is accepted as an alternative to the top-level `markdown`." },
                 "if_rev": { "type": "integer", "minimum": 0, "description": "Required when `id` is given: the block rev you last read." },

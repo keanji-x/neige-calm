@@ -1221,3 +1221,6 @@ async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
     );
     assert_eq!(fork.recipe_revision, None);
 }
+
+#[path = "track_recipe_layout.rs"]
+mod layout;

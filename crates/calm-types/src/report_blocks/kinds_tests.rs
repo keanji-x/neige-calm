@@ -468,3 +468,14 @@ fn inline_table_still_rejects_an_unknown_field() {
     .unwrap_err();
     assert!(err.contains("srcs: unknown field"), "{err}");
 }
+
+#[test]
+fn layout_payload_roundtrips_through_report_fences() {
+    let payload = json!({"version":1,"columns":2,"gap":"normal","surface":"plain","items":[{
+        "kind":"chart","title":"History","span":2,"data":{"source":"neige://plugin/market/history"},
+        "chart":"line","x":"at","y":"value","height":240,"color":"#A1b2C3","ranges":[30,90],"defaultRange":90
+    }]});
+    let fence = super::super::render_data_block("layout", &payload)
+        .expect("generic layout is a persisted report kind");
+    assert_eq!(super::super::parse_fence(&fence).unwrap().payload, payload);
+}

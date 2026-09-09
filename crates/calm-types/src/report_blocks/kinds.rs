@@ -1,6 +1,6 @@
 //! #960 PR3 — the non-prose block-kind vocabulary + payload validation.
 //!
-//! Three data kinds ship in this slice. Payloads are validated
+//! Data payloads are validated
 //! strictly at every write end (`blocks.upsert`, `write_markdown`,
 //! and the prose `Replace` shim when a body introduces new fences):
 //! unknown fields are rejected, and every violation is reported with
@@ -11,12 +11,13 @@
 //! | `chart.candles` | `{ symbol, period?, candles: [[ts_ms,o,h,l,c,v?];2..], overlays?, caption? }` |
 //! | `table` | inline: `{ columns: [{key,label,align?};1..], rows: [{<key>: string\|number\|null}], caption?, highlight? }`; live: `{ source: "neige://plugin/<id>/<overlay-kind>", caption? }` |
 //! | `app` | `{ src: same-origin path, title?, height? (120..2000 px) }` |
+//! | `layout` | versioned generic chart/table composition, see [`super::layout_schema`] |
 //!
 //! Candle data is inlined by design: the kernel has no market-data
 //! source — the agent fetches its own data and writes it in; range
 //! switching is client-side filtering.
 //!
-//! A `table` is the one kind that may instead *name* its data: the live
+//! `table` and `layout` may instead *name* their data: the live
 //! form carries a `source` pointing at a plugin-written overlay, and the
 //! renderer reads whatever that overlay currently holds. The document keeps
 //! the reference; the value moves underneath it. This is what makes a
@@ -34,6 +35,7 @@ pub const KIND_PROSE: &str = "prose";
 pub const KIND_CHART_CANDLES: &str = "chart.candles";
 pub const KIND_TABLE: &str = "table";
 pub const KIND_APP: &str = "app";
+pub const KIND_LAYOUT: &str = "layout";
 pub const KIND_TASK: &str = "task";
 
 // -- payload size caps (#960 PR3 review round 1) ----------------------
@@ -55,7 +57,13 @@ pub const MAX_STRING_CHARS: usize = 2048;
 pub const MAX_CANONICAL_BYTES: usize = 256 * 1024;
 
 /// The non-prose kinds a report may contain, in `blocks.kinds` order.
-pub const DATA_KINDS: [&str; 4] = [KIND_CHART_CANDLES, KIND_TABLE, KIND_APP, KIND_TASK];
+pub const DATA_KINDS: [&str; 5] = [
+    KIND_CHART_CANDLES,
+    KIND_TABLE,
+    KIND_APP,
+    KIND_TASK,
+    KIND_LAYOUT,
+];
 
 pub fn is_data_kind(kind: &str) -> bool {
     DATA_KINDS.contains(&kind)
@@ -99,6 +107,7 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         KIND_TABLE => validate_table(map, &mut errors),
         KIND_APP => validate_app(map, &mut errors),
         KIND_TASK => validate_task(map, &mut errors),
+        KIND_LAYOUT => super::layout::validate(map, &mut errors),
         other => errors.push(format!(
             "unknown block kind `{other}` — known data kinds: {}",
             DATA_KINDS.join(", ")
