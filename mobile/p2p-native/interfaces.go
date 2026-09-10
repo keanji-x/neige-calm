@@ -43,5 +43,13 @@ func configureInterfaces(raw string) string {
 	registerInterfaces.Do(func() {
 		netmon.RegisterInterfaceGetter(func() ([]netmon.Interface, error) { return *interfaceSnapshot.Load(), nil })
 	})
+	// A retry may happen after moving between Wi-Fi, mobile data or a VPN.
+	// Refresh the live monitor as well as the snapshot used at startup.
+	instance.Lock()
+	running := instance.engine
+	instance.Unlock()
+	if running != nil {
+		running.node.Sys().NetMon.Get().Poll()
+	}
 	return encoded(map[string]any{"ok": true})
 }

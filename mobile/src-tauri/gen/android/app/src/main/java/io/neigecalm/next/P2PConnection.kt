@@ -27,7 +27,7 @@ internal object P2PConnection {
   }
 
   fun execute(operation: () -> JSONObject, done: (Result<JSONObject>) -> Unit) {
-    worker.execute { done(runCatching { failure?.let { throw it }; operation() }) }
+    worker.execute { done(runCatching { failure?.let { throw it }; checked(NativeP2P.configure(AndroidNetworkSnapshot.read())); operation() }) }
   }
 
   fun awaitReadyAndReachable(cancellation: ConnectionAttempt.Cancellation) {
