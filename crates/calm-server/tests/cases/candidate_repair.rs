@@ -193,6 +193,31 @@ async fn candidate_repair_exact_c1_to_c2_delivery_with_fresh_review_and_stable_p
         publication
     );
     assert_eq!(c2view["file_delivery"]["qualified"], false);
+    let compact = call_tool(
+        &fx.boot,
+        "calm.plan.list",
+        planner_identity(&fx.boot),
+        json!({"detail":"summary","key":c2.key}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(compact["tasks"].as_array().unwrap().len(), 1);
+    let delivery = &compact["tasks"][0]["file_delivery"];
+    for field in ["candidate", "publication", "input", "qualification"] {
+        assert_eq!(delivery[field], c2view["file_delivery"][field]);
+    }
+    assert_eq!(
+        delivery["repair"]["snapshot"],
+        c2view["file_delivery"]["repair"]["snapshot"]
+    );
+    assert_eq!(
+        delivery["review"]["operation"],
+        c2view["file_delivery"]["review"]["operation"]
+    );
+    assert!(delivery["review"].get("finding_responses").is_none());
+    assert!(delivery["repair"].get("blocking_findings").is_none());
+    assert!(compact.to_string().len() <= 12 * 1024);
+
     verdict(&fx, &r2, "accepted").await.unwrap();
     let mut consume = consumer();
     consume["key"] = json!("consume-c2");

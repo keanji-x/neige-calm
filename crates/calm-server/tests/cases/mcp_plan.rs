@@ -279,7 +279,10 @@ async fn exec_sql(boot: &Boot, sql: &str) {
 async fn write_task_block(boot: &Boot, mut payload: Value) -> Value {
     let object = payload.as_object_mut().expect("task payload object");
     object.insert("ready".into(), json!(true));
-    object.insert("declared_by".into(), json!("spec"));
+    object.insert(
+        "declared_by".into(),
+        json!(calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR),
+    );
     let report = boot
         .repo
         .card_get(boot.report_card_id.as_str())
@@ -929,3 +932,7 @@ async fn plan_list_hides_gate_commands_but_shows_step_names() {
         "gate commands must never be echoed (§6.7): {rendered}"
     );
 }
+
+#[cfg(test)]
+#[path = "mcp_plan/summary.rs"]
+mod summary;

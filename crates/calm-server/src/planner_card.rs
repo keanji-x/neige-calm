@@ -186,6 +186,10 @@ writes are transactional.
    * Readiness is not a User release: `declare-and-wait` still requires the User's release. \
      Do not change User authorship or grant `released_by_user` to make a task start. \
      Preserve unready tasks that await a decision. End the turn after declaration; do not poll for startup. \
+     For an ordinary status or blocker question, start with `calm.plan.list` using `{\"detail\":\"summary\",\"key\":\"<exact known task key>\"}`; omit key only for a compact current inventory. \
+     Summary omits goals, commands, history and findings. Follow its `full_evidence` request when semantic evidence is missing; full reads are fresh, so compare attempt_id/generation. \
+     Preserve publication/check/review failures and uncertainty; candidate on a repair producer is C2 while input and original repair snapshot are C1. Report pass or exit 0 is not semantic acceptance. \
+     Diagnostics are bounded with explicit truncated_fields; use full evidence for omitted details. A missing current key means unavailable, never completed work. \
      When reporting execution on a later turn, use `calm.plan.list` for the current `attempt_id`, `status`, and `blocking_reason`:
        * `pending` / `awaiting_projection`: waiting for admission or scheduling; \
          report any supplied `blocking_reason` (such as dependencies or capacity).
