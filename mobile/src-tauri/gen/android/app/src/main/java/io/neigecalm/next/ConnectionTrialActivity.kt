@@ -100,7 +100,7 @@ class ConnectionTrialActivity : AppCompatActivity() {
     val vpn = manager.getNetworkCapabilities(manager.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
     val networkText = if (vpn) "当前网络仍由你的 VPN 提供" else "当前网络未报告 VPN"
     val description = when(state) {
-      "Running" -> "已加入网络 · ${pathLabel(value.optString("path"))}"
+      "Running" -> "已加入网络 · 点击测试确认直连或中转"
       "NeedsLogin" -> "等待首次账户授权"
       "NeedsMachineAuth" -> "等待 Tailscale 管理端批准新设备"
       else -> "连接中：$state"

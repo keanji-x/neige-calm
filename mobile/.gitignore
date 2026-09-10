@@ -19,3 +19,5 @@ src-tauri/icons/icon.icns
 src-tauri/icons/icon.ico
 src-tauri/icons/StoreLogo.png
 src-tauri/icons/Square*Logo.png
+
+src-tauri/gen/android/**/.kotlin/

@@ -117,18 +117,6 @@ func status() string {
 		return failure(err)
 	}
 	result := map[string]any{"ok": true, "state": s.BackendState, "authURL": s.AuthURL, "origin": targetURL, "elapsedMs": time.Since(e.started).Milliseconds(), "path": "unknown"}
-	for _, peer := range s.Peer {
-		for _, ip := range peer.TailscaleIPs {
-			if ip.String() == targetIP {
-				if peer.CurAddr != "" {
-					result["path"] = "direct"
-				} else if peer.Relay != "" {
-					result["path"] = "relay"
-				}
-				result["peerOnline"] = peer.Online
-			}
-		}
-	}
 	return encoded(result)
 }
 
