@@ -25,22 +25,27 @@ fn currency(raw: &str) -> Result<Currency, String> {
     }
 }
 
-/// Work from the JSON number's decimal representation, not binary x*100.
-/// Checked coefficient/exponent arithmetic accepts 0.29 and 1e2 without
-/// admitting 0.001, saturation or an unrepresentable public amount.
-fn decimal_cents(number: &serde_json::Number) -> Option<u64> {
-    let value = number.as_f64()?;
-    if !value.is_finite() || value < 0.0 {
-        return None;
-    }
-    let text = number.to_string();
-    let text = text.strip_prefix('-').unwrap_or(&text);
+/// Whole cents from a decimal literal — `<digits>[.<digits>][e[±]<digits>]`
+/// — read as digits, never as `value * 100.0`. Checked coefficient/exponent
+/// arithmetic accepts `0.29` and `1e2` without admitting `0.001`,
+/// saturation, a sign, or an unrepresentable public amount.
+fn decimal_text_cents(text: &str) -> Option<u64> {
     let (significand, exponent) = text
         .split_once(['e', 'E'])
         .map_or(Some((text, 0_i32)), |(s, e)| {
             e.parse::<i32>().ok().map(|e| (s, e))
         })?;
-    let (whole, fraction) = significand.split_once('.').unwrap_or((significand, ""));
+    let (whole, fraction) = match significand.split_once('.') {
+        // A decimal point commits the literal to digits on both sides:
+        // `1.`, `.5` and `1.2.3` are not amounts.
+        Some((_, "")) => return None,
+        Some(parts) => parts,
+        None => (significand, ""),
+    };
+    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty() || !digits(whole) || !digits(fraction) {
+        return None;
+    }
     let coefficient = format!("{whole}{fraction}").parse::<u128>().ok()?;
     let power = exponent
         .checked_add(2)?
@@ -58,6 +63,15 @@ fn decimal_cents(number: &serde_json::Number) -> Option<u64> {
     (cents <= MAX_CENTS).then_some(cents)
 }
 
+/// The decimal `serde_json` still holds for a parsed number. Sound for the
+/// numbers this plugin itself WROTE (`number` below round-trips them), which
+/// is what [`Book::from_value`] reads back; it is NOT sound for a number a
+/// caller sent, because parsing already replaced those digits with the
+/// nearest `f64` — see [`wire_cents`].
+fn decimal_cents(number: &serde_json::Number) -> Option<u64> {
+    decimal_text_cents(&number.to_string())
+}
+
 pub(super) fn number(cents: u64) -> Option<f64> {
     if cents > MAX_CENTS {
         return None;
@@ -68,9 +82,43 @@ pub(super) fn number(cents: u64) -> Option<f64> {
 }
 
 pub(super) fn cents(value: &Value) -> Result<u64, String> {
-    value.as_number().and_then(decimal_cents)
+    value
+        .as_number()
+        .and_then(decimal_cents)
         .filter(|cents| number(*cents).is_some())
-        .ok_or_else(|| "amount must be a finite nonnegative JSON number in whole cents within the safe numeric range; it is never rounded".into())
+        .ok_or_else(|| STORED_AMOUNT_ERROR.to_string())
+}
+
+const STORED_AMOUNT_ERROR: &str = "amount must be a finite nonnegative JSON number in whole cents within the safe numeric range; it is never rounded";
+const WIRE_AMOUNT_ERROR: &str = "amount must be a nonnegative decimal in whole cents within the safe numeric range, and is never rounded; send it as a JSON string (\"0.29\") when the digits matter, because a raw JSON number is already an f64 by the time it is read";
+
+/// Whole cents from the amount EXACTLY as the caller wrote it: the original
+/// token text, either a JSON string holding a decimal literal or a bare JSON
+/// number.
+///
+/// Validating the parsed `f64` instead would destroy the evidence it is
+/// supposed to weigh: `35184372088832.001` parses to the whole-cent double
+/// `35184372088832`, and `90071992547409.91` to `…409.90625`, whose own
+/// shortest decimal is `…409.9`. Both would then "round-trip" as amounts
+/// nobody sent. Read as text, the sub-cent digit and the unrepresentable
+/// cent are both refused.
+///
+/// Only the string form is exact end to end: a raw JSON number has already
+/// been through one `f64` in any kernel that re-serialises the frame.
+pub(super) fn wire_cents(raw: &str) -> Result<u64, String> {
+    let text = raw.trim();
+    let unquoted = text
+        .starts_with('"')
+        .then(|| serde_json::from_str::<String>(text).ok())
+        .flatten();
+    let decimal = match text.starts_with('"') {
+        true => unquoted.as_deref(),
+        false => Some(text),
+    };
+    decimal
+        .and_then(decimal_text_cents)
+        .filter(|cents| number(*cents).is_some())
+        .ok_or_else(|| WIRE_AMOUNT_ERROR.to_string())
 }
 
 pub(super) fn quantize(value: f64) -> Option<u64> {
@@ -130,12 +178,18 @@ pub(super) fn load(rpc: &Rpc, track: &str) -> Result<Book, String> {
     }
 }
 
+/// `amount_text` is the amount member's original wire text, recovered from
+/// the frame the kernel sent (`raw_argument`). It is deliberately separate
+/// from `args`: whether the caller SENT an amount is answered by `args`
+/// alone, so "no amount" and "an amount this plugin cannot read exactly"
+/// stay two outcomes rather than one missing value.
 pub(super) fn call(
     rpc: &Rpc,
     wake: &mpsc::Sender<()>,
     track: &str,
     name: &str,
     args: &Value,
+    amount_text: Option<&str>,
 ) -> Value {
     let object = match args.as_object() {
         Some(object) => object,
@@ -153,13 +207,20 @@ pub(super) fn call(
             Ok(value) => value,
             Err(error) => return tool_error(error),
         };
-        let amount = match object
-            .get("amount")
-            .ok_or("cash amount missing".to_string())
-            .and_then(cents)
-        {
-            Ok(value) => value,
-            Err(error) => return tool_error(error),
+        let amount = match (object.get("amount"), amount_text) {
+            (None, _) => return tool_error("cash amount missing"),
+            // Present on the frame, but its digits did not survive to here.
+            // Refusing is the only honest answer: the parsed value is an
+            // f64 that may already have rounded what the caller wrote.
+            (Some(_), None) => {
+                return tool_error(
+                    "cash amount could not be read exactly as it was sent; resend it as a JSON string",
+                );
+            }
+            (Some(_), Some(text)) => match wire_cents(text) {
+                Ok(value) => value,
+                Err(error) => return tool_error(error),
+            },
         };
         Some(Balance {
             currency,

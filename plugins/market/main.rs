@@ -41,6 +41,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 mod cash;
@@ -2269,7 +2270,33 @@ fn tool_error(text: impl Into<String>) -> Value {
 /// is a call from somewhere that has none (a direct daemon connection), and it
 /// is refused rather than defaulted: silently acting on some other Track is
 /// the failure this whole namespace exists to prevent.
-fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Value) -> Value {
+/// The ORIGINAL text of one `params.arguments` member, straight out of the
+/// frame the kernel wrote.
+///
+/// `serde_json` turns every JSON number into an `f64` while parsing, so by
+/// the time a frame is a [`Value`] the digits a caller actually sent are
+/// gone: `35184372088832.001` has already become `35184372088832`. A tool
+/// that must refuse an amount it cannot represent has to weigh the text,
+/// not the double — see [`cash::wire_cents`]. `RawValue` is the one thing
+/// that keeps a token's bytes, so the lookup walks it a level at a time.
+fn raw_argument(line: &str, name: &str) -> Option<String> {
+    let mut current: &RawValue = serde_json::from_str(line).ok()?;
+    for key in ["params", "arguments", name] {
+        let members: HashMap<&str, &RawValue> = serde_json::from_str(current.get()).ok()?;
+        current = members.get(key)?;
+    }
+    Some(current.get().to_string())
+}
+
+/// `line` is the frame's own JSON text, kept alongside the parsed `frame`
+/// for [`raw_argument`].
+fn tools_call_reply(
+    rpc: &Rpc,
+    cfg: &Config,
+    wake: &mpsc::Sender<()>,
+    frame: &Value,
+    line: &str,
+) -> Value {
     let name = frame
         .pointer("/params/name")
         .and_then(Value::as_str)
@@ -2322,7 +2349,14 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
     };
 
     match name {
-        "market.cash.set" | "market.cash.list" => cash::call(rpc, wake, &track_id, name, &args),
+        "market.cash.set" | "market.cash.list" => cash::call(
+            rpc,
+            wake,
+            &track_id,
+            name,
+            &args,
+            raw_argument(line, "amount").as_deref(),
+        ),
         "market.holdings.set" => {
             let raw = args
                 .get("asset")
@@ -2496,7 +2530,7 @@ fn main() {
     // the reader and take the plugin down silently. The single worker below
     // is therefore also what serialises tool calls against each other: they
     // are handled one at a time because one thread drains `tool_queue`.
-    let (tool_calls, tool_queue) = mpsc::channel::<Value>();
+    let (tool_calls, tool_queue) = mpsc::channel::<(Value, String)>();
     // Recording a holding wakes the poll thread instead of pricing inline, so
     // the write tool never touches the network — see the note at the
     // `market.holdings.set` arm.
@@ -2510,14 +2544,14 @@ fn main() {
         let config = Arc::clone(&config);
         let wake_tx = wake_tx.clone();
         std::thread::spawn(move || {
-            for frame in tool_queue {
+            for (frame, line) in tool_queue {
                 let Some(id) = frame.get("id").cloned() else {
                     continue;
                 };
                 // Read the configuration per call, so a call that was queued
                 // before a re-initialize still runs on the current one.
                 let cfg = config.lock().map(|cfg| cfg.clone()).unwrap_or_default();
-                let reply = tools_call_reply(&rpc, &cfg, &wake_tx, &frame);
+                let reply = tools_call_reply(&rpc, &cfg, &wake_tx, &frame, &line);
                 rpc.reply(id, reply);
             }
         });
@@ -2587,7 +2621,7 @@ fn main() {
                 }
             }
             "tools/call" => {
-                if tool_calls.send(frame).is_err() {
+                if tool_calls.send((frame, line)).is_err() {
                     eprintln!("market: the tool worker is gone; refusing the call");
                     rpc.send(&json!({
                         "jsonrpc": "2.0",
@@ -4262,12 +4296,9 @@ mod tests {
         // a network call and this arm makes no host callback, so the `Rpc`
         // below is never used.
         let (wake, _woken) = mpsc::channel();
-        let quoted = tools_call_reply(
-            &Rpc::new(),
-            &cfg,
-            &wake,
-            &json!({ "params": { "name": "market.quote", "arguments": { "asset": "usdt" } } }),
-        );
+        let call =
+            json!({ "params": { "name": "market.quote", "arguments": { "asset": "usdt" } } });
+        let quoted = tools_call_reply(&Rpc::new(), &cfg, &wake, &call, &call.to_string());
         let text = quoted["content"][0]["text"].as_str().expect("text");
         assert!(text.contains("CRYPTO:USDT"), "{text}");
         assert_eq!(quoted["structuredContent"]["venue"], json!("CRYPTO"));

@@ -101,7 +101,12 @@ fn invalid_cash_requests_and_corrupt_documents_do_not_write() {
         json!({"currency":"USD","amount":1.005}),
         json!({"currency":"USD","amount":-1}),
         json!({"currency":"EUR","amount":1}),
-        json!({"currency":"USD","amount":"1.2"}),
+        // A decimal STRING is the exact amount channel (the starter tells
+        // the assistant to use it), so what fails here is a string that is
+        // not a whole-cent decimal — not the fact that it is a string.
+        json!({"currency":"USD","amount":"1.005"}),
+        json!({"currency":"USD","amount":"1.2 USD"}),
+        json!({"currency":"USD","amount":""}),
         json!({"currency":"USD","amount":1e100}),
         json!({"currency":"USD","amount":2,"track_id":OTHER_TRACK}),
         json!({"amount":1}),

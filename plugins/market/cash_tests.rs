@@ -35,6 +35,43 @@ fn subcent_negative_non_numeric_and_unsafe_cash_are_refused_without_rounding() {
     assert!(sum([MAX_CENTS, 1].into_iter()).is_none());
 }
 
+/// The tool input is read from the token TEXT, so the digits a caller wrote
+/// are still there to refuse. Every literal below parses to an f64 that
+/// would have passed `cents` — the point is that the text does not.
+#[test]
+fn wire_amounts_are_judged_on_their_digits_not_on_the_parsed_double() {
+    for (raw, expected) in [
+        ("0", 0),
+        ("0.29", 29),
+        (r#""0.29""#, 29),
+        (r#""1.20""#, 120),
+        (r#""1e2""#, 10000),
+        ("  100000.0  ", 10000000),
+    ] {
+        assert_eq!(wire_cents(raw), Ok(expected), "{raw}");
+    }
+    for raw in [
+        // Round-trips only because parsing already lost a digit.
+        "90071992547409.91",
+        "70368744177664.01",
+        "35184372088832.001",
+        // Sub-cent, signed, out of range, or not a decimal literal at all.
+        "0.001",
+        "-0.01",
+        "1e100",
+        r#""1.005""#,
+        r#""1.2 USD""#,
+        r#""""#,
+        "1.",
+        ".5",
+        "null",
+        "true",
+        "",
+    ] {
+        assert!(wire_cents(raw).is_err(), "{raw}");
+    }
+}
+
 #[test]
 fn cash_document_is_versioned_strict_unique_and_keeps_explicit_zero() {
     assert!(Book::from_value(&Value::Null).is_err());

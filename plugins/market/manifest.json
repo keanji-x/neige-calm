@@ -91,9 +91,12 @@
             ]
           },
           "amount": {
-            "type": "number",
+            "type": [
+              "string",
+              "number"
+            ],
             "minimum": 0,
-            "description": "Current absolute balance in whole cents, e.g. 0.29 or 100000. Sub-cent or unsafe-range values are refused without rounding."
+            "description": "Current absolute balance in whole cents, e.g. \"0.29\" or \"100000\". Send it as a decimal string with no currency symbol and no thousands separator: a raw JSON number is read as a double before this plugin sees it, so its digits are only trusted where they survived that. Sub-cent or unsafe-range amounts are refused without rounding."
           }
         },
         "additionalProperties": false,
