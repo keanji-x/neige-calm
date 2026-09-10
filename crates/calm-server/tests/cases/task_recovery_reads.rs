@@ -145,6 +145,21 @@ async fn task_recovery_list_keeps_absent_projection_with_ready_blocker() {
         assert_eq!(compact[field], entry[field]);
     }
     assert_eq!(compact["task_projection"], "unavailable");
+    let omissions = compact["omitted_fields"].as_array().unwrap();
+    for path in omissions {
+        assert!(
+            entry.pointer(path.as_str().unwrap()).is_some(),
+            "invented omission {path}: {entry}"
+        );
+    }
+    for field in entry.as_object().unwrap().keys() {
+        if compact.get(field).is_none() {
+            assert!(
+                omissions.contains(&json!(format!("/{field}"))),
+                "missing omission for {field}"
+            );
+        }
+    }
 
     let view = serde_json::to_value(
         task_recovery_view(

@@ -163,3 +163,52 @@ async fn plan_list_summary_same_track_only() {
         assert!(error.message.contains("Planner"));
     }
 }
+
+#[tokio::test]
+async fn plan_list_summary_covers_omitted_full_fields() {
+    let boot = boot().await;
+    write_task_block(
+        &boot,
+        json!({"key":"dependency","kind":"codex","goal":"Prepare"}),
+    )
+    .await;
+    write_task_block(
+        &boot,
+        json!({"key":"gated","kind":"codex","goal":"Check output",
+        "depends_on":["dependency"],"priority":2,
+        "gate":{"steps":[{"name":"named-check","cmd":"printf private-command"}]}}),
+    )
+    .await;
+    let full = call_tool(
+        &boot,
+        TOOL_PLAN_LIST,
+        planner_identity(&boot),
+        json!({"detail":"full","key":"gated"}),
+    )
+    .await
+    .unwrap();
+    let summary = call_tool(
+        &boot,
+        TOOL_PLAN_LIST,
+        planner_identity(&boot),
+        json!({"detail":"summary","key":"gated"}),
+    )
+    .await
+    .unwrap();
+    let full = &full["tasks"][0];
+    let summary = &summary["tasks"][0];
+    assert_eq!(full["depends_on"], json!(["dependency"]));
+    assert_eq!(full["gate"]["steps"], json!(["named-check"]));
+    let omitted = summary["omitted_fields"].as_array().unwrap();
+    for field in full.as_object().unwrap().keys() {
+        if summary.get(field).is_none() {
+            assert!(
+                omitted.contains(&json!(format!("/{field}"))),
+                "missing omission for {field}: {summary}"
+            );
+        }
+    }
+    assert!(!summary.to_string().contains("Check output"));
+    assert!(!summary.to_string().contains("named-check"));
+    assert!(!summary.to_string().contains("private-command"));
+}

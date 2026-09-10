@@ -216,7 +216,23 @@ pub(super) fn summary(entry: &Value) -> Value {
     }
     let mut omitted_fields = Vec::new();
     omitted(entry, &result, "", &mut omitted_fields);
+    // The lightweight constructor never copies these full-entry values. Keep
+    // their paths in sync with task_list_entry; registry tests compare both views.
+    // Even the full missing-projection fallback supplies id, but no task fields.
+    omitted_fields.push("/id".into());
     if entry.get("task_projection").is_none() {
+        omitted_fields.extend(
+            [
+                "/depends_on",
+                "/priority",
+                "/gate",
+                "/worker_card_id",
+                "/created_at_ms",
+                "/finished_at_ms",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
         omitted_fields.push(
             if entry["kind"] == "terminal" {
                 "/command"
