@@ -14,7 +14,7 @@ async fn dispatch_candidate_maps_exact_nondefault_input_and_replays_without_writ
     let b = boot().await;
     crate::task_recovery::declare(&b, json!({
         "key":"release-2","kind":"codex","goal":"Produce release", "ready":false,
-        "declared_by":"spec", "no_gate_reason":"Candidate checks",
+        "declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR, "no_gate_reason":"Candidate checks",
         "context":{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty",
             "file_delivery":{"role":"candidate_producer","slot":"release_bundle","paths":["release.txt"],
                 "policy":{"scope":"declared-checks-only","timeout_secs":20,"steps":[{"name":"check","cmd":"test -f release.txt"}]}}}}
@@ -111,7 +111,7 @@ async fn dispatch_legacy_empty_json_payload_and_reply_remain_compatible() {
         block.payload,
         json!({
             "key":first["receipt"]["task_key"],"kind":"codex","goal":args()["goal"],
-            "acceptance":args()["acceptance"],"ready":true,"declared_by":"spec",
+            "acceptance":args()["acceptance"],"ready":true,"declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
             "no_gate_reason":"Semantic acceptance is reviewed from the completion report; it is not a machine gate or file candidate qualification.",
             "context":{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}}
         })
