@@ -260,7 +260,7 @@ pub(crate) async fn prompt(tx: &mut Tx<'_>, task: &Task) -> Result<String> {
                 .ok_or_else(|| conflict("candidate consumer binding missing"))?;
             validate_tx(tx, task, &binding).await?;
             Ok(format!(
-                "Read the exact sealed files from `{producer}` at /workspace/inputs/source. The declared machine checks passed for this candidate. The kernel checked the frozen qualification policy, including exact Reviewer/Planner evidence when required. This does not assert full test coverage."
+                "Read the exact sealed files from `{producer}` at /workspace/inputs/source. The declared machine checks passed for this candidate. The kernel checked the frozen qualification policy, including exact Reviewer/Planner evidence when required. This does not assert full test coverage. Optional completion presentation, only when the task/user result contract permits this envelope: report result as exactly {{\"$neige_result_presentation\":\"worker-summary-v1\",\"summary\":\"concise worker claims\",\"details\":<any JSON>}}. summary must be nonblank and at most 2048 UTF-8 bytes; put key observed results, source used and actual test commands/counts/outcomes first. Keep long scripts and full evidence in details. This summary is worker-reported data, not independent kernel verification or Planner acceptance. If the task/user mandates a specific root result shape, preserve that contract instead of wrapping it."
             ))
         }
         _ => Err(conflict("not a candidate delivery")),
