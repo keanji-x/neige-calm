@@ -37,9 +37,6 @@ android {
             // Keep the installable test APK small; native debug symbols stay in target/.
         }
         getByName("release") {
-            if (providers.gradleProperty("neige.releaseSmoke").orNull == "true") {
-                signingConfig = signingConfigs.getByName("debug")
-            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
@@ -53,11 +50,7 @@ android {
             matchingFallbacks += listOf("debug")
         }
     }
-    testBuildType = when {
-        providers.gradleProperty("neige.releaseSmoke").orNull == "true" -> "release"
-        providers.gradleProperty("neige.launcherSmoke").orNull == "true" -> "debug"
-        else -> "instrumented"
-    }
+    testBuildType = if (providers.gradleProperty("neige.launcherSmoke").orNull == "true") "debug" else "instrumented"
     testOptions { execution = "ANDROIDX_TEST_ORCHESTRATOR" }
     kotlinOptions {
         jvmTarget = "1.8"
