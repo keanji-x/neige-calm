@@ -16,7 +16,7 @@ class LoginSmokeTest {
     val context = instrumentation.targetContext
     val device = UiDevice.getInstance(instrumentation)
     context.startActivity(Intent(context, ConnectionTrialActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    val button = device.wait(Until.findObject(By.text("登录 Tailscale / 重新获取授权")), 15000)
+    val button = device.wait(Until.findObject(By.textContains("重新获取授权")), 15000)
     assertNotNull("Login button absent", button)
     button.click()
     val browser = device.wait(Until.hasObject(By.pkg("com.android.chrome")), 60000)

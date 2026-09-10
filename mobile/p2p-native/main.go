@@ -68,6 +68,17 @@ func start(dir string) string {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return failure(err)
 	}
+	// tsnet accepts an explicit state directory, but its Android socket logger
+	// still calls logpolicy.LogsDir without that option. Bridge our explicit,
+	// app-private directory to the upstream setting before creating the node.
+	// Never use /tmp, the process working directory, or change HOME on Android.
+	logsDir := filepath.Join(dir, "logs")
+	if err := os.MkdirAll(logsDir, 0700); err != nil {
+		return failure(err)
+	}
+	if err := os.Setenv("TS_LOGS_DIR", logsDir); err != nil {
+		return failure(err)
+	}
 	namePath := filepath.Join(dir, "trial-hostname")
 	name, err := os.ReadFile(namePath)
 	if os.IsNotExist(err) {
