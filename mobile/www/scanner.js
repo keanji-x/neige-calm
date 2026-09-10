@@ -1,5 +1,6 @@
 import { pairingDestination } from './pairing-url.js';
 import { bindServer } from './server-binding.js';
+import { defaultServer } from './server-config.js';
 
 const scan = document.querySelector('#scan');
 const cancelScan = document.querySelector('#cancel-scan');
@@ -10,6 +11,7 @@ let generation = 0;
 let settleCancel = null;
 
 function restoreLauncher() {
+  delete scan.dataset.active;
   scan.disabled = false;
   cancelScan.hidden = true;
   document.documentElement.classList.remove('scanning');
@@ -22,6 +24,7 @@ scan.addEventListener('click', async () => {
   confirm.hidden = true;
   if (!invoke) { error.textContent = '请在 Neige 安卓 App 中使用扫码。'; return; }
   const attempt = ++generation;
+  scan.dataset.active = 'true';
   scan.disabled = true;
   try {
     const permission = await invoke('plugin:barcode-scanner|request_permissions');
@@ -38,6 +41,7 @@ scan.addEventListener('click', async () => {
     ]);
     if (attempt !== generation || result === null) return;
     candidate = pairingDestination(result.content);
+    if (candidate.origin !== defaultServer) { candidate = null; throw new Error('请扫描当前电脑工作区的连接二维码。'); }
     document.querySelector('#pair-host').textContent = candidate.host;
     confirm.hidden = false;
   } catch (cause) {

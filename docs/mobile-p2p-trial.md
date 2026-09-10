@@ -24,3 +24,21 @@ Acceptance for phone handoff: ARM64 build, no VPN service/permission in merged
 manifest, correct TLS/no arbitrary CONNECT target, no embedded auth keys, actual
 bundled frontend and original signing key verified. Report untested Android
 runtime/VPN coexistence clearly; the user will validate those on their phone.
+
+## Remembered connection and redesigned launcher
+
+The next prototype replaces the native diagnostic Activity with one packaged
+launcher, exposing only login and QR pairing. The existing userspace node keeps
+its identity in the same no-backup directory; startup automatically restores it.
+Only local-launcher capabilities may read connection state, start browser login
+or select the fixed server proxy. Remote pages receive none of these permissions.
+
+With explicit user authorization to remember workspace access, the existing
+calm-session cookie is retained for up to 30 days in WebView's private cookie
+store with Secure, HttpOnly and SameSite=Strict intact. No cookie or enrollment
+URL is exposed to launcher JavaScript or stored in localStorage. The server is
+still authoritative for session validity and revocation; the cookie is only a
+resume hint. Auto-resume is consumed once per WebView to prevent an invalid
+cookie bouncing endlessly between the workspace and connection page. Returning
+to the connection page offers pairing instead. This does not change server
+session lifetime or deploy any new server configuration.

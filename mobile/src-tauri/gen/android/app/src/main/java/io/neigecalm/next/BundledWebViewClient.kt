@@ -23,7 +23,10 @@ internal class BundledWebViewClient(
   override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = original.shouldOverrideUrlLoading(view, request)
   override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = original.shouldOverrideUrlLoading(view, url)
   override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) = original.onPageStarted(view, url, favicon)
-  override fun onPageFinished(view: WebView, url: String) = original.onPageFinished(view, url)
+  override fun onPageFinished(view: WebView, url: String) {
+    original.onPageFinished(view, url)
+    if (url.startsWith(P2PConnection.ORIGIN + "/")) RememberedSession.persist()
+  }
   override fun onPageCommitVisible(view: WebView, url: String) = original.onPageCommitVisible(view, url)
   override fun onLoadResource(view: WebView, url: String) = original.onLoadResource(view, url)
   override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) = original.doUpdateVisitedHistory(view, url, isReload)

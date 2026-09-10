@@ -5,5 +5,5 @@
   "local": true,
   "windows": ["main"],
   "platforms": ["android"],
-  "permissions": ["bundled-frontend:allow-bind-server"]
+  "permissions": ["bundled-frontend:allow-bind-server", "bundled-frontend:allow-connection-status", "bundled-frontend:allow-login-tailscale"]
 }

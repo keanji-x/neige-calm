@@ -1,68 +1,63 @@
 import { test, expect } from '@playwright/test';
+const origin = 'https://pivot-neige.tail328551.ts.net:10000';
 
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
+  await page.addInitScript((server) => {
+    window.nativeCalls = [];
+    window.connection = { state: 'NeedsLogin', origin: server, resumeAvailable: false };
     window.__TAURI__ = { core: { invoke: async (command, args) => {
-      if (command !== 'plugin:bundled-frontend|bind_server') throw new Error('Unexpected native command');
-      return { origin: args.origin };
+      window.nativeCalls.push(command);
+      if (command.endsWith('|connection_status')) return window.connection;
+      if (command.endsWith('|login_tailscale')) { window.connection.state = 'Running'; return { state: 'Running' }; }
+      if (command.endsWith('|bind_server')) { window.connection.resumeAvailable = false; return { origin: args.origin }; }
+      throw new Error('Unexpected command');
     } } };
-  });
+  }, origin);
 });
 
-test('validates before navigation and lays out at phone width', async ({ page }) => {
+test('shows only login and scan, with a responsive phone layout', async ({ page }) => {
   await page.goto('/');
-  await page.getByLabel('服务器地址', { exact: true }).fill('');
-  await page.getByRole('button', { name: '进入工作空间' }).click();
-  await expect(page.getByRole('alert', { name: '地址错误' })).toContainText('完整的服务器地址');
-  await page.getByLabel('服务器地址', { exact: true }).fill('http://calm.example.com');
-  await page.getByRole('button', { name: '进入工作空间' }).click();
-  await expect(page.getByRole('alert', { name: '地址错误' })).toContainText('HTTPS');
-  await expect(page).toHaveURL('http://127.0.0.1:5197/');
+  await expect(page.getByRole('button', { name: /登录 Tailscale/ })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /扫码授权/ })).toBeDisabled();
+  await expect(page.locator('input')).toHaveCount(0);
   for (const width of [320, 390]) {
     await page.setViewportSize({ width, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
-    await expect(page.getByRole('button', { name: '进入工作空间' })).toBeInViewport();
+    await expect(page.getByRole('button', { name: /扫码授权/ })).toBeInViewport();
   }
-  await page.getByLabel('服务器地址', { exact: true }).fill('');
-  await page.reload();
-  await page.screenshot({ path: 'artifacts/connection-page.png', fullPage: true });
+  await page.screenshot({ path: 'artifacts/connection-redesign.png', fullPage: true });
 });
 
-test('opens the real navigation destination and remembers only the origin', async ({ page }) => {
-  await page.route('https://calm.example.com:8443/next/', (route) => route.fulfill({
-    contentType: 'text/html', body: '<h1>Server destination</h1>',
-  }));
+test('login calls the real bridge contract and enables scanning', async ({ page }) => {
   await page.goto('/');
-  await page.getByLabel('服务器地址', { exact: true }).fill('https://calm.example.com:8443/next/');
-  await page.getByRole('button', { name: '进入工作空间' }).click();
-  await expect(page).toHaveURL('https://calm.example.com:8443/next/');
-  await page.goto('http://127.0.0.1:5197/');
-  await expect(page.getByLabel('服务器地址', { exact: true })).toHaveValue('https://calm.example.com:8443');
-  await page.getByLabel('记住服务器地址').uncheck();
-  await page.getByRole('button', { name: '进入工作空间' }).click();
-  await expect(page).toHaveURL('https://calm.example.com:8443/next/');
-  await page.goto('http://127.0.0.1:5197/');
-  await expect(page.getByLabel('服务器地址', { exact: true })).toHaveValue('');
+  await page.getByRole('button', { name: /登录 Tailscale/ }).click();
+  await expect(page.getByRole('button', { name: /扫码授权/ })).toBeEnabled();
+  expect(await page.evaluate(() => window.nativeCalls)).toContain('plugin:bundled-frontend|login_tailscale');
 });
 
-test('storage failure does not prevent an explicit connection', async ({ page }) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(window, 'localStorage', { get() { throw new Error('Storage unavailable'); } });
-  });
-  await page.route('https://calm.example.com/next/', (route) => route.fulfill({ body: 'Connected' }));
+test('existing authorization automatically binds and opens the workspace', async ({ page }) => {
+  await page.addInitScript(() => { window.connection = { ...window.connection, state: 'Running', resumeAvailable: true }; });
+  await page.route(`${origin}/next/`, route => route.fulfill({ contentType: 'text/html', body: '<h1>Workspace</h1>' }));
   await page.goto('/');
-  await expect(page.getByLabel('记住服务器地址')).toBeDisabled();
-  await page.getByLabel('服务器地址', { exact: true }).fill('https://calm.example.com');
-  await page.getByRole('button', { name: '进入工作空间' }).click();
-  await expect(page).toHaveURL('https://calm.example.com/next/');
+  await expect(page).toHaveURL(`${origin}/next/`);
 });
 
-test('failed native binding stays on the launcher and displays the reason', async ({ page }) => {
+test('returning after an invalid session does not loop back into the workspace', async ({ page }) => {
+  await page.addInitScript(() => { window.connection = { ...window.connection, state: 'Running', resumeAvailable: false }; });
   await page.goto('/');
-  await page.evaluate(() => { window.__TAURI__.core.invoke = async () => { throw '系统网页组件版本过旧'; }; });
-  await page.getByLabel('服务器地址', { exact: true }).fill('https://calm.example.com');
-  await page.getByRole('button', { name: '进入工作空间' }).click();
-  await expect(page.getByRole('alert', { name: '地址错误' })).toContainText('系统网页组件版本过旧');
+  await expect(page.getByRole('button', { name: /扫码授权/ })).toBeEnabled();
+  await page.waitForTimeout(1700);
   await expect(page).toHaveURL('http://127.0.0.1:5197/');
-  await expect(page.getByRole('button', { name: '进入工作空间' })).toBeEnabled();
+  expect(await page.evaluate(() => window.nativeCalls)).not.toContain('plugin:bundled-frontend|bind_server');
+});
+
+test('login failures remain visible and can be retried', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    const original = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = (command, args) => command.endsWith('|login_tailscale') ? Promise.reject('无法获取授权链接') : original(command, args);
+  });
+  await page.getByRole('button', { name: /登录 Tailscale/ }).click();
+  await expect(page.locator('#error')).toHaveText('无法获取授权链接');
+  await expect(page.getByRole('button', { name: /登录 Tailscale/ })).toBeEnabled();
 });
