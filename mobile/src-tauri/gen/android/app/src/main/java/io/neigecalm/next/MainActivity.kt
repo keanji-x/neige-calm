@@ -9,8 +9,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AlertDialog
 
 class MainActivity : TauriActivity() {
-  // Tauri disables Wry's history handling by default; Next is a browser app.
-  override val handleBackNavigation: Boolean = true
+  // MainActivity owns history and the workspace-to-configuration transition.
+  // Wry registers its callback later, so its built-in handler must stay disabled.
+  override val handleBackNavigation: Boolean = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()

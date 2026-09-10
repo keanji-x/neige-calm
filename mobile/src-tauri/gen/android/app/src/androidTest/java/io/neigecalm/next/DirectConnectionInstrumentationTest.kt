@@ -39,6 +39,8 @@ class DirectConnectionInstrumentationTest {
     assertTrue(device.wait(Until.hasObject(By.textContains("保存并连接 IP")), 10000))
     SystemClock.sleep(2000)
     assertTrue("Returning to setup must not immediately reopen IP", device.hasObject(By.textContains("保存并连接 IP")))
+    device.pressBack()
+    assertTrue("Back from configuration must close instead of reopening old workspace", device.wait(Until.gone(By.pkg(context.packageName)), 10000))
   }
 
   private fun webView(view: View): WebView? {
