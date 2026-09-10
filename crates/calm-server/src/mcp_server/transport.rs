@@ -109,7 +109,6 @@ struct PluginToolRoute {
 }
 
 #[cfg(test)]
-#[path = "plugin_tool_access_tests.rs"]
 mod plugin_tool_access_tests;
 
 /// Configuration the codex daemon needs to know about the kernel's MCP

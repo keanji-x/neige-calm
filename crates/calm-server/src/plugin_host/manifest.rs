@@ -4863,5 +4863,4 @@ mod connector_kind_tests {
 }
 
 #[cfg(test)]
-#[path = "manifest_assistant_access_tests.rs"]
 mod assistant_access_tests;
