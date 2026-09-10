@@ -33,6 +33,16 @@ def hierarchy():
     return ET.fromstring(adb('shell', 'cat', '/sdcard/neige-release-window.xml'))
 
 
+def structural_hierarchy(root):
+    # Browser text, hints and accessibility descriptions may contain credentials.
+    # Only these fixed structural attributes are safe to export.
+    for node in root.iter():
+        node.attrib = {key: node.attrib[key] for key in
+                       ('package', 'class', 'bounds', 'enabled', 'clickable', 'focused', 'selected')
+                       if key in node.attrib}
+    return ET.tostring(root, encoding='unicode')
+
+
 def wait_node(predicate, description, timeout=30):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -138,9 +148,7 @@ if __name__ == '__main__':
     except Exception:
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
         try:
-            xml = ET.tostring(hierarchy(), encoding='unicode')
-            # Browser enrollment URLs are one-time credentials; never upload them.
-            xml = re.sub(r'https?://[^\s<"\']+', '<redacted-url>', xml)
+            xml = structural_hierarchy(hierarchy())
             (ARTIFACTS / 'failure-ui.xml').write_text(xml)
         except Exception:
             pass
