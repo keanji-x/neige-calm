@@ -95,7 +95,7 @@ Browser checks load the shipped connection-page files with the configured CSP.
 They check phone layout, configuration persistence, timeout/fallback rendering,
 stale-result cancellation, navigation and camera behavior. The destination response is intercepted: these
 checks do **not** establish that a real server login or Android WebView works.
-The screenshot is written to `artifacts/connection-page.png`.
+The screenshot is written to `artifacts/connection-dual-tailscale.png` and `artifacts/connection-dual-ip.png`.
 
 Before distribution, verify on a physical phone: server login, navigation/back,
 background/resume and event reconnect, keyboard resizing, attachments, and report

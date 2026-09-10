@@ -81,7 +81,7 @@ jobs:
           name: neige-calm-next-arm64-debug
           path: |
             mobile/src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk
-            mobile/artifacts/connection-page.png
+            mobile/artifacts/connection-dual-*.png
             mobile/artifacts/native-policy/
           if-no-files-found: error
           retention-days: 7
