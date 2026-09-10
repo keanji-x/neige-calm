@@ -80,6 +80,7 @@ class BundledFrontendPlugin(private val host: Activity) : Plugin(host) {
     check(current.host == "tauri.localhost" && current.rawUserInfo == null
       && ((current.scheme == "http" && current.port in listOf(-1, 80))
         || (current.scheme == "https" && current.port in listOf(-1, 443)))) { "只能从 App 连接页操作" }
+    (host as? MainActivity)?.installConnectionBackHandler()
     return webView
   }
 

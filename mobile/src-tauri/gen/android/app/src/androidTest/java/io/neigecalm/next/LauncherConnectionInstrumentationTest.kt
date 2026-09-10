@@ -17,9 +17,13 @@ class LauncherConnectionInstrumentationTest {
     val context = instrumentation.targetContext
     val device = UiDevice.getInstance(instrumentation)
     context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    val button = device.wait(Until.findObject(By.textContains("登录 Tailscale")), 20000)
+    val button = device.wait(Until.findObject(By.textContains("登录 Tailscale").enabled(true)), 20000)
     assertNotNull("Packaged login button must be visible", button)
     button.click()
-    assertTrue("Real packaged login did not open Chrome", device.wait(Until.hasObject(By.pkg("com.android.chrome")), 60000))
+    val opened = device.wait(Until.hasObject(By.pkg("com.android.chrome")), 60000)
+    if (!opened) {
+      val ui = device.findObjects(By.clazz("android.widget.TextView")).joinToString(" | ") { it.text }
+      fail("Real packaged login did not open Chrome. UI: " + ui.replace(Regex("https?://[^\\s]+"), "<url>"))
+    }
   }
 }

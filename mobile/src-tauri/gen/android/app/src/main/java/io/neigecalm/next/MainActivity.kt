@@ -9,6 +9,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AlertDialog
 
 class MainActivity : TauriActivity() {
+  private var connectionBack: OnBackPressedCallback? = null
   // MainActivity owns history and the workspace-to-configuration transition.
   // Wry registers its callback later, so its built-in handler must stay disabled.
   override val handleBackNavigation: Boolean = false
@@ -16,7 +17,7 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
-    onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+    connectionBack = object : OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {
         val view = findWebView(findViewById(android.R.id.content))
         val uri = runCatching { java.net.URI(view?.url ?: "") }.getOrNull()
@@ -25,11 +26,20 @@ class MainActivity : TauriActivity() {
         else if (uri?.scheme in listOf("http", "https")) view.loadUrl("http://tauri.localhost/")
         else finish()
       }
-    })
+    }
+    installConnectionBackHandler()
     if (!BundledWebViewSupport.available(this)) {
       AlertDialog.Builder(this).setTitle("请更新系统网页组件")
         .setMessage("请更新 Android System WebView 或系统浏览器后，再打开 Neige App。")
         .setPositiveButton("关闭") { _, _ -> finish() }.setCancelable(false).show()
+    }
+  }
+  internal fun installConnectionBackHandler() {
+    // Tauri's core AppPlugin also registers Back after Activity creation.
+    // Re-register once the real launcher invokes its bridge, after plugin load.
+    connectionBack?.let { callback ->
+      callback.remove()
+      onBackPressedDispatcher.addCallback(this, callback)
     }
   }
   private fun findWebView(view: View): WebView? {
