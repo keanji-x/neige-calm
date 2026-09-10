@@ -4,7 +4,7 @@ cd "$(dirname "$0")/../../src-tauri/gen/android"
 profile=${1:-debug}
 case "$profile" in
   debug) variant=Debug; smoke_property=-Pneige.launcherSmoke=true ;;
-  release) variant=Release; smoke_property=-Pneige.releaseSmoke=true ;;
+  release) exec python3 ../../../tests/native/run-release-smoke.py ;;
   *) echo 'Expected debug or release smoke profile' >&2; exit 2 ;;
 esac
 # The preceding Tauri CLI step built this exact native binary and embedded assets.

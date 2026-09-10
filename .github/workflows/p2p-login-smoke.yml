@@ -22,7 +22,6 @@ jobs:
       CARGO_BUILD_JOBS: '4'
       RUSTC_WRAPPER: ''
       GOMAXPROCS: '4'
-      ORG_GRADLE_PROJECT_neige.releaseSmoke: ${{ matrix.buildType == 'release' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -87,4 +86,5 @@ jobs:
           path: |
             mobile/src-tauri/gen/android/app/build/outputs/androidTest-results/
             mobile/artifacts/resume-*.txt
+            mobile/artifacts/release-smoke/
           retention-days: 3
