@@ -12,7 +12,7 @@ pub const TOOL_TASK_DISPATCH: &str = "calm.task.dispatch";
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(ToolDescriptor {
         name: TOOL_TASK_DISPATCH.into(),
-        description: "Declare one independent Codex task in an empty isolated workspace. name is a Track-local business identity for Dispatch-created tasks: only surrounding whitespace is trimmed; case and Unicode are exact. Same name and exact typed contract replays the original task key and block, even after report changes or session replacement; a different contract conflicts. Use a new meaningful name for new work, existing recovery for technical retries and calm.task.repair for an eligible rejected candidate. goal and acceptance are required. Semantic acceptance is reviewed from the completion report, not a machine gate or file candidate qualification. Receipt creation does not mean running: current diagnostics preserve User release, lifecycle and budget controls. current.contract_status compares the current declaration with the original Dispatch contract; it does not prove an attempt executed that contract. No dependencies or other options. Normal result receipts arrive through the existing Planner result path.".into(),
+        description: "Declare one named Codex task in an empty isolated workspace or consuming a verified candidate. workspace=verified-candidate requires input with exact same-Track producer key and slot; no report revision or generated task key copying is needed. For review-required sources, use calm.task.verdict to accept the producer after exact checks and review pass; optional lifecycle continues in that same write. Reviewing already schedules. Declared-checks-only sources keep their existing machine policy. Select the returned repair_key explicitly to consume a repaired candidate. current.candidate_input is a compact input/admission diagnostic, not a Worker result; calm.plan.list provides full evidence. name is a Track-local business identity for Dispatch-created tasks: only surrounding whitespace is trimmed; case and Unicode are exact. Same name and exact typed contract replays the original task key and block, even after report changes or session replacement; a different contract conflicts. Use a new meaningful name for new work, existing recovery for technical retries and calm.task.repair for an eligible rejected candidate. goal and acceptance are required. Semantic acceptance is reviewed from the completion report, not a machine gate or file candidate qualification. Receipt creation does not mean running: current diagnostics preserve User release, lifecycle and budget controls. current.contract_status compares the current declaration with the original Dispatch contract; it does not prove an attempt executed that contract. No dependencies or other options. Normal result receipts arrive through the existing Planner result path.".into(),
         input_schema: json!({
             "type":"object", "additionalProperties":false,
             "required":["name","goal","acceptance","executor","workspace"],
@@ -21,8 +21,17 @@ pub fn register_into(registry: &mut ToolRegistry) {
                 "goal":{"type":"string","minLength":1},
                 "acceptance":{"type":"string","minLength":1},
                 "executor":{"type":"string","enum":["codex"]},
-                "workspace":{"type":"string","enum":["empty"]}
-            }
+                "workspace":{"type":"string","enum":["empty","verified-candidate"]},
+                "input":{"type":"object","additionalProperties":false,"required":["producer","slot"],
+                    "properties":{
+                        "producer":{"type":"string","pattern":"^[a-z0-9][a-z0-9._-]{0,63}$","not":{"pattern":"[^a-z0-9._-]"},"description":"Exact same-Track candidate producer key; use repair_key for C2."},
+                        "slot":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,128}$","not":{"pattern":"[^A-Za-z0-9_-]"}}
+                    }}
+            },
+            "oneOf":[
+                {"properties":{"workspace":{"const":"empty"}},"not":{"required":["input"]}},
+                {"properties":{"workspace":{"const":"verified-candidate"}},"required":["input"]}
+            ]
         }),
         annotations: Some(role_gated_write_annotations()),
         visible_to_roles: &[CardRole::Planner],
@@ -83,5 +92,53 @@ mod tests {
             descriptor.input_schema["required"],
             json!(["name", "goal", "acceptance", "executor", "workspace"])
         );
+    }
+
+    #[test]
+    fn candidate_dispatch_schema_requires_input_only_for_candidate_variant() {
+        let mut registry = ToolRegistry::default();
+        register_into(&mut registry);
+        let descriptor = registry
+            .descriptors()
+            .into_iter()
+            .find(|d| d.name == TOOL_TASK_DISPATCH)
+            .unwrap();
+        let schema = &descriptor.input_schema;
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(
+            schema["properties"]["workspace"]["enum"],
+            json!(["empty", "verified-candidate"])
+        );
+        assert_eq!(
+            schema["oneOf"],
+            json!([
+                {"properties":{"workspace":{"const":"empty"}},"not":{"required":["input"]}},
+                {"properties":{"workspace":{"const":"verified-candidate"}},"required":["input"]}
+            ])
+        );
+        let input = &schema["properties"]["input"];
+        assert_eq!(input["type"], "object");
+        assert_eq!(input["additionalProperties"], false);
+        assert_eq!(input["required"], json!(["producer", "slot"]));
+        for field in ["producer", "slot"] {
+            assert_eq!(input["properties"][field]["type"], "string");
+        }
+        for (workspace, source) in [
+            ("empty", None),
+            (
+                "verified-candidate",
+                Some(json!({"producer":"release-2","slot":"release_bundle"})),
+            ),
+        ] {
+            let mut args = json!({"name":"Release", "goal":"Exercise files", "acceptance":"Report findings", "executor":"codex", "workspace":workspace});
+            if let Some(source) = source {
+                args["input"] = source;
+            }
+            let parsed: DispatchArgs = serde_json::from_value(args.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(parsed.normalize().unwrap()).unwrap(),
+                args
+            );
+        }
     }
 }

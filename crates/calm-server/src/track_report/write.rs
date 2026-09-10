@@ -1077,7 +1077,7 @@ async fn persist(
                 let dispatch_response = if let PersistPurpose::Dispatch { args, task_budget_default, .. } = &purpose {
                     let block = outcome.as_ref().ok_or_else(|| CalmError::Internal("dispatch block outcome missing".into()))?;
                     let receipt = super::dispatch::DispatchReceipt {
-                        name: args.name.clone(), task_key: dispatch_key,
+                        name: args.name().to_owned(), task_key: dispatch_key,
                         report_card_id: id.clone(), block_id: block.id.clone(),
                         created_at_ms: crate::model::now_ms(),
                     };

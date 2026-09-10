@@ -24,17 +24,29 @@ async fn review_source_listener(
     check: &str,
     live: bool,
 ) -> (Fixture, Task, String, Value) {
+    review_source_contract(scenario, check, live, "produce", "project", true).await
+}
+async fn review_source_contract(
+    scenario: &str,
+    check: &str,
+    live: bool,
+    producer_key: &str,
+    slot: &str,
+    legacy_consumer: bool,
+) -> (Fixture, Task, String, Value) {
     let fx = fixture(scenario).await;
     if !live {
         fx.state.dispatcher.abort_event_listener_for_test();
     }
     let mut task = producer(check);
+    task["key"] = json!(producer_key);
+    task["context"]["neige_execution"]["file_delivery"]["slot"] = json!(slot);
     task["context"]["neige_execution"]["file_delivery"]["policy"]["scope"] =
         json!("review-required");
     task["context"]["neige_execution"]["file_delivery"]["policy"]["reviewer"] = json!("review");
     declare(&fx.boot, task).await;
     schedule(&fx).await;
-    let producer = current(&fx.boot, "produce").await;
+    let producer = current(&fx.boot, producer_key).await;
     assert_eq!(
         producer.status,
         TaskStatus::Running,
@@ -48,8 +60,16 @@ async fn review_source_listener(
     settle(&fx, &producer, true).await;
     let publication = publish(&fx, &producer).await;
     std::fs::remove_dir_all(path).unwrap();
-    declare(&fx.boot, reviewer()).await;
-    declare(&fx.boot, consumer()).await;
+    let mut review = reviewer();
+    review["context"]["neige_execution"]["file_delivery"]["producer"] = json!(producer_key);
+    review["context"]["neige_execution"]["file_delivery"]["slot"] = json!(slot);
+    declare(&fx.boot, review).await;
+    if legacy_consumer {
+        let mut consume = consumer();
+        consume["context"]["neige_execution"]["file_delivery"]["producer"] = json!(producer_key);
+        consume["context"]["neige_execution"]["file_delivery"]["slot"] = json!(slot);
+        declare(&fx.boot, consume).await;
+    }
     schedule(&fx).await;
     let evidence = verified(&fx, &publication).await;
     schedule(&fx).await;
@@ -577,3 +597,6 @@ mod settlement;
 
 #[path = "candidate_repair.rs"]
 mod repair;
+
+#[path = "candidate_review_dispatch.rs"]
+mod dispatch;
