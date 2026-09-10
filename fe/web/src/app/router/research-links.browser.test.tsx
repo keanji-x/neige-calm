@@ -65,12 +65,12 @@ it('opens a saved same-origin research URL through the real Track route and retu
 });
 
 
-it('renders legacy ids and wave citations as links while rejected app URLs remain plain table cells', async () => {
+it('renders legacy ids and report citations as links while rejected app URLs remain plain table cells', async () => {
   const user = userEvent.setup();
   const onOpenLink = vi.fn<(target: ReportLinkTarget) => void>();
   const rows = [
     { name: 'Legacy research', target: 'legacy%2Fid' },
-    { name: 'Wave research', target: 'neige://wave/study#b-thesis' },
+    { name: 'Citation research', target: 'neige://wave/study#b-thesis' },
     { name: 'Relative research', target: `${APP_BASEPATH}/track/study%252F1#b%2Dthesis` },
     { name: 'External research', target: 'https://elsewhere.example/next/track/study' },
     { name: 'Wrong page', target: `${window.location.origin}${APP_BASEPATH}/area/study` },
@@ -84,7 +84,7 @@ it('renders legacy ids and wave citations as links while rejected app URLs remai
       }],
     } }] }}/>
   );
-  for (const label of ['Legacy research', 'Wave research', 'Relative research']) await user.click(screen.getByRole('button', { name: label }));
+  for (const label of ['Legacy research', 'Citation research', 'Relative research']) await user.click(screen.getByRole('button', { name: label }));
   expect(onOpenLink.mock.calls.map(call => call[0])).toEqual([
     { trackId: 'legacy%2Fid', blockId: null }, { trackId: 'study', blockId: 'b-thesis' }, { trackId: 'study%2F1', blockId: 'b-thesis' },
   ]);

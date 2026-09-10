@@ -15,7 +15,7 @@ other origins/ports, unknown schemes and non-Track paths do not become buttons.
 Relative URL support is limited to root-relative routes under the supplied app
 base, e.g. `/next/track/id`; page-relative paths and protocol-relative URLs are
 refused. View query parameters are not carried into the report destination.
-Valid ids are decoded once. Existing wave-link fragment compatibility is retained.
+Valid ids are decoded once. Existing citation-link fragment compatibility is retained.
 
 ReportDocument carries the optional resolver to native layout tables. Its saved
 Recipe preview mode clears both the resolver and navigation callback. Original

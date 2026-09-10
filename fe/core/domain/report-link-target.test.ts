@@ -8,7 +8,7 @@ it('preserves opaque legacy ids without decoding them', () => {
   expect(resolveReportLinkTarget('  ')).toBeNull();
 });
 
-it('uses existing wave citation and anchor behavior before consulting the browser', () => {
+it('uses existing report-link citation and anchor behavior before consulting the browser', () => {
   const browser = vi.fn(() => null);
   expect(resolveReportLinkTarget('neige://wave/study%252F1#b-thesis', browser)).toEqual({ trackId: 'study%2F1', blockId: 'b-thesis' });
   expect(resolveReportLinkTarget('neige://wave/%ZZ#invalid/anchor', browser)).toEqual({ trackId: '%ZZ', blockId: null });
