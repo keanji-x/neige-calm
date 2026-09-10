@@ -15,6 +15,7 @@ val tauriProperties = Properties().apply {
 
 android {
     compileSdk = 36
+    ndkVersion = "29.0.14206865"
     namespace = "io.neigecalm.next"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
