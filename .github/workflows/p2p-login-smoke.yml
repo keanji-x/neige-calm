@@ -39,6 +39,7 @@ jobs:
         with:
           workspaces: mobile/src-tauri -> target
           shared-key: p2p-launcher
+          cache-on-failure: true
       - name: Verify credential-free release diagnostics
         run: python3 -m unittest discover -s mobile/tests/native -p test_release_smoke.py
       - name: Verify Go transport boundaries

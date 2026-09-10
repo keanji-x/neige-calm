@@ -57,7 +57,7 @@ def wait_node(predicate, description, timeout=30):
 
 
 def text_node(text, timeout=30):
-    return wait_node(lambda n: n.get('text') == text and n.get('enabled') == 'true',
+    return wait_node(lambda n: text in (n.get('text'), n.get('content-desc')) and n.get('enabled') == 'true',
                      f'Missing enabled UI: {text}', timeout)
 
 
@@ -107,7 +107,7 @@ def main():
                   'Real release Tauri/JNI login did not open Chrome', 70)
         print('PASS: minified release login opens external Chrome', flush=True)
         launch(app_id)
-        tap(text_node('Tailscale'))
+        tap(text_node('连接方式'))
         tap(text_node('IP 连接'))
         entry = wait_node(lambda n: n.get('class') == 'android.widget.EditText' and
                           n.get('enabled') == 'true', 'Missing IP input')
