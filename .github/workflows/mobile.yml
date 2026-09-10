@@ -38,6 +38,10 @@ jobs:
           cache-dependency-path: |
             mobile/package-lock.json
             fe/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mobile/p2p-native/go.mod
+          cache-dependency-path: mobile/p2p-native/go.sum
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -103,6 +107,10 @@ jobs:
           cache-dependency-path: |
             mobile/package-lock.json
             fe/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mobile/p2p-native/go.mod
+          cache-dependency-path: mobile/p2p-native/go.sum
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

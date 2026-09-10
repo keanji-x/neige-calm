@@ -1,6 +1,6 @@
 {
   "name": "neige-calm-next-android",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,8 @@
     "android:apk": "tauri android build --debug --apk --target aarch64",
     "test": "node --test tests/*.test.mjs",
     "test:browser": "playwright test",
-    "test:pairing": "node tests/closed-loop.mjs"
+    "test:pairing": "node tests/closed-loop.mjs",
+    "android:release": "tauri android build --apk --target aarch64"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0",

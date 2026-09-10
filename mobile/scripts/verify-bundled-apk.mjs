@@ -8,6 +8,10 @@ const prefix = 'assets/neige-next/';
 const names = execFileSync('unzip', ['-Z1', apk], { encoding: 'utf8' }).trim().split('\n');
 assert.ok(!names.some((name) => name.includes('neige_instrumentation_ca')), 'Installable APK must not trust the instrumentation CA');
 assert.ok(names.includes(`${prefix}manifest.json`), 'APK must contain the bundled Next frontend manifest');
+const nativeAbis = names.filter((name) => /^lib\/[^/]+\/libapp_lib\.so$/.test(name)).map((name) => name.split('/')[1]);
+assert.ok(nativeAbis.length > 0, 'APK must contain the native app runtime');
+for (const abi of nativeAbis) assert.ok(names.includes(`lib/${abi}/libneige_p2p.so`), `Missing userspace networking for ${abi}`);
+
 const read = (name) => execFileSync('unzip', ['-p', apk, name], { maxBuffer: 32 * 1024 * 1024 });
 const manifest = JSON.parse(read(`${prefix}manifest.json`).toString('utf8'));
 assert.equal(manifest.version, 1);

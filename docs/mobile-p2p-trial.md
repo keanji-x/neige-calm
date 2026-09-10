@@ -61,8 +61,8 @@ rejects unconfigured HTTP destinations. The direct path uses an app-local, fixed
 the Tailscale path uses its userspace-network proxy. Neither direct traffic nor
 its redirect hops use a cloud relay. Both proxy configurations remove implicit
 bypass rules and allow only the packaged launcher to bypass; redirect destinations
-are checked again by the proxy, not only by WebView interception. Cookies are retained separately
-for each origin; HTTPS cookies are never copied to a newly entered IP. A new IP
+are checked again by the proxy, not only by WebView interception. Cookies follow browser host/domain scope: different ports on the same host share
+cookies. HTTPS cookies are never copied to a different IP host. A new IP
 origin may need its own workspace login once. The same backend remains authoritative
 for authentication, expiry and revocation on either path.
 

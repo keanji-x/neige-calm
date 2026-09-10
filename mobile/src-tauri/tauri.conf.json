@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Neige P2P Trial",
-  "version": "0.2.0",
+  "productName": "Neige Calm",
+  "version": "0.3.0",
   "identifier": "io.neigecalm.next",
   "build": {
     "beforeBuildCommand": "node scripts/build-bundled-frontend.mjs",
