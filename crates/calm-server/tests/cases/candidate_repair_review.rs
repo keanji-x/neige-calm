@@ -359,37 +359,59 @@ async fn candidate_repair_acceptance_briefing_ready() {
     assert!(brief["delivery"]["candidate"]["snapshot"].is_string());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn candidate_repair_acceptance_briefing_rechecks_receipt_and_settlement() {
-    for state in ["revoked-receipt", "failed", "unsettled"] {
-        let (_, brief) = notice_case(state, true).await;
-        let phase = &brief["repair_acceptance"];
-        assert_eq!(
-            phase["state"],
-            if state == "failed" {
-                "blocked"
-            } else {
-                "unavailable"
-            },
-            "{state}: {brief}"
-        );
-        assert!(phase["next_action"].is_null(), "{brief}");
-        assert!(
-            phase["reason"].as_str().is_some_and(|s| !s.is_empty()),
-            "{brief}"
-        );
-    }
+async fn assert_acceptance_refused(state: &str) {
+    let (_, brief) = notice_case(state, true).await;
+    let phase = &brief["repair_acceptance"];
+    assert_eq!(
+        phase["state"],
+        if state == "failed" {
+            "blocked"
+        } else {
+            "unavailable"
+        },
+        "{state}: {brief}"
+    );
+    assert!(phase["next_action"].is_null(), "{brief}");
+    assert!(
+        phase["reason"].as_str().is_some_and(|s| !s.is_empty()),
+        "{brief}"
+    );
 }
+
+// Each scenario owns a Tokio runtime so fixture background work cannot outlive
+// its scenario and accumulate into the next one. Nextest also isolates processes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn candidate_repair_acceptance_briefing_already_decided() {
-    for state in ["accepted", "rejected"] {
-        let (_, brief) = notice_case(state, true).await;
-        let phase = &brief["repair_acceptance"];
-        assert_eq!(phase["state"], "already-decided", "{brief}");
-        assert!(phase["next_action"].is_null(), "{brief}");
-        assert_eq!(brief["delivery"]["decision"]["state"], state);
-        assert!(brief["delivery"]["decision"]["event_id"].is_i64());
-    }
+async fn candidate_repair_acceptance_briefing_refuses_revoked_receipt() {
+    assert_acceptance_refused("revoked-receipt").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn candidate_repair_acceptance_briefing_blocks_failed_review() {
+    assert_acceptance_refused("failed").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn candidate_repair_acceptance_briefing_refuses_unsettled_execution() {
+    assert_acceptance_refused("unsettled").await;
+}
+
+async fn assert_acceptance_decided(state: &str) {
+    let (_, brief) = notice_case(state, true).await;
+    let phase = &brief["repair_acceptance"];
+    assert_eq!(phase["state"], "already-decided", "{brief}");
+    assert!(phase["next_action"].is_null(), "{brief}");
+    assert_eq!(brief["delivery"]["decision"]["state"], state);
+    assert!(brief["delivery"]["decision"]["event_id"].is_i64());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn candidate_repair_acceptance_briefing_already_accepted() {
+    assert_acceptance_decided("accepted").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn candidate_repair_acceptance_briefing_already_rejected() {
+    assert_acceptance_decided("rejected").await;
 }
 
 // Historical R1 and current R2 notices can share a turn or arrive in different
