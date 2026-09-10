@@ -31,7 +31,8 @@ const targetURL = "https://" + targetHost
 
 var instance struct {
 	sync.Mutex
-	engine *engine
+	engine     *engine
+	startError error
 }
 
 type engine struct {
@@ -47,6 +48,9 @@ func current() (*engine, error) {
 	instance.Lock()
 	defer instance.Unlock()
 	if instance.engine == nil {
+		if instance.startError != nil {
+			return nil, instance.startError
+		}
 		return nil, fmt.Errorf("连接尚未启动")
 	}
 	return instance.engine, nil
@@ -79,7 +83,8 @@ func start(dir string) string {
 	}
 	node := &tsnet.Server{Dir: dir, Hostname: string(name), Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {}}
 	if err = node.Start(); err != nil {
-		return failure(err)
+		instance.startError = fmt.Errorf("连接启动失败：%w", err)
+		return failure(instance.startError)
 	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -238,6 +243,11 @@ func (e *engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	local.Close()
 	upstream.Close()
 	<-done
+}
+
+//export p2pConfigure
+func p2pConfigure(snapshot *C.char) *C.char {
+	return C.CString(configureInterfaces(C.GoString(snapshot)))
 }
 
 //export p2pStart

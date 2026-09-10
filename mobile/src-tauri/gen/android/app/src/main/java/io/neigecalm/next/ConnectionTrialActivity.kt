@@ -12,6 +12,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AlertDialog
 import androidx.webkit.ProxyConfig
 import androidx.webkit.ProxyController
 import androidx.webkit.WebViewFeature
@@ -35,7 +36,7 @@ class ConnectionTrialActivity : AppCompatActivity() {
   private var requestingLogin = false
   private val poll = object : Runnable {
     override fun run() {
-      if (!resumed || busy) { if (resumed) handler.postDelayed(this, 1000); return }
+      if (!resumed || busy || requestingLogin) { if (resumed) handler.postDelayed(this, 1000); return }
       busy = true
       worker.execute {
         val status = runCatching { JSONObject(NativeP2P.status()) }
@@ -74,13 +75,24 @@ class ConnectionTrialActivity : AppCompatActivity() {
     setContentView(ScrollView(this).apply { addView(layout) })
     busy = true
     worker.execute {
-      val result = runCatching { JSONObject(NativeP2P.start(File(noBackupFilesDir, "p2p-node").absolutePath)) }
+      val result = runCatching {
+        val configured = JSONObject(NativeP2P.configure(AndroidNetworkSnapshot.read()))
+        check(configured.optBoolean("ok")) { configured.optString("error") }
+        JSONObject(NativeP2P.start(File(noBackupFilesDir, "p2p-node").absolutePath))
+      }
       runOnUiThread {
         busy = false
-        result.onSuccess { if (!it.optBoolean("ok")) connection.text = it.optString("error") }
-          .onFailure { connection.text = "启动失败：${it.message}" }
+        result.onSuccess { if (!it.optBoolean("ok")) showFailure("连接启动失败", it.optString("error")) }
+          .onFailure { showFailure("连接启动失败", it.message ?: "未知错误") }
       }
     }
+  }
+
+  private fun showFailure(title: String, message: String) {
+    connection.text = "$title：$message"
+    measurement.text = message
+    if (!isDestroyed && !isFinishing) AlertDialog.Builder(this).setTitle(title)
+      .setMessage(message).setPositiveButton("知道了", null).show()
   }
 
   private fun requestLogin() {
@@ -96,7 +108,7 @@ class ConnectionTrialActivity : AppCompatActivity() {
         if (isDestroyed) return@runOnUiThread
         result.onSuccess { value ->
           if (!value.optBoolean("ok")) {
-            measurement.text = value.optString("error")
+            showFailure("登录失败", value.optString("error"))
           } else {
             render(value)
             val uri = runCatching { URI(authURL) }.getOrNull()
@@ -108,7 +120,7 @@ class ConnectionTrialActivity : AppCompatActivity() {
                 .onFailure { measurement.text = "无法打开浏览器：${it.message}" }
             } else { measurement.text = "未获得有效登录链接，请重试。" }
           }
-        }.onFailure { measurement.text = "获取登录失败：${it.message}" }
+        }.onFailure { showFailure("登录失败", it.message ?: "未知错误") }
       }
     }
   }

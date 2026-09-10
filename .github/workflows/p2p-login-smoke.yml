@@ -8,8 +8,20 @@ jobs:
   login:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [before, after]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore original implementation for regression witness
+        if: matrix.variant == 'before'
+        run: |
+          for file in mobile/p2p-native/main.go mobile/p2p-native/bridge_android.c mobile/src-tauri/gen/android/app/src/main/java/io/neigecalm/next/NativeP2P.kt mobile/src-tauri/gen/android/app/src/main/java/io/neigecalm/next/ConnectionTrialActivity.kt; do
+            git show 09a953a6c:$file > "$file"
+          done
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -32,6 +44,8 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - uses: reactivecircus/android-emulator-runner@v2
+        id: actual-login
+        continue-on-error: ${{ matrix.variant == 'before' }}
         with:
           api-level: 35
           target: google_apis
@@ -39,9 +53,23 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect
           script: mobile/src-tauri/gen/android/gradlew -p mobile/p2p-smoke connectedDebugAndroidTest --no-daemon --max-workers=4
+      - name: Require original failure and corrected browser launch
+        if: always()
+        run: |
+          python3 - "${{ matrix.variant }}" <<'PY'
+          import pathlib,sys,xml.etree.ElementTree as E
+          files=list(pathlib.Path('mobile/p2p-smoke/build/outputs/androidTest-results').rglob('TEST-*.xml'))
+          cases=[t for p in files for t in E.parse(p).getroot().iter('testcase') if t.attrib['name']=='actualLoginButtonOpensBrowserUsingRealNativeEnrollment']
+          assert len(cases)==1, 'The real native test must execute'
+          failure=cases[0].find('failure')
+          if sys.argv[1]=='before':
+              assert failure is not None and 'Browser did not open' in (failure.text or ''), 'Expected the original login failure'
+          else:
+              assert failure is None and cases[0].find('error') is None and cases[0].find('skipped') is None, 'Actual browser launch must pass'
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: p2p-login-result
+          name: p2p-login-result-${{ matrix.variant }}
           path: mobile/p2p-smoke/build/outputs/androidTest-results/
           retention-days: 3

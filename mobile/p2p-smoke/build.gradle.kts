@@ -2,6 +2,13 @@ plugins {
   id("com.android.application") version "8.11.0"
   id("org.jetbrains.kotlin.android") version "1.9.25"
 }
+val stageLoginSources by tasks.registering(Sync::class) {
+  from("../src-tauri/gen/android/app/src/main/java/io/neigecalm/next") {
+    include("NativeP2P.kt", "ConnectionTrialActivity.kt", "AndroidNetworkSnapshot.kt")
+  }
+  into(layout.buildDirectory.dir("generated/login"))
+}
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach { dependsOn(stageLoginSources) }
 android {
   namespace = "io.neigecalm.next"
   compileSdk = 36
@@ -12,8 +19,7 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
   sourceSets.getByName("main") {
-    java.srcDir("../src-tauri/gen/android/app/src/main/java")
-    java.include("**/NativeP2P.kt", "**/ConnectionTrialActivity.kt", "**/AndroidNetworkSnapshot.kt")
+    java.srcDir(layout.buildDirectory.dir("generated/login"))
     jniLibs.srcDir("../src-tauri/gen/android/app/src/main/jniLibs")
   }
   kotlinOptions { jvmTarget = "1.8" }

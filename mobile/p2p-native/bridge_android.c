@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <stdlib.h>
 extern char *p2pStart(char *);
+extern char *p2pConfigure(char *);
 extern char *p2pStatus(void);
 extern char *p2pProbe(void);
 extern char *p2pLogin(void);
@@ -21,3 +22,10 @@ JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_probe(JNIEnv *env, jo
 JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_proxy(JNIEnv *env, jobject self) { return take(env, p2pProxy()); }
 
 JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_login(JNIEnv *env, jobject self) { return take(env, p2pLogin()); }
+
+JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_configure(JNIEnv *env, jobject self, jstring snapshot) {
+  const char *raw = (*env)->GetStringUTFChars(env, snapshot, 0);
+  char *result = p2pConfigure((char *)raw);
+  (*env)->ReleaseStringUTFChars(env, snapshot, raw);
+  return take(env, result);
+}
