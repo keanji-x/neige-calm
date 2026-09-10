@@ -378,6 +378,11 @@ fn compact_candidate_input(view: &Value) -> Value {
             &["role", "producer", "slot", "purpose"][..],
         ),
         (
+            "publication",
+            "publication",
+            &["operation_id", "state", "failure", "reason"][..],
+        ),
+        (
             "candidate",
             "candidate",
             &["state", "publication_operation_id", "snapshot"][..],
@@ -385,7 +390,26 @@ fn compact_candidate_input(view: &Value) -> Value {
         (
             "verification",
             "verification",
-            &["operation_id", "state", "passed", "failure"][..],
+            &[
+                "operation_id",
+                "state",
+                "passed",
+                "failure",
+                "failing_step",
+                "exit_code",
+                "status_detail",
+            ][..],
+        ),
+        (
+            "review",
+            "review",
+            &[
+                "reviewer",
+                "review_attempt_id",
+                "review_operation_id",
+                "state",
+                "reason",
+            ][..],
         ),
         (
             "input",
@@ -403,5 +427,43 @@ fn compact_candidate_input(view: &Value) -> Value {
             result[target] = fields(value, keys);
         }
     }
+    // A report may say passed while its operation failed to settle. Preserve
+    // both existing states, without copying report findings or repair history.
+    if let Some(operation) = view
+        .get("review")
+        .and_then(|review| review.get("operation"))
+    {
+        result["review"]["operation"] = fields(operation, &["state", "failure"]);
+    }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_diagnostic_retains_failure_details_without_full_evidence() {
+        let view = json!({
+            "qualified":false,"qualification":{"qualified":false,"reason":"waiting for acceptance"},
+            "publication":{"operation_id":"publication","state":"failed","failure":"capture failed"},
+            "verification":{"operation_id":"checks","state":"succeeded","passed":false,
+                "failing_step":"stdlib-tests","exit_code":7,"status_detail":"check failed",
+                "policy":{"steps":[{"cmd":"bulky command"}]},"log_tail":"bulky logs"},
+            "review":{"reviewer":"review","review_attempt_id":"review-attempt","review_operation_id":"review-op",
+                "state":"passed","operation":{"state":"failed","failure":"settlement failed"},
+                "blocking_findings":["bulky findings"],"finding_responses":["bulky history"]},
+            "repair":{"history":"bulky lineage"}
+        });
+        let out = compact_candidate_input(&view);
+        assert_eq!(out["publication"], view["publication"]);
+        assert_eq!(out["verification"]["failing_step"], "stdlib-tests");
+        assert_eq!(out["verification"]["exit_code"], 7);
+        assert_eq!(out["verification"]["status_detail"], "check failed");
+        assert_eq!(out["review"]["state"], "passed");
+        assert_eq!(out["review"]["operation"], view["review"]["operation"]);
+        assert_eq!(out["qualification"], view["qualification"]);
+        assert!(!out.to_string().contains("bulky"), "{out}");
+        assert_eq!(out["kind"], "input-admission");
+    }
 }

@@ -35,6 +35,14 @@ duplicated goal. Empty replies stay unchanged. Full evidence remains available
 through `calm.plan.list`; the compact projection is not a worker result or a new
 qualification algorithm.
 
+Preserve publication operation/state/failure even before a candidate is sealed;
+otherwise failed capture looks like ordinary waiting. Include reviewer
+identity/state/reason and its operation state/failure separately: a failed
+reviewer or unsuccessful settlement must remain visible even when qualification
+only reports waiting. Retain verification failing-step/exit/status details, but
+not commands, findings or logs. These are projections of existing source facts;
+they neither replace qualification reasons nor derive a new aggregate verdict.
+
 Verification uses public dispatch tests for exact nondefault mapping, same/changed
 input replay, strict schema/parser behavior and historical empty JSON/payload.
 One existing real candidate fixture proves waiting before acceptance and exact
