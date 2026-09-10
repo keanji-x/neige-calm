@@ -387,3 +387,43 @@ test('creates a track from a template and seeds its report', async ({ page, requ
 
   expect(errors).toEqual([]);
 });
+
+test('creates the planner with the model and effort selected beside Send', async ({ page, request }) => {
+  // A deterministic roster for the UI; creation and the persisted planner read
+  // still use the real kernel and the stack's fixture daemon.
+  await page.route('**/api/models', (route) => route.fulfill({ json: {
+    models: [{ id: 'e2e-model', model: 'e2e-model', display_name: 'E2E model', description: '',
+      is_default: false, default_reasoning_effort: 'low', supported_reasoning_efforts: [
+        { reasoning_effort: 'low', description: 'Faster' },
+        { reasoning_effort: 'high', description: 'More reasoning' },
+      ] }],
+    default: { model: null, reasoning_effort: null }, default_source: 'unknown',
+    source: 'live', fetched_at_ms: 1,
+  } }));
+  const area = await createArea(request);
+  createdAreaIds.push(area.id);
+  await page.goto('/next/');
+  await page.getByRole('button', { name: `New track in ${area.name}` }).click();
+  await page.getByRole('button', { name: 'Model: Default' }).click();
+  await page.getByRole('menuitem', { name: 'E2E model' }).click();
+  await page.getByRole('button', { name: 'Reasoning effort: low (the default)' }).click();
+  await page.getByRole('menuitem', { name: /high/ }).click();
+  await page.getByLabel(TASK_LABEL).fill('Start with the selected configuration');
+  const creation = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/tracks');
+  await page.getByRole('button', { name: 'Create track' }).click();
+  const response = await creation;
+  expect(response.status()).toBe(201);
+  expect(response.request().postDataJSON()).toMatchObject({ model: 'e2e-model', reasoning_effort: 'high',
+    first_message: 'Start with the selected configuration' });
+  const track = await response.json() as { id: string };
+  await expect(page).toHaveURL(new RegExp(`/track/${track.id}$`));
+  const detailResponse = await request.get(`/api/tracks/${track.id}`);
+  expect(detailResponse.ok()).toBe(true);
+  const detail = await detailResponse.json() as { cards: { id: string; payload: { planner_harness?: boolean } }[] };
+  const planner = detail.cards.find((card) => card.payload.planner_harness === true);
+  if (planner === undefined) throw new Error('Created track has no planner card');
+  const run = await request.get(`/api/cards/${planner.id}/planner/run`);
+  expect(run.ok()).toBe(true);
+  expect(await run.json()).toMatchObject({ model: 'e2e-model', reasoning_effort: 'high' });
+});

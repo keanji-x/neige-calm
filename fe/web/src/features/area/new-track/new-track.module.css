@@ -272,6 +272,17 @@
     flex-wrap: wrap;
   }
 
+  /* Astryx exposes the two footer slots, but no footer className. The owned
+     controls identify that row: wrap the slots as units so model, effort and
+     Send stay together when the starting-point/folder chips need another line. */
+  .composer :has(> :first-child > .controls) {
+    flex-wrap: wrap;
+  }
+
+  .composer :has(> :first-child > .controls) > :last-child {
+    margin-inline-start: auto;
+  }
+
   /* Indented and rule-led: the fields belong to the template named above them,
      and the inset rule carries that without a second box around them. */
   .panel {

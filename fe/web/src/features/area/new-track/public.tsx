@@ -179,7 +179,7 @@
 //     layer — but that is astryx's rendering detail carrying the ARIA
 //     structure, not something this file guarantees.
 
-import { useEffect, useRef, useId } from 'react';
+import { useEffect, useRef, useId, type ReactNode } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { ChatComposer, ChatComposerInput } from '@astryxdesign/core/Chat';
@@ -254,6 +254,8 @@ export type NewTrackDraft = Readonly<{
 }> & StartingPointFields;
 
 export type NewTrackFormProps = Readonly<{
+  /** App-composed model controls beside the send button. */
+  modelControls?: ReactNode;
   submitting: boolean;
   error: string | null;
   /** In-memory route draft, including unfinished template input. */
@@ -378,7 +380,7 @@ function needsInput(template: TrackTemplate | undefined): boolean {
 }
 
 export function NewTrackForm({
-  submitting, error, templates, templatesLoaded, templatesError = null,
+  modelControls, submitting, error, templates, templatesLoaded, templatesError = null,
   initialTemplateId, initialCwd, recipes = [], onManageRecipes, listDirectory, onSubmit,
   errorAction, initialDraft, onDraftChange, submitBlocked = false, locked = false,
 }: NewTrackFormProps) {
@@ -686,6 +688,7 @@ export function NewTrackForm({
                every other composer in the app and false of this one: pressing it
                creates a track. The name is the only thing overridden — the shape,
                the icon and the position stay the composer's. */
+            sendActions={modelControls}
             sendButton={(
               <Button
                 type="button"

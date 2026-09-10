@@ -524,17 +524,18 @@ export const modelCatalogSchema = z.object({
 export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
 
 /**
- * The catalog resolved against one card's workspace.
+ * The catalog resolved against one card's workspace, or without a workspace
+ * for a new track when `cardId` is null.
  *
  * `card_id` is not decoration: config layers are per-directory, so the default
  * this card follows can differ from the global one. Without it the server
  * answers `default_source: 'unknown'` rather than passing off a global value
  * as this conversation's.
  */
-export function modelCatalogOperation(cardId: string): ApiOperation<ModelCatalog> {
+export function modelCatalogOperation(cardId: string | null): ApiOperation<ModelCatalog> {
   return {
     method: 'GET',
-    path: `/api/models?card_id=${encodeURIComponent(cardId)}`,
+    path: cardId === null ? '/api/models' : `/api/models?card_id=${encodeURIComponent(cardId)}`,
     responseSchema: modelCatalogSchema,
   };
 }

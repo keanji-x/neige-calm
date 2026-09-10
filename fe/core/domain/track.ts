@@ -217,6 +217,9 @@ export function isBlankForKernel(text: string): boolean {
 
 export type NewTrackBody = Readonly<{
   area_id: string;
+  /** Planner overrides applied before the first message; omitted follows installation defaults. */
+  model?: string;
+  reasoning_effort?: string;
   /**
    * Issue #1211 — optional. The title is no longer the track's intent: omit it
    * and the kernel stores the **empty string** — it has no default name of its

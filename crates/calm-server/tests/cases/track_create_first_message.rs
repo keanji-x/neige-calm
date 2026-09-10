@@ -4617,3 +4617,91 @@ async fn the_tracks_first_message_is_addressable_in_the_pending_page() {
     release.notify_one();
     b.shutdown_harnesses().await;
 }
+
+#[tokio::test]
+async fn create_model_selection_runs_first_message_and_binds_replay() {
+    let b = boot().await;
+    let body = json!({"area_id": b.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]}, "first_message": "selected first turn", "model": "custom-create-model", "reasoning_effort": "high"});
+    let (status, created) = b.post_create(Some("create-model"), body.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert!(
+        b.started_turn_text("selected first turn")
+            .await
+            .contains("selected first turn")
+    );
+    let selections = b
+        .state
+        .shared_codex_appserver
+        .started_turn_selections_for_test();
+    assert_eq!(
+        selections[0].1.model.as_deref(),
+        Some("custom-create-model")
+    );
+    assert_eq!(selections[0].1.effort.as_deref(), Some("high"));
+    let (status, replay) = b.post_create(Some("create-model"), body.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{replay}");
+    assert_eq!(created["id"], replay["id"]);
+    for (field, value) in [("model", "another-model"), ("reasoning_effort", "low")] {
+        let mut changed = body.clone();
+        changed[field] = json!(value);
+        let (status, response) = b.post_create(Some("create-model"), changed).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{field}: {response}");
+    }
+    assert_eq!(b.track_count().await, 1);
+    assert_eq!(b.user_message_event_count().await, 1);
+    b.shutdown_harnesses().await;
+}
+
+#[tokio::test]
+async fn create_model_defaults_preserve_legacy_fingerprint_and_null_replay() {
+    let b = boot_without_daemon().await;
+    let body = json!({"area_id": b.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]}});
+    let (status, created) = b.post_create(Some("default-model"), body.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    // This is the exact pre-model request shape, independent of the new fields.
+    let old_shape = json!({"title": "", "sort": null, "cwd": null,
+        "template_id": null, "recipe_id": null, "template_input": null,
+        "attach_folder": false, "theme": body["theme"], "fork_report_from": null});
+    let expected = calm_server::routes::terminal_cards::stable_payload_hash(&old_shape).unwrap();
+    let actual: String =
+        sqlx::query_scalar("SELECT create_request_sha256 FROM track_create_idempotency")
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(actual, expected);
+    let mut explicit_defaults = body;
+    explicit_defaults["model"] = Value::Null;
+    explicit_defaults["reasoning_effort"] = Value::Null;
+    let (status, replay) = b
+        .post_create(Some("default-model"), explicit_defaults)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{replay}");
+    assert_eq!(created["id"], replay["id"]);
+    assert_eq!(b.track_count().await, 1);
+}
+
+#[tokio::test]
+async fn create_model_selection_refuses_agent_before_mint() {
+    let b = boot_without_daemon().await;
+    for field in ["model", "reasoning_effort"] {
+        let mut body = json!({"area_id": b.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]}});
+        body[field] = json!("high");
+        let response = b
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tracks")
+                    .header("content-type", "application/json")
+                    .header("x-calm-actor", "ai:codex")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{field}");
+    }
+    assert_eq!(b.track_count().await, 0);
+    assert_eq!(b.card_count().await, 0);
+}

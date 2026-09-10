@@ -150,6 +150,17 @@ function harness(options: {
           body: { ...TRACK_ROW, area_id: posted?.area_id ?? 'c1' },
         }));
       }
+      if (request.path === '/api/models') {
+        return Promise.resolve({ status: 200, statusText: 'OK', body: {
+          models: [{ id: 'fast', model: 'gpt-5', display_name: 'GPT-5', description: 'Everyday model',
+            is_default: true, default_reasoning_effort: 'low', supported_reasoning_efforts: [
+              { reasoning_effort: 'low', description: 'Answers sooner' },
+              { reasoning_effort: 'high', description: 'Thinks longer' },
+            ] }],
+          default: { model: null, reasoning_effort: null }, default_source: 'unknown',
+          source: 'live', fetched_at_ms: 1,
+        } });
+      }
       if (request.path === '/api/track-templates') {
         // `undefined` here is the read failing outright — the branch the
         // dialog must survive.
@@ -232,6 +243,55 @@ function harness(options: {
   );
   return { sent, client, router };
 }
+
+describe('New track model selection', () => {
+  it('keeps model and effort in the Area draft and retries the original creation configuration', async () => {
+    const { sent } = harness({ templates: [], loseFirstCreateAck: true });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.click(await screen.findByRole('button', { name: 'Model: Default' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'GPT-5' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Reasoning effort: low (the default)' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: /high/ }));
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Use these settings from the first turn');
+    await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    expect(await screen.findByRole('button', { name: 'Model: Default' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Go to Today' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    expect(await screen.findByRole('button', { name: 'Model: GPT-5' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reasoning effort: high' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await screen.findByText('Transport request failed');
+    const original = createdTrackRequests(sent)[0];
+    expect(original?.body).toMatchObject({ model: 'gpt-5', reasoning_effort: 'high',
+      first_message: 'Use these settings from the first turn' });
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Model: GPT-5' }).disabled).toBe(true);
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Reasoning effort: high' }).disabled).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    expect(createdTrackRequests(sent)[1]?.body).toEqual(original?.body);
+    expect(createdTrackRequests(sent)[1]?.headers).toEqual(original?.headers);
+  });
+
+  it('omits overrides after returning to the installation default', async () => {
+    const { sent } = harness({ templates: [] });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.click(await screen.findByRole('button', { name: 'Model: Default' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'GPT-5' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Reasoning effort: low (the default)' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: /high/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Model: GPT-5' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Default' }));
+    expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Follow the default');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
+    expect(createdTrackRequests(sent)[0]?.body).not.toHaveProperty('model');
+    expect(createdTrackRequests(sent)[0]?.body).not.toHaveProperty('reasoning_effort');
+  });
+});
 
 describe('Track creation drafts survive navigation', () => {
   it.each(['offline', 'rate-limit', 'folder-conflict'] as const)('keeps an earlier unconfirmed request after a later %s rejection', async (rejection) => {

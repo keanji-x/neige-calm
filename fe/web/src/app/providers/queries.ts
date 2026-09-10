@@ -217,7 +217,7 @@ export const queryKeys = Object.freeze({
    * hang an arm on. It is refetched by the write that can change the *default
    * this card follows*, which is the only part of it we move.
    */
-  modelCatalog: (cardId: string) => ['model-catalog', cardId] as const,
+  modelCatalog: (cardId: string | null) => ['model-catalog', cardId] as const,
   /**
    * One track's conversation list (#1189 §4.1), keyed by its track.
    *
@@ -285,7 +285,7 @@ function queueWriteMessage(error: unknown, fallback: string): string {
  * refetch that arrives inside that window is answered from it, and one that
  * arrives outside it is the fresh read a picker being opened wants.
  */
-export function modelCatalogQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+export function modelCatalogQueryOptions(transport: ApiTransportPort, cardId: string | null, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.modelCatalog(cardId),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
