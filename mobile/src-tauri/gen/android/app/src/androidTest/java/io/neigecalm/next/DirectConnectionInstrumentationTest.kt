@@ -40,7 +40,10 @@ class DirectConnectionInstrumentationTest {
     SystemClock.sleep(2000)
     assertTrue("Returning to setup must not immediately reopen IP", device.hasObject(By.textContains("保存并连接 IP")))
     device.pressBack()
-    assertTrue("Back from configuration must close instead of reopening old workspace", device.wait(Until.gone(By.pkg(context.packageName)), 10000))
+    assertTrue("Back from configuration must leave the app instead of reopening old workspace", device.wait(Until.gone(By.pkg(context.packageName)), 10000))
+    SystemClock.sleep(1000)
+    context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    assertTrue("Reopening the backgrounded app must retain configuration", device.wait(Until.hasObject(By.textContains("保存并连接 IP")), 10000))
   }
 
   private fun webView(view: View): WebView? {

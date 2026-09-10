@@ -21,10 +21,11 @@ class MainActivity : TauriActivity() {
       override fun handleOnBackPressed() {
         val view = findWebView(findViewById(android.R.id.content))
         val uri = runCatching { java.net.URI(view?.url ?: "") }.getOrNull()
-        if (view == null || uri?.host == "tauri.localhost") { finish(); return }
+        // Keep the native runtime alive when leaving the root screen.
+        if (view == null || uri?.host == "tauri.localhost") { moveTaskToBack(true); return }
         if (view.canGoBack()) view.goBack()
         else if (uri?.scheme in listOf("http", "https")) view.loadUrl("http://tauri.localhost/")
-        else finish()
+        else moveTaskToBack(true)
       }
     }
     installConnectionBackHandler()
