@@ -293,14 +293,9 @@ async fn task_recovery_deleted_frozen_reference_denies_only_affected_capability(
     assert_eq!(rest["current"]["attempt_id"], b.id);
     assert_eq!(rest["recovery"]["allowed"], false);
     rest_attempts(&boot, "absent", axum::http::StatusCode::NOT_FOUND).await;
-    let list = call_tool(
-        &boot,
-        "calm.plan.list",
-        planner_identity(&boot),
-        Value::Null,
-    )
-    .await
-    .unwrap();
+    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
     assert_eq!(list["tasks"].as_array().unwrap().len(), 2);
     let missing = task_recovery_view(
         boot.repo.as_ref(),
