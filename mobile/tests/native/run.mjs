@@ -12,15 +12,19 @@ const api = Number(process.argv[3]);
 const mutate = process.argv[4] === '--mutation';
 assert.ok([26, 35].includes(api));
 const android = fileURLToPath(new URL('../../src-tauri/gen/android/', import.meta.url));
+for (const name of ['libapp_lib.so', 'libneige_p2p.so']) {
+  assert.ok((await readFile(join(android, 'app/src/main/jniLibs/x86_64', name))).length > 0, `Build the exact native APK before backend instrumentation: ${name}`);
+}
 const reports = join(android, 'app/build/outputs/androidTest-results/connected');
 const artifacts = fileURLToPath(new URL('../../artifacts/native/', import.meta.url));
 await mkdir(artifacts, { recursive: true });
 await rm(join(artifacts, 'mutation.json'), { force: true });
 const args = [':app:connectedUniversalInstrumentedAndroidTest', '--max-workers=4', '--no-daemon',
+  '-Pandroid.testInstrumentationRunnerArguments.class=io.neigecalm.next.BundledFrontendInstrumentationTest,io.neigecalm.next.OldWebViewInstrumentationTest',
   '-PabiList=x86_64', '-ParchList=x86_64', '-PtargetList=x86_64',
   `-Pandroid.testInstrumentationRunnerArguments.server_origin=${runtime.origin}`,
   `-Pandroid.testInstrumentationRunnerArguments.other_origin=${runtime.otherOrigin}`,
-  `-Pandroid.testInstrumentationRunnerArguments.bad_origin=${runtime.badOrigin}`,
+  `-Pandroid.testInstrumentationRunnerArguments.control_origin=${runtime.controlOrigin}`,
   `-Pandroid.testInstrumentationRunnerArguments.test_password=${runtime.password}`];
 const remoteFence = 'io.neigecalm.next.BundledFrontendInstrumentationTest#remotePagesCannotRebindOrUseCamera';
 const modern = [remoteFence,
@@ -40,7 +44,7 @@ async function run(label) {
 
 function green(result) {
   assert.equal(result.exit, 0, 'Native tests did not complete successfully; inspect the saved log');
-  assert.ok(Object.keys(result.report).length >= 4, 'Native test discovery went empty');
+  assert.equal(Object.keys(result.report).length, 4, 'Native discovery must match the selected backend and WebView tests');
   assert.ok(Object.values(result.report).every((value) => value !== 'failed'));
   if (api === 26 && result.report[old] === 'passed') return;
   for (const test of modern) assert.equal(result.report[test], 'passed', `Required native test did not run: ${test}`);

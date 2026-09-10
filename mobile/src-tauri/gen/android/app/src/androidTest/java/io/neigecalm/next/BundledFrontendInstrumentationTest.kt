@@ -16,6 +16,7 @@ import org.json.JSONTokener
 import org.junit.*
 import org.junit.Assert.*
 import org.junit.runner.RunWith
+import java.net.URL
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -28,7 +29,7 @@ class BundledFrontendInstrumentationTest {
   private lateinit var webView: WebView
   private lateinit var origin: String
   private lateinit var otherOrigin: String
-  private lateinit var badOrigin: String
+  private lateinit var controlOrigin: String
   private lateinit var password: String
 
   private fun findWebView(view: View): WebView? {
@@ -89,8 +90,9 @@ class BundledFrontendInstrumentationTest {
     val args = InstrumentationRegistry.getArguments()
     origin = requireNotNull(args.getString("server_origin"))
     otherOrigin = requireNotNull(args.getString("other_origin"))
-    badOrigin = requireNotNull(args.getString("bad_origin"))
+    controlOrigin = requireNotNull(args.getString("control_origin"))
     password = requireNotNull(args.getString("test_password"))
+    ConnectionProfiles(instrumentation.targetContext).save("ip", "", false)
     activity = ActivityScenario.launch(MainActivity::class.java)
     val cookies = CountDownLatch(1)
     val viewDeadline = SystemClock.elapsedRealtime() + 15000
@@ -103,14 +105,27 @@ class BundledFrontendInstrumentationTest {
       CookieManager.getInstance().removeAllCookies { cookies.countDown() }
     }
     assertTrue(cookies.await(10, TimeUnit.SECONDS))
-    waitFor("Launcher/native bridge did not load", "location.host==='tauri.localhost' && typeof window.__TAURI__?.core?.invoke==='function'")
-    val binding = asyncValue("window.__TAURI__.core.invoke('plugin:bundled-frontend|bind_server',{origin:" + JSONObject.quote(origin) + "})")
-    assertTrue(binding.toString(), binding.getBoolean("ok"))
+    waitForLauncher()
+    bind(origin)
     activity.onActivity { assertEquals("BundledWebViewClient", WebViewCompat.getWebViewClient(webView).javaClass.simpleName) }
     navigate(origin + "/next/")
     waitFor("Bundled connection UI did not render", "document.body.innerText.includes('扫码连接你的工作区')")
     api("/_test/reset")
   }
+
+  private fun waitForLauncher() {
+    waitFor("Launcher/native connection attempt did not settle",
+      "location.host==='tauri.localhost' && typeof window.__TAURI__?.core?.invoke==='function' && !!document.querySelector('#connection-mode') && document.querySelector('#login')?.disabled===false && ['IP 已连接','连接超时，请重新配置'].includes(document.querySelector('#status-text')?.textContent)")
+  }
+
+  private fun bind(server: String) {
+    val saved = asyncValue("window.__TAURI__.core.invoke('plugin:bundled-frontend|save_connection',{mode:'ip',ipOrigin:" + JSONObject.quote(server) + ",tailscaleEnabled:false})")
+    assertTrue(saved.toString(), saved.getBoolean("ok"))
+    val binding = asyncValue("window.__TAURI__.core.invoke('plugin:bundled-frontend|bind_server',{origin:" + JSONObject.quote(server) + "})")
+    assertTrue(binding.toString(), binding.getBoolean("ok"))
+  }
+
+  private fun control(path: String): JSONObject = JSONObject(URL(controlOrigin + path).readText())
 
   // Android Test Orchestrator owns each test process and its Activity lifecycle.
 
@@ -147,7 +162,9 @@ class BundledFrontendInstrumentationTest {
 
   private fun assertNativeDenied() {
     waitFor("Native bridge must exist for an actual ACL check", "typeof window.__TAURI__?.core?.invoke==='function'")
-    for (command in listOf("plugin:bundled-frontend|bind_server", "plugin:barcode-scanner|request_permissions")) {
+    for (command in listOf("plugin:bundled-frontend|bind_server", "plugin:bundled-frontend|connection_settings",
+      "plugin:bundled-frontend|save_connection", "plugin:bundled-frontend|attempt_connection",
+      "plugin:bundled-frontend|login_tailscale", "plugin:barcode-scanner|request_permissions")) {
       val result = asyncValue("window.__TAURI__.core.invoke(" + JSONObject.quote(command) + ",{origin:" + JSONObject.quote(otherOrigin) + "})")
       assertFalse("Remote page invoked " + command, result.getBoolean("ok"))
       assertTrue("Expected the permission fence, not a missing bridge or handler: " + result, result.getString("error").contains("not allowed"))
@@ -159,25 +176,36 @@ class BundledFrontendInstrumentationTest {
     transition { it.reload() }
     waitFor("Reload did not render bundled UI", "document.body.innerText.includes('扫码连接你的工作区')")
     assertNativeDenied()
-    navigate(origin + "/_test/redirect")
-    waitFor("Cross-origin redirect did not load", "location.origin===" + JSONObject.quote(otherOrigin) + " && document.body.innerText.includes('Other origin')")
+    navigate(origin + "/_test/document")
+    waitFor("Server document did not load", "document.body.innerText.includes('Network document')")
+    assertNativeDenied()
+    // A different origin requires a new explicit launcher configuration; the
+    // production fixed-origin proxy must never be relaxed just for this test.
+    navigate("http://tauri.localhost/")
+    waitForLauncher()
+    bind(otherOrigin)
+    navigate(otherOrigin + "/_test/document")
+    waitFor("Other configured origin did not load", "location.origin===" + JSONObject.quote(otherOrigin) + " && document.body.innerText.includes('Other origin')")
     assertNativeDenied()
     transition { it.goBack() }
-    waitFor("Back navigation did not restore the paired origin", "location.origin===" + JSONObject.quote(origin))
+    waitForLauncher()
+    bind(origin)
+    navigate(origin + "/next/")
+    waitFor("Original workspace did not return", "document.body.innerText.includes('扫码连接你的工作区')")
     assertNativeDenied()
-    transition { it.goBack() }
-    waitFor("Launcher did not return", "location.host==='tauri.localhost' && !!document.querySelector('#server')")
-    assertTrue(asyncValue("window.__TAURI__.core.invoke('plugin:bundled-frontend|bind_server',{origin:" + JSONObject.quote(origin) + "})").getBoolean("ok"))
   }
 
   @Test fun untrustedTlsEndpointCannotExecuteItsDocument() {
-    activity.onActivity { webView.loadUrl(badOrigin + "/_test/untrusted") }
-    SystemClock.sleep(4000)
-    assertNotEquals(true, evaluate("window.untrustedCertificateAccepted===true"))
+    control("/tls/untrusted")
+    try {
+      activity.onActivity { webView.clearSslPreferences(); webView.loadUrl(origin + "/_test/untrusted") }
+      SystemClock.sleep(4000)
+      assertNotEquals(true, evaluate("window.untrustedCertificateAccepted===true"))
+      val stats = control("/stats")
+      assertTrue("The untrusted TLS endpoint was never contacted", stats.getInt("badTlsConnections") > 0)
+      assertEquals("Untrusted TLS reached HTTP", 0, stats.getInt("badTlsHttp"))
+    } finally { control("/tls/trusted") }
     navigate(origin + "/next/")
     waitFor("Could not return after rejected TLS", "document.body.innerText.includes('扫码连接你的工作区')")
-    val stats = api("/_test/stats")
-    assertTrue("The untrusted TLS endpoint was never contacted", stats.getInt("badTlsConnections") > 0)
-    assertEquals("Untrusted TLS reached HTTP", 0, stats.getInt("badTlsHttp"))
   }
 }

@@ -40,6 +40,9 @@ class RememberedSessionInstrumentationTest {
         assertTrue("IP authorization was lost after force-stop", RememberedSession.hasCookie(direct))
         assertEquals("calm-session=phone_test_session_1234567890", CookieManager.getInstance().getCookie(P2PConnection.ORIGIN))
         assertEquals("calm-session=ip_test_session_1234567890", CookieManager.getInstance().getCookie(direct))
+        // Browser cookie scope is the host/path, not a TCP port boundary.
+        assertEquals("calm-session=ip_test_session_1234567890", CookieManager.getInstance().getCookie("http://203.0.113.9:4141"))
+        assertNull("Another host must not receive the remembered cookie", CookieManager.getInstance().getCookie("http://203.0.113.10:4140"))
       }
     }
   }

@@ -7,4 +7,8 @@
       <certificates src="@raw/neige_instrumentation_ca" />
     </trust-anchors>
   </base-config>
+  <!-- Emulator-host fixture control only; absent from debug/release variants. -->
+  <domain-config cleartextTrafficPermitted="true">
+    <domain includeSubdomains="false">10.0.2.2</domain>
+  </domain-config>
 </network-security-config>
