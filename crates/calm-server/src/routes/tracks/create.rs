@@ -1253,6 +1253,8 @@ mod tests {
     #[test]
     fn cross_area_authorization_is_part_of_idempotent_create_identity() {
         let shape = |allow_cross_area_cwd| CreateRequestShape {
+            model: None,
+            reasoning_effort: None,
             title: "shared cwd".into(),
             sort: None,
             cwd: Some("/repo".into()),
