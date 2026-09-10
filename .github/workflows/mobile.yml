@@ -89,7 +89,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api: [24, 35]
+        api: [26, 35]
     env:
       CARGO_BUILD_JOBS: '4'
       CARGO_PROFILE_RELEASE_OPT_LEVEL: '1'

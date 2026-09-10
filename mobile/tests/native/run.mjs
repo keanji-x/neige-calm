@@ -10,7 +10,7 @@ if (process.argv.length < 4 || process.argv.length > 5) throw new Error('Usage: 
 const runtime = JSON.parse(await readFile(resolve(process.argv[2]), 'utf8'));
 const api = Number(process.argv[3]);
 const mutate = process.argv[4] === '--mutation';
-assert.ok([24, 35].includes(api));
+assert.ok([26, 35].includes(api));
 const android = fileURLToPath(new URL('../../src-tauri/gen/android/', import.meta.url));
 const reports = join(android, 'app/build/outputs/androidTest-results/connected');
 const artifacts = fileURLToPath(new URL('../../artifacts/native/', import.meta.url));
@@ -42,7 +42,7 @@ function green(result) {
   assert.equal(result.exit, 0, 'Native tests did not complete successfully; inspect the saved log');
   assert.ok(Object.keys(result.report).length >= 4, 'Native test discovery went empty');
   assert.ok(Object.values(result.report).every((value) => value !== 'failed'));
-  if (api === 24 && result.report[old] === 'passed') return;
+  if (api === 26 && result.report[old] === 'passed') return;
   for (const test of modern) assert.equal(result.report[test], 'passed', `Required native test did not run: ${test}`);
 }
 

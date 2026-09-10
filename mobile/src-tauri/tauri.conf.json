@@ -35,7 +35,8 @@
       "icons/128x128@2x.png"
     ],
     "android": {
-      "debugApplicationIdSuffix": ".debug"
+      "debugApplicationIdSuffix": ".debug",
+      "minSdkVersion": 26
     }
   }
 }

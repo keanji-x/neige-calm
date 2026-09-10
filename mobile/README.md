@@ -12,7 +12,7 @@ server's origin. Authentication, API calls, event WebSockets and requested files
 continue to use the remote server. No server credentials or workspace data are
 bundled into the APK. See [the bundled frontend design](../docs/mobile-bundled-frontend.md).
 
-Requires an ARM64 phone running Android 7.0/API 24 or later, an up-to-date Android
+Requires an ARM64 phone running Android 8.0/API 26 or later, an up-to-date Android
 System WebView (Chromium 111 or newer), and a server reachable from that phone.
 Older components show a native upgrade message. This is an online data client.
 The committed profile has no default server and denies cleartext HTTP. Trusted

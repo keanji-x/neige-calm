@@ -15,8 +15,8 @@ import org.junit.runner.RunWith
 class OldWebViewInstrumentationTest {
   @Test fun unsupportedWebViewShowsANativeUpgradeMessage() {
     Assume.assumeFalse(BundledWebViewSupport.available(InstrumentationRegistry.getInstrumentation().targetContext))
-    ActivityScenario.launch(MainActivity::class.java).use {
-      onView(withText("请更新系统网页组件")).check(matches(isDisplayed()))
-    }
+    // Android Test Orchestrator owns the isolated process and Activity lifecycle.
+    ActivityScenario.launch(MainActivity::class.java)
+    onView(withText("请更新系统网页组件")).check(matches(isDisplayed()))
   }
 }

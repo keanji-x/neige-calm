@@ -16,6 +16,7 @@ import org.json.JSONTokener
 import org.junit.*
 import org.junit.Assert.*
 import org.junit.runner.RunWith
+import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -55,11 +56,27 @@ class BundledFrontendInstrumentationTest {
 
   private fun asyncValue(expression: String): JSONObject {
     evaluate("window.__nativeProbe=null; Promise.resolve().then(function(){return " + expression + ";}).then(function(value){window.__nativeProbe={ok:true,value:value};},function(error){window.__nativeProbe={ok:false,error:String(error)};});")
-    waitFor("Asynchronous browser operation timed out", "window.__nativeProbe!==null")
-    return JSONObject(evaluate("JSON.stringify(window.__nativeProbe)") as String)
+    val deadline = SystemClock.elapsedRealtime() + 30000
+    while (SystemClock.elapsedRealtime() < deadline) {
+      val encoded = evaluate("JSON.stringify(window.__nativeProbe)")
+      if (encoded is String) {
+        val result = JSONObject(encoded)
+        if (result.has("ok")) return result
+      }
+      SystemClock.sleep(100)
+    }
+    throw AssertionError("Asynchronous browser operation timed out at " + evaluate("location.href"))
   }
 
-  private fun navigate(url: String) { activity.onActivity { webView.loadUrl(url) } }
+  private fun transition(action: (WebView) -> Unit) {
+    val marker = JSONObject.quote(UUID.randomUUID().toString())
+    evaluate("window.__previousDocument=" + marker)
+    activity.onActivity { action(webView) }
+    waitFor("Navigation did not finish in a new document",
+      "window.__previousDocument!==" + marker + " && document.readyState==='complete'")
+  }
+
+  private fun navigate(url: String) = transition { it.loadUrl(url) }
   private fun api(path: String): JSONObject {
     val result = asyncValue("fetch(" + JSONObject.quote(origin + path) + ").then(function(r){return r.json()})")
     assertTrue(result.toString(), result.getBoolean("ok"))
@@ -95,7 +112,7 @@ class BundledFrontendInstrumentationTest {
     api("/_test/reset")
   }
 
-  @After fun close() { if (::activity.isInitialized) activity.close() }
+  // Android Test Orchestrator owns each test process and its Activity lifecycle.
 
   private fun login() {
     evaluate("Array.from(document.querySelectorAll('button')).find(function(b){return b.textContent==='使用账号登录'}).click()")
@@ -123,7 +140,7 @@ class BundledFrontendInstrumentationTest {
     waitFor("Bundled deep link did not render", "document.body.innerText.includes('Network')")
     assertEquals(0, api("/_test/stats").getInt("assets"))
     api("/_test/offline")
-    activity.onActivity { webView.reload() }
+    transition { it.reload() }
     waitFor("Offline session probe became blank", "document.body.innerText.includes('暂时无法连接服务器')")
     api("/_test/online")
   }
@@ -139,22 +156,22 @@ class BundledFrontendInstrumentationTest {
 
   @Test fun remotePagesCannotRebindOrUseCamera() {
     assertNativeDenied()
-    activity.onActivity { webView.reload() }
+    transition { it.reload() }
     waitFor("Reload did not render bundled UI", "document.body.innerText.includes('扫码连接你的工作区')")
     assertNativeDenied()
     navigate(origin + "/_test/redirect")
     waitFor("Cross-origin redirect did not load", "location.origin===" + JSONObject.quote(otherOrigin) + " && document.body.innerText.includes('Other origin')")
     assertNativeDenied()
-    activity.onActivity { webView.goBack() }
+    transition { it.goBack() }
     waitFor("Back navigation did not restore the paired origin", "location.origin===" + JSONObject.quote(origin))
     assertNativeDenied()
-    activity.onActivity { webView.goBack() }
+    transition { it.goBack() }
     waitFor("Launcher did not return", "location.host==='tauri.localhost' && !!document.querySelector('#server')")
     assertTrue(asyncValue("window.__TAURI__.core.invoke('plugin:bundled-frontend|bind_server',{origin:" + JSONObject.quote(origin) + "})").getBoolean("ok"))
   }
 
   @Test fun untrustedTlsEndpointCannotExecuteItsDocument() {
-    navigate(badOrigin + "/_test/untrusted")
+    activity.onActivity { webView.loadUrl(badOrigin + "/_test/untrusted") }
     SystemClock.sleep(4000)
     assertNotEquals(true, evaluate("window.untrustedCertificateAccepted===true"))
     navigate(origin + "/next/")
