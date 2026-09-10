@@ -1,12 +1,14 @@
+import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef } from 'react';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import { isBlankForKernel, trackCreateKeyAction, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
+import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { NewTrackForm, type NewTrackDraft, type NewTrackFormState } from '../../features/area/new-track/public.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { createDirectoryLister } from '../providers/directory.ts';
-import { ApiError, OfflineSubmissionError, folderConflictOf, useTrackMutations, useTrackRecipes, useTrackTemplates, useWorkspace, type Workspace } from '../providers/queries.ts';
+import { ApiError, OfflineSubmissionError, folderConflictOf, modelCatalogQueryOptions, useTrackMutations, useTrackRecipes, useTrackTemplates, useWorkspace, type Workspace } from '../providers/queries.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { useGo, useRouteParam } from './navigation.ts';
@@ -36,6 +38,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   store: ReturnType<typeof useNewTrackSession>['store'];
 }) {
   const areaId = session.area.id;
+  const modelCatalog = useQuery(modelCatalogQueryOptions(transport, null, unauthorized));
   const trackMutations = useTrackMutations(transport, unauthorized);
   const templates = useTrackTemplates(transport, unauthorized);
   const recipes = useTrackRecipes(transport, unauthorized);
@@ -66,6 +69,8 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     const body = {
       area_id: areaId,
       theme: readHostThemeRgb(),
+      ...(current.model.model === null ? {} : { model: current.model.model }),
+      ...(current.model.reasoning_effort === null ? {} : { reasoning_effort: current.model.reasoning_effort }),
       ...(draft.template_id === undefined ? {} : { template_id: draft.template_id }),
       ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
       ...(draft.recipe_id === undefined ? {} : { recipe_id: draft.recipe_id }),
@@ -135,6 +140,12 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     : !available ? 'Area unavailable. Your draft is kept here; select and copy it to use elsewhere.' : null;
   const createdTrackId = session.createdTrackId;
   return <NewTrackForm
+    modelControls={<ModelPill
+      catalog={modelCatalog.data ?? null}
+      selection={session.model}
+      onChange={(model) => { store.update(areaId, { model }); }}
+      isDisabled={session.creating || session.request !== null || !available || createdTrackId !== null}
+    />}
     initialDraft={session.form ?? undefined}
     onDraftChange={saveForm}
     submitBlocked={!available || createdTrackId !== null}

@@ -41,6 +41,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 struct Boot {
+    repo: Arc<SqlxRepo>,
     app: axum::Router,
     /// `<sock>.methods` — every JSON-RPC method the fake daemon received.
     methods_path: PathBuf,
@@ -224,6 +225,7 @@ async fn boot(start_daemon: bool, scripted: impl FnOnce(&PathBuf)) -> Boot {
         .with_state(state.clone());
 
     Boot {
+        repo,
         app,
         methods_path: sock.with_extension("methods"),
         state,
@@ -879,4 +881,69 @@ async fn a_blank_card_id_takes_the_cardless_path() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(body["default_source"], "unknown");
     assert_eq!(body["source"], "live");
+}
+
+#[tokio::test]
+async fn track_create_rejects_stale_unsupported_effort_before_mint() {
+    let boot = boot(true, |sock| {
+        std::fs::write(sock.with_extension("model-list"), catalog().to_string()).unwrap();
+    })
+    .await;
+    let card = boot
+        .state
+        .repo
+        .card_get(&boot.card_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let track = boot
+        .state
+        .repo
+        .track_get(card.track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    // The caller's cached roster offered high, but the current catalog only
+    // supports medium / brand-new-effort for this model.
+    let body = json!({"area_id": track.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]},
+        "model": "gpt-5-codex", "reasoning_effort": "high", "first_message": "use my chosen effort"});
+    let response = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/tracks")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "stale-effort")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(
+        text.contains("high") && text.contains("medium") && text.contains("gpt-5-codex"),
+        "{text}"
+    );
+    let tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+    let cards: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cards")
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+    let bindings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_create_idempotency")
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        (tracks, cards, bindings),
+        (1, 1, 0),
+        "only fixture rows remain"
+    );
 }

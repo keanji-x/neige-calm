@@ -451,6 +451,15 @@ pub struct CreateTrackRequest {
     /// 500 claims — it does not promise the track is usable.
     #[serde(default)]
     pub first_message: Option<String>,
+    /// Model slug for the planner's first and subsequent turns. Omitted or null
+    /// follows installation defaults, as on the conversation model endpoint.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Reasoning effort. Values unsupported by the chosen model's current
+    /// catalog entry are rejected with 400 before creation; no silent adjustment.
+    /// Omitted or null follows installation defaults.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -1118,12 +1127,12 @@ pub(crate) async fn get_track_detail(
     path = "/api/tracks",
     tag = "tracks",
     params(
-        ("Idempotency-Key" = Option<String>, Header, description = "**Required if the body carries `first_message`; optional otherwise, and honoured when sent.** A create that sends no key at all is not idempotent — a retry mints a second track — which is the unchanged behaviour of every caller that sends none.\n\nWithout `first_message`, a key binds the minted track and nothing else: an identical repeat returns that same track with 201, a different create shape under the same key is 409 `conflict`, and no retry slot is consumed (so this shape cannot exhaust a key). Adding or removing `first_message` under a key already bound by the other shape is itself a 409 `conflict`, in both directions.\n\nWith `first_message`, one transaction persists the minted track/card ids and a versioned fingerprint of the original create. The fingerprint covers every mint input (`title`, `sort`, the original `cwd`, `template_id`, `recipe_id`, `template_input`, `attach_folder`, `theme`, and `fork_report_from`) plus the initial message digest, so it still constrains the key when no operation row exists. A different create shape is always 409 `conflict`, including after a terminal operation failure. A different `first_message` is also a conflict after success, `Stuck`, or a pre-operation failure; it may be edited only after a persisted terminal `Failed` attempt, where the fresh `#N` operation key represents a new delivery attempt against the same track.\n\nAn identical request after success returns the same track without re-delivery. A persisted terminal failure genuinely retries; a `Stuck` attempt keeps replaying its recorded 500; 64 failed attempts exhaust the key. Resume does not rerun mutable create-path validation, so repointing or deleting an attached workspace does not change request identity. Bindings created before request fingerprints existed fail closed with 409 because the server cannot prove request equality."),
+        ("Idempotency-Key" = Option<String>, Header, description = "**Required if the body carries `first_message`; optional otherwise, and honoured when sent.** A create that sends no key at all is not idempotent — a retry mints a second track — which is the unchanged behaviour of every caller that sends none.\n\nWithout `first_message`, a key binds the minted track and nothing else: an identical repeat returns that same track with 201, a different create shape under the same key is 409 `conflict`, and no retry slot is consumed (so this shape cannot exhaust a key). Adding or removing `first_message` under a key already bound by the other shape is itself a 409 `conflict`, in both directions.\n\nWith `first_message`, one transaction persists the minted track/card ids and a versioned fingerprint of the original create. The fingerprint covers every mint input (`title`, `sort`, the original `cwd`, `template_id`, `recipe_id`, `template_input`, `attach_folder`, `theme`, `fork_report_from`, and non-null `model` / `reasoning_effort`) plus the initial message digest, so it still constrains the key when no operation row exists. A different create shape is always 409 `conflict`, including after a terminal operation failure. A different `first_message` is also a conflict after success, `Stuck`, or a pre-operation failure; it may be edited only after a persisted terminal `Failed` attempt, where the fresh `#N` operation key represents a new delivery attempt against the same track.\n\nAn identical request after success returns the same track without re-delivery. A persisted terminal failure genuinely retries; a `Stuck` attempt keeps replaying its recorded 500; 64 failed attempts exhaust the key. Resume does not rerun mutable create-path validation, so repointing or deleting an attached workspace does not change request identity. Bindings created before request fingerprints existed fail closed with 409 because the server cannot prove request equality."),
     ),
     request_body = CreateTrackRequest,
     responses(
         (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.", body = Track),
-        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
+        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
         (status = 409, description = "Folder-claim conflict (structured `FolderConflict` body), `conflict` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, or `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized. Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request for a payload conflict (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.", body = ErrorBody),
         (status = 500, description = "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back and nothing compensates. What the server *can* promise, and this is what the `Idempotency-Key` buys: retrying the identical request under the **same** key creates no second track and delivers no second copy of the message. It does not promise the track is usable — a replay does not repair an attached workspace whose directory was deleted. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it — which also holds when such a create sends an `Idempotency-Key` and is answered from its binding.", body = ErrorBody),
@@ -1136,6 +1145,7 @@ pub(crate) async fn create_track(
     // #1384 — read only on the `first_message` path. A message-less create
     // never touches it, which is what keeps the legacy path unchanged.
     headers: HeaderMap,
+    State(codex): State<CodexShellState>,
     Json(mut request): Json<CreateTrackRequest>,
 ) -> Result<Response> {
     // Common area lifecycle fence for legacy mint, first-message mint, and
@@ -1184,6 +1194,8 @@ pub(crate) async fn create_track(
         // read this digest needs is the same one, and it still happens here.)
         // See `create::CreateRequestShape`.
         create::CreateRequestShape {
+            model: request.model.clone(),
+            reasoning_effort: request.reasoning_effort.clone(),
             title: request.title.clone(),
             sort: request.sort,
             cwd: request.cwd.clone(),
@@ -1236,6 +1248,22 @@ pub(crate) async fn create_track(
     // request validation, and the resuming arms mint nothing, so re-running it
     // on a replay is the variant-3 class this design closes.
     let allow_cross_area_cwd = request.allow_cross_area_cwd.clone();
+    // Resolve mutable catalog advice only for a new mint, never on replay.
+    let model = request.model.take();
+    let reasoning_effort = request.reasoning_effort.take();
+    let advice =
+        super::planner_model::catalog_advice(&codex, model.as_deref(), reasoning_effort.as_deref())
+            .await;
+    if let (Some(default), Some(model), Some(effort)) = (
+        advice.adjusted_to,
+        model.as_deref(),
+        reasoning_effort.as_deref(),
+    ) {
+        return Err(CalmError::BadRequest(format!(
+            "track create: reasoning_effort `{effort}` is unsupported for model `{model}`; \
+             its current catalog default is `{default}`. Refresh the model list and choose a supported effort."
+        )));
+    }
     let (mut p, named_source, cwd_omitted) = request.into_parts()?;
     // PR6 (#136) — track create now atomically mints a `CardRole::Planner`
     // codex card alongside the track row. Both rows commit in one tx
@@ -1421,6 +1449,8 @@ pub(crate) async fn create_track(
 
     let workspace_root = s.workspace_root.clone();
     let options = CreateTrackOptions {
+        model,
+        reasoning_effort,
         folder_claim,
         body_area_id,
         normalized_cwd,
@@ -1994,6 +2024,8 @@ enum TrackInit {
 }
 
 struct CreateTrackOptions {
+    model: Option<String>,
+    reasoning_effort: Option<String>,
     folder_claim: FolderClaim,
     body_area_id: String,
     normalized_cwd: String,
@@ -2056,6 +2088,8 @@ async fn create_track_structure(
     options: CreateTrackOptions,
 ) -> Result<(Track, bool, String, String)> {
     let CreateTrackOptions {
+        model,
+        reasoning_effort,
         folder_claim,
         body_area_id,
         normalized_cwd,
@@ -2296,6 +2330,16 @@ async fn create_track_structure(
                     }
                 };
 
+                let mut planner_payload = planner_harness_card_payload(None);
+                if model.is_some() || reasoning_effort.is_some() {
+                    crate::planner_model::CardModelSelection::apply_to_payload(
+                        planner_payload.as_object_mut().ok_or_else(|| {
+                            CalmError::Internal("planner payload is not an object".into())
+                        })?,
+                        model.as_deref(),
+                        reasoning_effort.as_deref(),
+                    );
+                }
                 let planner_card = card_create_with_id_tx(
                     tx,
                     planner_card_id_for_tx.clone(),
@@ -2312,7 +2356,7 @@ async fn create_track_structure(
                         // that is machine-written intent, not a title a human
                         // typed, and it is what seeds the child's harness when
                         // the child track starts.
-                        payload: planner_harness_card_payload(None),
+                        payload: planner_payload,
                     },
                     CardRole::Planner,
                     false,

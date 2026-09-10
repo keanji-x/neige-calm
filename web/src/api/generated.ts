@@ -1975,6 +1975,17 @@ export interface components {
              */
             fork_report_from?: string | null;
             /**
+             * @description Model slug for the planner's first and subsequent turns. Omitted or null
+             *     follows installation defaults, as on the conversation model endpoint.
+             */
+            model?: string | null;
+            /**
+             * @description Reasoning effort. Values unsupported by the chosen model's current
+             *     catalog entry are rejected with 400 before creation; no silent adjustment.
+             *     Omitted or null follows installation defaults.
+             */
+            reasoning_effort?: string | null;
+            /**
              * @description A user-defined recipe (`track_recipes` row, #1292) to start from.
              *
              *     Deliberately **not** folded into `template_id`. That field's value
@@ -7502,7 +7513,7 @@ export interface operations {
                  *
                  *     Without `first_message`, a key binds the minted track and nothing else: an identical repeat returns that same track with 201, a different create shape under the same key is 409 `conflict`, and no retry slot is consumed (so this shape cannot exhaust a key). Adding or removing `first_message` under a key already bound by the other shape is itself a 409 `conflict`, in both directions.
                  *
-                 *     With `first_message`, one transaction persists the minted track/card ids and a versioned fingerprint of the original create. The fingerprint covers every mint input (`title`, `sort`, the original `cwd`, `template_id`, `recipe_id`, `template_input`, `attach_folder`, `theme`, and `fork_report_from`) plus the initial message digest, so it still constrains the key when no operation row exists. A different create shape is always 409 `conflict`, including after a terminal operation failure. A different `first_message` is also a conflict after success, `Stuck`, or a pre-operation failure; it may be edited only after a persisted terminal `Failed` attempt, where the fresh `#N` operation key represents a new delivery attempt against the same track.
+                 *     With `first_message`, one transaction persists the minted track/card ids and a versioned fingerprint of the original create. The fingerprint covers every mint input (`title`, `sort`, the original `cwd`, `template_id`, `recipe_id`, `template_input`, `attach_folder`, `theme`, `fork_report_from`, and non-null `model` / `reasoning_effort`) plus the initial message digest, so it still constrains the key when no operation row exists. A different create shape is always 409 `conflict`, including after a terminal operation failure. A different `first_message` is also a conflict after success, `Stuck`, or a pre-operation failure; it may be edited only after a persisted terminal `Failed` attempt, where the fresh `#N` operation key represents a new delivery attempt against the same track.
                  *
                  *     An identical request after success returns the same track without re-delivery. A persisted terminal failure genuinely retries; a `Stuck` attempt keeps replaying its recorded 500; 64 failed attempts exhaust the key. Resume does not rerun mutable create-path validation, so repointing or deleting an attached workspace does not change request identity. Bindings created before request fingerprints existed fail closed with 409 because the server cannot prove request equality.
                  */
@@ -7526,7 +7537,7 @@ export interface operations {
                     "application/json": components["schemas"]["Track"];
                 };
             };
-            /** @description Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing. */
+            /** @description Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty or non-ASCII) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing. */
             400: {
                 headers: {
                     [name: string]: unknown;

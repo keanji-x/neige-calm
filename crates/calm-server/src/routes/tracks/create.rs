@@ -358,6 +358,8 @@ pub(super) struct ResumeFirstMessage {
 /// admitted or normalized live state would rerun mutable validation on Resume,
 /// which is the variant-3 class this module avoids.
 pub(super) struct CreateRequestShape {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub title: String,
     pub sort: Option<f64>,
     pub cwd: Option<String>,
@@ -673,6 +675,13 @@ fn create_request_digest(shape: &CreateRequestShape) -> Result<String> {
     // exact payload shape when no authorization was supplied.
     if let Some(authorization) = &shape.allow_cross_area_cwd {
         payload["allow_cross_area_cwd"] = serde_json::to_value(authorization)?;
+    }
+    // Preserve the exact pre-selection digest for omitted/null defaults.
+    if let Some(model) = &shape.model {
+        payload["model"] = serde_json::json!(model);
+    }
+    if let Some(effort) = &shape.reasoning_effort {
+        payload["reasoning_effort"] = serde_json::json!(effort);
     }
     stable_payload_hash(&payload)
 }

@@ -268,10 +268,10 @@ pub(crate) async fn set_planner_model(
 
 /// What the catalog says about a requested selection.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct CatalogAdvice {
+pub(super) struct CatalogAdvice {
     /// `Some(effort)` when the requested effort is not supported by the chosen
     /// model and must land on that model's own default instead.
-    adjusted_to: Option<String>,
+    pub(super) adjusted_to: Option<String>,
     unknown_model: bool,
 }
 
@@ -283,7 +283,7 @@ struct CatalogAdvice {
 /// perfectly good choice, and moving somebody's effort on the strength of a
 /// catalog we never read would be worse still. The stored selection is the
 /// requested one in every one of these branches.
-async fn catalog_advice(
+pub(super) async fn catalog_advice(
     codex: &CodexShellState,
     model: Option<&str>,
     reasoning_effort: Option<&str>,
