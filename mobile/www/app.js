@@ -5,7 +5,7 @@ const scan = document.querySelector('#scan');
 const status = document.querySelector('#connection-status');
 const text = document.querySelector('#status-text');
 const error = document.querySelector('#error');
-const loginDetail = document.querySelector('#login-detail');
+const loginLabel = document.querySelector('#login-label');
 let refreshing = false;
 let loggingIn = false;
 let connectionError = '';
@@ -30,7 +30,6 @@ async function refresh() {
     connectionError = '';
     const ready = connection.state === 'Running';
     status.dataset.state = ready ? 'ready' : 'waiting';
-    loginDetail.textContent = ready ? '已连接 · 下次自动恢复' : '连接你的私人网络';
     if (!scan.dataset.active && !document.documentElement.classList.contains('scanning')) scan.disabled = !ready;
     text.textContent = ready ? (resumeAttempts >= 3 ? '已连接，点击登录重试进入工作区' : '私人网络已连接') : connection.state === 'NeedsLogin' ? '先登录，再扫码连接工作区' : connection.state === 'NeedsMachineAuth' ? '请在 Tailscale 管理端批准此设备' : '正在恢复私人连接…';
     if (ready && connection.resumeAvailable && !pairingRequested && resumeAttempts < 3 && !document.documentElement.classList.contains('scanning')) {
@@ -53,6 +52,7 @@ async function refresh() {
 login.addEventListener('click', async () => {
   if (login.disabled) return;
   login.disabled = true;
+  loginLabel.textContent = '正在登录…';
   loggingIn = true;
   error.textContent = '';
   resumeAttempts = 0;
@@ -60,7 +60,7 @@ login.addEventListener('click', async () => {
   text.textContent = '正在准备登录，稍后将在浏览器继续…';
   try { await invoke('login_tailscale'); }
   catch (cause) { error.textContent = message(cause); }
-  finally { login.disabled = false; loggingIn = false; refresh(); }
+  finally { login.disabled = false; loginLabel.textContent = '登录 Tailscale'; loggingIn = false; refresh(); }
 });
 scan.addEventListener('click', () => { pairingRequested = true; });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });

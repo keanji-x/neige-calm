@@ -9,11 +9,27 @@ test -s app/src/main/jniLibs/x86_64/libneige_p2p.so
   -Pneige.launcherSmoke=true -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64 \
   -Pandroid.testInstrumentationRunnerArguments.class=io.neigecalm.next.LauncherConnectionInstrumentationTest
 mkdir -p ../../../artifacts
+# Gradle may uninstall its test APK after the connected run. Install the exact
+# built pair again and discover the actual instrumentation package from Android.
+adb install -r -t app/build/outputs/apk/universal/debug/app-universal-debug.apk
+mapfile -t test_apks < <(find app/build/outputs/apk/androidTest -name '*.apk' -type f)
+test "${#test_apks[@]}" -eq 1
+adb install -r -t "${test_apks[0]}"
+adb shell pm list instrumentation > ../../../artifacts/resume-instrumentation.txt
+instrumentation=$(python3 - ../../../artifacts/resume-instrumentation.txt <<'PY'
+import pathlib,re,sys
+text=pathlib.Path(sys.argv[1]).read_text()
+matches=re.findall(r'instrumentation:([A-Za-z0-9_./]+) \(target=io\.neigecalm\.next\.p2ptrial\)',text)
+assert len(matches)==1,text
+assert matches[0].endswith('/androidx.test.runner.AndroidJUnitRunner')
+print(matches[0])
+PY
+)
 for phase in seed check; do
   adb shell am instrument -w -r \
     -e class io.neigecalm.next.RememberedSessionInstrumentationTest \
     -e phase "$phase" \
-    io.neigecalm.next.p2ptrial.test/androidx.test.runner.AndroidJUnitRunner > "../../../artifacts/resume-$phase.txt"
+    "$instrumentation" > "../../../artifacts/resume-$phase.txt"
   python3 - "../../../artifacts/resume-$phase.txt" <<'PY'
 import pathlib,sys
 text=pathlib.Path(sys.argv[1]).read_text()

@@ -11,7 +11,7 @@
 </head>
 <body>
 <main>
-  <header class="topbar"><span class="wordmark"><img src="./neige-mark.svg" alt="" width="24" height="24">neige<span class="wordmark-dot">.</span></span><span class="private-label">你的私人工作区</span></header>
+  <header class="topbar"><img src="./neige-mark.svg" alt="Neige" width="26" height="26"></header>
   <section class="hero" aria-labelledby="welcome-title">
     <div class="connection-art" aria-hidden="true">
       <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
@@ -19,22 +19,19 @@
       <div class="connection-line"><i></i><i></i><i></i><i></i><i></i></div>
       <div class="device phone"><svg viewBox="0 0 40 48"><rect x="9" y="5" width="22" height="38" rx="5"/><path d="M17 10h6M18 37h4"/></svg></div>
       <span class="art-star star-one">✦</span><span class="art-star star-two">✧</span>
-      <span class="art-caption">YOUR SPACE, ANYWHERE</span>
     </div>
-    <p class="eyebrow">让工作，随你而行</p>
     <h1 id="welcome-title">回到你的<br><span>专注空间。</span></h1>
-    <p class="intro">连接电脑里的 Neige，<br>接着完成那些重要的小事。</p>
   </section>
-  <div id="connection-status" class="connection-status" role="status"><span class="status-dot"></span><span id="status-text">正在恢复连接…</span></div>
+  <div id="connection-status" class="connection-status sr-only" role="status"><span class="status-dot"></span><span id="status-text">正在恢复连接…</span></div>
   <section class="actions" aria-label="连接工作区">
     <button id="login" class="action action-login" type="button">
       <span class="action-icon tailscale-icon" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
-      <span class="action-copy"><strong>登录 Tailscale</strong><small id="login-detail">连接你的私人网络</small></span>
+      <span class="action-copy"><strong id="login-label">登录 Tailscale</strong></span>
       <span class="action-arrow" aria-hidden="true">↗</span>
     </button>
     <button id="scan" class="action action-scan" type="button" disabled>
       <span class="action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/><path d="M7 7h3v3H7zM14 7h3v3h-3zM7 14h3v3H7zM14 14h3v3h-3z"/></svg></span>
-      <span class="action-copy"><strong>扫码授权</strong><small>扫描电脑设置中的连接二维码</small></span>
+      <span class="action-copy"><strong>扫码授权</strong></span>
       <span class="action-arrow" aria-hidden="true">→</span>
     </button>
   </section>
@@ -46,7 +43,6 @@
     <button id="pair-cancel" type="button" class="text-button">取消</button>
   </section>
   <button id="cancel-scan" type="button" class="confirm-button" hidden>取消扫码</button>
-  <footer><span class="footer-line"></span><p>一次连接，下次直接继续。</p><span class="footer-note">仅连接此 App · 保留你原来的 VPN</span></footer>
 </main>
 </body>
 </html>

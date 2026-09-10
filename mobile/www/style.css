@@ -23,3 +23,11 @@ footer { margin-top:auto; text-align:center; padding-top:29px; color:var(--muted
 html.scanning,html.scanning body { background:transparent; }.scanning main > :not(#cancel-scan):not(#scan-error) { visibility:hidden; }.scanning #cancel-scan { position:fixed; inset-inline:24px; inset-block-end:max(24px,env(safe-area-inset-bottom)); width:auto; }.scanning #scan-error:not(:empty) { position:fixed; inset-inline:24px; inset-block-end:90px; padding:12px; background:var(--bg); }
 @media(max-height:760px) { .connection-art { height:163px; margin-top:12px; transform:scale(.85); transform-origin:center center; margin-bottom:-8px; }.eyebrow { margin-top:12px; }h1 { font-size:32px; }.intro { margin:10px 0 15px; }.action { min-height:70px; }footer { padding-top:20px; } }
 @media(prefers-reduced-motion:reduce) { .action { transition:none; } }
+
+/* The connection page keeps only the headline and the two action labels. */
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.hero { margin-top:auto; }
+.connection-art { margin-top:22px; margin-bottom:30px; }
+.actions { margin-top:42px; margin-bottom:auto; padding-bottom:46px; }
+.action-copy strong { font-size:16px; }
+@media(max-height:760px) { .connection-art { margin-top:8px; margin-bottom:10px; }.actions { margin-top:28px; padding-bottom:24px; } }
