@@ -7,7 +7,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -33,6 +32,7 @@ class ConnectionTrialActivity : AppCompatActivity() {
   private var authURL = ""
   private var busy = false
   private var resumed = false
+  private var requestingLogin = false
   private val poll = object : Runnable {
     override fun run() {
       if (!resumed || busy) { if (resumed) handler.postDelayed(this, 1000); return }
@@ -64,12 +64,7 @@ class ConnectionTrialActivity : AppCompatActivity() {
     label("Neige 直连试验", 26f)
     label("保留你原来的 VPN。本试验只连接你的工作区，不接管手机网络。")
     connection = label("正在启动内置连接…")
-    authorize = button("首次授权 Tailscale 账户") {
-      val uri = runCatching { URI(authURL) }.getOrNull()
-      if (uri?.scheme == "https" && uri.host == "login.tailscale.com" && uri.rawUserInfo == null) {
-        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authURL)))
-      } else { measurement.text = "授权地址尚未准备好，请稍等。" }
-    }.apply { visibility = View.GONE }
+    authorize = button("登录 Tailscale / 重新获取授权") { requestLogin() }
     label("首次授权请选择电脑所在的同一个 Tailscale 账户。完成后返回这里，不需要打开 Tailscale App。")
     test = button("测试接口耗时 / 直连状态") { measure() }.apply { isEnabled = false }
     measurement = label("连接后可测试三次：第一次包含建连耗时，后两次观察稳定延迟。")
@@ -88,11 +83,41 @@ class ConnectionTrialActivity : AppCompatActivity() {
     }
   }
 
+  private fun requestLogin() {
+    if (requestingLogin) return
+    requestingLogin = true
+    authorize.isEnabled = false
+    measurement.text = "正在获取登录链接，最多约 20 秒…"
+    worker.execute {
+      val result = runCatching { JSONObject(NativeP2P.login()) }
+      runOnUiThread {
+        requestingLogin = false
+        authorize.isEnabled = true
+        if (isDestroyed) return@runOnUiThread
+        result.onSuccess { value ->
+          if (!value.optBoolean("ok")) {
+            measurement.text = value.optString("error")
+          } else {
+            render(value)
+            val uri = runCatching { URI(authURL) }.getOrNull()
+            if (value.optString("state") == "Running") {
+              measurement.text = "已登录，可以点击测试接口耗时。"
+            } else if (uri?.scheme == "https" && uri.host == "login.tailscale.com" && uri.rawUserInfo == null) {
+              measurement.text = "请在浏览器中完成登录，然后返回这里。"
+              if (resumed) runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authURL))) }
+                .onFailure { measurement.text = "无法打开浏览器：${it.message}" }
+            } else { measurement.text = "未获得有效登录链接，请重试。" }
+          }
+        }.onFailure { measurement.text = "获取登录失败：${it.message}" }
+      }
+    }
+  }
+
   private fun render(value: JSONObject) {
     if (!value.optBoolean("ok")) { connection.text = value.optString("error"); return }
     val state = value.optString("state")
     authURL = value.optString("authURL")
-    authorize.visibility = if (authURL.isNotBlank() && state != "Running") View.VISIBLE else View.GONE
+    authorize.text = if (state == "Running") "已登录 · 刷新连接状态" else "登录 Tailscale / 重新获取授权"
     val ready = state == "Running"
     test.isEnabled = ready
     enter.isEnabled = ready
@@ -105,7 +130,9 @@ class ConnectionTrialActivity : AppCompatActivity() {
       "NeedsMachineAuth" -> "等待 Tailscale 管理端批准新设备"
       else -> "连接中：$state"
     }
-    connection.text = "$description\n$networkText\n本 App 未申请系统 VPN 权限"
+    val health = value.optJSONArray("health")
+    val detail = if (health != null && health.length() > 0) "\n诊断：${health.optString(0)}" else ""
+    connection.text = "$description\n$networkText\n本 App 未申请系统 VPN 权限$detail"
   }
 
   private fun pathLabel(path: String) = when(path) {

@@ -116,8 +116,49 @@ func status() string {
 	if err != nil {
 		return failure(err)
 	}
-	result := map[string]any{"ok": true, "state": s.BackendState, "authURL": s.AuthURL, "origin": targetURL, "elapsedMs": time.Since(e.started).Milliseconds(), "path": "unknown"}
+	result := map[string]any{"ok": true, "state": s.BackendState, "authURL": s.AuthURL, "origin": targetURL, "elapsedMs": time.Since(e.started).Milliseconds(), "path": "unknown", "health": s.Health}
 	return encoded(result)
+}
+
+// An explicit user action can retry enrollment when automatic startup has not
+// produced an authorization URL. Never log or persist the one-time URL.
+func login() string {
+	e, err := current()
+	if err != nil {
+		return failure(err)
+	}
+	lc, err := e.node.LocalClient()
+	if err != nil {
+		return failure(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	state, err := lc.Status(ctx)
+	if err != nil {
+		return failure(err)
+	}
+	if state.BackendState == "Running" {
+		return status()
+	}
+	if state.AuthURL == "" {
+		if err := lc.StartLoginInteractive(ctx); err != nil {
+			return failure(err)
+		}
+	}
+	for {
+		state, err = lc.Status(ctx)
+		if err != nil {
+			return failure(fmt.Errorf("获取登录链接失败，请检查当前网络后重试：%w", err))
+		}
+		if state.AuthURL != "" || state.BackendState == "Running" {
+			return status()
+		}
+		select {
+		case <-ctx.Done():
+			return failure(fmt.Errorf("暂时无法获取登录链接（%s）。请检查现有 VPN 是否允许本 App 联网，再点登录重试。", state.BackendState))
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
 }
 
 func probe() string {
@@ -204,6 +245,9 @@ func p2pStart(dir *C.char) *C.char { return C.CString(start(C.GoString(dir))) }
 
 //export p2pStatus
 func p2pStatus() *C.char { return C.CString(status()) }
+
+//export p2pLogin
+func p2pLogin() *C.char { return C.CString(login()) }
 
 //export p2pProbe
 func p2pProbe() *C.char { return C.CString(probe()) }

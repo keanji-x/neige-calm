@@ -5,5 +5,6 @@ internal object NativeP2P {
   external fun start(directory: String): String
   external fun status(): String
   external fun probe(): String
+  external fun login(): String
   external fun proxy(): String
 }

@@ -3,6 +3,7 @@
 extern char *p2pStart(char *);
 extern char *p2pStatus(void);
 extern char *p2pProbe(void);
+extern char *p2pLogin(void);
 extern char *p2pProxy(void);
 static jstring take(JNIEnv *env, char *text) {
   jstring result = (*env)->NewStringUTF(env, text);
@@ -18,3 +19,5 @@ JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_start(JNIEnv *env, jo
 JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_status(JNIEnv *env, jobject self) { return take(env, p2pStatus()); }
 JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_probe(JNIEnv *env, jobject self) { return take(env, p2pProbe()); }
 JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_proxy(JNIEnv *env, jobject self) { return take(env, p2pProxy()); }
+
+JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_login(JNIEnv *env, jobject self) { return take(env, p2pLogin()); }
