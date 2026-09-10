@@ -9,7 +9,8 @@ const loginDetail = document.querySelector('#login-detail');
 let refreshing = false;
 let loggingIn = false;
 let connectionError = '';
-let attemptedResume = false;
+let resumeAttempts = 0;
+let pairingRequested = false;
 let timer;
 const invoke = (command, args) => {
   const call = window.__TAURI__?.core?.invoke;
@@ -25,15 +26,15 @@ async function refresh() {
   try {
     const connection = await invoke('connection_status');
     if (loggingIn) return;
-    if (connectionError && error.textContent === connectionError) error.textContent = '';
+    if (connectionError && error.textContent === connectionError && resumeAttempts < 3) error.textContent = '';
     connectionError = '';
     const ready = connection.state === 'Running';
     status.dataset.state = ready ? 'ready' : 'waiting';
     loginDetail.textContent = ready ? '已连接 · 下次自动恢复' : '连接你的私人网络';
     if (!scan.dataset.active && !document.documentElement.classList.contains('scanning')) scan.disabled = !ready;
-    text.textContent = ready ? '私人网络已连接' : connection.state === 'NeedsLogin' ? '先登录，再扫码连接工作区' : connection.state === 'NeedsMachineAuth' ? '请在 Tailscale 管理端批准此设备' : '正在恢复私人连接…';
-    if (ready && connection.resumeAvailable && !attemptedResume && !document.documentElement.classList.contains('scanning')) {
-      attemptedResume = true;
+    text.textContent = ready ? (resumeAttempts >= 3 ? '已连接，点击登录重试进入工作区' : '私人网络已连接') : connection.state === 'NeedsLogin' ? '先登录，再扫码连接工作区' : connection.state === 'NeedsMachineAuth' ? '请在 Tailscale 管理端批准此设备' : '正在恢复私人连接…';
+    if (ready && connection.resumeAvailable && !pairingRequested && resumeAttempts < 3 && !document.documentElement.classList.contains('scanning')) {
+      resumeAttempts += 1;
       scan.disabled = true;
       text.textContent = '欢迎回来，正在打开工作区…';
       await bindServer(connection.origin);
@@ -54,11 +55,13 @@ login.addEventListener('click', async () => {
   login.disabled = true;
   loggingIn = true;
   error.textContent = '';
+  resumeAttempts = 0;
+  pairingRequested = false;
   text.textContent = '正在准备登录，稍后将在浏览器继续…';
   try { await invoke('login_tailscale'); }
   catch (cause) { error.textContent = message(cause); }
   finally { login.disabled = false; loggingIn = false; refresh(); }
 });
-scan.addEventListener('click', () => { attemptedResume = true; });
+scan.addEventListener('click', () => { pairingRequested = true; });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 refresh();

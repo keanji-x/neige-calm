@@ -61,3 +61,41 @@ test('login failures remain visible and can be retried', async ({ page }) => {
   await expect(page.locator('#error')).toHaveText('无法获取授权链接');
   await expect(page.getByRole('button', { name: /登录 Tailscale/ })).toBeEnabled();
 });
+
+test('retries a transient binding failure and opens the remembered workspace', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.connection = { ...window.connection, state: 'Running', resumeAvailable: true };
+    const original = window.__TAURI__.core.invoke;
+    let bindings = 0;
+    window.__TAURI__.core.invoke = (command, args) => command.endsWith('|bind_server') && ++bindings === 1
+      ? Promise.reject('连接正在恢复') : original(command, args);
+  });
+  await page.route(`${origin}/next/`, route => route.fulfill({ body: '<h1>Workspace</h1>' }));
+  await page.goto('/');
+  await expect(page).toHaveURL(`${origin}/next/`, { timeout: 7000 });
+});
+
+test('bounds automatic retries and lets login retry the saved workspace', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.connection = { ...window.connection, state: 'Running', resumeAvailable: true };
+    window.bindingCount = 0;
+    window.bindingFails = true;
+    const original = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = (command, args) => {
+      if (command.endsWith('|bind_server')) {
+        window.bindingCount++;
+        if (window.bindingFails) return Promise.reject('暂时无法恢复工作区');
+      }
+      return original(command, args);
+    };
+  });
+  await page.route(`${origin}/next/`, route => route.fulfill({ body: '<h1>Workspace</h1>' }));
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => window.bindingCount)).toBe(3);
+  await page.waitForTimeout(1700);
+  expect(await page.evaluate(() => window.bindingCount)).toBe(3);
+  await expect(page.locator('#error')).toHaveText('暂时无法恢复工作区');
+  await page.evaluate(() => { window.bindingFails = false; });
+  await page.getByRole('button', { name: /登录 Tailscale/ }).click();
+  await expect(page).toHaveURL(`${origin}/next/`);
+});

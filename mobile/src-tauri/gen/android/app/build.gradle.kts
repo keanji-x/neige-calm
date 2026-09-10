@@ -49,7 +49,7 @@ android {
             matchingFallbacks += listOf("debug")
         }
     }
-    testBuildType = "debug"
+    testBuildType = if (providers.gradleProperty("neige.launcherSmoke").orNull == "true") "debug" else "instrumented"
     testOptions { execution = "ANDROIDX_TEST_ORCHESTRATOR" }
     kotlinOptions {
         jvmTarget = "1.8"

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../../src-tauri/gen/android"
-./gradlew :app:connectedUniversalDebugAndroidTest --no-daemon --max-workers=4 \
-  -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64 \
+# The preceding Tauri CLI step built this exact native binary and embedded assets.
+# Its temporary CLI socket is closed now; instrumentation only rebuilds Kotlin.
+test -s app/src/main/jniLibs/x86_64/libapp_lib.so
+test -s app/src/main/jniLibs/x86_64/libneige_p2p.so
+./gradlew :app:connectedUniversalDebugAndroidTest -x :app:rustBuildX86_64Debug --no-daemon --max-workers=4 \
+  -Pneige.launcherSmoke=true -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64 \
   -Pandroid.testInstrumentationRunnerArguments.class=io.neigecalm.next.LauncherConnectionInstrumentationTest
 mkdir -p ../../../artifacts
 for phase in seed check; do
