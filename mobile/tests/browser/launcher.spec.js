@@ -1,101 +1,92 @@
 import { test, expect } from '@playwright/test';
-const origin = 'https://pivot-neige.tail328551.ts.net:10000';
+const tail = 'https://pivot-neige.tail328551.ts.net:10000';
+const direct = 'http://192.168.1.8:4140';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript((server) => {
     window.nativeCalls = [];
-    window.connection = { state: 'NeedsLogin', origin: server, resumeAvailable: false };
+    window.settings = { mode: 'tailscale', ipOrigin: '', tailscaleEnabled: false };
+    window.attemptResult = { connected: false, failures: [] };
     window.__TAURI__ = { core: { invoke: async (command, args) => {
       window.nativeCalls.push(command);
-      if (command.endsWith('|connection_status')) return window.connection;
-      if (command.endsWith('|login_tailscale')) { window.connection.state = 'Running'; return { state: 'Running' }; }
-      if (command.endsWith('|bind_server')) { window.connection.resumeAvailable = false; return { origin: args.origin }; }
-      throw new Error('Unexpected command');
+      if (command.endsWith('|connection_settings')) return { ...window.settings };
+      if (command.endsWith('|save_connection')) { window.settings = { ...args }; return { ...window.settings }; }
+      if (command.endsWith('|attempt_connection')) return window.attemptResult;
+      if (command.endsWith('|login_tailscale')) { window.settings.tailscaleEnabled = true; return { state: 'Running' }; }
+      if (command.endsWith('|bind_server')) return { origin: args.origin };
+      throw new Error('Unexpected native command');
     } } };
-  }, origin);
+  }, tail);
 });
 
-test('shows only login and scan, with a responsive phone layout', async ({ page }) => {
+test('shows the brand and persistent mode selector without annotation copy', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByRole('combobox', { name: '连接方式' })).toHaveValue('tailscale');
   await expect(page.getByRole('button', { name: /登录 Tailscale/ })).toBeEnabled();
-  await expect(page.getByRole('button', { name: /扫码授权/ })).toBeDisabled();
-  await expect(page.locator('input')).toHaveCount(0);
   for (const width of [320, 390]) {
     await page.setViewportSize({ width, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
-    await expect(page.getByRole('button', { name: /扫码授权/ })).toBeInViewport();
   }
-  await page.screenshot({ path: 'artifacts/connection-redesign.png', fullPage: true });
+  await page.screenshot({ path: 'artifacts/connection-dual-tailscale.png', fullPage: true });
+  await page.getByRole('combobox').selectOption('ip');
+  await expect(page.getByLabel('服务器地址')).toBeVisible();
+  await page.getByLabel('服务器地址').fill('http://192.168.1.8:4140');
+  await page.screenshot({ path: 'artifacts/connection-dual-ip.png', fullPage: true });
 });
 
-test('login calls the real bridge contract and enables scanning', async ({ page }) => {
+test('loads saved IP configuration and opens the successful direct route', async ({ page }) => {
+  await page.addInitScript((server) => {
+    window.settings = { mode: 'ip', ipOrigin: server, tailscaleEnabled: true };
+    window.attemptResult = { connected: true, mode: 'ip', origin: server, resumeAvailable: false, failures: [] };
+  }, direct);
+  await page.route(`${direct}/next/`, route => route.fulfill({ body: '<h1>IP workspace</h1>' }));
   await page.goto('/');
-  await page.getByRole('button', { name: /登录 Tailscale/ }).click();
-  await expect(page.getByRole('button', { name: /扫码授权/ })).toBeEnabled();
-  expect(await page.evaluate(() => window.nativeCalls)).toContain('plugin:bundled-frontend|login_tailscale');
+  await expect(page).toHaveURL(`${direct}/next/`);
 });
 
-test('existing authorization automatically binds and opens the workspace', async ({ page }) => {
-  await page.addInitScript(() => { window.connection = { ...window.connection, state: 'Running', resumeAvailable: true }; });
-  await page.route(`${origin}/next/`, route => route.fulfill({ contentType: 'text/html', body: '<h1>Workspace</h1>' }));
+test('opens the fallback returned by the native IP-first coordinator', async ({ page }) => {
+  await page.addInitScript(({ ip, server }) => {
+    window.settings = { mode: 'ip', ipOrigin: ip, tailscaleEnabled: true };
+    window.attemptResult = { connected: true, mode: 'tailscale', origin: server, resumeAvailable: true, failures: [{ mode: 'ip', message: 'timeout' }] };
+  }, { ip: direct, server: tail });
+  await page.route(`${tail}/next/`, route => route.fulfill({ body: '<h1>Tail workspace</h1>' }));
   await page.goto('/');
-  await expect(page).toHaveURL(`${origin}/next/`);
+  await expect(page).toHaveURL(`${tail}/next/`);
 });
 
-test('returning after an invalid session does not loop back into the workspace', async ({ page }) => {
-  await page.addInitScript(() => { window.connection = { ...window.connection, state: 'Running', resumeAvailable: false }; });
+test('exhausted options stay on the configuration homepage and do not retry forever', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.settings = { mode: 'ip', ipOrigin: 'http://192.168.1.8:4140', tailscaleEnabled: true };
+    window.attemptResult = { connected: false, failures: [{ mode: 'ip', message: 'timeout' }, { mode: 'tailscale', message: 'timeout' }] };
+  });
   await page.goto('/');
-  await expect(page.getByRole('button', { name: /扫码授权/ })).toBeEnabled();
-  await page.waitForTimeout(1700);
+  await expect(page.locator('#error')).toContainText('连接超时或不可用');
+  await expect(page.getByLabel('服务器地址')).toHaveValue(direct);
+  await expect(page.getByRole('button', { name: '保存并连接 IP' })).toBeEnabled();
+  await page.waitForTimeout(1800);
+  expect((await page.evaluate(() => window.nativeCalls)).filter(x => x.endsWith('|attempt_connection'))).toHaveLength(1);
+});
+
+test('editing mode preserves both configurations through the native save contract', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('combobox').selectOption('ip');
+  await page.getByLabel('服务器地址').fill(direct);
+  await page.getByRole('combobox').selectOption('tailscale');
+  await expect.poll(() => page.evaluate(() => window.settings)).toEqual({ mode: 'tailscale', ipOrigin: direct, tailscaleEnabled: false });
+  await page.getByRole('button', { name: '登录 Tailscale' }).click();
+  await expect(page.getByRole('button', { name: '扫码授权' })).toBeEnabled();
+});
+
+test('old connection results cannot navigate after the user starts editing', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = (command, args) => command.endsWith('|attempt_connection')
+      ? new Promise(resolve => { window.completeOldAttempt = resolve; }) : original(command, args);
+  });
+  await page.goto('/');
+  await page.getByRole('combobox').selectOption('ip');
+  await page.getByLabel('服务器地址').fill(direct);
+  await page.evaluate(server => window.completeOldAttempt({ connected: true, origin: server, mode: 'ip', resumeAvailable: true, failures: [] }), direct);
   await expect(page).toHaveURL('http://127.0.0.1:5197/');
   expect(await page.evaluate(() => window.nativeCalls)).not.toContain('plugin:bundled-frontend|bind_server');
-});
-
-test('login failures remain visible and can be retried', async ({ page }) => {
-  await page.goto('/');
-  await page.evaluate(() => {
-    const original = window.__TAURI__.core.invoke;
-    window.__TAURI__.core.invoke = (command, args) => command.endsWith('|login_tailscale') ? Promise.reject('无法获取授权链接') : original(command, args);
-  });
-  await page.getByRole('button', { name: /登录 Tailscale/ }).click();
-  await expect(page.locator('#error')).toHaveText('无法获取授权链接');
-  await expect(page.getByRole('button', { name: /登录 Tailscale/ })).toBeEnabled();
-});
-
-test('retries a transient binding failure and opens the remembered workspace', async ({ page }) => {
-  await page.addInitScript(() => {
-    window.connection = { ...window.connection, state: 'Running', resumeAvailable: true };
-    const original = window.__TAURI__.core.invoke;
-    let bindings = 0;
-    window.__TAURI__.core.invoke = (command, args) => command.endsWith('|bind_server') && ++bindings === 1
-      ? Promise.reject('连接正在恢复') : original(command, args);
-  });
-  await page.route(`${origin}/next/`, route => route.fulfill({ body: '<h1>Workspace</h1>' }));
-  await page.goto('/');
-  await expect(page).toHaveURL(`${origin}/next/`, { timeout: 7000 });
-});
-
-test('bounds automatic retries and lets login retry the saved workspace', async ({ page }) => {
-  await page.addInitScript(() => {
-    window.connection = { ...window.connection, state: 'Running', resumeAvailable: true };
-    window.bindingCount = 0;
-    window.bindingFails = true;
-    const original = window.__TAURI__.core.invoke;
-    window.__TAURI__.core.invoke = (command, args) => {
-      if (command.endsWith('|bind_server')) {
-        window.bindingCount++;
-        if (window.bindingFails) return Promise.reject('暂时无法恢复工作区');
-      }
-      return original(command, args);
-    };
-  });
-  await page.route(`${origin}/next/`, route => route.fulfill({ body: '<h1>Workspace</h1>' }));
-  await page.goto('/');
-  await expect.poll(() => page.evaluate(() => window.bindingCount)).toBe(3);
-  await page.waitForTimeout(1700);
-  expect(await page.evaluate(() => window.bindingCount)).toBe(3);
-  await expect(page.locator('#error')).toHaveText('暂时无法恢复工作区');
-  await page.evaluate(() => { window.bindingFails = false; });
-  await page.getByRole('button', { name: /登录 Tailscale/ }).click();
-  await expect(page).toHaveURL(`${origin}/next/`);
 });

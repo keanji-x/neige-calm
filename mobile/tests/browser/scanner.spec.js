@@ -4,7 +4,8 @@ test('scan result requires server confirmation before navigation', async ({ page
   const destination = `https://pivot-neige.tail328551.ts.net:10000/mobile/pair#v1.${'a'.repeat(64)}`;
   await page.addInitScript((value) => {
     window.__TAURI__ = { core: { invoke: async (command, args) => {
-      if (command.endsWith('|connection_status')) return { state: 'Running', origin: 'https://pivot-neige.tail328551.ts.net:10000', resumeAvailable: false };
+      if (command.endsWith('|connection_settings')) return { mode: 'tailscale', ipOrigin: '', tailscaleEnabled: true };
+      if (command.endsWith('|attempt_connection')) return { connected: true, mode: 'tailscale', origin: 'https://pivot-neige.tail328551.ts.net:10000', resumeAvailable: false, failures: [] };
       if (command.endsWith('|bind_server')) return { origin: args.origin };
       return command.endsWith('request_permissions') ? { camera: 'granted' } : { content: value, format: 'QR_CODE' };
     } } };
@@ -21,7 +22,7 @@ test('scan result requires server confirmation before navigation', async ({ page
 });
 
 test('camera denial preserves the connection page', async ({ page }) => {
-  await page.addInitScript(() => { window.__TAURI__ = { core: { invoke: async (command) => command.endsWith('|connection_status') ? { state: 'Running', origin: 'https://pivot-neige.tail328551.ts.net:10000', resumeAvailable: false } : ({ camera: 'denied' }) } }; });
+  await page.addInitScript(() => { window.__TAURI__ = { core: { invoke: async (command) => command.endsWith('|connection_settings') ? { mode: 'tailscale', ipOrigin: '', tailscaleEnabled: true } : command.endsWith('|attempt_connection') ? { connected: true, mode: 'tailscale', origin: 'https://pivot-neige.tail328551.ts.net:10000', resumeAvailable: false, failures: [] } : ({ camera: 'denied' }) } }; });
   await page.goto('/');
   await page.getByRole('button', { name: /扫码授权/ }).click();
   await expect(page.getByText('请允许相机权限后重试。')).toBeVisible();
@@ -32,7 +33,8 @@ test('camera denial preserves the connection page', async ({ page }) => {
 test('keeps the cancellation control above the native camera preview', async ({ page }) => {
   await page.addInitScript(() => {
     window.__TAURI__ = { core: { invoke: async (command, options) => {
-      if (command.endsWith('|connection_status')) return { state: 'Running', origin: 'https://pivot-neige.tail328551.ts.net:10000', resumeAvailable: false };
+      if (command.endsWith('|connection_settings')) return { mode: 'tailscale', ipOrigin: '', tailscaleEnabled: true };
+      if (command.endsWith('|attempt_connection')) return { connected: true, mode: 'tailscale', origin: 'https://pivot-neige.tail328551.ts.net:10000', resumeAvailable: false, failures: [] };
       if (command.endsWith('request_permissions')) return { camera: 'granted' };
       window.scanOptions = options;
       return new Promise(() => {});
@@ -49,7 +51,8 @@ test('cancel settles locally when native scan remains pending and ignores its la
   await page.addInitScript(() => {
     let scans = 0;
     window.__TAURI__ = { core: { invoke: async (command) => {
-      if (command.endsWith('|connection_status')) return { state: 'Running', origin: 'https://pivot-neige.tail328551.ts.net:10000', resumeAvailable: false };
+      if (command.endsWith('|connection_settings')) return { mode: 'tailscale', ipOrigin: '', tailscaleEnabled: true };
+      if (command.endsWith('|attempt_connection')) return { connected: true, mode: 'tailscale', origin: 'https://pivot-neige.tail328551.ts.net:10000', resumeAvailable: false, failures: [] };
       if (command.endsWith('request_permissions')) return { camera: 'granted' };
       if (command.endsWith('|cancel')) return;
       if (++scans === 1) return new Promise((resolve) => { window.finishOldScan = resolve; });
@@ -70,7 +73,8 @@ test('cancel settles locally when native scan remains pending and ignores its la
 test('ignores scan results while cancellation is in flight', async ({ page }) => {
   await page.addInitScript(() => {
     window.__TAURI__ = { core: { invoke: async (command) => {
-      if (command.endsWith('|connection_status')) return { state: 'Running', origin: 'https://pivot-neige.tail328551.ts.net:10000', resumeAvailable: false };
+      if (command.endsWith('|connection_settings')) return { mode: 'tailscale', ipOrigin: '', tailscaleEnabled: true };
+      if (command.endsWith('|attempt_connection')) return { connected: true, mode: 'tailscale', origin: 'https://pivot-neige.tail328551.ts.net:10000', resumeAvailable: false, failures: [] };
       if (command.endsWith('request_permissions')) return { camera: 'granted' };
       if (command.endsWith('|cancel')) return new Promise((resolve) => { window.finishCancel = resolve; });
       return new Promise((resolve) => { window.finishScan = resolve; });

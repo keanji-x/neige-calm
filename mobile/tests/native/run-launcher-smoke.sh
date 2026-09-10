@@ -5,9 +5,10 @@ cd "$(dirname "$0")/../../src-tauri/gen/android"
 # Its temporary CLI socket is closed now; instrumentation only rebuilds Kotlin.
 test -s app/src/main/jniLibs/x86_64/libapp_lib.so
 test -s app/src/main/jniLibs/x86_64/libneige_p2p.so
+./gradlew :app:testUniversalDebugUnitTest --tests io.neigecalm.next.ConnectionAttemptTest -x :app:rustBuildX86_64Debug --no-daemon --max-workers=4 -Pneige.launcherSmoke=true -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64
 ./gradlew :app:connectedUniversalDebugAndroidTest -x :app:rustBuildX86_64Debug --no-daemon --max-workers=4 \
   -Pneige.launcherSmoke=true -PabiList=x86_64 -ParchList=x86_64 -PtargetList=x86_64 \
-  -Pandroid.testInstrumentationRunnerArguments.class=io.neigecalm.next.LauncherConnectionInstrumentationTest
+  -Pandroid.testInstrumentationRunnerArguments.class=io.neigecalm.next.LauncherConnectionInstrumentationTest,io.neigecalm.next.DirectConnectionInstrumentationTest
 mkdir -p ../../../artifacts
 # Gradle may uninstall its test APK after the connected run. Install the exact
 # built pair again and discover the actual instrumentation package from Android.

@@ -4,6 +4,7 @@ extern char *p2pStart(char *);
 extern char *p2pConfigure(char *);
 extern char *p2pStatus(void);
 extern char *p2pProbe(void);
+extern char *p2pCheck(void);
 extern char *p2pLogin(void);
 extern char *p2pProxy(void);
 static jstring take(JNIEnv *env, char *text) {
@@ -29,3 +30,5 @@ JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_configure(JNIEnv *env
   (*env)->ReleaseStringUTFChars(env, snapshot, raw);
   return take(env, result);
 }
+
+JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_check(JNIEnv *env, jobject self) { return take(env, p2pCheck()); }

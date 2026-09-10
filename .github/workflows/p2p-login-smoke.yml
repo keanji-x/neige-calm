@@ -44,6 +44,15 @@ jobs:
           npm --prefix mobile ci
           npm --prefix fe ci
           env -u NEIGE_CODEX_BIN npm --prefix mobile run tauri -- android build --debug --apk --target x86_64
+      - name: Start loopback-only HTTP test peers
+        run: |
+          python3 mobile/tests/native/ip-fixture.py > "$RUNNER_TEMP/ip-fixture.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/ip-fixture.pid"
+          for attempt in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:5413/api/version > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          exit 1
       - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -57,6 +66,10 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect
           script: mobile/tests/native/run-launcher-smoke.sh
+      - name: Stop test peers
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/ip-fixture.pid" ]; then kill "$(cat "$RUNNER_TEMP/ip-fixture.pid")" || true; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

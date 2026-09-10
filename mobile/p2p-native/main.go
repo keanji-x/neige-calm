@@ -177,6 +177,46 @@ func login() string {
 	}
 }
 
+func checkConnection() string {
+	e, err := current()
+	if err != nil {
+		return failure(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL+"/api/version", nil)
+	if err != nil {
+		return failure(err)
+	}
+	response, err := e.client.Do(request)
+	if err != nil {
+		return failure(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		return failure(fmt.Errorf("服务器返回 HTTP %d", response.StatusCode))
+	}
+	var version struct {
+		WebCompatVersion int    `json:"webCompatVersion"`
+		APIVersion       string `json:"apiVersion"`
+		KernelVersion    string `json:"kernelVersion"`
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 65537))
+	if err != nil {
+		return failure(err)
+	}
+	if len(body) > 65536 {
+		return failure(fmt.Errorf("服务器响应异常"))
+	}
+	if err = json.Unmarshal(body, &version); err != nil {
+		return failure(err)
+	}
+	if version.WebCompatVersion <= 0 || version.APIVersion == "" || version.KernelVersion == "" {
+		return failure(fmt.Errorf("这个地址不是 Neige 服务器"))
+	}
+	return encoded(map[string]any{"ok": true})
+}
+
 func probe() string {
 	e, err := current()
 	if err != nil {
@@ -269,6 +309,9 @@ func p2pStatus() *C.char { return C.CString(status()) }
 
 //export p2pLogin
 func p2pLogin() *C.char { return C.CString(login()) }
+
+//export p2pCheck
+func p2pCheck() *C.char { return C.CString(checkConnection()) }
 
 //export p2pProbe
 func p2pProbe() *C.char { return C.CString(probe()) }

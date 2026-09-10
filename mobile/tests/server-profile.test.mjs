@@ -29,7 +29,7 @@ test('private profile generates working exact-origin HTTP access and matching An
   const { root, configure } = await project(t);
   const origin = 'http://192.0.2.20:4140'; // RFC 5737 documentation address.
   const profile = join(root, 'fixture.local.json');
-  await writeFile(profile, JSON.stringify({ defaultServer: origin, httpOrigins: [origin] }));
+  await writeFile(profile, JSON.stringify({ defaultServer: origin, httpOrigins: [origin], allowConfiguredHttp: false }));
   const result = configure(profile);
   assert.equal(result.status, 0, result.stderr);
   const config = await import(pathToFileURL(join(root, 'www/server-config.js')));
@@ -57,9 +57,10 @@ test('invalid profiles fail before changing either generated output', async (t) 
   const { root, configure } = await project(t);
   assert.equal(configure().status, 0);
   const before = await Promise.all(['www/server-config.js', xmlPath].map((file) => readFile(join(root, file), 'utf8')));
-  for (const profile of [{}, { defaultServer: '', httpOrigins: ['http://user:secret@192.0.2.20:4140'] },
-    { defaultServer: 'http://192.0.2.20:4140', httpOrigins: [] },
-    { defaultServer: '', httpOrigins: ['http://example.com:4140'] }]) {
+  for (const profile of [{}, { defaultServer: '', httpOrigins: ['http://user:secret@192.0.2.20:4140'], allowConfiguredHttp: false },
+    { defaultServer: 'http://192.0.2.20:4140', httpOrigins: [], allowConfiguredHttp: false },
+    { defaultServer: '', httpOrigins: ['http://example.com:4140'], allowConfiguredHttp: false },
+    { defaultServer: '', httpOrigins: [], allowConfiguredHttp: 'true' }]) {
     const path = join(root, 'invalid.local.json');
     await writeFile(path, JSON.stringify(profile));
     assert.notEqual(configure(path).status, 0);

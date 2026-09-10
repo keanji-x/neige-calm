@@ -11,7 +11,7 @@
 </head>
 <body>
 <main>
-  <header class="topbar"><img src="./neige-mark.svg" alt="Neige" width="26" height="26"></header>
+  <header class="topbar"><span class="wordmark"><img src="./neige-mark.svg" alt="" width="26" height="26">neige.</span><select id="connection-mode" aria-label="连接方式"><option value="tailscale">Tailscale</option><option value="ip">IP 连接</option></select></header>
   <section class="hero" aria-labelledby="welcome-title">
     <div class="connection-art" aria-hidden="true">
       <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
@@ -24,6 +24,7 @@
   </section>
   <div id="connection-status" class="connection-status sr-only" role="status"><span class="status-dot"></span><span id="status-text">正在恢复连接…</span></div>
   <section class="actions" aria-label="连接工作区">
+    <div id="ip-settings" hidden><label class="sr-only" for="ip-origin">服务器地址</label><input id="ip-origin" type="url" inputmode="url" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="http://IP:端口" /></div>
     <button id="login" class="action action-login" type="button">
       <span class="action-icon tailscale-icon" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
       <span class="action-copy"><strong id="login-label">登录 Tailscale</strong></span>

@@ -26,8 +26,9 @@ before `npm run android:apk`. Keep real deployment addresses in an ignored
 its generated outputs. After the local build, run `npm run configure` to restore
 the shareable default configuration.
 
-A profile must contain `defaultServer` (an empty string or server origin) and
-`httpOrigins` (an array of exact IPv4 HTTP origins). For USB development, an
+A profile must contain `defaultServer` (an empty string or server origin),
+`httpOrigins` (an array of exact IPv4 HTTP origins), and `allowConfiguredHttp`
+(a boolean enabling the native exact-origin HTTP fence for runtime IP setup). For USB development, an
 explicit `http://127.0.0.1:4140` origin can be paired with
 `adb reverse tcp:4140 tcp:4140`; without forwarding, loopback points to the phone.
 For LAN use, select the host's address reachable from the phone. Android scopes

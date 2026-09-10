@@ -42,3 +42,23 @@ resume hint. Auto-resume is consumed once per WebView to prevent an invalid
 cookie bouncing endlessly between the workspace and connection page. Returning
 to the connection page offers pairing instead. This does not change server
 session lifetime or deploy any new server configuration.
+
+## IP-first failover prototype
+
+Persist an independently configured direct IP/server origin, the Tailscale option,
+and the last edited mode in app-private preferences. Automatic startup probes IP
+first, then Tailscale, with a bounded deadline per candidate. A successful check
+must return the real Neige /api/version shape; node-online alone is insufficient.
+No redirects or credentials are used in probes. Failed attempts are not retried
+forever; the packaged configuration homepage remains available after exhaustion.
+Manual configuration changes invalidate any older attempt before it can bind.
+
+HTTP is accepted for explicitly configured literal private or public IP addresses
+(excluding loopback, link-local/metadata and multicast). HTTPS also supports
+hostnames with normal certificate verification; the selected scheme is preserved. Android cleartext support is
+explicitly enabled by a typed build profile field, while the active WebView client
+rejects unconfigured HTTP destinations. The direct path clears the WebView proxy;
+the Tailscale path installs its fixed-target proxy. Cookies are retained separately
+for each origin; HTTPS cookies are never copied to a newly entered IP. A new IP
+origin may need its own workspace login once. The same backend remains authoritative
+for authentication, expiry and revocation on either path.

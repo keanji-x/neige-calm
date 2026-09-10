@@ -7,19 +7,20 @@ import android.webkit.CookieManager
  * checks expiry/revocation on every request. No cookie is exposed to JavaScript.
  */
 internal object RememberedSession {
-  private var remembered: String? = null
-  private fun token(): String? = CookieManager.getInstance().getCookie(P2PConnection.ORIGIN)
+  private val remembered = mutableMapOf<String, String>()
+  private fun token(origin: String): String? = CookieManager.getInstance().getCookie(origin)
     ?.split(';')?.map { it.trim() }?.firstOrNull { it.startsWith("calm-session=") }
     ?.substringAfter('=')?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{16,256}")) }
 
-  fun hasCookie(): Boolean = token() != null
+  fun hasCookie(origin: String = P2PConnection.ORIGIN): Boolean = token(origin) != null
 
-  fun persist(done: (Boolean) -> Unit = {}) {
-    val value = token() ?: run { done(false); return }
-    if (remembered == value) { done(true); return }
-    CookieManager.getInstance().setCookie(P2PConnection.ORIGIN,
-      "calm-session=$value; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=2592000") { saved ->
-      if (saved) { remembered = value; CookieManager.getInstance().flush() }
+  fun persist(origin: String = P2PConnection.ORIGIN, done: (Boolean) -> Unit = {}) {
+    val value = token(origin) ?: run { done(false); return }
+    if (remembered[origin] == value) { done(true); return }
+    val secure = if (origin.startsWith("https://")) "; Secure" else ""
+    CookieManager.getInstance().setCookie(origin,
+      "calm-session=$value; Path=/$secure; HttpOnly; SameSite=Strict; Max-Age=2592000") { saved ->
+      if (saved) { remembered[origin] = value; CookieManager.getInstance().flush() }
       done(saved)
     }
   }
