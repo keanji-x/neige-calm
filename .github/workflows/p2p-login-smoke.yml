@@ -1,0 +1,47 @@
+name: P2P login smoke
+on:
+  push:
+    branches: [codex/mobile-p2p-prototype]
+permissions:
+  contents: read
+jobs:
+  login:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mobile/p2p-native/go.mod
+          cache-dependency-path: mobile/p2p-native/go.sum
+      - name: Build actual userspace JNI library for emulator
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'ndk;29.0.14206865'
+          cd mobile/p2p-native
+          export GOOS=android GOARCH=amd64 CGO_ENABLED=1
+          export CC="$ANDROID_HOME/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang"
+          mkdir -p ../src-tauri/gen/android/app/src/main/jniLibs/x86_64
+          go build -p 4 -buildmode=c-shared -ldflags='-s -w' -o ../src-tauri/gen/android/app/src/main/jniLibs/x86_64/libneige_p2p.so .
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect
+          script: mobile/src-tauri/gen/android/gradlew -p mobile/p2p-smoke connectedDebugAndroidTest --no-daemon --max-workers=4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: p2p-login-result
+          path: mobile/p2p-smoke/build/outputs/androidTest-results/
+          retention-days: 3
