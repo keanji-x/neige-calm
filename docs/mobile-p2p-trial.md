@@ -65,3 +65,7 @@ are checked again by the proxy, not only by WebView interception. Cookies are re
 for each origin; HTTPS cookies are never copied to a newly entered IP. A new IP
 origin may need its own workspace login once. The same backend remains authoritative
 for authentication, expiry and revocation on either path.
+
+At the root workspace, Android Back opens the configuration homepage without
+logging out. Back from that homepage closes the Activity rather than returning
+to stale workspace history, so persistent auto-entry never hides configuration.
