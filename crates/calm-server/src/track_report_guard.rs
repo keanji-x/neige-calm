@@ -766,52 +766,10 @@ mod tests {
         assert_eq!(tombstone.payload["key"], "Build");
     }
 
-    /// The residual that [`super::validate_block_content`]'s prose branch
-    /// does **not** close, pinned as behaviour rather than papered over.
-    ///
-    /// `check_prose_markdown` is a *per-block* check, and
-    /// `ReportDoc::project` concatenates block bodies byte-for-byte with
-    /// no separator (`track_report_doc.rs`, `body.push_str(text)`).
-    /// A fence can therefore be cut in two so that neither half is a
-    /// recognisable fence opener — split right after ```` ```neige-block ````
-    /// plus its space, and `neige_open_kind` sees an empty kind, so
-    /// neither the prose check nor the unterminated-fence check fires —
-    /// while the concatenation of the two prose blocks is the fence.
-    ///
-    /// Four things this test states, and none of them is "#1269 closed
-    /// this":
-    ///
-    /// 1. It is **pre-existing**, not introduced by #1269. On the parent
-    ///    commit the prose `UpsertBlock` arm had no fence check at all,
-    ///    so a *single* upsert carrying the whole fence landed verbatim.
-    ///    #1269 strictly tightens that; the two-fragment path behaves
-    ///    identically before and after, and identically through the MCP
-    ///    and REST surfaces, which run the same per-argument
-    ///    `check_prose_markdown`.
-    /// 2. It reaches **no new document state**. The `app` half below
-    ///    shows the live block appearing — but that is the same block a
-    ///    single `Replace` writes directly on a prose-only document, with
-    ///    no splitting at all, which is what the `Replace` arm is for.
-    ///    The fragments are a longer road to a state the whole-body arm
-    ///    already writes.
-    /// 3. The materialising write is where the whole-body check applies:
-    ///    on the op layer `validate_body_fences` runs on `Replace` /
-    ///    `WriteMarkdown` only; the track-fork exit does run it per prose
-    ///    block, but there it sees each fragment separately and accepts
-    ///    it (neither fragment carries a recognisable `neige-block`
-    ///    opener). `guard_task_declarations` does
-    ///    run on every op, the prose upserts included — but there it sees
-    ///    prose on both sides of the edit and has nothing to object to.
-    ///    It gets something to object to at the write that assembles the
-    ///    block.
-    /// 4. The case that matters — a `task` declaration, the thing
-    ///    attribution is enforced on — **is** caught there: the second
-    ///    half asserts the `Replace` is refused because the assembled
-    ///    task claims `declared_by: "user"` while the writer is `Planner`.
-    ///
-    /// Closing the assembly itself would mean checking prose against the
-    /// projection rather than against one block, which is a different
-    /// change than #1269 and is not attempted here.
+    /// Per-block prose checks accept fragments of a data fence. Projection
+    /// now keeps those fragments on separate lines (#1501), so they cannot
+    /// accidentally assemble. A caller can still concatenate the fragments
+    /// manually: the materialising Replace must enforce task attribution.
     #[test]
     fn fence_assembled_across_two_prose_blocks_is_caught_at_the_materialising_write() {
         use calm_types::report_blocks::{check_prose_markdown, parse_fence, split_body};
@@ -867,7 +825,15 @@ mod tests {
                 .map(|block| block.kind.clone())
                 .collect();
             let (_, body) = doc.project().unwrap();
-            (doc, body, kinds)
+            assert!(
+                split_body(&body)
+                    .iter()
+                    .all(|slice| parse_fence(&slice.raw).is_none()),
+                "projection must not assemble a data fence across prose blocks"
+            );
+            // A caller can still manually concatenate fragments. Exercise the
+            // materialising write guard against that input as before.
+            (doc, format!("# A\n\nalpha\n{fence}# B\n\nbeta\n"), kinds)
         }
 
         // Split immediately after "```neige-block " — the opener carries

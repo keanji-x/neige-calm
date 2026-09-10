@@ -2736,9 +2736,9 @@ fn prepare_fork_report(
             // reach that check at all — see `track_report_guard`'s module
             // doc, which enumerates all four construction sites.) And
             // "fenced prose" here means a fence
-            // carried whole in one block; on the residual that a fence split
-            // across two prose blocks still assembles in the projection, see
-            // `track_report_guard::validate_block_content`.
+            // carried whole in one block. Projection keeps independent
+            // blocks on line boundaries; manually assembled input is still
+            // checked at the materialising whole-document write.
             //
             // Deliberately only the fence check here: the fork exit does not
             // additionally run `validate_payload` on the prose block's own
@@ -2847,7 +2847,10 @@ fn prepare_fork_report(
             .unwrap_or_default()
             .iter()
             .map(flat_text)
-            .collect::<String>()
+            .fold(String::new(), |mut body, text| {
+                calm_types::report_blocks::append_block_text(&mut body, &text);
+                body
+            })
     );
     Ok(InitialReportSnapshot {
         payload,
@@ -5412,3 +5415,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod report_boundaries_tests;
