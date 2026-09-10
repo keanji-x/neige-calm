@@ -29,6 +29,16 @@ class ConnectionAttemptTest {
     val empty = ConnectionAttempt.firstAvailable(ConnectionSettings("ip", "", false)) { fail("No configured route") }
     assertNull(empty.route); assertTrue(empty.failures.isEmpty())
   }
+  @Test fun cancellationStopsBeforeStartingAnotherRoute() {
+    val cancellation = ConnectionAttempt.Cancellation()
+    cancellation.cancel()
+    var checks = 0
+    try {
+      ConnectionAttempt.firstAvailable(settings) { cancellation.check(); checks++ }
+      fail("Cancelled work must not continue")
+    } catch (_: java.util.concurrent.CancellationException) {}
+    assertEquals(0, checks)
+  }
   @Test fun addressesAreExplicitAndCannotTargetTheLauncherOrMetadata() {
     assertEquals("http://192.168.1.8:4140", ConnectionProfiles.parseDirect("192.168.1.8:4140/next/").value)
     assertEquals("http://203.0.113.5:4140", ConnectionProfiles.parseDirect("http://203.0.113.5:4140").value)

@@ -57,8 +57,11 @@ HTTP is accepted for explicitly configured literal private or public IP addresse
 (excluding loopback, link-local/metadata and multicast). HTTPS also supports
 hostnames with normal certificate verification; the selected scheme is preserved. Android cleartext support is
 explicitly enabled by a typed build profile field, while the active WebView client
-rejects unconfigured HTTP destinations. The direct path clears the WebView proxy;
-the Tailscale path installs its fixed-target proxy. Cookies are retained separately
+rejects unconfigured HTTP destinations. The direct path uses an app-local, fixed-origin proxy over ordinary sockets;
+the Tailscale path uses its userspace-network proxy. Neither direct traffic nor
+its redirect hops use a cloud relay. Both proxy configurations remove implicit
+bypass rules and allow only the packaged launcher to bypass; redirect destinations
+are checked again by the proxy, not only by WebView interception. Cookies are retained separately
 for each origin; HTTPS cookies are never copied to a newly entered IP. A new IP
 origin may need its own workspace login once. The same backend remains authoritative
 for authentication, expiry and revocation on either path.

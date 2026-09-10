@@ -13,18 +13,28 @@ internal data class ConnectionOutcome(val route: ConnectionRoute?, val failures:
 
 /** One bounded pass, preserving IP-first order. Never sends session credentials. */
 internal object ConnectionAttempt {
+  class Cancellation {
+    @Volatile private var cancelled = false
+    private val connection = java.util.concurrent.atomic.AtomicReference<HttpURLConnection?>(null)
+    fun check() { if (cancelled || Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("连接已取消") }
+    fun attach(value: HttpURLConnection) { connection.set(value); check() }
+    fun detach() { connection.set(null) }
+    fun cancel() { cancelled = true; connection.get()?.disconnect() }
+  }
   private val deadlines = Executors.newSingleThreadScheduledExecutor()
   fun firstAvailable(settings: ConnectionSettings, check: (ConnectionRoute) -> Unit): ConnectionOutcome {
     val failures = mutableListOf<ConnectionFailure>()
     for (candidate in settings.candidates()) {
       try { check(candidate); return ConnectionOutcome(candidate, failures) }
+      catch (error: java.util.concurrent.CancellationException) { throw error }
       catch (error: InterruptedException) { Thread.currentThread().interrupt(); throw error }
       catch (error: Exception) { failures.add(ConnectionFailure(candidate.mode, error.message ?: "连接不可用")) }
     }
     return ConnectionOutcome(null, failures)
   }
 
-  fun checkDirect(origin: String) {
+  fun checkDirect(origin: String, cancellation: Cancellation = Cancellation()) {
+    cancellation.check()
     val validated = ConnectionProfiles.parseDirect(origin)
     val connection = URL(validated.value + "/api/version").openConnection(Proxy.NO_PROXY) as HttpURLConnection
     connection.connectTimeout = 3000
@@ -32,6 +42,7 @@ internal object ConnectionAttempt {
     connection.instanceFollowRedirects = false
     connection.useCaches = false
     connection.setRequestProperty("Accept", "application/json")
+    cancellation.attach(connection)
     val timeout = deadlines.schedule({ connection.disconnect() }, 5, TimeUnit.SECONDS)
     try {
       check(connection.responseCode == 200) { "服务器未响应 Neige 接口" }
@@ -39,6 +50,7 @@ internal object ConnectionAttempt {
       connection.inputStream.use { stream ->
         val buffer = ByteArray(4096)
         while (true) {
+          cancellation.check()
           val count = stream.read(buffer)
           if (count < 0) break
           check(data.size() + count <= 65536) { "服务器响应异常" }
@@ -48,6 +60,6 @@ internal object ConnectionAttempt {
       val version = JSONObject(data.toString("UTF-8"))
       check(version.getInt("webCompatVersion") > 0 && version.getString("apiVersion").isNotEmpty()
         && version.getString("kernelVersion").isNotEmpty()) { "这个地址不是 Neige 服务器" }
-    } finally { timeout.cancel(false); connection.disconnect() }
+    } finally { timeout.cancel(false); connection.disconnect(); cancellation.detach() }
   }
 }

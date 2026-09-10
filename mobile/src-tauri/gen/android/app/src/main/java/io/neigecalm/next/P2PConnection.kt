@@ -30,18 +30,21 @@ internal object P2PConnection {
     worker.execute { done(runCatching { failure?.let { throw it }; operation() }) }
   }
 
-  fun awaitReadyAndReachable() {
+  fun awaitReadyAndReachable(cancellation: ConnectionAttempt.Cancellation) {
     val result = CompletableFuture<Result<JSONObject>>()
     execute({
+      cancellation.check()
       val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
       var state = checked(NativeP2P.status())
       while (state.getString("state") !in listOf("Running", "NeedsLogin", "NeedsMachineAuth") && System.nanoTime() < until) {
-        Thread.sleep(100); state = checked(NativeP2P.status())
+        cancellation.check(); Thread.sleep(100); state = checked(NativeP2P.status())
       }
       check(state.getString("state") == "Running") { "Tailscale 尚未登录或未连接" }
+      cancellation.check()
       checked(NativeP2P.check())
     }) { result.complete(it) }
-    result.get(7, TimeUnit.SECONDS).getOrThrow()
+    try { result.get(7, TimeUnit.SECONDS).getOrThrow() }
+    finally { if (!result.isDone) { cancellation.cancel(); result.cancel(false) } }
   }
 
   fun checked(raw: String): JSONObject = JSONObject(raw).also {

@@ -310,6 +310,12 @@ func p2pStatus() *C.char { return C.CString(status()) }
 //export p2pLogin
 func p2pLogin() *C.char { return C.CString(login()) }
 
+//export p2pDirect
+func p2pDirect(origin *C.char) *C.char { return C.CString(configureDirect(C.GoString(origin))) }
+
+//export p2pStopDirect
+func p2pStopDirect() { stopDirect() }
+
 //export p2pCheck
 func p2pCheck() *C.char { return C.CString(checkConnection()) }
 

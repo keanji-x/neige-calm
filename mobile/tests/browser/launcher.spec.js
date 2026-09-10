@@ -37,7 +37,7 @@ test('shows the brand and persistent mode selector without annotation copy', asy
 test('loads saved IP configuration and opens the successful direct route', async ({ page }) => {
   await page.addInitScript((server) => {
     window.settings = { mode: 'ip', ipOrigin: server, tailscaleEnabled: true };
-    window.attemptResult = { connected: true, mode: 'ip', origin: server, resumeAvailable: false, failures: [] };
+    window.attemptResult = { connected: true, mode: 'ip', origin: server, entryAvailable: true, resumeAvailable: false, failures: [] };
   }, direct);
   await page.route(`${direct}/next/`, route => route.fulfill({ body: '<h1>IP workspace</h1>' }));
   await page.goto('/');
@@ -89,4 +89,18 @@ test('old connection results cannot navigate after the user starts editing', asy
   await page.evaluate(server => window.completeOldAttempt({ connected: true, origin: server, mode: 'ip', resumeAvailable: true, failures: [] }), direct);
   await expect(page).toHaveURL('http://127.0.0.1:5197/');
   expect(await page.evaluate(() => window.nativeCalls)).not.toContain('plugin:bundled-frontend|bind_server');
+});
+
+test('returning from an IP workspace stays on the configuration homepage', async ({ page }) => {
+  await page.addInitScript((server) => {
+    window.settings = { mode: 'ip', ipOrigin: server, tailscaleEnabled: true };
+    window.attemptResult = { connected: true, mode: 'ip', origin: server, entryAvailable: false, resumeAvailable: false, failures: [] };
+  }, direct);
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '保存并连接 IP' })).toBeEnabled();
+  await expect(page).toHaveURL('http://127.0.0.1:5197/');
+  expect(await page.evaluate(() => window.nativeCalls)).not.toContain('plugin:bundled-frontend|bind_server');
+  await page.route(`${direct}/next/`, route => route.fulfill({ body: 'Workspace' }));
+  await page.getByRole('button', { name: '保存并连接 IP' }).click();
+  await expect(page).toHaveURL(`${direct}/next/`);
 });

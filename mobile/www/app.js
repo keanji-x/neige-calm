@@ -39,7 +39,7 @@ async function save(attempt) {
   return config;
 }
 
-async function connect() {
+async function connect(manual = false) {
   const attempt = ++generation;
   login.disabled = true;
   scan.disabled = true;
@@ -56,7 +56,7 @@ async function connect() {
     }
     status.dataset.state = 'ready';
     text.textContent = result.mode === 'ip' ? 'IP 已连接' : 'Tailscale 已连接';
-    if (result.mode === 'ip' || result.resumeAvailable) {
+    if ((result.mode === 'ip' && (manual || result.entryAvailable)) || result.resumeAvailable) {
       await bindServer(result.origin);
       if (attempt !== generation) return;
       location.replace(`${result.origin}/next/`);
@@ -86,21 +86,21 @@ login.addEventListener('click', async () => {
   try {
     await save(attempt);
     if (attempt !== generation) return;
-    if (mode.value === 'ip') { await connect(); return; }
+    if (mode.value === 'ip') { await connect(true); return; }
     loginLabel.textContent = '正在登录…';
     waitingForLogin = true;
     config.tailscaleEnabled = true;
     const result = await invoke('login_tailscale');
     if (attempt !== generation) return;
     config.tailscaleEnabled = true;
-    if (result.state === 'Running') { waitingForLogin = false; await connect(); }
+    if (result.state === 'Running') { waitingForLogin = false; await connect(true); }
   } catch (cause) {
     if (attempt === generation) { waitingForLogin = false; error.textContent = message(cause); }
   } finally { if (attempt === generation) idle(); }
 });
 scan.addEventListener('click', () => { ++generation; waitingForLogin = false; });
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && waitingForLogin) { waitingForLogin = false; connect(); }
+  if (!document.hidden && waitingForLogin) { waitingForLogin = false; connect(true); }
 });
 
 async function initialize() {
