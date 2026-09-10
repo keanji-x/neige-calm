@@ -5417,5 +5417,4 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "track_report_boundaries_tests.rs"]
 mod report_boundaries_tests;
