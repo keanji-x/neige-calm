@@ -8,6 +8,7 @@ const assets = new Map([
   ['/scanner.js', ['scanner.js', 'text/javascript']],
   ['/pairing-url.js', ['pairing-url.js', 'text/javascript']],
   ['/server-url.js', ['server-url.js', 'text/javascript']],
+  ['/server-binding.js', ['server-binding.js', 'text/javascript']],
   ['/server-config.js', ['server-config.js', 'text/javascript']],
   ['/style.css', ['style.css', 'text/css']],
   ['/neige-mark.svg', ['neige-mark.svg', 'image/svg+xml']],

@@ -5,6 +5,7 @@ import type { SyncCursorPort } from '../../systems/events/cursor-port.ts';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { ThemeProvider } from '../theme/public.tsx';
+import { BundledConnectionNotice } from '../auth/bundled-connection.tsx';
 import styles from './preflight-status.module.css';
 
 /**
@@ -76,7 +77,12 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge,
   const id = query.data?.dbInstanceId;
   const verdict = id === undefined ? 'pending'
     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';
-  if (busted) return null;
+  if (busted) return __NC_BUNDLED__ ? <BundledConnectionNotice kind="checking" /> : null;
+  if (__NC_BUNDLED__ && query.data === undefined) return <BundledConnectionNotice kind={query.isError || query.fetchStatus === 'paused' ? 'unreachable' : 'checking'}>
+    {(query.isError || query.fetchStatus === 'paused') && <button type="button" disabled={query.isFetching} onClick={() => { void query.refetch(); }}>重试连接</button>}
+  </BundledConnectionNotice>;
+  if (__NC_BUNDLED__ && query.data && query.data.webCompatVersion < WEB_COMPAT_VERSION) return <BundledConnectionNotice kind="server-update" />;
+  if (__NC_BUNDLED__ && query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <BundledConnectionNotice kind="app-update" />;
   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;
   return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}
     {query.data === undefined && (query.isError || query.fetchStatus === 'paused') && (

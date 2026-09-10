@@ -19,6 +19,7 @@ import { createUiPreferences } from '../providers/ui-preferences.tsx';
 import { createRecentFileHistory } from '../providers/recent-files.ts';
 import { createCardHost, createCardRegistry } from '../../systems/cards/public.js';
 import { bootCards } from '../cards.ts';
+import { BundledConnectionNotice, BundledLoginPage } from './bundled-connection.tsx';
 
 export function ProductionApp({ transport, unauthorized, client, runtime, cursorStore, router, renderEventBridge,
   renderLogin, renderError }: Readonly<{
@@ -75,8 +76,12 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
   });
   createRoot(root).render(<ProductionApp transport={transport} unauthorized={unauthorized} client={client}
     runtime={runtime} cursorStore={events.store} router={router}
-    renderLogin={() => <LoginPage login={(username, password) => loginWithTransport(transport, username, password)} reload={browser.reload} />}
-    renderError={(retry) => <main><p>Could not check your session.</p><button type="button" onClick={retry}>Try again</button></main>}
+    renderLogin={() => __NC_BUNDLED__
+      ? <BundledLoginPage login={(username, password) => loginWithTransport(transport, username, password)} reload={browser.reload} />
+      : <LoginPage login={(username, password) => loginWithTransport(transport, username, password)} reload={browser.reload} />}
+    renderError={(retry) => __NC_BUNDLED__
+      ? <BundledConnectionNotice kind="unreachable"><button type="button" onClick={retry}>重试连接</button></BundledConnectionNotice>
+      : <main><p>Could not check your session.</p><button type="button" onClick={retry}>Try again</button></main>}
     renderEventBridge={(server) => <EventBridge client={client} stream={events.stream}
       syncEventVersion={server.syncEventVersion} dbInstanceId={server.dbInstanceId} cursor={events.store} />}
   />);

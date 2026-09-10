@@ -19,8 +19,10 @@ android {
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "io.neigecalm.next"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 36
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunnerArguments["clearPackageData"] = "true"
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
@@ -41,13 +43,21 @@ android {
                     .toList().toTypedArray()
             )
         }
+        create("instrumented") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".instrumented"
+            matchingFallbacks += listOf("debug")
+        }
     }
+    testBuildType = "instrumented"
+    testOptions { execution = "ANDROIDX_TEST_ORCHESTRATOR" }
     kotlinOptions {
         jvmTarget = "1.8"
     }
     buildFeatures {
         buildConfig = true
     }
+    sourceSets.getByName("main").assets.srcDir("../../../../bundled-frontend")
 }
 
 rust {
@@ -63,6 +73,9 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("androidx.test:rules:1.5.0")
+    androidTestUtil("androidx.test:orchestrator:1.4.2")
 }
 
 apply(from = "tauri.build.gradle.kts")

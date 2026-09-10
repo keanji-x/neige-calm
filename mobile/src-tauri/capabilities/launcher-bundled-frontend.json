@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "launcher-bundled-frontend",
+  "description": "Only the packaged launcher may select the server whose Next resources are supplied from the APK.",
+  "local": true,
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": ["bundled-frontend:allow-bind-server"]
+}

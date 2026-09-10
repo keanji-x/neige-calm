@@ -3,8 +3,10 @@ import { test, expect } from '@playwright/test';
 test('scan result requires server confirmation before navigation', async ({ page }) => {
   const destination = `https://pair.example.ts.net/mobile/pair#v1.${'a'.repeat(64)}`;
   await page.addInitScript((value) => {
-    window.__TAURI__ = { core: { invoke: async (command) => command.endsWith('request_permissions')
-      ? { camera: 'granted' } : { content: value, format: 'QR_CODE' } } };
+    window.__TAURI__ = { core: { invoke: async (command, args) => {
+      if (command.endsWith('|bind_server')) return { origin: args.origin };
+      return command.endsWith('request_permissions') ? { camera: 'granted' } : { content: value, format: 'QR_CODE' };
+    } } };
   }, destination);
   await page.route('https://pair.example.ts.net/mobile/pair', (route) => route.fulfill({ body: 'Pairing bootstrap' }));
   await page.goto('/');

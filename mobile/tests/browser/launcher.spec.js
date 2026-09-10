@@ -1,5 +1,14 @@
 import { test, expect } from '@playwright/test';
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__TAURI__ = { core: { invoke: async (command, args) => {
+      if (command !== 'plugin:bundled-frontend|bind_server') throw new Error('Unexpected native command');
+      return { origin: args.origin };
+    } } };
+  });
+});
+
 test('validates before navigation and lays out at phone width', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('服务器地址', { exact: true }).fill('');
@@ -46,4 +55,14 @@ test('storage failure does not prevent an explicit connection', async ({ page })
   await page.getByLabel('服务器地址', { exact: true }).fill('https://calm.example.com');
   await page.getByRole('button', { name: '进入工作空间' }).click();
   await expect(page).toHaveURL('https://calm.example.com/next/');
+});
+
+test('failed native binding stays on the launcher and displays the reason', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => { window.__TAURI__.core.invoke = async () => { throw '系统网页组件版本过旧'; }; });
+  await page.getByLabel('服务器地址', { exact: true }).fill('https://calm.example.com');
+  await page.getByRole('button', { name: '进入工作空间' }).click();
+  await expect(page.getByRole('alert', { name: '地址错误' })).toContainText('系统网页组件版本过旧');
+  await expect(page).toHaveURL('http://127.0.0.1:5197/');
+  await expect(page.getByRole('button', { name: '进入工作空间' })).toBeEnabled();
 });

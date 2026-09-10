@@ -14,6 +14,7 @@ import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { SyncCursorPort } from '../../systems/events/cursor-port.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ProviderRuntime } from '../providers/public.tsx';
+import { BundledConnectionNotice } from './bundled-connection.tsx';
 
 type SessionCleanupRuntime = Pick<ProviderRuntime, 'deleteDatabase' | 'idbDatabaseName'>;
 type SessionCursorStore = Pick<SyncCursorPort, 'clear'>;
@@ -65,7 +66,7 @@ export function SessionGate({ children, transport, unauthorized, client, runtime
     clearSessionArtifacts(client, cursorStore, runtime);
     setState({ status: 'unauthed' });
   }), [client, cursorStore, runtime, unauthorized]);
-  if (state.status === 'unknown') return null;
+  if (state.status === 'unknown') return __NC_BUNDLED__ ? <BundledConnectionNotice kind="checking" /> : null;
   if (state.status === 'unauthed') return renderLogin();
   if (state.status === 'error') return renderError(probe);
   return children;

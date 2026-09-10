@@ -1,4 +1,5 @@
 import { pairingDestination } from './pairing-url.js';
+import { bindServer } from './server-binding.js';
 
 const scan = document.querySelector('#scan');
 const cancelScan = document.querySelector('#cancel-scan');
@@ -67,8 +68,16 @@ cancelScan.addEventListener('click', async () => {
   finally { cancelScan.disabled = false; }
 });
 
-document.querySelector('#pair-connect').addEventListener('click', () => {
+document.querySelector('#pair-connect').addEventListener('click', async () => {
   if (candidate === null) return;
+  const selected = candidate;
+  const button = document.querySelector('#pair-connect');
+  button.disabled = true;
+  error.textContent = '';
+  try { await bindServer(selected.origin); }
+  catch (cause) { error.textContent = cause.message; return; }
+  finally { button.disabled = false; }
+  if (candidate !== selected) return;
   try { localStorage.setItem('neige-calm-server', candidate.origin); }
   catch { /* Pairing works even when remembering the origin is unavailable. */ }
   location.assign(candidate.url);

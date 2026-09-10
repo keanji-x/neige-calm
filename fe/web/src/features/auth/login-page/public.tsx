@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, type ReactNode } from 'react';
 import { useState } from '../../../ui/state/public.ts';
 import styles from './login-page.module.css';
 import type { SessionIdentity } from '../../../../../core/api/auth.ts';
@@ -6,9 +6,22 @@ import type { SessionIdentity } from '../../../../../core/api/auth.ts';
 export type LoginPageProps = Readonly<{
   login: (username: string, password: string) => Promise<SessionIdentity | null>;
   reload: () => void;
+  onBackToPairing?: () => void;
 }>;
 
-export function LoginPage({ login, reload }: LoginPageProps) {
+export function ConnectionNotice({ title, detail, busy, reconnectHref, children }: Readonly<{
+  title: string; detail: string; busy: boolean; reconnectHref: string; children?: ReactNode;
+}>) {
+  return <main className={styles.page}>
+    <section className={styles.form} aria-label={title}>
+      <h1>{title}</h1><p role={busy ? 'status' : undefined}>{detail}</p>
+      <a href={reconnectHref}>返回连接页</a>
+      {children}
+    </section>
+  </main>;
+}
+
+export function LoginPage({ login, reload, onBackToPairing }: LoginPageProps) {
   const prefix = useId();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -37,6 +50,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {
       <label htmlFor={`${prefix}-password`}>Password</label>
       <input id={`${prefix}-password`} name="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} />
       <button type="submit" disabled={submitting}>{submitting ? 'Signing in…' : 'Sign in'}</button>
+      {onBackToPairing && <button type="button" onClick={onBackToPairing}>返回扫码连接</button>}
     </form>
   </main>;
 }
