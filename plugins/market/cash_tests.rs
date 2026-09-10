@@ -37,7 +37,8 @@ fn subcent_negative_non_numeric_and_unsafe_cash_are_refused_without_rounding() {
 
 #[test]
 fn cash_document_is_versioned_strict_unique_and_keeps_explicit_zero() {
-    assert!(Book::from_value(&Value::Null).unwrap().balances.is_empty());
+    assert!(Book::from_value(&Value::Null).is_err());
+    assert!(Book::default().balances.is_empty());
     let zero = json!({"version":1,"balances":[{"currency":"CNY","amount":0.0}]});
     let book = Book::from_value(&zero).unwrap();
     assert_eq!(book.balances.len(), 1);

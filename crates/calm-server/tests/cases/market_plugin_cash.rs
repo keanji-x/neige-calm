@@ -245,7 +245,7 @@ fn each_history_read_failure_preserves_its_series_without_blocking_the_other() {
             }
         );
         let other_count = kernel.kv[&other].as_array().unwrap().len();
-        kernel.refuse_kv_get = Some(failed.into());
+        kernel.refuse_kv_read = Some(failed.into());
         set_cash(&mut kernel, 4, "USD", 6.0);
         assert_eq!(kernel.kv[&failing_key], preserved);
         assert_eq!(kernel.kv[&other].as_array().unwrap().len(), other_count + 1);
@@ -365,4 +365,131 @@ fn malformed_history_never_becomes_an_empty_replacement() {
         set_cash(&mut kernel, 3, "USD", 10.0);
         assert_eq!(kernel.kv[&key], bad);
     }
+}
+
+#[test]
+fn stored_null_cash_is_an_error_not_missing_and_prefix_neighbors_are_not_adopted() {
+    let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
+    let key = format!("cash/{TRACK}");
+    let neighbor = format!("{key}-neighbor");
+    let other = json!({"version":1,"balances":[{"currency":"USD","amount":9.0}]});
+    kernel.kv.insert(key.clone(), Value::Null);
+    kernel.kv.insert(neighbor.clone(), other.clone());
+    let list = kernel.call_tool(2, "market.cash.list", json!({}), Some(TRACK));
+    assert_eq!(
+        list["result"]["isError"], true,
+        "stored null was reported as missing: {list}"
+    );
+    let set = kernel.call_tool(
+        3,
+        "market.cash.set",
+        json!({"currency":"USD","amount":1}),
+        Some(TRACK),
+    );
+    assert_eq!(
+        set["result"]["isError"], true,
+        "must not replace malformed null cash: {set}"
+    );
+    assert_eq!(kernel.kv[&key], Value::Null);
+    kernel.kv.remove(&key);
+    let missing = kernel.call_tool(4, "market.cash.list", json!({}), Some(TRACK));
+    assert_eq!(
+        missing["result"]["structuredContent"]["balances"],
+        json!([])
+    );
+    set_cash(&mut kernel, 5, "USD", 0.29);
+    assert_eq!(kernel.kv[&neighbor], other);
+    assert_eq!(kernel.kv[&key]["balances"][0]["amount"], 0.29);
+}
+
+#[test]
+fn stored_null_histories_are_preserved_and_never_replaced_by_new_points() {
+    let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
+    kernel.set_holding(2, "USDT", 1.0, TRACK);
+    for prefix in ["history/", "total_history/"] {
+        kernel.kv.insert(format!("{prefix}{TRACK}"), Value::Null);
+    }
+    let before = kernel.pushes.len();
+    set_cash(&mut kernel, 3, "USD", 100.0);
+    for prefix in ["history/", "total_history/"] {
+        assert_eq!(
+            kernel.kv[&format!("{prefix}{TRACK}")],
+            Value::Null,
+            "{prefix}"
+        );
+    }
+    assert!(
+        !kernel.pushes[before..]
+            .iter()
+            .any(|(kind, _)| kind == &format!("portfolio.history@{TRACK}")
+                || kind == &format!("portfolio.total_history@{TRACK}"))
+    );
+}
+
+#[test]
+fn stored_null_securities_never_make_a_complete_cash_inclusive_total() {
+    let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
+    set_cash(&mut kernel, 2, "USD", 100.0);
+    let history = kernel.kv[&format!("total_history/{TRACK}")].clone();
+    kernel.kv.insert(format!("holdings/{TRACK}"), Value::Null);
+    set_cash(&mut kernel, 3, "USD", 200.0);
+    let allocation = overlay(&kernel, "portfolio.allocation", TRACK);
+    assert!(
+        allocation["rows"].as_array().unwrap().last().unwrap()["value"].is_null(),
+        "{allocation}"
+    );
+    assert!(overlay(&kernel, "portfolio.cash", TRACK)["rows"][0]["weight"].is_null());
+    assert_eq!(kernel.kv[&format!("total_history/{TRACK}")], history);
+    assert_eq!(
+        kernel.last_total_for(TRACK),
+        Some(0.0),
+        "legacy security-only tolerance is unchanged"
+    );
+}
+
+fn raw_numeric_amount_must_be_refused(raw: &str) {
+    let mut kernel = FakeKernel::boot(DEAD_ENDPOINT);
+    let frame=json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"market.cash.set",
+        "arguments":{"currency":"USD","amount":"RAW_DECIMAL_NUMBER"},"_meta":{"dev.neige/track":{"id":TRACK}}}})
+        .to_string().replace("\"RAW_DECIMAL_NUMBER\"",raw);
+    writeln!(kernel.stdin, "{frame}").unwrap();
+    kernel.stdin.flush().unwrap();
+    let reply = kernel.drain_until_reply();
+    assert_eq!(
+        reply["result"]["isError"], true,
+        "raw input {raw} was accepted/rounded: {reply}"
+    );
+    assert!(!kernel.kv.contains_key(&format!("cash/{TRACK}")));
+}
+#[test]
+fn large_raw_cent_input_cannot_round_down_before_validation() {
+    raw_numeric_amount_must_be_refused("90071992547409.91");
+}
+#[test]
+fn large_raw_cent_input_cannot_round_up_before_validation() {
+    raw_numeric_amount_must_be_refused("70368744177664.01");
+}
+#[test]
+fn large_raw_subcent_input_cannot_become_an_integer_before_validation() {
+    raw_numeric_amount_must_be_refused("35184372088832.001");
+}
+
+#[test]
+fn decimal_string_inputs_accept_cents_zero_and_scientific_notation() {
+    let mut kernel = FakeKernel::boot_settling(DEAD_ENDPOINT, DEAD_ENDPOINT, 3600, "CNY");
+    for (index, amount) in ["0", "0.01", "0.29", "1.20", "1e2"].into_iter().enumerate() {
+        let reply = kernel.call_tool(
+            2 + index as u64,
+            "market.cash.set",
+            json!({"currency":"CNY","amount":amount}),
+            Some(TRACK),
+        );
+        assert_ne!(reply["result"]["isError"], true, "{amount}: {reply}");
+        kernel.drain();
+    }
+    let reply = kernel.call_tool(10, "market.cash.list", json!({}), Some(TRACK));
+    assert_eq!(
+        reply["result"]["structuredContent"]["balances"][0]["amount"],
+        100.0
+    );
 }

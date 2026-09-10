@@ -108,7 +108,7 @@ struct FakeKernel {
     /// also refuse the holdings write, and then the tick under test would
     /// never reach the history step it is about.
     refuse_kv_set: Option<String>,
-    refuse_kv_get: Option<String>,
+    refuse_kv_read: Option<String>,
     /// Applied to the KV immediately after answering a `neige.kv.list`, to
     /// open exactly the window a stale-snapshot bug would fall into.
     mutate_after_list: Option<(String, Value)>,
@@ -167,7 +167,7 @@ impl FakeKernel {
             pushes: Vec::new(),
             methods: Vec::new(),
             refuse_kv_set: None,
-            refuse_kv_get: None,
+            refuse_kv_read: None,
             mutate_after_list: None,
         };
         kernel.send(json!({
@@ -252,7 +252,7 @@ impl FakeKernel {
             "neige.kv.get" => {
                 let key = params["key"].as_str().unwrap_or_default();
                 if self
-                    .refuse_kv_get
+                    .refuse_kv_read
                     .as_deref()
                     .is_some_and(|prefix| key.starts_with(prefix))
                 {
@@ -280,6 +280,14 @@ impl FakeKernel {
             }
             "neige.kv.list" => {
                 let prefix = params["prefix"].as_str().unwrap_or_default();
+                if self
+                    .refuse_kv_read
+                    .as_deref()
+                    .is_some_and(|blocked| prefix.starts_with(blocked))
+                {
+                    self.send(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"read unavailable"}}));
+                    return;
+                }
                 let entries: Vec<Value> = self
                     .kv
                     .iter()

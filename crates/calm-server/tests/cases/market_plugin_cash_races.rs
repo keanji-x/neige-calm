@@ -232,7 +232,7 @@ fn unchanged_aba_inputs_can_commit_the_original_observation() {
 fn an_error_projection_cannot_overwrite_a_newer_cash_ack() {
     let mut kernel = FakeKernel::boot_settling(DEAD_ENDPOINT, DEAD_ENDPOINT, 3600, "CNY");
     set_cash(&mut kernel, 2, "CNY", 100.0);
-    kernel.refuse_kv_get = Some("holdings/".into());
+    kernel.refuse_kv_read = Some(format!("holdings/{TRACK}"));
     kernel.call_tool(
         3,
         "market.cash.set",
@@ -247,7 +247,7 @@ fn an_error_projection_cannot_overwrite_a_newer_cash_ack() {
             .unwrap()
             .contains("unavailable")
     );
-    kernel.refuse_kv_get = None;
+    kernel.refuse_kv_read = None;
     kernel.send(
         json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"market.cash.set",
         "arguments":{"currency":"CNY","amount":200},"_meta":{"dev.neige/track":{"id":TRACK}}}}),

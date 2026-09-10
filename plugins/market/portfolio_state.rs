@@ -5,6 +5,34 @@ use super::*;
 pub(super) static STATE: Mutex<()> = Mutex::new(());
 pub(super) const TOTAL_HISTORY_PREFIX: &str = "total_history/";
 
+/// kv.get returns null for both missing and stored-null. Read the exact entry
+/// from an existing prefix-list API so absence remains a separate typed state.
+/// A prefix neighbor is never this Track's document.
+pub(super) fn read_key(rpc: &Rpc, key: &str) -> Result<Option<Value>, String> {
+    let reply = rpc.call("neige.kv.list", json!({"prefix":key}))?;
+    let entries = reply
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or("exact-key read returned no entries array")?;
+    let mut found = None;
+    for entry in entries {
+        let entry_key = entry
+            .get("key")
+            .and_then(Value::as_str)
+            .ok_or("key listing contained an invalid key")?;
+        let value = entry
+            .get("value")
+            .ok_or("key listing contained no value field")?;
+        if entry_key == key {
+            if found.is_some() {
+                return Err("key listing contained duplicate exact keys".into());
+            }
+            found = Some(value.clone());
+        }
+    }
+    Ok(found)
+}
+
 #[derive(PartialEq)]
 struct Snapshot {
     holdings: Vec<Holding>,
@@ -14,16 +42,14 @@ struct Snapshot {
 
 impl Snapshot {
     fn load(rpc: &Rpc, track: &str) -> Result<Self, String> {
-        let result = rpc.call("neige.kv.get", json!({"key":holdings_key(track)}))?;
-        let raw = result
-            .get("value")
-            .ok_or("holdings read returned no value field")?;
-        let holdings_valid = raw.is_null()
-            || raw
+        let raw = read_key(rpc, &holdings_key(track))?;
+        let holdings_valid = raw.as_ref().is_none_or(|value| {
+            value
                 .as_array()
-                .is_some_and(|rows| rows.iter().all(|row| Holding::from_json(row).is_some()));
+                .is_some_and(|rows| rows.iter().all(|row| Holding::from_json(row).is_some()))
+        });
         Ok(Self {
-            holdings: holdings_from_value(Some(raw), track),
+            holdings: holdings_from_value(raw.as_ref(), track),
             holdings_valid,
             cash: cash::load(rpc, track),
         })
@@ -31,13 +57,9 @@ impl Snapshot {
 }
 
 fn read_history(rpc: &Rpc, key: &str) -> Result<Vec<Value>, String> {
-    let reply = rpc.call("neige.kv.get", json!({"key":key}))?;
-    let value = reply
-        .get("value")
-        .ok_or("history read returned no value field")?;
-    if value.is_null() {
+    let Some(value) = read_key(rpc, key)? else {
         return Ok(Vec::new());
-    }
+    };
     let points = value
         .as_array()
         .ok_or("history must be an array; refusing to overwrite it")?;

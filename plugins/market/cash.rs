@@ -87,9 +87,6 @@ pub(super) fn sum(mut values: impl Iterator<Item = u64>) -> Option<(u64, f64)> {
 
 impl Book {
     pub fn from_value(value: &Value) -> Result<Self, String> {
-        if value.is_null() {
-            return Ok(Self::default());
-        }
         let object = value.as_object().ok_or("cash document must be an object")?;
         if object.len() != 2 || object.get("version").and_then(Value::as_u64) != Some(1) {
             return Err("unsupported or malformed cash document version".into());
@@ -127,12 +124,10 @@ impl Book {
 }
 
 pub(super) fn load(rpc: &Rpc, track: &str) -> Result<Book, String> {
-    let result = rpc.call("neige.kv.get", json!({"key":format!("{PREFIX}{track}")}))?;
-    Book::from_value(
-        result
-            .get("value")
-            .ok_or("cash read returned no value field")?,
-    )
+    match portfolio_state::read_key(rpc, &format!("{PREFIX}{track}"))? {
+        None => Ok(Book::default()),
+        Some(value) => Book::from_value(&value),
+    }
 }
 
 pub(super) fn call(

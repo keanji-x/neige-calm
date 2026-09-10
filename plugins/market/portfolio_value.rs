@@ -109,7 +109,7 @@ pub(super) fn value(
             true
         }
     };
-    let recorded = !positions.is_empty() || cash_recorded;
+    let recorded = !positions.is_empty() || cash_recorded || !holdings_valid;
     if !securities.complete {
         reasons.push("Some securities could not be valued".into());
     }
