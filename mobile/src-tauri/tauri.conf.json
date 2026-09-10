@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Neige Calm",
+  "productName": "Neige P2P Trial",
   "version": "0.2.0",
   "identifier": "io.neigecalm.next",
   "build": {
@@ -35,7 +35,7 @@
       "icons/128x128@2x.png"
     ],
     "android": {
-      "debugApplicationIdSuffix": ".debug",
+      "debugApplicationIdSuffix": ".p2ptrial",
       "minSdkVersion": 26
     }
   }

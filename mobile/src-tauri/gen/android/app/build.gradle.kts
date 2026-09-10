@@ -28,7 +28,7 @@ android {
     }
     buildTypes {
         getByName("debug") {
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = ".p2ptrial"
             manifestPlaceholders["usesCleartextTraffic"] = "false"
             isDebuggable = true
             isJniDebuggable = false

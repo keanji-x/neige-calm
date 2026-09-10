@@ -1,0 +1,9 @@
+package io.neigecalm.next
+
+internal object NativeP2P {
+  init { System.loadLibrary("neige_p2p") }
+  external fun start(directory: String): String
+  external fun status(): String
+  external fun probe(): String
+  external fun proxy(): String
+}
