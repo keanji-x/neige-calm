@@ -390,7 +390,9 @@ async fn candidate_repair_r2_report_requires_exact_complete_responses_and_fresh_
     let pair = request(&fx, "Fix findings").await.unwrap();
     let (c2, _, _, r2) = produce_c2(&fx, &pair).await;
     let identity = review_identity(&fx, &r2).await;
-    let mut bad = Vec::new();
+    let mut bad = vec![
+        json!({"$neige_result_presentation":"worker-summary-v1","summary":"review claims pass","details":passed()}),
+    ];
     let mut value = passed();
     value.as_object_mut().unwrap().remove("finding_responses");
     bad.push(value);

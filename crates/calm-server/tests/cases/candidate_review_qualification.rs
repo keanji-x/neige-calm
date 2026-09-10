@@ -144,6 +144,26 @@ async fn candidate_review_qualification_exact_native_report_verdict_and_consumer
     schedule(&fx).await;
     let consume = current(&fx.boot, "consume").await;
     assert_eq!(consume.status, TaskStatus::Running, "{}", listed(&fx).await);
+    for (task, expects_summary) in [(&consume, true), (&review, false)] {
+        let identity = review_identity(&fx, task).await;
+        let card = fx
+            .boot
+            .repo
+            .card_get(&identity.card_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let prompt = card.payload["prompt"].as_str().unwrap();
+        assert_eq!(
+            prompt.contains("worker-summary-v1"),
+            expects_summary,
+            "{prompt}"
+        );
+        if expects_summary {
+            assert!(prompt.contains("preserve that contract instead of wrapping it"));
+            assert!(prompt.contains("not independent kernel verification or Planner acceptance"));
+        }
+    }
     let input = binding(&fx, &consume).await;
     assert_eq!(input["candidate"], machine["candidate"]);
     assert_eq!(input["candidate"]["publication_operation_id"], publication);
@@ -298,6 +318,7 @@ async fn candidate_review_qualification_report_schema_identity_and_replay_are_fe
     let review = current(&fx.boot, "review").await;
     let identity = review_identity(&fx, &review).await;
     for result in [
+        json!({"$neige_result_presentation":"worker-summary-v1","summary":"review claims pass","details":{"passed":true,"blocking_findings":[]}}),
         json!({"passed":true}),
         json!({"passed":false,"blocking_findings":[]}),
         json!({"passed":true,"blocking_findings":["blocker"]}),

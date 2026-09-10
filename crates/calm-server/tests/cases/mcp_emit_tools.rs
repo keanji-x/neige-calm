@@ -249,6 +249,48 @@ async fn task_completed_emits_task_completed_with_worker_actor() {
 }
 
 #[tokio::test]
+async fn consumer_summary_authenticated_completion_preserves_entire_result() {
+    let b = boot_with_role(CardRole::Worker).await;
+    let mut rx = b.events.subscribe_filtered();
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    handshake(&mut rd, &mut wr, &b.raw_token).await;
+    let result = json!({"$neige_result_presentation":"worker-summary-v1",
+        "summary":"worker claims sum=10 and 10 tests OK",
+        "details":{"direct_call_command":"script\n".repeat(1024)}});
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            20,
+            "calm.task.complete",
+            &b.thread_id,
+            json!({"idempotency_key":"consumer-attempt", "result":result}),
+        ),
+    )
+    .await;
+    let response = recv_frame(&mut rd).await;
+    assert!(response.get("error").is_none(), "{response}");
+    let event = wait_for_kind(&mut rx, "task.completed").await;
+    assert_eq!(
+        event.actor,
+        ActorId::AiCodexSession(b.session_id.clone().into())
+    );
+    let EventScope::Card { card, .. } = &event.scope else {
+        panic!("worker card scope required")
+    };
+    assert_eq!(card.as_str(), b.card_id);
+    let Event::TaskCompleted {
+        idempotency_key,
+        result: recorded,
+        ..
+    } = &event.event
+    else {
+        panic!("completion required")
+    };
+    assert_eq!(idempotency_key, "consumer-attempt");
+    assert_eq!(recorded, &result);
+}
+
+#[tokio::test]
 async fn task_completed_from_claude_worker_persists_claude_session_actor() {
     let b = boot_with_role(CardRole::Worker).await;
     let pool = b.repo.sqlite_pool().expect("sqlite pool");
