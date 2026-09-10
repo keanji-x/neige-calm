@@ -4,19 +4,44 @@ use crate::error::{CalmError, Result};
 use crate::ids::TrackId;
 use crate::mcp_server::registry::ToolCallIdentity;
 use crate::model::{CardRole, now_ms};
-use calm_types::report_blocks;
+use calm_types::{
+    report_blocks,
+    task_execution::{
+        CandidateInputPurpose, FileDelivery, IsolatedCodexSelection, IsolatedCodexVersion,
+        IsolatedWorkspace,
+    },
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 
+// The workspace tag preserves the released flat empty contract JSON.
+// Required candidate fields belong to their variant, never optional backfills.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "workspace", deny_unknown_fields)]
+pub(crate) enum DispatchArgs {
+    #[serde(rename = "empty")]
+    Empty {
+        name: String,
+        goal: String,
+        acceptance: String,
+        executor: Executor,
+    },
+    #[serde(rename = "verified-candidate")]
+    VerifiedCandidate {
+        name: String,
+        goal: String,
+        acceptance: String,
+        executor: Executor,
+        input: CandidateInput,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DispatchArgs {
-    pub name: String,
-    pub goal: String,
-    pub acceptance: String,
-    pub executor: Executor,
-    pub workspace: Workspace,
+pub(crate) struct CandidateInput {
+    producer: String,
+    slot: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,24 +49,58 @@ pub(crate) struct DispatchArgs {
 pub(crate) enum Executor {
     Codex,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Workspace {
-    Empty,
-}
 
 impl DispatchArgs {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Empty { name, .. } | Self::VerifiedCandidate { name, .. } => name,
+        }
+    }
+    fn goal(&self) -> &str {
+        match self {
+            Self::Empty { goal, .. } | Self::VerifiedCandidate { goal, .. } => goal,
+        }
+    }
+    fn acceptance(&self) -> &str {
+        match self {
+            Self::Empty { acceptance, .. } | Self::VerifiedCandidate { acceptance, .. } => {
+                acceptance
+            }
+        }
+    }
+    fn execution(&self) -> IsolatedCodexSelection {
+        let (workspace, file_delivery) = match self {
+            Self::Empty { .. } => (IsolatedWorkspace::Empty, None),
+            Self::VerifiedCandidate { input, .. } => (
+                IsolatedWorkspace::FileInput,
+                Some(FileDelivery::CandidateConsumer {
+                    producer: input.producer.clone(),
+                    slot: input.slot.clone(),
+                    purpose: CandidateInputPurpose::VerifiedCandidateInput,
+                }),
+            ),
+        };
+        IsolatedCodexSelection {
+            version: IsolatedCodexVersion::V1,
+            workspace,
+            file_delivery,
+            repair: None,
+        }
+    }
     pub(crate) fn normalize(mut self) -> Result<Self> {
-        self.name = self.name.trim().to_owned();
-        if self.name.is_empty() || self.name.len() > 200 || self.name.chars().any(char::is_control)
-        {
+        let (Self::Empty { name, .. } | Self::VerifiedCandidate { name, .. }) = &mut self;
+        *name = name.trim().to_owned();
+        if name.is_empty() || name.len() > 200 || name.chars().any(char::is_control) {
             return Err(CalmError::BadRequest("name must be nonempty, at most 200 UTF-8 bytes after trim, and contain no control characters".into()));
         }
-        if self.goal.trim().is_empty() || self.acceptance.trim().is_empty() {
+        if self.goal().trim().is_empty() || self.acceptance().trim().is_empty() {
             return Err(CalmError::BadRequest(
                 "goal and acceptance must be nonempty".into(),
             ));
         }
+        self.execution()
+            .validate_delivery()
+            .map_err(CalmError::BadRequest)?;
         Ok(self)
     }
 }
@@ -116,7 +175,7 @@ pub(super) async fn lookup_tx(
         "SELECT contract_json FROM planner_dispatch_receipts WHERE track_id=?1 AND name=?2",
     )
     .bind(track.as_str())
-    .bind(&args.name)
+    .bind(args.name())
     .fetch_optional(&mut **tx)
     .await?;
     let Some(saved) = saved else {
@@ -129,15 +188,23 @@ pub(super) async fn lookup_tx(
     }
     Ok(Some(sqlx::query_as(
         "SELECT name,task_key,report_card_id,block_id,created_at_ms FROM planner_dispatch_receipts WHERE track_id=?1 AND name=?2")
-        .bind(track.as_str()).bind(&args.name).fetch_one(&mut **tx).await?))
+        .bind(track.as_str()).bind(args.name()).fetch_one(&mut **tx).await?))
 }
 
 fn declaration_payload(args: &DispatchArgs, task_key: &str) -> Value {
+    let no_gate_reason = match args {
+        DispatchArgs::Empty { .. } => {
+            "Semantic acceptance is reviewed from the completion report; it is not a machine gate or file candidate qualification."
+        }
+        DispatchArgs::VerifiedCandidate { .. } => {
+            "Consumer semantic acceptance is reviewed from its completion report; input qualification follows the source candidate policy."
+        }
+    };
     json!({
-        "key": task_key, "kind": "codex", "goal": args.goal,
-        "acceptance": args.acceptance, "ready": true, "declared_by": report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
-        "no_gate_reason": "Semantic acceptance is reviewed from the completion report; it is not a machine gate or file candidate qualification.",
-        "context": {"neige_execution": {"version": "isolated-codex-v1", "workspace": "empty"}}
+        "key": task_key, "kind": "codex", "goal": args.goal(),
+        "acceptance": args.acceptance(), "ready": true, "declared_by": report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
+        "no_gate_reason": no_gate_reason,
+        "context": {"neige_execution": args.execution()}
     })
 }
 
@@ -167,7 +234,7 @@ pub(super) async fn insert_tx(
     receipt: &DispatchReceipt,
 ) -> Result<()> {
     sqlx::query("INSERT INTO planner_dispatch_receipts(track_id,name,contract_json,task_key,report_card_id,block_id,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)")
-        .bind(track.as_str()).bind(&args.name).bind(serde_json::to_string(args)?)
+        .bind(track.as_str()).bind(args.name()).bind(serde_json::to_string(args)?)
         .bind(&receipt.task_key).bind(&receipt.report_card_id).bind(&receipt.block_id)
         .bind(receipt.created_at_ms).execute(&mut **tx).await?;
     Ok(())
@@ -261,7 +328,17 @@ pub(super) async fn snapshot_tx(
         }
         None => None,
     };
-    Ok(json!({
+    let candidate_input = if matches!(args, DispatchArgs::VerifiedCandidate { .. }) {
+        Some(match &task {
+            Some(task) => compact_candidate_input(&crate::file_delivery::view_tx(tx, task).await?),
+            None => {
+                json!({"kind":"input-admission", "state":"unavailable", "reason":"No current task allocation; inspect declaration diagnostics"})
+            }
+        })
+    } else {
+        None
+    };
+    let mut response = json!({
         "receipt": receipt,
         "current": {
             "as_of_ms": now_ms(), "contract_status": contract_status,
@@ -271,5 +348,60 @@ pub(super) async fn snapshot_tx(
             "allocation": allocation,
             "task": task.map(|t| json!({"attempt_id": t.id, "status": t.status, "status_detail": t.status_detail, "worker_card_id": t.worker_card_id}))
         }
-    }))
+    });
+    if let Some(input) = candidate_input {
+        response["current"]["candidate_input"] = input;
+    }
+    Ok(response)
+}
+
+/// Project existing evidence only. Never return review history or policy commands,
+/// and never treat the requested Dispatch input as the actual execution contract.
+fn compact_candidate_input(view: &Value) -> Value {
+    fn fields(value: &Value, names: &[&str]) -> Value {
+        Value::Object(
+            names
+                .iter()
+                .filter_map(|name| value.get(*name).map(|v| ((*name).into(), v.clone())))
+                .collect(),
+        )
+    }
+    if view.is_null() {
+        return json!({"kind":"input-admission", "state":"unavailable", "reason":"Current task has no file delivery"});
+    }
+    let mut result = fields(view, &["state", "failure", "qualified", "qualification"]);
+    result["kind"] = json!("input-admission");
+    for (source, target, keys) in [
+        (
+            "contract",
+            "contract",
+            &["role", "producer", "slot", "purpose"][..],
+        ),
+        (
+            "candidate",
+            "candidate",
+            &["state", "publication_operation_id", "snapshot"][..],
+        ),
+        (
+            "verification",
+            "verification",
+            &["operation_id", "state", "passed", "failure"][..],
+        ),
+        (
+            "input",
+            "preparation",
+            &[
+                "state",
+                "publication_operation_id",
+                "verification_operation_id",
+                "decision_event_id",
+            ][..],
+        ),
+        ("decision", "decision", &["state", "event_id"][..]),
+    ] {
+        if let Some(value) = view.get(source) {
+            result[target] = fields(value, keys);
+        }
+    }
+    result
 }

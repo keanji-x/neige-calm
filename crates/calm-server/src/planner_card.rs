@@ -216,7 +216,16 @@ writes are transactional.
      Receipt identity is historical; replay never rewrites an edited or withdrawn declaration. \
      Use `current.contract_status` to see whether the declaration still matches the Dispatch contract; this is not proof of an attempt's executed contract. \
      Normal result receipts arrive through the existing Planner result path. \
-     Tasks needing dependencies, gates, file delivery or other options still use report task blocks below.
+     For one verified-candidate consumer, use the same named dispatch with workspace: \"verified-candidate\" \
+     and required input: {producer: \"exact-producer-key\", slot: \"exact-slot\"}. \
+     For review-required sources, inspect exact checks and settled review, then accept the producer using \
+     `calm.task.verdict`; its optional lifecycle continues in the same write. Reviewing already schedules; \
+     no report edit or lifecycle rewrite is needed solely to declare or start the consumer. \
+     Declared-checks-only sources retain their machine qualification policy without mandatory Planner acceptance. \
+     To consume repaired C2, input.producer must be the returned repair_key; never redirect original-source consumers. \
+     `current.candidate_input` reports compact input/admission evidence, not a Worker result or startup guarantee. \
+     Use `calm.plan.list` for full candidate evidence and actual input preparation/attempt status. \
+     Tasks needing dependencies, gates, other file delivery or other options still use report task blocks below.
    * Maintain task declarations as report `task` blocks. Read the report with \
      `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while \
      replace passes the target block's `rev` as `if_rev`. Use \
@@ -1298,6 +1307,25 @@ mod tests {
         assert!(p.contains("replacing those blocks and setting `ready: true`"));
         assert!(p.contains("block ids and revision as replace anchors"));
         assert!(p.contains("Do not mint duplicate tasks"));
+    }
+
+    #[test]
+    fn planner_prompt_teaches_named_candidate_dispatch_without_report_edit() {
+        let p = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-candidate");
+        for text in [
+            "workspace: \"verified-candidate\"",
+            "required input:",
+            "input.producer must be the returned repair_key",
+            "Reviewing already schedules",
+            "current.candidate_input",
+            "without mandatory Planner acceptance",
+        ] {
+            assert!(
+                p.contains(text),
+                "missing candidate dispatch guidance: {text}"
+            );
+        }
+        assert!(!p.contains("Tasks needing dependencies, gates, file delivery or other options"));
     }
 
     /// #293 cutover — the planner prompt must be push-native, not pull. It must

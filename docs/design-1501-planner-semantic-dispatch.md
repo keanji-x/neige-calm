@@ -1,5 +1,9 @@
 # Planner semantic dispatch: one named independent task
 
+The original empty-workspace slice below is extended by
+[named verified-candidate consumer dispatch](design-1501-candidate-consumer-dispatch.md).
+That extension preserves this slice's saved empty contracts and receipts.
+
 Status: implementation scope, not a claim of shipped behavior. Baseline: b7bdad97c.
 Related: #1501, #1492; result receipts shipped in #1593.
 
