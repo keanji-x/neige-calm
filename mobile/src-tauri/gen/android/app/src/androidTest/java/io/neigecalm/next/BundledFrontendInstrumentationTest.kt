@@ -58,7 +58,7 @@ class BundledFrontendInstrumentationTest {
     evaluate("window.__nativeProbe=null; Promise.resolve().then(function(){return " + expression + ";}).then(function(value){window.__nativeProbe={ok:true,value:value};},function(error){window.__nativeProbe={ok:false,error:String(error)};});")
     val deadline = SystemClock.elapsedRealtime() + 30000
     while (SystemClock.elapsedRealtime() < deadline) {
-      val encoded = evaluate("JSON.stringify(window.__nativeProbe)")
+      val encoded = evaluate("JSON.stringify(window.__nativeProbe && typeof window.__nativeProbe.ok==='boolean' ? window.__nativeProbe : undefined)")
       if (encoded is String) {
         val result = JSONObject(encoded)
         if (result.has("ok")) return result

@@ -54,8 +54,8 @@ Bundling the frontend addresses that transfer directly.
   client, and distinguish an App update from a server update. Show connection
   progress and a re-pairing entry on expired sessions. Manual owner login remains
   available for servers that support it.
-- Android API 26 is the minimum supported system (the Tauri runtime fails to initialize on API 24); the frontend requires Chromium/WebView 111
-  or newer. An older component receives a native upgrade message. Retrieve the
+- Android API 26 is the minimum supported system: the Tauri runtime fails to
+  initialize on API 24. The frontend requires Chromium/WebView 111 or newer. An older component receives a native upgrade message. Retrieve the
   original client through the feature-checked AndroidX accessor.
 
 ## Acceptance
