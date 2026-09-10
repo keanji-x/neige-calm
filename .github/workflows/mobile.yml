@@ -38,6 +38,10 @@ jobs:
           cache-dependency-path: |
             mobile/package-lock.json
             fe/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mobile/p2p-native/go.mod
+          cache-dependency-path: mobile/p2p-native/go.sum
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -77,7 +81,7 @@ jobs:
           name: neige-calm-next-arm64-debug
           path: |
             mobile/src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk
-            mobile/artifacts/connection-page.png
+            mobile/artifacts/connection-dual-*.png
             mobile/artifacts/native-policy/
           if-no-files-found: error
           retention-days: 7
@@ -103,6 +107,10 @@ jobs:
           cache-dependency-path: |
             mobile/package-lock.json
             fe/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mobile/p2p-native/go.mod
+          cache-dependency-path: mobile/p2p-native/go.sum
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

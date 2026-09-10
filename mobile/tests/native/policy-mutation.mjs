@@ -22,11 +22,12 @@ const expected = ['io.neigecalm.next.BundledOriginTest#originRequiresAnExplicitS
 
 async function run(label) {
   await rm(reports, { recursive: true, force: true });
-  const result = spawnSync('./gradlew', [':app:testUniversalDebugUnitTest', '--tests', 'io.neigecalm.next.BundledOriginTest',
+  const result = spawnSync('./gradlew', [':app:testUniversalDebugUnitTest', '--tests', 'io.neigecalm.next.BundledOriginTest', '--tests', 'io.neigecalm.next.ConnectionAttemptTest',
     '--max-workers=4', '--no-daemon'], { cwd: android, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
   await writeFile(join(artifacts, `${label}.log`), `${result.stdout ?? ''}${result.stderr ?? ''}`);
   const report = readJUnit(reports);
-  assert.equal(Object.keys(report).length, 5, 'Origin policy tests did not all run');
+  assert.equal(Object.keys(report).filter((name) => name.startsWith('io.neigecalm.next.BundledOriginTest#')).length, 5, 'Origin policy tests did not all run');
+  assert.equal(Object.keys(report).filter((name) => name.startsWith('io.neigecalm.next.ConnectionAttemptTest#')).length, 6, 'Direct-route policy tests did not all run');
   console.log(`${label}: ${JSON.stringify(report)}`);
   return { exit: result.status, report };
 }

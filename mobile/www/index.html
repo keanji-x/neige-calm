@@ -1,40 +1,49 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="color-scheme" content="light dark">
-    <title>Neige Calm</title>
-    <link rel="stylesheet" href="./style.css">
-    <script type="module" src="./app.js"></script>
-    <script type="module" src="./scanner.js"></script>
-  </head>
-  <body>
-    <main>
-      <img class="brand" src="./neige-mark.svg" width="48" height="48" alt="">
-      <p class="eyebrow">NEIGE CALM</p>
-      <h1>你的工作，<br>随时继续。</h1>
-      <p class="intro">界面已保存在 App 中，<br>连接后同步你的工作空间。</p>
-      <button id="scan" type="button">扫码连接</button>
-      <button id="cancel-scan" type="button" hidden>取消扫码</button>
-      <p id="scan-error" role="alert"></p>
-      <section id="pair-confirm" hidden aria-label="确认配对服务器">
-        <p>连接到 <strong id="pair-host"></strong></p>
-        <button id="pair-connect" type="button">继续配对</button>
-        <button id="pair-cancel" type="button">取消</button>
-      </section>
-      <p class="hint">或手动输入服务器地址</p>
-      <form novalidate>
-        <label for="server">服务器地址</label>
-        <input id="server" name="server" type="url" inputmode="url" autocomplete="url"
-          autocapitalize="none" spellcheck="false" placeholder="https://calm.example.com"
-          aria-describedby="hint error" required>
-        <p id="hint">填写手机可访问的服务器地址。</p>
-        <label class="remember"><input id="remember" type="checkbox" checked>记住服务器地址</label>
-        <p id="error" role="alert" aria-label="地址错误"></p>
-        <button type="submit">进入工作空间 <span aria-hidden="true">→</span></button>
-      </form>
-      <p class="footer">扫码后在电脑端确认 · 同步数据需要网络连接</p>
-    </main>
-  </body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <title>Neige · 连接工作区</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+  <script type="module" src="./scanner.js"></script>
+</head>
+<body>
+<main>
+  <header class="topbar"><span class="wordmark"><img src="./neige-mark.svg" alt="" width="26" height="26">neige.</span><select id="connection-mode" aria-label="连接方式"><option value="tailscale">Tailscale</option><option value="ip">IP 连接</option></select></header>
+  <section class="hero" aria-labelledby="welcome-title">
+    <div class="connection-art" aria-hidden="true">
+      <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
+      <div class="device desktop"><svg viewBox="0 0 48 48"><rect x="8" y="9" width="32" height="23" rx="4"/><path d="M18 39h12M24 33v6"/><path class="accent-stroke" d="m19 20 4 4 7-8"/></svg></div>
+      <div class="connection-line"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="device phone"><svg viewBox="0 0 40 48"><rect x="9" y="5" width="22" height="38" rx="5"/><path d="M17 10h6M18 37h4"/></svg></div>
+      <span class="art-star star-one">✦</span><span class="art-star star-two">✧</span>
+    </div>
+    <h1 id="welcome-title">回到你的<br><span>专注空间。</span></h1>
+  </section>
+  <div id="connection-status" class="connection-status sr-only" role="status"><span class="status-dot"></span><span id="status-text">正在恢复连接…</span></div>
+  <section class="actions" aria-label="连接工作区">
+    <div id="ip-settings" hidden><label class="sr-only" for="ip-origin">服务器地址</label><input id="ip-origin" type="url" inputmode="url" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="http://IP:端口" /></div>
+    <button id="login" class="action action-login" type="button">
+      <span class="action-icon tailscale-icon" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <span class="action-copy"><strong id="login-label">登录 Tailscale</strong></span>
+      <span class="action-arrow" aria-hidden="true">↗</span>
+    </button>
+    <button id="scan" class="action action-scan" type="button" disabled>
+      <span class="action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/><path d="M7 7h3v3H7zM14 7h3v3h-3zM7 14h3v3H7zM14 14h3v3h-3z"/></svg></span>
+      <span class="action-copy"><strong>扫码授权</strong></span>
+      <span class="action-arrow" aria-hidden="true">→</span>
+    </button>
+  </section>
+  <p id="error" role="alert"></p>
+  <p id="scan-error" role="alert"></p>
+  <section id="pair-confirm" hidden aria-label="确认配对服务器" class="pair-confirm">
+    <p>授权连接到 <strong id="pair-host"></strong></p>
+    <button id="pair-connect" type="button" class="confirm-button">继续配对</button>
+    <button id="pair-cancel" type="button" class="text-button">取消</button>
+  </section>
+  <button id="cancel-scan" type="button" class="confirm-button" hidden>取消扫码</button>
+</main>
+</body>
 </html>

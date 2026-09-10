@@ -1,48 +1,47 @@
 # Neige Calm Next for Android
 
-A Tauri 2 Android client for the existing Neige Calm **Next** app at `/next/`.
-Use **扫码连接** to scan a QR created in web Settings → Network → Mobile connection.
-Confirm the server hostname and compare the verification code on both screens;
-the owner approves the phone in the web page. The phone then signs in over HTTPS
-without a Tailscale app. See [server setup and scope](../docs/mobile-qr-pairing.md).
+A Tauri 2 Android client with the Next frontend packaged locally. HTML, scripts,
+styles and icons load from Android assets; authentication, API calls, event
+WebSockets and requested files use the selected server. No workspace credentials
+or data are bundled. See [the bundled frontend design](../docs/mobile-bundled-frontend.md).
 
-The APK contains the connection page and the full existing Next frontend. Its
-HTML, scripts, styles and icons load from Android assets under the confirmed
-server's origin. Authentication, API calls, event WebSockets and requested files
-continue to use the remote server. No server credentials or workspace data are
-bundled into the APK. See [the bundled frontend design](../docs/mobile-bundled-frontend.md).
+The launcher offers IP and Tailscale modes. Both configurations persist, startup
+tries configured IP first, and failure falls back once to configured Tailscale.
+If neither is available, setup remains visible. Android Back from the root
+workspace opens setup; Back from setup backgrounds the app without logging out.
 
-Requires an ARM64 phone running Android 8.0/API 26 or later, an up-to-date Android
-System WebView (Chromium 111 or newer), and a server reachable from that phone.
-Older components show a native upgrade message. This is an online data client.
-The committed profile has no default server and denies cleartext HTTP. Trusted
-HTTPS is the default; self-signed TLS certificates remain rejected.
+IP mode accepts trusted LAN/public IP HTTP origins or trusted HTTPS server
+origins, entered after installation. Tailscale uses the userspace tsnet engine
+inside the app, so no separate Tailscale app or Android VPN slot is required.
+Log in through the external browser, then scan the server's web Settings →
+Network → Mobile connection QR and approve the phone there.
 
-`server-profile.json` is the default input for `npm run configure`, which generates
-`www/server-config.js` and Android network-security XML. A build can explicitly
-select a private profile using `npm run configure -- /absolute/path/profile.local.json`
-before `npm run android:apk`. Keep real deployment addresses in an ignored
-`*.local.json` file or outside this checkout. Do not commit the private profile or
-its generated outputs. After the local build, run `npm run configure` to restore
-the shareable default configuration.
+**This release's Tailscale destination is fixed** to
+`pivot-neige.tail328551.ts.net:10000` via tailnet peer `100.123.126.35:10000`.
+It is a deployment-specific build, not an arbitrary-tailnet QR client. The
+constants in `p2p-native/main.go`, `P2PConnection.kt`, and `server-profile.json`
+form that build profile; changing only the web default does not retarget tsnet.
+Use IP mode for another directly reachable server.
 
-A profile must contain `defaultServer` (an empty string or server origin) and
-`httpOrigins` (an array of exact IPv4 HTTP origins). For USB development, an
-explicit `http://127.0.0.1:4140` origin can be paired with
-`adb reverse tcp:4140 tcp:4140`; without forwarding, loopback points to the phone.
-For LAN use, select the host's address reachable from the phone. Android scopes
-HTTP exceptions by exact host (all ports); the launcher additionally requires the
-exact configured origin/port. No global cleartext allowance is used.
+Requires ARM64 Android 8.0/API 26+, an up-to-date Android System WebView
+(Chromium 111+), and a reachable server. This is an online data client. TLS
+verification remains enabled. HTTP IP mode enables Android cleartext transport,
+with exact selected-origin enforcement in the native proxy and WebView fence;
+it does not authorize forwarding to other origins or privileged local addresses.
 
-The connection page can remember the server origin. Force-close and reopen the
-app to return to that page and change the server. Saved login sessions are managed
-by the server and Android WebView, separately from the remembered server address.
+`npm run configure` generates `www/server-config.js` and Android network-security
+XML from `server-profile.json`. Required fields are `defaultServer`, `httpOrigins`
+and `allowConfiguredHttp`. The committed profile enables runtime IP setup but
+contains no prefilled IP. Private profile files and generated private outputs
+must not be committed. Restore defaults with `npm run configure` after local use.
 
 ## Build an installable test APK
 
 Install the [Tauri Android prerequisites](https://v2.tauri.app/start/prerequisites/#android):
 JDK 17+, Android SDK command-line tools/platform tools, Android SDK platform 36,
 build-tools 35.0.0 (used by the generated Gradle plugin), Android NDK, Node.js, and the repository-pinned Rust toolchain.
+Install Go using the version pinned in `p2p-native/go.mod`. The standard Gradle
+packaging tasks build the userspace networking library for each requested ABI.
 Set `JAVA_HOME`, `ANDROID_HOME`, and `NDK_HOME` to those installations.
 
 From `mobile/`:
@@ -60,7 +59,7 @@ The build first compiles `fe/` in Android mode and generates a manifest for all
 bundled resources. Verify the actual APK with
 `npm run verify:apk -- /absolute/path/to/app.apk`. App updates ship new UI code;
 reloading a bundled frontend does not download an update from the server.
-The debug package ID is `io.neigecalm.next.debug`; its display name is Neige Calm.
+The debug package ID is `io.neigecalm.next.p2ptrial`; its display name is Neige Calm.
 Install it directly on a phone or use `adb install -r /absolute/path/to/app.apk`.
 The debug signing key is generated locally by Android's build tools. Builds from
 another computer may require uninstalling the old test app first, which removes
@@ -83,7 +82,7 @@ and an ARM64 APK build on an ephemeral GitHub-hosted runner. Native emulator job
 also launch the real activity against a temporary real backend, refuse frontend
 network requests, and test native authority after navigation. Successful runs
 provide a debug APK and connection-page screenshot as a seven-day artifact.
-CI builds use the committed HTTPS-only profile and contain no private endpoints.
+CI builds use the committed Tailscale endpoint and no prefilled IP connection.
 
 ```sh
 npm test
@@ -93,10 +92,10 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check
 ```
 
 Browser checks load the shipped connection-page files with the configured CSP.
-They check phone layout, invalid input, navigation, remembering/removing the
-server, and storage failure. The destination response is intercepted: these
+They check phone layout, configuration persistence, timeout/fallback rendering,
+stale-result cancellation, navigation and camera behavior. The destination response is intercepted: these
 checks do **not** establish that a real server login or Android WebView works.
-The screenshot is written to `artifacts/connection-page.png`.
+The screenshot is written to `artifacts/connection-dual-tailscale.png` and `artifacts/connection-dual-ip.png`.
 
 Before distribution, verify on a physical phone: server login, navigation/back,
 background/resume and event reconnect, keyboard resizing, attachments, and report
@@ -110,7 +109,8 @@ Remote pages receive no Tauri native capabilities or custom commands. Android
 camera access is granted only to the packaged launcher, when the user starts a
 scan. Only that launcher may bind the origin used by the local asset interceptor.
 Permission refusal/cancellation preserves manual connection. Android
-cleartext traffic is restricted to the profile's explicit hosts; app backup is
+cleartext traffic is restricted by the native fixed-origin proxy to the configured
+IP server; app backup is
 disabled, including for the test APK. The
 connection page and bundled Next document have their own CSP; remote pairing
 and API responses keep the server's policy. Next API calls, cookies, and event WebSockets remain on the server's
@@ -122,3 +122,20 @@ The `instrumented` build type is exclusively for CI. It trusts a short-lived tes
 CA generated by `tests/native/backend.mjs`, has a separate application ID, and is
 never a distribution artifact. Normal debug/release builds retain their original
 trust policy; APK verification rejects the test CA in a distributable build.
+
+## Signed release APK
+
+`npm run android:release` builds an ARM64 release with R8 enabled and debugging
+disabled. Sign the resulting unsigned APK with your own persistent key using
+`apksigner`; keep the key and password outside this repository. Run
+`npm run verify:apk -- /absolute/path/to/signed.apk`, `apksigner verify`, and
+`zipalign -c -P 16 4` on the final artifact. The release ID is `io.neigecalm.next`;
+it installs separately from `io.neigecalm.next.p2ptrial` and starts with independent
+credentials. Subsequent release updates must use the same signing key.
+
+The launcher saves IP and Tailscale configuration, tries IP first, and falls back
+once to Tailscale if configured. Neither route being available returns to setup.
+WebView cookies follow browser host/domain scope: different hosts have separate
+sessions, while different ports on the same host share cookies. Only configure
+trusted services; the connection selector is not an isolation boundary between
+services on the same host.

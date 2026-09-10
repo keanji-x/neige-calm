@@ -15,6 +15,7 @@ val tauriProperties = Properties().apply {
 
 android {
     compileSdk = 36
+    ndkVersion = "29.0.14206865"
     namespace = "io.neigecalm.next"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
@@ -28,7 +29,7 @@ android {
     }
     buildTypes {
         getByName("debug") {
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = ".p2ptrial"
             manifestPlaceholders["usesCleartextTraffic"] = "false"
             isDebuggable = true
             isJniDebuggable = false
@@ -49,7 +50,7 @@ android {
             matchingFallbacks += listOf("debug")
         }
     }
-    testBuildType = "instrumented"
+    testBuildType = if (providers.gradleProperty("neige.launcherSmoke").orNull == "true") "debug" else "instrumented"
     testOptions { execution = "ANDROIDX_TEST_ORCHESTRATOR" }
     kotlinOptions {
         jvmTarget = "1.8"
@@ -75,7 +76,23 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
     androidTestImplementation("androidx.test:runner:1.5.2")
     androidTestImplementation("androidx.test:rules:1.5.0")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     androidTestUtil("androidx.test:orchestrator:1.4.2")
 }
 
 apply(from = "tauri.build.gradle.kts")
+
+// Every Android packaging entry point must include the userspace network library.
+val p2pAbis = providers.gradleProperty("abiList").orElse("arm64-v8a,armeabi-v7a,x86,x86_64").get().split(',')
+val p2pTasks = p2pAbis.map { abi ->
+    tasks.register<Exec>("buildP2p" + abi.replace("-", "").replace("_", "")) {
+        workingDir = file("../../../..")
+        commandLine("bash", "scripts/build-p2p-native.sh", abi)
+        inputs.dir(file("../../../../p2p-native"))
+        inputs.file(file("../../../../scripts/build-p2p-native.sh"))
+        outputs.file(file("src/main/jniLibs/$abi/libneige_p2p.so"))
+    }
+}
+tasks.configureEach {
+    if (name.endsWith("JniLibFolders")) dependsOn(p2pTasks)
+}

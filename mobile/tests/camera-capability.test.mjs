@@ -23,5 +23,5 @@ test('server binding capability is confined to the packaged Android launcher', a
   assert.equal(Object.hasOwn(capability, 'remote'), false);
   assert.deepEqual(capability.windows, ['main']);
   assert.deepEqual(capability.platforms, ['android']);
-  assert.deepEqual(capability.permissions, ['bundled-frontend:allow-bind-server']);
+  assert.deepEqual(capability.permissions, ['bundled-frontend:allow-bind-server', 'bundled-frontend:allow-login-tailscale', 'bundled-frontend:allow-connection-settings', 'bundled-frontend:allow-save-connection', 'bundled-frontend:allow-attempt-connection']);
 });

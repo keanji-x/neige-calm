@@ -19,3 +19,11 @@ src-tauri/icons/icon.icns
 src-tauri/icons/icon.ico
 src-tauri/icons/StoreLogo.png
 src-tauri/icons/Square*Logo.png
+
+src-tauri/gen/android/**/.kotlin/
+
+p2p-smoke/build/
+p2p-smoke/.gradle/
+p2p-smoke/.kotlin/
+
+tests/native/__pycache__/

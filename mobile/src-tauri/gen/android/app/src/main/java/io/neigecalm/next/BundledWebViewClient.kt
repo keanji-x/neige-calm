@@ -5,6 +5,7 @@ import android.net.http.SslError
 import android.os.Message
 import android.view.KeyEvent
 import android.webkit.*
+import java.io.ByteArrayInputStream
 
 /** Keep the exact Wry client alive: Ipc reads its currentUrl for native authority. */
 @Suppress("DEPRECATION")
@@ -16,14 +17,24 @@ internal class BundledWebViewClient(
     // The original also tracks interception and injects initialization scripts
     // on WebViews without document-start support. Preserve that bookkeeping.
     val response = original.shouldInterceptRequest(view, request)
+    if (!HttpOriginFence.permits(request.url.toString(), assets.origin.get())) return WebResourceResponse(
+      "text/plain", "UTF-8", 403, "Unconfigured HTTP origin", mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(ByteArray(0)))
     return response ?: assets.response(request)
   }
 
-  override fun shouldInterceptRequest(view: WebView, url: String): WebResourceResponse? = original.shouldInterceptRequest(view, url)
-  override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = original.shouldOverrideUrlLoading(view, request)
-  override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = original.shouldOverrideUrlLoading(view, url)
+  override fun shouldInterceptRequest(view: WebView, url: String): WebResourceResponse? {
+    if (!HttpOriginFence.permits(url, assets.origin.get())) return WebResourceResponse("text/plain", "UTF-8", 403, "Unconfigured HTTP origin", mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(ByteArray(0)))
+    return original.shouldInterceptRequest(view, url)
+  }
+  override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = !HttpOriginFence.permits(request.url.toString(), assets.origin.get()) || original.shouldOverrideUrlLoading(view, request)
+  override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = !HttpOriginFence.permits(url, assets.origin.get()) || original.shouldOverrideUrlLoading(view, url)
   override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) = original.onPageStarted(view, url, favicon)
-  override fun onPageFinished(view: WebView, url: String) = original.onPageFinished(view, url)
+  override fun onPageFinished(view: WebView, url: String) {
+    original.onPageFinished(view, url)
+    val origin = assets.origin.get()
+    val uri = runCatching { java.net.URI(url) }.getOrNull()
+    if (origin != null && uri != null && origin.matches(uri)) RememberedSession.persist(origin.value)
+  }
   override fun onPageCommitVisible(view: WebView, url: String) = original.onPageCommitVisible(view, url)
   override fun onLoadResource(view: WebView, url: String) = original.onLoadResource(view, url)
   override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) = original.doUpdateVisitedHistory(view, url, isReload)

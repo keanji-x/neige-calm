@@ -1,0 +1,93 @@
+name: Android connection smoke
+on:
+  pull_request:
+    paths: ['mobile/**', 'fe/**', '.github/workflows/p2p-login-smoke.yml', 'rust-toolchain.toml']
+  push:
+    branches: [main, codex/mobile-p2p-prototype]
+    paths: ['mobile/**', 'fe/**', '.github/workflows/p2p-login-smoke.yml', 'rust-toolchain.toml']
+permissions:
+  contents: read
+env:
+  NPM_CONFIG_AUDIT: 'false'
+jobs:
+  launcher:
+    name: connection smoke (${{ matrix.buildType }})
+    strategy:
+      fail-fast: false
+      matrix:
+        buildType: [debug, release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '4'
+      RUSTC_WRAPPER: ''
+      GOMAXPROCS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mobile/p2p-native/go.mod
+          cache-dependency-path: mobile/p2p-native/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mobile/src-tauri -> target
+          shared-key: p2p-launcher
+          cache-on-failure: true
+      - name: Verify credential-free release diagnostics
+        run: python3 -m unittest discover -s mobile/tests/native -p test_release_smoke.py
+      - name: Verify Go transport boundaries
+        working-directory: mobile/p2p-native
+        run: go test -p 4 -count=1 ./...
+      - name: Build actual APK with userspace networking
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865'
+          echo "NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          export NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
+          rustup target add x86_64-linux-android
+          npm --prefix mobile ci
+          npm --prefix fe ci
+          args=(android build --apk --target x86_64)
+          if [ "${{ matrix.buildType }}" = debug ]; then args+=(--debug); fi
+          env -u NEIGE_CODEX_BIN npm --prefix mobile run tauri -- "${args[@]}"
+      - name: Start loopback-only HTTP test peers
+        run: |
+          python3 mobile/tests/native/ip-fixture.py > "$RUNNER_TEMP/ip-fixture.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/ip-fixture.pid"
+          for attempt in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:5413/api/version > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect
+          script: mobile/tests/native/run-launcher-smoke.sh "${{ matrix.buildType }}"
+      - name: Stop test peers
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/ip-fixture.pid" ]; then kill "$(cat "$RUNNER_TEMP/ip-fixture.pid")" || true; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: p2p-launcher-${{ matrix.buildType }}-result
+          path: |
+            mobile/src-tauri/gen/android/app/build/outputs/androidTest-results/
+            mobile/artifacts/resume-*.txt
+            mobile/artifacts/release-smoke/
+          retention-days: 3
