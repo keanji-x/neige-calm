@@ -29,13 +29,13 @@ function idle() {
   document.body.dataset.mode = mode.value;
 }
 
-async function save(attempt) {
+async function save(attempt, useDraft = mode.value === 'ip') {
   const saved = await invoke('save_connection', {
-    mode: mode.value, ipOrigin: ip.value.trim(), tailscaleEnabled: config?.tailscaleEnabled ?? false,
+    mode: mode.value, ipOrigin: useDraft ? ip.value.trim() : config.ipOrigin, tailscaleEnabled: config?.tailscaleEnabled ?? false,
   });
   if (attempt !== generation) return;
   config = saved;
-  ip.value = config.ipOrigin;
+  if (useDraft) ip.value = config.ipOrigin;
   return config;
 }
 
@@ -60,6 +60,10 @@ async function connect(manual = false) {
       await bindServer(result.origin);
       if (attempt !== generation) return;
       location.replace(`${result.origin}/next/`);
+    } else if (result.mode === 'tailscale') {
+      // Reachability is not workspace authorization. Show the pairing action
+      // when failover reaches a network whose workspace session is absent.
+      mode.value = 'tailscale';
     }
   } catch (cause) {
     if (attempt === generation) {
@@ -72,8 +76,14 @@ async function connect(manual = false) {
 
 mode.addEventListener('change', async () => {
   const attempt = ++generation; waitingForLogin = false; error.textContent = ''; idle();
-  try { await save(attempt); if (attempt === generation) idle(); }
-  catch (cause) { if (attempt === generation) error.textContent = message(cause); }
+  try { await save(attempt, true); if (attempt === generation) idle(); }
+  catch (cause) {
+    if (attempt !== generation) return;
+    if (mode.value === 'tailscale') {
+      try { await save(attempt, false); } catch (failure) { cause = failure; }
+    }
+    if (attempt === generation) { error.textContent = message(cause); idle(); }
+  }
 });
 ip.addEventListener('input', () => { ++generation; error.textContent = ''; ip.removeAttribute('aria-invalid'); idle(); });
 

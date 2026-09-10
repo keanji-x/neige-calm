@@ -108,6 +108,18 @@ func stopDirect() {
 		directState.current = nil
 	}
 }
+func directForwarder(target *url.URL) *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{Rewrite: func(request *httputil.ProxyRequest) {
+		request.SetURL(target)
+		request.Out.Host = target.Host
+		// This is an in-app transport, not a trusted server-side ingress proxy.
+		// Do not claim that the phone's loopback socket is the upstream client IP.
+		for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP"} {
+			request.Out.Header.Del(header)
+		}
+	}}
+}
+
 func configureDirect(raw string) string {
 	target, err := directOrigin(raw)
 	if err != nil {
@@ -127,7 +139,7 @@ func configureDirect(raw string) string {
 		return failure(err)
 	}
 	p := &directProxy{target: target, listener: listener, clients: make(map[net.Conn]bool)}
-	p.reverse = httputil.NewSingleHostReverseProxy(target)
+	p.reverse = directForwarder(target)
 	p.reverse.Transport = &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 15 * time.Second, ForceAttemptHTTP2: true}
 	p.server = &http.Server{Handler: p, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 65536}
 	directState.current = p

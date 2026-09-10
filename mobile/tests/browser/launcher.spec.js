@@ -104,3 +104,29 @@ test('returning from an IP workspace stays on the configuration homepage', async
   await page.getByRole('button', { name: '保存并连接 IP' }).click();
   await expect(page).toHaveURL(`${direct}/next/`);
 });
+
+test('an unfinished IP draft does not block Tailscale login', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = (command, args) => command.endsWith('|save_connection') && args.ipOrigin === 'broken'
+      ? Promise.reject('请输入合法的服务器地址') : original(command, args);
+  });
+  await page.goto('/');
+  await page.getByRole('combobox').selectOption('ip');
+  await page.getByLabel('服务器地址').fill('broken');
+  await page.getByRole('combobox').selectOption('tailscale');
+  await expect(page.locator('#error')).toContainText('请输入合法的服务器地址');
+  await page.getByRole('button', { name: '登录 Tailscale' }).click();
+  await expect(page.getByRole('button', { name: '扫码授权' })).toBeEnabled();
+});
+
+test('fallback without a workspace session offers Tailscale pairing', async ({ page }) => {
+  await page.addInitScript(({ ip, server }) => {
+    window.settings = { mode: 'ip', ipOrigin: ip, tailscaleEnabled: true };
+    window.attemptResult = { connected: true, mode: 'tailscale', origin: server, entryAvailable: true, resumeAvailable: false, failures: [{ mode: 'ip', message: 'timeout' }] };
+  }, { ip: direct, server: tail });
+  await page.goto('/');
+  await expect(page.getByRole('combobox')).toHaveValue('tailscale');
+  await expect(page.getByRole('button', { name: '扫码授权' })).toBeEnabled();
+  expect(await page.evaluate(() => window.settings.ipOrigin)).toBe(direct);
+});

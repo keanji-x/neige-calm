@@ -29,7 +29,7 @@ class DirectConnectionInstrumentationTest {
     val device = UiDevice.getInstance(instrumentation)
     context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     assertTrue("IP route did not reach the bundled workspace login", device.wait(Until.hasObject(By.textContains("扫码连接你的工作区")), 25000))
-    val back = device.wait(Until.findObject(By.textContains("返回连接页")), 10000)
+    val back = device.wait(Until.findObject(By.text("返回连接页")), 10000)
     assertNotNull(back); back.click()
     assertTrue(device.wait(Until.hasObject(By.textContains("保存并连接 IP")), 10000))
     SystemClock.sleep(2000)
