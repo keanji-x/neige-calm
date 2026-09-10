@@ -67,5 +67,6 @@ origin may need its own workspace login once. The same backend remains authorita
 for authentication, expiry and revocation on either path.
 
 At the root workspace, Android Back opens the configuration homepage without
-logging out. Back from that homepage closes the Activity rather than returning
-to stale workspace history, so persistent auto-entry never hides configuration.
+logging out. Back from that homepage backgrounds the task and preserves the native
+runtime. Reopening shows the same configuration screen, so persistent auto-entry
+never hides configuration.
