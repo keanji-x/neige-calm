@@ -717,4 +717,5 @@ async fn legacy_receipt_without_envelope_discloses_unconfirmed_original_event_an
     }
 }
 
+#[cfg(test)]
 mod consumer_summary_tests;
