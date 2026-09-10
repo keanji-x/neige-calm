@@ -377,6 +377,35 @@ async fn file_delivery_invalid_json_remains_failed_without_consumer_or_automatic
             .to_string()
             .contains("json-document-v1 verification failed")
     );
+    let full = listed(&fx).await;
+    let compact = call_tool(
+        &fx.boot,
+        "calm.plan.list",
+        planner_identity(&fx.boot),
+        json!({"detail":"summary","key":source.key}),
+    )
+    .await
+    .unwrap();
+    let original = full["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["key"] == source.key)
+        .unwrap();
+    assert_eq!(
+        compact["tasks"][0]["file_delivery"]["publication"],
+        original["file_delivery"]["publication"]
+    );
+    assert_eq!(
+        compact["tasks"][0]["file_delivery"]["publication"]["state"],
+        "failed"
+    );
+    assert!(
+        compact["tasks"][0]["file_delivery"]["publication"]["failure"]
+            .as_str()
+            .unwrap()
+            .contains("verification failed")
+    );
     let count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM operations WHERE kind='task-file-publication'")
             .fetch_one(&fx.boot.repo.sqlite_pool().unwrap())

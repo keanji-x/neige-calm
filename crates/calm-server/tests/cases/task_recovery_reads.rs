@@ -126,6 +126,26 @@ async fn task_recovery_list_keeps_absent_projection_with_ready_blocker() {
     assert_eq!(entry["attempt_id"], receipt["attempt_id"]);
     assert_eq!(entry["status"], "awaiting_projection");
     assert!(entry["blocking_reason"].as_str().unwrap().contains("ready"));
+    let summary = call_tool(
+        &boot,
+        "calm.plan.list",
+        planner_identity(&boot),
+        json!({"detail":"summary","key":"b"}),
+    )
+    .await
+    .unwrap();
+    let compact = &summary["tasks"][0];
+    for field in [
+        "attempt_id",
+        "generation",
+        "status",
+        "blocking_reason",
+        "recovery",
+    ] {
+        assert_eq!(compact[field], entry[field]);
+    }
+    assert_eq!(compact["task_projection"], "unavailable");
+
     let view = serde_json::to_value(
         task_recovery_view(
             boot.repo.as_ref(),
@@ -307,6 +327,34 @@ async fn task_recovery_plan_inventory_pages_all_current_allocations() {
     assert_eq!(keys.len(), 130);
     assert_eq!(keys.first(), Some(&"k000"));
     assert_eq!(keys.last(), Some(&"k129"));
+    let selected = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        call_tool(
+            &boot,
+            "calm.plan.list",
+            planner_identity(&boot),
+            json!({"detail":"summary","key":"k129"}),
+        ),
+    )
+    .await
+    .expect("direct lookup must terminate")
+    .unwrap();
+    assert_eq!(selected["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(selected["tasks"][0]["key"], "k129");
+    let missing = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        call_tool(
+            &boot,
+            "calm.plan.list",
+            planner_identity(&boot),
+            json!({"detail":"summary","key":"unknown"}),
+        ),
+    )
+    .await
+    .expect("missing lookup must terminate")
+    .unwrap_err();
+    assert!(missing.message.contains("current execution unavailable"));
+
     assert_eq!(
         keys.iter()
             .copied()

@@ -58,6 +58,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod list;
+
 pub const TOOL_PLAN_UPSERT: &str = "calm.plan.upsert";
 pub const TOOL_PLAN_CANCEL: &str = "calm.plan.cancel";
 pub const TOOL_PLAN_LIST: &str = "calm.plan.list";
@@ -770,7 +772,7 @@ where
 fn plan_list_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_LIST.into(),
-        description: "Planner-only: read the track's full task plan with per-task status. \
+        description: "Planner-only: for status start with detail=summary and the exact key when known; omit key for a compact current inventory. Use detail=full with that key for semantic evidence. Omitted arguments retain the full plan. Summaries are current observations, not acceptance or authority; compare attempt_id when reading full evidence. \
              Gate commands are not echoed (only step names); each entry carries the \
              latest machine gate verdict as `gate_result` (on failure `status_detail` \
              is gate-red / gate-timeout / gate-infra). Read the worker output for a \
@@ -778,7 +780,8 @@ fn plan_list_descriptor() -> ToolDescriptor {
             .into(),
         input_schema: json!({
             "type": "object",
-            "properties": {}
+            "properties": {"detail":{"type":"string","enum":["summary","full"]},"key":{"type":"string","minLength":1,"description":"One exact current task key in this Track; no prefix matching or whitespace normalization."}},
+            "additionalProperties":false
         }),
         annotations: Some(read_only_annotations()),
         visible_to_roles: &[CardRole::Planner],
@@ -788,9 +791,10 @@ fn plan_list_descriptor() -> ToolDescriptor {
 async fn plan_list(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
-    _args: Value,
+    args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Planner)?;
+    let args = list::Args::parse(&args)?;
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let actor = identity.to_actor_id();
     let task_budget_default = ctx.task_budget_default;
@@ -800,13 +804,15 @@ async fn plan_list(
             let mut tasks_json = Vec::new();
             let mut after_key = None;
             loop {
-                let allocations = crate::db::sqlite::task_attempt_current_by_track_tx(
-                    tx,
-                    track.id.as_str(),
-                    after_key.as_deref(),
-                    128,
-                )
-                .await?;
+                let allocations = if let Some(key) = &args.key {
+                    vec![crate::db::sqlite::task_attempt_current_tx(tx, track.id.as_str(), key)
+                        .await?
+                        .ok_or_else(|| CalmError::BadRequest(format!("current execution unavailable for exact key `{key}` in this Track")))?]
+                } else {
+                    crate::db::sqlite::task_attempt_current_by_track_tx(
+                        tx, track.id.as_str(), after_key.as_deref(), 128,
+                    ).await?
+                };
                 let full_page = allocations.len() == 128;
                 for allocation in allocations {
                     let task = crate::db::sqlite::task_get_tx(tx, &allocation.attempt_id).await?;
@@ -818,9 +824,18 @@ async fn plan_list(
                         task_budget_default,
                     )
                     .await?;
-                    let mut entry = task.as_ref().map(task_list_entry).unwrap_or_else(
-                        || json!({"id":allocation.attempt_id,"key":allocation.key}),
-                    );
+                    let mut entry = if args.summary {
+                        match &task {
+                            Some(task) => json!({"key":allocation.key,"kind":task.kind,
+                                "status_detail":task.status_detail,
+                                "gate_result":task.gate_result_json.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok())}),
+                            None => json!({"key":allocation.key,"task_projection":"unavailable"}),
+                        }
+                    } else {
+                        task.as_ref().map(task_list_entry).unwrap_or_else(
+                            || json!({"id":allocation.attempt_id,"key":allocation.key}),
+                        )
+                    };
                     let current = view.current.ok_or_else(|| {
                         CalmError::Internal(
                             "allocated task has no current execution history".into(),
@@ -844,10 +859,10 @@ async fn plan_list(
                     entry["status"] = json!(current.status);
                     entry["blocking_reason"] = json!(current.blocking_reason);
                     entry["recovery"] = serde_json::to_value(view.recovery)?;
-                    tasks_json.push(entry);
+                    tasks_json.push(if args.summary { list::summary(&entry) } else { entry });
                     after_key = Some(allocation.key);
                 }
-                if !full_page {
+                if args.key.is_some() || !full_page {
                     break;
                 }
             }
