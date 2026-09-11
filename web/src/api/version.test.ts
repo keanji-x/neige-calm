@@ -17,6 +17,11 @@ import { describe, it, expect } from 'vitest';
 import { isCompatible, WEB_COMPAT_VERSION } from './version';
 
 describe('isCompatible', () => {
+  it('refreshes bundles predating MCP JSON setup support', () => {
+    expect(WEB_COMPAT_VERSION).toBeGreaterThan(26);
+    expect(isCompatible({ minWebCompatVersion: WEB_COMPAT_VERSION }, 26)).toBe(false);
+  });
+
   it('refuses bundles predating file-publication events', () => {
     expect(WEB_COMPAT_VERSION).toBeGreaterThan(25);
     expect(isCompatible({ minWebCompatVersion: WEB_COMPAT_VERSION }, 25)).toBe(false);

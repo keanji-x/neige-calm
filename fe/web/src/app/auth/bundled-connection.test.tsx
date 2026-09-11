@@ -49,3 +49,12 @@ it('offers re-pairing first while retaining manual login for servers that suppor
   await userEvent.click(screen.getByRole('button', { name: '返回扫码连接' }));
   expect(screen.getByRole('heading', { name: '扫码连接你的工作区' })).toBeTruthy();
 });
+
+it('blocks pre-MCP-setup servers before the bundle can submit unsupported connector fields', async () => {
+  // Version 26 silently ignores tools_all/headers in an install request and
+  // has no unsaved connection-check endpoint. Pin that released version.
+  mount(() => Promise.resolve({ webCompatVersion: 26,
+    minWebCompatVersion: 26, syncEventVersion: 20, dbInstanceId: 'before-mcp-setup' }));
+  expect(await screen.findByRole('heading', { name: '请更新电脑端 Neige' })).toBeTruthy();
+  expect(screen.queryByText('workspace')).toBeNull();
+});

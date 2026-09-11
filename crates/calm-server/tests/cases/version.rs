@@ -158,12 +158,13 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     // planner REST responses and the rewritten event payloads gets the refresh
     // curtain instead of rendering an undefined-shaped conversation.
     // #1501 F4: 26 excludes bundles that cannot classify candidate verification.
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 26);
+    // MCP setup requires header/all-tools support and an unsaved Check endpoint.
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 27);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 26);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 27);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

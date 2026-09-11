@@ -106,7 +106,10 @@ pub const API_VERSION: &str = "6";
 ///
 /// A dropped row and an `undefined` field both leave a plausible-looking UI, so
 /// the refresh curtain is what has to stop such a bundle from connecting.
-pub const WEB_COMPAT_VERSION: u32 = 26;
+// MCP JSON setup requires explicit all-tools/header support and the Check
+// endpoint. A separately updated bundled frontend must refuse v26 servers,
+// which otherwise silently ignore the new install fields.
+pub const WEB_COMPAT_VERSION: u32 = 27;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]
