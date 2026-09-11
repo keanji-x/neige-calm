@@ -136,7 +136,9 @@ def completed_calls(rows):
             require_object(call["result"], "MCP result")
         if str(call.get("tool", "")).startswith("calm.terminal."):
             arguments = require_object(call.get("arguments", {}), "terminal arguments")
-            if "action" in arguments:
+            if call["tool"] == "calm.terminal.control" and arguments.get("action") not in ("claim", "release", "detach"):
+                raise EvidenceError("terminal control action must be claim, release or detach")
+            if call["tool"] == "calm.terminal.input" and "action" in arguments:
                 action = require_object(arguments["action"], "terminal action")
                 for field in ("type", "key", "text"):
                     if field in action and not isinstance(action[field], str):
@@ -175,6 +177,30 @@ def final_texts(rows):
             and isinstance(row["params"]["item"].get("text"), str)]
 
 
+def observation_refused(call):
+    if call.get("tool") != "calm.terminal.input":
+        return False
+    messages = []
+    if call.get("error") is not None:
+        messages.append(require_object(call["error"], "MCP error").get("message"))
+    result = call.get("result") or {}
+    if result.get("isError") is True:
+        content = result.get("content", [])
+        if not isinstance(content, list):
+            raise EvidenceError("MCP error content must be an array")
+        for part in content:
+            part = require_object(part, "MCP error content item")
+            if part.get("type") == "text":
+                messages.append(part.get("text"))
+    # Exact production refusals in terminal_interaction/operations.rs. A broad
+    # word-order regex misses the revision fence and counts unrelated errors.
+    refusals = ("observation expired; observe again",
+                "observation belongs to another connection or expired",
+                "terminal changed since observation; observe again")
+    return any(refusal in message for message in messages if isinstance(message, str)
+               for refusal in refusals)
+
+
 def metrics(rows):
     calls = completed_calls(rows)
     terminal = [call for call in calls if str(call.get("tool", "")).startswith("calm.terminal.")]
@@ -204,8 +230,7 @@ def metrics(rows):
             "repeated_identical_input_actions": sum(n - 1 for n in collections.Counter(actions).values()),
             "tool_errors": sum(bool(call.get("error") or call.get("status") == "failed"
                                     or (call.get("result") or {}).get("isError")) for call in calls),
-            "observation_refusals": sum(bool(re.search(r"observation.*(?:expired|stale|changed)",
-                                                       json.dumps(call.get("error")), re.I)) for call in terminal),
+            "observation_refusals": sum(observation_refused(call) for call in terminal),
             "human_intervention": "not_measured", "token_savings": "not_measured"}
 
 

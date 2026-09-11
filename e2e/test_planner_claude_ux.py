@@ -21,6 +21,52 @@ def row(identifier, tool="calm.terminal.observe", *, text=("3141",), terminal="t
 
 
 class CollectorTests(unittest.TestCase):
+    def test_real_control_actions_and_result_shapes_remain_collectable(self):
+        # terminal_interaction::control: action is a string; detach returns
+        # {detached:true}, while claim/release return connection/control IDs.
+        for action, result in (("claim", {"terminal_id": "t1", "connection_id": "c1", "control_id": "owner1"}),
+                               ("release", {"terminal_id": "t1", "connection_id": "c1", "control_id": None}),
+                               ("detach", {"detached": True})):
+            control = row(2, "calm.terminal.control")
+            control["params"]["item"]["arguments"]["action"] = action
+            control["params"]["item"]["result"] = {"structuredContent": result}
+            with self.subTest(action=action):
+                self.assertEqual(ux.metrics([row(1), control])["terminal_tool_calls"], 2)
+                _, _, calls, errors = ux.terminal_evidence([row(1), control])
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(errors, [])
+
+    def test_changed_since_observation_production_refusal_is_counted(self):
+        bad = row(1, "calm.terminal.input")
+        bad["params"]["item"]["status"] = "failed"
+        bad["params"]["item"]["error"] = {"message": "terminal changed since observation; observe again"}
+        self.assertEqual(ux.metrics([bad])["observation_refusals"], 1)
+
+    def test_observation_refusal_variants_and_error_envelopes(self):
+        for message in ("observation expired; observe again",
+                        "observation belongs to another connection or expired",
+                        "terminal changed since observation; observe again"):
+            for envelope in ("error", "result", "both"):
+                failed = row(1, "calm.terminal.input")
+                item = failed["params"]["item"]
+                if envelope in ("error", "both"):
+                    item["status"] = "failed"
+                    item["error"] = {"message": f"MCP error: -32403: {message}"}
+                if envelope in ("result", "both"):
+                    item["result"] = {"isError": True, "content": [{"type": "text", "text": message}]}
+                with self.subTest(message=message, envelope=envelope):
+                    self.assertEqual(ux.metrics([failed])["observation_refusals"], 1)
+
+    def test_refusal_metric_ignores_unrelated_errors_and_success_output(self):
+        unrelated = row(1, "calm.terminal.input")
+        unrelated["params"]["item"]["error"] = {"message": "observation renderer changed resolution"}
+        other_tool = row(2, "calm.track.cat")
+        other_tool["params"]["item"]["error"] = {"message": "observation expired; observe again"}
+        success = row(3, "calm.terminal.input")
+        success["params"]["item"]["result"] = {"isError": False, "content": [
+            {"type": "text", "text": "terminal changed since observation; observe again"}]}
+        self.assertEqual(ux.metrics([unrelated, other_tool, success])["observation_refusals"], 0)
+
     def test_main_preserves_incomplete_transcript_when_wait_turn_metrics_rejects_shapes(self):
         for field, value in (("arguments", "{}"), ("arguments", None),
                              ("arguments", {"action": []}),
