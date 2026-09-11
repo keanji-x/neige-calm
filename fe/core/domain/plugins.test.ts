@@ -466,8 +466,18 @@ describe('connector install', () => {
     display_name: 'Zhibao',
     url: 'https://mcp.wisburg.com/mcp',
     api_key: 'sk-credential',
+    tool_mode: 'selected',
     tools: 'list-articles, get-article-detail',
   };
+
+  it('defaults a connector with no tool names to the complete upstream catalog', () => {
+    const allTools = { ...draft, tool_mode: 'all' as const, tools: '' };
+    expect(connectorDraftError(allTools)).toBeNull();
+    const source = (installConnectorOperation(allTools).body as {
+      source: Record<string, unknown>;
+    }).source;
+    expect('tools_allow' in source).toBe(false);
+  });
 
   it('sends a bearer credential as the kernel spells it', () => {
     const operation = installConnectorOperation(draft);
@@ -520,9 +530,9 @@ describe('connector install', () => {
    * write.
    */
   /*
-   * The refusal that exists because the failure it prevents looks like success:
-   * `tools_allow` is a strict allowlist, so a connector installed with no names
-   * comes up running and exposes nothing at all.
+   * The selected-mode refusal that exists because the failure it prevents looks
+   * like success: `tools_allow` is a strict allowlist, so a selected connector
+   * with no names would come up running and expose nothing at all.
    */
   it('refuses a connector that would expose no tools, and splits the list the operator typed', () => {
     expect(connectorDraftError({ ...draft, tools: '   ' })).toMatch(/at least one tool/i);

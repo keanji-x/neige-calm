@@ -104,20 +104,36 @@ Open **Settings → Plugins → Add a plugin**. Choose a source:
 
 | Source | What to provide |
 | --- | --- |
-| **Remote MCP server** | Name, unique plugin ID, streamable-HTTP endpoint, and the exact tool names to expose. Add an API key only if the server requires one. |
+| **Remote MCP server** | Paste the server’s MCP configuration JSON. Tool access defaults to the complete catalog. |
 | **Server directory** | A directory containing `manifest.json` on the machine running Neige Calm. This is not a directory on the browser's computer. |
 
-For a remote server, **Tools** is a strict allowlist, separated by commas,
-spaces, or newlines. The form requires at least one name; an empty list never
-means “all tools.” Check names against the upstream server: an unknown name is
-skipped with a server warning, and a plugin shown as `running` does not prove
-that every requested tool was found.
+Paste a direct `{"url":"https://example.com/mcp","headers":{}}` object,
+Claude-style `mcpServers`, or VS Code-style `servers`. If there is more than one
+server, choose the one to add. The name and stable plugin ID are filled in
+for you. **Advanced settings** lets you change them or choose **Selected tools**
+and enter exact tool names separated by commas, spaces, or newlines.
+An empty selected list is refused; **All tools** is the default.
 
-The optional key uses **Authorization: Bearer** or **Custom header** placement;
-for a custom header, enter its name and supply the raw key. Do not put credentials
-in the URL. The key is stored on the server and is not shown again by the UI or
-returned in the install response. There is no stored-key editor: remove and
-re-add the connector to replace it.
+**Check connection** is optional. It contacts the server using the current
+unsaved configuration, reads every page of its tool catalog, and shows the
+count and names. It does not install, enable, or call a business tool. A failed
+check leaves your draft intact. Editing the draft invalidates the result.
+A successful check confirms discovery, not that every tool call will succeed.
+
+Only remote HTTP / streamable-HTTP is supported. Local commands (stdio), SSE,
+OAuth, helper commands and unresolved variables are refused. Use literal
+`headers` for authentication, for example `"Authorization": "Bearer your-key"`;
+multiple custom headers are supported. Transport-controlled headers such as
+`Host`, `Content-Length` and `Mcp-Session-Id` cannot be supplied.
+Do not put credentials in the URL. Header values stay in memory until Add and
+are then stored privately on the server, never in the public manifest or a
+browser cache. Remove and re-add a connector to change its stored credentials.
+
+The kernel refreshes the complete catalog on each enable/reload; it does not
+update an existing conversation live. Selected tools remain a strict allowlist.
+Unknown selected names are skipped with a server warning.
+Existing manifests and API callers keep their original semantics: omitted or
+empty `tools_allow` exposes nothing unless `tools_all: true` is explicit.
 
 Select **Add plugin**, return to the list, and enable its switch. New plugins
 are installed disabled. Check the resulting status and any error before use.

@@ -343,3 +343,16 @@ async fn connector_install_requires_owner_and_writes_no_credential() {
             .is_file()
     );
 }
+
+#[tokio::test]
+async fn mcp_setup_check_requires_owner_without_side_effects() {
+    let fx = Fixture::new().await;
+    fx.assert_rejected(
+        "/api/plugins/mcp/check",
+        json!({
+            "id": "test.check-auth", "display_name": "Check", "url": "http://127.0.0.1:1/mcp",
+            "headers": {"Authorization": "Bearer sk-private-header"}, "tools_all": true
+        }),
+    )
+    .await;
+}

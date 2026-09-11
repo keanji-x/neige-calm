@@ -353,8 +353,9 @@ fn read_capped(
 // Tool materialization (§2.7)
 // ---------------------------------------------------------------------------
 
-/// Turn an upstream `tools/list` payload into `ExposedTool` entries, keeping
-/// only names in `tools_allow`.
+/// Turn the complete upstream `tools/list` payload into `ExposedTool` entries.
+/// `tools_all: true` keeps every valid upstream tool; otherwise only names in
+/// the strict `tools_allow` list are kept.
 ///
 /// An allowlisted name the server does not serve is warned about and skipped —
 /// one stale entry must not take the whole connector down (§2.2).
@@ -368,6 +369,17 @@ pub fn materialize_http_tools(
     upstream: &[Value],
 ) -> Vec<ExposedTool> {
     let mut out = Vec::new();
+    if block.tools_all {
+        for tool in upstream {
+            let Some(name) = tool.get("name").and_then(|name| name.as_str()) else {
+                tracing::warn!(plugin_id = %plugin_id, "skipping upstream MCP tool without a string name");
+                continue;
+            };
+            push_http_tool(&mut out, plugin_id, name, tool, "upstream tools/list name");
+        }
+        return out;
+    }
+
     for wanted in &block.tools_allow {
         let Some(tool) = upstream
             .iter()
@@ -380,25 +392,34 @@ pub fn materialize_http_tools(
             );
             continue;
         };
-        if let Err(e) = validate_connector_tool_name(wanted, "mcp_http.tools_allow") {
-            tracing::warn!(plugin_id = %plugin_id, tool = %wanted, error = %e, "skipping tool");
-            continue;
-        }
-        out.push(ExposedTool {
-            name: wanted.clone(),
-            description: tool
-                .get("description")
-                .and_then(|d| d.as_str())
-                .map(str::to_string),
-            // `kind` stays `None`: connector tools are ordinary tool calls,
-            // never forge actions (D6 — a forge action would hand them the
-            // forge credential passthrough).
-            kind: None,
-            input_schema: tool.get("inputSchema").cloned(),
-            annotations: tool.get("annotations").cloned(),
-        });
+        push_http_tool(&mut out, plugin_id, wanted, tool, "mcp_http.tools_allow");
     }
     out
+}
+
+fn push_http_tool(
+    out: &mut Vec<ExposedTool>,
+    plugin_id: &str,
+    name: &str,
+    tool: &Value,
+    field: &str,
+) {
+    if let Err(e) = validate_connector_tool_name(name, field) {
+        tracing::warn!(plugin_id = %plugin_id, tool = %name, error = %e, "skipping tool");
+        return;
+    }
+    out.push(ExposedTool {
+        name: name.to_string(),
+        description: tool
+            .get("description")
+            .and_then(|description| description.as_str())
+            .map(str::to_string),
+        // Connector tools are ordinary calls, never forge actions: a forge
+        // action would receive the forge credential passthrough.
+        kind: None,
+        input_schema: tool.get("inputSchema").cloned(),
+        annotations: tool.get("annotations").cloned(),
+    });
 }
 
 /// The `cli-query` half of §2.7: turn the manifest's hand-declared
@@ -442,6 +463,14 @@ mod tests {
         .unwrap()
     }
 
+    fn all_tools_block() -> McpHttpBlock {
+        serde_json::from_value(json!({
+            "url": "https://example.com/mcp",
+            "tools_all": true,
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn http_materialization_filters_by_allowlist() {
         let upstream = vec![
@@ -454,6 +483,47 @@ mod tests {
         assert_eq!(tools[0].name, "list_reports");
         assert_eq!(tools[0].description.as_deref(), Some("d"));
         assert_eq!(tools[0].input_schema, Some(json!({ "type": "object" })));
+    }
+
+    #[test]
+    fn all_tools_materialization_keeps_valid_upstream_metadata_and_never_mints_forge_actions() {
+        let upstream = vec![
+            json!({
+                "name": "list_reports",
+                "description": "d",
+                "inputSchema": { "type": "object" },
+                "annotations": { "readOnlyHint": true }
+            }),
+            json!({ "name": "two words", "inputSchema": {} }),
+            json!({ "description": "missing name" }),
+        ];
+        let tools = materialize_http_tools("c", &all_tools_block(), &upstream);
+        assert_eq!(
+            tools.len(),
+            1,
+            "invalid upstream names must still be refused"
+        );
+        assert_eq!(tools[0].name, "list_reports");
+        assert_eq!(tools[0].description.as_deref(), Some("d"));
+        assert_eq!(tools[0].input_schema, Some(json!({ "type": "object" })));
+        assert_eq!(tools[0].annotations, Some(json!({ "readOnlyHint": true })));
+        assert!(
+            tools[0].kind.is_none(),
+            "remote tools are not forge actions"
+        );
+    }
+
+    #[test]
+    fn a_legacy_empty_allowlist_does_not_inherit_all_tools() {
+        let upstream = vec![json!({
+            "name": "admin_purge",
+            "inputSchema": { "type": "object" }
+        })];
+        let tools = materialize_http_tools("legacy", &block(&[]), &upstream);
+        assert!(
+            tools.is_empty(),
+            "an absent/empty legacy allowlist must continue exposing nothing: {tools:?}"
+        );
     }
 
     #[test]

@@ -221,6 +221,7 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
       <PluginAddPane
         pending={install.pending}
         onBack={() => setAdding(false)}
+        onCheckConnector={install.checkConnector}
         onInstallConnector={install.installConnector}
         onInstallLocalPath={install.installLocalPath}
         /* The list is what says the install worked, so the form leaves as soon

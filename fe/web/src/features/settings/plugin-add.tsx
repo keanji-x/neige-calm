@@ -1,292 +1,136 @@
-// Settings › Plugins › Add — the form that installs one (#1480).
-//
-// Presentational and props-driven like every other surface here: the draft
-// lives in this component, the write leaves through `onInstall*`, and the only
-// thing this file knows about the kernel is that it answers with a sentence
-// when it refuses.
-//
-// ## Why a second level rather than a row on the list
-//
-// An install is not a setting. It is several fields that only mean anything
-// together — a URL with no credential and a credential with no URL are both
-// half a plugin — and it has a moment of commitment: `POST /install` creates a
-// row, writes a tree and stores a credential. That is the same shape as the
-// plugin *configuration* pane one file over, and it is why both have an
-// explicit button while INV-SETTINGS-003 keeps every ordinary settings row
-// committing itself.
-//
-// ## Two sources, and they are not two ways to do one thing
-//
-// * **Remote MCP server** is the one the operator can complete on their own:
-//   they have a URL and a key, and the kernel writes the plugin tree for them.
-// * **Server directory** installs a tree that already exists *on the machine
-//   the workspace runs on* — the only way to install a plugin that runs code.
-//   The path is resolved in the kernel's filesystem, which is why this asks for
-//   a path instead of offering a file picker: a picker would read the operator's
-//   own computer, which is not where the plugin has to be.
-//
-// A selector rather than two panes: they answer one question ("where does this
-// plugin come from"), the fields below it change with the answer, and the
-// second source is one field.
-//
-// ## The API key is typed once and never read back
-//
-// The field is a password input, the value is held only until the request goes
-// out, and nothing on this screen or in the plugin list can display it
-// afterwards — the kernel writes it into a `secrets.json` it keeps `0600` and
-// never echoes it in a response. Editing a stored key is therefore not offered
-// here: it is not an edit, it is a fresh install, and pretending otherwise
-// would need a control that shows what it cannot show.
-
+// Draft configuration stays in component memory. Check is a diagnostic request,
+// never an installation prerequisite; only Add creates a plugin.
+import { useEffect, useRef } from 'react';
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { Selector as AstryxSelector } from '@astryxdesign/core/Selector';
-import { Text as AstryxText } from '@astryxdesign/core/Text';
+import { TextArea } from '@astryxdesign/core/TextArea';
 import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput';
-
-import {
-  EMPTY_CONNECTOR_DRAFT, connectorDraftError,
-  type ApiKeyPlacement, type ConnectorInstallDraft,
-} from '../../../../core/domain/plugins.ts';
+import { parseMcpConfig } from '../../../../core/domain/mcp-config.ts';
+import { connectorDraftError, type ConnectorCheckResult, type ConnectorInstallDraft } from '../../../../core/domain/plugins.ts';
 import { useState } from '../../ui/state/public.ts';
 import { CONTROL_WIDTH, SettingRow, SettingsList, SettingsPane } from './public.tsx';
 import styles from './settings.module.css';
 
 export type PluginAddPaneProps = Readonly<{
-  /** True while an install is in flight. */
   pending: boolean;
   onBack: () => void;
-  /** Both resolve with the kernel's refusal, or `null` when the plugin was
-   *  installed. A rejected promise would take the operator's typing with it. */
+  onCheckConnector: (draft: ConnectorInstallDraft) => Promise<ConnectorCheckResult>;
   onInstallConnector: (draft: ConnectorInstallDraft) => Promise<string | null>;
   onInstallLocalPath: (path: string) => Promise<string | null>;
-  /** Called after an install the kernel accepted, so the caller can leave. */
   onInstalled: () => void;
 }>;
-
-type Source = 'connector' | 'local_path';
 
 const SOURCE_OPTIONS = Object.freeze([
   Object.freeze({ value: 'connector', label: 'Remote MCP server' }),
   Object.freeze({ value: 'local_path', label: 'Server directory' }),
 ] as const);
-
-const PLACEMENT_OPTIONS = Object.freeze([
-  Object.freeze({ value: 'bearer', label: 'Authorization: Bearer' }),
-  Object.freeze({ value: 'header', label: 'Custom header' }),
+const TOOL_ACCESS_OPTIONS = Object.freeze([
+  Object.freeze({ value: 'all', label: 'All tools' }),
+  Object.freeze({ value: 'selected', label: 'Selected tools' }),
 ] as const);
 
-export function PluginAddPane({
-  pending, onBack, onInstallConnector, onInstallLocalPath, onInstalled,
-}: PluginAddPaneProps) {
-  const [source, setSource] = useState<Source>('connector');
-  const [draft, setDraft] = useState<ConnectorInstallDraft>(EMPTY_CONNECTOR_DRAFT);
+export function PluginAddPane({ pending, onBack, onCheckConnector, onInstallConnector, onInstallLocalPath, onInstalled }: PluginAddPaneProps) {
+  const [source, setSource] = useState('connector');
+  const [raw, setRaw] = useState('');
+  const [selection, setSelection] = useState<string>();
+  const [advanced, setAdvanced] = useState(false);
+  const [overrides, setOverrides] = useState<Partial<ConnectorInstallDraft>>({});
   const [path, setPath] = useState('');
-  /* The kernel's refusal, or the one refusal this form makes on its own. Both
-     are cleared by typing: a verdict about the values that were sent is not a
-     verdict about the ones being edited. */
   const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checked, setChecked] = useState<ConnectorCheckResult | null>(null);
+  const generation = useRef(0);
+  useEffect(() => () => { generation.current += 1; }, []);
 
-  const localDraftError = source === 'connector'
-    ? connectorDraftError(draft)
-    : (path.trim() === '' ? 'A directory path is required.' : null);
+  const parsed = parseMcpConfig(raw, selection);
+  const choices = parseMcpConfig(raw);
+  const draft = parsed.kind === 'ready' ? { ...parsed.draft, ...overrides } : null;
+  const problem = parsed.kind === 'invalid' ? parsed.error
+    : parsed.kind === 'choose' ? 'Choose one server to add.'
+      : draft === null ? 'Paste a configuration.' : connectorDraftError(draft);
 
-  const edit = (next: ConnectorInstallDraft) => {
-    setDraft(next);
+  const invalidate = () => {
+    generation.current += 1;
+    setChecking(false);
+    setChecked(null);
     setError(null);
   };
-
-  const submit = () => {
-    if (localDraftError !== null) {
-      setError(localDraftError);
-      return;
-    }
+  const editAdvanced = (change: Partial<ConnectorInstallDraft>) => {
+    invalidate();
+    setOverrides((value) => ({ ...value, ...change }));
+  };
+  const check = async () => {
+    if (problem !== null || draft === null) { setError(problem); return; }
+    const token = ++generation.current;
+    setChecking(true);
+    setChecked(null);
     setError(null);
-    const write = source === 'connector'
-      ? onInstallConnector(draft)
-      : onInstallLocalPath(path);
-    void write.then((failure) => {
-      if (failure === null) onInstalled();
-      else setError(failure);
-    });
+    let result: ConnectorCheckResult;
+    try { result = await onCheckConnector(draft); }
+    catch { result = { ok: false, message: 'The connection check could not finish. Try again.' }; }
+    if (generation.current !== token) return;
+    setChecking(false);
+    setChecked(result);
+  };
+  const submit = async () => {
+    const failure = source === 'connector' ? problem : path.trim() === '' ? 'A directory path is required.' : null;
+    if (failure !== null) { setError(failure); return; }
+    invalidate();
+    try {
+      const result = source === 'connector' && draft !== null
+        ? await onInstallConnector(draft) : await onInstallLocalPath(path);
+      if (result === null) onInstalled(); else setError(result);
+    } catch { setError('The plugin could not be added. Try again.'); }
   };
 
   return (
-    <SettingsPane
-      title="Add a plugin"
-      lede="Where this plugin comes from. Nothing runs until you enable it on the previous screen."
-    >
+    <SettingsPane title="Add a plugin" lede="Paste your MCP configuration. Nothing runs until you enable the plugin after adding it.">
       <div className={styles.actions}>
         <AstryxButton label="‹ Plugins" variant="ghost" onClick={onBack} />
       </div>
-
       <SettingsList>
-        <SettingRow
-          title="Source"
-          description="A remote MCP server the workspace calls, or a plugin directory already on the server."
-          control={(
-            <AstryxSelector
-              label="Source"
-              isLabelHidden
-              value={source}
-              options={[...SOURCE_OPTIONS]}
-              onChange={(value) => {
-                setSource(value === 'local_path' ? 'local_path' : 'connector');
-                setError(null);
-              }}
-              width={CONTROL_WIDTH}
-            />
-          )}
-        />
-
-        {source === 'connector' ? (
-          <>
-            <SettingRow
-              title="Name"
-              description="What the plugin is called in this list."
-              control={(
-                <AstryxTextInput
-                  label="Name"
-                  isLabelHidden
-                  value={draft.display_name}
-                  placeholder="Zhibao"
-                  onChange={(value) => edit({ ...draft, display_name: value })}
-                  width={CONTROL_WIDTH}
-                />
-              )}
-            />
-            <SettingRow
-              title="Id"
-              /* The kernel owns what a legal id is (`is_valid_plugin_id`), and
-                 it owns uniqueness too — a taken id comes back as a 409 with
-                 its own sentence. This line says what the id is *for*, which is
-                 the part no error message will tell them. */
-              description="Stable key for this plugin: lower-case letters, digits, dots and dashes."
-              control={(
-                <AstryxTextInput
-                  label="Id"
-                  isLabelHidden
-                  value={draft.id}
-                  placeholder="com.example.zhibao"
-                  onChange={(value) => edit({ ...draft, id: value })}
-                  width={CONTROL_WIDTH}
-                />
-              )}
-            />
-            <SettingRow
-              title="Server URL"
-              description="The streamable-HTTP MCP endpoint."
-              control={(
-                <AstryxTextInput
-                  label="Server URL"
-                  isLabelHidden
-                  value={draft.url}
-                  placeholder="https://mcp.example.com/mcp"
-                  onChange={(value) => edit({ ...draft, url: value })}
-                  width={CONTROL_WIDTH}
-                />
-              )}
-            />
-            <SettingRow
-              title="Tools"
-              /* The sentence has to carry the fact the screen cannot show: the
-                 kernel exposes exactly the names listed here, so a connector
-                 installed with none runs and contributes nothing. */
-              description="Which of the server’s tools to expose, separated by commas. A connector exposes only what is named here."
-              control={(
-                <AstryxTextInput
-                  label="Tools"
-                  isLabelHidden
-                  value={draft.tools}
-                  placeholder="list-articles, get-article-detail"
-                  onChange={(value) => edit({ ...draft, tools: value })}
-                  width={CONTROL_WIDTH}
-                />
-              )}
-            />
-            <SettingRow
-              title="API key"
-              /* Two facts the operator needs before they paste a credential:
-                 where it goes, and that this is their last look at it. */
-              description="Stored on the server, never shown again. Leave empty for a server that needs no key."
-              control={(
-                <AstryxTextInput
-                  label="API key"
-                  isLabelHidden
-                  type="password"
-                  value={draft.api_key}
-                  onChange={(value) => edit({ ...draft, api_key: value })}
-                  width={CONTROL_WIDTH}
-                />
-              )}
-            />
-            {draft.api_key.trim() !== '' && (
-              <SettingRow
-                title="Key placement"
-                description="How the key is sent. Most servers take a bearer token."
-                control={(
-                  <AstryxSelector
-                    label="Key placement"
-                    isLabelHidden
-                    value={draft.placement}
-                    options={[...PLACEMENT_OPTIONS]}
-                    onChange={(value) => edit({
-                      ...draft,
-                      placement: (value === 'header' ? 'header' : 'bearer') satisfies ApiKeyPlacement,
-                    })}
-                    width={CONTROL_WIDTH}
-                  />
-                )}
-              />
-            )}
-            {draft.api_key.trim() !== '' && draft.placement === 'header' && (
-              <SettingRow
-                title="Header name"
-                description="The key is sent under this header, with no prefix."
-                control={(
-                  <AstryxTextInput
-                    label="Header name"
-                    isLabelHidden
-                    value={draft.header_name}
-                    placeholder="X-API-Key"
-                    onChange={(value) => edit({ ...draft, header_name: value })}
-                    width={CONTROL_WIDTH}
-                  />
-                )}
-              />
-            )}
-          </>
-        ) : (
-          <SettingRow
-            title="Directory path"
-            description="A directory on the machine running this workspace, containing manifest.json."
-            control={(
-              <AstryxTextInput
-                label="Directory path"
-                isLabelHidden
-                value={path}
-                placeholder="/srv/neige/plugins/todo"
-                onChange={(value) => { setPath(value); setError(null); }}
-                width={CONTROL_WIDTH}
-              />
-            )}
-          />
-        )}
+        <SettingRow title="Source" description="Connect a remote MCP server or use a plugin directory on this server." control={(
+          <AstryxSelector label="Source" isLabelHidden value={source} options={[...SOURCE_OPTIONS]} width={CONTROL_WIDTH}
+            onChange={(value) => { invalidate(); setSource(value); }} />
+        )} />
+        {source === 'connector' ? <>
+          <SettingRow title="MCP configuration" description="JSON with a URL and optional headers. Keep API keys private." control={(
+            <TextArea label="MCP configuration" isLabelHidden width={CONTROL_WIDTH} rows={8} value={raw} isDisabled={pending}
+              placeholder={'{\n  "url": "https://example.com/mcp"\n}'}
+              onChange={(value: string) => { invalidate(); setRaw(value); setSelection(undefined); setOverrides({}); }} />
+          )} />
+          {choices.kind === 'choose' && <SettingRow title="Server" description="Choose one server from this configuration." control={(
+            <AstryxSelector label="Server" isLabelHidden value={selection ?? ''} width={CONTROL_WIDTH}
+              options={[{ value: '', label: 'Choose a server' }, ...choices.names.map((name) => ({ value: name, label: name }))]}
+              onChange={(value) => { invalidate(); setSelection(value || undefined); setOverrides({}); }} />
+          )} />}
+          {draft !== null && <SettingRow title={draft.display_name} description="All tools are available by default. Advanced settings can restrict access." control={(
+            <AstryxButton label={advanced ? 'Hide advanced settings' : 'Advanced settings'} variant="ghost" onClick={() => setAdvanced(!advanced)} />
+          )} />}
+          {advanced && draft !== null && <>
+            <SettingRow title="Name" control={<AstryxTextInput label="Name" isLabelHidden value={draft.display_name} width={CONTROL_WIDTH} onChange={(display_name) => editAdvanced({ display_name })} />} />
+            <SettingRow title="Id" description="A stable identifier generated from the server name and URL." control={<AstryxTextInput label="Id" isLabelHidden value={draft.id} width={CONTROL_WIDTH} onChange={(id) => editAdvanced({ id })} />} />
+            <SettingRow title="Tool access" description="All tools includes new tools on the next enable or reload." control={(
+              <AstryxSelector label="Tool access" isLabelHidden value={draft.tool_mode} options={[...TOOL_ACCESS_OPTIONS]} width={CONTROL_WIDTH}
+                onChange={(value) => editAdvanced({ tool_mode: value === 'selected' ? 'selected' : 'all' })} />
+            )} />
+            {draft.tool_mode === 'selected' && <SettingRow title="Tools" description="Enter exact tool names separated by commas, spaces or newlines." control={(
+              <AstryxTextInput label="Tools" isLabelHidden value={draft.tools} width={CONTROL_WIDTH} onChange={(tools) => editAdvanced({ tools })} />
+            )} />}
+          </>}
+        </> : <SettingRow title="Directory path" description="A directory containing manifest.json on the machine running Neige Calm." control={(
+          <AstryxTextInput label="Directory path" isLabelHidden value={path} width={CONTROL_WIDTH} onChange={(value) => { invalidate(); setPath(value); }} />
+        )} />}
       </SettingsList>
-
-      {error !== null && <p className={styles.error} role="alert">{error}</p>}
-
+      {error !== null && <p role="alert">{error}</p>}
+      {checked !== null && (checked.ok
+        ? <div role="status" aria-label="Connection check"><p>Connection successful · {checked.tools.length} tools discovered. Tool calls have not been tested.</p>
+          <details><summary>View tool names</summary><ul>{checked.tools.map((name, index) => <li key={`${name}-${index}`}>{name}</li>)}</ul></details></div>
+        : <p role="alert">{checked.message}</p>)}
       <div className={styles.actions}>
-        <AstryxButton
-          label="Add plugin"
-          variant="primary"
-          isLoading={pending}
-          isDisabled={pending}
-          onClick={submit}
-        />
+        {source === 'connector' && <AstryxButton label={checking ? 'Checking…' : 'Check connection'} variant="secondary" isDisabled={pending || checking} onClick={() => { void check(); }} />}
+        <AstryxButton label={pending ? 'Adding…' : 'Add plugin'} isDisabled={pending} onClick={() => { void submit(); }} />
       </div>
-      <AstryxText as="p" color="secondary">
-        A new plugin is installed switched off. Enable it on the previous screen to start it.
-      </AstryxText>
     </SettingsPane>
   );
 }

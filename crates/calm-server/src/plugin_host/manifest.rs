@@ -3,7 +3,7 @@
 //! Every plugin ships a `manifest.json` at the root of its install directory.
 //! This module owns its typed shape, validation, and shared error surface.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use crate::mcp_server::tools::plan::key_is_valid;
@@ -369,8 +369,20 @@ pub struct McpHttpBlock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_in: Option<String>,
 
-    /// Hand-written allowlist of upstream tool names to expose. Names the
-    /// upstream does not serve are warned about and skipped, not fatal (§2.2).
+    /// Header name to secrets.json key. Values never live in the public manifest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub header_secrets: BTreeMap<String, String>,
+
+    /// Discover and expose the upstream's complete current catalog on every
+    /// enable/reload. Explicit rather than inferred from an empty allowlist so
+    /// manifests written before this field existed keep exposing nothing.
+    #[serde(default)]
+    pub tools_all: bool,
+
+    /// Hand-written strict allowlist of upstream tool names to expose. Names
+    /// the upstream does not serve are warned about and skipped, not fatal
+    /// (§2.2). An absent or empty list still exposes nothing unless
+    /// `tools_all` is explicitly true.
     #[serde(default)]
     pub tools_allow: Vec<String>,
 
@@ -1292,7 +1304,7 @@ impl McpHttpBlock {
                     ));
                 }
             }
-            if self.api_key_secret.is_some() {
+            if self.api_key_secret.is_some() || !self.header_secrets.is_empty() {
                 probe_literal_url(raw)?;
             }
         }
@@ -1382,6 +1394,39 @@ impl McpHttpBlock {
                 Some(_) => {}
             },
             (None, _) => {}
+        }
+        super::http_headers::validate_header_names(self.header_secrets.keys().map(String::as_str))
+            .map_err(|why| ManifestError::invalid("mcp_http.header_secrets", why))?;
+        if self.header_secrets.values().any(|key| key.is_empty()) {
+            return Err(ManifestError::invalid(
+                "mcp_http.header_secrets",
+                "secret references must be non-empty",
+            ));
+        }
+        if let Some(auth) = self
+            .api_key_in_parsed()
+            .filter(|_| self.api_key_secret.is_some())
+        {
+            let auth_name = match auth {
+                ApiKeyIn::Bearer => "authorization".to_string(),
+                ApiKeyIn::Header(name) => name,
+            };
+            if self
+                .header_secrets
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case(&auth_name))
+            {
+                return Err(ManifestError::invalid(
+                    "mcp_http.header_secrets",
+                    "cannot override the API key header",
+                ));
+            }
+        }
+        if self.tools_all && !self.tools_allow.is_empty() {
+            return Err(ManifestError::invalid(
+                "mcp_http.tools_all",
+                "cannot be true when `mcp_http.tools_allow` names tools; choose all tools or a strict allowlist",
+            ));
         }
         for (i, name) in self.tools_allow.iter().enumerate() {
             validate_connector_tool_name(name, &format!("mcp_http.tools_allow[{i}]"))?;
@@ -2015,7 +2060,7 @@ pub fn resolve_mcp_http_url(
     // spellings) that a configuration value is the newest way to introduce.
     validate_mcp_http_url(&rendered).map_err(|e| e.to_string())?;
 
-    if block.api_key_secret.is_some() {
+    if block.api_key_secret.is_some() || !block.header_secrets.is_empty() {
         lock_origin(raw, &rendered)?;
     }
     Ok(ResolvedMcpUrl(rendered))
@@ -3783,6 +3828,49 @@ mod connector_kind_tests {
     // ---- mcp_http block --------------------------------------------------
 
     #[test]
+    fn all_tools_is_explicit_and_legacy_empty_allowlists_stay_empty() {
+        for explicit_empty in [false, true] {
+            let mut block = mcp_http_block();
+            let object = block.as_object_mut().unwrap();
+            if explicit_empty {
+                object.insert("tools_allow".into(), json!([]));
+            } else {
+                object.remove("tools_allow");
+            }
+            let manifest = Manifest::parse(&base(json!({
+                "kind": "mcp-http",
+                "mcp_http": block,
+            })))
+            .expect("legacy connector still parses");
+            let parsed = manifest.mcp_http.unwrap();
+            assert!(!parsed.tools_all, "absence must never be promoted to all");
+            assert!(parsed.tools_allow.is_empty());
+        }
+
+        let mut block = mcp_http_block();
+        block.as_object_mut().unwrap().remove("tools_allow");
+        block["tools_all"] = json!(true);
+        let manifest = Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": block,
+        })))
+        .expect("explicit all-tools connector parses");
+        assert!(manifest.mcp_http.unwrap().tools_all);
+    }
+
+    #[test]
+    fn a_manifest_cannot_combine_all_tools_with_a_named_allowlist() {
+        let mut block = mcp_http_block();
+        block["tools_all"] = json!(true);
+        let error = Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": block,
+        })))
+        .expect_err("two authority modes must be refused");
+        assert!(error.to_string().contains("tools_all"), "{error}");
+    }
+
+    #[test]
     fn mcp_http_url_must_be_absolute_http() {
         let mut block = mcp_http_block();
         block["url"] = json!("mcp.example.com/mcp");
@@ -4082,6 +4170,8 @@ mod connector_kind_tests {
             url: "https://user{{config.endpoint}}@h.example/mcp".to_string(),
             api_key_secret: Some("API_KEY".to_string()),
             api_key_in: Some("bearer".to_string()),
+            header_secrets: BTreeMap::new(),
+            tools_all: false,
             tools_allow: vec!["quote".to_string()],
             request_timeout_ms: None,
             bringup_timeout_ms: None,

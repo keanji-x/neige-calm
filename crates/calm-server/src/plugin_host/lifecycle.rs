@@ -202,8 +202,7 @@ impl PluginHost {
     pub async fn install_managed_connector(&self, connector: &ConnectorInstall) -> Result<Plugin> {
         let text = serde_json::to_string_pretty(&connector.manifest_json())
             .map_err(|e| CalmError::PluginInstall(format!("serializing manifest: {e}")))?;
-        let manifest =
-            Manifest::parse(&text).map_err(|e| CalmError::PluginInstall(e.to_string()))?;
+        let (manifest, secrets) = connector.prepare().map_err(CalmError::PluginInstall)?;
         self.check_min_kernel(&manifest)?;
 
         let guard = self
@@ -215,7 +214,6 @@ impl PluginHost {
         // cleanup aimed at a path the install never wrote is the one mistake
         // this function must not make.
         let install_dir = self.plugins_dir.join(&manifest.id);
-        let credential = connector.credential().map(str::to_owned);
         // **Whether this call wrote the tree**, not whether a tree exists. The
         // difference is a live plugin's credential: a duplicate-id refusal
         // happens with the previous install's tree sitting at exactly this
@@ -225,7 +223,7 @@ impl PluginHost {
         let wrote_tree = std::sync::atomic::AtomicBool::new(false);
         let outcome = self
             .install_under(&guard, manifest, |dir| {
-                let written = managed::write_connector_tree(dir, &text, credential.as_deref());
+                let written = managed::write_connector_tree(dir, &text, &secrets);
                 if written.is_ok() {
                     wrote_tree.store(true, std::sync::atomic::Ordering::Relaxed);
                 }

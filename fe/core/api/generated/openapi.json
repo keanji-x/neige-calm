@@ -2714,6 +2714,57 @@
         }
       }
     },
+    "/api/plugins/mcp/check": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Transient authenticated diagnostic; never installs or enables a plugin.",
+        "operationId": "check_mcp_connection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectorInstall"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpCheckResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/plugins/views": {
       "get": {
         "tags": [
@@ -6895,6 +6946,16 @@
           "display_name": {
             "type": "string"
           },
+          "headers": {
+            "type": "object",
+            "description": "Private literal HTTP headers. Stored only in secrets.json; not echoed.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "id": {
             "type": "string",
             "description": "Plugin id. Validated by `Manifest::parse`, not here — the manifest is\nthe single source of truth for what a legal id is."
@@ -6906,6 +6967,10 @@
             ],
             "format": "int64",
             "minimum": 0
+          },
+          "tools_all": {
+            "type": "boolean",
+            "description": "Explicit all-tools mode. Old requests omitting this flag retain their\nstrict (possibly empty) allowlist."
           },
           "tools_allow": {
             "type": "array",
@@ -7751,6 +7816,20 @@
           "path": {
             "type": "string",
             "description": "Canonical absolute path of the listed directory."
+          }
+        }
+      },
+      "McpCheckResult": {
+        "type": "object",
+        "required": [
+          "tools"
+        ],
+        "properties": {
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

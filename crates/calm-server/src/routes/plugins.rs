@@ -36,6 +36,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/plugins", get(list_plugins))
         .route("/api/plugins/views", get(list_plugin_views))
         .route("/api/plugins/install", post(install_plugin))
+        .route("/api/plugins/mcp/check", post(check_mcp_connection))
         .route(
             "/api/plugins/{id}",
             get(get_plugin_detail).delete(uninstall_plugin),
@@ -1660,5 +1661,24 @@ mod rotate_error_mapping_tests {
         let mapped = rotate_error_to_calm("dev.app", HostError::OperatorDisabled("dev.app".into()));
         assert_eq!(mapped.status(), StatusCode::CONFLICT);
         assert_eq!(mapped.code(), "plugin_conflict");
+    }
+}
+
+/// Transient authenticated diagnostic; never installs or enables a plugin.
+#[utoipa::path(post, path = "/api/plugins/mcp/check", request_body = ConnectorInstall,
+    responses((status = 200, body = crate::plugin_host::mcp_setup::McpCheckResult),
+        (status = 400, body = ErrorBody), (status = 502, body = ErrorBody)), tag = "plugins")]
+pub(crate) async fn check_mcp_connection(Json(body): Json<ConnectorInstall>) -> Response {
+    match crate::plugin_host::mcp_setup::check(body).await {
+        Ok(result) => Json(result).into_response(),
+        Err((network, message)) => (
+            if network {
+                StatusCode::BAD_GATEWAY
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            Json(serde_json::json!({"code": "mcp_setup_failed", "error": message})),
+        )
+            .into_response(),
     }
 }

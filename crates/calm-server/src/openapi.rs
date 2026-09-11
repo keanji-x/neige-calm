@@ -173,6 +173,7 @@ use utoipa::OpenApi;
         crate::routes::plugins::list_plugins,
         crate::routes::plugins::get_plugin_detail,
         crate::routes::plugins::install_plugin,
+        crate::routes::plugins::check_mcp_connection,
         crate::routes::plugins::uninstall_plugin,
         crate::routes::plugins::enable_plugin,
         crate::routes::plugins::disable_plugin,
