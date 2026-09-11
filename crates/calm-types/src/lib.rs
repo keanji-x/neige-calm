@@ -3,6 +3,7 @@
 //! This bottom layer contains no sqlx, axum, tokio, or other IO dependencies.
 
 pub mod boot_budget;
+pub mod compatibility;
 pub mod error;
 pub mod event;
 pub mod forge_git;

@@ -129,6 +129,11 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         KERNEL_PROTOCOL_VERSION
     );
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
+    assert_eq!(
+        v["apiVersion"].as_str().unwrap(),
+        "7",
+        "MCP setup needs a new API capability revision"
+    );
     // #1450: "4" -> "5" because Track detail now requires `can_resume`.
     // #1316 S4b: "5" -> "6" when three planner REST responses renamed
     // `runtime_id` to `worker_session_id`.

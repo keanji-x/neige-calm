@@ -107,6 +107,9 @@ Open **Settings → Plugins → Add a plugin**. Choose a source:
 | **Remote MCP server** | Paste the server’s MCP configuration JSON. Tool access defaults to the complete catalog. |
 | **Server directory** | A directory containing `manifest.json` on the machine running Neige Calm. This is not a directory on the browser's computer. |
 
+Update the server and app together before using JSON setup; older servers
+cannot interpret its new configuration fields. A web-only update is refused.
+
 Paste a direct `{"url":"https://example.com/mcp","headers":{}}` object,
 Claude-style `mcpServers`, or VS Code-style `servers`. If there is more than one
 server, choose the one to add. The name and stable plugin ID are filled in

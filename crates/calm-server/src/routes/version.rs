@@ -46,7 +46,11 @@ use utoipa::ToSchema;
 /// they answered `runtime_id`. Unlike a removed endpoint this is silent on the
 /// wire — the request still 200s and the old client reads `undefined` — so the
 /// compatibility gate is the only thing that can turn it into a visible refusal.
-pub const API_VERSION: &str = "6";
+/// Revision 7 adds `headers`/`tools_all` and the unsaved MCP Check endpoint.
+/// Old request bodies remain valid, but web-only updates must reject a kernel
+/// that would silently ignore the new fields. The shared constant also pins
+/// the installer's production preflight regression to what this server emits.
+pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 
 /// Monotonically increasing frontend compatibility floor.
 ///
