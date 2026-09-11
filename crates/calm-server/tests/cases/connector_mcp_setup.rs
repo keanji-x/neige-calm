@@ -124,8 +124,8 @@ async fn mcp_setup_check_rejects_bad_headers_and_auth_failures_without_writes() 
     assert!(!failed.to_string().contains("tenant=tenant-team"));
     for headers in [
         json!({"Host":"bad.example"}),
-        json!({"X-Key":"x\r\ny"}),
-        json!({"X-Key":"a", "x-key":"b"}),
+        json!({"X-Key":"secret\r\nvalue"}),
+        json!({"X-Key":"secret-alpha", "x-key":"secret-bravo"}),
     ] {
         let mut body = setup_body(&stub.url());
         body["headers"] = headers;
