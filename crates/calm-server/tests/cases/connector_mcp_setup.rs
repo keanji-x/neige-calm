@@ -2,7 +2,7 @@ use super::*;
 
 fn setup_body(url: &str) -> Value {
     json!({"id": "test.json-mcp", "display_name": "JSON MCP", "url": url,
-        "tools_all": true, "headers": {"Authorization": format!("Bearer {SECRET_VALUE}"), "X-Tenant": "team"}})
+        "tools_all": true, "headers": {"Authorization": format!("Bearer {SECRET_VALUE}"), "X-Tenant": "tenant-team"}})
 }
 
 #[tokio::test]
@@ -36,7 +36,7 @@ async fn mcp_setup_check_discovers_all_pages_without_installing_or_calling_tools
             .lock()
             .unwrap()
             .iter()
-            .all(|tenant| tenant == "team")
+            .all(|tenant| tenant == "tenant-team")
     );
     assert!(
         stub.auth_by_method()
@@ -91,13 +91,13 @@ async fn mcp_setup_headers_stay_private_and_survive_install_and_restart() {
         .to_json()
         .to_string();
     assert!(!public.contains(SECRET_VALUE));
-    assert!(!public.contains("tenant=team"));
+    assert!(!public.contains("tenant=tenant-team"));
     assert!(
         stub.seen_tenants
             .lock()
             .unwrap()
             .iter()
-            .all(|tenant| tenant == "team")
+            .all(|tenant| tenant == "tenant-team")
     );
     assert!(
         stub.auth_by_method()
@@ -116,7 +116,12 @@ async fn mcp_setup_check_rejects_bad_headers_and_auth_failures_without_writes() 
         post_json(&state, "/api/plugins/mcp/check", setup_body(&stub.url())).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY, "{failed}");
     assert!(!failed.to_string().contains(SECRET_VALUE));
-    assert!(!failed.to_string().contains("tenant=team"));
+    assert!(
+        !failed
+            .to_string()
+            .contains(&SECRET_VALUE[..KEY_STRADDLE_TAIL])
+    );
+    assert!(!failed.to_string().contains("tenant=tenant-team"));
     for headers in [
         json!({"Host":"bad.example"}),
         json!({"X-Key":"x\r\ny"}),
@@ -128,4 +133,49 @@ async fn mcp_setup_check_rejects_bad_headers_and_auth_failures_without_writes() 
         assert_eq!(status, StatusCode::BAD_REQUEST, "{failed}");
     }
     assert!(!b.plugins_dir.join("test.json-mcp").exists());
+}
+
+async fn assert_header_values_refused(values: &[&str]) {
+    let stub = StubServer::start(StubMode::Normal).await;
+    let b = boot().await;
+    let host = b.host();
+    let state = b.state(Arc::clone(&host));
+    for value in values {
+        let mut body = setup_body(&stub.url());
+        body["headers"] = json!({"X-Tenant":value});
+        let (status, checked) = post_json(&state, "/api/plugins/mcp/check", body.clone()).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "unsupported header value must fail before discovery: {checked}"
+        );
+        body["kind"] = json!("mcp_http");
+        let (status, installed) =
+            post_json(&state, "/api/plugins/install", json!({"source":body})).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "same validation before persisting: {installed}"
+        );
+        assert!(!b.plugins_dir.join("test.json-mcp").exists());
+    }
+    assert!(
+        stub.methods().is_empty(),
+        "invalid headers must never leave the host"
+    );
+}
+
+#[tokio::test]
+async fn mcp_setup_check_and_install_refuse_empty_header_values() {
+    assert_header_values_refused(&["", "   "]).await;
+}
+
+#[tokio::test]
+async fn mcp_setup_check_and_install_refuse_outer_whitespace() {
+    assert_header_values_refused(&[" sk-private-tenant ", "sk-private-tenant "]).await;
+}
+
+#[tokio::test]
+async fn mcp_setup_check_and_install_refuse_unsafe_short_header_values() {
+    assert_header_values_refused(&["a", "e", "tools", "result", "12345678", "redacted>y"]).await;
 }

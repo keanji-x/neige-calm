@@ -60,15 +60,37 @@ impl HttpHeaders {
         {
             return Err("HTTP headers exceed 16 KiB".into());
         }
-        for value in headers.values() {
-            if !value.bytes().all(|b| b == b' ' || b.is_ascii_graphic()) {
+        for (name, value) in &headers {
+            if value.trim() != value {
                 return Err(
-                    "HTTP header values must contain printable ASCII without control characters"
-                        .into(),
+                    "HTTP header values must not have leading or trailing whitespace".into(),
                 );
             }
             if value.contains("${") || value.contains("{{") {
                 return Err("HTTP header variables must be resolved before use".into());
+            }
+            // All custom header values are private. Reuse the transport's
+            // existing credential constraints: registering arbitrary short
+            // values would rewrite protocol keys and ordinary tool data.
+            let private = if name.eq_ignore_ascii_case("authorization") {
+                value
+                    .split_once(' ')
+                    .map_or(value.as_str(), |(_, token)| token)
+            } else {
+                value.as_str()
+            };
+            super::HttpCredential::parse(private)
+                .map_err(|why| format!("HTTP header value {why}"))?;
+            // An Authorization scheme is the sole supported space-separated
+            // prefix. Its bytes also need to be a valid HTTP token.
+            if name.eq_ignore_ascii_case("authorization")
+                && let Some((scheme, _)) = value.split_once(' ')
+                && (scheme.is_empty()
+                    || !scheme
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)))
+            {
+                return Err("Authorization scheme must be an HTTP token".into());
             }
         }
         Ok(Self(headers))
@@ -79,7 +101,7 @@ impl HttpHeaders {
     }
 
     /// Register both whole values and the credential in Authorization schemes.
-    /// All configured values are private, including short tenant identifiers.
+    /// Every accepted custom value obeys the same redaction constraints as API keys.
     pub fn private_values(&self) -> Vec<String> {
         let mut values = Vec::new();
         for (name, value) in &self.0 {

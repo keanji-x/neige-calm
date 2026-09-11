@@ -168,7 +168,10 @@ results show discovered tool names and count; failures preserve the draft.
 
 JSON and credentials live only in local component memory. Installed header
 values go into server-side `secrets.json` with mode `0600`; public manifests hold
-only references. Unsupported commands, helper execution, OAuth, SSE and variable
+only references. HTTP values share `HttpCredential` validation (Authorization
+validates the token after its scheme); empty values, outer whitespace, short
+values and unsafe redaction shapes are refused before either operation.
+Unsupported commands, helper execution, OAuth, SSE and variable
 expansion are refused rather than interpreted. The JSON input visibly contains
 what the user pastes; it does not read any stored credential back.
 

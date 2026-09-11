@@ -123,7 +123,14 @@ A successful check confirms discovery, not that every tool call will succeed.
 Only remote HTTP / streamable-HTTP is supported. Local commands (stdio), SSE,
 OAuth, helper commands and unresolved variables are refused. Use literal
 `headers` for authentication, for example `"Authorization": "Bearer your-key"`;
-multiple custom headers are supported. Transport-controlled headers such as
+multiple custom headers are supported. Since all header values are private,
+they use the existing credential rules: at least eight printable ASCII
+characters, no spaces/quotes/backslashes, and not a JSON number. For
+`Authorization`, these rules apply to the token after the scheme (such as
+`Bearer`). Empty values, leading/trailing whitespace, and values that overlap
+the redaction marker are refused by both Check and Add. Short ordinary header
+values are not supported by this connector’s redaction contract.
+Transport-controlled headers such as
 `Host`, `Content-Length` and `Mcp-Session-Id` cannot be supplied.
 Do not put credentials in the URL. Header values stay in memory until Add and
 are then stored privately on the server, never in the public manifest or a

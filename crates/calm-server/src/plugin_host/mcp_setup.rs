@@ -3,14 +3,9 @@
 use super::{
     ConnectorInstall, HttpCredential, HttpMcpClient, connector, http_headers::HttpHeaders, manifest,
 };
-use serde::Serialize;
 use std::sync::Arc;
-use utoipa::ToSchema;
 
-#[derive(Serialize, ToSchema)]
-pub struct McpCheckResult {
-    pub tools: Vec<String>,
-}
+pub use calm_types::mcp_connector::McpCheckResult;
 
 pub async fn check(connector: ConnectorInstall) -> Result<McpCheckResult, (bool, String)> {
     let (manifest, _) = connector.prepare().map_err(|why| (false, why))?;

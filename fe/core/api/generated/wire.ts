@@ -327,6 +327,8 @@ export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" |
  */
 export type HarnessQueueChange = "edited" | "deleted" | "steered" | "dropped";
 
+export type McpCheckResult = { tools: Array<string>, };
+
 export type MobileStatus = { available: boolean, publicUrl: string | null, pending: Array<PendingPair>, devices: Array<PairedDevice>, };
 
 export type Overlay = { id: string, plugin_id: string, 

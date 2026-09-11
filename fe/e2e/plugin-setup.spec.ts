@@ -33,7 +33,7 @@ test('checks an unsaved MCP configuration, installs it, and enables every catalo
     await page.goto('/next/settings/plugins');
     await page.getByText('Add a plugin', { exact: true }).click();
     await page.getByRole('textbox', { name: 'MCP configuration' }).fill(JSON.stringify({ mcpServers: {
-      [name]: { type: 'http', url: `http://${fixtureHost}:${address.port}/mcp`, headers: { Authorization: 'Bearer fixture-private-token', 'X-Tenant': 'team' } },
+      [name]: { type: 'http', url: `http://${fixtureHost}:${address.port}/mcp`, headers: { Authorization: 'Bearer fixture-private-token', 'X-Tenant': 'tenant-team' } },
     } }, null, 2));
     await page.getByRole('button', { name: 'Check connection' }).click();
     await expect(page.getByRole('status', { name: 'Connection check' })).toContainText('2 tools discovered');
@@ -55,7 +55,7 @@ test('checks an unsaved MCP configuration, installs it, and enables every catalo
       const result = await (await request.get(`/api/plugins/${pluginId}`)).json() as { state: string };
       return result.state;
     }).toBe('running');
-    expect(seen.every((entry) => entry.auth === 'Bearer fixture-private-token' && entry.tenant === 'team')).toBe(true);
+    expect(seen.every((entry) => entry.auth === 'Bearer fixture-private-token' && entry.tenant === 'tenant-team')).toBe(true);
     expect(seen.some((entry) => entry.method === 'tools/call')).toBe(false);
   } finally {
     if (pluginId !== undefined) await request.delete(`/api/plugins/${pluginId}`);

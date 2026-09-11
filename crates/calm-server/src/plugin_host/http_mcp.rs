@@ -239,10 +239,9 @@
 //! of the credential — `{"error":"Invalid API key: sk-…"}` reaches this same
 //! arm — so the example is stated at that width instead.
 
-// Private imported headers may contain spaces, short identifiers or numeric
-// values, unlike the legacy HttpCredential API. with_headers registers every
-// value (and Authorization token); scrub_value covers scalar echoes and the
-// final scrub scan prevents overlapping values from re-forming a credential.
+// Imported header values share the legacy credential validation rules. The
+// Authorization scheme is retained on the wire while its token is also
+// registered separately for redaction of ordinary upstream auth errors.
 use std::collections::HashSet;
 use std::io::Read as _;
 use std::sync::Arc;
@@ -2482,13 +2481,13 @@ mod tests {
     }
 
     #[test]
-    fn mcp_setup_scrubs_short_numeric_and_escaped_header_values() {
+    fn mcp_setup_scrubs_all_private_header_values() {
         let block: McpHttpBlock =
             serde_json::from_value(json!({"url":"https://mcp.example.com/"})).unwrap();
         let headers =
             super::super::http_headers::HttpHeaders::parse(std::collections::BTreeMap::from([
-                ("X-Tenant".to_string(), "team".to_string()),
-                ("X-Number".to_string(), "12345".to_string()),
+                ("X-Tenant".to_string(), "tenant-team".to_string()),
+                ("X-Second".to_string(), "private-12345".to_string()),
                 (
                     "Authorization".to_string(),
                     "Bearer sk-private-quoted".to_string(),
@@ -2497,9 +2496,9 @@ mod tests {
             .unwrap();
         let client = HttpMcpClient::new("c", &resolved(&block), &block, None).with_headers(headers);
         let value = parse_scrubbed(&client.secret_forms,
-            r#"{"result":{"team":"sk-private-quoted","number":12345,"nested":["Bearer sk-private-quoted"]}}"#, "tools/list").unwrap();
+            r#"{"result":{"tenant-team":"sk-private-quoted","second":"private-12345","nested":["Bearer sk-private-quoted"]}}"#, "tools/list").unwrap();
         let output = value.to_string();
-        for secret in ["team", "12345", "sk-private-quoted"] {
+        for secret in ["tenant-team", "private-12345", "sk-private-quoted"] {
             assert!(!output.contains(secret), "{output}");
         }
         assert!(!format!("{client:?}").contains("sk-private-quoted"));

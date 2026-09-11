@@ -10,6 +10,7 @@
 import { z } from 'zod';
 
 import type { ApiOperation } from '../api/types.js';
+import type { McpCheckResult } from '../api/generated/wire.js';
 
 /**
  * The kernel's wire-name set for a plugin's runtime state, plus the fallback
@@ -234,7 +235,7 @@ export function installConnectorOperation(draft: ConnectorInstallDraft): ApiOper
 }
 
 /** Check is a transient POST; its body must never become a query key/cache. */
-export const connectorCheckSchema = z.object({ tools: z.array(z.string()) });
+export const connectorCheckSchema: z.ZodType<McpCheckResult> = z.object({ tools: z.array(z.string()) });
 export type ConnectorCheckResult = Readonly<{ ok: true; tools: readonly string[] }>
   | Readonly<{ ok: false; message: string }>;
 

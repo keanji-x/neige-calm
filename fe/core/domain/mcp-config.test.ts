@@ -5,12 +5,12 @@ describe('MCP JSON configuration', () => {
   it('imports named HTTP servers and preserves headers without browser storage', () => {
     const result = parseMcpConfig(JSON.stringify({ mcpServers: { 'Docs & Search': {
       type: 'http', url: 'https://example.com/mcp',
-      headers: { Authorization: 'Bearer sk-private-value', 'X-Tenant': 'team' },
+      headers: { Authorization: 'Bearer sk-private-value', 'X-Tenant': 'tenant-team' },
     } } }));
     expect(result.kind).toBe('ready');
     if (result.kind !== 'ready') throw new Error('expected ready');
     expect(result.draft).toMatchObject({ display_name: 'Docs & Search', tool_mode: 'all',
-      headers: { Authorization: 'Bearer sk-private-value', 'X-Tenant': 'team' } });
+      headers: { Authorization: 'Bearer sk-private-value', 'X-Tenant': 'tenant-team' } });
     expect(result.draft.id).toMatch(/^[a-z0-9][a-z0-9._-]*$/);
     expect(parseMcpConfig(JSON.stringify({ mcpServers: { 'Docs & Search': {
       headers: { Authorization: 'Bearer another-credential', 'X-Tenant': 'other' },
