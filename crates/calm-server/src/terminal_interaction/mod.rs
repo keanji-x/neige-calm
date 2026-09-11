@@ -14,7 +14,9 @@ use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
 mod client;
+mod observation;
 mod operations;
+pub use observation::ObservationFormat;
 mod target;
 use client::Client;
 pub(crate) use target::Binding;
@@ -134,7 +136,8 @@ impl TerminalInteraction {
         target: &Target,
         offset: usize,
         wait_ms: u64,
-    ) -> Result<(Value, Vec<u8>)> {
+        format: ObservationFormat,
+    ) -> Result<(Value, Option<Vec<u8>>)> {
         ensure!(wait_ms <= 2000, "observation wait exceeds 2000ms");
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let terminal = resolved.binding.terminal_id.as_str();
@@ -158,25 +161,18 @@ impl TerminalInteraction {
             .lock()
             .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
             .capture(offset)?;
-        let raster = self
-            .raster
-            .get_or_try_init(|| async {
-                tokio::task::spawn_blocking(Rasterizer::system)
-                    .await?
-                    .map(Arc::new)
-            })
-            .await?
-            .clone();
-        let image_frame = frame.clone();
-        let png = tokio::task::spawn_blocking(move || raster.png(&image_frame)).await??;
+        let png = format.render_image(&self.raster, &frame).await?;
         Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let observation_id = Uuid::new_v4();
-        let metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
+        let mut metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
             "terminal_session_id":client.entry.handle.session_id,"control_id":control,"role":if control.is_some(){"owner"}else{"observer"},
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
-            "text":frame.text,"exited":exited,"image_source":"rmux_client_projection"});
+            "text":frame.text,"exited":exited});
+        if png.is_some() {
+            metadata["image_source"] = json!("rmux_client_projection");
+        }
         let mut observations = self
             .observations
             .lock()

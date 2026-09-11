@@ -1,5 +1,5 @@
 //! Actual MCP and PTY paths with task/session metadata built by production helpers.
-use crate::terminal_support::Harness;
+use crate::terminal_support::{Harness, assert_text_observation};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
@@ -163,7 +163,7 @@ async fn each_task_kind_resolves_observes_and_inputs_its_own_terminal() {
         let viewed = h
             .call(
                 "calm.terminal.observe",
-                json!({"task_id":w.task,"wait_ms":50}),
+                json!({"task_id":w.task,"wait_ms":50,"format":"image"}),
             )
             .await;
         assert!(viewed.get("error").is_none(), "{viewed}");
@@ -177,6 +177,18 @@ async fn each_task_kind_resolves_observes_and_inputs_its_own_terminal() {
         let meta = &viewed["result"]["structuredContent"];
         assert_eq!(meta["task"]["task_id"], w.task);
         assert_eq!(meta["card_id"], w.card);
+        for target in [
+            json!({"task_id":w.task}),
+            json!({"terminal_id":w.terminal,"format":"text"}),
+        ] {
+            let text = h.call("calm.terminal.observe", target).await;
+            let text_meta = assert_text_observation(&text);
+            assert_eq!(text_meta["task"]["task_id"], w.task);
+            assert_eq!(
+                text_meta["terminal_session_id"],
+                meta["terminal_session_id"]
+            );
+        }
         h.ok(
             "calm.terminal.control",
             json!({"task_id":w.task,"action":"claim"}),

@@ -4,9 +4,9 @@ The application entry point is a Planner-only MCP tool set:
 
 | Tool | Behavior |
 |---|---|
-| `calm.terminal.open` | Idempotent visible Terminal-card creation through `terminal-create` OperationRuntime, attributed to the authenticated Planner session. |
+| `calm.terminal.open` | Idempotent visible Terminal-card creation through `terminal-create` OperationRuntime, attributed to the authenticated Planner session. Returns text by default; `format=image` requests a PNG. Presentation does not change creation idempotency. |
 | `calm.terminal.resolve` | Resolve an exact current task attempt or Terminal ID to its real Worker card, worker session and view availability. |
-| `calm.terminal.observe` | PNG and text/cursor/mode state from the same captured RMUX projection, with observation and connection IDs. Reads never create or restart a process. |
+| `calm.terminal.observe` | Text/cursor/mode state and observation/connection IDs by default. Explicit `format=image` includes a PNG from that same captured RMUX frame. Reads never create or restart a process. |
 | `calm.terminal.control` | Claim/release control, or detach the model client while retaining the card/program. |
 | `calm.terminal.input` | One text/key/cell-click action, bound to a recent live observation and current control. A matching request ID replays its receipt without another write. |
 
@@ -29,7 +29,20 @@ proven complete, so model observation fails explicitly; human reconnect retains
 its existing behavior. Open a new Terminal for the model instead of silently
 claiming complete recovery. No model read launches a replacement process.
 
-The frame is immutable before rasterization. System-font-only `resvg` renders
+Open and observe accept only `format=text` (the default) or `format=image`.
+Normal observations return one MCP text block and structured metadata, including
+a valid observation ID for input. They never initialize system fonts or rasterize
+an image. Input still requires control, a fresh live observation, and the same
+session, revision and authority checks in either format. Observing after each
+action does not require taking a screenshot.
+
+Use `format=image` for color, reverse-video selection or layout-dependent TUI
+decisions; plain text does not preserve these visual cues. Image replies include
+a native MCP PNG block and `image_source`; text replies omit both. Explicit image
+errors are returned without a fallback to text. Both formats use one immutable
+captured frame for their metadata and any image.
+
+For explicit image observations, the frame is immutable before rasterization. System-font-only `resvg` renders
 escaped terminal text into a bounded PNG with a fixed cell geometry. No terminal
 text is interpreted as SVG markup, file paths or external image URLs. The image
 uses the model projection's font/viewport, not a screenshot of browser chrome.
@@ -129,14 +142,23 @@ sets HTTP_PROXY and HTTPS_PROXY to `http://127.0.0.1:2080` before starting Claud
 
 The focused suite uses the actual authenticated MCP UDS server, real operation
 runtime and renderer, and a real shell. It verifies visible card identity, native
-PNG delivery, exact application output, physical Enter counts for duplicate
+default text-only envelopes, explicit native PNG delivery, format-independent open
+idempotency, exact application output, physical Enter counts for duplicate
 requests, same-database foreign-Track refusal, human takeover and reconnect IDs.
 The writer tests hold real protocol work and physical acknowledgement separately.
 Projection tests traverse actual RenderPlane output and resize paths.
 
 A developer driver reuses only this test setup and calls the actual tools; it is
 not a Planner implementation. It accepts private NDJSON stdin and starts a
-disposable loopback browser preview. Build with:
+disposable loopback browser preview. It forwards observation formats unchanged:
+
+```json
+{"name":"calm.terminal.observe","arguments":{"terminal_id":"<returned-terminal-id>"}}
+{"name":"calm.terminal.observe","arguments":{"terminal_id":"<returned-terminal-id>","format":"image"}}
+```
+
+The first reads text without a screenshot; the second explicitly asks for one.
+Build with:
 
 ```sh
 env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=4 \

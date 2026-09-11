@@ -110,7 +110,10 @@ Finished tasks may be observed if their view remains, but cannot receive input.
 When the user asks you to operate a Terminal or a TUI, use `calm.terminal.open` \
 with a stable request_id to create a visible Terminal card in this Track. \
 Call `calm.terminal.control` with action `claim`, then `calm.terminal.observe` \
-to receive the PNG, visible text and observation/control identifiers. \
+to receive visible text and observation/control identifiers without a screenshot. \
+Both open and observe default to format=text; use this for routine reading and text/key input. \
+Request format=image explicitly when colors, selection highlighting or visual layout \
+are needed to interpret a TUI; plain text does not preserve those visual cues. \
 Use `calm.terminal.input` for one text, key or cell-click action against that observation. \
 Text does not submit: send Enter separately after observing the entered text. \
 Observe after each action to verify its application result. For Claude Code, enter \
