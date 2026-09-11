@@ -5,6 +5,7 @@ import json
 import io
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -21,6 +22,47 @@ def row(identifier, tool="calm.terminal.observe", *, text=("3141",), terminal="t
 
 
 class CollectorTests(unittest.TestCase):
+    def test_bootstrap_posts_user_input_before_waiting_for_same_live_session(self):
+        calls = []
+
+        class ApiResponses:
+            def call(self, method, path, body=None):
+                calls.append((method, path, body))
+                return {("GET", "/api/version"): {"buildSha": "source"},
+                        ("POST", "/api/areas"): {"id": "area"},
+                        ("POST", "/api/tracks"): {"id": "track"},
+                        ("GET", "/api/tracks/track/cards"): [{"id": "planner", "payload": {"planner_harness": True}}],
+                        ("GET", "/api/cards/planner/planner/run"): {"worker_session_id": "session", "phase": "idle"},
+                        ("POST", "/api/cards/planner/planner/input"): {"worker_session_id": "session"}}[(method, path)]
+
+        class BootstrapReached(Exception):
+            pass
+
+        def wait(round_, name, expected_session=None):
+            self.assertEqual(name, "bootstrap")
+            self.assertEqual(calls[-1][:2], ("POST", "/api/cards/planner/planner/input"))
+            self.assertIn("Reply ready", calls[-1][2]["text"])
+            self.assertEqual(expected_session, "session")
+            self.assertEqual(round_.session, "session")
+            raise BootstrapReached()
+
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(source_sha="source", workspace="/synthetic", artifacts=Path(directory),
+                                   claude_version="test", codex_version="test")
+            with patch.object(ux.Round, "wait_turn", wait), self.assertRaises(BootstrapReached):
+                ux.Round(ApiResponses(), args).run()
+
+    def test_bootstrap_input_rejects_a_changed_planner_session(self):
+        class ApiResponse:
+            def call(self, *_):
+                return {"worker_session_id": "replacement"}
+
+        round_ = ux.Round(ApiResponse(), None)
+        round_.card, round_.session = "planner", "original"
+        with patch.object(round_, "wait_turn") as wait, self.assertRaisesRegex(ux.EvidenceError, "another session"):
+            round_.send("bootstrap", "Reply ready")
+        wait.assert_not_called()
+
     def test_real_control_actions_and_result_shapes_remain_collectable(self):
         # terminal_interaction::control: action is a string; detach returns
         # {detached:true}, while claim/release return connection/control IDs.

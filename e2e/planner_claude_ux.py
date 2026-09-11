@@ -343,7 +343,7 @@ class Round:
         track = self.api.call("POST", "/api/tracks", {
             "area_id": area["id"], "cwd": args.workspace, "attach_folder": True,
             "theme": {"fg": [220, 220, 220], "bg": [30, 30, 30]},
-            "title": "Disposable Planner terminal usability test. Do not dispatch workers or modify files. Reply ready and wait for the next instruction."})
+            "title": "Planner Claude terminal usability test"})
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             cards = self.api.call("GET", f"/api/tracks/{track['id']}/cards")
@@ -352,15 +352,23 @@ class Round:
             planners = [card for card in cards if require_object(require_object(card, "card").get("payload"), "card payload").get("planner_harness") is True]
             if len(planners) == 1:
                 self.card = planners[0]["id"]
-                break
+                snapshot = require_object(self.api.call("GET", f"/api/cards/{self.card}/planner/run"), "Planner run")
+                if snapshot.get("blocked_reason") or snapshot.get("phase") == "wedged":
+                    raise EvidenceError("Planner startup is blocked")
+                session = snapshot.get("worker_session_id")
+                if isinstance(session, str) and session and snapshot.get("phase") in ("idle", "turn_completed"):
+                    self.session = session
+                    break
             time.sleep(2)
-        if not self.card:
-            raise EvidenceError("production Planner card did not appear")
+        if not self.session:
+            raise EvidenceError("production Planner did not become ready with a live session")
         write_json(args.artifacts / "environment.json", {
             "source_sha": args.source_sha, "server": version,
             "claude_version": args.claude_version, "codex_version": args.codex_version,
             "track_id": track["id"], "planner_card_id": self.card})
-        self.wait_turn("bootstrap")
+        # #1211: Track title is a label. Only normal user input starts a turn.
+        self.send("bootstrap", "Disposable Planner terminal usability test. Do not dispatch workers "
+                  "or modify files. Reply ready and wait for the next instruction.")
         common = ("This is an authorized disposable usability test. Operate the actual Claude TUI "
                   "through your production terminal tools. Do not use shell/exec tools outside that "
                   "terminal, call model APIs directly, impersonate tool output, write files, read "
