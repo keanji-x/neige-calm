@@ -2167,6 +2167,10 @@ async fn connector_install_writes_manifest_secrets_and_marker() {
         "https://mcp.example.test/mcp"
     );
     assert_eq!(
+        body["manifest"]["mcp_http"]["tools_all"], false,
+        "legacy API requests omitting tools_allow must not gain authority"
+    );
+    assert_eq!(
         body["manifest"]["mcp_http"]["api_key_secret"], "api_key",
         "the manifest names the secrets key, never the credential"
     );
@@ -2214,6 +2218,56 @@ async fn connector_install_writes_manifest_secrets_and_marker() {
     assert_eq!(arr.as_array().unwrap().len(), 1);
     assert_eq!(arr[0]["id"], "test.zhibao");
     assert_eq!(arr[0]["manifest_name"], "Zhibao");
+}
+
+/// Compatibility is keyed on presence, not array length: old API callers that
+/// explicitly sent `tools_allow: []` asked for zero tools and keep that exact
+/// authority after all-tools became the default for an omitted field.
+#[tokio::test]
+async fn connector_install_preserves_explicit_empty_and_named_allowlists() {
+    let (state, _tmp, _plugins_dir) = boot_state().await;
+
+    for (id, allow) in [
+        ("test.none", json!([])),
+        ("test.named", json!(["search", "fetch-detail"])),
+    ] {
+        let resp = post_json(
+            app(state.clone()),
+            "/api/plugins/install",
+            connector_body(id, json!({ "tools_allow": allow.clone() })),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED, "{id} install failed");
+        let body = body_to_json(resp).await;
+        assert_eq!(body["manifest"]["mcp_http"]["tools_all"], false, "{id}");
+        assert_eq!(body["manifest"]["mcp_http"]["tools_allow"], allow, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn connector_install_rejects_null_or_invalid_named_tool_lists() {
+    let (state, _tmp, plugins_dir) = boot_state().await;
+    for (id, allow, expected) in [
+        (
+            "test.null-tools",
+            Value::Null,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "test.bad-tool",
+            json!(["two words"]),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let resp = post_json(
+            app(state.clone()),
+            "/api/plugins/install",
+            connector_body(id, json!({ "tools_allow": allow })),
+        )
+        .await;
+        assert_eq!(resp.status(), expected, "{id} must be refused");
+        assert!(!plugins_dir.join(id).exists(), "{id} left a tree behind");
+    }
 }
 
 #[tokio::test]

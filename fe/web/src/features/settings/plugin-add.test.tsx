@@ -1,148 +1,88 @@
-// @vitest-environment jsdom
-//
-// #1480 — the install form. What is pinned here is the *body it builds*, since
-// that is the only thing the kernel sees: a draft that reads correctly on
-// screen and posts `api_key_in: null` installs a connector that cannot
-// authenticate, and no assertion about the rendered fields would notice.
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PluginAddPane, type PluginAddPaneProps } from './plugin-add.tsx';
+import type { ConnectorCheckResult } from '../../../../core/domain/plugins.ts';
 
-beforeEach(() => {
-  vi.stubGlobal('matchMedia', vi.fn(() => ({
-    matches: false,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  })));
-});
-
-afterEach(() => {
-  cleanup();
-  vi.unstubAllGlobals();
-});
-
+afterEach(cleanup);
 function props(overrides: Partial<PluginAddPaneProps> = {}): PluginAddPaneProps {
-  return {
-    pending: false,
-    onBack: vi.fn(),
-    onInstallConnector: vi.fn(() => Promise.resolve(null)),
-    onInstallLocalPath: vi.fn(() => Promise.resolve(null)),
-    onInstalled: vi.fn(),
-    ...overrides,
-  };
+  return { pending: false, onBack: vi.fn(),
+    onCheckConnector: vi.fn(() => Promise.resolve({ ok: true as const, tools: ['search'] })),
+    onInstallConnector: vi.fn(() => Promise.resolve(null)), onInstallLocalPath: vi.fn(() => Promise.resolve(null)),
+    onInstalled: vi.fn(), ...overrides };
 }
-
-async function fill(label: string, value: string) {
-  await userEvent.type(screen.getByLabelText(label), value);
-}
-
-/** astryx's `Selector` is a listbox, not a native `<select>`. */
+const config = JSON.stringify({ mcpServers: { Docs: { url: 'https://mcp.example.com/mcp', headers: { Authorization: 'Bearer sk-private-value' } } } });
+function paste(raw = config) { fireEvent.change(screen.getByRole('textbox', { name: 'MCP configuration' }), { target: { value: raw } }); }
 async function choose(label: string, option: string) {
   await userEvent.click(screen.getByRole('combobox', { name: label }));
   await userEvent.click(await screen.findByRole('option', { name: option }));
 }
-
-describe('Add a plugin', () => {
-  it('installs a bearer-authenticated connector from what was typed', async () => {
-    // Typed through the prop, so `mock.calls[0][0]` is the draft rather than
-    // `never` — the argument is what this test is about.
-    const onInstallConnector: PluginAddPaneProps['onInstallConnector'] = vi.fn(
-      () => Promise.resolve(null),
-    );
-    const onInstalled = vi.fn();
-    render(<PluginAddPane {...props({ onInstallConnector, onInstalled })} />);
-
-    await fill('Name', 'Zhibao');
-    await fill('Id', 'com.example.zhibao');
-    await fill('Server URL', 'https://mcp.wisburg.com/mcp');
-    await fill('Tools', 'list-articles, list-feed');
-    await fill('API key', 'sk-secret');
+describe('Add a plugin from JSON', () => {
+  it('adds all tools directly with a generated name and id, without checking first', async () => {
+    const p = props(); render(<PluginAddPane {...p} />); paste();
+    expect(screen.queryByLabelText('Tools')).toBeNull();
+    expect(screen.queryByLabelText('Name')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
-
-    const draft = vi.mocked(onInstallConnector).mock.calls[0]?.[0];
-    if (draft === undefined) throw new Error('the form did not install anything');
-    expect(draft.id).toBe('com.example.zhibao');
-    expect(draft.display_name).toBe('Zhibao');
-    expect(draft.url).toBe('https://mcp.wisburg.com/mcp');
-    expect(draft.api_key).toBe('sk-secret');
-    expect(draft.placement).toBe('bearer');
-    expect(draft.tools).toBe('list-articles, list-feed');
-    expect(onInstalled.mock.calls.length).toBe(1);
+    expect(p.onInstallConnector).toHaveBeenCalledWith(expect.objectContaining({ display_name: 'Docs', tool_mode: 'all', headers: { Authorization: 'Bearer sk-private-value' } }));
+    expect(vi.mocked(p.onInstallConnector).mock.calls[0]?.[0].id).toMatch(/^mcp-docs-/);
+    expect(p.onCheckConnector).not.toHaveBeenCalled();
+    expect(p.onInstalled).toHaveBeenCalledOnce();
   });
-
-  /* The credential is typed once and never shown again — including while it is
-     being typed, on a screen somebody may be presenting. */
-  /* The one refusal that guards a failure indistinguishable from success. */
-  it('refuses a connector that would expose no tools', async () => {
-    const onInstallConnector = vi.fn(() => Promise.resolve(null));
-    render(<PluginAddPane {...props({ onInstallConnector })} />);
-    await fill('Name', 'Zhibao');
-    await fill('Id', 'com.example.zhibao');
-    await fill('Server URL', 'https://mcp.example.com/mcp');
+  it('checks without installing, displays tool names and invalidates on edits', async () => {
+    const p = props(); render(<PluginAddPane {...p} />); paste();
+    await userEvent.click(screen.getByRole('button', { name: 'Check connection' }));
+    expect((await screen.findByRole('status', { name: 'Connection check' })).textContent).toContain('1 tools discovered');
+    expect(screen.getByText('search')).toBeTruthy();
+    expect(p.onInstallConnector).not.toHaveBeenCalled();
+    paste('{"url":"https://other.example/mcp"}');
+    expect(screen.queryByRole('status', { name: 'Connection check' })).toBeNull();
+  });
+  it('ignores late responses even when the draft is edited back to its original value', async () => {
+    let resolve!: (result: ConnectorCheckResult) => void;
+    const p = props({ onCheckConnector: () => new Promise((done) => { resolve = done; }) });
+    render(<PluginAddPane {...p} />); paste();
+    await userEvent.click(screen.getByRole('button', { name: 'Check connection' }));
+    paste('{}'); paste();
+    await act(() => { resolve({ ok: true, tools: ['stale-tool'] }); return Promise.resolve(); });
+    expect(screen.queryByRole('status', { name: 'Connection check' })).toBeNull();
+    expect(screen.queryByText('stale-tool')).toBeNull();
+  });
+  it('keeps drafts after a failed check and permits Add anyway', async () => {
+    const p = props({ onCheckConnector: () => Promise.resolve({ ok: false, message: 'HTTP 401: authentication failed' }) });
+    render(<PluginAddPane {...p} />); paste();
+    await userEvent.click(screen.getByRole('button', { name: 'Check connection' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('HTTP 401');
+    expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'MCP configuration' }).value).toBe(config);
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
-    expect(onInstallConnector.mock.calls).toEqual([]);
-    expect(screen.getByRole('alert').textContent).toMatch(/at least one tool/i);
+    expect(p.onInstallConnector).toHaveBeenCalledOnce();
   });
-
-  it('masks the API key field', () => {
-    render(<PluginAddPane {...props()} />);
-    expect(screen.getByLabelText<HTMLInputElement>('API key').type).toBe('password');
-  });
-
-  /* The placement rows exist only once there is a credential to place: with no
-     key the kernel needs no `api_key_in` at all, and offering one would ask the
-     reader to decide something that has no consequence. */
-  it('asks where the key rides only once there is a key', async () => {
-    render(<PluginAddPane {...props()} />);
-    expect(screen.queryByRole('combobox', { name: 'Key placement' })).toBeNull();
-    await fill('API key', 'sk-secret');
-    expect(screen.getByRole('combobox', { name: 'Key placement' })).toBeTruthy();
-    expect(screen.queryByLabelText('Header name')).toBeNull();
-  });
-
-  it('refuses to send a custom-header key with no header name', async () => {
-    const onInstallConnector = vi.fn(() => Promise.resolve(null));
-    render(<PluginAddPane {...props({ onInstallConnector })} />);
-    await fill('Name', 'Zhibao');
-    await fill('Id', 'com.example.zhibao');
-    await fill('Server URL', 'https://mcp.example.com/mcp');
-    await fill('Tools', 'list-articles');
-    await fill('API key', 'sk-secret');
-    await choose('Key placement', 'Custom header');
+  it('requires a choice for multiple servers and validates selected tools', async () => {
+    const p = props(); render(<PluginAddPane {...p} />);
+    paste('{"servers":{"first":{"url":"https://first.test"},"second":{"url":"https://second.test"}}}');
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
-
-    expect(onInstallConnector.mock.calls).toEqual([]);
-    expect(screen.getByRole('alert').textContent).toContain('header name');
+    expect(p.onInstallConnector).not.toHaveBeenCalled();
+    await choose('Server', 'second');
+    await userEvent.click(screen.getByRole('button', { name: 'Advanced settings' }));
+    await choose('Tool access', 'Selected tools');
+    await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('at least one tool');
+    await userEvent.type(screen.getByLabelText('Tools'), 'search, fetch');
+    await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
+    expect(p.onInstallConnector).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://second.test', tool_mode: 'selected', tools: 'search, fetch' }));
   });
-
-  it('installs a directory that already exists on the server', async () => {
-    const onInstallLocalPath = vi.fn(() => Promise.resolve(null));
-    render(<PluginAddPane {...props({ onInstallLocalPath })} />);
+  it('retains the draft after an install refusal', async () => {
+    const p = props({ onInstallConnector: () => Promise.resolve('already installed') });
+    render(<PluginAddPane {...p} />); paste();
+    await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('already installed');
+    expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'MCP configuration' }).value).toBe(config);
+    expect(p.onInstalled).not.toHaveBeenCalled();
+  });
+  it('still installs a directory on the server', async () => {
+    const p = props(); render(<PluginAddPane {...p} />);
     await choose('Source', 'Server directory');
-    await fill('Directory path', '/srv/neige/plugins/todo');
+    await userEvent.type(screen.getByLabelText('Directory path'), '/srv/plugins/todo');
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
-    expect(onInstallLocalPath.mock.calls).toEqual([['/srv/neige/plugins/todo']]);
-  });
-
-  /* A refusal keeps the operator's typing. The credential is the field they
-     cannot recover from a re-render, and a form that cleared itself on a taken
-     id would make them paste it again. */
-  it('keeps the form and its values when the kernel refuses', async () => {
-    const onInstallConnector = vi.fn(() => Promise.resolve('plugin `x` already installed'));
-    const onInstalled = vi.fn();
-    render(<PluginAddPane {...props({ onInstallConnector, onInstalled })} />);
-    await fill('Name', 'Zhibao');
-    await fill('Id', 'com.example.zhibao');
-    await fill('Server URL', 'https://mcp.example.com/mcp');
-    await fill('Tools', 'list-articles');
-    await fill('API key', 'sk-secret');
-    await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
-
-    expect(screen.getByRole('alert').textContent).toContain('already installed');
-    expect(onInstalled.mock.calls).toEqual([]);
-    expect(screen.getByLabelText<HTMLInputElement>('API key').value).toBe('sk-secret');
-    expect(screen.getByLabelText<HTMLInputElement>('Id').value).toBe('com.example.zhibao');
+    expect(p.onInstallLocalPath).toHaveBeenCalledWith('/srv/plugins/todo');
   });
 });

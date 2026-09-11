@@ -23,8 +23,10 @@ import styles from './preflight-status.module.css';
  * old cached bundle must refresh and a new bundle must not pair with API v4.
  * 22 -> 23: #1456 replaces terminal task `goal` with `command`; cached bundles
  * must refresh before parsing the new block shape.
+ * 26 -> 27: MCP JSON setup depends on headers/tools_all and the Check endpoint;
+ * a bundled frontend must not install through a v26 server that ignores them.
  */
-export const WEB_COMPAT_VERSION = 26;
+export const WEB_COMPAT_VERSION = 27;
 export type ServerVersionInfo = Readonly<{ webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;

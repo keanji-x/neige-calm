@@ -36,6 +36,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/plugins", get(list_plugins))
         .route("/api/plugins/views", get(list_plugin_views))
         .route("/api/plugins/install", post(install_plugin))
+        .route("/api/plugins/mcp/check", post(check_mcp_connection))
         .route(
             "/api/plugins/{id}",
             get(get_plugin_detail).delete(uninstall_plugin),
@@ -237,10 +238,13 @@ pub enum InstallSource {
     /// when a credential is given) and owns it thereafter; see
     /// `plugin_host::managed`.
     ///
-    /// This is the only install source that does not require a directory to
-    /// exist on the server beforehand, which is what makes "add a connector"
-    /// expressible from the UI at all.
-    McpHttp(ConnectorInstall),
+    /// This source family does not require a directory to exist on the server
+    /// beforehand, which makes "add a connector" expressible from the UI.
+    McpHttp(Box<ConnectorInstall>),
+    /// JSON setup clients use a distinct source tag so older kernels reject
+    /// the request instead of silently ignoring `headers` and `tools_all`.
+    /// `mcp_http` remains accepted for existing clients.
+    McpHttpV2(Box<ConnectorInstall>),
     /// Catch-all so we can return a friendly 400 for tarball/url/etc. instead
     /// of a serde deserialize error.
     #[serde(other)]
@@ -409,7 +413,7 @@ pub(crate) async fn install_plugin(
 ) -> Result<(StatusCode, Json<PluginDetail>)> {
     let raw_path = match body.source {
         InstallSource::LocalPath { path } => path,
-        InstallSource::McpHttp(connector) => {
+        InstallSource::McpHttp(connector) | InstallSource::McpHttpV2(connector) => {
             // The whole operation — manifest synthesis, validation, writing the
             // tree, the row — belongs to the host, which is where the per-id
             // lifecycle guard lives. See `install_managed_connector` for why
@@ -419,7 +423,8 @@ pub(crate) async fn install_plugin(
         }
         InstallSource::Other => {
             return Err(CalmError::PluginInstall(
-                "unsupported source kind — accepted: `local_path`, `mcp_http`".into(),
+                "unsupported source kind — accepted: `local_path`, `mcp_http`, `mcp_http_v2`"
+                    .into(),
             ));
         }
     };
@@ -1660,5 +1665,24 @@ mod rotate_error_mapping_tests {
         let mapped = rotate_error_to_calm("dev.app", HostError::OperatorDisabled("dev.app".into()));
         assert_eq!(mapped.status(), StatusCode::CONFLICT);
         assert_eq!(mapped.code(), "plugin_conflict");
+    }
+}
+
+/// Transient authenticated diagnostic; never installs or enables a plugin.
+#[utoipa::path(post, path = "/api/plugins/mcp/check", request_body = ConnectorInstall,
+    responses((status = 200, body = crate::plugin_host::mcp_setup::McpCheckResult),
+        (status = 400, body = ErrorBody), (status = 502, body = ErrorBody)), tag = "plugins")]
+pub(crate) async fn check_mcp_connection(Json(body): Json<ConnectorInstall>) -> Response {
+    match crate::plugin_host::mcp_setup::check(body).await {
+        Ok(result) => Json(result).into_response(),
+        Err((network, message)) => (
+            if network {
+                StatusCode::BAD_GATEWAY
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            Json(serde_json::json!({"code": "mcp_setup_failed", "error": message})),
+        )
+            .into_response(),
     }
 }

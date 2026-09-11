@@ -127,6 +127,18 @@ enum StubMode {
     /// result. The success-path leak the scrub layer exists for — and the one
     /// header auth does NOT close, which is why `scrub_value` survives #1194.
     EchoAuthInResults,
+    /// Split the catalog over two pages. The second page carries a tool that
+    /// no first-page-only implementation can materialize.
+    PaginatedTools,
+    /// Return the same non-terminal cursor forever. A client must reject the
+    /// loop rather than treating the first page as a complete catalog.
+    RepeatedToolsCursor,
+    /// Return a non-string pagination cursor. The MCP cursor is opaque text;
+    /// coercing this value would invent a protocol the upstream did not send.
+    InvalidToolsCursor,
+    /// Return a fresh cursor forever. This bypasses repeated-cursor detection
+    /// and therefore uniquely exercises the explicit page-count bound.
+    EndlessToolsPagination,
 }
 
 /// How long [`StubMode::SlowToolsCall`] takes to answer a `tools/call`.
@@ -140,6 +152,7 @@ struct StubServer {
     /// `Authorization` header values seen, in order — the slot the credential
     /// rides in since #1194. Empty string when the header was absent.
     seen_auth: Arc<std::sync::Mutex<Vec<String>>>,
+    seen_tenants: Arc<std::sync::Mutex<Vec<String>>>,
     /// `(JSON-RPC method, Authorization value)` for each request, recorded as
     /// ONE push from the connection task that knows both.
     ///
@@ -231,6 +244,7 @@ impl StubServer {
         let addr = listener.local_addr().expect("local addr");
         let seen_queries = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_auth = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_tenants = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_auth_by_method = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_targets = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_methods = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -239,6 +253,7 @@ impl StubServer {
         let targets = Arc::clone(&seen_targets);
         let queries = Arc::clone(&seen_queries);
         let auths = Arc::clone(&seen_auth);
+        let tenants = Arc::clone(&seen_tenants);
         let auth_by_method = Arc::clone(&seen_auth_by_method);
         let methods = Arc::clone(&seen_methods);
         let received = Arc::clone(&tools_list_received);
@@ -255,6 +270,7 @@ impl StubServer {
                 };
                 let queries = Arc::clone(&queries);
                 let auths = Arc::clone(&auths);
+                let tenants = Arc::clone(&tenants);
                 let auth_by_method = Arc::clone(&auth_by_method);
                 let targets = Arc::clone(&targets);
                 let methods = Arc::clone(&methods);
@@ -267,6 +283,8 @@ impl StubServer {
                     };
                     let auth = header_value(&head, "authorization").unwrap_or_default();
                     auths.lock().unwrap().push(auth.clone());
+                    let tenant = header_value(&head, "x-tenant").unwrap_or_default();
+                    tenants.lock().unwrap().push(tenant.clone());
                     targets.lock().unwrap().push(target.clone());
                     if let Some(q) = target.split_once('?').map(|(_, q)| q.to_string()) {
                         queries.lock().unwrap().push(q);
@@ -299,7 +317,7 @@ impl StubServer {
                         // before the cap and runs past it: clamp-first leaves
                         // exactly that many characters of a live credential in
                         // the message, scrub-first leaves none.
-                        let echoed = format!("Authorization: {auth}");
+                        let echoed = format!("Authorization: {auth}; tenant={tenant}");
                         let key_at = echoed.find(SECRET_VALUE).unwrap_or(0);
                         let pad = MAX_UPSTREAM_DETAIL_CHARS - KEY_STRADDLE_TAIL - key_at;
                         let body = format!("{}{echoed} rejected", "x".repeat(pad));
@@ -329,7 +347,7 @@ impl StubServer {
                     // What an upstream that quotes our own request back looks
                     // like on the SUCCESS path. Includes the API key verbatim.
                     let echo = if mode == StubMode::EchoAuthInResults {
-                        format!(" [upstream saw Authorization: {auth}]")
+                        format!(" [upstream saw Authorization: {auth}; tenant={tenant}]")
                     } else {
                         String::new()
                     };
@@ -340,6 +358,48 @@ impl StubServer {
                             "capabilities": { "tools": {} },
                             "serverInfo": { "name": format!("stub-mcp{echo}"), "version": "0.8.4" }
                         }),
+                        "tools/list" if mode == StubMode::PaginatedTools => {
+                            match req.pointer("/params/cursor").and_then(Value::as_str) {
+                                None => json!({
+                                    "tools": [{
+                                        "name": ALLOWED_TOOL,
+                                        "description": "first page",
+                                        "inputSchema": { "type": "object" }
+                                    }],
+                                    "nextCursor": "page-2"
+                                }),
+                                Some("page-2") => json!({ "tools": [{
+                                    "name": ALLOWED_TOOL_2,
+                                    "description": "second page",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": { "report_id": { "type": "string" } }
+                                    },
+                                    "annotations": { "readOnlyHint": true }
+                                }] }),
+                                other => json!({ "unexpectedCursor": other }),
+                            }
+                        }
+                        "tools/list" if mode == StubMode::RepeatedToolsCursor => json!({
+                            "tools": [{ "name": ALLOWED_TOOL, "inputSchema": { "type": "object" } }],
+                            "nextCursor": "again"
+                        }),
+                        "tools/list" if mode == StubMode::InvalidToolsCursor => json!({
+                            "tools": [{ "name": ALLOWED_TOOL, "inputSchema": { "type": "object" } }],
+                            "nextCursor": { "page": 2 }
+                        }),
+                        "tools/list" if mode == StubMode::EndlessToolsPagination => {
+                            let page = req
+                                .pointer("/params/cursor")
+                                .and_then(Value::as_str)
+                                .and_then(|cursor| cursor.strip_prefix("page-"))
+                                .and_then(|number| number.parse::<usize>().ok())
+                                .unwrap_or(0);
+                            json!({
+                                "tools": [],
+                                "nextCursor": format!("page-{}", page + 1)
+                            })
+                        }
                         "tools/list" => json!({ "tools": [
                             { "name": ALLOWED_TOOL,
                               "description": format!("institutional reports{echo}"),
@@ -385,6 +445,7 @@ impl StubServer {
             addr,
             seen_queries,
             seen_auth,
+            seen_tenants,
             seen_auth_by_method,
             seen_targets,
             seen_methods,
@@ -571,6 +632,25 @@ fn write_connector_with(
         .unwrap();
     drop(f);
     std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(secret_mode)).unwrap();
+    dir
+}
+
+/// Write an all-tools manifest directly for runtime error-path fixtures. The
+/// successful path below deliberately uses the install API instead, so the
+/// persistence contract is not proved by this helper.
+fn write_all_tools_connector(plugins_dir: &Path, url: &str) -> PathBuf {
+    let dir = write_connector(plugins_dir, url, 5_000, 0o600);
+    let mut manifest = connector_manifest_json(url, Budgets::uniform(5_000));
+    manifest["mcp_http"]
+        .as_object_mut()
+        .unwrap()
+        .remove("tools_allow");
+    manifest["mcp_http"]["tools_all"] = json!(true);
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
     dir
 }
 
@@ -841,6 +921,169 @@ async fn connector_installs_enables_and_stays_running_across_restart() {
         "expected a tools/list per boot, saw {:?}",
         stub.methods()
     );
+}
+
+/// A form-style install with explicit `tools_all: true` is the new all-tools mode. This
+/// drives the complete production path: REST install writes the explicit
+/// manifest, enable discovers every page, the registry exposes the later-page
+/// schema/annotations as an ordinary (non-forge) tool, a real tools/call works,
+/// and boot re-discovers the same mode from disk.
+#[tokio::test]
+async fn default_all_tools_install_discovers_every_page_and_survives_restart() {
+    let stub = StubServer::start(StubMode::PaginatedTools).await;
+    let b = boot().await;
+    let host = b.host();
+    let state = b.state(Arc::clone(&host));
+
+    let (status, installed) = post_json(
+        &state,
+        "/api/plugins/install",
+        json!({ "source": {
+            "kind": "mcp_http_v2",
+            "id": CONNECTOR_ID,
+            "display_name": "Paginated MCP",
+            "tools_all": true,
+            "url": stub.url()
+        }}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "install failed: {installed}");
+    assert_eq!(installed["manifest"]["mcp_http"]["tools_all"], true);
+    assert_eq!(
+        installed["manifest"]["mcp_http"]["tools_allow"],
+        json!([]),
+        "the decoded manifest may publish its default empty allowlist, but tools_all is the explicit authority bit"
+    );
+
+    let (status, enabled) = post_json(
+        &state,
+        &format!("/api/plugins/{CONNECTOR_ID}/enable"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "enable failed: {enabled}");
+
+    let manifest = host.registry().get(CONNECTOR_ID).expect("registry entry");
+    assert_eq!(
+        manifest
+            .exposes_tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![ALLOWED_TOOL, ALLOWED_TOOL_2],
+        "a later page must not be silently omitted"
+    );
+    let later = manifest
+        .exposes_tools
+        .iter()
+        .find(|tool| tool.name == ALLOWED_TOOL_2)
+        .expect("later-page tool");
+    assert!(later.kind.is_none(), "remote tools are never forge actions");
+    assert_eq!(
+        later
+            .input_schema
+            .as_ref()
+            .and_then(|schema| schema.pointer("/properties/report_id/type")),
+        Some(&json!("string"))
+    );
+    assert_eq!(later.annotations, Some(json!({ "readOnlyHint": true })));
+
+    let ConnectorClient::Http(client) = host
+        .connector_client(CONNECTOR_ID)
+        .await
+        .expect("running connector client")
+    else {
+        panic!("expected the http connector client");
+    };
+    let called = client
+        .tools_call(ALLOWED_TOOL_2, json!({ "report_id": "r-1" }))
+        .await
+        .expect("later-page tool remains callable");
+    assert!(
+        serde_json::to_string(&called)
+            .unwrap()
+            .contains(ALLOWED_TOOL_2),
+        "the upstream must receive the later-page tool call: {called:?}"
+    );
+
+    let host2 = b.host();
+    host2.autospawn_enabled().await;
+    let after = host2
+        .registry()
+        .get(CONNECTOR_ID)
+        .expect("registry after restart");
+    assert_eq!(
+        after.mcp_http.as_ref().map(|block| block.tools_all),
+        Some(true)
+    );
+    assert_eq!(
+        after.exposes_tools.len(),
+        2,
+        "restart must rediscover every page"
+    );
+}
+
+#[tokio::test]
+async fn repeated_tools_cursor_fails_closed_instead_of_publishing_a_partial_catalog() {
+    let stub = StubServer::start(StubMode::RepeatedToolsCursor).await;
+    let b = boot().await;
+    write_all_tools_connector(&b.plugins_dir, &stub.url());
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+
+    let err = host
+        .spawn(CONNECTOR_ID)
+        .await
+        .expect_err("a cursor loop must make the connector unavailable");
+    assert!(
+        err.to_string().contains("nextCursor") && err.to_string().contains("repeat"),
+        "{err}"
+    );
+    assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
+    assert!(
+        host.registry()
+            .get(CONNECTOR_ID)
+            .is_some_and(|manifest| manifest.exposes_tools.is_empty()),
+        "the first page is not a complete catalog and must not be published"
+    );
+}
+
+#[tokio::test]
+async fn non_string_tools_cursor_fails_closed_instead_of_ending_pagination() {
+    let stub = StubServer::start(StubMode::InvalidToolsCursor).await;
+    let b = boot().await;
+    write_all_tools_connector(&b.plugins_dir, &stub.url());
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+
+    let err = host
+        .spawn(CONNECTOR_ID)
+        .await
+        .expect_err("an invalid cursor must not be mistaken for end-of-list");
+    assert!(
+        err.to_string().contains("nextCursor") && err.to_string().contains("string"),
+        "{err}"
+    );
+    assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
+}
+
+#[tokio::test]
+async fn endlessly_fresh_tools_cursors_hit_the_page_cap_before_publish() {
+    let stub = StubServer::start(StubMode::EndlessToolsPagination).await;
+    let b = boot().await;
+    write_all_tools_connector(&b.plugins_dir, &stub.url());
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+
+    let err = host
+        .spawn(CONNECTOR_ID)
+        .await
+        .expect_err("fresh cursors forever must still be bounded");
+    assert!(
+        err.to_string().contains("catalog exceeded") && err.to_string().contains("pages"),
+        "the page cap, not partial success, must end the catalog: {err}"
+    );
+    assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
 }
 
 // ===========================================================================
@@ -4500,3 +4743,6 @@ async fn a_config_gate_breach_is_counted_not_only_logged() {
          release build leaves behind"
     );
 }
+
+#[path = "connector_mcp_setup.rs"]
+mod mcp_setup;

@@ -28,7 +28,13 @@ service secrets in that environment are hidden from app plugins. CLI connectors
 use an explicit child environment allowlist, but their local executables are
 also not OS-sandboxed by the host. Remote HTTP connectors do not receive app
 process tokens or run as local children; review their configured destinations
-and secrets separately.
+and secrets separately. Form-created remote connectors expose the upstream's
+complete tool catalog by default; choose **Advanced settings → Selected tools** during installation
+when the server should be held to a narrower authority set. Unsaved connection
+checks perform initialization and catalog discovery only, with no installation
+or business tool call. Imported header values are stored in `0600` secrets files;
+only references appear in manifests. Check and install share header validation,
+URL validation and the existing no-redirect transport.
 
 ## Installation sources and removal
 

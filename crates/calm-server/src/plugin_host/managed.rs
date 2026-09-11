@@ -34,7 +34,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value, json};
 use utoipa::ToSchema;
 
@@ -74,7 +74,7 @@ pub const REJECT_MARKED_SOURCE_HINT: &str = "this directory is a kernel-managed 
 /// `source.kind = "mcp_http"`. Everything the *kernel* decides — the secrets
 /// key name, the manifest version, `min_kernel_version` — is a constant above,
 /// not a field here.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[derive(Clone, Deserialize, ToSchema)]
 pub struct ConnectorInstall {
     /// Plugin id. Validated by `Manifest::parse`, not here — the manifest is
     /// the single source of truth for what a legal id is.
@@ -85,6 +85,9 @@ pub struct ConnectorInstall {
     /// Absolute `http://` / `https://` endpoint. Shape-checked by
     /// `McpHttpBlock::validate` once the manifest is parsed.
     pub url: String,
+    /// Private literal HTTP headers. Stored only in secrets.json; not echoed.
+    #[serde(default, deserialize_with = "private_headers")]
+    pub headers: BTreeMap<String, String>,
     /// The credential. Absent or empty ⇒ an unauthenticated connector, and the
     /// synthesized manifest then names no `api_key_secret` and no
     /// `secrets.json` is written.
@@ -97,12 +100,40 @@ pub struct ConnectorInstall {
     /// `McpHttpBlock::validate`; `query:<name>` is refused there (#1194).
     #[serde(default)]
     pub api_key_in: Option<String>,
+    /// Explicit all-tools mode. Old requests omitting this flag retain their
+    /// strict (possibly empty) allowlist.
+    #[serde(default)]
+    pub tools_all: bool,
     #[serde(default)]
     pub tools_allow: Vec<String>,
     #[serde(default)]
     pub request_timeout_ms: Option<u64>,
     #[serde(default)]
     pub bringup_timeout_ms: Option<u64>,
+}
+
+// Serde's default map error can quote a wrongly typed credential value.
+// Decode through Value and return only fixed diagnostics at this boundary.
+fn private_headers<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, String>, D::Error> {
+    let value = Value::deserialize(d)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| serde::de::Error::custom("headers must be a string map"))?;
+    object
+        .iter()
+        .map(|(name, value)| {
+            value
+                .as_str()
+                .map(|value| (name.clone(), value.to_string()))
+                .ok_or_else(|| serde::de::Error::custom("HTTP header values must be strings"))
+        })
+        .collect()
+}
+
+impl std::fmt::Debug for ConnectorInstall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConnectorInstall(<private>)")
+    }
 }
 
 impl ConnectorInstall {
@@ -116,6 +147,24 @@ impl ConnectorInstall {
         self.api_key.as_deref().filter(|k| !k.is_empty())
     }
 
+    /// Same validation for unsaved Check and durable installation.
+    pub fn prepare(&self) -> Result<(super::Manifest, BTreeMap<String, String>), String> {
+        super::http_headers::HttpHeaders::parse(self.headers.clone())?;
+        if let Some(key) = self.credential() {
+            super::HttpCredential::parse(key)?;
+        }
+        let manifest =
+            super::Manifest::parse(&self.manifest_json().to_string()).map_err(|e| e.to_string())?;
+        let mut secrets = BTreeMap::new();
+        if let Some(key) = self.credential() {
+            secrets.insert(API_KEY_SECRET_NAME.to_string(), key.to_string());
+        }
+        for (index, value) in self.headers.values().enumerate() {
+            secrets.insert(format!("http_header_{index}"), value.clone());
+        }
+        Ok((manifest, secrets))
+    }
+
     /// The manifest document this connector describes.
     ///
     /// **Validation is not done here on purpose.** Every field this writes is
@@ -127,6 +176,15 @@ impl ConnectorInstall {
     pub fn manifest_json(&self) -> Value {
         let mut mcp_http = Map::new();
         mcp_http.insert("url".into(), json!(self.url));
+        if !self.headers.is_empty() {
+            let refs: BTreeMap<_, _> = self
+                .headers
+                .keys()
+                .enumerate()
+                .map(|(index, name)| (name, format!("http_header_{index}")))
+                .collect();
+            mcp_http.insert("header_secrets".into(), json!(refs));
+        }
         if self.credential().is_some() {
             mcp_http.insert("api_key_secret".into(), json!(API_KEY_SECRET_NAME));
             // Absent `api_key_in` is left absent rather than defaulted: with a
@@ -136,9 +194,8 @@ impl ConnectorInstall {
                 mcp_http.insert("api_key_in".into(), json!(placement));
             }
         }
-        if !self.tools_allow.is_empty() {
-            mcp_http.insert("tools_allow".into(), json!(self.tools_allow));
-        }
+        mcp_http.insert("tools_all".into(), json!(self.tools_all));
+        mcp_http.insert("tools_allow".into(), json!(self.tools_allow));
         if let Some(ms) = self.request_timeout_ms {
             mcp_http.insert("request_timeout_ms".into(), json!(ms));
         }
@@ -223,7 +280,7 @@ impl std::fmt::Display for WriteError {
 pub fn write_connector_tree(
     dir: &Path,
     manifest_text: &str,
-    credential: Option<&str>,
+    secrets: &BTreeMap<String, String>,
 ) -> Result<(), WriteError> {
     if dir.exists() {
         if !is_managed_tree(dir) {
@@ -239,24 +296,26 @@ pub fn write_connector_tree(
     // — and must — take the partial tree with it. The marker is written last,
     // so a half-written tree is not `is_managed_tree`, and leaving one behind
     // would strand a `secrets.json` that no later call is willing to delete.
-    let built = build_tree(dir, manifest_text, credential);
+    let built = build_tree(dir, manifest_text, secrets);
     if built.is_err() {
         let _ = std::fs::remove_dir_all(dir);
     }
     built
 }
 
-fn build_tree(dir: &Path, manifest_text: &str, credential: Option<&str>) -> Result<(), WriteError> {
+fn build_tree(
+    dir: &Path,
+    manifest_text: &str,
+    secrets: &BTreeMap<String, String>,
+) -> Result<(), WriteError> {
     std::fs::create_dir_all(dir)
         .map_err(|e| WriteError::Io(format!("creating {}: {e}", dir.display())))?;
     set_mode(dir, 0o700)?;
 
     write_file(&dir.join("manifest.json"), manifest_text.as_bytes(), 0o644)?;
 
-    if let Some(key) = credential {
-        let mut secrets = BTreeMap::new();
-        secrets.insert(API_KEY_SECRET_NAME.to_string(), key.to_string());
-        let body = serde_json::to_vec_pretty(&secrets)
+    if !secrets.is_empty() {
+        let body = serde_json::to_vec_pretty(secrets)
             .map_err(|e| WriteError::Io(format!("serializing {SECRETS_FILENAME}: {e}")))?;
         write_file(&dir.join(SECRETS_FILENAME), &body, 0o600)?;
     }
@@ -320,6 +379,8 @@ mod tests {
             url: "https://mcp.example.test/mcp".into(),
             api_key: api_key.map(str::to_owned),
             api_key_in: Some("bearer".into()),
+            headers: BTreeMap::new(),
+            tools_all: false,
             tools_allow: Vec::new(),
             request_timeout_ms: None,
             bringup_timeout_ms: None,
@@ -363,7 +424,12 @@ mod tests {
     fn a_written_tree_is_recognisable_as_the_kernels_and_carries_0600_secrets() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("plug");
-        write_connector_tree(&dir, "{}", Some("sk-credential")).unwrap();
+        write_connector_tree(
+            &dir,
+            "{}",
+            &BTreeMap::from([(API_KEY_SECRET_NAME.to_string(), "sk-credential".to_string())]),
+        )
+        .unwrap();
 
         assert!(is_managed_tree(&dir));
         let secrets = dir.join(SECRETS_FILENAME);
@@ -390,7 +456,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.json"), "operator's manifest").unwrap();
 
-        let err = write_connector_tree(&dir, "{}", Some("sk-credential")).unwrap_err();
+        let err = write_connector_tree(
+            &dir,
+            "{}",
+            &BTreeMap::from([(API_KEY_SECRET_NAME.to_string(), "sk-credential".to_string())]),
+        )
+        .unwrap_err();
         assert!(matches!(err, WriteError::Occupied(_)), "{err}");
         assert_eq!(
             std::fs::read_to_string(dir.join("manifest.json")).unwrap(),
@@ -404,8 +475,13 @@ mod tests {
     fn rewriting_a_managed_tree_drops_the_previous_secret() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("plug");
-        write_connector_tree(&dir, "{}", Some("sk-credential")).unwrap();
-        write_connector_tree(&dir, "{}", None).unwrap();
+        write_connector_tree(
+            &dir,
+            "{}",
+            &BTreeMap::from([(API_KEY_SECRET_NAME.to_string(), "sk-credential".to_string())]),
+        )
+        .unwrap();
+        write_connector_tree(&dir, "{}", &BTreeMap::new()).unwrap();
         assert!(!dir.join(SECRETS_FILENAME).exists());
         assert!(is_managed_tree(&dir), "and it is still ours");
     }

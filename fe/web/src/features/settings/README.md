@@ -151,25 +151,29 @@ The form behind it is a second level for the same reason the configuration pane
 is one — it holds what the operator is typing, including a credential — and it
 is visit state rather than a route for the same reason too.
 
-It offers two sources, because they are not two ways to do one thing. A **remote
-MCP server** is described in the form (name, id, URL, key) and the kernel writes
-the plugin tree itself, credential included, into a `secrets.json` it keeps
-`0600`. A **server directory** installs a tree that already exists on the machine
-the workspace runs on — the only way to install a plugin that runs code — which
-is why it asks for a path and not for a file: a picker would read the operator's
-own computer, which is not where the plugin has to be.
+The remote source accepts MCP JSON: a direct URL/headers object, `mcpServers`,
+or `servers`. Multiple entries require an explicit selection. `core/domain/mcp-config`
+parses only literal HTTP configuration and derives identity without including
+credentials. Advanced settings contains name, ID and the optional strict
+allowlist; the default sends explicit `tools_all: true`. Older API requests and
+manifests retain strict allowlist semantics, including omission and empty lists.
+The server-directory source retains the existing path installation.
 
-The form asks which **tools** to expose, and refuses an empty list.
-`mcp_http.tools_allow` is a strict allowlist — the kernel materializes exactly
-the names it holds — so a connector installed with none comes up `running` and
-contributes nothing to any conversation, which is the one failure on this screen
-that looks like success. "Empty means all" is deliberately *not* invented here:
-the allowlist exists so an upstream cannot add a tool behind the operator's
-back.
+Check leaves through `onCheckConnector`; app wiring sends a transient POST using
+the same operation body as Add. It does not enter a query/mutation cache or
+invalidate the plugin list. Each draft edit increments a generation so late
+results cannot attach to another draft, including an edit back to the same JSON.
+Check is optional and does not install, enable or call a business tool. Successful
+results show discovered tool names and count; failures preserve the draft.
 
-The **API key is typed once**. It is a password field, it goes out with the
-install request, and nothing here can show it again — so this screen offers no
-way to *edit* a stored key; re-adding the plugin is how a key is replaced.
+JSON and credentials live only in local component memory. Installed header
+values go into server-side `secrets.json` with mode `0600`; public manifests hold
+only references. HTTP values share `HttpCredential` validation (Authorization
+validates the token after its scheme); empty values, outer whitespace, short
+values and unsafe redaction shapes are refused before either operation.
+Unsupported commands, helper execution, OAuth, SSE and variable
+expansion are refused rather than interpreted. The JSON input visibly contains
+what the user pastes; it does not read any stored credential back.
 
 ### Remove asks first, in the row
 

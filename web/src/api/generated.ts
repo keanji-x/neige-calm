@@ -640,6 +640,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/plugins/mcp/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Transient authenticated diagnostic; never installs or enables a plugin. */
+        post: operations["check_mcp_connection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/plugins/views": {
         parameters: {
             query?: never;
@@ -1835,6 +1852,10 @@ export interface components {
             bringup_timeout_ms?: number | null;
             description?: string | null;
             display_name: string;
+            /** @description Private literal HTTP headers. Stored only in secrets.json; not echoed. */
+            headers?: {
+                [key: string]: string;
+            };
             /**
              * @description Plugin id. Validated by `Manifest::parse`, not here — the manifest is
              *     the single source of truth for what a legal id is.
@@ -1842,6 +1863,11 @@ export interface components {
             id: string;
             /** Format: int64 */
             request_timeout_ms?: number | null;
+            /**
+             * @description Explicit all-tools mode. Old requests omitting this flag retain their
+             *     strict (possibly empty) allowlist.
+             */
+            tools_all?: boolean;
             tools_allow?: string[];
             /**
              * @description Absolute `http://` / `https://` endpoint. Shape-checked by
@@ -2329,6 +2355,9 @@ export interface components {
         } | (components["schemas"]["ConnectorInstall"] & {
             /** @enum {string} */
             kind: "mcp_http";
+        }) | (components["schemas"]["ConnectorInstall"] & {
+            /** @enum {string} */
+            kind: "mcp_http_v2";
         }) | {
             /** @enum {string} */
             kind: "other";
@@ -2357,6 +2386,9 @@ export interface components {
             parent?: string | null;
             /** @description Canonical absolute path of the listed directory. */
             path: string;
+        };
+        McpCheckResult: {
+            tools: string[];
         };
         MobileAction: Record<string, never>;
         MobileStatus: {
@@ -6309,6 +6341,45 @@ export interface operations {
             };
             /** @description Internal error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    check_mcp_connection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectorInstall"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpCheckResult"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

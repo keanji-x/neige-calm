@@ -36,17 +36,19 @@
 //! "adjust the arithmetic, watch the defect reappear one level up"; see that
 //! constant for the history.
 //!
-//! Neither deadline is a TOTAL bound on bring-up: `initialize` and `tools/list`
-//! are two round trips, and `spawn_blocking` queue delay plus DNS sit outside
-//! ureq's own clock. There are two bounds above this one:
+//! The per-request deadline is not a TOTAL bound on bring-up: `initialize` and
+//! at least one `tools/list` are separate round trips, pagination can add more,
+//! and `spawn_blocking` queue delay plus DNS sit outside ureq's own clock. There
+//! are two bounds above this one:
 //!
 //! * `PluginHost::spawn_mcp_http` wraps ONE connector's bring-up in a
 //!   `tokio::time::timeout` of `2 × bringup_timeout_ms + CONNECTOR_BRINGUP_SLACK`
 //!   (that constant lives in `plugin_host::mod`, and it is NOT the separate
 //!   500 ms margin the connector-phase ceiling carries) — a multiple,
-//!   because the configured value is per-REQUEST and this path makes two
-//!   requests. Since `bringup_timeout_ms` has a validated ceiling, this
-//!   product has one too;
+//!   because the configured value is per-REQUEST and the baseline path makes
+//!   two requests. Pagination deliberately shares this unchanged TOTAL cap;
+//!   it does not multiply boot time by the number of pages. Since
+//!   `bringup_timeout_ms` has a validated ceiling, this product has one too;
 //! * `PluginHost::autospawn_enabled` bounds the connector portion of boot as a
 //!   WHOLE — spawn, reconciliation and every persisted emission, under one
 //!   `connector_phase_ceiling`. Bring-up is still inline and still serial
@@ -237,6 +239,10 @@
 //! of the credential — `{"error":"Invalid API key: sk-…"}` reaches this same
 //! arm — so the example is stated at that width instead.
 
+// Imported header values share the legacy credential validation rules. The
+// Authorization scheme is retained on the wire while its token is also
+// registered separately for redaction of ordinary upstream auth errors.
+use std::collections::HashSet;
 use std::io::Read as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -254,6 +260,16 @@ const SSE_DATA_PREFIX: &str = "data:";
 /// Cap on the response body we will buffer. A `tools/list` for 13 tools is a
 /// few tens of KiB; a megabyte is generous and still bounded.
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// A fast peer can otherwise return a fresh cursor forever while staying
+/// inside every per-request deadline. Crossing the cap is an error, never a
+/// partial-success return, so all-tools mode cannot silently omit later pages.
+const MAX_TOOLS_LIST_PAGES: usize = 100;
+
+/// Cursors are opaque, but they still ride in the next request body. Bound one
+/// value independently of the response-body cap to avoid reflecting an
+/// attacker-sized token through every subsequent allocation.
+const MAX_TOOLS_CURSOR_BYTES: usize = 4 * 1024;
 
 /// How much of an upstream error body survives into the operator-facing
 /// message. Applied strictly AFTER [`scrub_with`] — see the module header.
@@ -566,6 +582,7 @@ pub struct HttpMcpClient {
     /// "Bearer <credential>")` for `api_key_in: bearer`, `(name, credential)`
     /// verbatim for `api_key_in: header:<name>`.
     header_auth: Option<(String, String)>,
+    headers: super::http_headers::HttpHeaders,
     /// Host only, for the per-call audit line required by risk R2.
     log_target: String,
     /// The literals the secret is known to take in a string an upstream may
@@ -584,8 +601,9 @@ pub struct HttpMcpClient {
     /// ~150-certificate webpki root store and gives up all connection/TLS
     /// reuse, per `tools/call`.
     agent: ureq::Agent,
-    /// Deadline for `initialize` + `tools/list` — the pair on the inline-awaited
-    /// boot path. Hard-capped at manifest parse time.
+    /// Per-request deadline for `initialize` and each `tools/list` page on the
+    /// inline-awaited boot path. Hard-capped at manifest parse time; the host
+    /// separately keeps the whole sequence inside one total deadline.
     bringup_timeout: Duration,
     /// Deadline for a steady-state `tools/call`. Uncapped on purpose.
     call_timeout: Duration,
@@ -597,7 +615,7 @@ pub struct HttpMcpClient {
 /// unrepresentable, so every call site names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    /// `initialize` / `tools/list` — bounded, because boot waits on it.
+    /// `initialize` / each `tools/list` page — bounded, because boot waits.
     Bringup,
     /// `tools/call` — generous, because a real tool may run for minutes.
     Call,
@@ -745,6 +763,7 @@ impl HttpMcpClient {
             log_target: log_target(&url),
             url,
             header_auth,
+            headers: super::http_headers::HttpHeaders::default(),
             secret_forms,
             agent: ureq::AgentBuilder::new()
                 // The manifest names the one endpoint this credential belongs
@@ -771,6 +790,28 @@ impl HttpMcpClient {
             call_timeout,
             next_id: std::sync::atomic::AtomicU64::new(1),
         }
+    }
+
+    /// Headers arrive validated and are always registered for redaction before
+    /// any request is possible. Preserve the legacy API-key constructor.
+    pub fn with_headers(mut self, headers: super::http_headers::HttpHeaders) -> Self {
+        for value in headers.private_values() {
+            let escaped = serde_json::to_string(&value).expect("string serialization");
+            for form in [
+                value.clone(),
+                percent_encode(&value),
+                escaped[1..escaped.len() - 1].to_string(),
+            ] {
+                if !form.is_empty() && !self.secret_forms.contains(&form) {
+                    self.secret_forms.push(form);
+                }
+            }
+        }
+        self.secret_forms
+            .sort_by_key(|form| std::cmp::Reverse(form.len()));
+        self.log_target = self.scrub(self.log_target.clone());
+        self.headers = headers;
+        self
     }
 
     /// Host (and port) of the endpoint — the only part of the URL that is safe
@@ -844,17 +885,74 @@ impl HttpMcpClient {
         Ok(result)
     }
 
-    /// `tools/list`, returning the raw `tools` array entries.
+    /// Drain `tools/list`, returning every raw `tools` array entry.
+    ///
+    /// Pagination stays under `spawn_mcp_http`'s existing total bring-up
+    /// timeout. A malformed, repeated or unreasonably long cursor and a peer
+    /// that exceeds the page cap all fail the whole discovery: a partial
+    /// catalog must never be published as though it were complete.
     pub async fn tools_list(&self) -> Result<Vec<Value>, RpcError> {
-        let result = self
-            .request(Phase::Bringup, "tools/list", json!({}))
-            .await?;
-        let tools = result
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(tools)
+        let mut all_tools = Vec::new();
+        let mut catalog_bytes = 0usize;
+        let mut cursor: Option<String> = None;
+        let mut seen = HashSet::new();
+
+        for page in 0..MAX_TOOLS_LIST_PAGES {
+            let params = match cursor.as_deref() {
+                Some(value) => json!({ "cursor": value }),
+                None => json!({}),
+            };
+            let result = self.request(Phase::Bringup, "tools/list", params).await?;
+            let tools = result
+                .get("tools")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    RpcError::internal("mcp-http tools/list: result.tools must be an array")
+                })?;
+            catalog_bytes += tools
+                .iter()
+                .map(|tool| tool.to_string().len())
+                .sum::<usize>();
+            if catalog_bytes > MAX_BODY_BYTES || all_tools.len() + tools.len() > 10_000 {
+                return Err(RpcError::internal(
+                    "mcp-http tools/list: complete catalog exceeds size limit",
+                ));
+            }
+            all_tools.extend(tools.iter().cloned());
+
+            let next = match result.get("nextCursor") {
+                None | Some(Value::Null) => return Ok(all_tools),
+                Some(Value::String(value)) if value.is_empty() => {
+                    return Err(RpcError::internal(
+                        "mcp-http tools/list: result.nextCursor must be a non-empty string or null",
+                    ));
+                }
+                Some(Value::String(value)) if value.len() > MAX_TOOLS_CURSOR_BYTES => {
+                    return Err(RpcError::internal(format!(
+                        "mcp-http tools/list: result.nextCursor exceeds {MAX_TOOLS_CURSOR_BYTES} bytes"
+                    )));
+                }
+                Some(Value::String(value)) => value.clone(),
+                Some(_) => {
+                    return Err(RpcError::internal(
+                        "mcp-http tools/list: result.nextCursor must be a string or null",
+                    ));
+                }
+            };
+            if !seen.insert(next.clone()) {
+                return Err(RpcError::internal(
+                    "mcp-http tools/list: result.nextCursor repeated; refusing a pagination loop",
+                ));
+            }
+            if page + 1 == MAX_TOOLS_LIST_PAGES {
+                return Err(RpcError::internal(format!(
+                    "mcp-http tools/list: catalog exceeded {MAX_TOOLS_LIST_PAGES} pages"
+                )));
+            }
+            cursor = Some(next);
+        }
+
+        unreachable!("the final page-cap iteration returns")
     }
 
     /// `tools/call`, parsed into the same envelope stdio plugins return so the
@@ -908,6 +1006,7 @@ impl HttpMcpClient {
 
         let url = self.url.clone();
         let header_auth = self.header_auth.clone();
+        let headers = self.headers.clone();
         let agent = self.agent.clone();
         let method_owned = method.to_string();
         let target = self.log_target.clone();
@@ -948,6 +1047,9 @@ impl HttpMcpClient {
                 // both means a plain-JSON server works unchanged.
                 .set("accept", "application/json, text/event-stream");
             if let Some((name, value)) = header_auth.as_ref() {
+                req = req.set(name, value);
+            }
+            for (name, value) in headers.pairs() {
                 req = req.set(name, value);
             }
             // NOTE: a `ureq::Error` must NEVER be formatted with `{e}`. Its
@@ -994,7 +1096,17 @@ impl HttpMcpClient {
         // upstream-authored `error.message` — is derived from this value, and
         // it is scrubbed as a JSON TREE (decoded strings and object keys),
         // never as raw text.
-        let parsed = parse_scrubbed(&self.secret_forms, &text, &method_owned)?;
+        let mut parsed = parse_scrubbed(&self.secret_forms, &text, &method_owned)?;
+        // A cursor is private routing data, not exposed catalog metadata. Keep
+        // its exact bytes even when they overlap a credential scrub pattern.
+        if method == "tools/list"
+            && let Some(payload) = strip_sse_envelope(&text)
+            && let Ok(raw) = serde_json::from_str::<Value>(payload)
+            && let Some(cursor) = raw.pointer("/result/nextCursor")
+            && let Some(result) = parsed.get_mut("result").and_then(Value::as_object_mut)
+        {
+            result.insert("nextCursor".into(), cursor.clone());
+        }
 
         if let Some(err) = parsed.get("error")
             && !err.is_null()
@@ -1062,6 +1174,14 @@ fn parse_scrubbed(forms: &[String], text: &str, method: &str) -> Result<Value, R
 /// withdrawn.
 fn scrub_value(forms: &[String], v: &mut Value) {
     if forms.is_empty() {
+        return;
+    }
+    if !v.is_string()
+        && !v.is_array()
+        && !v.is_object()
+        && forms.iter().any(|form| form == &v.to_string())
+    {
+        *v = Value::String(safe_marker(forms).to_string());
         return;
     }
     match v {
@@ -1239,20 +1359,36 @@ const REDACTED: &str = "<redacted>";
 /// function taking an arbitrary `&[String]`, and tests pass hand-built lists
 /// that do NOT satisfy the precondition; for those, idempotence is not claimed
 /// and nothing in production depends on it.
+fn safe_marker(forms: &[String]) -> &'static str {
+    if forms
+        .iter()
+        .any(|form| !form.is_empty() && REDACTED.contains(form.as_str()))
+    {
+        ""
+    } else {
+        REDACTED
+    }
+}
+
 fn scrub_with(forms: &[String], s: String) -> String {
+    let marker = safe_marker(forms);
     let mut out = s;
     for form in forms {
         debug_assert!(!form.is_empty(), "an empty scrub pattern is a memory bomb");
-        if form.is_empty() {
-            continue;
-        }
-        // `contains` first: `replace` would allocate a fresh `String` even when
-        // nothing matches, and the clean path is every healthy response body.
-        if out.contains(form.as_str()) {
-            out = out.replace(form.as_str(), REDACTED);
+        if !form.is_empty() && out.contains(form.as_str()) {
+            out = out.replace(form.as_str(), marker);
         }
     }
-    out
+    // Several arbitrary header values can overlap one another or the marker.
+    // Never return a credential re-formed across a replacement boundary.
+    if forms
+        .iter()
+        .any(|form| !form.is_empty() && out.contains(form.as_str()))
+    {
+        marker.to_string()
+    } else {
+        out
+    }
 }
 
 /// Clamp to `max` *characters* (never bytes — this must not split a UTF-8
@@ -2344,29 +2480,40 @@ mod tests {
         assert!(!is_marker_family_substring("sk-abc-8213"));
     }
 
-    /// The idempotence theorem on [`scrub_with`], pinned at the boundary the
-    /// guard now draws.
-    ///
-    /// One `str::replace` pass never rescans what it wrote, so "one pass is
-    /// enough" is a property of the CREDENTIAL, not of the scrubber. This test
-    /// stands on both sides of the line: the shape the guard refuses really does
-    /// re-form itself in one pass (so the rule is not decoration), and its
-    /// nearest legal neighbour — same length, one character off the marker's
-    /// edge — comes out clean and stays clean under a second pass.
     #[test]
-    fn one_scrub_pass_is_enough_exactly_because_the_guard_refuses_the_overlap() {
-        // The refused side. `exact_forms` is hand-built on purpose: production
-        // can no longer assemble this list, which is the point.
+    fn mcp_setup_scrubs_all_private_header_values() {
+        let block: McpHttpBlock =
+            serde_json::from_value(json!({"url":"https://mcp.example.com/"})).unwrap();
+        let headers =
+            super::super::http_headers::HttpHeaders::parse(std::collections::BTreeMap::from([
+                ("X-Tenant".to_string(), "tenant-team".to_string()),
+                ("X-Second".to_string(), "private-12345".to_string()),
+                (
+                    "Authorization".to_string(),
+                    "Bearer sk-private-quoted".to_string(),
+                ),
+            ]))
+            .unwrap();
+        let client = HttpMcpClient::new("c", &resolved(&block), &block, None).with_headers(headers);
+        let value = parse_scrubbed(&client.secret_forms,
+            r#"{"result":{"tenant-team":"sk-private-quoted","second":"private-12345","nested":["Bearer sk-private-quoted"]}}"#, "tools/list").unwrap();
+        let output = value.to_string();
+        for secret in ["tenant-team", "private-12345", "sk-private-quoted"] {
+            assert!(!output.contains(secret), "{output}");
+        }
+        assert!(!format!("{client:?}").contains("sk-private-quoted"));
+    }
+
+    /// Legacy API keys retain their validation contract. Arbitrary private
+    /// header values need the scrubber itself to prevent marker reformation.
+    #[test]
+    fn mcp_setup_scrubbing_arbitrary_headers_cannot_reform_a_private_value() {
         let leaky = "redacted>y";
-        assert!(
-            HttpCredential::parse(leaky).is_err(),
-            "this credential is what round 3 accepted; it must be refused now"
-        );
+        assert!(HttpCredential::parse(leaky).is_err());
         let once = scrub_with(&exact_forms(&[leaky]), "hit redacted>yy end".to_string());
         assert!(
-            once.contains(leaky),
-            "the premise of the whole rule: one pass really does re-form this \
-             credential out of the marker's own text: {once}"
+            !once.contains(leaky),
+            "header value re-formed across the marker: {once}"
         );
 
         // The legal neighbour, driven through the production constructor so the
@@ -2431,6 +2578,8 @@ mod tests {
                 url: "https://mcp.example.com/mcp".to_string(),
                 api_key_secret: Some("K".to_string()),
                 api_key_in: Some(placement.to_string()),
+                header_secrets: std::collections::BTreeMap::new(),
+                tools_all: false,
                 tools_allow: Vec::new(),
                 request_timeout_ms: None,
                 bringup_timeout_ms: None,

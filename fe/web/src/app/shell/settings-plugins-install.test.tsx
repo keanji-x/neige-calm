@@ -19,7 +19,7 @@
 //      decided to hide it.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -96,11 +96,15 @@ describe('Settings › Plugins › add, end to end', () => {
     });
 
     await userEvent.click(await screen.findByText('Add a plugin'));
-    await type('Name', 'Zhibao');
+    fireEvent.change(screen.getByLabelText('MCP configuration'), { target: { value: JSON.stringify({
+      name: 'Zhibao', url: 'https://mcp.wisburg.com/mcp', headers: { Authorization: 'Bearer sk-live-credential' },
+    }) } });
+    await userEvent.click(screen.getByRole('button', { name: 'Advanced settings' }));
+    await userEvent.clear(screen.getByLabelText('Id'));
     await type('Id', 'com.example.zhibao');
-    await type('Server URL', 'https://mcp.wisburg.com/mcp');
+    await userEvent.click(screen.getByRole('combobox', { name: 'Tool access' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Selected tools' }));
     await type('Tools', 'list-articles, get-article-detail');
-    await type('API key', 'sk-live-credential');
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
 
     await waitFor(() => {
@@ -110,13 +114,12 @@ describe('Settings › Plugins › add, end to end', () => {
     expect(install?.method).toBe('POST');
     expect(install?.body).toEqual({
       source: {
-        kind: 'mcp_http',
+        kind: 'mcp_http_v2',
         id: 'com.example.zhibao',
         display_name: 'Zhibao',
         url: 'https://mcp.wisburg.com/mcp',
         tools_allow: ['list-articles', 'get-article-detail'],
-        api_key: 'sk-live-credential',
-        api_key_in: 'bearer',
+        headers: { Authorization: 'Bearer sk-live-credential' },
       },
     });
     // The form leaves once the kernel has accepted, back to the list it added to.
@@ -127,6 +130,7 @@ describe('Settings › Plugins › add, end to end', () => {
     const calls = renderPlugins((request) => {
       if (request.path === '/api/plugins') return ok([]);
       if (request.path === '/api/settings') return ok({ settings: {} });
+      if (request.path === '/api/plugins/mcp/check') return ok({ tools: ['search'] });
       if (request.path === '/api/plugins/install') {
         return { status: 201, statusText: 'Created', body: { id: 'open', enabled: false } };
       }
@@ -134,10 +138,10 @@ describe('Settings › Plugins › add, end to end', () => {
     });
 
     await userEvent.click(await screen.findByText('Add a plugin'));
-    await type('Name', 'Open server');
-    await type('Id', 'com.example.open');
-    await type('Server URL', 'https://open.example.com/mcp');
-    await type('Tools', 'list-articles');
+    fireEvent.change(screen.getByLabelText('MCP configuration'), { target: { value: '{"url":"https://open.example.com/mcp"}' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Check connection' }));
+    expect((await screen.findByRole('status', { name: 'Connection check' })).textContent).toContain('1 tools discovered');
+    expect(calls.some((call) => call.path === '/api/plugins/install')).toBe(false);
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
 
     await waitFor(() => {
@@ -147,6 +151,11 @@ describe('Settings › Plugins › add, end to end', () => {
       ?.body as { source: Record<string, unknown> }).source;
     expect('api_key' in source).toBe(false);
     expect('api_key_in' in source).toBe(false);
+    expect('tools_allow' in source).toBe(false);
+    expect(source.tools_all).toBe(true);
+    const configuration = { ...source };
+    delete configuration.kind;
+    expect(calls.find((call) => call.path === '/api/plugins/mcp/check')?.body).toEqual(configuration);
   });
 
   it('installs a server directory by path', async () => {
@@ -194,10 +203,10 @@ describe('Settings › Plugins › add, end to end', () => {
     });
 
     await userEvent.click(await screen.findByText('Add a plugin'));
-    await type('Name', 'Todo');
+    fireEvent.change(screen.getByLabelText('MCP configuration'), { target: { value: '{"url":"https://mcp.example.com/mcp","name":"Todo"}' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Advanced settings' }));
+    await userEvent.clear(screen.getByLabelText('Id'));
     await type('Id', 'todo');
-    await type('Server URL', 'https://mcp.example.com/mcp');
-    await type('Tools', 'list-articles');
     await userEvent.click(screen.getByRole('button', { name: 'Add plugin' }));
 
     const alert = await screen.findByRole('alert');

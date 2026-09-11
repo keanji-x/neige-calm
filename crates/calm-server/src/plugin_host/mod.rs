@@ -12,11 +12,13 @@ pub mod connector;
 pub mod error;
 pub mod events;
 mod glob;
+pub mod http_headers;
 pub mod http_mcp;
 pub mod lifecycle;
 pub mod managed;
 pub mod manifest;
 pub mod mcp;
+pub mod mcp_setup;
 pub mod perms;
 pub mod process;
 pub mod registry;
@@ -702,7 +704,23 @@ async fn connect_mcp_http(
         None => None,
     };
 
-    let client = Arc::new(HttpMcpClient::new(id, url, block, api_key.as_ref()));
+    let headers = http_headers::HttpHeaders::parse(
+        block
+            .header_secrets
+            .iter()
+            .map(|(header, key)| {
+                secrets
+                    .get(key)
+                    .cloned()
+                    .map(|value| (header.clone(), value))
+                    .ok_or_else(|| {
+                        "a configured HTTP header is missing from secrets.json".to_string()
+                    })
+            })
+            .collect::<Result<_, _>>()?,
+    )?;
+    let client =
+        Arc::new(HttpMcpClient::new(id, url, block, api_key.as_ref()).with_headers(headers));
 
     // Best-effort: the probed server class answers `tools/list` with no
     // handshake at all, so an `initialize` failure is informational. It shares
@@ -716,6 +734,8 @@ async fn connect_mcp_http(
         );
     }
 
+    // `tools_list` drains pagination. Every page shares the existing outer
+    // `connector_bringup_budget`; discovery never widens boot time.
     let upstream = client
         .tools_list()
         .await
@@ -2490,9 +2510,10 @@ impl PluginHost {
 
         // ONE outer wall-clock bound over the WHOLE bring-up (§2.2).
         //
-        // `mcp_http.bringup_timeout_ms` is a PER-REQUEST budget, and
-        // `connect_mcp_http` makes two round trips (`initialize`, then
-        // `tools/list`). Setting the outer bound to exactly one request's worth
+        // `mcp_http.bringup_timeout_ms` is a PER-REQUEST budget, and the
+        // baseline `connect_mcp_http` path makes two round trips (`initialize`,
+        // then the first `tools/list` page). Setting the outer bound to exactly
+        // one request's worth
         // therefore condemned a healthy-but-slow upstream — or one that merely
         // stalls on `initialize`, which is explicitly best-effort — to
         // `Unavailable`. The outer bound is a MULTIPLE of the per-request one
@@ -2501,6 +2522,8 @@ impl PluginHost {
         // TLS, and
         // `spawn_blocking` queue delay), so it stays a real cap on a black-holed
         // host without redefining what the operator configured.
+        // Additional `tools/list` pages consume this same cap; they do not
+        // enlarge it, so pagination cannot stretch the service-start wall.
         //
         // `request_timeout_ms` is deliberately NOT consulted here: it is the
         // `tools/call` budget, it may be minutes long, and this expression is

@@ -122,7 +122,8 @@
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 26;
+// 26 -> 27: stay in lockstep with the MCP setup capability requirement.
+export const WEB_COMPAT_VERSION = 27;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

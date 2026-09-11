@@ -822,6 +822,38 @@ mod tests {
     }
 
     #[test]
+    fn web_only_denies_mcp_setup_bundle_on_pre_setup_kernel() {
+        // Use the same capability revision that calm-server actually emits,
+        // not a fixture's independently handwritten target API version.
+        let mut target = compat(27, 27);
+        target.api_version = calm_types::compatibility::REST_API_VERSION.into();
+        let mut old = current();
+        old.api_version = "6".into();
+        old.web_compat_version = Some(26);
+        old.min_web_compat_version = 26;
+        let result = run_preflight(
+            PreflightMode::WebOnly,
+            &old,
+            &manifest(
+                ReleaseUnits {
+                    web: Some(WebUnit {
+                        version: "mcp-setup".into(),
+                        compatibility: target,
+                    }),
+                    ..ReleaseUnits::default()
+                },
+                vec![web_file()],
+            ),
+        );
+        assert!(
+            !result.allowed,
+            "v26 ignores MCP headers/tools_all: {result:?}"
+        );
+        assert_eq!(result.required_action, "ship-matching-web-or-bundle");
+        assert!(result.reason.contains("apiVersion mismatch"), "{result:?}");
+    }
+
+    #[test]
     fn web_only_denies_old_web_compat() {
         let result = run_preflight(
             PreflightMode::WebOnly,

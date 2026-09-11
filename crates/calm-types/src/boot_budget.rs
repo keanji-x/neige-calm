@@ -51,9 +51,11 @@ use std::time::Duration;
 /// push boot past [`CONNECTOR_AUTOSPAWN_BUDGET`]".
 pub const MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS: u64 = 15_000;
 
-/// Round trips `connect_mcp_http` makes: `initialize` then `tools/list`. The
-/// outer bring-up timeout is this multiple of the per-request budget, because
-/// `mcp_http.bringup_timeout_ms` configures ONE request, not the whole spawn.
+/// Baseline round trips `connect_mcp_http` makes: `initialize` then the first
+/// `tools/list` page. The outer bring-up timeout is this multiple of the
+/// per-request budget because `mcp_http.bringup_timeout_ms` configures ONE
+/// request, not the whole spawn. Additional catalog pages share this unchanged
+/// outer deadline; pagination must not expand boot time.
 pub const MCP_HTTP_ROUND_TRIPS: u32 = 2;
 
 /// Headroom on top of `MCP_HTTP_ROUND_TRIPS × bringup_timeout_ms` for the work

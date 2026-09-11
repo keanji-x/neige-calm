@@ -2714,6 +2714,57 @@
         }
       }
     },
+    "/api/plugins/mcp/check": {
+      "post": {
+        "tags": [
+          "plugins"
+        ],
+        "summary": "Transient authenticated diagnostic; never installs or enables a plugin.",
+        "operationId": "check_mcp_connection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectorInstall"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpCheckResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/plugins/views": {
       "get": {
         "tags": [
@@ -6895,6 +6946,16 @@
           "display_name": {
             "type": "string"
           },
+          "headers": {
+            "type": "object",
+            "description": "Private literal HTTP headers. Stored only in secrets.json; not echoed.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "id": {
             "type": "string",
             "description": "Plugin id. Validated by `Manifest::parse`, not here — the manifest is\nthe single source of truth for what a legal id is."
@@ -6906,6 +6967,10 @@
             ],
             "format": "int64",
             "minimum": 0
+          },
+          "tools_all": {
+            "type": "boolean",
+            "description": "Explicit all-tools mode. Old requests omitting this flag retain their\nstrict (possibly empty) allowlist."
           },
           "tools_allow": {
             "type": "array",
@@ -7671,7 +7736,7 @@
             "allOf": [
               {
                 "$ref": "#/components/schemas/ConnectorInstall",
-                "description": "#1480 — an `mcp-http` connector described by the request itself. The\nkernel synthesizes the plugin tree (`manifest.json`, and `secrets.json`\nwhen a credential is given) and owns it thereafter; see\n`plugin_host::managed`.\n\nThis is the only install source that does not require a directory to\nexist on the server beforehand, which is what makes \"add a connector\"\nexpressible from the UI at all."
+                "description": "#1480 — an `mcp-http` connector described by the request itself. The\nkernel synthesizes the plugin tree (`manifest.json`, and `secrets.json`\nwhen a credential is given) and owns it thereafter; see\n`plugin_host::managed`.\n\nThis source family does not require a directory to exist on the server\nbeforehand, which makes \"add a connector\" expressible from the UI."
               },
               {
                 "type": "object",
@@ -7688,7 +7753,30 @@
                 }
               }
             ],
-            "description": "#1480 — an `mcp-http` connector described by the request itself. The\nkernel synthesizes the plugin tree (`manifest.json`, and `secrets.json`\nwhen a credential is given) and owns it thereafter; see\n`plugin_host::managed`.\n\nThis is the only install source that does not require a directory to\nexist on the server beforehand, which is what makes \"add a connector\"\nexpressible from the UI at all."
+            "description": "#1480 — an `mcp-http` connector described by the request itself. The\nkernel synthesizes the plugin tree (`manifest.json`, and `secrets.json`\nwhen a credential is given) and owns it thereafter; see\n`plugin_host::managed`.\n\nThis source family does not require a directory to exist on the server\nbeforehand, which makes \"add a connector\" expressible from the UI."
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ConnectorInstall",
+                "description": "JSON setup clients use a distinct source tag so older kernels reject\nthe request instead of silently ignoring `headers` and `tools_all`.\n`mcp_http` remains accepted for existing clients."
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "mcp_http_v2"
+                    ]
+                  }
+                }
+              }
+            ],
+            "description": "JSON setup clients use a distinct source tag so older kernels reject\nthe request instead of silently ignoring `headers` and `tools_all`.\n`mcp_http` remains accepted for existing clients."
           },
           {
             "type": "object",
@@ -7751,6 +7839,20 @@
           "path": {
             "type": "string",
             "description": "Canonical absolute path of the listed directory."
+          }
+        }
+      },
+      "McpCheckResult": {
+        "type": "object",
+        "required": [
+          "tools"
+        ],
+        "properties": {
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

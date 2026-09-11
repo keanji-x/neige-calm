@@ -26,6 +26,7 @@ import {
   type ReportBlock, type TaskVerdict, type TrackBacklinks,
 } from '../../../../core/domain/report.ts';
 import {
+  checkConnectorOperation, type ConnectorCheckResult,
   installConnectorOperation, installLocalPathOperation, patchPluginConfigOperation,
   pluginDetailOperation, pluginsOperation, reloadPluginOperation, setPluginEnabledOperation,
   uninstallPluginOperation,
@@ -1451,6 +1452,7 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
  */
 export type PluginInstallMutation = Readonly<{
   pending: boolean;
+  checkConnector: (draft: ConnectorInstallDraft) => Promise<ConnectorCheckResult>;
   installConnector: (draft: ConnectorInstallDraft) => Promise<string | null>;
   installLocalPath: (path: string) => Promise<string | null>;
 }>;
@@ -1475,6 +1477,14 @@ export function usePluginInstall(
   };
   return {
     pending,
+    checkConnector: async (draft) => {
+      try {
+        const result = await runOperation(transport, checkConnectorOperation(draft), unauthorized);
+        return { ok: true, tools: result.tools };
+      } catch (error) {
+        return { ok: false, message: pluginFailureOf(error).message };
+      }
+    },
     installConnector: (draft) => run(installConnectorOperation(draft)),
     installLocalPath: (path) => run(installLocalPathOperation(path)),
   };
