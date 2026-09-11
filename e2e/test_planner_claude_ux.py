@@ -22,6 +22,59 @@ def row(identifier, tool="calm.terminal.observe", *, text=("3141",), terminal="t
 
 
 class CollectorTests(unittest.TestCase):
+    def test_available_action_readback_is_actual_observation_without_changing_receipt(self):
+        state = row(1)["params"]["item"]["result"]["structuredContent"]
+        state.update({"observation_id": "fresh-observation", "control_id": "owner1", "role": "owner"})
+        for tool, action, receipt in (
+                ("calm.terminal.control", "claim", {"terminal_id": "t1", "connection_id": "c1", "control_id": "owner1"}),
+                ("calm.terminal.input", {"type": "key", "key": "Enter"},
+                 {"terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_completed": False}),
+                ("calm.terminal.input", {"type": "key", "key": "Enter"},
+                 {"terminal_id": "t1", "request_id": "r1", "outcome": "unknown", "repeat_input": False})):
+            observed = row(1, tool)
+            item = observed["params"]["item"]
+            item["arguments"].update({"action": action, "observe": True})
+            item["result"] = {"structuredContent": {**receipt, "observation": {"status": "available", "state": state}}}
+            original = copy.deepcopy(observed)
+            with self.subTest(tool=tool, receipt=receipt):
+                _, evidence = ux.check_scenario("short", [observed], None)
+                self.assertEqual(evidence["observations"][0]["text"], "3141")
+                self.assertEqual(evidence["status"], "review_required")
+                self.assertEqual(observed, original)
+                self.assertEqual(ux.metrics([observed])["image_count"], 0)
+
+    def test_unavailable_readback_preserves_written_receipt_without_inventing_view(self):
+        written = row(2, "calm.terminal.input")
+        written["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Enter"}
+        receipt = {"terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_completed": False,
+                   "observation": {"status": "unavailable", "reason": "connection lost after write"}}
+        written["params"]["item"]["result"] = {"structuredContent": receipt}
+        original = copy.deepcopy(written)
+        _, observations, _, errors = ux.terminal_evidence([row(1), written])
+        self.assertEqual([view["row_id"] for view in observations], [1])
+        self.assertEqual(errors, [])
+        self.assertEqual(ux.metrics([written])["tool_errors"], 0)
+        self.assertEqual(written, original)
+        with self.assertRaisesRegex(ux.EvidenceError, "no successful terminal observations"):
+            ux.terminal_evidence([written])
+
+    def test_receipt_text_without_available_readback_is_not_observation(self):
+        receipt = row(1, "calm.terminal.input")
+        receipt["params"]["item"]["result"]["structuredContent"]["outcome"] = "written"
+        with self.assertRaisesRegex(ux.EvidenceError, "no successful terminal observations"):
+            ux.terminal_evidence([receipt])
+
+    def test_readback_reuses_exact_session_and_shape_validation(self):
+        state = row(1)["params"]["item"]["result"]["structuredContent"]
+        binding, *_ = ux.terminal_evidence([row(1)])
+        for observation in (None, {"status": "available", "state": []}, {"status": "unavailable"},
+                            {"status": "unavailable", "reason": 123}, {"status": "unknown", "state": state},
+                            {"status": "available", "state": {**state, "terminal_session_id": "replacement"}}):
+            call = row(2, "calm.terminal.input")
+            call["params"]["item"]["result"] = {"structuredContent": {"outcome": "written", "observation": observation}}
+            with self.subTest(observation=observation), self.assertRaises(ux.EvidenceError):
+                ux.terminal_evidence([call], binding)
+
     def test_bootstrap_posts_user_input_before_waiting_for_same_live_session(self):
         calls = []
 

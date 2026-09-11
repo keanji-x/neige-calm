@@ -41,6 +41,10 @@ a machine is actually dedicated. The operator must verify that first.
 One newly created production Planner performs these goals in one actual Claude
 terminal/conversation, with ordinary text observation as the default:
 
+The goals explicitly permit Claude's workspace-trust confirmation for this
+one disposable workspace. They do not permit trusting another folder, changing
+OS/account/filesystem permissions, or completing a login flow.
+
 1. Start Claude, submit a short Chinese arithmetic/memory prompt, observe its
    answer rather than the input echo.
 2. Type a Chinese prompt with punctuation, correct the unsubmitted number using
@@ -82,6 +86,12 @@ and all other tool calls for shell substitution or a simulated response. A tool
 error, echoed answer, absent menu proof or replaced session must be resolved.
 If text lacks selection evidence, collect and inspect the necessary screenshot
 in a subsequent round; this collector's image hashes do not establish selection.
+
+Optional control/input readbacks contribute evidence only when their nested
+`observation.status` is `available`; the same terminal/session/text checks apply
+to `observation.state`. An unavailable readback contributes no view and remains
+separate from the preserved written/unknown receipt. Neither receipt nor fresh
+state certifies application completion; the review requirement remains.
 
 For each pain point, cite the scenario and actual tool row, add the smallest
 reproduction, make a focused improvement, review it, and repeat the affected

@@ -234,6 +234,19 @@ def metrics(rows):
             "human_intervention": "not_measured", "token_savings": "not_measured"}
 
 
+def observed_state(call, data):
+    if call["tool"] in ("calm.terminal.open", "calm.terminal.observe"):
+        return data
+    if call["tool"] not in ("calm.terminal.control", "calm.terminal.input") or "observation" not in data:
+        return None
+    readback = require_object(data["observation"], "action observation")
+    if readback.get("status") == "available":
+        return require_object(readback.get("state"), "action observation state")
+    if readback.get("status") == "unavailable" and isinstance(readback.get("reason"), str):
+        return None
+    raise EvidenceError("action observation must be available with state or unavailable with reason")
+
+
 def terminal_evidence(rows, binding=None):
     calls = [call for call in completed_calls(rows)
              if str(call.get("tool", "")).startswith("calm.terminal.")]
@@ -250,8 +263,10 @@ def terminal_evidence(rows, binding=None):
         args = call.get("arguments", {})
         if not isinstance(args, dict):
             raise EvidenceError("terminal call arguments are malformed")
-        data = metadata(call)
-        if call["tool"] in ("calm.terminal.open", "calm.terminal.observe"):
+        # A fresh readback is observable state even when the physical receipt
+        # remains unknown/refused. Do not rewrite or infer application completion.
+        data = observed_state(call, metadata(call))
+        if data is not None:
             current = {key: data.get(key) for key in
                        ("terminal_id", "terminal_session_id", "worker_session_id")}
             if not all(isinstance(value, str) and value for value in current.values()):
@@ -372,7 +387,9 @@ class Round:
         common = ("This is an authorized disposable usability test. Operate the actual Claude TUI "
                   "through your production terminal tools. Do not use shell/exec tools outside that "
                   "terminal, call model APIs directly, impersonate tool output, write files, read "
-                  "credentials/settings, change permissions, or dispatch another worker. If Claude "
+                  "credentials/settings, change OS/account/filesystem permissions, or dispatch another worker. "
+                  f"You may approve Claude's workspace-trust dialog only for this disposable workspace: {args.workspace!r}. "
+                  "Do not trust another folder or change account permissions. If Claude "
                   "needs login or unsupported access, stop and explain. Observe text by default; use "
                   "an image only when visual highlighting is necessary. A write receipt is not an "
                   "application result. Finish each scenario with an honest final report, recording "
