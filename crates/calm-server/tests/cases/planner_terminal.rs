@@ -1,5 +1,5 @@
 //! Production MCP/operation/renderer integration; the driver shares setup only.
-use crate::terminal_support::Harness;
+use crate::terminal_support::{Harness, assert_text_observation};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::card_with_codex_create_tx;
@@ -13,7 +13,7 @@ async fn planner_opens_visible_terminal_and_receives_png_and_confirmed_input() {
     let opened = h
         .call(
             "calm.terminal.open",
-            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal"}),
+            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal","format":"image"}),
         )
         .await;
     assert!(opened.get("error").is_none(), "{opened}");
@@ -38,7 +38,7 @@ async fn planner_opens_visible_terminal_and_receives_png_and_confirmed_input() {
     let repeated = h
         .ok(
             "calm.terminal.open",
-            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal"}),
+            json!({"program":"exec /bin/sh","request_id":"open-1","title":"Planner terminal","format":"image"}),
         )
         .await;
     assert_eq!(repeated["terminal_id"], terminal);
@@ -428,5 +428,152 @@ async fn detach_releases_receipts_and_old_observations_cannot_authorize_a_new_co
         )
         .await;
     assert_eq!(written["outcome"], "written");
+    h.stop(&terminal).await;
+}
+
+#[tokio::test]
+async fn default_terminal_observations_authorize_shell_input_without_images() {
+    let h = Harness::start().await;
+    let opened = h
+        .call(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"text-default"}),
+        )
+        .await;
+    let terminal = assert_text_observation(&opened)["terminal_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    h.ok(
+        "calm.terminal.control",
+        json!({"terminal_id":terminal,"action":"claim"}),
+    )
+    .await;
+    let observed = h
+        .call(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_ms":100}),
+        )
+        .await;
+    let before = assert_text_observation(&observed);
+    assert_eq!(before["role"], "owner");
+    assert_eq!(before["controllable"], true);
+    assert!(before["control_id"].is_string());
+    assert_eq!(
+        h.input(
+            &terminal,
+            before,
+            "type",
+            json!({"type":"text","text":"printf '%s%s\\n' TEXT_ OBSERVATION_OK"})
+        )
+        .await["outcome"],
+        "written"
+    );
+    let mut needle = "printf";
+    for (request, action) in [
+        ("submit", Some(json!({"type":"key","key":"Enter"}))),
+        ("result", None),
+    ] {
+        let start = std::time::Instant::now();
+        loop {
+            let response = h
+                .call(
+                    "calm.terminal.observe",
+                    json!({"terminal_id":terminal,"wait_ms":30}),
+                )
+                .await;
+            let view = assert_text_observation(&response);
+            let visible = view["text"].as_array().unwrap().iter().any(|line| {
+                let line = line.as_str().unwrap();
+                if action.is_some() {
+                    line.contains(needle)
+                } else {
+                    line == needle
+                }
+            });
+            if visible {
+                assert_eq!(view["terminal_session_id"], before["terminal_session_id"]);
+                if let Some(action) = action {
+                    assert_eq!(
+                        h.input(&terminal, view, request, action).await["outcome"],
+                        "written"
+                    );
+                }
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "missing {needle}: {view}"
+            );
+        }
+        needle = "TEXT_OBSERVATION_OK";
+    }
+    h.stop(&terminal).await;
+}
+
+#[tokio::test]
+async fn terminal_formats_are_explicit_and_do_not_change_open_identity() {
+    let h = Harness::start().await;
+    for invalid in [json!("png"), json!("TEXT"), json!(null), json!(1)] {
+        for tool in ["calm.terminal.open", "calm.terminal.observe"] {
+            let args = if tool.ends_with("open") {
+                json!({"request_id":"invalid-format","format":invalid})
+            } else {
+                json!({"terminal_id":"not-created","format":invalid})
+            };
+            let rejected = h.call(tool, args).await;
+            assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
+        }
+    }
+    assert_eq!(
+        h.sql.cards_by_track(&h.track).await.unwrap().len(),
+        1,
+        "invalid formats must not create a card"
+    );
+    let opened = h
+        .call(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"same-open","format":"text"}),
+        )
+        .await;
+    let first = assert_text_observation(&opened);
+    let terminal = first["terminal_id"].as_str().unwrap().to_owned();
+    let image = h
+        .call(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"same-open","format":"image"}),
+        )
+        .await;
+    assert!(image.get("error").is_none(), "{image}");
+    let image_meta = &image["result"]["structuredContent"];
+    assert_eq!(image_meta["terminal_id"], terminal);
+    assert_eq!(image_meta["operation_id"], first["operation_id"]);
+    assert_eq!(
+        image_meta["terminal_session_id"],
+        first["terminal_session_id"]
+    );
+    assert_eq!(image_meta["image_source"], "rmux_client_projection");
+    assert!(
+        image["result"]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|part| part["type"] == "image" && part["mimeType"] == "image/png")
+    );
+    let text = h
+        .call(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"format":"text"}),
+        )
+        .await;
+    assert_eq!(
+        assert_text_observation(&text)["terminal_session_id"],
+        first["terminal_session_id"]
+    );
+    assert_eq!(
+        h.sql.cards_by_track(&h.track).await.unwrap().len(),
+        2,
+        "changing presentation must not create another terminal"
+    );
     h.stop(&terminal).await;
 }

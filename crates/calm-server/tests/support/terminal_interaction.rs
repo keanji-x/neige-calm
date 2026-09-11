@@ -210,3 +210,27 @@ impl Harness {
         drop(self.root);
     }
 }
+
+/// Inspect the complete MCP envelope, including the textual projection of metadata.
+pub fn assert_text_observation(response: &Value) -> &Value {
+    assert!(response.get("error").is_none(), "{response}");
+    let content = response["result"]["content"].as_array().unwrap();
+    assert_eq!(content.len(), 1, "text observation must not include images");
+    assert_eq!(content[0]["type"], "text");
+    let metadata = &response["result"]["structuredContent"];
+    assert_eq!(
+        serde_json::from_str::<Value>(content[0]["text"].as_str().unwrap()).unwrap(),
+        *metadata
+    );
+    assert!(
+        metadata.get("image_source").is_none(),
+        "text observation must not claim an image source"
+    );
+    uuid::Uuid::parse_str(metadata["observation_id"].as_str().unwrap()).unwrap();
+    uuid::Uuid::parse_str(metadata["connection_id"].as_str().unwrap()).unwrap();
+    assert!(metadata["text"].is_array());
+    assert!(metadata["cursor"].is_object());
+    assert!(metadata["cols"].as_u64().unwrap() > 0);
+    assert!(metadata["rows"].as_u64().unwrap() > 0);
+    metadata
+}

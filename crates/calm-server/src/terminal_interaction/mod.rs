@@ -13,8 +13,11 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
+mod action_observation;
 mod client;
+mod observation;
 mod operations;
+pub use observation::ObservationFormat;
 mod target;
 use client::Client;
 pub(crate) use target::Binding;
@@ -134,11 +137,24 @@ impl TerminalInteraction {
         target: &Target,
         offset: usize,
         wait_ms: u64,
-    ) -> Result<(Value, Vec<u8>)> {
+        format: ObservationFormat,
+    ) -> Result<(Value, Option<Vec<u8>>)> {
         ensure!(wait_ms <= 2000, "observation wait exceeds 2000ms");
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
-        let terminal = resolved.binding.terminal_id.as_str();
         let client = self.client(identity, &resolved.binding).await?;
+        self.capture(identity, resolved, &client, offset, wait_ms, format)
+            .await
+    }
+    async fn capture(
+        &self,
+        identity: &ToolCallIdentity,
+        resolved: target::Resolved,
+        client: &Client,
+        offset: usize,
+        wait_ms: u64,
+        format: ObservationFormat,
+    ) -> Result<(Value, Option<Vec<u8>>)> {
+        let terminal = resolved.binding.terminal_id.as_str();
         if wait_ms > 0 {
             tokio::time::sleep(Duration::from_millis(wait_ms)).await;
         }
@@ -158,25 +174,18 @@ impl TerminalInteraction {
             .lock()
             .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
             .capture(offset)?;
-        let raster = self
-            .raster
-            .get_or_try_init(|| async {
-                tokio::task::spawn_blocking(Rasterizer::system)
-                    .await?
-                    .map(Arc::new)
-            })
-            .await?
-            .clone();
-        let image_frame = frame.clone();
-        let png = tokio::task::spawn_blocking(move || raster.png(&image_frame)).await??;
+        let png = format.render_image(&self.raster, &frame).await?;
         Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let observation_id = Uuid::new_v4();
-        let metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
+        let mut metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
             "terminal_session_id":client.entry.handle.session_id,"control_id":control,"role":if control.is_some(){"owner"}else{"observer"},
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
-            "text":frame.text,"exited":exited,"image_source":"rmux_client_projection"});
+            "text":frame.text,"exited":exited});
+        if png.is_some() {
+            metadata["image_source"] = json!("rmux_client_projection");
+        }
         let mut observations = self
             .observations
             .lock()
@@ -204,7 +213,16 @@ impl TerminalInteraction {
         identity: &ToolCallIdentity,
         target: &Target,
         action: &str,
+        observation_wait_ms: Option<u64>,
     ) -> Result<Value> {
+        ensure!(
+            observation_wait_ms.is_none_or(|wait| wait <= 2000),
+            "observation wait exceeds 2000ms"
+        );
+        ensure!(
+            action != "detach" || observation_wait_ms.is_none(),
+            "detach cannot request observation"
+        );
         if action == "detach" {
             Self::authorize(self.repo.as_ref(), identity).await?;
             self.clients.lock().await.retain(|key, client| {
@@ -250,9 +268,12 @@ impl TerminalInteraction {
             }
             _ => anyhow::bail!("unknown terminal control action"),
         }
-        let state = client.screen.lock().unwrap();
-        Ok(
-            json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":state.control}),
-        )
+        let receipt = {
+            let state = client.screen.lock().unwrap();
+            json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":state.control})
+        };
+        Ok(self
+            .with_observation(identity, &client, receipt, observation_wait_ms)
+            .await)
     }
 }

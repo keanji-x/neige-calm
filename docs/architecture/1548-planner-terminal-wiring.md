@@ -4,11 +4,33 @@ The application entry point is a Planner-only MCP tool set:
 
 | Tool | Behavior |
 |---|---|
-| `calm.terminal.open` | Idempotent visible Terminal-card creation through `terminal-create` OperationRuntime, attributed to the authenticated Planner session. |
+| `calm.terminal.open` | Idempotent visible Terminal-card creation through `terminal-create` OperationRuntime, attributed to the authenticated Planner session. Returns text by default; `format=image` requests a PNG. Presentation does not change creation idempotency. |
 | `calm.terminal.resolve` | Resolve an exact current task attempt or Terminal ID to its real Worker card, worker session and view availability. |
-| `calm.terminal.observe` | PNG and text/cursor/mode state from the same captured RMUX projection, with observation and connection IDs. Reads never create or restart a process. |
-| `calm.terminal.control` | Claim/release control, or detach the model client while retaining the card/program. |
-| `calm.terminal.input` | One text/key/cell-click action, bound to a recent live observation and current control. A matching request ID replays its receipt without another write. |
+| `calm.terminal.observe` | Text/cursor/mode state and observation/connection IDs by default. Explicit `format=image` includes a PNG from that same captured RMUX frame. Reads never create or restart a process. |
+| `calm.terminal.control` | Claim/release control, optionally returning fresh text with `observe=true`, or detach the model client while retaining the card/program. |
+| `calm.terminal.input` | One text/key/cell-click action, bound to a recent live observation and current control; navigation/editing keys support bounded `repeat`. Optional `observe=true` returns fresh text after the action. A matching request ID replays its receipt without another write. |
+
+## Model discovery schema
+
+The four targeted tools expose complete, closed `anyOf` object arms for
+`terminal_id` and `task_id`. Each arm derives from the same common schema, retains
+all common properties and required fields, requires its selected target, and
+excludes the other target property. Root common properties remain present for
+MCP clients that require an object surface. The accepted request set is unchanged.
+
+Input action variants also use `anyOf`; their distinct required `type` literals
+keep text, key and click mutually exclusive. Existing `const` discriminators are
+preserved: the inspected local Codex sanitizer converts them to singleton enums.
+That parser does not retain `oneOf`, and its TypeScript renderer handles union
+arms before sibling properties. Complete arms prevent nested action fields from
+turning into an uninformative object in discovery. The registered schemas stay
+below the local 4000-byte compaction threshold. This local source inspection does
+not attest the installed Codex build; fresh Planner discovery remains the end-to-end
+acceptance check.
+
+Planner guidance uses exact Terminal tool names once and includes a complete
+nested-action example. This changes discovery metadata and guidance only; input
+execution, targeting guards and MCP result envelopes retain their existing paths.
 
 ## Ownership and observation
 
@@ -29,7 +51,20 @@ proven complete, so model observation fails explicitly; human reconnect retains
 its existing behavior. Open a new Terminal for the model instead of silently
 claiming complete recovery. No model read launches a replacement process.
 
-The frame is immutable before rasterization. System-font-only `resvg` renders
+Open and observe accept only `format=text` (the default) or `format=image`.
+Normal observations return one MCP text block and structured metadata, including
+a valid observation ID for input. They never initialize system fonts or rasterize
+an image. Input still requires control, a fresh live observation, and the same
+session, revision and authority checks in either format. Observing after each
+action does not require taking a screenshot.
+
+Use `format=image` for color, reverse-video selection or layout-dependent TUI
+decisions; plain text does not preserve these visual cues. Image replies include
+a native MCP PNG block and `image_source`; text replies omit both. Explicit image
+errors are returned without a fallback to text. Both formats use one immutable
+captured frame for their metadata and any image.
+
+For explicit image observations, the frame is immutable before rasterization. System-font-only `resvg` renders
 escaped terminal text into a bounded PNG with a fixed cell geometry. No terminal
 text is interpreted as SVG markup, file paths or external image URLs. The image
 uses the model projection's font/viewport, not a screenshot of browser chrome.
@@ -56,10 +91,48 @@ cells, text or image bytes. Each capture contains the exact control identity it 
 human takeover invalidates it. Output changes also require a new observation.
 
 A successful input reply says `written`, not that the TUI completed an action.
-Text excludes control characters and never implicitly submits. Enter, Escape,
+Text excludes control characters and never implicitly submits. Ctrl+J explicitly
+sends LF (0x0a), distinct from Enter's CR (0x0d). Claude Code documents Ctrl+J
+as [draft newline](https://code.claude.com/docs/en/keybindings); other applications define their own behavior, so LF is not a
+generic no-submit guarantee. Enter, Escape,
 arrows and other supported keys are explicit actions. Application mouse input
 requires reported SGR mouse mode and in-range cell coordinates. Local history
 scrolling uses `observe.scroll_offset`; application paging uses explicit keys.
+
+## Optional action observation and repeated navigation
+
+Control (claim/release) and input accept `observe=true` with optional `wait_ms`
+(0..2000). They retain the original receipt fields and add exactly one of:
+
+```json
+{"observation":{"status":"available","state":{"observation_id":"...","text":["..."],"control_id":"...","role":"owner"}}}
+{"observation":{"status":"unavailable","reason":"..."}}
+```
+
+`state` is the full existing text observation metadata, not just the abbreviated
+example. These responses never include PNG. The default remains receipt-only;
+`wait_ms` without `observe=true`, or detach with observation, is rejected before
+any action. Fixed waiting does not certify application completion. A readback
+failure never erases or changes the action receipt, including written/unknown
+input. An unavailable observation must not cause a new input request.
+
+Readback uses the action's existing client, renderer generation and execution
+binding. It cannot attach a client or silently follow a replacement session.
+It rechecks current state after waiting; a human takeover does not claim control
+again. Presentation options do not enter the physical action fingerprint/cache.
+Repeating an identical request may obtain a fresh observation without another
+physical write; receipt-only replay still returns the original receipt.
+
+A Planner can claim with observation, type with observation, inspect the text,
+and send Enter against that fresh observation in three calls. Input accepts the
+returned `observation_id`; `control_id` is informational, not an input argument.
+
+Key actions accept optional integer `repeat` (1..32, default 1). Counts above one
+are restricted to Left/Right/Up/Down/Backspace/Delete. Enter/Escape/Tab/control keys
+cannot repeat; null, noninteger and out-of-range counts fail before input. The
+repeated encoded bytes travel in one existing input request under one ownership
+barrier. Repeat belongs to the physical action fingerprint. This does not add
+mixed-action batches, automatic Enter or relaxed observation revision checks.
 
 ## Provider approval entry point (#1578)
 
@@ -129,14 +202,23 @@ sets HTTP_PROXY and HTTPS_PROXY to `http://127.0.0.1:2080` before starting Claud
 
 The focused suite uses the actual authenticated MCP UDS server, real operation
 runtime and renderer, and a real shell. It verifies visible card identity, native
-PNG delivery, exact application output, physical Enter counts for duplicate
+default text-only envelopes, explicit native PNG delivery, format-independent open
+idempotency, exact application output, physical Enter counts for duplicate
 requests, same-database foreign-Track refusal, human takeover and reconnect IDs.
 The writer tests hold real protocol work and physical acknowledgement separately.
 Projection tests traverse actual RenderPlane output and resize paths.
 
 A developer driver reuses only this test setup and calls the actual tools; it is
 not a Planner implementation. It accepts private NDJSON stdin and starts a
-disposable loopback browser preview. Build with:
+disposable loopback browser preview. It forwards observation formats unchanged:
+
+```json
+{"name":"calm.terminal.observe","arguments":{"terminal_id":"<returned-terminal-id>"}}
+{"name":"calm.terminal.observe","arguments":{"terminal_id":"<returned-terminal-id>","format":"image"}}
+```
+
+The first reads text without a screenshot; the second explicitly asks for one.
+Build with:
 
 ```sh
 env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=4 \
