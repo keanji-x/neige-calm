@@ -60,6 +60,12 @@ does not claim to cover them.
 Artifacts are private under ignored `e2e-artifacts/planner-claude-*/`: exact
 source/server and CLI versions, per-scenario transcript/elapsed time/metrics,
 terminal and session identity, interview and `review.json` or `incomplete.json`.
+`planner_model_selection` records the card's selection, not a provider-attested
+model identity: null follows the installation default. The run endpoint does
+not expose the resolved per-turn model. Record that separately before comparing
+rounds. Completion requires a current app-server `agentMessage` with
+`phase: final_answer` plus a settled Planner phase; unsupported/missing message
+phase times out explicitly instead of treating commentary as completion.
 Cookie credentials travel over private stdin; credential fields, common token
 patterns and URL query strings are redacted. Images retain byte counts/hashes,
 not base64. This is not a general secret scrubber: keep the workspace synthetic,

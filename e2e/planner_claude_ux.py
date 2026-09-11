@@ -209,9 +209,10 @@ def terminal_evidence(rows, binding=None):
             binding = current if binding is None else binding
             if current != binding:
                 raise EvidenceError("terminal or session changed during UX round")
-            if not isinstance(data.get("text"), str):
-                raise EvidenceError("terminal observation has no text")
-            observations.append({"row_id": call["row_id"], "text": data["text"]})
+            lines = data.get("text")  # Frame.text is Vec<String>, not a scalar.
+            if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+                raise EvidenceError("terminal observation text must be an array of strings")
+            observations.append({"row_id": call["row_id"], "text": "\n".join(lines)})
         if binding and args.get("terminal_id", binding["terminal_id"]) != binding["terminal_id"]:
             raise EvidenceError("Planner targeted another terminal")
     if not observations:
@@ -268,7 +269,9 @@ class Round:
                 write_json(self.args.artifacts / f"{name}.json", {
                     "elapsed_seconds": round(time.monotonic() - started, 3),
                     "planner_card_id": self.card, "planner_session_id": session,
-                    "planner_model": snapshot.get("model"), "metrics": metrics(self.current),
+                    "planner_model_selection": snapshot.get("model"),
+                    "planner_reasoning_effort_selection": snapshot.get("reasoning_effort"),
+                    "metrics": metrics(self.current),
                     "transcript": self.current})
                 return self.current
             time.sleep(2)

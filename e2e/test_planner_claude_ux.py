@@ -7,20 +7,50 @@ import unittest
 import planner_claude_ux as ux
 
 
-def row(identifier, tool="calm.terminal.observe", *, text="3141", terminal="t1"):
+def row(identifier, tool="calm.terminal.observe", *, text=("3141",), terminal="t1"):
     return {"id": identifier, "method": "item/completed", "worker_session_id": "planner1",
             "params": {"item": {"id": f"call-{identifier}", "type": "mcpToolCall",
                                 "tool": tool, "status": "completed", "arguments": {"terminal_id": terminal},
                                 "result": {"structuredContent": {"terminal_id": terminal,
                                                                  "terminal_session_id": "pty1",
-                                                                 "worker_session_id": "worker1", "text": text}}}}}
+                                                                 "worker_session_id": "worker1", "text": list(text)}}}}}
 
 
 class CollectorTests(unittest.TestCase):
+    def test_production_terminal_text_rows_are_joined_without_mutating_transcript(self):
+        observed = row(1)
+        # Frame.text: Vec<String>, emitted directly by terminal_interaction::observe.
+        observed["params"]["item"]["result"]["structuredContent"]["text"] = ["Claude", "3141", ""]
+        original = copy.deepcopy(observed)
+        _, evidence = ux.check_scenario("short", [observed], None)
+        self.assertEqual(evidence["observations"][0]["text"], "Claude\n3141\n")
+        self.assertEqual(observed, original)
+
     def test_no_terminal_calls_does_not_turn_prose_into_success(self):
         for rows in ([], [row(1, "calm.track.cat")]):
             with self.subTest(rows=rows), self.assertRaisesRegex(ux.EvidenceError, "no actual Planner"):
                 ux.terminal_evidence(rows)
+
+    def test_terminal_text_rejects_scalar_and_nonstring_rows(self):
+        for malformed in ("3141", [3141], ["3141", None], None, {}):
+            observed = row(1)
+            observed["params"]["item"]["result"]["structuredContent"]["text"] = malformed
+            with self.subTest(text=malformed), self.assertRaisesRegex(ux.EvidenceError, "array of strings"):
+                ux.terminal_evidence([observed])
+
+    def test_completed_agent_message_uses_real_item_phase_and_text(self):
+        # Current app-server shape captured in plannerChatItems.test.ts; the
+        # kernel persists item fields verbatim, including phase.
+        final = {"id": 1, "method": "item/completed", "params": {"completedAtMs": 1780977421069,
+                 "item": {"id": "msg_agent", "phase": "final_answer", "text": "Done", "type": "agentMessage"},
+                 "threadId": "thread", "turnId": "turn"}}
+        commentary = copy.deepcopy(final)
+        commentary["params"]["item"]["phase"] = "commentary"
+        started = copy.deepcopy(final)
+        started["method"] = "item/started"
+        missing_phase = copy.deepcopy(final)
+        missing_phase["params"]["item"].pop("phase")
+        self.assertEqual(ux.final_texts([commentary, started, missing_phase, final]), ["Done"])
 
     def test_session_replacement_is_rejected(self):
         binding, *_ = ux.terminal_evidence([row(1)])
@@ -70,16 +100,16 @@ class CollectorTests(unittest.TestCase):
 
     def test_prompt_echo_without_actual_answer_is_incomplete(self):
         with self.assertRaisesRegex(ux.EvidenceError, "answer absent"):
-            ux.check_scenario("short", [row(1, text="请只回答 3100 + 41 的结果")], None)
+            ux.check_scenario("short", [row(1, text=["请只回答 3100 + 41 的结果"])], None)
 
     def test_rewind_answer_without_rewind_action_is_incomplete(self):
         with self.assertRaisesRegex(ux.EvidenceError, "actual /rewind input absent"):
-            ux.check_scenario("rewind", [row(1, text="松果 9123")], None)
+            ux.check_scenario("rewind", [row(1, text=["松果 9123"])], None)
 
     def test_actual_rewind_action_still_requires_review(self):
         action = row(2, "calm.terminal.input")
         action["params"]["item"]["arguments"]["action"] = {"type": "text", "text": "/rewind"}
-        _, evidence = ux.check_scenario("rewind", [row(1, text="松果 9123"), action], None)
+        _, evidence = ux.check_scenario("rewind", [row(1, text=["松果 9123"]), action], None)
         self.assertEqual(evidence["status"], "review_required")
 
     def test_paginated_rows_are_complete_and_cursor_advances(self):
