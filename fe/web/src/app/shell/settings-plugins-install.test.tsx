@@ -114,7 +114,7 @@ describe('Settings › Plugins › add, end to end', () => {
     expect(install?.method).toBe('POST');
     expect(install?.body).toEqual({
       source: {
-        kind: 'mcp_http',
+        kind: 'mcp_http_v2',
         id: 'com.example.zhibao',
         display_name: 'Zhibao',
         url: 'https://mcp.wisburg.com/mcp',

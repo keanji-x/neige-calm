@@ -2355,6 +2355,9 @@ export interface components {
         } | (components["schemas"]["ConnectorInstall"] & {
             /** @enum {string} */
             kind: "mcp_http";
+        }) | (components["schemas"]["ConnectorInstall"] & {
+            /** @enum {string} */
+            kind: "mcp_http_v2";
         }) | {
             /** @enum {string} */
             kind: "other";

@@ -485,7 +485,7 @@ describe('connector install', () => {
     expect(operation.path).toBe('/api/plugins/install');
     expect(operation.body).toEqual({
       source: {
-        kind: 'mcp_http',
+        kind: 'mcp_http_v2',
         id: 'com.example.zhibao',
         display_name: 'Zhibao',
         url: 'https://mcp.wisburg.com/mcp',

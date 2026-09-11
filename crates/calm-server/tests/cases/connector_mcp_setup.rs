@@ -59,7 +59,7 @@ async fn mcp_setup_headers_stay_private_and_survive_install_and_restart() {
         &state,
         "/api/plugins/install",
         json!({"source": {
-            "kind": "mcp_http", "id": body["id"], "display_name": body["display_name"],
+            "kind": "mcp_http_v2", "id": body["id"], "display_name": body["display_name"],
             "url": body["url"], "headers": body["headers"], "tools_all": true
         }}),
     )
@@ -149,7 +149,7 @@ async fn assert_header_values_refused(values: &[&str]) {
             StatusCode::BAD_REQUEST,
             "unsupported header value must fail before discovery: {checked}"
         );
-        body["kind"] = json!("mcp_http");
+        body["kind"] = json!("mcp_http_v2");
         let (status, installed) =
             post_json(&state, "/api/plugins/install", json!({"source":body})).await;
         assert_eq!(

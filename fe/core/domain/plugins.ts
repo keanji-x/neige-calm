@@ -203,8 +203,9 @@ export const installedPluginSchema = z.object({ id: z.string(), enabled: z.boole
 export type InstalledPlugin = z.infer<typeof installedPluginSchema>;
 
 /**
- * `POST /api/plugins/install` with `source.kind = "mcp_http"` — the kernel
- * synthesizes the plugin tree from these fields (#1480).
+ * `POST /api/plugins/install` with `source.kind = "mcp_http_v2"` — the kernel
+ * synthesizes the plugin tree from these fields (#1480). Older kernels reject
+ * this tag instead of silently dropping headers and the all-tools selection.
  *
  * A blank credential is sent as an **absent** key, not as `""`: the kernel
  * reads absent as "unauthenticated connector", which is what a blank box means,
@@ -220,7 +221,7 @@ export function installConnectorOperation(draft: ConnectorInstallDraft): ApiOper
     path: '/api/plugins/install',
     body: {
       source: {
-        kind: 'mcp_http',
+        kind: 'mcp_http_v2',
         id: draft.id.trim(),
         display_name: draft.display_name.trim(),
         ...(description === '' ? {} : { description }),

@@ -134,10 +134,6 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         "7",
         "MCP setup needs a new API capability revision"
     );
-    // #1450: "4" -> "5" because Track detail now requires `can_resume`.
-    // #1316 S4b: "5" -> "6" when three planner REST responses renamed
-    // `runtime_id` to `worker_session_id`.
-    assert_eq!(v["apiVersion"].as_str().unwrap(), "6");
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64

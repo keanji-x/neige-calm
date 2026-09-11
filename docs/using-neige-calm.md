@@ -108,7 +108,8 @@ Open **Settings → Plugins → Add a plugin**. Choose a source:
 | **Server directory** | A directory containing `manifest.json` on the machine running Neige Calm. This is not a directory on the browser's computer. |
 
 Update the server and app together before using JSON setup; older servers
-cannot interpret its new configuration fields. A web-only update is refused.
+cannot interpret its new configuration fields. The web-only upgrade preflight
+rejects this mismatch, and older servers refuse the new install request type.
 
 Paste a direct `{"url":"https://example.com/mcp","headers":{}}` object,
 Claude-style `mcpServers`, or VS Code-style `servers`. If there is more than one

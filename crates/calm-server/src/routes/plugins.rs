@@ -238,10 +238,13 @@ pub enum InstallSource {
     /// when a credential is given) and owns it thereafter; see
     /// `plugin_host::managed`.
     ///
-    /// This is the only install source that does not require a directory to
-    /// exist on the server beforehand, which is what makes "add a connector"
-    /// expressible from the UI at all.
+    /// This source family does not require a directory to exist on the server
+    /// beforehand, which makes "add a connector" expressible from the UI.
     McpHttp(Box<ConnectorInstall>),
+    /// JSON setup clients use a distinct source tag so older kernels reject
+    /// the request instead of silently ignoring `headers` and `tools_all`.
+    /// `mcp_http` remains accepted for existing clients.
+    McpHttpV2(Box<ConnectorInstall>),
     /// Catch-all so we can return a friendly 400 for tarball/url/etc. instead
     /// of a serde deserialize error.
     #[serde(other)]
@@ -410,7 +413,7 @@ pub(crate) async fn install_plugin(
 ) -> Result<(StatusCode, Json<PluginDetail>)> {
     let raw_path = match body.source {
         InstallSource::LocalPath { path } => path,
-        InstallSource::McpHttp(connector) => {
+        InstallSource::McpHttp(connector) | InstallSource::McpHttpV2(connector) => {
             // The whole operation — manifest synthesis, validation, writing the
             // tree, the row — belongs to the host, which is where the per-id
             // lifecycle guard lives. See `install_managed_connector` for why
@@ -420,7 +423,8 @@ pub(crate) async fn install_plugin(
         }
         InstallSource::Other => {
             return Err(CalmError::PluginInstall(
-                "unsupported source kind — accepted: `local_path`, `mcp_http`".into(),
+                "unsupported source kind — accepted: `local_path`, `mcp_http`, `mcp_http_v2`"
+                    .into(),
             ));
         }
     };

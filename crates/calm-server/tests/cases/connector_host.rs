@@ -939,7 +939,7 @@ async fn default_all_tools_install_discovers_every_page_and_survives_restart() {
         &state,
         "/api/plugins/install",
         json!({ "source": {
-            "kind": "mcp_http",
+            "kind": "mcp_http_v2",
             "id": CONNECTOR_ID,
             "display_name": "Paginated MCP",
             "tools_all": true,
