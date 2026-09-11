@@ -349,7 +349,7 @@ class CollectorTests(unittest.TestCase):
             def call(self, method, path):
                 self.paths.append(path)
                 rows = [row(i) for i in range(1, 501)] if len(self.paths) == 1 else [row(501)]
-                # HarnessItem.params is JSON encoded inside the REST JSON row
+                # Transcript params are JSON encoded inside the REST JSON row
                 # (crates/calm-types/src/model.rs), not an embedded object.
                 return [{**item, "params": json.dumps(item["params"])} for item in rows]
 
