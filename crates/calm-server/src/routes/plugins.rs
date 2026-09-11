@@ -241,7 +241,7 @@ pub enum InstallSource {
     /// This is the only install source that does not require a directory to
     /// exist on the server beforehand, which is what makes "add a connector"
     /// expressible from the UI at all.
-    McpHttp(ConnectorInstall),
+    McpHttp(Box<ConnectorInstall>),
     /// Catch-all so we can return a friendly 400 for tarball/url/etc. instead
     /// of a serde deserialize error.
     #[serde(other)]
