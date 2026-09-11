@@ -10,6 +10,28 @@ The application entry point is a Planner-only MCP tool set:
 | `calm.terminal.control` | Claim/release control, optionally returning fresh text with `observe=true`, or detach the model client while retaining the card/program. |
 | `calm.terminal.input` | One text/key/cell-click action, bound to a recent live observation and current control; navigation/editing keys support bounded `repeat`. Optional `observe=true` returns fresh text after the action. A matching request ID replays its receipt without another write. |
 
+## Model discovery schema
+
+The four targeted tools expose complete, closed `anyOf` object arms for
+`terminal_id` and `task_id`. Each arm derives from the same common schema, retains
+all common properties and required fields, requires its selected target, and
+excludes the other target property. Root common properties remain present for
+MCP clients that require an object surface. The accepted request set is unchanged.
+
+Input action variants also use `anyOf`; their distinct required `type` literals
+keep text, key and click mutually exclusive. Existing `const` discriminators are
+preserved: the inspected local Codex sanitizer converts them to singleton enums.
+That parser does not retain `oneOf`, and its TypeScript renderer handles union
+arms before sibling properties. Complete arms prevent nested action fields from
+turning into an uninformative object in discovery. The registered schemas stay
+below the local 4000-byte compaction threshold. This local source inspection does
+not attest the installed Codex build; fresh Planner discovery remains the end-to-end
+acceptance check.
+
+Planner guidance uses exact Terminal tool names once and includes a complete
+nested-action example. This changes discovery metadata and guidance only; input
+execution, targeting guards and MCP result envelopes retain their existing paths.
+
 ## Ownership and observation
 
 This slice retains Neige's existing supervisor PTY and terminal-create lifecycle.

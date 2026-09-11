@@ -45,9 +45,9 @@ pub fn register_into(registry: &mut ToolRegistry) {
         ),
         (
             "calm.terminal.input",
-            "Select exactly one terminal_id or task_id (exact attempt_id). Send one action against a recent live observation you own. request_id prevents repeated writes within this connection. Text never submits: send key Enter separately. Keys: Enter, Escape, Tab, Backspace, Ctrl+C/D/J/U/L, Up/Down/Left/Right, Home/End, PageUp/PageDown, Delete. Optional key repeat is an integer 1..32 (default 1); repeat>1 is allowed only for Left/Right/Up/Down/Backspace/Delete and sends one bounded action. Enter/Escape/Tab/Ctrl keys cannot repeat. Ctrl+J sends LF and Enter sends CR; application-specific newline/submission behavior must be verified. Click uses zero-based terminal cell column/row and requires application mouse mode. Use observation_id from the latest state, never pass control_id as an input argument. Set observe=true to include a fresh text observation after this action; wait_ms (0..2000) requires observe=true. A failed readback preserves the action receipt and reports observation unavailable. Readback does not prove application completion. After written, inspect the returned state or observe separately to verify the application result. Unknown is not success: do not retry with a new ID or assume a rewind completed.",
+            "Select exactly one terminal_id or task_id (exact attempt_id). Send one action against a recent live observation you own. request_id prevents repeated writes within this connection. Text never submits: send key Enter separately. Keys: Enter, Escape, Tab, Backspace, Ctrl+C/D/J/U/L, Up/Down/Left/Right, Home/End, PageUp/PageDown, Delete. Optional key repeat is an integer 1..32 (default 1); repeat>1 is allowed only for Left/Right/Up/Down/Backspace/Delete and sends one bounded action. Enter/Escape/Tab/Ctrl keys cannot repeat. Ctrl+J sends LF and Enter sends CR; application-specific newline/submission behavior must be verified. Click uses zero-based terminal cell column/row and requires application mouse mode. Use observation_id from the latest state, never pass control_id as an input argument. Set observe=true to include a fresh text observation after this action; wait_ms (0..2000) requires observe=true. A failed readback preserves the action receipt and reports observation unavailable. Readback does not prove application completion. After written, inspect the returned state or observe separately to verify the application result. Unknown is not success: do not retry with a new ID or assume a rewind completed. Example shape (replace returned IDs): {\"terminal_id\":\"<terminal_id>\",\"observation_id\":\"<observation_id>\",\"request_id\":\"move-1\",\"action\":{\"type\":\"key\",\"key\":\"Left\",\"repeat\":5},\"observe\":true}.",
             json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"request_id":{"type":"string","minLength":1,"maxLength":128},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":2000},
-            "action":{"oneOf":[
+            "action":{"anyOf":[
                 {"type":"object","required":["type","text"],"additionalProperties":false,"properties":{"type":{"const":"text"},"text":{"type":"string","minLength":1,"maxLength":16384}}},
                 {"type":"object","required":["type","key"],"additionalProperties":false,"properties":{"type":{"const":"key"},"key":{"type":"string"},"repeat":{"type":"integer","minimum":1,"maximum":32,"default":1}}},
                 {"type":"object","required":["type","column","row"],"additionalProperties":false,"properties":{"type":{"const":"click"},"column":{"type":"integer","minimum":0},"row":{"type":"integer","minimum":0}}}
@@ -62,10 +62,22 @@ pub fn register_into(registry: &mut ToolRegistry) {
         });
         let mut input_schema = json!({"type":"object","additionalProperties":false,"properties":properties,"required":required});
         if name != "calm.terminal.open" {
-            input_schema["oneOf"] = json!([
-                {"required":["terminal_id"],"not":{"required":["task_id"]}},
-                {"required":["task_id"],"not":{"required":["terminal_id"]}}
-            ]);
+            // Discovery clients may render union arms before root properties.
+            // Clone the complete common schema so neither fields nor required
+            // constraints disappear. Closed arms with opposite selectors removed
+            // preserve exactly-one targeting without unsupported `not`/`oneOf`.
+            let arms = [("terminal_id", "task_id"), ("task_id", "terminal_id")].map(
+                |(selector, other)| {
+                    let mut arm = input_schema.clone();
+                    arm["properties"].as_object_mut().unwrap().remove(other);
+                    arm["required"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!(selector));
+                    arm
+                },
+            );
+            input_schema["anyOf"] = json!(arms);
         }
         registry.register(ToolDescriptor { name:name.into(),description:description.into(),
             input_schema,
@@ -312,3 +324,6 @@ async fn call(
         _ => Err(RpcError::invalid_params("unknown terminal tool")),
     }
 }
+
+#[cfg(test)]
+mod schema_tests;

@@ -99,6 +99,10 @@ Inspect calm.plan.list file_delivery for candidate, verification and input facts
 
 ## Interactive Terminal work
 
+Discover only the exact `calm.terminal.resolve`, `calm.terminal.open`, \
+`calm.terminal.observe`, `calm.terminal.control` and `calm.terminal.input` names \
+once, then reuse their declarations. Avoid overlapping broad tool searches.
+
 For an existing task's Worker terminal, use `calm.terminal.resolve` with \
 `task_id` equal to the exact current `attempt_id` from `calm.plan.list`. \
 Then observe/control/input using that same task_id; do not open a substitute \
@@ -120,7 +124,9 @@ Request format=image explicitly when colors, selection highlighting or visual la
 are needed to interpret a TUI; plain text does not preserve those visual cues. \
 Use `calm.terminal.input` for one text, key or cell-click action with the latest \
 observation_id (from observation.state for an action readback). control_id is returned \
-state, not an input argument. For navigation/editing keys Left/Right/Up/Down/Backspace/Delete, \
+state, not an input argument. Put key/text fields inside action, never at the top level. \
+Example shape using returned IDs: {\"terminal_id\":\"<terminal_id>\",\"observation_id\":\"<observation_id>\",\"request_id\":\"move-1\",\"action\":{\"type\":\"key\",\"key\":\"Left\",\"repeat\":5},\"observe\":true}. \
+For navigation/editing keys Left/Right/Up/Down/Backspace/Delete, \
 optional repeat=1..32 sends one bounded action; other keys, especially Enter, cannot repeat. \
 Request observe=true with input to inspect the resulting text and use its fresh \
 observation_id for the next action without a separate observe call. Text does not \
