@@ -20,17 +20,29 @@ import urllib.request
 
 
 class EvidenceError(Exception):
-    pass
+    def __init__(self, message, payload=None):
+        super().__init__(message)
+        self.payload = payload
+
+
+def require_object(value, label):
+    if not isinstance(value, dict):
+        raise EvidenceError(f"{label} must be an object")
+    return value
 
 
 def scrub(value):
     """Keep private synthetic text; remove credential fields and image bytes."""
     if isinstance(value, dict):
-        if value.get("type") == "image" and isinstance(value.get("data"), str):
+        if value.get("type") == "image":
+            if not isinstance(value.get("data"), str):
+                return {"type": "image", "invalid_data_type": type(value.get("data")).__name__}
             try:
                 image = base64.b64decode(value["data"], validate=True)
-            except ValueError as error:
-                raise EvidenceError("malformed image payload") from error
+            except ValueError:
+                # Failure evidence must remain writable even if the offending
+                # transcript contains invalid base64; never preserve those bytes.
+                return {"type": "image", "invalid_base64": True, "encoded_bytes": len(value["data"])}
             return {"type": "image", "mimeType": value.get("mimeType"),
                     "bytes": len(image), "sha256": hashlib.sha256(image).hexdigest()}
         return {key: "[REDACTED]" if re.search(
@@ -85,16 +97,16 @@ def read_items(api, card, after):
     for _ in range(50):
         page = api.call("GET", f"/api/cards/{card}/harness/items?after_id={after}&limit=500&direction=asc")
         if not isinstance(page, list) or len(page) > 500:
-            raise EvidenceError("malformed transcript page")
+            raise EvidenceError("malformed transcript page", {"earlier_rows": rows, "page": page})
         for row in page:
             if not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] <= after:
-                raise EvidenceError("transcript cursor did not advance")
+                raise EvidenceError("transcript cursor did not advance", {"earlier_rows": rows, "row": row})
             try:
                 params = json.loads(row["params"])
             except (KeyError, TypeError, json.JSONDecodeError) as error:
-                raise EvidenceError("malformed transcript params JSON string") from error
+                raise EvidenceError("malformed transcript params JSON string", {"earlier_rows": rows, "row": row}) from error
             if not isinstance(params, dict) or not isinstance(params.get("item", {}), dict):
-                raise EvidenceError("malformed transcript params object")
+                raise EvidenceError("malformed transcript params object", {"earlier_rows": rows, "row": row})
             row = {**row, "params": params}
             after = row["id"]
             rows.append(row)
@@ -119,6 +131,16 @@ def completed_calls(rows):
         call["row_id"] = row["id"]
         if row.get("method") == "item/completed":
             call["completed"] = True
+    for call in calls.values():
+        if call.get("result") is not None:
+            require_object(call["result"], "MCP result")
+        if str(call.get("tool", "")).startswith("calm.terminal."):
+            arguments = require_object(call.get("arguments", {}), "terminal arguments")
+            if "action" in arguments:
+                action = require_object(arguments["action"], "terminal action")
+                for field in ("type", "key", "text"):
+                    if field in action and not isinstance(action[field], str):
+                        raise EvidenceError(f"terminal action {field} must be a string")
     return list(calls.values())
 
 
@@ -160,8 +182,11 @@ def metrics(rows):
 
     def walk(value):
         if isinstance(value, dict):
-            if value.get("type") == "image" and isinstance(value.get("data"), str):
-                images.append(scrub(value))
+            if value.get("type") == "image":
+                image = scrub(value)
+                if "bytes" not in image:
+                    raise EvidenceError("malformed image payload")
+                images.append(image)
             else:
                 for item in value.values():
                     walk(item)
@@ -279,14 +304,14 @@ class Round:
 
     def send(self, name, goal):
         self.current = []
-        response = self.api.call("POST", f"/api/cards/{self.card}/planner/input", {"text": goal})
+        response = require_object(self.api.call("POST", f"/api/cards/{self.card}/planner/input", {"text": goal}), "Planner input response")
         if response.get("worker_session_id") != self.session:
             raise EvidenceError("Planner input was accepted by another session")
         return self.wait_turn(name, self.session)
 
     def run(self):
         args = self.args
-        version = self.api.call("GET", "/api/version")
+        version = require_object(self.api.call("GET", "/api/version"), "version response")
         if version.get("buildSha") != args.source_sha:
             raise EvidenceError("running build SHA does not match the committed source")
         area = self.api.call("POST", "/api/areas", {"name": "Planner Claude UX", "color": "#4a90d9"})
@@ -297,7 +322,9 @@ class Round:
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             cards = self.api.call("GET", f"/api/tracks/{track['id']}/cards")
-            planners = [card for card in cards if card.get("payload", {}).get("planner_harness") is True]
+            if not isinstance(cards, list):
+                raise EvidenceError("cards response must be an array")
+            planners = [card for card in cards if require_object(require_object(card, "card").get("payload"), "card payload").get("planner_harness") is True]
             if len(planners) == 1:
                 self.card = planners[0]["id"]
                 break
@@ -380,7 +407,8 @@ def main():
     except (EvidenceError, KeyError, TypeError) as error:
         write_json(args.artifacts / "incomplete.json", {
             "status": "incomplete", "acceptance": "not_established",
-            "reason": str(error), "transcript": round_.current})
+            "reason": str(error), "transcript": round_.current,
+            "malformed_payload": error.payload if isinstance(error, EvidenceError) else None})
         print(f"INCOMPLETE: {scrub(str(error))}; private evidence at {args.artifacts}", file=sys.stderr)
         return 1
 

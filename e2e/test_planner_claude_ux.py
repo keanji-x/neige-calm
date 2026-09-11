@@ -2,7 +2,11 @@
 
 import copy
 import json
+import io
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import planner_claude_ux as ux
 
@@ -17,6 +21,41 @@ def row(identifier, tool="calm.terminal.observe", *, text=("3141",), terminal="t
 
 
 class CollectorTests(unittest.TestCase):
+    def test_main_preserves_incomplete_transcript_when_wait_turn_metrics_rejects_shapes(self):
+        for field, value in (("arguments", "{}"), ("arguments", None),
+                             ("arguments", {"action": []}),
+                             ("arguments", {"action": {"type": "text", "text": ["bad"]}}),
+                             ("result", ["malformed"]), ("result", []),
+                             ("result", {"content": [{"type": "image", "data": "invalid"}]}),
+                             ("result", {"content": [{"type": "image", "data": []}]})):
+            bad = row(1, "calm.terminal.input")
+            bad["params"]["item"][field] = value
+            final = {"id": 2, "worker_session_id": "planner1", "method": "item/completed",
+                     "params": {"item": {"id": "final", "type": "agentMessage",
+                                         "phase": "final_answer", "text": "Done"}}}
+            wire = [{**item, "params": json.dumps(item["params"])} for item in [bad, final]]
+
+            class ApiResponses:
+                def call(self, method, path):
+                    if "/harness/items?" in path:
+                        return copy.deepcopy(wire)
+                    return {"worker_session_id": "planner1", "phase": "turn_completed"}
+
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                argv = ["collector", "--url", "http://127.0.0.1:4900", "--workspace", "/synthetic",
+                        "--claude-bin", "/bin/claude", "--claude-version", "test", "--codex-version", "test",
+                        "--source-sha", "test", "--artifacts", directory]
+                # Enter the real wait_turn and top-level failure writer without
+                # creating a Planner, invoking a model or imitating its behavior.
+                with patch.object(ux, "Api", return_value=ApiResponses()), \
+                     patch.object(ux.Round, "run", lambda self: self.wait_turn("malformed")), \
+                     patch.object(ux.sys, "argv", argv), patch.object(ux.sys, "stdin", io.StringIO()), \
+                     patch.object(ux.sys, "stderr", io.StringIO()):
+                    self.assertEqual(ux.main(), 1)
+                artifact = json.loads((Path(directory) / "incomplete.json").read_text())
+                self.assertEqual(artifact["status"], "incomplete")
+                self.assertEqual(artifact["transcript"], ux.scrub([bad, final]))
+
     def test_production_terminal_text_rows_are_joined_without_mutating_transcript(self):
         observed = row(1)
         # Frame.text: Vec<String>, emitted directly by terminal_interaction::observe.
@@ -139,6 +178,18 @@ class CollectorTests(unittest.TestCase):
         for page in ({}, [row(0)], [{"id": 1, "params": "bad"}], [row(2), row(1)]):
             with self.subTest(page=page), self.assertRaises(ux.EvidenceError):
                 ux.read_items(Page(page), "card", 0)
+
+    def test_malformed_wire_row_retains_preceding_rows_and_bad_payload(self):
+        good = row(1)
+        bad = {"id": 2, "params": "invalid json"}
+
+        class Page:
+            def call(self, *_):
+                return [{**good, "params": json.dumps(good["params"])}, bad]
+
+        with self.assertRaises(ux.EvidenceError) as raised:
+            ux.read_items(Page(), "card", 0)
+        self.assertEqual(raised.exception.payload, {"earlier_rows": [good], "row": bad})
 
     def test_sanitization_removes_credentials_and_image_bytes(self):
         value = ux.scrub({"authorization": "private", "content": [
