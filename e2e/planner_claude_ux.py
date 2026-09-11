@@ -201,6 +201,11 @@ def observation_refused(call):
                for refusal in refusals)
 
 
+def tool_failed(call):
+    return bool(call.get("error") or call.get("status") == "failed"
+                or (call.get("result") or {}).get("isError"))
+
+
 def metrics(rows):
     calls = completed_calls(rows)
     terminal = [call for call in calls if str(call.get("tool", "")).startswith("calm.terminal.")]
@@ -224,27 +229,54 @@ def metrics(rows):
         walk(call.get("result"))
     actions = [json.dumps(call.get("arguments", {}).get("action"), sort_keys=True)
                for call in terminal if call.get("tool") == "calm.terminal.input"]
+    readbacks = collections.Counter()
+    requested_presses = extra_presses = unmeasured_requests = 0
+    for call in terminal:
+        if not call.get("completed"):
+            continue
+        if call["tool"] in ("calm.terminal.control", "calm.terminal.input") and not tool_failed(call):
+            readback = action_readback(call, metadata(call))
+            if readback is not None:
+                readbacks[readback["status"]] += 1
+        action = call.get("arguments", {}).get("action", {})
+        if call["tool"] == "calm.terminal.input" and action.get("type") == "key":
+            repeat = action.get("repeat", 1)
+            if type(repeat) is int and 1 <= repeat <= 32:
+                requested_presses += repeat
+                extra_presses += repeat - 1
+            else:
+                # Preserve the refused caller request and interview; an invalid
+                # count is unmeasured, never silently treated as one press.
+                unmeasured_requests += 1
     return {"mcp_tool_calls": len(calls), "terminal_tool_calls": len(terminal),
             "image_count": len(images), "image_bytes": sum(image["bytes"] for image in images),
             "normalized_transcript_json_bytes": len(json.dumps(rows, ensure_ascii=False).encode()),
             "repeated_identical_input_actions": sum(n - 1 for n in collections.Counter(actions).values()),
-            "tool_errors": sum(bool(call.get("error") or call.get("status") == "failed"
-                                    or (call.get("result") or {}).get("isError")) for call in calls),
+            "tool_errors": sum(tool_failed(call) for call in calls),
+            "readback_available": readbacks["available"], "readback_unavailable": readbacks["unavailable"],
+            "requested_key_presses": requested_presses, "additional_repeated_key_presses": extra_presses,
+            "unmeasured_key_press_requests": unmeasured_requests,
             "observation_refusals": sum(observation_refused(call) for call in terminal),
             "human_intervention": "not_measured", "token_savings": "not_measured"}
+
+
+def action_readback(call, data):
+    if call["tool"] not in ("calm.terminal.control", "calm.terminal.input") or "observation" not in data:
+        return None
+    readback = require_object(data["observation"], "action observation")
+    if readback.get("status") == "available":
+        require_object(readback.get("state"), "action observation state")
+        return readback
+    if readback.get("status") == "unavailable" and isinstance(readback.get("reason"), str):
+        return readback
+    raise EvidenceError("action observation must be available with state or unavailable with reason")
 
 
 def observed_state(call, data):
     if call["tool"] in ("calm.terminal.open", "calm.terminal.observe"):
         return data
-    if call["tool"] not in ("calm.terminal.control", "calm.terminal.input") or "observation" not in data:
-        return None
-    readback = require_object(data["observation"], "action observation")
-    if readback.get("status") == "available":
-        return require_object(readback.get("state"), "action observation state")
-    if readback.get("status") == "unavailable" and isinstance(readback.get("reason"), str):
-        return None
-    raise EvidenceError("action observation must be available with state or unavailable with reason")
+    readback = action_readback(call, data)
+    return readback["state"] if readback is not None and readback["status"] == "available" else None
 
 
 def terminal_evidence(rows, binding=None):
@@ -256,8 +288,7 @@ def terminal_evidence(rows, binding=None):
     for call in calls:
         if not call.get("completed"):
             raise EvidenceError("terminal call never completed")
-        if (call.get("error") or call.get("status") == "failed"
-                or (call.get("result") or {}).get("isError")):
+        if tool_failed(call):
             errors.append(call["row_id"])
             continue
         args = call.get("arguments", {})

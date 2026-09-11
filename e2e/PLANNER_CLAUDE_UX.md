@@ -101,6 +101,15 @@ latency savings are inferred without a comparable measured baseline. Identical
 key actions are counted as repetitions, not automatically classified as errors.
 Human intervention and token savings are explicitly unmeasured.
 
+`readback_available` and `readback_unavailable` count the corresponding nested
+results on completed control/input calls, separately from tool errors. Neither
+means the application finished. `requested_key_presses` sums key actions'
+`repeat` (default 1); `additional_repeated_key_presses` sums the extra `repeat - 1`
+presses. These describe requests, including failed or replayed requests, not
+confirmed physical writes. Invalid repeat counts contribute to
+`unmeasured_key_press_requests` instead of silently becoming 1. The existing
+`repeated_identical_input_actions` metric keeps its original definition.
+
 ## Model-free driver checks
 
 These validate only collection/failure handling; they are not a fake passing

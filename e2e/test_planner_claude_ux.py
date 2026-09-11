@@ -22,6 +22,52 @@ def row(identifier, tool="calm.terminal.observe", *, text=("3141",), terminal="t
 
 
 class CollectorTests(unittest.TestCase):
+    def test_metrics_count_available_and_unavailable_action_readbacks_separately(self):
+        state = row(1)["params"]["item"]["result"]["structuredContent"]
+        calls = []
+        for identifier, observation in ((1, {"status": "available", "state": state}),
+                                         (2, {"status": "unavailable", "reason": "readback timeout"})):
+            call = row(identifier, "calm.terminal.input")
+            call["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Enter"}
+            call["params"]["item"]["result"] = {"structuredContent": {
+                "terminal_id": "t1", "request_id": f"request-{identifier}", "outcome": "written",
+                "application_completed": False, "observation": observation}}
+            calls.append(call)
+        result = ux.metrics(calls)
+        self.assertEqual(result["readback_available"], 1)
+        self.assertEqual(result["readback_unavailable"], 1)
+        self.assertEqual(result["tool_errors"], 0)
+
+    def test_metrics_count_requested_key_presses_without_redefining_repeated_actions(self):
+        calls = []
+        for identifier, action in enumerate(({"type": "key", "key": "Left", "repeat": 4},
+                                             {"type": "key", "key": "Right"},
+                                             {"type": "key", "key": "Backspace", "repeat": 2},
+                                             {"type": "key", "key": "Enter"},
+                                             {"type": "key", "key": "Left", "repeat": 4}), start=1):
+            call = row(identifier, "calm.terminal.input")
+            call["params"]["item"]["arguments"]["action"] = action
+            calls.append(call)
+        result = ux.metrics(calls)
+        self.assertEqual(result["requested_key_presses"], 12)
+        self.assertEqual(result["additional_repeated_key_presses"], 7)
+        self.assertEqual(result["repeated_identical_input_actions"], 1)
+
+    def test_invalid_repeat_on_failed_call_is_preserved_and_unmeasured(self):
+        for repeat in (None, "4", 2.5, True, 0, 33):
+            call = row(1, "calm.terminal.input")
+            item = call["params"]["item"]
+            item["arguments"]["action"] = {"type": "key", "key": "Left", "repeat": repeat}
+            item["status"], item["error"] = "failed", {"message": "invalid repeat"}
+            original = copy.deepcopy(call)
+            with self.subTest(repeat=repeat):
+                result = ux.metrics([call])
+                self.assertEqual(result["requested_key_presses"], 0)
+                self.assertEqual(result["additional_repeated_key_presses"], 0)
+                self.assertEqual(result["unmeasured_key_press_requests"], 1)
+                self.assertEqual(result["tool_errors"], 1)
+                self.assertEqual(call, original)
+
     def test_available_action_readback_is_actual_observation_without_changing_receipt(self):
         state = row(1)["params"]["item"]["result"]["structuredContent"]
         state.update({"observation_id": "fresh-observation", "control_id": "owner1", "role": "owner"})
@@ -158,8 +204,11 @@ class CollectorTests(unittest.TestCase):
         other_tool = row(2, "calm.track.cat")
         other_tool["params"]["item"]["error"] = {"message": "observation expired; observe again"}
         success = row(3, "calm.terminal.input")
-        success["params"]["item"]["result"] = {"isError": False, "content": [
-            {"type": "text", "text": "terminal changed since observation; observe again"}]}
+        # A successful kernel result carries JSON metadata, even when some
+        # returned text happens to quote a refusal message.
+        data = {"terminal_id": "t1", "outcome": "written", "next": "terminal changed since observation; observe again"}
+        success["params"]["item"]["result"] = {"isError": False, "structuredContent": data, "content": [
+            {"type": "text", "text": json.dumps(data)}]}
         self.assertEqual(ux.metrics([unrelated, other_tool, success])["observation_refusals"], 0)
 
     def test_main_preserves_incomplete_transcript_when_wait_turn_metrics_rejects_shapes(self):
