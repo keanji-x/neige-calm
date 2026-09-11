@@ -185,6 +185,7 @@ pub fn key_bytes(key: &str, modes: u32) -> Result<Vec<u8>> {
         "Backspace" => vec![127],
         "Ctrl+C" => vec![3],
         "Ctrl+D" => vec![4],
+        "Ctrl+J" => vec![10],
         "Ctrl+U" => vec![21],
         "Ctrl+L" => vec![12],
         "Up" => format!("{arrow}A").into_bytes(),

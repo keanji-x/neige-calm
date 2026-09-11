@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
+mod action_observation;
 mod client;
 mod observation;
 mod operations;
@@ -140,8 +141,20 @@ impl TerminalInteraction {
     ) -> Result<(Value, Option<Vec<u8>>)> {
         ensure!(wait_ms <= 2000, "observation wait exceeds 2000ms");
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
-        let terminal = resolved.binding.terminal_id.as_str();
         let client = self.client(identity, &resolved.binding).await?;
+        self.capture(identity, resolved, &client, offset, wait_ms, format)
+            .await
+    }
+    async fn capture(
+        &self,
+        identity: &ToolCallIdentity,
+        resolved: target::Resolved,
+        client: &Client,
+        offset: usize,
+        wait_ms: u64,
+        format: ObservationFormat,
+    ) -> Result<(Value, Option<Vec<u8>>)> {
+        let terminal = resolved.binding.terminal_id.as_str();
         if wait_ms > 0 {
             tokio::time::sleep(Duration::from_millis(wait_ms)).await;
         }
@@ -200,7 +213,16 @@ impl TerminalInteraction {
         identity: &ToolCallIdentity,
         target: &Target,
         action: &str,
+        observation_wait_ms: Option<u64>,
     ) -> Result<Value> {
+        ensure!(
+            observation_wait_ms.is_none_or(|wait| wait <= 2000),
+            "observation wait exceeds 2000ms"
+        );
+        ensure!(
+            action != "detach" || observation_wait_ms.is_none(),
+            "detach cannot request observation"
+        );
         if action == "detach" {
             Self::authorize(self.repo.as_ref(), identity).await?;
             self.clients.lock().await.retain(|key, client| {
@@ -246,9 +268,12 @@ impl TerminalInteraction {
             }
             _ => anyhow::bail!("unknown terminal control action"),
         }
-        let state = client.screen.lock().unwrap();
-        Ok(
-            json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":state.control}),
-        )
+        let receipt = {
+            let state = client.screen.lock().unwrap();
+            json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":state.control})
+        };
+        Ok(self
+            .with_observation(identity, &client, receipt, observation_wait_ms)
+            .await)
     }
 }

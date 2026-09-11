@@ -39,17 +39,17 @@ pub fn register_into(registry: &mut ToolRegistry) {
         ),
         (
             "calm.terminal.control",
-            "Select exactly one terminal_id or task_id (exact attempt_id). Claim, release, or detach your terminal control connection. A human takeover revokes your previous control. Claim deliberately only when the user asked you to operate the terminal; observe after claiming. Detach closes your client, leaving the Terminal card and program alive.",
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"action":{"type":"string","enum":["claim","release","detach"]}}),
+            "Select exactly one terminal_id or task_id (exact attempt_id). Claim, release, or detach your terminal control connection. A human takeover revokes your previous control. Claim deliberately only when the user asked you to operate the terminal. For claim/release, observe=true optionally includes a fresh text observation; wait_ms (0..2000) requires observe=true. A failed readback preserves the control receipt and reports observation unavailable. Detach closes your client, leaving the Terminal card and program alive.",
+            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"action":{"type":"string","enum":["claim","release","detach"]},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":2000}}),
             vec!["action"],
         ),
         (
             "calm.terminal.input",
-            "Select exactly one terminal_id or task_id (exact attempt_id). Send one action against a recent live observation you own. request_id prevents repeated writes within this connection. Text never submits: send key Enter separately. Keys: Enter, Escape, Tab, Backspace, Ctrl+C/D/U/L, Up/Down/Left/Right, Home/End, PageUp/PageDown, Delete. Click uses zero-based terminal cell column/row and requires application mouse mode. After written, observe to verify the application result. Unknown is not success: do not retry with a new ID or assume a rewind completed.",
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"request_id":{"type":"string","minLength":1,"maxLength":128},
+            "Select exactly one terminal_id or task_id (exact attempt_id). Send one action against a recent live observation you own. request_id prevents repeated writes within this connection. Text never submits: send key Enter separately. Keys: Enter, Escape, Tab, Backspace, Ctrl+C/D/J/U/L, Up/Down/Left/Right, Home/End, PageUp/PageDown, Delete. Optional key repeat is an integer 1..32 (default 1); repeat>1 is allowed only for Left/Right/Up/Down/Backspace/Delete and sends one bounded action. Enter/Escape/Tab/Ctrl keys cannot repeat. Ctrl+J sends LF and Enter sends CR; application-specific newline/submission behavior must be verified. Click uses zero-based terminal cell column/row and requires application mouse mode. Use observation_id from the latest state, never pass control_id as an input argument. Set observe=true to include a fresh text observation after this action; wait_ms (0..2000) requires observe=true. A failed readback preserves the action receipt and reports observation unavailable. Readback does not prove application completion. After written, inspect the returned state or observe separately to verify the application result. Unknown is not success: do not retry with a new ID or assume a rewind completed.",
+            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"request_id":{"type":"string","minLength":1,"maxLength":128},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":2000},
             "action":{"oneOf":[
                 {"type":"object","required":["type","text"],"additionalProperties":false,"properties":{"type":{"const":"text"},"text":{"type":"string","minLength":1,"maxLength":16384}}},
-                {"type":"object","required":["type","key"],"additionalProperties":false,"properties":{"type":{"const":"key"},"key":{"type":"string"}}},
+                {"type":"object","required":["type","key"],"additionalProperties":false,"properties":{"type":{"const":"key"},"key":{"type":"string"},"repeat":{"type":"integer","minimum":1,"maximum":32,"default":1}}},
                 {"type":"object","required":["type","column","row"],"additionalProperties":false,"properties":{"type":{"const":"click"},"column":{"type":"integer","minimum":0},"row":{"type":"integer","minimum":0}}}
             ]}}),
             vec!["observation_id", "request_id", "action"],
@@ -102,6 +102,9 @@ struct Control {
     terminal_id: Option<String>,
     task_id: Option<String>,
     action: String,
+    #[serde(default)]
+    observe: bool,
+    wait_ms: Option<u64>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,6 +114,9 @@ struct Input {
     observation_id: Uuid,
     request_id: String,
     action: Value,
+    #[serde(default)]
+    observe: bool,
+    wait_ms: Option<u64>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,6 +139,21 @@ fn observation_result(metadata: Value, png: Option<Vec<u8>>) -> Result<ToolResul
         Some(png) => ToolResult::png(metadata, &png),
         None => Ok(ToolResult::structured(metadata)),
     }
+}
+fn action_observation(
+    observe: bool,
+    wait_ms: Option<u64>,
+    detach: bool,
+) -> Result<Option<u64>, RpcError> {
+    if wait_ms.is_some_and(|wait| wait > 2000)
+        || (wait_ms.is_some() && !observe)
+        || (detach && observe)
+    {
+        return Err(RpcError::invalid_params(
+            "wait_ms requires observe=true and must be 0..2000; detach cannot observe",
+        ));
+    }
+    Ok(observe.then_some(wait_ms.unwrap_or(0)))
 }
 async fn call(
     name: &str,
@@ -260,11 +281,13 @@ async fn call(
         }
         "calm.terminal.control" => {
             let args: Control = parse(args)?;
+            let readback = action_observation(args.observe, args.wait_ms, args.action == "detach")?;
             service
                 .control(
                     &identity,
                     &target(args.terminal_id, args.task_id)?,
                     &args.action,
+                    readback,
                 )
                 .await
                 .map(ToolResult::structured)
@@ -272,6 +295,7 @@ async fn call(
         }
         "calm.terminal.input" => {
             let args: Input = parse(args)?;
+            let readback = action_observation(args.observe, args.wait_ms, false)?;
             service
                 .input(
                     &identity,
@@ -279,6 +303,7 @@ async fn call(
                     args.observation_id,
                     &args.request_id,
                     args.action,
+                    readback,
                 )
                 .await
                 .map(ToolResult::structured)

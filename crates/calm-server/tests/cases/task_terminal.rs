@@ -189,11 +189,14 @@ async fn each_task_kind_resolves_observes_and_inputs_its_own_terminal() {
                 meta["terminal_session_id"]
             );
         }
-        h.ok(
-            "calm.terminal.control",
-            json!({"task_id":w.task,"action":"claim"}),
-        )
-        .await;
+        let claimed = h
+            .ok(
+                "calm.terminal.control",
+                json!({"task_id":w.task,"action":"claim","observe":true,"wait_ms":50}),
+            )
+            .await;
+        assert_eq!(claimed["observation"]["status"], "available");
+        assert_eq!(claimed["observation"]["state"]["task"]["task_id"], w.task);
         let before = snapshot(&h, json!({"task_id":w.task})).await;
         let typed=h.ok("calm.terminal.input",json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"text","action":{"type":"text","text":"hello"}})).await;
         assert_eq!(typed["outcome"], "written");

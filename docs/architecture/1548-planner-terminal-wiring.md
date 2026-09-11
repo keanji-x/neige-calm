@@ -7,8 +7,8 @@ The application entry point is a Planner-only MCP tool set:
 | `calm.terminal.open` | Idempotent visible Terminal-card creation through `terminal-create` OperationRuntime, attributed to the authenticated Planner session. Returns text by default; `format=image` requests a PNG. Presentation does not change creation idempotency. |
 | `calm.terminal.resolve` | Resolve an exact current task attempt or Terminal ID to its real Worker card, worker session and view availability. |
 | `calm.terminal.observe` | Text/cursor/mode state and observation/connection IDs by default. Explicit `format=image` includes a PNG from that same captured RMUX frame. Reads never create or restart a process. |
-| `calm.terminal.control` | Claim/release control, or detach the model client while retaining the card/program. |
-| `calm.terminal.input` | One text/key/cell-click action, bound to a recent live observation and current control. A matching request ID replays its receipt without another write. |
+| `calm.terminal.control` | Claim/release control, optionally returning fresh text with `observe=true`, or detach the model client while retaining the card/program. |
+| `calm.terminal.input` | One text/key/cell-click action, bound to a recent live observation and current control; navigation/editing keys support bounded `repeat`. Optional `observe=true` returns fresh text after the action. A matching request ID replays its receipt without another write. |
 
 ## Ownership and observation
 
@@ -69,10 +69,48 @@ cells, text or image bytes. Each capture contains the exact control identity it 
 human takeover invalidates it. Output changes also require a new observation.
 
 A successful input reply says `written`, not that the TUI completed an action.
-Text excludes control characters and never implicitly submits. Enter, Escape,
+Text excludes control characters and never implicitly submits. Ctrl+J explicitly
+sends LF (0x0a), distinct from Enter's CR (0x0d). Claude Code documents Ctrl+J
+as [draft newline](https://code.claude.com/docs/en/keybindings); other applications define their own behavior, so LF is not a
+generic no-submit guarantee. Enter, Escape,
 arrows and other supported keys are explicit actions. Application mouse input
 requires reported SGR mouse mode and in-range cell coordinates. Local history
 scrolling uses `observe.scroll_offset`; application paging uses explicit keys.
+
+## Optional action observation and repeated navigation
+
+Control (claim/release) and input accept `observe=true` with optional `wait_ms`
+(0..2000). They retain the original receipt fields and add exactly one of:
+
+```json
+{"observation":{"status":"available","state":{"observation_id":"...","text":["..."],"control_id":"...","role":"owner"}}}
+{"observation":{"status":"unavailable","reason":"..."}}
+```
+
+`state` is the full existing text observation metadata, not just the abbreviated
+example. These responses never include PNG. The default remains receipt-only;
+`wait_ms` without `observe=true`, or detach with observation, is rejected before
+any action. Fixed waiting does not certify application completion. A readback
+failure never erases or changes the action receipt, including written/unknown
+input. An unavailable observation must not cause a new input request.
+
+Readback uses the action's existing client, renderer generation and execution
+binding. It cannot attach a client or silently follow a replacement session.
+It rechecks current state after waiting; a human takeover does not claim control
+again. Presentation options do not enter the physical action fingerprint/cache.
+Repeating an identical request may obtain a fresh observation without another
+physical write; receipt-only replay still returns the original receipt.
+
+A Planner can claim with observation, type with observation, inspect the text,
+and send Enter against that fresh observation in three calls. Input accepts the
+returned `observation_id`; `control_id` is informational, not an input argument.
+
+Key actions accept optional integer `repeat` (1..32, default 1). Counts above one
+are restricted to Left/Right/Up/Down/Backspace/Delete. Enter/Escape/Tab/control keys
+cannot repeat; null, noninteger and out-of-range counts fail before input. The
+repeated encoded bytes travel in one existing input request under one ownership
+barrier. Repeat belongs to the physical action fingerprint. This does not add
+mixed-action batches, automatic Enter or relaxed observation revision checks.
 
 ## Provider approval entry point (#1578)
 

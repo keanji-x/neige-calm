@@ -9,7 +9,12 @@ impl TerminalInteraction {
         observation: Uuid,
         request_key: &str,
         action: Value,
+        observation_wait_ms: Option<u64>,
     ) -> Result<Value> {
+        ensure!(
+            observation_wait_ms.is_none_or(|wait| wait <= 2000),
+            "observation wait exceeds 2000ms"
+        );
         ensure!(
             !request_key.is_empty() && request_key.len() <= 128,
             "invalid input request key"
@@ -23,19 +28,26 @@ impl TerminalInteraction {
         let fingerprint = crate::routes::terminal_cards::stable_payload_hash(
             &json!({"observation_id":observation,"action":action}),
         )?;
-        {
+        let cached = {
             let requests = client.requests.lock().await;
             if let Some((prior, result)) = requests.get(&key) {
                 ensure!(
                     prior == &fingerprint,
                     "input request key reused with different arguments"
                 );
-                return Ok(result.clone());
+                Some(result.clone())
+            } else {
+                ensure!(
+                    requests.len() < 4096,
+                    "terminal connection receipt limit reached; detach and observe a fresh connection"
+                );
+                None
             }
-            ensure!(
-                requests.len() < 4096,
-                "terminal connection receipt limit reached; detach and observe a fresh connection"
-            );
+        };
+        if let Some(receipt) = cached {
+            return Ok(self
+                .with_observation(identity, &client, receipt, observation_wait_ms)
+                .await);
         }
         let bytes = {
             let observations = self
@@ -126,7 +138,9 @@ impl TerminalInteraction {
             .lock()
             .await
             .insert(key, (fingerprint, result.clone()));
-        Ok(result)
+        Ok(self
+            .with_observation(identity, &client, result, observation_wait_ms)
+            .await)
     }
 }
 fn encode(action: &Value, frame: &InputSurface) -> Result<Vec<u8>> {
@@ -146,13 +160,34 @@ fn encode(action: &Value, frame: &InputSurface) -> Result<Vec<u8>> {
             Ok(text.as_bytes().to_vec())
         }
         Some("key") => {
-            ensure!(object.len() == 2, "key action accepts only type/key");
-            key_bytes(
-                action["key"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("key required"))?,
-                frame.modes,
-            )
+            ensure!(
+                (2..=3).contains(&object.len())
+                    && object
+                        .keys()
+                        .all(|field| matches!(field.as_str(), "type" | "key" | "repeat")),
+                "key action accepts only type/key/repeat"
+            );
+            let key = action["key"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("key required"))?;
+            let repeat = match object.get("repeat") {
+                None => 1,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|value| (1..=32).contains(value))
+                    .ok_or_else(|| anyhow::anyhow!("repeat must be an integer from 1 to 32"))?,
+            };
+            ensure!(
+                repeat == 1
+                    || matches!(
+                        key,
+                        "Left" | "Right" | "Up" | "Down" | "Backspace" | "Delete"
+                    ),
+                "only navigation and editing keys may repeat"
+            );
+            // One bounded action, one receipt and one physical ownership barrier.
+            // Never turn Enter, Escape or control keys into repeated submissions.
+            Ok(key_bytes(key, frame.modes)?.repeat(repeat as usize))
         }
         Some("click") => {
             ensure!(object.len() == 3, "click accepts only type/column/row");
