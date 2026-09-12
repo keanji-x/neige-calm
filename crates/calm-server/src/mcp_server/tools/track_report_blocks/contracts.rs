@@ -324,7 +324,7 @@ pub(super) fn upsert_descriptor() -> ToolDescriptor {
             "required": ["kind"],
             "properties": {
                 "id": { "type": "string", "description": "Existing block id to replace. Omit to create a new block." },
-                "kind": { "type": "string", "enum": ["prose", "chart.candles", "table", "app", "task"], "description": "Block kind." },
+                "kind": { "type": "string", "enum": block_kind_enum(), "description": "Block kind." },
                 "markdown": { "type": "string", "description": "Prose content (kind=prose only)." },
                 "payload": { "type": "object", "description": "Kind-specific payload: required for data kinds; for prose, `{ markdown }` is accepted as an alternative to the top-level `markdown`." },
                 "if_rev": { "type": "integer", "minimum": 0, "description": "Required when `id` is given: the block rev you last read." },
@@ -349,7 +349,9 @@ pub(super) fn move_descriptor() -> ToolDescriptor {
              are untouched — ordering is not content. `if_doc_rev` is \
              REQUIRED because ordering is document-wide; read `docRev` \
              from `calm.report.read` (mismatch → error -32001). Returns \
-             `{ id, rev, updated_at, docRev }`."
+             `{ id, rev, updated_at, docRev }`. Takes no `message` and no \
+             `lifecycle` — passing either is refused (-32602); carry them \
+             with `calm.report.commit`."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -373,7 +375,9 @@ pub(super) fn delete_descriptor() -> ToolDescriptor {
         description: "Planner-only: delete a report block. `if_rev` is \
              REQUIRED (destructive op): pass the rev you last read; a \
              mismatch returns error -32001 (rev conflict) and deletes \
-             nothing. Returns `{ updated_at, docRev }`."
+             nothing. Returns `{ updated_at, docRev }`. Takes no `message` \
+             and no `lifecycle` — passing either is refused (-32602); carry \
+             them with `calm.report.commit`."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -434,6 +438,20 @@ pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
     }
 }
 
+/// The `kind` enum every block-writing schema publishes, read off
+/// [`kinds_table`] so the upsert tool and the commit op cannot drift from
+/// the self-description (or from each other).
+fn block_kind_enum() -> Value {
+    let table = kinds_table();
+    let kinds = table["kinds"]
+        .as_array()
+        .expect("kinds_table publishes a kinds array")
+        .iter()
+        .map(|entry| entry["kind"].clone())
+        .collect::<Vec<_>>();
+    Value::Array(kinds)
+}
+
 /// `message` on the block channel is optional (the single-op tools never
 /// required one); when present it follows `message_schema()`'s rules.
 fn optional_message_schema() -> Value {
@@ -479,12 +497,20 @@ pub(super) fn commit_descriptor() -> ToolDescriptor {
              (stale `if_doc_rev` → -32001, stale per-block `if_rev` → -32001, \
              invalid content → -32602, illegal lifecycle → -32403) aborts the \
              WHOLE commit — nothing is written and no event is emitted. \
-             `ops` may be empty when only `summary` and/or `lifecycle` change. \
-             A batch `delete` cannot retire a live task block; use \
-             `calm.report.blocks.delete` for that. Returns `{ updated_at, \
-             docRev, blocks: [{ id, kind, rev }], lifecycle }` — the full \
-             post-commit block index (keep the revs for your next edit) and \
-             the lifecycle applied, or null."
+             Each existing block id may appear in at most ONE op per commit \
+             (a second op on the same id is refused -32602 before anything \
+             is written): ops apply in order and a content change bumps \
+             that block's rev, so a later op could not know the rev to \
+             pass. `ops` may be empty when only `summary` and/or `lifecycle` \
+             change; such a commit still bumps `docRev` and emits the usual \
+             CardUpdated + TrackReportEdited pair, so any `if_doc_rev` other \
+             holders read before it goes stale. A batch `delete` cannot \
+             retire a live task block; use `calm.report.blocks.delete` for \
+             that. Returns `{ updated_at, docRev, blocks: [{ id, kind, rev }], \
+             lifecycle }` — the full post-commit block index (keep the revs \
+             for your next edit) and the lifecycle transition applied, or \
+             null when none applied (no `lifecycle` given, or the track was \
+             already in the requested state)."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -505,7 +531,7 @@ pub(super) fn commit_descriptor() -> ToolDescriptor {
                             "op": { "type": "string", "enum": ["upsert", "move", "delete"] },
                             "id": { "type": "string", "description": "upsert (replace) / move / delete: the existing block id. Omit on upsert to create." },
                             "if_rev": { "type": "integer", "minimum": 0, "description": "Required on upsert-with-id and delete: that block's rev you last read." },
-                            "kind": { "type": "string", "enum": ["prose", "chart.candles", "table", "app", "task"], "description": "upsert: block kind." },
+                            "kind": { "type": "string", "enum": block_kind_enum(), "description": "upsert: block kind." },
                             "markdown": { "type": "string", "description": "upsert, kind=prose: the content." },
                             "payload": { "type": "object", "description": "upsert, data kinds: the schema-validated payload (see calm.report.blocks.kinds)." },
                             "position": { "type": "integer", "minimum": 0, "description": "upsert-create only: insertion index (default append)." },
@@ -661,13 +687,27 @@ mod task_kind_contract_tests {
         assert!(kinds.description.contains("`task`"));
         let upsert = upsert_descriptor();
         assert!(upsert.description.contains("/ `task`"));
+        let upsert_kinds = &upsert.input_schema["properties"]["kind"]["enum"];
         assert!(
-            upsert.input_schema["properties"]["kind"]["enum"]
+            upsert_kinds
                 .as_array()
                 .unwrap()
                 .iter()
                 .any(|kind| kind == "task")
         );
+        // The commit op's `kind` enum is the same vocabulary, and both are
+        // exactly the kinds the self-description table publishes.
+        let commit = commit_descriptor();
+        let commit_kinds =
+            &commit.input_schema["properties"]["ops"]["items"]["properties"]["kind"]["enum"];
+        assert_eq!(commit_kinds, upsert_kinds);
+        let table_kinds: Vec<Value> = table["kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["kind"].clone())
+            .collect();
+        assert_eq!(upsert_kinds, &Value::Array(table_kinds));
     }
 
     #[test]

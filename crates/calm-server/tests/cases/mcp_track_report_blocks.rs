@@ -2480,6 +2480,11 @@ async fn commit_touching_a_task_block_illegally_is_refused_as_a_whole() {
     .await
     .expect_err("batch may not drop a live task");
     assert_eq!(err.code, -32602, "{err:?}");
+    assert!(
+        err.message
+            .contains("must use the block-level DELETE endpoint"),
+        "{err:?}"
+    );
 
     // (b) Rewriting an immutable provenance field inside a batch.
     let mut flipped = planner_task_payload("batch-task", "build it");
@@ -2531,4 +2536,199 @@ async fn commit_touching_a_task_block_illegally_is_refused_as_a_whole() {
     .await
     .expect("legal tombstone in a batch");
     assert_eq!(out["docRev"].as_u64(), Some(before.doc_rev + 1));
+}
+
+#[tokio::test]
+async fn commit_rejects_duplicate_block_ids_before_touching_the_doc() {
+    let boot = boot().await;
+    let index = seed_two_blocks(&boot).await;
+    let (a_id, a_rev) = index[0].clone();
+    let (b_id, b_rev) = index[1].clone();
+    let before = current_payload(&boot).await;
+    assert_eq!(before.doc_rev, 1);
+    let mut rx = boot.ctx.events.subscribe();
+
+    // The reviewer's shape: a content-changing upsert would bump A to rev
+    // 2, so the delete's `if_rev: 1` could never be right — the batch is
+    // refused up front instead of failing -32001 on an unknowable rev.
+    let cases: Vec<(&str, Value)> = vec![
+        (
+            "upsert then delete the same id",
+            json!([
+                { "op": "upsert", "id": a_id, "if_rev": a_rev, "kind": "prose", "markdown": "# A\n\nv2\n" },
+                { "op": "delete", "id": a_id, "if_rev": a_rev }
+            ]),
+        ),
+        (
+            "move then move the same id",
+            json!([
+                { "op": "move", "id": b_id, "to_index": 0 },
+                { "op": "upsert", "kind": "prose", "markdown": "# C\n\nnew\n" },
+                { "op": "move", "id": b_id, "to_index": 2 }
+            ]),
+        ),
+        (
+            "delete then upsert the same id",
+            json!([
+                { "op": "delete", "id": b_id, "if_rev": b_rev },
+                { "op": "upsert", "id": b_id, "if_rev": b_rev, "kind": "prose", "markdown": "# B\n\nback\n" }
+            ]),
+        ),
+    ];
+    for (name, ops) in cases {
+        let err = call_tool(
+            &boot,
+            TOOL_REPORT_COMMIT,
+            planner_identity(&boot),
+            commit_args(1, ops),
+        )
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("{name}: must be refused"));
+        assert_eq!(err.code, -32602, "{name}: {err:?}");
+        assert!(
+            err.message
+                .contains("each block id may appear at most once per commit"),
+            "{name}: {err:?}"
+        );
+        assert!(
+            err.message.contains("ops[1]:") || err.message.contains("ops[2]:"),
+            "{name}: names the offending op: {err:?}"
+        );
+    }
+
+    let after = current_payload(&boot).await;
+    assert_eq!(after.doc_rev, before.doc_rev, "docRev unchanged");
+    assert_eq!(after.body, before.body, "nothing persisted");
+    assert_eq!(index_of(&read(&boot, json!({})).await), index);
+    assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
+
+    // Two creates (no id) in one commit are fine — they address nothing.
+    let out = call_tool(
+        &boot,
+        TOOL_REPORT_COMMIT,
+        planner_identity(&boot),
+        commit_args(
+            1,
+            json!([
+                { "op": "upsert", "kind": "prose", "markdown": "# C\n\nc\n" },
+                { "op": "upsert", "kind": "prose", "markdown": "# D\n\nd\n" }
+            ]),
+        ),
+    )
+    .await
+    .expect("two creates");
+    assert_eq!(out["docRev"].as_u64(), Some(2));
+}
+
+#[tokio::test]
+async fn commit_same_state_lifecycle_reports_null_bumps_doc_rev_and_emits_no_lifecycle_events() {
+    let boot = boot().await;
+    seed_two_blocks(&boot).await;
+    let before = current_payload(&boot).await;
+    assert_eq!(before.doc_rev, 1);
+    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
+    let mut rx = boot.ctx.events.subscribe();
+
+    // Lifecycle-only commit asking for the state the track is already in:
+    // no transition applies, and the response says so instead of echoing
+    // the request. The doc still moves (docRev + the event pair).
+    let out = call_tool(
+        &boot,
+        TOOL_REPORT_COMMIT,
+        planner_identity(&boot),
+        json!({ "if_doc_rev": 1, "message": "still planning", "lifecycle": "planning" }),
+    )
+    .await
+    .expect("same-state lifecycle commit");
+    assert_eq!(out["lifecycle"], Value::Null, "{out}");
+    assert_eq!(out["docRev"].as_u64(), Some(2), "{out}");
+    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
+    let after = current_payload(&boot).await;
+    assert_eq!(after.doc_rev, 2);
+    assert_eq!(after.body, before.body);
+    assert_eq!(after.summary, before.summary);
+
+    let envs = drain_events(&mut rx).await;
+    let kinds: Vec<&str> = envs
+        .iter()
+        .map(|e| match &e.event {
+            Event::TrackLifecycleChanged { .. } => "lifecycle_changed",
+            Event::TrackUpdated(_) => "track_updated",
+            Event::CardUpdated(_) => "card_updated",
+            Event::TrackReportEdited { .. } => "report_edited",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, vec!["card_updated", "report_edited"], "got {envs:?}");
+
+    // A real transition in the same shape is reported as applied.
+    let out = call_tool(
+        &boot,
+        TOOL_REPORT_COMMIT,
+        planner_identity(&boot),
+        json!({ "if_doc_rev": 2, "message": "now dispatching", "lifecycle": "dispatching" }),
+    )
+    .await
+    .expect("real transition");
+    assert_eq!(out["lifecycle"], json!("dispatching"), "{out}");
+    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Dispatching);
+}
+
+#[tokio::test]
+async fn move_and_delete_refuse_message_and_lifecycle_with_32602() {
+    let boot = boot().await;
+    let index = seed_two_blocks(&boot).await;
+    let (a_id, a_rev) = index[0].clone();
+    let before = current_payload(&boot).await;
+    let mut rx = boot.ctx.events.subscribe();
+
+    let cases: Vec<(&str, &str, Value)> = vec![
+        (
+            TOOL_REPORT_BLOCKS_MOVE,
+            "message",
+            json!({ "id": a_id, "to_index": 1, "if_doc_rev": 1, "message": "reorder" }),
+        ),
+        (
+            TOOL_REPORT_BLOCKS_MOVE,
+            "lifecycle",
+            json!({ "id": a_id, "to_index": 1, "if_doc_rev": 1, "lifecycle": "working" }),
+        ),
+        (
+            TOOL_REPORT_BLOCKS_DELETE,
+            "message",
+            json!({ "id": a_id, "if_rev": a_rev, "message": "drop it" }),
+        ),
+        (
+            TOOL_REPORT_BLOCKS_DELETE,
+            "lifecycle",
+            json!({ "id": a_id, "if_rev": a_rev, "lifecycle": "working" }),
+        ),
+    ];
+    for (tool, key, args) in cases {
+        let err = call_tool(&boot, tool, planner_identity(&boot), args)
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{tool} with `{key}` must be refused"));
+        assert_eq!(err.code, -32602, "{tool} `{key}`: {err:?}");
+        assert!(
+            err.message.contains(tool) && err.message.contains(&format!("`{key}` is not accepted")),
+            "{tool} `{key}`: names the tool and the key: {err:?}"
+        );
+        assert!(
+            err.message.contains("calm.report.commit"),
+            "{tool} `{key}`: points at the carrier: {err:?}"
+        );
+    }
+
+    let after = current_payload(&boot).await;
+    assert_eq!(after.doc_rev, before.doc_rev, "nothing persisted");
+    assert_eq!(after.body, before.body);
+    assert_eq!(
+        index_of(&read(&boot, json!({})).await),
+        index,
+        "order untouched"
+    );
+    assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
+    assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
 }

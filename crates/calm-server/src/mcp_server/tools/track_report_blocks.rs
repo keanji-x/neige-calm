@@ -10,10 +10,10 @@
 //! |---|---|---|
 //! | `calm.report.blocks.kinds`  | `{}` | Self-describing kind vocabulary (static). |
 //! | `calm.report.blocks.upsert` | `{ id?, kind, markdown?, payload?, if_rev?, if_doc_rev?, position?, message?, lifecycle? }` | Create (`id` absent + mandatory `if_doc_rev`) or replace (`id` + mandatory `if_rev`). Returns `{ id, rev, updated_at, docRev }`. |
-//! | `calm.report.blocks.move`   | `{ id, to_index, if_doc_rev }` | Reorder; rev untouched. |
-//! | `calm.report.blocks.delete` | `{ id, if_rev }` | `if_rev` mandatory. |
+//! | `calm.report.blocks.move`   | `{ id, to_index, if_doc_rev }` | Reorder; rev untouched. A `message`/`lifecycle` key is refused (-32602). |
+//! | `calm.report.blocks.delete` | `{ id, if_rev }` | `if_rev` mandatory. A `message`/`lifecycle` key is refused (-32602). |
 //! | `calm.report.write_markdown`| `{ body, summary?, if_doc_rev, message?, lifecycle? }` | The id-preserving whole-document write: guarded full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. |
-//! | `calm.report.commit`        | `{ if_doc_rev, message, ops?, summary?, lifecycle? }` | Planner-only: one user-intent update — an ordered list of block ops (`upsert`/`move`/`delete`, each in its single-op shape minus `if_doc_rev`) + optional summary + optional lifecycle, under ONE `if_doc_rev`. Returns `{ updated_at, docRev, blocks: [{ id, kind, rev }], lifecycle }`. |
+//! | `calm.report.commit`        | `{ if_doc_rev, message, ops?, summary?, lifecycle? }` | Planner-only: one user-intent update — an ordered list of block ops (`upsert`/`move`/`delete`, each in its single-op shape minus `if_doc_rev`) + optional summary + optional lifecycle, under ONE `if_doc_rev`; each existing block id at most once per commit (-32602). Returns `{ updated_at, docRev, blocks: [{ id, kind, rev }], lifecycle }` — `lifecycle` is the transition applied (null when none, incl. a same-state request). |
 //!
 //! ## Concurrency contract
 //!
@@ -209,6 +209,7 @@ async fn blocks_move(
     require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     let tool = TOOL_REPORT_BLOCKS_MOVE;
     let obj = require_object(&args, tool)?;
+    reject_stray_write_args(obj, tool)?;
     let id = required_string(obj, "id", tool)?;
     let to_index = optional_index(obj, "to_index", tool)?
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: missing `to_index` (integer)")))?;
@@ -261,6 +262,7 @@ async fn blocks_delete(
     require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     let tool = TOOL_REPORT_BLOCKS_DELETE;
     let obj = require_object(&args, tool)?;
+    reject_stray_write_args(obj, tool)?;
     let id = required_string(obj, "id", tool)?;
     let if_rev = optional_u32(obj, "if_rev", tool)?.ok_or_else(|| {
         RpcError::invalid_params(format!(
@@ -385,20 +387,34 @@ async fn commit(
         .enumerate()
         .map(|(index, raw)| parse_batch_op(raw, index, tool))
         .collect::<Result<Vec<_>, _>>()?;
+    reject_duplicate_block_ids(&ops, tool)?;
 
-    let (card, _none) = commit_block_op(
-        &ctx,
-        &identity,
-        tool,
-        ReportDocOp::Batch {
-            if_doc_rev,
-            summary,
-            ops,
-        },
-        Some(write_args.message),
-        write_args.lifecycle,
-    )
-    .await?;
+    // Resolved here rather than through `commit_block_op` because the
+    // response reports the lifecycle transition this commit APPLIED, not
+    // the one it requested: `apply_requested_transition_in_tx` is a no-op
+    // for a same-state request, so the honest value is the persisted
+    // lifecycle after the write when it differs from the snapshot before
+    // it. Known gap: a transition another actor lands between this
+    // snapshot and the persist transaction is indistinguishable from ours.
+    let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
+    let track_id = track.id.clone();
+    let lifecycle_before = track.lifecycle;
+    let (card, _none) = CardDecisionSink::from_app_context(&ctx)
+        .commit_report_op(
+            &identity,
+            track,
+            report_card,
+            current,
+            ReportDocOp::Batch {
+                if_doc_rev,
+                summary,
+                ops,
+            },
+            Some(write_args.message),
+            write_args.lifecycle,
+        )
+        .await
+        .map_err(|e| map_commit_err(tool, e))?;
     let doc_rev = updated_report_doc_rev(&card, tool)?;
     // The response index is read off the persisted payload — the doc's
     // own post-op snapshot — so it is exactly what the next
@@ -418,8 +434,26 @@ async fn commit(
         })
         .collect::<Vec<_>>();
     let lifecycle = match write_args.lifecycle {
-        Some(lifecycle) => serde_json::to_value(lifecycle)
-            .map_err(|e| RpcError::internal(format!("{tool}: serialize lifecycle: {e}")))?,
+        Some(_) => {
+            let lifecycle_after = ctx
+                .repo
+                .track_get(track_id.as_str())
+                .await
+                .map_err(|e| RpcError::internal(format!("{tool}: track re-read: {e}")))?
+                .ok_or_else(|| {
+                    RpcError::internal(format!(
+                        "{tool}: track {} vanished after commit",
+                        track_id.as_str()
+                    ))
+                })?
+                .lifecycle;
+            if lifecycle_after == lifecycle_before {
+                Value::Null
+            } else {
+                serde_json::to_value(lifecycle_after)
+                    .map_err(|e| RpcError::internal(format!("{tool}: serialize lifecycle: {e}")))?
+            }
+        }
         None => Value::Null,
     };
     Ok(json!({
@@ -626,6 +660,49 @@ fn planner_only_lifecycle(
                 identity.role
             ),
         ));
+    }
+    Ok(())
+}
+
+/// `calm.report.blocks.move` / `.delete` carry no `message` and no
+/// `lifecycle` — the prompt says so, and silently dropping either would
+/// let a planner believe a rationale was persisted or a track advanced.
+/// Refused `-32602` naming the key, before anything is resolved.
+fn reject_stray_write_args(
+    obj: &serde_json::Map<String, Value>,
+    tool: &str,
+) -> Result<(), RpcError> {
+    for key in ["message", "lifecycle"] {
+        if obj.contains_key(key) {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `{key}` is not accepted here; use `calm.report.commit` to carry \
+                 a message or a lifecycle transition alongside block ops"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Ops in a batch apply in order to the doc as the previous ops left it,
+/// and a content-changing upsert bumps that block's rev — so a second op
+/// on the same block would need an `if_rev` the caller cannot know yet.
+/// Rather than publish intra-batch rev arithmetic, each existing block id
+/// may appear at most once per commit (`-32602` at parse time).
+fn reject_duplicate_block_ids(ops: &[BatchBlockOp], tool: &str) -> Result<(), RpcError> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (index, op) in ops.iter().enumerate() {
+        let id = match op {
+            BatchBlockOp::Upsert { id, .. } => id.as_deref(),
+            BatchBlockOp::Move { id, .. } | BatchBlockOp::Delete { id, .. } => Some(id.as_str()),
+        };
+        if let Some(id) = id
+            && !seen.insert(id)
+        {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: ops[{index}]: block `{id}` already addressed by an earlier op — each \
+                 block id may appear at most once per commit"
+            )));
+        }
     }
     Ok(())
 }
