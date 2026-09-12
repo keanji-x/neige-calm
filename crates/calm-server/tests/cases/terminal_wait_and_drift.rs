@@ -944,6 +944,18 @@ async fn drift_tolerant_input_refuses_mode_change_and_history_views() {
 /// an explicit projection error long before its 10 s budget.
 #[tokio::test]
 async fn change_wait_stops_when_the_output_source_disconnects() {
+    wait_stops_when_the_output_source_disconnects("change").await;
+}
+
+/// #1620 F5 — a signal wait subscribes to the projection too, so an
+/// attach-stream failure ends it (and frees the connection's input serial)
+/// instead of parking it to the budget.
+#[tokio::test]
+async fn signal_wait_stops_when_the_output_source_disconnects() {
+    wait_stops_when_the_output_source_disconnects("signal").await;
+}
+
+async fn wait_stops_when_the_output_source_disconnects(wait_for: &str) {
     let h = Harness::start().await;
     let terminal = open(&h, "printf 'READY\\n'; cat >/dev/null", "source-loss").await;
     h.observe_text(&terminal, "READY").await;
@@ -965,14 +977,14 @@ async fn change_wait_stops_when_the_output_source_disconnects() {
     let (response, ()) = tokio::join!(
         h.call(
             "calm.terminal.observe",
-            json!({"terminal_id":terminal,"wait_for":"change","wait_ms":10000})
+            json!({"terminal_id":terminal,"wait_for":wait_for,"wait_ms":10000})
         ),
         sever
     );
     let elapsed = started.elapsed();
     assert!(
         elapsed < Duration::from_secs(5),
-        "the wait idled towards its budget: {elapsed:?} {response}"
+        "the {wait_for} wait idled towards its budget: {elapsed:?} {response}"
     );
     let message = error_text(&response);
     assert!(

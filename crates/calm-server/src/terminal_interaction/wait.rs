@@ -215,11 +215,22 @@ pub async fn wait(
                 .unwrap_or(true)
             || projection_unavailable(&client.entry.handle.model_view)
     };
+    // Both modes subscribe to the projection: a revision is what a change
+    // wait is for, and an invalidation (`ModelView::invalidate`, e.g. the
+    // output source disconnecting) must end a signal wait too instead of
+    // leaving it — and the connection's input serial — parked to the budget.
+    let revisions = match client.entry.handle.model_view.lock() {
+        Ok(view) => view.subscribe(),
+        Err(_) => {
+            return report(WaitOutcome::Unchanged, started.elapsed(), false, None);
+        }
+    };
     if plan.mode == WaitFor::Signal {
         let ring = &client.entry.signals;
         let signals = ring.subscribe();
         let find = || ring.first_matching(signal_baseline, &plan.signal_events);
-        let (signal, exited) = wait_for_signal(signals, events, stopped, find, deadline).await;
+        let (signal, exited) =
+            wait_for_signal(signals, revisions, events, stopped, find, deadline).await;
         let outcome = match (&signal, exited) {
             (Some(_), _) => WaitOutcome::Signal,
             (None, true) => WaitOutcome::Exited,
@@ -228,12 +239,6 @@ pub async fn wait(
         return report(outcome, started.elapsed(), false, signal);
     }
     let settle = Duration::from_millis(plan.settle_ms);
-    let revisions = match client.entry.handle.model_view.lock() {
-        Ok(view) => view.subscribe(),
-        Err(_) => {
-            return report(WaitOutcome::Unchanged, started.elapsed(), false, None);
-        }
-    };
     let Progress {
         changed,
         settled,
@@ -261,20 +266,32 @@ fn projection_unavailable(model_view: &SharedModelView) -> bool {
 
 /// The signal-mode loop (#1620), separated from the client so its timing can
 /// be tested under a paused clock. `signals` is the ring's seq channel,
-/// `events` the client's protocol channel, `find` the ring lookup for a
-/// matching signal above the baseline. The ring is inspected before every
-/// select and again on timeout, after the seq channel version has been
-/// marked seen, so a signal that lands between the lookup and the select is
-/// never missed and one that lands as the budget expires is still reported.
+/// `revisions` the projection revision channel (a revision itself never ends
+/// a signal wait; its wake re-evaluates `stopped`, which covers projection
+/// invalidation), `events` the client's protocol channel, `find` the ring
+/// lookup for a matching signal above the baseline. The ring is inspected
+/// before every select and again on timeout, after the seq channel version
+/// has been marked seen, so a signal that lands between the lookup and the
+/// select is never missed and one that lands as the budget expires is still
+/// reported; the timeout branch re-reads `stopped` as well, so an exit that
+/// coincides with the deadline is reported as exited, never as unchanged.
 async fn wait_for_signal(
     mut signals: watch::Receiver<u64>,
+    mut revisions: watch::Receiver<u64>,
     mut events: watch::Receiver<u64>,
     stopped: impl Fn() -> bool,
     find: impl Fn() -> Option<Signal>,
     deadline: Instant,
 ) -> (Option<Signal>, bool) {
+    // A matching signal wins over every other verdict; otherwise `stopped`
+    // is read at the moment the wait ends.
+    let finish = |exited_unless_found: bool| match find() {
+        Some(signal) => (Some(signal), false),
+        None => (None, exited_unless_found),
+    };
     loop {
         signals.borrow_and_update();
+        revisions.borrow_and_update();
         events.borrow_and_update();
         if let Some(signal) = find() {
             return (Some(signal), false);
@@ -288,16 +305,21 @@ async fn wait_for_signal(
         tokio::select! {
             result = signals.changed() => {
                 if result.is_err() {
-                    return (find(), false);
+                    return finish(stopped());
+                }
+            }
+            result = revisions.changed() => {
+                if result.is_err() {
+                    return finish(stopped());
                 }
             }
             result = events.changed() => {
                 if result.is_err() {
-                    return (find(), stopped());
+                    return finish(stopped());
                 }
             }
             _ = tokio::time::sleep_until(deadline) => {
-                return (find(), false);
+                return finish(stopped());
             }
         }
     }
@@ -489,87 +511,214 @@ mod tests {
         assert_eq!(only.budget_ms, 0);
     }
 
-    /// Signal loop: a matching signal above the baseline ends the wait
-    /// whether it was already in the ring, arrives during the wait, or lands
-    /// exactly as the budget expires; protocol events only re-check stopped.
-    #[tokio::test(start_paused = true)]
-    async fn signal_loop_inspects_the_ring_before_select_and_on_timeout() {
-        use crate::terminal_renderer::{IncomingSignal, SignalRing};
-        let incoming = |event: &str| IncomingSignal {
+    fn incoming(event: &str) -> crate::terminal_renderer::IncomingSignal {
+        crate::terminal_renderer::IncomingSignal {
             event: event.into(),
             notification_type: None,
             message: String::new(),
             claude_session_id: None,
-        };
-        let stop = vec!["stop".to_string()];
+        }
+    }
+    struct SignalFixture {
+        revisions: watch::Sender<u64>,
+        events: watch::Sender<u64>,
+        stopped: Arc<AtomicBool>,
+    }
+    /// Spawn a signal wait for `stop` above `baseline` with every sender kept
+    /// alive by the fixture (a dropped sender ends the loop at once, which
+    /// would make a budget test vacuous).
+    fn start_signal(
+        ring: Arc<crate::terminal_renderer::SignalRing>,
+        baseline: u64,
+        budget_ms: u64,
+    ) -> (
+        SignalFixture,
+        tokio::task::JoinHandle<((Option<Signal>, bool), Duration)>,
+    ) {
+        let (revisions, revisions_rx) = watch::channel(0u64);
+        let (events, events_rx) = watch::channel(0u64);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let flag = stopped.clone();
+        let started = Instant::now();
+        let waiter = ring.clone();
+        let task = tokio::spawn(async move {
+            let stop = vec!["stop".to_string()];
+            let result = wait_for_signal(
+                waiter.subscribe(),
+                revisions_rx,
+                events_rx,
+                move || flag.load(Ordering::SeqCst),
+                move || waiter.first_matching(baseline, &stop),
+                started + Duration::from_millis(budget_ms),
+            )
+            .await;
+            (result, started.elapsed())
+        });
+        (
+            SignalFixture {
+                revisions,
+                events,
+                stopped,
+            },
+            task,
+        )
+    }
+
+    /// Signal loop: a matching signal above the baseline ends the wait
+    /// whether it was already in the ring or arrives during the wait;
+    /// protocol events and revisions only re-check stopped.
+    #[tokio::test(start_paused = true)]
+    async fn signal_loop_inspects_the_ring_before_select() {
+        use crate::terminal_renderer::SignalRing;
         // Already present above the baseline: returns without sleeping.
         let ring = Arc::new(SignalRing::new());
         ring.push("a", incoming("user_prompt_submit"), 0);
         ring.push("b", incoming("stop"), 0);
-        let (events, events_rx) = watch::channel(0u64);
-        let found = ring.clone();
-        let (signal, exited) = wait_for_signal(
-            ring.subscribe(),
-            events_rx,
-            || false,
-            move || found.first_matching(0, &stop),
-            Instant::now() + Duration::from_millis(5_000),
-        )
-        .await;
+        let (fixture, task) = start_signal(ring.clone(), 0, 5_000);
+        let ((signal, exited), waited) = task.await.unwrap();
         assert_eq!(signal.map(|s| s.seq), Some(2));
         assert!(!exited);
+        assert_eq!(waited, Duration::ZERO);
+        drop(fixture);
         // Present but at or below the baseline: ignored; a later one wakes.
-        let ring2 = ring.clone();
-        let stop = vec!["stop".to_string()];
-        let started = Instant::now();
-        let events_rx = events.subscribe();
-        let task = tokio::spawn(async move {
-            wait_for_signal(
-                ring2.subscribe(),
-                events_rx,
-                || false,
-                move || ring2.first_matching(2, &stop),
-                started + Duration::from_millis(5_000),
-            )
-            .await
-        });
+        let (fixture, task) = start_signal(ring.clone(), 2, 5_000);
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(100)).await;
-        bump(&events);
+        bump(&fixture.events);
+        bump(&fixture.revisions);
         tokio::task::yield_now().await;
         assert!(
             !task.is_finished(),
-            "protocol events do not end a signal wait"
+            "protocol events and revisions do not end a signal wait"
         );
         ring.push("c", incoming("notification"), 0);
         tokio::task::yield_now().await;
         assert!(!task.is_finished(), "a non-matching event keeps waiting");
         ring.push("d", incoming("stop"), 0);
         tokio::task::yield_now().await;
-        let (signal, exited) = task.await.unwrap();
+        let ((signal, exited), _) = task.await.unwrap();
         assert_eq!(signal.map(|s| s.seq), Some(4));
         assert!(!exited);
-        // Budget without a match reports no signal; stopped reports exited.
-        let ring3 = ring.clone();
-        let stop = vec!["stop".to_string()];
-        let (signal, exited) = wait_for_signal(
-            ring.subscribe(),
-            watch::channel(0u64).1,
-            || false,
-            move || ring3.first_matching(4, &stop),
-            Instant::now() + Duration::from_millis(300),
-        )
-        .await;
-        assert!(signal.is_none() && !exited);
-        let (signal, exited) = wait_for_signal(
-            ring.subscribe(),
-            watch::channel(0u64).1,
-            || true,
-            || None,
-            Instant::now() + Duration::from_millis(300),
-        )
-        .await;
+        // Stopped before the wait starts reports exited at once.
+        let (fixture, task) = start_signal(ring.clone(), 4, 300);
+        fixture.stopped.store(true, Ordering::SeqCst);
+        let ((signal, exited), _) = task.await.unwrap();
         assert!(signal.is_none() && exited);
+    }
+
+    /// The budget: with every sender alive the loop runs to the deadline and
+    /// reports no signal after exactly the budget; a signal pushed at the
+    /// deadline itself is still reported (the ring is re-read on timeout).
+    #[tokio::test(start_paused = true)]
+    async fn signal_loop_runs_to_the_budget_and_rereads_the_ring_on_timeout() {
+        use crate::terminal_renderer::SignalRing;
+        let ring = Arc::new(SignalRing::new());
+        let (fixture, task) = start_signal(ring.clone(), 0, 300);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(299)).await;
+        assert!(!task.is_finished(), "ended before the budget");
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let ((signal, exited), waited) = task.await.unwrap();
+        assert!(signal.is_none() && !exited);
+        assert_eq!(waited, Duration::from_millis(300));
+        drop(fixture);
+
+        // A matching signal that becomes visible to the lookup without any
+        // channel wake (only the deadline timer wakes the loop) is still
+        // reported: the timeout branch re-reads the ring instead of
+        // returning unchanged.
+        let (signals_tx, signals_rx) = watch::channel(0u64);
+        let (revisions_tx, revisions_rx) = watch::channel(0u64);
+        let (events_tx, events_rx) = watch::channel(0u64);
+        let visible = Arc::new(AtomicBool::new(false));
+        let flag = visible.clone();
+        let started = Instant::now();
+        let task = tokio::spawn(async move {
+            let result = wait_for_signal(
+                signals_rx,
+                revisions_rx,
+                events_rx,
+                || false,
+                move || {
+                    flag.load(Ordering::SeqCst).then(|| Signal {
+                        seq: 1,
+                        event: "stop".into(),
+                        notification_type: None,
+                        message: String::new(),
+                        claude_session_id: None,
+                        received_at_ms: 0,
+                    })
+                },
+                started + Duration::from_millis(300),
+            )
+            .await;
+            (result, started.elapsed())
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(299)).await;
+        assert!(!task.is_finished());
+        visible.store(true, Ordering::SeqCst);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let ((signal, exited), waited) = task.await.unwrap();
+        assert_eq!(signal.map(|s| s.seq), Some(1), "signal at the deadline");
+        assert!(!exited);
+        assert_eq!(waited, Duration::from_millis(300));
+        drop((signals_tx, revisions_tx, events_tx));
+    }
+
+    /// An exit that coincides with the deadline is reported as exited: the
+    /// timeout branch re-reads `stopped` instead of returning unchanged.
+    #[tokio::test(start_paused = true)]
+    async fn signal_loop_timeout_rechecks_the_stopped_state() {
+        use crate::terminal_renderer::SignalRing;
+        let ring = Arc::new(SignalRing::new());
+        let (fixture, task) = start_signal(ring, 0, 300);
+        tokio::task::yield_now().await;
+        // The process exits without any wake of the loop (no protocol event
+        // reaches it before the timer), so only the timer branch can see it.
+        fixture.stopped.store(true, Ordering::SeqCst);
+        tokio::time::advance(Duration::from_millis(300)).await;
+        let ((signal, exited), waited) = task.await.unwrap();
+        assert!(signal.is_none());
+        assert!(exited, "exit at the deadline reported as unchanged");
+        assert_eq!(waited, Duration::from_millis(300));
+    }
+
+    /// An invalidated projection wakes a signal wait through the revision
+    /// subscription and, composed with `projection_unavailable`, ends it as
+    /// exited before the budget (same treatment as change mode).
+    #[tokio::test(start_paused = true)]
+    async fn invalidated_projection_stops_a_signal_wait_before_the_budget() {
+        use crate::terminal_renderer::{ModelView, SignalRing};
+        let view = ModelView::new(80, 24, (220, 220, 220), (15, 20, 24));
+        let revisions = view.lock().unwrap().subscribe();
+        let (events, events_rx) = watch::channel(0u64);
+        let ring = Arc::new(SignalRing::new());
+        let started = Instant::now();
+        let stopped_view = view.clone();
+        let waiter = ring.clone();
+        let task = tokio::spawn(async move {
+            let stop = vec!["stop".to_string()];
+            let result = wait_for_signal(
+                waiter.subscribe(),
+                revisions,
+                events_rx,
+                move || projection_unavailable(&stopped_view),
+                move || waiter.first_matching(0, &stop),
+                started + Duration::from_millis(5_000),
+            )
+            .await;
+            (result, started.elapsed())
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+        assert!(!task.is_finished(), "a live projection keeps waiting");
+        view.lock().unwrap().invalidate("simulated source gap");
+        tokio::task::yield_now().await;
+        let ((signal, exited), waited) = task.await.unwrap();
+        assert!(signal.is_none() && exited);
+        assert_eq!(waited, Duration::from_millis(100));
+        drop(events);
     }
 
     struct Fixture {
