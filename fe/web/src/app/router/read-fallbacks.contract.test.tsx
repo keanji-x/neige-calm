@@ -244,6 +244,23 @@ describe('degraded workspace reads stay usable', () => {
           trackId: 'w1', title: null, kind: 'track-assistant', state: null, updatedAt: 1,
         }]);
       }
+      /* The create that lost its acknowledgement did commit, and the kernel
+         drained its sentence into a turn: the landed card's transcript serves
+         it (#1625 P2). This is where the reader's words come from once the
+         card is adopted — the client mints nothing for them. */
+      if (request.path.includes('/harness/items') && revealLanding) {
+        return ok([{
+          id: 1, worker_session_id: 'r', track_id: 'w1', thread_id: 't',
+          card_id: trackConversationCardId('w1', creates[0].headers!['Idempotency-Key']),
+          turn_id: null, item_uuid: 'entry-0001', item_type: 'userMessage', method: 'item/completed',
+          params: JSON.stringify({
+            item: { id: 'entry-0001', clientId: 'entry-0001', type: 'userMessage', content: [{ type: 'text', text: 'User says:\nOriginal uncertain intent' }] },
+            _projection: true,
+          }),
+          input_segments: [{ presentation: 'user', text: 'User says:\nOriginal uncertain intent', attachments: [] }],
+          created_at_ms: 1,
+        }]);
+      }
       return ok([]);
     });
     await userEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
@@ -264,8 +281,14 @@ describe('degraded workspace reads stay usable', () => {
     drawer = await screen.findByRole('complementary', { name: 'Untitled' });
     expect(within(drawer).getByText('Edited offline intent')).toBeTruthy();
     await userEvent.click(within(drawer).getByRole('button', { name: 'Try again' }));
-    const adopted = await screen.findByRole('complementary', { name: 'Assistant' });
-    expect(within(adopted).getByText('Original uncertain intent')).toBeTruthy();
+    /* The adopted conversation is the original create's: its row names the
+       drawer (the conversation name is derived from the first confirmed
+       user turn) and is its one `you` line. The edited words were never
+       posted and are nowhere in it. */
+    const adopted = await screen.findByRole('complementary', { name: 'Original uncertain intent' });
+    await waitFor(() => expect(
+      [...adopted.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+    ).toEqual(['Original uncertain intent']));
     expect(within(adopted).queryByText('Edited offline intent')).toBeNull();
     expect(creates).toHaveLength(1);
   });

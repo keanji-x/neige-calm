@@ -52,6 +52,38 @@ function userParams(text: string) {
 }
 
 describe('parseHarnessItem', () => {
+  /*
+   * #1625 P2 — the row the kernel writes at queue drain, before codex echoes
+   * the turn: no turn yet, `item_uuid` = the queue entry id, params marked
+   * `_projection`. Legacy web reads only `method`, `item_type` and
+   * `params.item.content`, so the row is a user bubble like any other.
+   * `_provenance`: hand-written from `write_projection_row`
+   * (`crates/calm-server/src/harness/run_loop.rs`), not a capture.
+   */
+  it('renders the kernel-written projection of a drained user message', () => {
+    const entry = parseHarnessItem(
+      harnessRow({
+        turn_id: null,
+        item_uuid: 'entry-0001',
+        params: {
+          item: {
+            id: 'entry-0001',
+            clientId: 'entry-0001',
+            type: 'userMessage',
+            content: [{ text: 'User says:\nhello from the queue', type: 'text' }],
+          },
+          _projection: true,
+        },
+      }),
+    );
+
+    expect(entry).toMatchObject({
+      kind: 'user',
+      text: 'hello from the queue',
+      atMs: 1780977420000,
+    });
+  });
+
   it('strips the track diff block before extracting User says text', () => {
     const entry = parseHarnessItem(
       harnessRow({
