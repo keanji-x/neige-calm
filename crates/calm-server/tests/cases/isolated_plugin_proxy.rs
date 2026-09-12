@@ -8,7 +8,7 @@ use std::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn isolated_worker_queries_http_plugin_without_direct_network() {
+async fn isolated_worker_queries_http_plugin_with_network_disabled_policy() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let calls = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -58,12 +58,12 @@ async fn isolated_worker_queries_http_plugin_without_direct_network() {
             if task.status == calm_server::model::TaskStatus::Done {
                 break;
             }
-            assert_ne!(
-                task.status,
-                calm_server::model::TaskStatus::Failed,
-                "{:?}",
-                task.status_detail
-            );
+            if task.status == calm_server::model::TaskStatus::Failed {
+                let op: String = sqlx::query_scalar("SELECT id FROM operations WHERE kind='codex-isolated-worker' AND idempotency_key=?1")
+                    .bind(&task.id).fetch_one(&fx.boot.repo.sqlite_pool().unwrap()).await.unwrap();
+                let stderr=std::fs::read_to_string(fx.root.path().join("runtime").join(op).join("provider.stderr")).unwrap_or_default();
+                panic!("worker failed {:?}; fixture provider stderr: {stderr}",task.status_detail);
+            }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
@@ -83,7 +83,7 @@ async fn isolated_worker_queries_http_plugin_without_direct_network() {
                 let record:Value=serde_json::from_str(&raw).unwrap();
                 let workspace=record["data"]["isolated_execution"]["request"]["workspace"].as_str().unwrap();
                 let data:Value=serde_json::from_str(&std::fs::read_to_string(std::path::Path::new(workspace).join("report-result.json")).unwrap()).unwrap();
-                assert_eq!(data,json!({"source":"source-42","answer":42,"direct_network":false}));
+                assert_eq!(data,json!({"source":"source-42","answer":42,"command_network_policy":false}));
                 break;
             }
             assert_ne!(phase,"failed");

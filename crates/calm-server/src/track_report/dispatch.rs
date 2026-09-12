@@ -353,7 +353,14 @@ pub(super) async fn snapshot_tx(
     } else {
         None
     };
+    let executor_environment = match task.as_ref() {
+        Some(task) => crate::task_recovery::executor_statement(task)?.environment,
+        None => {
+            json!({"executor":"codex", "note":"No current execution allocation; original requested grants are in requested_executor_environment"})
+        }
+    };
     let mut response = json!({
+        "requested_executor_environment": crate::dedicated_codex::executor_environment_with_plugins(args.plugin_tools()),
         "receipt": receipt,
         "current": {
             "as_of_ms": now_ms(), "contract_status": contract_status,
@@ -363,7 +370,7 @@ pub(super) async fn snapshot_tx(
             "allocation": allocation,
             "task": task.map(|t| json!({"attempt_id": t.id, "status": t.status, "status_detail": t.status_detail, "worker_card_id": t.worker_card_id})),
             // Stated up front so a Planner never learns the envelope at failure time.
-            "executor_environment": crate::dedicated_codex::executor_environment_with_plugins(args.plugin_tools())
+            "executor_environment": executor_environment
         }
     });
     if let Some(input) = candidate_input {

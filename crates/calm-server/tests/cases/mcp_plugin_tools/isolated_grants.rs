@@ -309,3 +309,122 @@ async fn isolated_worker_grants_filter_attributed_daemon_discovery() {
     .await;
     assert_eq!(recv_frame(&mut rd).await["error"]["code"], -32601);
 }
+
+#[tokio::test]
+async fn isolated_plugin_dispatch_environment_tracks_edited_current_declaration() {
+    let fx = boot_fixture().await;
+    let report = fx
+        .repo
+        .card_create(calm_server::model::NewCard {
+            track_id: fx.track_id.clone().into(),
+            title: None,
+            kind: "track-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
+                .unwrap(),
+        })
+        .await
+        .unwrap();
+    let (token, thread) = mint_card_with_thread(
+        &fx.repo,
+        &fx.card_role_cache,
+        fx.track_id.clone().into(),
+        CardRole::Planner,
+    )
+    .await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &token).await;
+    let args = json!({"name":"Research","goal":"Look up source","acceptance":"Return source result","executor":"codex","workspace":"empty","plugin_tools":[EXPOSED_NAME]});
+    send_frame(
+        &mut wr,
+        tools_call_frame(2, "calm.task.dispatch", &thread, args.clone()),
+    )
+    .await;
+    let first = recv_frame(&mut rd).await;
+    assert!(first.get("error").is_none(), "{first}");
+    let card = fx.repo.card_get(report.id.as_str()).await.unwrap().unwrap();
+    let block = card.payload["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["kind"] == "task")
+        .unwrap();
+    let mut payload = block["payload"].clone();
+    payload["context"]["neige_execution"]["plugin_tools"] = json!([COLLIDING_EXPOSED_NAME]);
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            3,
+            "calm.report.blocks.upsert",
+            &thread,
+            json!({"id":block["id"],"kind":"task","payload":payload,"if_rev":block["rev"]}),
+        ),
+    )
+    .await;
+    let edit = recv_frame(&mut rd).await;
+    assert!(edit.get("error").is_none(), "{edit}");
+    send_frame(
+        &mut wr,
+        tools_call_frame(4, "calm.task.dispatch", &thread, args),
+    )
+    .await;
+    let replay = recv_frame(&mut rd).await;
+    let out = &replay["result"]["structuredContent"];
+    assert_eq!(
+        out["requested_executor_environment"]["plugin_tools"],
+        json!([EXPOSED_NAME]),
+        "{replay}"
+    );
+    assert_eq!(
+        out["current"]["executor_environment"]["plugin_tools"],
+        json!([COLLIDING_EXPOSED_NAME]),
+        "{replay}"
+    );
+    assert_eq!(
+        out["receipt"],
+        first["result"]["structuredContent"]["receipt"]
+    );
+}
+
+#[tokio::test]
+async fn isolated_worker_plugin_binding_corruption_never_becomes_legacy_access() {
+    for corruption in ["missing-op", "wrong-session", "wrong-task-track"] {
+        let fx = boot_fixture().await;
+        bind_isolated(&fx, &[EXPOSED_NAME]).await;
+        let pool = fx.repo.sqlite_pool().unwrap();
+        match corruption {
+            "missing-op" => {
+                sqlx::query("UPDATE worker_sessions SET spawn_op_id=NULL WHERE thread_id=?1")
+                    .bind(&fx.thread_id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            "wrong-session" => {
+                sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.isolated_execution.request.identity.session_id','different-session') WHERE id='isolated-operation'").execute(&pool).await.unwrap();
+            }
+            "wrong-task-track" => {
+                sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) VALUES('foreign-test',?1,'foreign-test','codex','foreign','{}','pending',1,1)")
+                    .bind(&fx.bound_track_id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE operations SET payload_json=json_set(payload_json,'$.task_id','foreign-test','$.idempotency_key','foreign-test'),tx_output_json=json_set(tx_output_json,'$.data.isolated_execution.request.identity.attempt_id','foreign-test') WHERE id='isolated-operation'")
+                    .execute(&pool).await.unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let (mut rd, mut wr) = connect(&fx.socket_path).await;
+        handshake(&mut rd, &mut wr, &fx.raw_token).await;
+        send_frame(&mut wr, tools_list_frame(2, &fx.thread_id)).await;
+        let list = recv_frame(&mut rd).await;
+        assert!(list.get("error").is_some(), "{corruption}: {list}");
+        send_frame(
+            &mut wr,
+            tools_call_frame(3, EXPOSED_NAME, &fx.thread_id, json!({})),
+        )
+        .await;
+        let called = recv_frame(&mut rd).await;
+        assert!(called.get("error").is_some(), "{corruption}: {called}");
+    }
+}

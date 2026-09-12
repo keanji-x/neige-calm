@@ -38,3 +38,5 @@ newly installed tools; disabling a plugin or narrowing scope takes effect on
 subsequent calls. Private-home policy digests reject preparing an existing run
 with a different grant set. The worker receives the platform MCP session token
 through the existing private shim configuration, never connector credentials.
+
+The local process fixture exercises actual runtime/provider launch, the native shim, platform authentication/authorization and an authenticated HTTP connector. Its provider is deterministic and does not implement Codex command sandboxing: it asserts the generated command network policy remains disabled, and does not mistake the provider transport process (which legitimately needs network) for a model shell command. Real-provider shell-network behavior remains covered by the existing provider policy contract; no shared-host real Codex E2E is run.

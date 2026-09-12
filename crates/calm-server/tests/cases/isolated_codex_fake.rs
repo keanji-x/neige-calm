@@ -236,16 +236,17 @@ fn probe_plugin_proxy(input: &mut impl Write, output: &mut impl BufRead) {
     let data: Value =
         serde_json::from_str(detail["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(data["answer"], 42);
-    let address =
-        std::net::SocketAddr::from(([127, 0, 0, 1], data["port"].as_u64().unwrap() as u16));
-    assert!(
-        std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(200))
-            .is_err(),
-        "worker must not directly reach the live connector HTTP fixture"
+    // Provider transport needs network. This fixture checks the actual command
+    // policy, not the provider's own socket access or a copied sandbox.
+    assert_eq!(
+        config["permissions"]["neige-delivery-v1"]["network"]["enabled"].as_bool(),
+        Some(false)
     );
+    assert_eq!(config["web_search"].as_str(), Some("disabled"));
     std::fs::write(
         "/workspace/report-result.json",
-        json!({"source":found["id"],"answer":data["answer"],"direct_network":false}).to_string(),
+        json!({"source":found["id"],"answer":data["answer"],"command_network_policy":false})
+            .to_string(),
     )
     .unwrap();
 }
