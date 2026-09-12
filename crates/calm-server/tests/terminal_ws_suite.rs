@@ -6,6 +6,8 @@ mod terminal_action_observation;
 mod terminal_card_endpoint;
 #[path = "cases/terminal_lifecycle.rs"]
 mod terminal_lifecycle;
+#[path = "cases/terminal_signals.rs"]
+mod terminal_signals;
 #[path = "cases/terminal_sweeper.rs"]
 mod terminal_sweeper;
 #[path = "cases/terminal_wait_and_drift.rs"]

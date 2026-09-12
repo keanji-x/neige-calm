@@ -1,0 +1,759 @@
+//! #1620 — hook signals and bounded composite actions through the real MCP
+//! tools, the real operation runtime, a real PTY and the production ingest
+//! route. A fake `claude` (shell script) reads the generated `--settings`
+//! file and runs the registered hook command with synthetic payloads, so the
+//! whole path settings file → bridge command → `/internal/claude/hook` →
+//! renderer ring → `wait_for=signal` is exercised end to end.
+use crate::terminal_support::Harness;
+use calm_server::event::Event;
+use serde_json::{Value, json};
+use std::collections::BTreeSet;
+use std::time::Duration;
+
+/// Parses `--settings <file>`, extracts the registered hook command, prints
+/// `READY <card id>` and then, per stdin line, runs the hook command with
+/// synthetic Claude Code payloads (`perm` → a permission Notification,
+/// anything else → UserPromptSubmit then Stop) before echoing the turn.
+const FAKE_CLAUDE: &str = r#"#!/bin/sh
+settings=""
+while [ $# -gt 0 ]; do case "$1" in --settings) settings="$2"; shift 2;; *) shift;; esac; done
+hook=$(sed -n 's/^ *"command": "\(.*\)"[,]*$/\1/p' "$settings" | head -1)
+printf 'READY %s\n' "$NEIGE_CARD_ID"
+n=0
+while IFS= read -r line; do
+  n=$((n+1))
+  case "$line" in
+    perm) printf '{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash","session_id":"fake-session","turn":%s}' "$n" | sh -c "$hook" >/dev/null 2>&1 ;;
+    *) printf '{"hook_event_name":"UserPromptSubmit","prompt":"%s","session_id":"fake-session","turn":%s}' "$line" "$n" | sh -c "$hook" >/dev/null 2>&1
+       printf '{"hook_event_name":"Stop","stop_hook_active":false,"session_id":"fake-session","turn":%s}' "$n" | sh -c "$hook" >/dev/null 2>&1 ;;
+  esac
+  printf 'TURN:%s:%s\n' "$n" "$line"
+done
+"#;
+const COUNT_PROBE: &str = "i=0; printf 'READY\\n'; while IFS= read -r line; do i=$((i+1)); printf x >> physical-lines; printf 'COUNT:%s:%s\\n' \"$i\" \"$line\"; done";
+const EXPECTED_EVENTS: [&str; 7] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+    "Notification",
+    "PermissionRequest",
+    "SessionEnd",
+    "SubagentStop",
+];
+const INJECTED_ENV: [&str; 5] = [
+    "NEIGE_CLAUDE_SETTINGS",
+    "NEIGE_CARD_ID",
+    "NEIGE_CALM_BASE_URL",
+    "NEIGE_HOOK_PROVIDER",
+    "NEIGE_HOOK_URL",
+];
+
+fn fake_claude_program(h: &Harness) -> String {
+    let script = h.root.path().join("fake-claude.sh");
+    std::fs::write(&script, FAKE_CLAUDE).unwrap();
+    format!(
+        "exec sh {} --settings \"$NEIGE_CLAUDE_SETTINGS\"",
+        script.display()
+    )
+}
+fn receipt(response: &Value) -> &Value {
+    assert!(response.get("error").is_none(), "{response}");
+    &response["result"]["structuredContent"]
+}
+fn state(response: &Value) -> &Value {
+    let result = receipt(response);
+    assert_eq!(result["observation"]["status"], "available", "{result}");
+    &result["observation"]["state"]
+}
+fn has_line(state: &Value, needle: &str) -> bool {
+    state["text"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line.as_str().unwrap().contains(needle))
+}
+fn events_of(state: &Value) -> Vec<String> {
+    state["signals"]["since_previous_observation"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|signal| signal["event"].as_str().unwrap().to_owned())
+        .collect()
+}
+/// Open a claimed fake-claude terminal and return (open result, terminal id).
+async fn open_fake_claude(h: &Harness, request_id: &str) -> (Value, String) {
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":fake_claude_program(h),"request_id":request_id,"claim":true}),
+        )
+        .await;
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    let ready = h.observe_text(&terminal, "READY").await;
+    assert!(
+        has_line(
+            &ready,
+            &format!("READY {}", opened["card_id"].as_str().unwrap())
+        ),
+        "the child must see NEIGE_CARD_ID: {ready}"
+    );
+    (opened, terminal)
+}
+async fn submit(h: &Harness, terminal: &str, request: &str, text: &str, wait: Value) -> Value {
+    let mut args = json!({"terminal_id":terminal,"request_id":request,"action":{"type":"submit","text":text},"observe":true});
+    for (key, value) in wait.as_object().unwrap() {
+        args[key] = value.clone();
+    }
+    h.call("calm.terminal.input", args).await
+}
+
+#[tokio::test]
+async fn open_writes_hook_settings_injects_env_and_replays_idempotently() {
+    let h = Harness::start().await;
+    let (opened, terminal) = open_fake_claude(&h, "hooks-open").await;
+    let card_id = opened["card_id"].as_str().unwrap().to_owned();
+    assert_eq!(opened["role"], "owner", "{opened}");
+    assert!(opened["control_id"].is_string());
+    assert_eq!(opened["claim"]["status"], "claimed", "{opened}");
+    assert_eq!(opened["signals"]["hooks_seen"], false);
+
+    // The terminal row carries exactly the generated keys, derived from the
+    // allocated card id, on top of the (empty) request env.
+    let term = h.state.repo.terminal_get(&terminal).await.unwrap().unwrap();
+    let env = term.env.as_object().unwrap();
+    assert_eq!(
+        env.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        INJECTED_ENV.iter().copied().collect::<BTreeSet<_>>(),
+        "{env:?}"
+    );
+    assert_eq!(env["NEIGE_CARD_ID"], card_id);
+    assert_eq!(env["NEIGE_HOOK_PROVIDER"], "claude");
+    assert_eq!(env["NEIGE_CALM_BASE_URL"], h.base_url);
+    assert_eq!(
+        env["NEIGE_HOOK_URL"],
+        format!("{}/internal/claude/hook?card_id={card_id}", h.base_url)
+    );
+    let settings_path = std::path::PathBuf::from(env["NEIGE_CLAUDE_SETTINGS"].as_str().unwrap());
+    assert_eq!(
+        settings_path,
+        h.state
+            .codex
+            .terminal_hook_settings_dir
+            .join(format!("{card_id}.json"))
+    );
+    let settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert_eq!(
+        settings["hooks"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        EXPECTED_EVENTS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<BTreeSet<_>>(),
+        "exactly the seven issue events"
+    );
+    assert!(settings.get("mcpServers").is_none());
+    let command = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(
+        command.contains(&format!("'{}' --provider claude", h.bridge.display())),
+        "{command}"
+    );
+    assert!(
+        command.contains(&format!("NEIGE_CARD_ID='{card_id}'")),
+        "{command}"
+    );
+
+    // Replay: same request_id → same terminal, control already held on this
+    // connection → the current observation, no second claim, no error.
+    let replayed = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":fake_claude_program(&h),"request_id":"hooks-open","claim":true}),
+        )
+        .await;
+    assert_eq!(replayed["terminal_id"], terminal);
+    assert_eq!(replayed["card_id"], card_id);
+    assert_eq!(replayed["role"], "owner");
+    assert_eq!(replayed["control_id"], opened["control_id"]);
+    assert_eq!(replayed["claim"]["status"], "claimed", "{replayed}");
+    assert_eq!(
+        h.state
+            .repo
+            .cards_by_track(&h.track)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|c| c.kind == "terminal")
+            .count(),
+        1,
+        "the replay must not create a second terminal card"
+    );
+
+    // A human-created terminal (REST route) gets exactly the env it asked for
+    // and no settings file.
+    use tower::ServiceExt;
+    let body = json!({"program":"exec /bin/sh","cwd":"","env":{"FOO":"bar"},"theme":{"fg":[216,219,226],"bg":[15,20,24]}});
+    let response = h
+        .app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{}/terminal-cards", h.track))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let card: Value = serde_json::from_slice(&bytes).unwrap();
+    let rest_card_id = card["id"].as_str().unwrap().to_owned();
+    let rest_term = h
+        .state
+        .repo
+        .terminal_get_by_card(&rest_card_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rest_term.env,
+        json!({"FOO":"bar"}),
+        "no injected env on REST terminals"
+    );
+    assert!(
+        !h.state
+            .codex
+            .terminal_hook_settings_dir
+            .join(format!("{rest_card_id}.json"))
+            .exists()
+    );
+    h.state.terminal_renderer.drop_entry(&rest_term.id).await;
+    h.stop(&terminal).await;
+}
+
+#[tokio::test]
+async fn hook_post_for_a_terminal_card_lands_in_the_ring_and_never_projects_state() {
+    let h = Harness::start().await;
+    let (opened, terminal) = open_fake_claude(&h, "hooks-ring").await;
+    let card_id = opened["card_id"].as_str().unwrap().to_owned();
+    let mut bus = h.state.events.subscribe();
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    let before = entry.signals.last_seq();
+
+    let stop =
+        json!({"hook_event_name":"Stop","session_id":"posted-session","message":"done\u{7}\n now"});
+    assert_eq!(h.post_claude_hook(&card_id, &stop).await, 200);
+    assert_eq!(entry.signals.last_seq(), before + 1);
+    // Duplicate delivery of the same body: acknowledged, appended once.
+    assert_eq!(h.post_claude_hook(&card_id, &stop).await, 200);
+    assert_eq!(entry.signals.last_seq(), before + 1);
+    // Malformed / unknown payloads: acknowledged, never appended.
+    for malformed in [
+        json!({"message":"no event name"}),
+        json!({"hook_event_name":"NotAClaudeHook","message":"x"}),
+        json!({"hook_event_name":42}),
+        json!([1, 2, 3]),
+    ] {
+        assert_eq!(
+            h.post_claude_hook(&card_id, &malformed).await,
+            200,
+            "{malformed}"
+        );
+    }
+    assert_eq!(entry.signals.last_seq(), before + 1);
+
+    // Presentation: the signal is listed with its bounded message, the
+    // connection baseline advances, and a second observation lists nothing.
+    let view = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(view["signals"]["hooks_seen"], true, "{view}");
+    assert_eq!(view["signals"]["last_seq"], before + 1);
+    assert_eq!(view["signals"]["dropped_since_previous_observation"], 0);
+    let listed = view["signals"]["since_previous_observation"]
+        .as_array()
+        .unwrap();
+    assert_eq!(listed.len(), 1, "{view}");
+    assert_eq!(listed[0]["event"], "stop");
+    assert_eq!(listed[0]["seq"], before + 1);
+    assert_eq!(listed[0]["message"], "done now");
+    assert_eq!(listed[0]["claude_session_id"], "posted-session");
+    assert!(listed[0]["received_at_ms"].as_i64().unwrap() > 0);
+    assert_eq!(view["wait"]["baseline_signal_seq"], before);
+    let again = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(again["signals"]["since_previous_observation"], json!([]));
+    assert_eq!(again["wait"]["baseline_signal_seq"], before + 1);
+
+    // Never worker state: nothing was persisted or broadcast for the card.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    while let Ok(Ok(envelope)) = tokio::time::timeout_at(deadline, bus.recv()).await {
+        assert!(
+            !matches!(
+                envelope.event,
+                Event::ClaudeHook { .. } | Event::CodexHook { .. }
+            ),
+            "a terminal hook must not be persisted as a hook event: {:?}",
+            envelope.event
+        );
+    }
+    let card = h.state.repo.card_get(&card_id).await.unwrap().unwrap();
+    assert_eq!(card.kind, "terminal");
+    h.stop(&terminal).await;
+}
+
+#[tokio::test]
+async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
+    let h = Harness::start().await;
+    let (_, terminal) = open_fake_claude(&h, "hooks-wait").await;
+    let before = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(before["signals"]["hooks_seen"], false);
+    let baseline = before["signals"]["last_seq"].as_u64().unwrap();
+
+    // Default events: user_prompt_submit is ignored, stop ends the wait.
+    let answered = submit(
+        &h,
+        &terminal,
+        "ask-1",
+        "hello",
+        json!({"wait_for":"signal","wait_ms":10000}),
+    )
+    .await;
+    assert_eq!(receipt(&answered)["outcome"], "written", "{answered}");
+    let answered = state(&answered);
+    assert_eq!(answered["wait"]["mode"], "signal");
+    assert_eq!(answered["wait"]["outcome"], "signal", "{answered}");
+    assert_eq!(answered["wait"]["signal"]["event"], "stop");
+    assert_eq!(answered["wait"]["baseline_signal_seq"], baseline);
+    assert!(answered["wait"]["signal"]["seq"].as_u64().unwrap() > baseline);
+    assert_eq!(answered["wait"]["settled"], false);
+    assert_eq!(answered["signals"]["hooks_seen"], true);
+    assert_eq!(events_of(answered), vec!["user_prompt_submit", "stop"]);
+    assert_eq!(
+        answered["signals"]["since_previous_observation"][0]["message"],
+        "hello"
+    );
+    assert_eq!(
+        answered["signals"]["since_previous_observation"][1]["claude_session_id"],
+        "fake-session"
+    );
+    assert!(has_line(answered, "TURN:1:hello"), "{answered}");
+
+    // No new signal: the budget elapses with outcome unchanged and no signal.
+    let idle = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_for":"signal","wait_ms":400}),
+        )
+        .await;
+    assert_eq!(idle["wait"]["outcome"], "unchanged", "{idle}");
+    assert_eq!(idle["wait"]["signal"], Value::Null);
+    assert!(idle["wait"]["waited_ms"].as_u64().unwrap() >= 400);
+    assert_eq!(idle["signals"]["since_previous_observation"], json!([]));
+
+    // signal_events narrows the match: user_prompt_submit alone ends it ...
+    let prompt = submit(
+        &h,
+        &terminal,
+        "ask-2",
+        "again",
+        json!({"wait_for":"signal","wait_ms":10000,"signal_events":["user_prompt_submit"]}),
+    )
+    .await;
+    assert_eq!(
+        state(&prompt)["wait"]["signal"]["event"],
+        "user_prompt_submit",
+        "{prompt}"
+    );
+    // ... and session_end never arrives: budget, while the stop is still listed.
+    let none = submit(
+        &h,
+        &terminal,
+        "ask-3",
+        "third",
+        json!({"wait_for":"signal","wait_ms":1500,"signal_events":["session_end"]}),
+    )
+    .await;
+    let none = state(&none);
+    assert_eq!(none["wait"]["outcome"], "unchanged", "{none}");
+    assert!(events_of(none).contains(&"stop".to_string()), "{none}");
+    // A permission notification carries its notification_type.
+    let perm = submit(
+        &h,
+        &terminal,
+        "ask-4",
+        "perm",
+        json!({"wait_for":"signal","wait_ms":10000}),
+    )
+    .await;
+    let perm = state(&perm);
+    assert_eq!(perm["wait"]["signal"]["event"], "notification", "{perm}");
+    assert_eq!(
+        perm["wait"]["signal"]["notification_type"],
+        "permission_prompt"
+    );
+    assert_eq!(
+        perm["wait"]["signal"]["message"],
+        "Claude needs your permission to use Bash"
+    );
+
+    // Argument validation.
+    for (args, why) in [
+        (
+            json!({"terminal_id":terminal,"wait_for":"signal","settle_ms":100}),
+            "settle_ms in signal mode",
+        ),
+        (
+            json!({"terminal_id":terminal,"wait_for":"change","signal_events":["stop"]}),
+            "signal_events outside signal mode",
+        ),
+        (
+            json!({"terminal_id":terminal,"wait_for":"signal","signal_events":[]}),
+            "empty signal_events",
+        ),
+        (
+            json!({"terminal_id":terminal,"wait_for":"signal","signal_events":["Stop"]}),
+            "unknown event name",
+        ),
+        (
+            json!({"terminal_id":terminal,"wait_for":"signal","wait_ms":20001}),
+            "budget above the limit",
+        ),
+    ] {
+        let response = h.call("calm.terminal.observe", args).await;
+        assert!(response.get("error").is_some(), "{why}: {response}");
+    }
+    h.stop(&terminal).await;
+}
+
+#[tokio::test]
+async fn readback_signal_baseline_is_read_before_the_physical_write() {
+    let h = Harness::start().await;
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":COUNT_PROBE,"request_id":"pre-write","claim":true}),
+        )
+        .await;
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    let card_id = opened["card_id"].as_str().unwrap().to_owned();
+    let ready = h.observe_text(&terminal, "READY").await;
+    assert_eq!(ready["signals"]["last_seq"], 0);
+    // A signal that lands after this connection's previous observation but
+    // BEFORE the input call must not satisfy the readback wait: the readback
+    // baseline is the seq read just before the physical write, not the
+    // previous observation.
+    assert_eq!(
+        h.post_claude_hook(&card_id, &json!({"hook_event_name":"Stop","turn":1}))
+            .await,
+        200
+    );
+    let poster = {
+        let h_card = card_id.clone();
+        let app = h.app.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            use tower::ServiceExt;
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/internal/claude/hook?card_id={h_card}"))
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "ai:claude")
+                .body(axum::body::Body::from(
+                    json!({"hook_event_name":"Stop","turn":2}).to_string(),
+                ))
+                .unwrap();
+            assert_eq!(app.oneshot(request).await.unwrap().status(), 200);
+        })
+    };
+    let written = submit(
+        &h,
+        &terminal,
+        "probe",
+        "PROBE",
+        json!({"wait_for":"signal","wait_ms":8000}),
+    )
+    .await;
+    poster.await.unwrap();
+    assert_eq!(receipt(&written)["outcome"], "written", "{written}");
+    let written = state(&written);
+    assert_eq!(written["wait"]["baseline_signal_seq"], 1, "{written}");
+    assert_eq!(written["wait"]["outcome"], "signal", "{written}");
+    assert_eq!(written["wait"]["signal"]["seq"], 2);
+    assert!(written["wait"]["waited_ms"].as_u64().unwrap() < 8000);
+    // Both signals are new relative to the previous observation on this
+    // connection, so both are listed.
+    assert_eq!(events_of(written), vec!["stop", "stop"]);
+    assert!(
+        has_line(written, "COUNT:1:PROBE"),
+        "submit must complete the line: {written}"
+    );
+    h.stop(&terminal).await;
+}
+
+#[tokio::test]
+async fn submit_writes_text_and_cr_as_one_action_and_never_repeats() {
+    let h = Harness::start().await;
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":COUNT_PROBE,"request_id":"submit","claim":true}),
+        )
+        .await;
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    h.observe_text(&terminal, "READY").await;
+    let sent = submit(
+        &h,
+        &terminal,
+        "line-1",
+        "PAYLOAD",
+        json!({"wait_for":"change","wait_ms":3000}),
+    )
+    .await;
+    assert_eq!(receipt(&sent)["outcome"], "written", "{sent}");
+    assert_eq!(receipt(&sent)["application_result"], "unverified");
+    assert!(
+        has_line(state(&sent), "COUNT:1:PAYLOAD"),
+        "one submit is one completed line: {sent}"
+    );
+    // Plain text still never submits.
+    let typed = h
+        .call(
+            "calm.terminal.input",
+            json!({"terminal_id":terminal,"request_id":"text-1","action":{"type":"text","text":"HELD"},"observe":true,"wait_ms":300}),
+        )
+        .await;
+    assert!(!has_line(state(&typed), "COUNT:2"), "{typed}");
+    let entered = submit(&h, &terminal, "line-2", "", json!({})).await;
+    assert!(
+        entered.get("error").is_some(),
+        "empty submit is invalid: {entered}"
+    );
+    let entered = h
+        .call(
+            "calm.terminal.input",
+            json!({"terminal_id":terminal,"request_id":"enter-2","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000}),
+        )
+        .await;
+    assert!(has_line(state(&entered), "COUNT:2:HELD"), "{entered}");
+    // Replaying the submit request_id never writes again.
+    let replay = submit(&h, &terminal, "line-1", "PAYLOAD", json!({"wait_ms":200})).await;
+    assert_eq!(receipt(&replay)["outcome"], "written");
+    assert!(!has_line(state(&replay), "COUNT:3"), "{replay}");
+    assert_eq!(
+        std::fs::read(h.root.path().join("physical-lines")).unwrap(),
+        b"xx",
+        "two completed lines in total"
+    );
+    for (action, why) in [
+        (json!({"type":"submit","text":"x","repeat":2}), "repeat"),
+        (json!({"type":"submit","text":"a\nb"}), "control characters"),
+        (json!({"type":"submit"}), "missing text"),
+    ] {
+        let response = h
+            .call(
+                "calm.terminal.input",
+                json!({"terminal_id":terminal,"request_id":format!("bad-{why}"),"action":action}),
+            )
+            .await;
+        assert!(response.get("error").is_some(), "{why}: {response}");
+    }
+    assert!(!has_line(
+        &h.ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_ms":200})
+        )
+        .await,
+        "COUNT:3"
+    ));
+    h.stop(&terminal).await;
+}
+
+#[tokio::test]
+async fn open_with_claim_reports_takeover_on_replay_instead_of_reclaiming() {
+    use calm_server::terminal_renderer::{ClientInputScope, ClientPumpContext, run_client_pump};
+    use calm_session::{
+        ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
+        RenderEncoding,
+    };
+    let h = Harness::start().await;
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"claimed","claim":true}),
+        )
+        .await;
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    assert_eq!(opened["role"], "owner", "{opened}");
+    assert_eq!(opened["claim"]["status"], "claimed");
+    assert_eq!(opened["claim"]["control_id"], opened["control_id"]);
+    assert!(opened["text"].is_array(), "claim readback carries text");
+    assert_eq!(opened["wait"]["mode"], "elapsed");
+    // Without claim the open stays an observer, as before.
+    let observer = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"unclaimed"}),
+        )
+        .await;
+    assert_eq!(observer["role"], "observer");
+    assert!(observer.get("claim").is_none());
+    h.state
+        .terminal_renderer
+        .drop_entry(observer["terminal_id"].as_str().unwrap())
+        .await;
+
+    // A human takes over the claimed terminal.
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    let (incoming, rx) = tokio::sync::mpsc::channel(8);
+    let (tx, mut outgoing) = tokio::sync::mpsc::channel(32);
+    let user = uuid::Uuid::new_v4();
+    let pump = tokio::spawn(run_client_pump(
+        rx,
+        tx,
+        ClientPumpContext {
+            input_barrier: entry.handle.input_barrier.clone(),
+            input_scope: ClientInputScope::InteractiveUser,
+            event_rx: entry.subscribe(),
+            event_tx: entry.handle.event_tx.clone(),
+            render_plane: entry.handle.render_plane.clone(),
+            exit: entry.exit.clone(),
+            supervisor_tx: entry.handle.supervisor_tx.clone(),
+            owner_registry: entry.handle.owner_registry.clone(),
+            session_id: entry.handle.session_id,
+            terminal_id: terminal.clone(),
+        },
+    ));
+    incoming
+        .send(ClientMsg::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            terminal_id: terminal.clone(),
+            client_id: user,
+            desired_size: PtySize {
+                cols: 80,
+                rows: 24,
+                pixel_width: None,
+                pixel_height: None,
+            },
+            cell_size: None,
+            initial_scrollback: InitialScrollback::None,
+            resume_from: None,
+            role_hint: None,
+            capabilities: ClientCapabilities {
+                render_encodings: vec![RenderEncoding::Vt],
+                supports_scrollback: true,
+                supports_sixel: false,
+                supports_images: false,
+                kernel_originated_input: false,
+            },
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        outgoing.recv().await,
+        Some(DaemonMsg::ServerHello { .. })
+    ));
+    incoming.send(ClientMsg::OwnerClaim).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if matches!(outgoing.recv().await, Some(DaemonMsg::OwnerChanged { owner_client_id: Some(id) }) if id == user) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    // The Planner's connection learns about the revocation.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let view = h
+                .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+                .await;
+            if view["role"] == "observer" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Replayed open with claim: the terminal is returned, the human keeps
+    // control, and the claim is reported unavailable with the reason.
+    let replayed = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"claimed","claim":true}),
+        )
+        .await;
+    assert_eq!(replayed["terminal_id"], terminal);
+    assert_eq!(replayed["role"], "observer", "{replayed}");
+    assert_eq!(replayed["control_id"], Value::Null);
+    assert_eq!(replayed["claim"]["status"], "unavailable", "{replayed}");
+    assert!(
+        replayed["claim"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("human takeover"),
+        "{replayed}"
+    );
+    assert_eq!(
+        entry.handle.owner_registry.lock().unwrap().current_owner(),
+        Some(user),
+        "the human still owns the terminal"
+    );
+    pump.abort();
+    let _ = pump.await;
+    h.stop(&terminal).await;
+}
+
+#[tokio::test]
+async fn hook_settings_file_is_removed_when_the_card_is_deleted() {
+    use tower::ServiceExt;
+    let h = Harness::start().await;
+    let (opened, terminal) = open_fake_claude(&h, "hooks-delete").await;
+    let card_id = opened["card_id"].as_str().unwrap().to_owned();
+    let settings_path = h
+        .state
+        .codex
+        .terminal_hook_settings_dir
+        .join(format!("{card_id}.json"));
+    assert!(settings_path.exists());
+    // A sibling file the server did not derive from this card stays.
+    let sibling = h.state.codex.terminal_hook_settings_dir.join("other.json");
+    std::fs::write(&sibling, "{}").unwrap();
+    let response = h
+        .app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/cards/{card_id}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+    assert!(
+        !settings_path.exists(),
+        "settings file must go with the card"
+    );
+    assert!(sibling.exists());
+    assert!(h.state.terminal_renderer.get(&terminal).is_none());
+    h.stop(&terminal).await;
+}
