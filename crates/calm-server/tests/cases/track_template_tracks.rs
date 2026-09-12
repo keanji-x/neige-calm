@@ -1276,7 +1276,10 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
 #[tokio::test]
 async fn create_stores_the_roster_key_as_template_id() {
     let boot = boot().await;
-    for key in [ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION] {
+    // The roster is iterated rather than listed by hand so every entry —
+    // including the task-less `investment-research` — is covered, and a new
+    // one cannot land outside this loop.
+    for key in calm_server::templates::TEMPLATES.iter().map(|t| t.key()) {
         let (status, body) = post(
             boot.app.clone(),
             "/api/tracks",

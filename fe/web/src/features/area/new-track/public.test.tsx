@@ -72,7 +72,16 @@ const INVESTIGATION: TrackTemplate = {
   title: 'Investigation',
   tasks: [{ key: 'gather-facts', goal: 'Read the code, docs and history.' }],
 };
-const TEMPLATES = [ISSUE_DEV, SMALL_CHANGE, INVESTIGATION];
+/** A task-less template: the kernel's `investment-research` pre-sets no
+    tasks, so the picker must offer it without a task hover card. */
+const INVESTMENT_RESEARCH: TrackTemplate = {
+  id: 'investment-research',
+  title: 'Investment research',
+  tasks: [],
+};
+const TEMPLATES = [ISSUE_DEV, SMALL_CHANGE, INVESTIGATION, INVESTMENT_RESEARCH];
+/** The templates that carry a task card; `INVESTMENT_RESEARCH` does not. */
+const TEMPLATES_WITH_TASKS = TEMPLATES.filter((template) => template.tasks.length > 0);
 
 function renderForm(overrides: Partial<Parameters<typeof NewTrackForm>[0]> = {}) {
   const onSubmit = vi.fn();
@@ -305,7 +314,10 @@ describe('NewTrackForm asks only what the track starts from', () => {
        it is the only entry point to writing one. With no recipes there are no
        band headings either; `recipe-picker.test.tsx` asserts that half. */
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent))
-      .toEqual(['No templateSelected', 'Issue development', 'Small change', 'Investigation', 'Manage recipes…']);
+      .toEqual([
+        'No templateSelected', 'Issue development', 'Small change', 'Investigation',
+        'Investment research', 'Manage recipes…',
+      ]);
   });
 
   /*
@@ -856,14 +868,20 @@ describe('Start from — each template says which tasks it pre-sets', () => {
     }
 
     /*
-     * One card per template, and each card is bound to *its own* option — the
-     * check that separates "the card lists the right tasks" from "every row
-     * points at the same list". Blank has no card: it has no tasks.
+     * One card per template *with tasks*, and each card is bound to *its own*
+     * option — the check that separates "the card lists the right tasks" from
+     * "every row points at the same list". Blank has no card: it has no tasks.
+     * Neither does a task-less template — its option is a plain row.
      */
     const cards = screen.getAllByRole('dialog', { hidden: true });
-    expect(cards).toHaveLength(TEMPLATES.length);
+    expect(TEMPLATES_WITH_TASKS.length).toBeLessThan(TEMPLATES.length);
+    expect(cards).toHaveLength(TEMPLATES_WITH_TASKS.length);
     for (const template of TEMPLATES) {
       const option = within(menu).getByRole('menuitem', { name: new RegExp(`^${template.title}`) });
+      if (template.tasks.length === 0) {
+        expect(option.getAttribute('aria-describedby')).toBeNull();
+        continue;
+      }
       const card = document.getElementById(option.getAttribute('aria-describedby') ?? '');
       expect(card).toBeTruthy();
       for (const task of template.tasks) expect(card?.textContent).toContain(task.key);
@@ -877,6 +895,32 @@ describe('Start from — each template says which tasks it pre-sets', () => {
     }
     expect(within(menu).getByRole('menuitem', { name: /^No template/ }).getAttribute('aria-describedby'))
       .toBeNull();
+  });
+
+  /*
+   * A template that pre-sets no tasks is still a template: it is offered and
+   * can be chosen like any other, and its row carries no task hover card —
+   * there is nothing to list, so `StartingPointPill` returns the bare item.
+   *
+   * Green when: the option is present, has no `aria-describedby`, no dialog
+   * mentions it, and choosing it lands on the trigger.
+   * Red when: a task-less template gets an (empty) card, is dropped from the
+   * menu, or cannot be selected.
+   */
+  it('offers a task-less template as a selectable option with no task list', async () => {
+    const { onSubmit } = renderForm();
+    await fillMessage();
+    const menu = await openTemplates();
+
+    const option = within(menu).getByRole('menuitem', { name: /^Investment research/ });
+    expect(option.getAttribute('aria-describedby')).toBeNull();
+    for (const card of screen.getAllByRole('dialog', { hidden: true })) {
+      expect(card.textContent).not.toContain(INVESTMENT_RESEARCH.title);
+    }
+    await userEvent.click(option);
+    expect(screen.getByRole('button', { name: 'Template: Investment research' })).toBeTruthy();
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing', template_id: 'investment-research' });
   });
 
   /*

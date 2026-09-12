@@ -217,7 +217,7 @@ struct Definition {
 ///
 /// KNOWN GAP — no automated test covers the error arm. The handler iterates
 /// the [`TEMPLATES`] static itself, so covering it would mean making one of the
-/// three roster constants fail to compile at test time: there is no seam to
+/// roster constants fail to compile at test time: there is no seam to
 /// inject an entry through, and in **safe** Rust no substitute can be built
 /// either, since every field of `Template` — `build_recipe` included — is
 /// private and a literal outside `templates.rs` is `E0451`. That safe-Rust

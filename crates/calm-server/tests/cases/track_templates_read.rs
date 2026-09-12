@@ -397,8 +397,11 @@ async fn put_is_not_routed_and_writes_nothing() {
     // Every roster key, not just one. A residual route could easily be
     // reintroduced for a subset — a `match id` that handles one template and
     // falls through for the rest is a perfectly ordinary shape — and a
-    // single-key check would call that gone.
-    for id in [ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION] {
+    // single-key check would call that gone. The roster itself is iterated,
+    // not a hand-kept list of its keys, so a new entry is covered the moment
+    // it lands and cannot be left out of this check.
+    for template in calm_server::templates::TEMPLATES.iter() {
+        let id = template.key();
         let before = db_digest(&boot.repo).await;
 
         let resp = boot
