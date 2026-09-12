@@ -59,6 +59,9 @@ pub struct Client {
     pub serial: Mutex<()>,
     pub requests: Mutex<std::collections::HashMap<String, (String, serde_json::Value)>>,
     pub last_used: Arc<StdMutex<std::time::Instant>>,
+    /// The most recent observation captured on this connection (any format,
+    /// including action readbacks): `(observation_id, model-view revision)`.
+    pub latest_observation: StdMutex<Option<(Uuid, u64)>>,
     incoming: mpsc::Sender<ClientMsg>,
     changed: watch::Receiver<u64>,
     pump: JoinHandle<anyhow::Result<()>>,
@@ -192,6 +195,7 @@ impl Client {
             serial: Mutex::new(()),
             requests: Mutex::new(std::collections::HashMap::new()),
             last_used,
+            latest_observation: StdMutex::new(None),
             incoming,
             changed,
             pump,
@@ -221,6 +225,11 @@ impl Client {
             }
         })
         .await?
+    }
+    /// Wakes on every protocol message (ownership, ack/refusal, exit) and on
+    /// disconnect; the model-view revision channel covers screen output.
+    pub fn changed(&self) -> watch::Receiver<u64> {
+        self.changed.clone()
     }
     pub async fn send(&self, message: ClientMsg) -> Result<()> {
         self.incoming.send(message).await.map_err(Into::into)

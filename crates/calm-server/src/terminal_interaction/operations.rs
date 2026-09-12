@@ -2,19 +2,23 @@ use super::*;
 use calm_terminal_view::{click_bytes, key_bytes};
 
 impl TerminalInteraction {
+    /// `observation` is the caller's argument; `None` selects this
+    /// connection's latest observation. `allow_output_since_observation`
+    /// replaces the exact-revision fence with a same-surface fence.
+    #[allow(clippy::too_many_arguments)]
     pub async fn input(
         &self,
         identity: &ToolCallIdentity,
         target: &Target,
-        observation: Uuid,
+        observation: Option<Uuid>,
         request_key: &str,
         action: Value,
-        observation_wait_ms: Option<u64>,
+        allow_output_since_observation: bool,
+        observation_wait: Option<WaitSpec>,
     ) -> Result<Value> {
-        ensure!(
-            observation_wait_ms.is_none_or(|wait| wait <= 2000),
-            "observation wait exceeds 2000ms"
-        );
+        if let Some(wait) = observation_wait {
+            wait.validate()?;
+        }
         ensure!(
             !request_key.is_empty() && request_key.len() <= 128,
             "invalid input request key"
@@ -25,9 +29,12 @@ impl TerminalInteraction {
         let client = self.client(identity, &resolved.binding).await?;
         let _serial = client.serial.lock().await;
         let key = request_key.to_owned();
-        let fingerprint = crate::routes::terminal_cards::stable_payload_hash(
-            &json!({"observation_id":observation,"action":action}),
-        )?;
+        // The fingerprint hashes the argument as given (null when omitted) so
+        // a replayed request_id returns the same receipt.
+        let fingerprint = crate::routes::terminal_cards::stable_payload_hash(&json!({
+            "observation_id":observation,"action":action,
+            "allow_output_since_observation":allow_output_since_observation
+        }))?;
         let cached = {
             let requests = client.requests.lock().await;
             if let Some((prior, result)) = requests.get(&key) {
@@ -46,10 +53,21 @@ impl TerminalInteraction {
         };
         if let Some(receipt) = cached {
             return Ok(self
-                .with_observation(identity, &client, receipt, observation_wait_ms)
+                .with_observation(identity, &client, receipt, observation_wait, None)
                 .await);
         }
-        let bytes = {
+        let observation = match observation {
+            Some(id) => id,
+            None => client
+                .latest_observation
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal client poisoned"))?
+                .map(|(id, _)| id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no observation on this connection; observe first")
+                })?,
+        };
+        let (bytes, observed_revision, input_revision) = {
             let observations = self
                 .observations
                 .lock()
@@ -73,22 +91,40 @@ impl TerminalInteraction {
                 "terminal control changed; observe before input"
             );
             ensure!(
-                saved.revision
-                    == client
-                        .entry
-                        .handle
-                        .model_view
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
-                        .capture(0)?
-                        .1,
-                "terminal changed since observation; observe again"
-            );
-            ensure!(
                 saved.surface.scroll_offset == 0,
                 "return to live viewport before input"
             );
-            encode(&action, &saved.surface)?
+            // Read immediately before the physical write: this is the readback
+            // baseline and the drift evidence.
+            let (frame, current) = client
+                .entry
+                .handle
+                .model_view
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
+                .capture(0)?;
+            let surface = if allow_output_since_observation {
+                let now = frame.input_surface();
+                ensure!(
+                    saved.surface.cols == now.cols
+                        && saved.surface.rows == now.rows
+                        && saved.surface.modes == now.modes,
+                    "terminal surface changed since observation (size or input modes); observe again"
+                );
+                now
+            } else {
+                ensure!(
+                    saved.revision == current,
+                    "terminal changed since observation; observe again"
+                );
+                saved.surface
+            };
+            (encode(&action, &surface)?, saved.revision, current)
+        };
+        let drift = if input_revision != observed_revision {
+            Some(json!({"observed_revision":observed_revision,"input_revision":input_revision}))
+        } else {
+            None
         };
         // Reserve before enqueue. Cancellation preserves Unknown and blocks all
         // subsequent writes until the matching ack/refusal is observed.
@@ -102,7 +138,14 @@ impl TerminalInteraction {
             state.pending = Some(sequence);
             sequence
         };
-        let unknown = json!({"terminal_id":terminal,"request_id":request_key,"outcome":"unknown","repeat_input":false});
+        let mut unknown = json!({"terminal_id":terminal,"request_id":request_key,"outcome":"unknown","repeat_input":false,
+            "observation_id_used":observation});
+        if let Some(drift) = &drift {
+            unknown["output_since_observation"] = json!(true);
+            unknown["observation_drift"] = drift.clone();
+        } else {
+            unknown["output_since_observation"] = json!(false);
+        }
         client
             .requests
             .lock()
@@ -127,8 +170,13 @@ impl TerminalInteraction {
             {
                 Ok(()) => {
                     let state = client.screen.lock().unwrap();
-                    json!({"terminal_id":terminal,"request_id":request_key,"outcome":if state.ack>=sequence{"written"}else{"refused"},
-                        "application_completed":false,"next":"observe the application result"})
+                    let mut receipt = json!({"terminal_id":terminal,"request_id":request_key,"outcome":if state.ack>=sequence{"written"}else{"refused"},
+                        "application_result":"unverified","next":"observe the application result",
+                        "observation_id_used":observation,"output_since_observation":drift.is_some()});
+                    if let Some(drift) = drift {
+                        receipt["observation_drift"] = drift;
+                    }
+                    receipt
                 }
                 Err(_) => unknown,
             }
@@ -139,7 +187,13 @@ impl TerminalInteraction {
             .await
             .insert(key, (fingerprint, result.clone()));
         Ok(self
-            .with_observation(identity, &client, result, observation_wait_ms)
+            .with_observation(
+                identity,
+                &client,
+                result,
+                observation_wait,
+                Some(input_revision),
+            )
             .await)
     }
 }

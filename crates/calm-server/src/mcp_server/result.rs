@@ -46,6 +46,17 @@ impl ToolResult {
         }
     }
 
+    /// One text block carrying only `summary`; the complete state lives in
+    /// `structuredContent`. For tools whose state would otherwise be delivered
+    /// twice to a model that reads the raw result verbatim.
+    pub fn structured_with_summary(value: Value, summary: String) -> Self {
+        Self {
+            content: vec![Content::Text { text: summary }],
+            structured_content: value,
+            is_error: false,
+        }
+    }
+
     /// Return captured PNG bytes as an image, with a separate textual and
     /// structured description. This checks the payload bound and signature;
     /// it is not a PNG decoder or a validator for untrusted uploaded images.
@@ -72,6 +83,23 @@ impl ToolResult {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn summary_result_carries_state_once() {
+        let result = ToolResult::structured_with_summary(
+            json!({"text":["SECRET_SCREEN"],"n":1}),
+            "one line".into(),
+        );
+        let wire = serde_json::to_value(&result).unwrap();
+        assert_eq!(wire["content"], json!([{"type":"text","text":"one line"}]));
+        assert_eq!(wire["structuredContent"]["n"], 1);
+        assert!(!wire["content"].to_string().contains("SECRET_SCREEN"));
+        assert_eq!(
+            serde_json::to_value(ToolResult::structured(json!({"n":1}))).unwrap()["content"][0]["text"],
+            "{\"n\":1}",
+            "other tools keep the JSON text projection"
+        );
+    }
 
     #[test]
     fn tool_png_rejects_wrong_signature_and_oversized_payload() {

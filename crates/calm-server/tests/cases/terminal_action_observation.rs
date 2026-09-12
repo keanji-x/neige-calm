@@ -81,7 +81,7 @@ async fn terminal_actions_return_fresh_text_observations() {
     )
     .await;
     assert_eq!(receipt(&entered)["outcome"], "written");
-    assert_eq!(receipt(&entered)["application_completed"], false);
+    assert_eq!(receipt(&entered)["application_result"], "unverified");
     let after = observation(&entered);
     assert!(
         has_line(after, "ACTION_OBSERVED"),
@@ -211,7 +211,7 @@ async fn failed_readback_preserves_written_receipt_and_replay() {
         result["outcome"], "written",
         "readback failure must retain the physical write receipt"
     );
-    assert_eq!(result["application_completed"], false);
+    assert_eq!(result["application_result"], "unverified");
     assert_eq!(result["observation"]["status"], "unavailable");
     assert!(
         result["observation"]["reason"]
@@ -285,7 +285,9 @@ async fn invalid_action_readback_options_fail_before_side_effects() {
     let terminal = open(&h).await;
     let entry = h.state.terminal_renderer.get(&terminal).unwrap();
     for options in [
-        json!({"observe":true,"wait_ms":2001}),
+        json!({"observe":true,"wait_ms":20001}),
+        json!({"observe":true,"settle_ms":10}),
+        json!({"observe":true,"wait_for":"change","settle_ms":2001}),
         json!({"wait_ms":0}),
         json!({"observe":false,"wait_ms":1}),
         json!({"observe":true,"wait_ms":-1}),
@@ -309,7 +311,9 @@ async fn invalid_action_readback_options_fail_before_side_effects() {
     }
     let claimed = claim(&h, &terminal).await;
     for options in [
-        json!({"observe":true,"wait_ms":2001}),
+        json!({"observe":true,"wait_ms":20001}),
+        json!({"observe":true,"settle_ms":10}),
+        json!({"observe":true,"wait_for":"change","settle_ms":2001}),
         json!({"wait_ms":0}),
         json!({"observe":false,"wait_ms":1}),
     ] {

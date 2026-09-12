@@ -7,15 +7,13 @@ impl TerminalInteraction {
         identity: &ToolCallIdentity,
         client: &Arc<Client>,
         mut receipt: Value,
-        wait_ms: Option<u64>,
+        wait: Option<WaitSpec>,
+        baseline: Option<u64>,
     ) -> Value {
-        let Some(wait_ms) = wait_ms else {
+        let Some(wait) = wait else {
             return receipt;
         };
         let captured = async {
-            if wait_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-            }
             // Re-read task/control state, but pin the physical client and its
             // complete execution binding to the action that already ran.
             let resolved = Self::resolve_target(
@@ -34,8 +32,16 @@ impl TerminalInteraction {
                     .is_some_and(|entry| Arc::ptr_eq(&entry, &client.entry)),
                 "action terminal generation changed before observation"
             );
-            self.capture(identity, resolved, client, 0, 0, ObservationFormat::Text)
-                .await
+            self.capture(
+                identity,
+                resolved,
+                client,
+                0,
+                wait,
+                baseline,
+                ObservationFormat::Text,
+            )
+            .await
         }
         .await;
         receipt["observation"] = match captured {
