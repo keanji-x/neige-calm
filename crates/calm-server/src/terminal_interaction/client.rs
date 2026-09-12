@@ -22,6 +22,10 @@ pub struct LatestObservation {
     pub id: Uuid,
     pub revision: u64,
     pub scroll_offset: usize,
+    /// #1620 — the signal ring's `last_seq` when it was captured: the
+    /// per-connection baseline for `signals.since_previous_observation` and
+    /// for an observe `wait_for=signal`.
+    pub last_seq: u64,
 }
 
 pub struct ScreenState {

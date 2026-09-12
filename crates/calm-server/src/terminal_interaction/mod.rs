@@ -25,7 +25,21 @@ pub(crate) use target::Binding;
 pub use target::Target;
 #[cfg(test)]
 pub(crate) use target::TaskBinding;
-pub use wait::{SETTLE_MS_DEFAULT, SETTLE_MS_MAX, WAIT_MS_MAX, WaitFor, WaitPlan};
+pub use wait::{
+    SETTLE_MS_DEFAULT, SETTLE_MS_MAX, SIGNAL_WAIT_MS_DEFAULT, WAIT_MS_MAX, WaitFor, WaitPlan,
+};
+
+/// Baseline an action readback compares against: the projection revision and
+/// the signal seq read immediately before the physical action (#1618/#1620).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReadbackBaseline {
+    pub revision: u64,
+    pub signal_seq: u64,
+}
+
+/// Signals listed on one observation (the most recent ones since the
+/// previous observation on the connection; the rest are counted as dropped).
+pub const SIGNALS_PER_OBSERVATION: usize = 20;
 
 pub struct TerminalInteraction {
     repo: Arc<dyn RouteRepo>,
@@ -173,9 +187,9 @@ impl TerminalInteraction {
         self.capture(identity, resolved, &client, offset, wait, None, format)
             .await
     }
-    /// `baseline` is the revision a change wait compares against; `None`
-    /// means this connection's previous observation (or the revision at call
-    /// start when there is none).
+    /// `baseline` is the revision (and signal seq) a change or signal wait
+    /// compares against; `None` means this connection's previous observation
+    /// (or the state at call start when there is none).
     #[allow(clippy::too_many_arguments)]
     async fn capture(
         &self,
@@ -184,7 +198,7 @@ impl TerminalInteraction {
         client: &Client,
         offset: usize,
         wait: WaitPlan,
-        baseline: Option<u64>,
+        baseline: Option<ReadbackBaseline>,
         format: ObservationFormat,
     ) -> Result<(Value, Option<Vec<u8>>)> {
         let terminal = resolved.binding.terminal_id.clone();
@@ -192,10 +206,10 @@ impl TerminalInteraction {
             .latest_observation
             .lock()
             .map_err(|_| anyhow::anyhow!("terminal client poisoned"))?;
-        let baseline = match (baseline, previous) {
-            (Some(revision), _) => revision,
-            (None, Some(previous)) => previous.revision,
-            (None, None) => {
+        let (baseline, signal_baseline) = match (baseline, previous) {
+            (Some(baseline), _) => (baseline.revision, baseline.signal_seq),
+            (None, Some(previous)) => (previous.revision, previous.last_seq),
+            (None, None) => (
                 client
                     .entry
                     .handle
@@ -203,10 +217,11 @@ impl TerminalInteraction {
                     .lock()
                     .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
                     .capture(0)?
-                    .1
-            }
+                    .1,
+                client.entry.signals.last_seq(),
+            ),
         };
-        let waited = wait::wait(client, wait, baseline).await;
+        let waited = wait::wait(client, &wait, baseline, signal_baseline).await;
         // The wait may span a task completion or an authority change, so the
         // task status and controllability in the result are re-read after
         // waiting; the binding they belong to must still be the one the wait
@@ -234,13 +249,26 @@ impl TerminalInteraction {
             Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let observation_id = Uuid::new_v4();
         let changed_since_previous = previous.is_some_and(|prior| prior.revision != revision);
+        // #1620 — the listed signals and the recorded `last_seq` come from one
+        // ring read, so advancing this connection's baseline to `last_seq`
+        // cannot skip a signal that was never listed. Untrusted telemetry:
+        // presentation only, no fence reads it.
+        let signals = client.entry.signals.since(
+            previous
+                .map(|prior| prior.last_seq)
+                .unwrap_or(signal_baseline),
+            SIGNALS_PER_OBSERVATION,
+        );
         let mut metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
             "terminal_session_id":client.entry.handle.session_id,"control_id":control,"role":if control.is_some(){"owner"}else{"observer"},
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
             "text":frame.text,"exited":exited,"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
-            "previous_observation_revision":previous.map(|prior| prior.revision.to_string())});
+            "previous_observation_revision":previous.map(|prior| prior.revision.to_string()),
+            "signals":{"hooks_seen":signals.last_seq > 0,"last_seq":signals.last_seq,
+                "since_previous_observation":signals.signals.iter().map(|signal| signal.to_json()).collect::<Vec<_>>(),
+                "dropped_since_previous_observation":signals.dropped}});
         if png.is_some() {
             metadata["image_source"] = json!("rmux_client_projection");
         }
@@ -271,8 +299,46 @@ impl TerminalInteraction {
             id: observation_id,
             revision,
             scroll_offset: frame.scroll_offset,
+            last_seq: signals.last_seq,
         });
         Ok((metadata, png))
+    }
+    /// #1620 `open claim:true`: claim control right after creation and return
+    /// the claim receipt with its readback. Unlike an explicit
+    /// `control claim`, an open never revokes a holder: on a fresh terminal
+    /// nobody holds control, so this only matters for a replayed open (same
+    /// request_id) after a human takeover, which is reported as unavailable
+    /// instead of being taken back silently. Control already held by this
+    /// connection returns the current observation without a second claim.
+    pub async fn claim_after_open(
+        &self,
+        identity: &ToolCallIdentity,
+        target: &Target,
+        readback: WaitPlan,
+    ) -> Result<Value> {
+        readback.validate()?;
+        let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        let client = self.client(identity, &resolved.binding).await?;
+        let (owner, control) = {
+            let state = client
+                .screen
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
+            (state.owner, state.control)
+        };
+        if control.is_some() {
+            let receipt = json!({"terminal_id":resolved.binding.terminal_id,"connection_id":client.connection,"control_id":control});
+            return Ok(self
+                .with_observation(identity, &client, receipt, Some(readback), None)
+                .await);
+        }
+        ensure!(
+            owner.is_none(),
+            "terminal control is held by another client since this terminal was opened (human takeover); open does not reclaim it, claim deliberately with calm.terminal.control"
+        );
+        drop(client);
+        self.control(identity, target, "claim", Some(readback))
+            .await
     }
     pub async fn control(
         &self,
@@ -281,7 +347,7 @@ impl TerminalInteraction {
         action: &str,
         observation_wait: Option<WaitPlan>,
     ) -> Result<Value> {
-        if let Some(wait) = observation_wait {
+        if let Some(wait) = &observation_wait {
             wait.validate()?;
         }
         ensure!(
@@ -331,8 +397,9 @@ impl TerminalInteraction {
         .await?;
         let client = self.client(identity, &resolved.binding).await?;
         let _serial = client.serial.lock().await;
-        // Readback change waits compare against the screen as it was when the
-        // control action started.
+        // Readback change/signal waits compare against the screen and the
+        // signal seq as they were when the control action started.
+        let signal_seq = client.entry.signals.last_seq();
         let baseline = client
             .entry
             .handle
@@ -340,7 +407,10 @@ impl TerminalInteraction {
             .lock()
             .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
             .capture(0)
-            .map(|(_, revision)| revision)
+            .map(|(_, revision)| ReadbackBaseline {
+                revision,
+                signal_seq,
+            })
             .ok();
         match action {
             "claim" => {

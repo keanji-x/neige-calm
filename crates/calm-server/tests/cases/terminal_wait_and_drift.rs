@@ -168,7 +168,7 @@ async fn observe_change_wait_on_quiet_shell_reports_unchanged_at_budget() {
         .await;
     assert_eq!(
         settled["wait"],
-        json!({"mode":"elapsed","outcome":"elapsed","waited_ms":200,"settled":false,
+        json!({"mode":"elapsed","outcome":"elapsed","waited_ms":200,"settled":false,"baseline_signal_seq":0,
             "baseline_revision":settled["previous_observation_revision"]})
     );
     // open captured this connection's first observation, so the baseline is a
@@ -616,7 +616,7 @@ async fn omitted_wait_ms_in_change_mode_waits_for_a_late_reply() {
         .await;
     assert_eq!(
         immediate["wait"],
-        json!({"mode":"elapsed","outcome":"elapsed","waited_ms":0,"settled":false,
+        json!({"mode":"elapsed","outcome":"elapsed","waited_ms":0,"settled":false,"baseline_signal_seq":0,
             "baseline_revision":view["observation_revision"]})
     );
     assert_eq!(

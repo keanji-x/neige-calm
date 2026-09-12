@@ -50,13 +50,21 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
                 "wait_ms",
                 "wait_for",
                 "settle_ms",
+                "signal_events",
                 "format",
             ],
             vec![],
         ),
         (
             "control",
-            vec!["action", "observe", "wait_ms", "wait_for", "settle_ms"],
+            vec![
+                "action",
+                "observe",
+                "wait_ms",
+                "wait_for",
+                "settle_ms",
+                "signal_events",
+            ],
             vec!["action"],
         ),
         (
@@ -69,6 +77,7 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
                 "wait_ms",
                 "wait_for",
                 "settle_ms",
+                "signal_events",
                 "allow_output_since_observation",
             ],
             vec!["request_id", "action"],
@@ -137,17 +146,28 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
             assert_eq!(
                 schema["properties"]["wait_ms"],
                 json!({"type":"integer","minimum":0,"maximum":20000,
-                    "description":"Omitted: 0 for wait_for=elapsed, 2000 for wait_for=change"}),
+                    "description":"Omitted: elapsed 0, change 2000, signal 15000"}),
                 "{name}"
             );
             assert!(
                 descriptor.description.contains("2000 for")
-                    && descriptor.description.contains("change"),
-                "{name}: tool description states the change-mode default budget"
+                    && descriptor.description.contains("change")
+                    && descriptor.description.contains("15000")
+                    && descriptor.description.contains("signal"),
+                "{name}: tool description states the change and signal default budgets"
             );
             assert_eq!(
                 schema["properties"]["wait_for"],
-                json!({"type":"string","enum":["elapsed","change"],"default":"elapsed"}),
+                json!({"type":"string","enum":["elapsed","change","signal"],"default":"elapsed"}),
+                "{name}"
+            );
+            // #1620 signal events: signal mode only. The vocabulary is
+            // validated server-side and stated in the descriptions; an enum
+            // in every arm would push the input schema over the 4000-byte
+            // compaction threshold.
+            assert_eq!(
+                schema["properties"]["signal_events"],
+                json!({"type":"array","minItems":1,"items":{"type":"string"}}),
                 "{name}"
             );
             assert_eq!(
@@ -172,11 +192,26 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
     );
     let control = description("calm.terminal.control");
     assert!(control.contains("text_omitted") && control.contains("500 ms"));
+    // #1620: open claims in one call, submit is one write, signals are untrusted.
+    let open = description("calm.terminal.open");
+    assert!(open.contains("claim=true") && open.contains("NEIGE_CLAUDE_SETTINGS"));
+    assert!(observe.contains("hooks_seen") && observe.contains("forge"));
+    let open_schema = &descriptors
+        .iter()
+        .find(|descriptor| descriptor.name == "calm.terminal.open")
+        .unwrap()
+        .input_schema;
+    assert_eq!(
+        open_schema["properties"]["claim"],
+        json!({"type":"boolean","default":false})
+    );
     let input_description = description("calm.terminal.input");
     assert!(
         input_description.contains("stale_observation")
             && input_description.contains("never for menu selection or clicks")
             && input_description.contains("Omit observation_id")
+            && input_description.contains("\"type\":\"submit\"")
+            && input_description.contains("repeat is not allowed")
     );
     let input = &descriptors
         .iter()
@@ -205,29 +240,37 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
         );
         let actions = arm["properties"]["action"]["anyOf"].as_array().unwrap();
         assert_eq!(actions.len(), 3);
+        // #1620: `submit` shares the text arm (same fields, same limits) as a
+        // two-value discriminator instead of a fourth arm, keeping the schema
+        // under the compaction threshold.
         for (action, kind, properties, mandatory) in [
             (
                 &actions[0],
-                "text",
+                json!(["text", "submit"]),
                 vec!["type", "text"],
                 vec!["type", "text"],
             ),
             (
                 &actions[1],
-                "key",
+                json!("key"),
                 vec!["type", "key", "repeat"],
                 vec!["type", "key"],
             ),
             (
                 &actions[2],
-                "click",
+                json!("click"),
                 vec!["type", "column", "row"],
                 vec!["type", "column", "row"],
             ),
         ] {
             assert_eq!(action["type"], "object");
             assert_eq!(action["additionalProperties"], false);
-            assert_eq!(action["properties"]["type"], json!({"const":kind}));
+            match &kind {
+                Value::Array(values) => {
+                    assert_eq!(action["properties"]["type"], json!({"enum":values}))
+                }
+                other => assert_eq!(action["properties"]["type"], json!({"const":other})),
+            }
             assert_eq!(
                 action["properties"]
                     .as_object()
