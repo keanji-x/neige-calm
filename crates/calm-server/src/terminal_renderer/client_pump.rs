@@ -12,6 +12,24 @@ use super::{
 };
 use crate::terminal_renderer::snapshot::{rebuild_server_hello_snapshot, scrollback_request};
 
+/// Kernel-internal commands a Planner client issues next to the wire
+/// protocol (#1620). Never decoded from a socket: browser connections have no
+/// command channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PumpCommand {
+    /// Claim control only if no OTHER client currently holds it, decided
+    /// under the owner-registry lock in the same pass that would apply an
+    /// ordinary `OwnerClaim` (same grant barrier, same scope check, same
+    /// effects). When another client owns the terminal nothing changes and
+    /// the client receives `ProtocolError { code: NotOwner, message:
+    /// CONTROL_HELD_BY_ANOTHER_CLIENT }`.
+    ClaimIfUnowned,
+}
+
+/// Reason carried by the `NotOwner` protocol error a refused
+/// [`PumpCommand::ClaimIfUnowned`] produces.
+pub const CONTROL_HELD_BY_ANOTHER_CLIENT: &str = "terminal is controlled by another client";
+
 pub struct ClientPumpContext {
     pub input_barrier: std::sync::Arc<InputBarrier>,
     pub input_scope: ClientInputScope,
@@ -54,7 +72,31 @@ impl Drop for ClientLifetime {
 }
 
 pub async fn run_client_pump(
+    incoming_rx: mpsc::Receiver<ClientMsg>,
+    outgoing_tx: mpsc::Sender<DaemonMsg>,
+    ctx: ClientPumpContext,
+) -> anyhow::Result<()> {
+    run_client_pump_with_commands(incoming_rx, None, outgoing_tx, ctx).await
+}
+
+/// The next kernel-internal command, or a future that never completes once
+/// the command channel is absent or closed.
+async fn next_command(commands: &mut Option<mpsc::Receiver<PumpCommand>>) -> PumpCommand {
+    loop {
+        match commands.as_mut() {
+            Some(rx) => match rx.recv().await {
+                Some(command) => return command,
+                None => *commands = None,
+            },
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// [`run_client_pump`] with an optional [`PumpCommand`] channel (#1620).
+pub async fn run_client_pump_with_commands(
     mut incoming_rx: mpsc::Receiver<ClientMsg>,
+    mut commands: Option<mpsc::Receiver<PumpCommand>>,
     outgoing_tx: mpsc::Sender<DaemonMsg>,
     ctx: ClientPumpContext,
 ) -> anyhow::Result<()> {
@@ -240,8 +282,17 @@ pub async fn run_client_pump(
 
     connection.downstream = Some(down_task.abort_handle());
     loop {
-        let Some(msg) = incoming_rx.recv().await else {
-            break;
+        // `only_if_unowned` marks a claim that must not displace another
+        // client's control (#1620 open+claim); an ordinary `OwnerClaim` keeps
+        // its deliberate-takeover semantics.
+        let (msg, only_if_unowned) = tokio::select! {
+            msg = incoming_rx.recv() => match msg {
+                Some(msg) => (msg, false),
+                None => break,
+            },
+            command = next_command(&mut commands) => match command {
+                PumpCommand::ClaimIfUnowned => (ClientMsg::OwnerClaim, true),
+            },
         };
         let grant = if matches!(msg, ClientMsg::OwnerClaim) {
             match input_barrier.grant().await {
@@ -272,9 +323,23 @@ pub async fn run_client_pump(
                 current_default_fg: guard.default_fg(),
                 current_default_bg: guard.default_bg(),
             };
-            let effects = connection
-                .state
-                .on_client_frame(msg, guard.transcript(), &mut reg, &ctx);
+            let held_by_another = only_if_unowned
+                && reg
+                    .current_owner()
+                    .is_some_and(|owner| Some(owner) != connection.state.client_id());
+            let effects = if held_by_another {
+                // Decided under the registry lock: the holder keeps control
+                // and the registry is untouched.
+                vec![Effect::SendProtocolError {
+                    code: calm_session::ProtocolErrorCode::NotOwner,
+                    message: CONTROL_HELD_BY_ANOTHER_CLIENT.into(),
+                    expected_version: None,
+                }]
+            } else {
+                connection
+                    .state
+                    .on_client_frame(msg, guard.transcript(), &mut reg, &ctx)
+            };
             let authority = WriteAuthority::Connection {
                 permission: connection.state.input_permission(),
                 registry: owner_registry.clone(),

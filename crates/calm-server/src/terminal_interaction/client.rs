@@ -1,5 +1,5 @@
 use crate::terminal_renderer::{
-    ClientInputScope, ClientPumpContext, RendererEntry, run_client_pump,
+    ClientInputScope, ClientPumpContext, PumpCommand, RendererEntry, run_client_pump_with_commands,
 };
 use anyhow::{Result, ensure};
 use calm_session::{
@@ -36,6 +36,11 @@ pub struct ScreenState {
     pub ack: u64,
     pub refused: u64,
     pub pending: Option<u64>,
+    /// Protocol errors received on this connection and the last one's
+    /// message: how a refused claim-if-unowned (#1620) is told apart from a
+    /// claim that is still in flight.
+    pub protocol_errors: u64,
+    pub last_protocol_error: Option<String>,
 }
 impl ScreenState {
     fn apply(&mut self, message: DaemonMsg, id: Uuid) -> Result<()> {
@@ -52,10 +57,12 @@ impl ScreenState {
                 self.ack = input_seq;
                 self.pending = None;
             }
-            DaemonMsg::ProtocolError { .. } => {
+            DaemonMsg::ProtocolError { message, .. } => {
                 if let Some(pending) = self.pending.take() {
                     self.refused = pending;
                 }
+                self.protocol_errors = self.protocol_errors.wrapping_add(1);
+                self.last_protocol_error = Some(message);
             }
 
             DaemonMsg::TerminalExited { .. } => self.exited = true,
@@ -79,6 +86,7 @@ pub struct Client {
     pub last_used: Arc<StdMutex<std::time::Instant>>,
     pub latest_observation: StdMutex<Option<LatestObservation>>,
     incoming: mpsc::Sender<ClientMsg>,
+    commands: mpsc::Sender<PumpCommand>,
     changed: watch::Receiver<u64>,
     pump: JoinHandle<anyhow::Result<()>>,
     reader: JoinHandle<()>,
@@ -109,9 +117,11 @@ impl Client {
             .map_err(|_| anyhow::anyhow!("terminal renderer poisoned"))?
             .current_size();
         let (incoming, incoming_rx) = mpsc::channel(8);
+        let (commands, commands_rx) = mpsc::channel(1);
         let (outgoing_tx, mut outgoing) = mpsc::channel(128);
-        let pump = tokio::spawn(run_client_pump(
+        let pump = tokio::spawn(run_client_pump_with_commands(
             incoming_rx,
+            Some(commands_rx),
             outgoing_tx,
             ClientPumpContext {
                 input_barrier: entry.handle.input_barrier.clone(),
@@ -177,6 +187,8 @@ impl Client {
             ack: 0,
             refused: 0,
             pending: None,
+            protocol_errors: 0,
+            last_protocol_error: None,
         };
         let screen = Arc::new(StdMutex::new(state));
         let (notify, changed) = watch::channel(0u64);
@@ -220,6 +232,7 @@ impl Client {
             last_used,
             latest_observation: StdMutex::new(None),
             incoming,
+            commands,
             changed,
             pump,
             reader,
@@ -265,5 +278,14 @@ impl Client {
     }
     pub async fn send(&self, message: ClientMsg) -> Result<()> {
         self.incoming.send(message).await.map_err(Into::into)
+    }
+    /// #1620 — ask the pump to claim control only if no other client holds
+    /// it (decided under the owner-registry lock). The outcome arrives as an
+    /// `OwnerChanged` naming this client or as a protocol error.
+    pub async fn claim_if_unowned(&self) -> Result<()> {
+        self.commands
+            .send(PumpCommand::ClaimIfUnowned)
+            .await
+            .map_err(Into::into)
     }
 }

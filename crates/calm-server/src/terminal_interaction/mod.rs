@@ -2,7 +2,9 @@
 use crate::db::RouteRepo;
 use crate::mcp_server::registry::ToolCallIdentity;
 use crate::model::CardRole;
-use crate::terminal_renderer::{ClientInputScope, TerminalRendererRegistry};
+use crate::terminal_renderer::{
+    CONTROL_HELD_BY_ANOTHER_CLIENT, ClientInputScope, TerminalRendererRegistry,
+};
 use anyhow::{Result, ensure};
 use calm_session::ClientMsg;
 use calm_terminal_view::{InputSurface, Rasterizer};
@@ -41,12 +43,19 @@ pub(crate) struct ReadbackBaseline {
 /// previous observation on the connection; the rest are counted as dropped).
 pub const SIGNALS_PER_OBSERVATION: usize = 20;
 
+/// Test seam run inside the open+claim window (#1620), given the terminal id.
+#[cfg(feature = "fixtures")]
+pub type ClaimWindowSeam =
+    Box<dyn FnOnce(String) -> futures::future::BoxFuture<'static, ()> + Send>;
+
 pub struct TerminalInteraction {
     repo: Arc<dyn RouteRepo>,
     renderer: Arc<TerminalRendererRegistry>,
     clients: Mutex<HashMap<String, Arc<Client>>>,
     raster: OnceCell<Arc<Rasterizer>>,
     observations: StdMutex<HashMap<Uuid, Observation>>,
+    #[cfg(feature = "fixtures")]
+    claim_window_seam: StdMutex<Option<ClaimWindowSeam>>,
 }
 struct Observation {
     binding: String,
@@ -64,6 +73,8 @@ impl TerminalInteraction {
             clients: Mutex::new(HashMap::new()),
             raster: OnceCell::new(),
             observations: StdMutex::new(HashMap::new()),
+            #[cfg(feature = "fixtures")]
+            claim_window_seam: StdMutex::new(None),
         }
     }
     pub async fn authorize(repo: &dyn RouteRepo, identity: &ToolCallIdentity) -> Result<String> {
@@ -305,11 +316,15 @@ impl TerminalInteraction {
     }
     /// #1620 `open claim:true`: claim control right after creation and return
     /// the claim receipt with its readback. Unlike an explicit
-    /// `control claim`, an open never revokes a holder: on a fresh terminal
-    /// nobody holds control, so this only matters for a replayed open (same
-    /// request_id) after a human takeover, which is reported as unavailable
-    /// instead of being taken back silently. Control already held by this
-    /// connection returns the current observation without a second claim.
+    /// `control claim`, an open never revokes a holder: the claim is applied
+    /// by the client pump only if no other client owns the terminal, decided
+    /// under the owner-registry lock (never from this connection's cached
+    /// owner, which lags the registry by the `OwnerChanged` delivery). A
+    /// human who claimed between the create and this call keeps control and
+    /// the claim fails with [`CONTROL_HELD_BY_ANOTHER_CLIENT`]; the same
+    /// holds for a replayed open (same request_id) after a human takeover.
+    /// Control already held by this connection returns the current
+    /// observation without a second claim.
     pub async fn claim_after_open(
         &self,
         identity: &ToolCallIdentity,
@@ -318,27 +333,90 @@ impl TerminalInteraction {
     ) -> Result<Value> {
         readback.validate()?;
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
         let client = self.client(identity, &resolved.binding).await?;
-        let (owner, control) = {
+        let terminal = resolved.binding.terminal_id.as_str();
+        let _serial = client.serial.lock().await;
+        let (control, errors_before) = {
             let state = client
                 .screen
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
-            (state.owner, state.control)
+            (state.control, state.protocol_errors)
         };
         if control.is_some() {
-            let receipt = json!({"terminal_id":resolved.binding.terminal_id,"connection_id":client.connection,"control_id":control});
+            let receipt = json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":control});
             return Ok(self
                 .with_observation(identity, &client, receipt, Some(readback), None)
                 .await);
         }
-        ensure!(
-            owner.is_none(),
-            "terminal control is held by another client since this terminal was opened (human takeover); open does not reclaim it, claim deliberately with calm.terminal.control"
-        );
-        drop(client);
-        self.control(identity, target, "claim", Some(readback))
-            .await
+        #[cfg(feature = "fixtures")]
+        self.run_claim_window_seam(terminal).await;
+        // Readback waits compare against the screen and the signal seq as
+        // they were when the claim started (same as `control`).
+        let signal_seq = client.entry.signals.last_seq();
+        let baseline = client
+            .entry
+            .handle
+            .model_view
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
+            .capture(0)
+            .map(|(_, revision)| ReadbackBaseline {
+                revision,
+                signal_seq,
+            })
+            .ok();
+        client.claim_if_unowned().await?;
+        client
+            .wait(
+                |state| {
+                    (state.owner == Some(client.id) && state.control != control)
+                        || state.protocol_errors != errors_before
+                },
+                Duration::from_secs(7),
+            )
+            .await?;
+        let receipt = {
+            let state = client
+                .screen
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
+            if state.owner != Some(client.id) || state.control == control {
+                let reason = state
+                    .last_protocol_error
+                    .clone()
+                    .unwrap_or_else(|| CONTROL_HELD_BY_ANOTHER_CLIENT.to_owned());
+                anyhow::bail!("{reason}");
+            }
+            json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":state.control})
+        };
+        Ok(self
+            .with_observation(identity, &client, receipt, Some(readback), baseline)
+            .await)
+    }
+    /// Test seam (#1620): runs between the cached-owner read and the atomic
+    /// claim of the next [`Self::claim_after_open`] (the terminal id is not
+    /// known before the open), so a test can let a human claim inside exactly
+    /// that window. Consumed once.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn set_claim_window_seam(&self, seam: ClaimWindowSeam) {
+        *self
+            .claim_window_seam
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(seam);
+    }
+    #[cfg(feature = "fixtures")]
+    async fn run_claim_window_seam(&self, terminal_id: &str) {
+        let seam = self
+            .claim_window_seam
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(seam) = seam {
+            seam(terminal_id.to_owned()).await;
+        }
     }
     pub async fn control(
         &self,

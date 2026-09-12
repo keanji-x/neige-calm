@@ -33,7 +33,10 @@ pub mod signals;
 mod snapshot;
 pub use signals::{IncomingSignal, SIGNAL_MESSAGE_MAX_CHARS, Signal, SignalRing, SignalsSince};
 
-pub use client_pump::{ClientPumpContext, run_client_pump};
+pub use client_pump::{
+    CONTROL_HELD_BY_ANOTHER_CLIENT, ClientPumpContext, PumpCommand, run_client_pump,
+    run_client_pump_with_commands,
+};
 
 pub type SharedRenderPlane = Arc<StdMutex<RenderPlane>>;
 pub type SharedOwnerRegistry = Arc<StdMutex<OwnerRegistry>>;
