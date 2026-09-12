@@ -189,12 +189,15 @@ impl TerminalInteraction {
             card_kind: card.kind,
         })
     }
+    /// Re-resolve `expected.terminal_id` and return the current resolution
+    /// after proving its execution binding is still `expected`; callers that
+    /// emit task status or controllability read them from this result.
     pub(super) async fn check_binding(
         repo: &dyn RouteRepo,
         identity: &ToolCallIdentity,
         expected: &Binding,
         write: bool,
-    ) -> Result<()> {
+    ) -> Result<Resolved> {
         let current = Self::resolve_target(
             repo,
             identity,
@@ -209,7 +212,7 @@ impl TerminalInteraction {
             !write || current.controllable,
             "task or worker session is not running; terminal control refused"
         );
-        Ok(())
+        Ok(current)
     }
     pub async fn resolve(&self, identity: &ToolCallIdentity, target: &Target) -> Result<Value> {
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;

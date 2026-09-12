@@ -8,6 +8,8 @@ mod terminal_card_endpoint;
 mod terminal_lifecycle;
 #[path = "cases/terminal_sweeper.rs"]
 mod terminal_sweeper;
+#[path = "cases/terminal_wait_and_drift.rs"]
+mod terminal_wait_and_drift;
 #[path = "cases/theme_required.rs"]
 mod theme_required;
 #[path = "cases/ws_events.rs"]

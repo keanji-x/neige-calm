@@ -31,7 +31,7 @@ class CollectorTests(unittest.TestCase):
             call["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Enter"}
             call["params"]["item"]["result"] = {"structuredContent": {
                 "terminal_id": "t1", "request_id": f"request-{identifier}", "outcome": "written",
-                "application_completed": False, "observation": observation}}
+                "application_result": "unverified", "observation": observation}}
             calls.append(call)
         result = ux.metrics(calls)
         self.assertEqual(result["readback_available"], 1)
@@ -74,7 +74,7 @@ class CollectorTests(unittest.TestCase):
         for tool, action, receipt in (
                 ("calm.terminal.control", "claim", {"terminal_id": "t1", "connection_id": "c1", "control_id": "owner1"}),
                 ("calm.terminal.input", {"type": "key", "key": "Enter"},
-                 {"terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_completed": False}),
+                 {"terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_result": "unverified"}),
                 ("calm.terminal.input", {"type": "key", "key": "Enter"},
                  {"terminal_id": "t1", "request_id": "r1", "outcome": "unknown", "repeat_input": False})):
             observed = row(1, tool)
@@ -92,7 +92,7 @@ class CollectorTests(unittest.TestCase):
     def test_unavailable_readback_preserves_written_receipt_without_inventing_view(self):
         written = row(2, "calm.terminal.input")
         written["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Enter"}
-        receipt = {"terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_completed": False,
+        receipt = {"terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_result": "unverified",
                    "observation": {"status": "unavailable", "reason": "connection lost after write"}}
         written["params"]["item"]["result"] = {"structuredContent": receipt}
         original = copy.deepcopy(written)
@@ -164,10 +164,13 @@ class CollectorTests(unittest.TestCase):
 
     def test_real_control_actions_and_result_shapes_remain_collectable(self):
         # terminal_interaction::control: action is a string; detach returns
-        # {detached:true}, while claim/release return connection/control IDs.
+        # the #1618 identity receipt (older servers: {detached:true}), while
+        # claim/release return connection/control IDs.
         for action, result in (("claim", {"terminal_id": "t1", "connection_id": "c1", "control_id": "owner1"}),
                                ("release", {"terminal_id": "t1", "connection_id": "c1", "control_id": None}),
-                               ("detach", {"detached": True})):
+                               ("detach", {"detached": True}),
+                               ("detach", {"detached": True, "had_client": True, "terminal_id": "t1",
+                                           "connection_id": "c1", "terminal_session_id": "pty1"})):
             control = row(2, "calm.terminal.control")
             control["params"]["item"]["arguments"]["action"] = action
             control["params"]["item"]["result"] = {"structuredContent": result}
@@ -176,6 +179,186 @@ class CollectorTests(unittest.TestCase):
                 _, _, calls, errors = ux.terminal_evidence([row(1), control])
                 self.assertEqual(len(calls), 2)
                 self.assertEqual(errors, [])
+
+    def test_change_wait_outcomes_are_read_from_returned_observations_only(self):
+        # Request side: wait_for=change on observe, and on an observe=true
+        # input readback. Outcome side: the observation's own wait block.
+        def wait(outcome, settled=True):
+            return {"wait": {"mode": "change", "outcome": outcome, "waited_ms": 812, "settled": settled},
+                    "changed_since_previous_observation": outcome == "changed"}
+        calls = []
+        for identifier, outcome, settled in ((1, "changed", True), (2, "changed", False), (3, "unchanged", False)):
+            call = row(identifier)
+            call["params"]["item"]["arguments"].update({"wait_for": "change", "wait_ms": 5000})
+            call["params"]["item"]["result"]["structuredContent"].update(wait(outcome, settled))
+            calls.append(call)
+        state = {**row(4)["params"]["item"]["result"]["structuredContent"], **wait("exited")}
+        readback = row(4, "calm.terminal.input")
+        readback["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
+                                                         "observe": True, "wait_for": "change"})
+        readback["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "r4", "outcome": "written", "application_result": "unverified",
+            "observation_id_used": "obs-3", "output_since_observation": False,
+            "observation": {"status": "available", "state": state}}}
+        calls.append(readback)
+        # Refused change wait: a request, but no observation and no outcome.
+        refused = row(5)
+        refused["params"]["item"]["arguments"]["wait_for"] = "change"
+        refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "wait_ms out of range"}
+        calls.append(refused)
+        # Unavailable readback with wait_for=change: a request without an observation.
+        unavailable = row(6, "calm.terminal.input")
+        unavailable["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
+                                                            "observe": True, "wait_for": "change"})
+        unavailable["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "r6", "outcome": "written", "application_result": "unverified",
+            "observation": {"status": "unavailable", "reason": "readback timeout"}}}
+        calls.append(unavailable)
+        original = copy.deepcopy(calls)
+        result = ux.metrics(calls)
+        self.assertEqual(result["change_wait_requests"], 6)
+        self.assertEqual(result["change_wait_outcomes"], {"changed": 2, "exited": 1, "unchanged": 1})
+        self.assertEqual(result["unsettled_change_waits"], 1)
+        self.assertEqual(result["elapsed_wait_requests"], 0)
+        self.assertEqual(result["unmeasured_wait_observations"], 0)
+        self.assertEqual(result["readback_available"], 1)
+        self.assertEqual(result["tool_errors"], 1)
+        self.assertEqual(calls, original)
+        # Existing definitions are untouched by the new fields.
+        self.assertEqual(result["terminal_tool_calls"], 6)
+        self.assertEqual(result["observation_refusals"], 0)
+
+    def test_change_wait_only_counts_calls_that_produce_an_observation(self):
+        # wait_for=change on a control call without observe=true requests no
+        # readback, so it is neither a change nor an elapsed wait request.
+        control = row(1, "calm.terminal.control")
+        control["params"]["item"]["arguments"].update({"action": "claim", "wait_for": "change"})
+        control["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "connection_id": "c1", "control_id": "owner1"}}
+        result = ux.metrics([control])
+        self.assertEqual(result["change_wait_requests"], 0)
+        self.assertEqual(result["elapsed_wait_requests"], 0)
+        self.assertEqual(result["unmeasured_wait_observations"], 0)
+
+    def test_elapsed_wait_requests_are_explicit_or_positive_wait_ms_without_mode(self):
+        cases = ({"wait_for": "elapsed"}, {"wait_ms": 500}, {"wait_for": "elapsed", "wait_ms": 0},
+                 {"wait_ms": 0}, {}, {"wait_for": "change", "wait_ms": 500}, {"wait_ms": "500"})
+        calls = []
+        for identifier, arguments in enumerate(cases, start=1):
+            call = row(identifier)
+            call["params"]["item"]["arguments"].update(arguments)
+            call["params"]["item"]["result"]["structuredContent"].update({
+                "wait": {"mode": arguments.get("wait_for", "elapsed"), "outcome": "elapsed",
+                         "waited_ms": 0, "settled": True},
+                "changed_since_previous_observation": False})
+            calls.append(call)
+        result = ux.metrics(calls)
+        self.assertEqual(result["elapsed_wait_requests"], 3)
+        self.assertEqual(result["change_wait_requests"], 1)
+        self.assertEqual(result["change_wait_outcomes"], {"elapsed": 1})
+        self.assertEqual(result["unmeasured_wait_observations"], 0)
+
+    def test_observation_without_wait_field_is_unmeasured_not_a_crash(self):
+        # Pre-#1618 server: no wait block on observe results or readback states.
+        plain = row(1)
+        requested = row(2)
+        requested["params"]["item"]["arguments"]["wait_for"] = "change"
+        state = row(3)["params"]["item"]["result"]["structuredContent"]
+        readback = row(3, "calm.terminal.input")
+        readback["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"}, "observe": True})
+        readback["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
+            "observation": {"status": "available", "state": state}}}
+        result = ux.metrics([plain, requested, readback])
+        self.assertEqual(result["unmeasured_wait_observations"], 3)
+        self.assertEqual(result["change_wait_requests"], 1)
+        self.assertEqual(result["change_wait_outcomes"], {})
+        self.assertEqual(result["unsettled_change_waits"], 0)
+        _, evidence = ux.check_scenario("short", [plain, requested, readback], None)
+        self.assertEqual([view["row_id"] for view in evidence["observations"]], [1, 2, 3])
+
+    def test_malformed_wait_block_is_rejected(self):
+        for wait in ([], "changed", {"outcome": "changed"}, {"outcome": 1, "settled": True},
+                     {"outcome": "changed", "settled": "yes"}):
+            observed = row(1)
+            observed["params"]["item"]["result"]["structuredContent"]["wait"] = wait
+            with self.subTest(wait=wait), self.assertRaisesRegex(ux.EvidenceError, "wait"):
+                ux.metrics([observed])
+
+    def test_input_without_observation_id_is_implicit_and_still_evidence(self):
+        state = row(1)["params"]["item"]["result"]["structuredContent"]
+        state.update({"observation_id": "obs-2", "wait": {"mode": "change", "outcome": "changed",
+                                                          "waited_ms": 40, "settled": True},
+                      "changed_since_previous_observation": True})
+        explicit = row(1, "calm.terminal.input")
+        explicit["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
+                                                        "observation_id": "obs-1", "request_id": "r1"})
+        explicit["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "r1", "outcome": "written", "application_result": "unverified",
+            "observation_id_used": "obs-1", "output_since_observation": False}}
+        implicit = row(2, "calm.terminal.input")
+        implicit["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"},
+                                                        "request_id": "r2", "observe": True})
+        implicit["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "r2", "outcome": "written", "application_result": "unverified",
+            "observation_id_used": "obs-1", "output_since_observation": False,
+            "observation": {"status": "available", "state": state}}}
+        original = copy.deepcopy([explicit, implicit])
+        result = ux.metrics([explicit, implicit])
+        self.assertEqual(result["implicit_observation_inputs"], 1)
+        self.assertEqual(result["drift_allowed_inputs"], 0)
+        self.assertEqual(result["drift_observed_inputs"], 0)
+        self.assertEqual(result["readback_available"], 1)
+        _, evidence = ux.check_scenario("short", [explicit, implicit], None)
+        self.assertEqual([view["row_id"] for view in evidence["observations"]], [2])
+        self.assertEqual(evidence["status"], "review_required")
+        self.assertEqual([explicit, implicit], original)
+
+    def test_drift_allowed_and_drift_observed_inputs_are_counted_from_arguments_and_receipts(self):
+        def input_call(identifier, allow, receipt, failed=False):
+            call = row(identifier, "calm.terminal.input")
+            item = call["params"]["item"]
+            item["arguments"].update({"action": {"type": "key", "key": "Escape"}, "observation_id": "obs-1",
+                                      "request_id": f"r{identifier}"})
+            if allow is not None:
+                item["arguments"]["allow_output_since_observation"] = allow
+            item["result"] = {"structuredContent": {"terminal_id": "t1", "request_id": f"r{identifier}",
+                                                    "outcome": "written", "application_result": "unverified",
+                                                    "observation_id_used": "obs-1", **receipt}}
+            if failed:
+                item["status"], item["error"] = "failed", {"message": "terminal changed since observation; observe again"}
+            return call
+        calls = [
+            input_call(1, True, {"output_since_observation": True,
+                                 "observation_drift": {"observed_revision": 7, "input_revision": 9}}),
+            input_call(2, True, {"output_since_observation": False}),
+            input_call(3, None, {"output_since_observation": False}),
+            input_call(4, False, {"output_since_observation": True}),
+            # Refused: the flag was requested, but no receipt reports drift.
+            input_call(5, True, {"output_since_observation": True}, failed=True),
+            # Older server: receipt has no drift field at all; nothing is inferred.
+            input_call(6, True, {}),
+        ]
+        result = ux.metrics(calls)
+        self.assertEqual(result["drift_allowed_inputs"], 4)
+        self.assertEqual(result["drift_observed_inputs"], 2)
+        self.assertEqual(result["implicit_observation_inputs"], 0)
+        self.assertEqual(result["tool_errors"], 1)
+        self.assertEqual(result["observation_refusals"], 1)
+
+    def test_review_wait_summary_is_the_per_scenario_counter_subset(self):
+        observed = row(1)
+        observed["params"]["item"]["arguments"]["wait_for"] = "change"
+        observed["params"]["item"]["result"]["structuredContent"].update({
+            "wait": {"mode": "change", "outcome": "unchanged", "waited_ms": 5000, "settled": False},
+            "changed_since_previous_observation": False})
+        result = ux.metrics([observed])
+        summary = {key: result[key] for key in ux.WAIT_METRIC_KEYS}
+        self.assertEqual(summary, {"change_wait_requests": 1, "change_wait_outcomes": {"unchanged": 1},
+                                   "unsettled_change_waits": 0, "elapsed_wait_requests": 0,
+                                   "unmeasured_wait_observations": 0, "drift_allowed_inputs": 0,
+                                   "drift_observed_inputs": 0, "implicit_observation_inputs": 0})
+        self.assertEqual(json.loads(json.dumps(summary)), summary)
 
     def test_changed_since_observation_production_refusal_is_counted(self):
         bad = row(1, "calm.terminal.input")
@@ -186,7 +369,9 @@ class CollectorTests(unittest.TestCase):
     def test_observation_refusal_variants_and_error_envelopes(self):
         for message in ("observation expired; observe again",
                         "observation belongs to another connection or expired",
-                        "terminal changed since observation; observe again"):
+                        "terminal changed since observation; observe again",
+                        "terminal surface changed since observation (size, input modes or alternate screen); observe again",
+                        "no observation on this connection; observe first"):
             for envelope in ("error", "result", "both"):
                 failed = row(1, "calm.terminal.input")
                 item = failed["params"]["item"]
@@ -309,12 +494,108 @@ class CollectorTests(unittest.TestCase):
             with self.subTest(result=result), self.assertRaises(ux.EvidenceError):
                 ux.terminal_evidence([bad])
 
-    def test_text_only_mcp_metadata_is_parsed(self):
-        import json
+    def test_summary_only_result_is_rejected_not_parsed_as_metadata(self):
         value = row(1)["params"]["item"]
         metadata = value["result"]["structuredContent"]
-        value["result"] = {"content": [{"type": "text", "text": json.dumps(metadata)}]}
-        self.assertEqual(ux.metadata(value), metadata)
+        for text in (json.dumps(metadata), "terminal t1 observation o1 revision 3 owner 80x24 cursor 0,0 wait elapsed; full state in structuredContent"):
+            value["result"] = {"content": [{"type": "text", "text": text}]}
+            with self.subTest(text=text), self.assertRaisesRegex(ux.EvidenceError, "lacks structuredContent; content is a summary"):
+                ux.metadata(value)
+
+    def test_drift_and_implicit_observation_refusals_are_counted_exactly(self):
+        for message, counted in (
+                ("terminal surface changed since observation (size, input modes or alternate screen); observe again", 1),
+                ("no observation on this connection; observe first", 1),
+                ("terminal control changed; observe before input", 0),
+                ("observe first", 0)):
+            failed = row(1, "calm.terminal.input")
+            failed["params"]["item"]["status"] = "failed"
+            failed["params"]["item"]["error"] = {"message": f"MCP error: -32403: {message}"}
+            with self.subTest(message=message):
+                self.assertEqual(ux.metrics([failed])["observation_refusals"], counted)
+
+    def test_stale_observation_result_counts_as_refusal_and_its_fresh_state_is_evidence(self):
+        state = row(1)["params"]["item"]["result"]["structuredContent"]
+        state.update({"observation_id": "fresh", "previous_observation_revision": "41",
+                      "wait": {"mode": "elapsed", "outcome": "elapsed", "waited_ms": 0, "settled": False,
+                               "baseline_revision": "41"}})
+        stale = row(2, "calm.terminal.input")
+        stale["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Enter"}
+        stale["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "enter", "outcome": "stale_observation",
+            "application_result": "unverified", "observation_id_used": "old",
+            "observed_revision": 41, "current_revision": 42, "next": "inspect observation.state",
+            "observation": {"status": "available", "state": state}}}
+        original = copy.deepcopy(stale)
+        result = ux.metrics([stale])
+        self.assertEqual(result["observation_refusals"], 1)
+        self.assertEqual(result["tool_errors"], 0)
+        self.assertEqual(result["readback_available"], 1)
+        self.assertEqual(result["implicit_observation_inputs"], 1)
+        self.assertEqual(result["drift_observed_inputs"], 0)
+        # The fresh observation is real terminal evidence, like any readback.
+        binding, observations, _, errors = ux.terminal_evidence([stale])
+        self.assertEqual(binding["terminal_id"], "t1")
+        self.assertEqual([view["row_id"] for view in observations], [2])
+        self.assertEqual(errors, [])
+        self.assertEqual(stale, original)
+        # Both refusal shapes in one round add up; a written receipt does not.
+        failed = row(3, "calm.terminal.input")
+        failed["params"]["item"]["status"] = "failed"
+        failed["params"]["item"]["error"] = {"message": "terminal changed since observation; observe again"}
+        written = row(4, "calm.terminal.input")
+        written["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "enter", "outcome": "written", "application_result": "unverified"}}
+        self.assertEqual(ux.metrics([stale, failed, written])["observation_refusals"], 2)
+
+    def test_stale_observation_outcome_is_not_counted_on_failed_or_started_calls(self):
+        for status, completed in (("failed", True), ("completed", False)):
+            call = row(1, "calm.terminal.input")
+            item = call["params"]["item"]
+            item["result"] = {"structuredContent": {"terminal_id": "t1", "outcome": "stale_observation"}}
+            if status == "failed":
+                item["status"] = "failed"
+                item["error"] = {"message": "unrelated failure"}
+            if not completed:
+                call["method"] = "item/started"
+            with self.subTest(status=status, completed=completed):
+                self.assertEqual(ux.metrics([call])["observation_refusals"], 0)
+        other = row(2, "calm.terminal.control")
+        other["params"]["item"]["arguments"]["action"] = "claim"
+        other["params"]["item"]["result"] = {"structuredContent": {"terminal_id": "t1", "outcome": "stale_observation"}}
+        self.assertEqual(ux.metrics([other])["observation_refusals"], 0)
+
+    def test_release_readback_without_text_is_tolerated_but_adds_no_observation(self):
+        state = row(1)["params"]["item"]["result"]["structuredContent"]
+        del state["text"]
+        state.update({"observation_id": "o2", "text_omitted": "unchanged since previous observation o1"})
+        released = row(2, "calm.terminal.control")
+        released["params"]["item"]["arguments"]["action"] = "release"
+        released["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "connection_id": "c1", "control_id": None,
+            "observation": {"status": "available", "state": state}}}
+        binding, observations, calls, errors = ux.terminal_evidence([row(1), released])
+        self.assertEqual([view["row_id"] for view in observations], [1])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(errors, [])
+        self.assertEqual(ux.metrics([row(1), released])["readback_available"], 1)
+        # The identity checks still apply to a text-less state.
+        foreign = copy.deepcopy(released)
+        foreign["params"]["item"]["result"]["structuredContent"]["observation"]["state"]["terminal_session_id"] = "other"
+        with self.assertRaisesRegex(ux.EvidenceError, "terminal or session changed"):
+            ux.terminal_evidence([row(1), foreign])
+        # Without text_omitted a missing or malformed text is still an error,
+        # and text_omitted must be a string.
+        for patch_state in ({"text_omitted": None}, {"text_omitted": 7}, {}):
+            broken = copy.deepcopy(released)
+            broken_state = broken["params"]["item"]["result"]["structuredContent"]["observation"]["state"]
+            broken_state.pop("text_omitted", None)
+            broken_state.update(patch_state)
+            with self.subTest(patch=patch_state), self.assertRaisesRegex(ux.EvidenceError, "text must be an array"):
+                ux.terminal_evidence([row(1), broken])
+        # Text-less states alone are not a successful observation.
+        with self.assertRaisesRegex(ux.EvidenceError, "no successful terminal observations"):
+            ux.terminal_evidence([released])
 
     def test_tool_errors_retained_as_review_findings(self):
         bad = row(2, "calm.terminal.input")

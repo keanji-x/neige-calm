@@ -3,18 +3,33 @@
 use calm_session::terminal_session::RenderObserver;
 use calm_terminal_view::{Frame, TerminalView};
 use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
 pub type SharedModelView = Arc<Mutex<ModelView>>;
 pub struct ModelView {
     view: anyhow::Result<TerminalView>,
     revision: u64,
+    /// Published under the same lock as `revision`, so a subscriber that
+    /// observes a value on this channel can capture at least that revision.
+    /// Invalidation also wakes subscribers; they discover the error on capture.
+    published: watch::Sender<u64>,
 }
 impl ModelView {
     pub fn new(cols: u16, rows: u16, fg: (u8, u8, u8), bg: (u8, u8, u8)) -> SharedModelView {
         Arc::new(Mutex::new(Self {
             view: TerminalView::new(cols, rows, [fg.0, fg.1, fg.2], [bg.0, bg.1, bg.2]),
             revision: 0,
+            published: watch::channel(0u64).0,
         }))
+    }
+    /// Revision notifications for change waiting; no polling is required.
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.published.subscribe()
+    }
+    /// Live revision subscribers: a change wait counts from the moment it
+    /// subscribes until it returns. Test observability of a wait in progress.
+    pub fn change_waiters(&self) -> usize {
+        self.published.receiver_count()
     }
     pub fn capture(&self, offset: usize) -> anyhow::Result<(Frame, u64)> {
         let view = self
@@ -25,10 +40,14 @@ impl ModelView {
     }
     pub fn invalidate(&mut self, reason: &str) {
         self.view = Err(anyhow::anyhow!("{reason}"));
+        self.published.send_modify(|_| {});
     }
     fn advance(&mut self) {
         match self.revision.checked_add(1) {
-            Some(next) => self.revision = next,
+            Some(next) => {
+                self.revision = next;
+                self.published.send_replace(next);
+            }
             None => self.invalidate("observation sequence exhausted"),
         }
     }

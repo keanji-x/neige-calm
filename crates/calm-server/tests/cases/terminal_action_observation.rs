@@ -81,7 +81,7 @@ async fn terminal_actions_return_fresh_text_observations() {
     )
     .await;
     assert_eq!(receipt(&entered)["outcome"], "written");
-    assert_eq!(receipt(&entered)["application_completed"], false);
+    assert_eq!(receipt(&entered)["application_result"], "unverified");
     let after = observation(&entered);
     assert!(
         has_line(after, "ACTION_OBSERVED"),
@@ -100,7 +100,35 @@ async fn terminal_actions_return_fresh_text_observations() {
         observation(&released)["connection_id"],
         before["connection_id"]
     );
-    assert!(has_line(observation(&released), "ACTION_OBSERVED"));
+    // #1618 G3: a release readback repeats text only when the screen moved
+    // since the previous observation (the `entered` readback); the shell
+    // prompt may or may not have repainted by now, so both shapes are legal
+    // and each is checked exactly. The deterministic cases live in
+    // terminal_wait_and_drift.rs.
+    let released_state = observation(&released);
+    match released_state.get("text") {
+        Some(_) => {
+            assert!(has_line(released_state, "ACTION_OBSERVED"));
+            assert!(released_state.get("text_omitted").is_none());
+            assert_ne!(
+                released_state["observation_revision"],
+                after["observation_revision"]
+            );
+        }
+        None => {
+            assert_eq!(
+                released_state["text_omitted"],
+                json!(format!(
+                    "unchanged since previous observation {}",
+                    after["observation_id"].as_str().unwrap()
+                ))
+            );
+            assert_eq!(
+                released_state["observation_revision"],
+                after["observation_revision"]
+            );
+        }
+    }
     h.stop(&terminal).await;
 }
 
@@ -211,7 +239,7 @@ async fn failed_readback_preserves_written_receipt_and_replay() {
         result["outcome"], "written",
         "readback failure must retain the physical write receipt"
     );
-    assert_eq!(result["application_completed"], false);
+    assert_eq!(result["application_result"], "unverified");
     assert_eq!(result["observation"]["status"], "unavailable");
     assert!(
         result["observation"]["reason"]
@@ -285,7 +313,9 @@ async fn invalid_action_readback_options_fail_before_side_effects() {
     let terminal = open(&h).await;
     let entry = h.state.terminal_renderer.get(&terminal).unwrap();
     for options in [
-        json!({"observe":true,"wait_ms":2001}),
+        json!({"observe":true,"wait_ms":20001}),
+        json!({"observe":true,"settle_ms":10}),
+        json!({"observe":true,"wait_for":"change","settle_ms":2001}),
         json!({"wait_ms":0}),
         json!({"observe":false,"wait_ms":1}),
         json!({"observe":true,"wait_ms":-1}),
@@ -309,7 +339,9 @@ async fn invalid_action_readback_options_fail_before_side_effects() {
     }
     let claimed = claim(&h, &terminal).await;
     for options in [
-        json!({"observe":true,"wait_ms":2001}),
+        json!({"observe":true,"wait_ms":20001}),
+        json!({"observe":true,"settle_ms":10}),
+        json!({"observe":true,"wait_for":"change","settle_ms":2001}),
         json!({"wait_ms":0}),
         json!({"observe":false,"wait_ms":1}),
     ] {

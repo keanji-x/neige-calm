@@ -28,6 +28,9 @@ pub struct Harness {
     pub track: String,
 }
 impl Harness {
+    pub fn interaction(&self) -> Arc<TerminalInteraction> {
+        self.server.terminal_interaction.get().unwrap().clone()
+    }
     pub fn supervisor_socket(&self) -> PathBuf {
         self.supervisor.sock().to_owned()
     }
@@ -218,10 +221,23 @@ pub fn assert_text_observation(response: &Value) -> &Value {
     assert_eq!(content.len(), 1, "text observation must not include images");
     assert_eq!(content[0]["type"], "text");
     let metadata = &response["result"]["structuredContent"];
-    assert_eq!(
-        serde_json::from_str::<Value>(content[0]["text"].as_str().unwrap()).unwrap(),
-        *metadata
+    // #1618: the text block is a one-line summary, never a second copy of the
+    // state and never the screen text.
+    let summary = content[0]["text"].as_str().unwrap();
+    assert!(!summary.contains('\n'), "{summary}");
+    assert!(
+        summary.ends_with("; full state in structuredContent"),
+        "{summary}"
     );
+    assert!(
+        summary.contains(&format!(
+            "observation {} revision {} ",
+            metadata["observation_id"].as_str().unwrap(),
+            metadata["observation_revision"].as_str().unwrap()
+        )),
+        "{summary}"
+    );
+    assert!(serde_json::from_str::<Value>(summary).is_err());
     assert!(
         metadata.get("image_source").is_none(),
         "text observation must not claim an image source"

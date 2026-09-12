@@ -51,6 +51,9 @@ pub struct InputSurface {
     pub cols: u16,
     pub rows: u16,
     pub modes: u32,
+    /// The alternate screen is tracked by the saved grid, not by a mode bit,
+    /// so `modes` alone cannot tell a menu from the shell underneath it.
+    pub alternate: bool,
     pub scroll_offset: usize,
 }
 impl Frame {
@@ -59,6 +62,7 @@ impl Frame {
             cols: self.cols,
             rows: self.rows,
             modes: self.modes,
+            alternate: self.alternate,
             scroll_offset: self.scroll_offset,
         }
     }

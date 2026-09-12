@@ -19,11 +19,13 @@ mod observation;
 mod operations;
 pub use observation::ObservationFormat;
 mod target;
-use client::Client;
+mod wait;
+use client::{Client, LatestObservation};
 pub(crate) use target::Binding;
 pub use target::Target;
 #[cfg(test)]
 pub(crate) use target::TaskBinding;
+pub use wait::{SETTLE_MS_DEFAULT, SETTLE_MS_MAX, WAIT_MS_MAX, WaitFor, WaitPlan};
 
 pub struct TerminalInteraction {
     repo: Arc<dyn RouteRepo>,
@@ -131,34 +133,86 @@ impl TerminalInteraction {
             control: scope_check(true),
         }
     }
+    /// Whether a Planner input on `terminal_id` is reserved but not yet
+    /// acknowledged or refused (the write is parked at the physical barrier
+    /// or in flight). Test observability only; no tool reports it.
+    #[doc(hidden)]
+    pub async fn input_pending(&self, terminal_id: &str) -> bool {
+        self.clients.lock().await.values().any(|client| {
+            client.binding.terminal_id == terminal_id
+                && client
+                    .screen
+                    .lock()
+                    .is_ok_and(|state| state.pending.is_some())
+        })
+    }
+    /// Inputs on `terminal_id` waiting for their connection's serial lock
+    /// (queued behind an action still in progress). Test observability only;
+    /// no tool reports it.
+    #[doc(hidden)]
+    pub async fn serial_waiters(&self, terminal_id: &str) -> usize {
+        self.clients
+            .lock()
+            .await
+            .values()
+            .filter(|client| client.binding.terminal_id == terminal_id)
+            .map(|client| client.serial_waiters())
+            .sum()
+    }
     pub async fn observe(
         &self,
         identity: &ToolCallIdentity,
         target: &Target,
         offset: usize,
-        wait_ms: u64,
+        wait: WaitPlan,
         format: ObservationFormat,
     ) -> Result<(Value, Option<Vec<u8>>)> {
-        ensure!(wait_ms <= 2000, "observation wait exceeds 2000ms");
+        wait.validate()?;
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let client = self.client(identity, &resolved.binding).await?;
-        self.capture(identity, resolved, &client, offset, wait_ms, format)
+        self.capture(identity, resolved, &client, offset, wait, None, format)
             .await
     }
+    /// `baseline` is the revision a change wait compares against; `None`
+    /// means this connection's previous observation (or the revision at call
+    /// start when there is none).
+    #[allow(clippy::too_many_arguments)]
     async fn capture(
         &self,
         identity: &ToolCallIdentity,
         resolved: target::Resolved,
         client: &Client,
         offset: usize,
-        wait_ms: u64,
+        wait: WaitPlan,
+        baseline: Option<u64>,
         format: ObservationFormat,
     ) -> Result<(Value, Option<Vec<u8>>)> {
-        let terminal = resolved.binding.terminal_id.as_str();
-        if wait_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-        }
-        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
+        let terminal = resolved.binding.terminal_id.clone();
+        let previous = *client
+            .latest_observation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terminal client poisoned"))?;
+        let baseline = match (baseline, previous) {
+            (Some(revision), _) => revision,
+            (None, Some(previous)) => previous.revision,
+            (None, None) => {
+                client
+                    .entry
+                    .handle
+                    .model_view
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
+                    .capture(0)?
+                    .1
+            }
+        };
+        let waited = wait::wait(client, wait, baseline).await;
+        // The wait may span a task completion or an authority change, so the
+        // task status and controllability in the result are re-read after
+        // waiting; the binding they belong to must still be the one the wait
+        // started on, otherwise the observation is refused.
+        let resolved =
+            Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let (control, exited) = {
             let state = client
                 .screen
@@ -175,14 +229,18 @@ impl TerminalInteraction {
             .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
             .capture(offset)?;
         let png = format.render_image(&self.raster, &frame).await?;
-        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
+        // Rendering takes time too: the emitted status is the last read.
+        let resolved =
+            Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let observation_id = Uuid::new_v4();
+        let changed_since_previous = previous.is_some_and(|prior| prior.revision != revision);
         let mut metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
             "terminal_session_id":client.entry.handle.session_id,"control_id":control,"role":if control.is_some(){"owner"}else{"observer"},
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
-            "text":frame.text,"exited":exited});
+            "text":frame.text,"exited":exited,"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
+            "previous_observation_revision":previous.map(|prior| prior.revision.to_string())});
         if png.is_some() {
             metadata["image_source"] = json!("rmux_client_projection");
         }
@@ -206,6 +264,14 @@ impl TerminalInteraction {
                 created: Instant::now(),
             },
         );
+        *client
+            .latest_observation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terminal client poisoned"))? = Some(LatestObservation {
+            id: observation_id,
+            revision,
+            scroll_offset: frame.scroll_offset,
+        });
         Ok((metadata, png))
     }
     pub async fn control(
@@ -213,18 +279,18 @@ impl TerminalInteraction {
         identity: &ToolCallIdentity,
         target: &Target,
         action: &str,
-        observation_wait_ms: Option<u64>,
+        observation_wait: Option<WaitPlan>,
     ) -> Result<Value> {
+        if let Some(wait) = observation_wait {
+            wait.validate()?;
+        }
         ensure!(
-            observation_wait_ms.is_none_or(|wait| wait <= 2000),
-            "observation wait exceeds 2000ms"
-        );
-        ensure!(
-            action != "detach" || observation_wait_ms.is_none(),
+            action != "detach" || observation_wait.is_none(),
             "detach cannot request observation"
         );
         if action == "detach" {
             Self::authorize(self.repo.as_ref(), identity).await?;
+            let mut removed = Vec::new();
             self.clients.lock().await.retain(|key, client| {
                 let selected = match target {
                     Target::Terminal(id) => &client.binding.terminal_id == id,
@@ -234,9 +300,25 @@ impl TerminalInteraction {
                         .as_ref()
                         .is_some_and(|task| &task.task_id == id),
                 };
-                !(selected && key == &client.binding.key(identity))
+                let detach = selected && key == &client.binding.key(identity);
+                if detach {
+                    removed.push(client.clone());
+                }
+                !detach
             });
-            return Ok(json!({"detached":true}));
+            let closed = removed.into_iter().next();
+            let terminal_id = match &closed {
+                Some(client) => Some(client.binding.terminal_id.clone()),
+                None => Self::resolve_target(self.repo.as_ref(), identity, target)
+                    .await
+                    .ok()
+                    .map(|resolved| resolved.binding.terminal_id),
+            };
+            return Ok(
+                json!({"detached":true,"had_client":closed.is_some(),"terminal_id":terminal_id,
+                "connection_id":closed.as_ref().map(|client| client.connection),
+                "terminal_session_id":closed.as_ref().map(|client| client.entry.handle.session_id)}),
+            );
         }
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let terminal = resolved.binding.terminal_id.as_str();
@@ -249,6 +331,17 @@ impl TerminalInteraction {
         .await?;
         let client = self.client(identity, &resolved.binding).await?;
         let _serial = client.serial.lock().await;
+        // Readback change waits compare against the screen as it was when the
+        // control action started.
+        let baseline = client
+            .entry
+            .handle
+            .model_view
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
+            .capture(0)
+            .map(|(_, revision)| revision)
+            .ok();
         match action {
             "claim" => {
                 let previous = client.screen.lock().unwrap().control;
@@ -272,8 +365,25 @@ impl TerminalInteraction {
             let state = client.screen.lock().unwrap();
             json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":state.control})
         };
-        Ok(self
-            .with_observation(identity, &client, receipt, observation_wait_ms)
-            .await)
+        // Read before the readback registers its own capture as the latest.
+        let previous = *client
+            .latest_observation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terminal client poisoned"))?;
+        let mut receipt = self
+            .with_observation(identity, &client, receipt, observation_wait, baseline)
+            .await;
+        if action == "release" {
+            action_observation::omit_unchanged_release_text(&mut receipt, previous);
+        }
+        Ok(receipt)
     }
+}
+/// The input-surface fence: size, input modes and alternate screen. The
+/// scroll offset is a separate fence (live viewport only).
+pub(crate) fn same_input_surface(saved: &InputSurface, live: &InputSurface) -> bool {
+    saved.cols == live.cols
+        && saved.rows == live.rows
+        && saved.modes == live.modes
+        && saved.alternate == live.alternate
 }

@@ -208,6 +208,19 @@ pub(crate) enum RendererDropOutcome {
 }
 
 impl RendererEntry {
+    /// Sever the supervisor output stream the way a lost attach connection
+    /// does: the attach reader is aborted and its drop guard invalidates the
+    /// projection (`terminal output source disconnected`) through
+    /// `RenderPlane::invalidate_observation`. Test observability only; the
+    /// child process and its teardown are untouched.
+    #[doc(hidden)]
+    pub fn disconnect_output_source_for_test(&self) {
+        if let Ok(mut attach) = self.attach_task.lock()
+            && let Some(task) = attach.take()
+        {
+            task.abort();
+        }
+    }
     pub fn config(&self) -> &RendererConfig {
         &self.config
     }

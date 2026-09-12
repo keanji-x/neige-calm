@@ -101,14 +101,41 @@ latency savings are inferred without a comparable measured baseline. Identical
 key actions are counted as repetitions, not automatically classified as errors.
 Human intervention and token savings are explicitly unmeasured.
 
+The collector requires `structuredContent` on every terminal tool result and
+never parses the one-line text summary; servers from this change (#1618
+rounds 07/08) onward emit it, and a result without it is an evidence error,
+not a skipped row.
+
 `readback_available` and `readback_unavailable` count the corresponding nested
 results on completed control/input calls, separately from tool errors. Neither
-means the application finished. `requested_key_presses` sums key actions'
+means the application finished. `observation_refusals` counts input calls
+refused by an observation fence: the exact production error strings, plus
+completed input calls whose receipt `outcome` is `stale_observation` (#1618
+rounds 07/08: nothing written, a fresh observation returned instead of an
+error). A release readback whose state carries `text_omitted` instead of `text`
+(screen unchanged since the previous observation) is accepted as evidence of
+the same terminal/session but adds no observation entry. `requested_key_presses` sums key actions'
 `repeat` (default 1); `additional_repeated_key_presses` sums the extra `repeat - 1`
 presses. These describe requests, including failed or replayed requests, not
 confirmed physical writes. Invalid repeat counts contribute to
 `unmeasured_key_press_requests` instead of silently becoming 1. The existing
 `repeated_identical_input_actions` metric keeps its original definition.
+
+#1618 wait/drift counters (aggregated per scenario as `wait_summary` in
+`review.json` for comparison with rounds 05/06) are each read from a completed
+call's own arguments or result, never inferred. `change_wait_requests`: `observe`
+calls and `observe: true` readbacks whose arguments say `wait_for: "change"`;
+`change_wait_outcomes`: tally of those calls' returned `wait.outcome` (observe
+result or readback `observation.state`; failed calls and unavailable readbacks
+contribute none); `unsettled_change_waits`: outcome `changed` with `settled:
+false`; `elapsed_wait_requests`: explicit `wait_for: "elapsed"` or `wait_ms > 0`
+without `wait_for`; `unmeasured_wait_observations`: observations lacking a `wait`
+block (older server); `drift_allowed_inputs`: inputs requesting
+`allow_output_since_observation`; `drift_observed_inputs`: non-failed input
+receipts with `output_since_observation: true`; `implicit_observation_inputs`:
+inputs omitting `observation_id` (`observation_id_used` is informational). A
+settled or `unchanged` wait outcome, like `application_result: "unverified"`,
+is not application completion.
 
 ## Model-free driver checks
 

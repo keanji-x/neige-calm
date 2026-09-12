@@ -152,18 +152,9 @@ def metadata(call):
         raise EvidenceError("terminal call has no structured result")
     value = result.get("structuredContent")
     if value is None:
-        # App-server releases may preserve MCP text while omitting the redundant
-        # structuredContent field. ToolResult::structured writes the same JSON.
-        content = result.get("content", [])
-        if not isinstance(content, list) or not all(isinstance(item, dict) for item in content):
-            raise EvidenceError("terminal content is malformed")
-        texts = [item.get("text") for item in content if item.get("type") == "text"]
-        if len(texts) != 1:
-            raise EvidenceError("terminal result lacks one metadata JSON text")
-        try:
-            value = json.loads(texts[0])
-        except (TypeError, json.JSONDecodeError) as error:
-            raise EvidenceError("terminal metadata is not JSON") from error
+        # Terminal tools keep the state only in structuredContent; the text
+        # block is a one-line summary (#1618), so there is nothing to parse.
+        raise EvidenceError("terminal result lacks structuredContent; content is a summary")
     if not isinstance(value, dict):
         raise EvidenceError("terminal metadata is not an object")
     return value
@@ -177,9 +168,26 @@ def final_texts(rows):
             and isinstance(row["params"]["item"].get("text"), str)]
 
 
+def stale_observation_result(call):
+    """A completed input whose receipt says `outcome: "stale_observation"`.
+
+    Since #1618 rounds 07/08 a stale observation with every other fence intact
+    is a successful tool result carrying a fresh observation, not an RPC error;
+    it still counts as an observation refusal because nothing was written.
+    """
+    if call.get("tool") != "calm.terminal.input" or not call.get("completed") or tool_failed(call):
+        return False
+    result = call.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("structuredContent"), dict):
+        return False
+    return result["structuredContent"].get("outcome") == "stale_observation"
+
+
 def observation_refused(call):
     if call.get("tool") != "calm.terminal.input":
         return False
+    if stale_observation_result(call):
+        return True
     messages = []
     if call.get("error") is not None:
         messages.append(require_object(call["error"], "MCP error").get("message"))
@@ -194,9 +202,13 @@ def observation_refused(call):
                 messages.append(part.get("text"))
     # Exact production refusals in terminal_interaction/operations.rs. A broad
     # word-order regex misses the revision fence and counts unrelated errors.
+    # The surface fence message continues with the changed properties; its
+    # prefix is stable.
     refusals = ("observation expired; observe again",
                 "observation belongs to another connection or expired",
-                "terminal changed since observation; observe again")
+                "terminal changed since observation; observe again",
+                "terminal surface changed since observation",
+                "no observation on this connection; observe first")
     return any(refusal in message for message in messages if isinstance(message, str)
                for refusal in refusals)
 
@@ -204,6 +216,69 @@ def observation_refused(call):
 def tool_failed(call):
     return bool(call.get("error") or call.get("status") == "failed"
                 or (call.get("result") or {}).get("isError"))
+
+
+WAIT_METRIC_KEYS = ("change_wait_requests", "change_wait_outcomes", "unsettled_change_waits",
+                    "elapsed_wait_requests", "unmeasured_wait_observations", "drift_allowed_inputs",
+                    "drift_observed_inputs", "implicit_observation_inputs")
+
+
+def wait_outcome(state):
+    """Return the observation's `wait.outcome`, or None when the server sent no `wait`."""
+    if "wait" not in state:
+        return None  # pre-#1618 server: unmeasured, never inferred
+    wait = require_object(state["wait"], "observation wait")
+    if not isinstance(wait.get("outcome"), str) or not isinstance(wait.get("settled"), bool):
+        raise EvidenceError("observation wait must carry a string outcome and a boolean settled")
+    return wait
+
+
+def wait_metrics(terminal):
+    """#1618 counters, each read from a completed call's own arguments or result.
+
+    A change wait is an `observe` call, or a control/input call requesting an
+    `observe=true` readback, whose arguments say `wait_for: "change"`. Outcomes
+    are read from the returned observation (`observe` result or readback
+    `observation.state`); a failed call or unavailable readback returns no
+    observation and therefore no outcome. Open results are not observations
+    here. A settled/unchanged outcome is not application completion.
+    """
+    counts = collections.Counter()
+    outcomes = collections.Counter()
+    for call in terminal:
+        if not call.get("completed"):
+            continue
+        args = call.get("arguments", {})
+        tool = call["tool"]
+        if tool == "calm.terminal.input":
+            if args.get("allow_output_since_observation") is True:
+                counts["drift_allowed_inputs"] += 1
+            if "observation_id" not in args:
+                counts["implicit_observation_inputs"] += 1
+        observes = tool == "calm.terminal.observe" or (
+            tool in ("calm.terminal.control", "calm.terminal.input") and args.get("observe") is True)
+        wait_for, wait_ms = args.get("wait_for"), args.get("wait_ms")
+        if observes and wait_for == "change":
+            counts["change_wait_requests"] += 1
+        elif observes and (wait_for == "elapsed" or (wait_for is None and type(wait_ms) is int and wait_ms > 0)):
+            counts["elapsed_wait_requests"] += 1
+        if tool_failed(call):
+            continue
+        data = metadata(call)
+        if tool == "calm.terminal.input" and data.get("output_since_observation") is True:
+            counts["drift_observed_inputs"] += 1
+        state = observed_state(call, data) if tool != "calm.terminal.open" else None
+        if state is None:
+            continue
+        wait = wait_outcome(state)
+        if wait is None:
+            counts["unmeasured_wait_observations"] += 1
+        elif observes and wait_for == "change":
+            outcomes[wait["outcome"]] += 1
+            if wait["outcome"] == "changed" and wait["settled"] is False:
+                counts["unsettled_change_waits"] += 1
+    return {**{key: counts[key] for key in WAIT_METRIC_KEYS if key != "change_wait_outcomes"},
+            "change_wait_outcomes": dict(sorted(outcomes.items()))}
 
 
 def metrics(rows):
@@ -257,6 +332,7 @@ def metrics(rows):
             "requested_key_presses": requested_presses, "additional_repeated_key_presses": extra_presses,
             "unmeasured_key_press_requests": unmeasured_requests,
             "observation_refusals": sum(observation_refused(call) for call in terminal),
+            **wait_metrics(terminal),
             "human_intervention": "not_measured", "token_savings": "not_measured"}
 
 
@@ -294,6 +370,8 @@ def terminal_evidence(rows, binding=None):
         args = call.get("arguments", {})
         if not isinstance(args, dict):
             raise EvidenceError("terminal call arguments are malformed")
+        # `observation_id` may be omitted (#1618 C3); the receipt's
+        # `observation_id_used` is informational and not checked here.
         # A fresh readback is observable state even when the physical receipt
         # remains unknown/refused. Do not rewrite or infer application completion.
         data = observed_state(call, metadata(call))
@@ -306,9 +384,15 @@ def terminal_evidence(rows, binding=None):
             if current != binding:
                 raise EvidenceError("terminal or session changed during UX round")
             lines = data.get("text")  # Frame.text is Vec<String>, not a scalar.
-            if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+            if lines is None and isinstance(data.get("text_omitted"), str):
+                # A release readback of a screen unchanged since the previous
+                # observation (#1618 rounds 07/08) carries no text on purpose;
+                # its identity was checked above but it adds no view.
+                pass
+            elif not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
                 raise EvidenceError("terminal observation text must be an array of strings")
-            observations.append({"row_id": call["row_id"], "text": "\n".join(lines)})
+            else:
+                observations.append({"row_id": call["row_id"], "text": "\n".join(lines)})
         if binding and args.get("terminal_id", binding["terminal_id"]) != binding["terminal_id"]:
             raise EvidenceError("Planner targeted another terminal")
     if not observations:
@@ -440,9 +524,10 @@ class Round:
             "Do not simulate rewind by starting a fresh session or by asking Claude to pretend. "
             "If the installed version cannot restore the conversation as requested, report it "
             "as blocked. State what proves the first exchange survived and the second was replaced."}
-        binding, findings = None, {}
+        binding, findings, wait_summary = None, {}, {}
         for name, goal in goals.items():
             rows = self.send(name, goal)
+            wait_summary[name] = {key: metrics(rows)[key] for key in WAIT_METRIC_KEYS}
             try:
                 binding, findings[name] = check_scenario(name, rows, binding)
             except EvidenceError as error:
@@ -462,7 +547,8 @@ class Round:
             findings["interview"] = {"status": "incomplete", "reason": "interview performed extra tool actions"}
         write_json(args.artifacts / "review.json", {
             "status": "review_required", "acceptance": "not_established",
-            "binding": binding, "scenarios": findings, "interview": final_texts(interview),
+            "binding": binding, "scenarios": findings, "wait_summary": wait_summary,
+            "interview": final_texts(interview),
             "review_requirements": ["actual Claude UI, not prompt echo or shell substitution",
                                     "unsubmitted correction and exactly one submission",
                                     "real rewind menu, restored history and resubmission",

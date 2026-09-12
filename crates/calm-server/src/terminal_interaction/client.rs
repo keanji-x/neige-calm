@@ -7,11 +7,22 @@ use calm_session::{
     RenderEncoding, Role,
 };
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
+
+/// The most recent observation captured on a connection (any format,
+/// including action readbacks). `scroll_offset` is the history offset it was
+/// captured at: a history view shares the live revision but not its text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LatestObservation {
+    pub id: Uuid,
+    pub revision: u64,
+    pub scroll_offset: usize,
+}
 
 pub struct ScreenState {
     pub owner: Option<Uuid>,
@@ -57,12 +68,22 @@ pub struct Client {
     pub entry: Arc<RendererEntry>,
     pub screen: Arc<StdMutex<ScreenState>>,
     pub serial: Mutex<()>,
+    /// Inputs currently waiting for `serial` (queued behind an action still
+    /// in progress on this connection). Test observability only.
+    serial_waiters: AtomicUsize,
     pub requests: Mutex<std::collections::HashMap<String, (String, serde_json::Value)>>,
     pub last_used: Arc<StdMutex<std::time::Instant>>,
+    pub latest_observation: StdMutex<Option<LatestObservation>>,
     incoming: mpsc::Sender<ClientMsg>,
     changed: watch::Receiver<u64>,
     pump: JoinHandle<anyhow::Result<()>>,
     reader: JoinHandle<()>,
+}
+pub struct SerialQueued<'a>(&'a AtomicUsize);
+impl Drop for SerialQueued<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 impl Drop for Client {
     fn drop(&mut self) {
@@ -190,8 +211,10 @@ impl Client {
             entry,
             screen,
             serial: Mutex::new(()),
+            serial_waiters: AtomicUsize::new(0),
             requests: Mutex::new(std::collections::HashMap::new()),
             last_used,
+            latest_observation: StdMutex::new(None),
             incoming,
             changed,
             pump,
@@ -221,6 +244,20 @@ impl Client {
             }
         })
         .await?
+    }
+    /// Count this input as waiting for `serial` until the guard is dropped
+    /// (once the lock is held, or when the call is cancelled while queued).
+    pub fn queued_for_serial(&self) -> SerialQueued<'_> {
+        self.serial_waiters.fetch_add(1, Ordering::SeqCst);
+        SerialQueued(&self.serial_waiters)
+    }
+    pub fn serial_waiters(&self) -> usize {
+        self.serial_waiters.load(Ordering::SeqCst)
+    }
+    /// Wakes on every protocol message (ownership, ack/refusal, exit) and on
+    /// disconnect; the model-view revision channel covers screen output.
+    pub fn changed(&self) -> watch::Receiver<u64> {
+        self.changed.clone()
     }
     pub async fn send(&self, message: ClientMsg) -> Result<()> {
         self.incoming.send(message).await.map_err(Into::into)

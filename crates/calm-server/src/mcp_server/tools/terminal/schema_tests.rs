@@ -45,12 +45,18 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
         ("resolve", vec![], vec![]),
         (
             "observe",
-            vec!["scroll_offset", "wait_ms", "format"],
+            vec![
+                "scroll_offset",
+                "wait_ms",
+                "wait_for",
+                "settle_ms",
+                "format",
+            ],
             vec![],
         ),
         (
             "control",
-            vec!["action", "observe", "wait_ms"],
+            vec!["action", "observe", "wait_ms", "wait_for", "settle_ms"],
             vec!["action"],
         ),
         (
@@ -61,8 +67,11 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
                 "action",
                 "observe",
                 "wait_ms",
+                "wait_for",
+                "settle_ms",
+                "allow_output_since_observation",
             ],
-            vec!["observation_id", "request_id", "action"],
+            vec!["request_id", "action"],
         ),
     ] {
         let name = format!("calm.terminal.{name}");
@@ -121,13 +130,79 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
             schema.to_string().len() < 4000,
             "{name}: avoid model schema compaction"
         );
+        if name != "calm.terminal.resolve" {
+            // #1618 waiting arguments: raised budget, change mode and settle.
+            // The omitted-budget default depends on wait_for, so it is stated
+            // in the description rather than as a single JSON Schema default.
+            assert_eq!(
+                schema["properties"]["wait_ms"],
+                json!({"type":"integer","minimum":0,"maximum":20000,
+                    "description":"Omitted: 0 for wait_for=elapsed, 2000 for wait_for=change"}),
+                "{name}"
+            );
+            assert!(
+                descriptor.description.contains("2000 for")
+                    && descriptor.description.contains("change"),
+                "{name}: tool description states the change-mode default budget"
+            );
+            assert_eq!(
+                schema["properties"]["wait_for"],
+                json!({"type":"string","enum":["elapsed","change"],"default":"elapsed"}),
+                "{name}"
+            );
+            assert_eq!(
+                schema["properties"]["settle_ms"],
+                json!({"type":"integer","minimum":0,"maximum":2000,"default":150}),
+                "{name}"
+            );
+        }
     }
+    // #1618 round 07/08 guidance lives in the descriptions, not the schema.
+    let description = |name: &str| {
+        descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == name)
+            .unwrap()
+            .description
+            .clone()
+    };
+    let observe = description("calm.terminal.observe");
+    assert!(
+        observe.contains("baseline_revision") && observe.contains("previous_observation_revision")
+    );
+    let control = description("calm.terminal.control");
+    assert!(control.contains("text_omitted") && control.contains("500 ms"));
+    let input_description = description("calm.terminal.input");
+    assert!(
+        input_description.contains("stale_observation")
+            && input_description.contains("never for menu selection or clicks")
+            && input_description.contains("Omit observation_id")
+    );
     let input = &descriptors
         .iter()
         .find(|descriptor| descriptor.name == "calm.terminal.input")
         .unwrap()
         .input_schema;
+    assert_eq!(
+        input["properties"]["allow_output_since_observation"],
+        json!({"type":"boolean","default":false})
+    );
+    assert_eq!(
+        input["properties"]["observation_id"],
+        json!({"type":"string","format":"uuid"}),
+        "observation_id stays typed while optional"
+    );
     for arm in input["anyOf"].as_array().unwrap() {
+        assert!(
+            !required(arm).contains("observation_id"),
+            "observation_id is optional in both arms"
+        );
+        assert!(arm["properties"].get("observation_id").is_some());
+        assert!(
+            arm["properties"]
+                .get("allow_output_since_observation")
+                .is_some()
+        );
         let actions = arm["properties"]["action"]["anyOf"].as_array().unwrap();
         assert_eq!(actions.len(), 3);
         for (action, kind, properties, mandatory) in [

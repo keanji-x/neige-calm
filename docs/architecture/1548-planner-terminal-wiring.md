@@ -76,7 +76,11 @@ Scope comes from live MCP session/card/Track identity and is checked at tool
 admission and again by the queued write's scope callback. A connection owns a
 server-issued lease. The final writer rechecks that lease under a barrier shared
 with ownership grants, then retains the barrier until the supervisor acknowledges
-the physical PTY write. Queued stale writes are refused. If a sent write loses its
+the physical PTY write. Queued stale writes are refused. The input-surface
+fence (size, modes, alternate screen) is evaluated once, at admission of the
+tool call before the write is queued. A surface change between that check and
+the physical PTY write is not re-checked; the queued write still revalidates
+scope, ownership lease and task binding. If a sent write loses its
 acknowledgement, the barrier becomes uncertain and refuses new ownership grants;
 cancelling a Rust future does not prove the supervisor's blocking write stopped.
 Existing kernel-originated input remains a distinct trusted capability.
@@ -102,7 +106,7 @@ scrolling uses `observe.scroll_offset`; application paging uses explicit keys.
 ## Optional action observation and repeated navigation
 
 Control (claim/release) and input accept `observe=true` with optional `wait_ms`
-(0..2000). They retain the original receipt fields and add exactly one of:
+(0..20000; see the #1618 section for `wait_for`/`settle_ms`). They retain the original receipt fields and add exactly one of:
 
 ```json
 {"observation":{"status":"available","state":{"observation_id":"...","text":["..."],"control_id":"...","role":"owner"}}}
@@ -132,7 +136,175 @@ are restricted to Left/Right/Up/Down/Backspace/Delete. Enter/Escape/Tab/control 
 cannot repeat; null, noninteger and out-of-range counts fail before input. The
 repeated encoded bytes travel in one existing input request under one ownership
 barrier. Repeat belongs to the physical action fingerprint. This does not add
-mixed-action batches, automatic Enter or relaxed observation revision checks.
+mixed-action batches or automatic Enter; the only relaxed revision check is the
+explicit `allow_output_since_observation` fence below (#1618).
+
+## Change waiting, drift-tolerant input and implicit observation (#1618)
+
+`calm.terminal.observe` and the `observe=true` readbacks of control and input
+accept `wait_for` (`elapsed`, default, or `change`), `wait_ms` (0..20000, the
+budget for either mode; when omitted it is 0 for `elapsed` and 2000 for
+`change`, so the prompt's recommended `observe=true, wait_for=change` readback
+actually waits) and `settle_ms` (0..2000, default 150; rejected unless
+`wait_for=change`). `change` returns once the model projection's revision differs
+from the baseline and no further revision arrived for `settle_ms`, or at the
+budget, or when the process exited, the client became unavailable or the
+projection was invalidated (`ModelView::invalidate` wakes subscribers without
+a revision; the wait stops there and the capture after it fails explicitly
+instead of idling to the budget). Only a new revision starts or extends the
+quiet window; protocol events (acks, ownership)
+do not, and when the quiet timer completes the revision and exit state are read
+again before `settled:true` is reported, because `select!` may pick the timer
+while a newer revision notification is already ready. Baselines:
+observe uses this connection's previous observation revision (the revision at
+call start when there is none); an input readback uses the revision read
+immediately before the physical write; a control readback uses the revision at
+call start. The wait selects over `ModelView`'s `watch<u64>` revision channel
+(published under the same lock as the revision) and the client's protocol
+watch; there is no sleep-poll loop. Every observation, in either mode, carries:
+
+```json
+"wait":{"mode":"change","outcome":"changed|unchanged|exited|elapsed","waited_ms":812,"settled":true,"baseline_revision":"41"},
+"changed_since_previous_observation":true,
+"previous_observation_revision":"41"
+```
+
+`elapsed` mode reports `outcome:"elapsed"`, `settled:false`, `waited_ms` equal to
+the budget. `unchanged`/settled screens are not completion evidence; the prompt
+says so. `changed_since_previous_observation` is false when the connection had
+no previous observation.
+
+Baseline transparency (rounds 07/08): `wait.baseline_revision` is the revision
+the wait compared against, as a string like `observation_revision`; it is
+reported in elapsed mode too, where it is the same baseline a change wait
+would have used (the previous observation for observe, the pre-write revision
+for an input readback, the call-start revision for a control readback).
+`previous_observation_revision` is the revision of this connection's previous
+observation, or `null` on a fresh connection, and is what
+`changed_since_previous_observation` is computed from. The two differ after an
+action: an input readback's wait baseline is the pre-write read, while
+`changed_since_previous_observation` still compares with the last observation
+the Planner saw.
+
+Input accepts `allow_output_since_observation` (default false; part of the
+request fingerprint). When false the exact-revision fence is unchanged. When
+true the fence becomes: same binding and connection, observation younger than
+120 s, `control` unchanged and present, client available, not exited, no pending
+unknown write, `scroll_offset == 0`, and the observation's input surface (cols,
+rows, modes, alternate) equal to the live frame's; bytes are encoded against the
+live surface. The receipt reports `output_since_observation` and, when true,
+`observation_drift: {observed_revision, input_revision}` (numbers). A resize, an
+input-mode change (for example application cursor keys) or an alternate-screen
+switch in either direction is refused with a surface-changed error even with
+the flag. The alternate screen is compared as the projection's `alternate`
+flag: rmux tracks it through the saved grid, not through a mode bit, so a
+modes-only comparison would let a menu that appeared over the shell pass.
+
+Under the same fence the action is validated (encoded against the live
+surface) before stale is decided, so an invalid action — Enter with `repeat`,
+a click without mouse mode — is an RPC error whatever the revision did; only
+the exact-revision fence is relaxed by the stale result. Write authority
+(`check_binding(write)`: task running, worker session active) is decided
+under the connection's serial lock, after any readback in progress, so an
+input queued behind a long readback sees the task state as it is when its
+turn comes; a task that finished during the queue refuses the input rather
+than answering `stale_observation`.
+
+`observation_id` is optional on input. When omitted the server uses the latest
+observation captured on this client connection (any format, including action
+readbacks and the fresh observation of a stale result); the receipt reports
+`observation_id_used`. All fences still apply. A connection with no
+observation is refused ("observe first"). The fingerprint hashes
+`observation_id` as given (null when omitted), so a replayed `request_id`
+returns the same receipt. The prompt's input example omits `observation_id`
+and says to pass it only after an image observation or to act deliberately on
+an older observation.
+
+### Structured stale refusal (rounds 07/08)
+
+In round 07 three inputs were refused with the RPC error "terminal changed
+since observation; observe again" because only Claude's bottom status line had
+changed between a settled readback and the next input; each refusal cost a
+separate observe round trip. Now, when every other fence passes (binding,
+connection, age, availability, no pending unknown write, control, live
+viewport and input surface) and only the exact revision differs, input returns
+a successful tool result instead of an error:
+
+```json
+{"terminal_id":"..","request_id":"enter-3","outcome":"stale_observation","application_result":"unverified",
+ "observation_id_used":"<old>","observed_revision":41,"current_revision":42,
+ "next":"inspect observation.state; if only status text changed, resend the same request_id with allow_output_since_observation=true, else act on the new state",
+ "observation":{"status":"available","state":{"observation_id":"<fresh>","text":["..."],"previous_observation_revision":"41", ...}}}
+```
+
+No physical write happens and nothing is cached under the `request_id`, so a
+later resend with a different flag or observation id does not conflict. The
+fresh observation is a text capture taken at once and registered as this
+connection's latest, so the advised resend may omit `observation_id`; when the
+capture fails the receipt says `observation:{"status":"unavailable","reason"}`.
+`observed_revision`/`current_revision` are numbers like `observation_drift`.
+Every other refusal — including a revision change combined with a control or
+surface change — stays an RPC error; without the flag the surface fence is
+now checked too, so a resize plus output reports the surface error rather than
+inviting a flagged resend. The summary line reads `input stale_observation
+readback available`.
+
+### Release readback economy (rounds 07/08)
+
+A release rarely changes the screen, and its readback repeated the unchanged
+text. For `control` action `release` with `observe=true`, when the captured
+revision equals this connection's previous observation revision (read before
+the readback registers itself) and both captures are live viewports
+(`scroll_offset` 0; the connection's latest observation stores its offset),
+`observation.state` omits the `text` array and carries
+`"text_omitted":"unchanged since previous observation <id>"`; every other
+field (ids, revision, geometry, cursor, wait, task status) stays. A history
+view shares the live revision but not its text, so after one the release
+readback includes the text. After output the text is included as before. Claim readbacks and observe always
+include text. The tool descriptions and prompt also say that claim/release
+readbacks should use `wait_for=elapsed` or a change budget of at most 500 ms,
+keeping long change budgets for program output after Enter, and that
+`allow_output_since_observation=true` is for Escape/Ctrl+C while a program
+streams and for typing or submitting in an input field whose surrounding
+status text keeps changing (after inspecting the fresh state), never for menu
+selection or clicks.
+
+Receipts: input drops `application_completed` and reports
+`application_result:"unverified"` on every outcome — written, refused and
+unknown (enqueue failure, acknowledgement timeout, cancelled replay) — plus
+`next` on acknowledged ones. Detach returns
+`{"detached":true,"had_client":bool,"terminal_id":..,"connection_id":<closed or null>,"terminal_session_id":<closed client's or null>}`;
+without a client the terminal id comes from a read-only target resolution when
+possible.
+
+Text results of the five terminal tools keep the complete state only in
+`structuredContent`; `content[0].text` is a one-line summary (ids, revision,
+role, geometry, cursor, wait outcome, receipt facts, or the operation id and
+outcome of an open that did not succeed) and never contains screen text.
+Collectors that read terminal results must read `structuredContent`; the
+summary is not parseable metadata. The UX collector counts a completed input
+whose receipt outcome is `stale_observation` as an observation refusal (next
+to the error-string refusals) and accepts a release readback whose state has
+`text_omitted` instead of `text` without adding an observation entry for it.
+
+Readback ordering: an action readback re-resolves the target after its wait,
+not only before it. The wait (up to 20 s) can span a task completion or an
+authority change, so `task_status` and `controllable` in the returned state
+are the post-wait values; if the execution binding changed during the wait the
+readback is `unavailable` with the reason and the action receipt stands.
+
+Serialization: one connection runs one action at a time, and the readback wait
+is part of the action. A second input or control call from the same Planner on
+the same terminal queues behind a readback in progress (bounded by the wait
+budget) instead of writing into the screen the first call is still waiting to
+read back. Releasing the serial before the readback would keep the fences
+sound (the pending reservation is cleared by the acknowledgement and the
+revision fence still applies) but would let the second write end the first
+wait with output that is not the first action's reply, so the readback stays
+inside the serialized section. Connections of other Planners or humans are not
+serialized by it. Image results keep their metadata text block and native PNG block. A probe
+of Codex 0.153.4 showed the model receives both `content` and
+`structuredContent` verbatim, so the duplicate state was real.
 
 ## Provider approval entry point (#1578)
 
