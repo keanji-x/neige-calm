@@ -369,7 +369,9 @@ class CollectorTests(unittest.TestCase):
     def test_observation_refusal_variants_and_error_envelopes(self):
         for message in ("observation expired; observe again",
                         "observation belongs to another connection or expired",
-                        "terminal changed since observation; observe again"):
+                        "terminal changed since observation; observe again",
+                        "terminal surface changed since observation (size, input modes or alternate screen); observe again",
+                        "no observation on this connection; observe first"):
             for envelope in ("error", "result", "both"):
                 failed = row(1, "calm.terminal.input")
                 item = failed["params"]["item"]
@@ -492,12 +494,25 @@ class CollectorTests(unittest.TestCase):
             with self.subTest(result=result), self.assertRaises(ux.EvidenceError):
                 ux.terminal_evidence([bad])
 
-    def test_text_only_mcp_metadata_is_parsed(self):
-        import json
+    def test_summary_only_result_is_rejected_not_parsed_as_metadata(self):
         value = row(1)["params"]["item"]
         metadata = value["result"]["structuredContent"]
-        value["result"] = {"content": [{"type": "text", "text": json.dumps(metadata)}]}
-        self.assertEqual(ux.metadata(value), metadata)
+        for text in (json.dumps(metadata), "terminal t1 observation o1 revision 3 owner 80x24 cursor 0,0 wait elapsed; full state in structuredContent"):
+            value["result"] = {"content": [{"type": "text", "text": text}]}
+            with self.subTest(text=text), self.assertRaisesRegex(ux.EvidenceError, "lacks structuredContent; content is a summary"):
+                ux.metadata(value)
+
+    def test_drift_and_implicit_observation_refusals_are_counted_exactly(self):
+        for message, counted in (
+                ("terminal surface changed since observation (size, input modes or alternate screen); observe again", 1),
+                ("no observation on this connection; observe first", 1),
+                ("terminal control changed; observe before input", 0),
+                ("observe first", 0)):
+            failed = row(1, "calm.terminal.input")
+            failed["params"]["item"]["status"] = "failed"
+            failed["params"]["item"]["error"] = {"message": f"MCP error: -32403: {message}"}
+            with self.subTest(message=message):
+                self.assertEqual(ux.metrics([failed])["observation_refusals"], counted)
 
     def test_tool_errors_retained_as_review_findings(self):
         bad = row(2, "calm.terminal.input")

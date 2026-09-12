@@ -152,18 +152,9 @@ def metadata(call):
         raise EvidenceError("terminal call has no structured result")
     value = result.get("structuredContent")
     if value is None:
-        # App-server releases may preserve MCP text while omitting the redundant
-        # structuredContent field. ToolResult::structured writes the same JSON.
-        content = result.get("content", [])
-        if not isinstance(content, list) or not all(isinstance(item, dict) for item in content):
-            raise EvidenceError("terminal content is malformed")
-        texts = [item.get("text") for item in content if item.get("type") == "text"]
-        if len(texts) != 1:
-            raise EvidenceError("terminal result lacks one metadata JSON text")
-        try:
-            value = json.loads(texts[0])
-        except (TypeError, json.JSONDecodeError) as error:
-            raise EvidenceError("terminal metadata is not JSON") from error
+        # Terminal tools keep the state only in structuredContent; the text
+        # block is a one-line summary (#1618), so there is nothing to parse.
+        raise EvidenceError("terminal result lacks structuredContent; content is a summary")
     if not isinstance(value, dict):
         raise EvidenceError("terminal metadata is not an object")
     return value
@@ -194,9 +185,13 @@ def observation_refused(call):
                 messages.append(part.get("text"))
     # Exact production refusals in terminal_interaction/operations.rs. A broad
     # word-order regex misses the revision fence and counts unrelated errors.
+    # The surface fence message continues with the changed properties; its
+    # prefix is stable.
     refusals = ("observation expired; observe again",
                 "observation belongs to another connection or expired",
-                "terminal changed since observation; observe again")
+                "terminal changed since observation; observe again",
+                "terminal surface changed since observation",
+                "no observation on this connection; observe first")
     return any(refusal in message for message in messages if isinstance(message, str)
                for refusal in refusals)
 
