@@ -30,6 +30,7 @@ use crate::actor::Actor;
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
+use crate::model::Terminal;
 use crate::role_gate::RoleViolation;
 use crate::session_projection_lookup::resolve_session_for_thread;
 use crate::session_projection_repo::AgentProvider;
@@ -192,10 +193,25 @@ pub(crate) async fn ingest_provider_hook(
     // a card FSM and never occupies a slot of the bounded worker cache (a
     // flood of terminal hooks, malformed ones included, must not evict a
     // worker key). The ring dedupes on the same key, per terminal.
+    //
+    // The routing key is the card's durable execution identity, not only
+    // `cards.kind`: `kind` is patchable through the public card PATCH, which
+    // does not remove the terminal row, the process or the generated hook
+    // settings. A card that owns a terminal row is a terminal for hook
+    // purposes whatever its `kind` says; a `kind == "terminal"` card whose
+    // row is already gone is still never worker state.
     let card = s.repo.card_get(&card_id_str).await?;
-    if card.as_ref().is_some_and(|card| card.kind == "terminal") {
-        return ingest_terminal_signal(s, &card_id_str, &payload, provider, hook_idempotency_key)
-            .await;
+    let terminal = s.repo.terminal_get_by_card(&card_id_str).await?;
+    if terminal.is_some() || card.as_ref().is_some_and(|card| card.kind == "terminal") {
+        return ingest_terminal_signal(
+            s,
+            &card_id_str,
+            terminal,
+            &payload,
+            provider,
+            hook_idempotency_key,
+        )
+        .await;
     }
 
     {
@@ -272,6 +288,7 @@ pub(crate) async fn ingest_provider_hook(
 async fn ingest_terminal_signal(
     s: &RouteState,
     card_id: &str,
+    terminal: Option<Terminal>,
     payload: &Value,
     provider: HookProvider,
     hook_idempotency_key: String,
@@ -280,7 +297,7 @@ async fn ingest_terminal_signal(
         provider,
         crate::terminal_hooks::parse_terminal_signal(payload),
     ) {
-        (HookProvider::Claude, Ok(incoming)) => match s.repo.terminal_get_by_card(card_id).await? {
+        (HookProvider::Claude, Ok(incoming)) => match terminal {
             Some(term) => {
                 let event = incoming.event.clone();
                 let seq = s.terminal_renderer.push_signal(

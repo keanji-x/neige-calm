@@ -409,11 +409,17 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
         json!({"wait_for":"signal","wait_ms":10000,"signal_events":["user_prompt_submit"]}),
     )
     .await;
+    assert_eq!(receipt(&prompt)["outcome"], "written", "{prompt}");
     assert_eq!(
         state(&prompt)["wait"]["signal"]["event"],
         "user_prompt_submit",
         "{prompt}"
     );
+    // The wait ended on the prompt: the fake's Stop and its turn line land
+    // later. Await the turn's projected completion so the next submission
+    // observes a settled screen (a turn line arriving between its observation
+    // and the write would make it `stale_observation`).
+    h.observe_text(&terminal, "TURN:2:again").await;
     // ... and session_end never arrives: budget, while the stop is still listed.
     let none = submit(
         &h,
@@ -423,9 +429,11 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
         json!({"wait_for":"signal","wait_ms":1500,"signal_events":["session_end"]}),
     )
     .await;
+    assert_eq!(receipt(&none)["outcome"], "written", "{none}");
     let none = state(&none);
     assert_eq!(none["wait"]["outcome"], "unchanged", "{none}");
     assert!(events_of(none).contains(&"stop".to_string()), "{none}");
+    h.observe_text(&terminal, "TURN:3:third").await;
     // A permission notification carries its notification_type.
     let perm = submit(
         &h,
@@ -435,6 +443,7 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
         json!({"wait_for":"signal","wait_ms":10000}),
     )
     .await;
+    assert_eq!(receipt(&perm)["outcome"], "written", "{perm}");
     let perm = state(&perm);
     assert_eq!(perm["wait"]["signal"]["event"], "notification", "{perm}");
     assert_eq!(
@@ -1113,5 +1122,314 @@ async fn hook_settings_file_is_removed_when_the_track_is_deleted() {
     );
     assert!(sibling.exists());
     assert!(h.state.terminal_renderer.get(&terminal).is_none());
+    h.stop(&terminal).await;
+}
+
+/// A human client on `terminal` (its own pump, no command channel) that has
+/// just taken control: returns once its `OwnerChanged` names `user`. The
+/// pump is aborted through the returned handle; the sender keeps it alive.
+async fn human_takeover(
+    entry: &std::sync::Arc<calm_server::terminal_renderer::RendererEntry>,
+    terminal: &str,
+    user: uuid::Uuid,
+) -> (
+    tokio::task::AbortHandle,
+    tokio::sync::mpsc::Sender<calm_session::ClientMsg>,
+) {
+    use calm_server::terminal_renderer::{ClientInputScope, ClientPumpContext, run_client_pump};
+    use calm_session::{
+        ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
+        RenderEncoding,
+    };
+    let (incoming, rx) = tokio::sync::mpsc::channel(8);
+    let (tx, mut outgoing) = tokio::sync::mpsc::channel(32);
+    let pump = tokio::spawn(run_client_pump(
+        rx,
+        tx,
+        ClientPumpContext {
+            input_barrier: entry.handle.input_barrier.clone(),
+            input_scope: ClientInputScope::InteractiveUser,
+            event_rx: entry.subscribe(),
+            event_tx: entry.handle.event_tx.clone(),
+            render_plane: entry.handle.render_plane.clone(),
+            exit: entry.exit.clone(),
+            supervisor_tx: entry.handle.supervisor_tx.clone(),
+            owner_registry: entry.handle.owner_registry.clone(),
+            session_id: entry.handle.session_id,
+            terminal_id: terminal.to_owned(),
+        },
+    ));
+    incoming
+        .send(ClientMsg::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            terminal_id: terminal.to_owned(),
+            client_id: user,
+            desired_size: PtySize {
+                cols: 80,
+                rows: 24,
+                pixel_width: None,
+                pixel_height: None,
+            },
+            cell_size: None,
+            initial_scrollback: InitialScrollback::None,
+            resume_from: None,
+            role_hint: None,
+            capabilities: ClientCapabilities {
+                render_encodings: vec![RenderEncoding::Vt],
+                supports_scrollback: true,
+                supports_sixel: false,
+                supports_images: false,
+                kernel_originated_input: false,
+            },
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        outgoing.recv().await,
+        Some(DaemonMsg::ServerHello { .. })
+    ));
+    incoming.send(ClientMsg::OwnerClaim).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if matches!(outgoing.recv().await, Some(DaemonMsg::OwnerChanged { owner_client_id: Some(id) }) if id == user) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        entry.handle.owner_registry.lock().unwrap().current_owner(),
+        Some(user)
+    );
+    (pump.abort_handle(), incoming)
+}
+
+/// #1620 R1 — the hook route keys on the card's durable execution identity
+/// (its terminal row), not on the patchable `cards.kind`. After a public
+/// PATCH sets the kind to `codex` (the terminal row, process and hook
+/// settings all stay), a Claude hook for the card still lands in the ring
+/// and is never persisted or projected as worker state.
+#[tokio::test]
+async fn hook_for_a_terminal_owning_card_stays_a_signal_after_a_kind_patch() {
+    use tower::ServiceExt;
+    let h = Harness::start().await;
+    let (opened, terminal) = open_fake_claude(&h, "hooks-kind-patch").await;
+    let card_id = opened["card_id"].as_str().unwrap().to_owned();
+    let response = h
+        .app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{card_id}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(r#"{"kind":"codex"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let card = h.state.repo.card_get(&card_id).await.unwrap().unwrap();
+    assert_eq!(card.kind, "codex", "the PATCH is accepted as it stands");
+    assert!(
+        h.state
+            .repo
+            .terminal_get_by_card(&card_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "the terminal row survives the kind change"
+    );
+
+    let mut bus = h.state.events.subscribe();
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    let before = entry.signals.last_seq();
+    let stop =
+        json!({"hook_event_name":"Stop","session_id":"unresolved-session","message":"after patch"});
+    assert_eq!(h.post_claude_hook(&card_id, &stop).await, 200);
+    assert_eq!(entry.signals.last_seq(), before + 1, "the hook is a signal");
+    // A duplicate delivery is still deduped by the ring, not the worker cache.
+    assert_eq!(h.post_claude_hook(&card_id, &stop).await, 200);
+    assert_eq!(entry.signals.last_seq(), before + 1);
+    // Never worker state: nothing was persisted or broadcast for the card.
+    // (The MCP tools' own admission fence refuses the retargeted card, so the
+    // ring is read directly rather than through an observation.)
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    while let Ok(Ok(envelope)) = tokio::time::timeout_at(deadline, bus.recv()).await {
+        assert!(
+            !matches!(
+                envelope.event,
+                Event::ClaudeHook { .. } | Event::CodexHook { .. }
+            ),
+            "a hook for a terminal-owning card must not be persisted as a hook event: {:?}",
+            envelope.event
+        );
+    }
+    h.stop(&terminal).await;
+}
+
+/// #1620 R2 — a replayed `open claim:true` after a human takeover that this
+/// connection has not applied yet (its `OwnerChanged` delivery is held) must
+/// not report `claimed` from the cached lease: "already owned by this
+/// connection" is decided against the owner registry, and the replay
+/// reports the takeover reason while the human keeps control.
+#[tokio::test]
+async fn open_with_claim_replay_reports_takeover_before_the_owner_change_is_delivered() {
+    let h = Harness::start().await;
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"held-replay","claim":true}),
+        )
+        .await;
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    assert_eq!(opened["claim"]["status"], "claimed", "{opened}");
+    let held = h
+        .interaction()
+        .hold_delivery(&terminal)
+        .await
+        .expect("the open established the Planner's client");
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    let user = uuid::Uuid::new_v4();
+    let (pump, _incoming) = human_takeover(&entry, &terminal, user).await;
+    // The Planner's cache still says owner: the takeover has not been applied.
+    let stale = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(stale["role"], "owner", "delivery is held: {stale}");
+
+    let replayed = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"held-replay","claim":true}),
+        )
+        .await;
+    assert_eq!(replayed["terminal_id"], terminal);
+    assert_eq!(replayed["claim"]["status"], "unavailable", "{replayed}");
+    assert_eq!(
+        replayed["claim"]["reason"], "terminal is controlled by another client",
+        "{replayed}"
+    );
+    assert_eq!(
+        entry.handle.owner_registry.lock().unwrap().current_owner(),
+        Some(user),
+        "the human keeps control"
+    );
+    drop(held);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let view = h
+                .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+                .await;
+            if view["role"] == "observer" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the held OwnerChanged is applied once delivery resumes");
+    // A genuine replay (the lease is really this connection's) keeps it.
+    pump.abort();
+    let reclaimed = h
+        .ok(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"claim"}),
+        )
+        .await;
+    let control_id = reclaimed["control_id"].as_str().unwrap().to_owned();
+    let replayed = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"held-replay","claim":true}),
+        )
+        .await;
+    assert_eq!(replayed["claim"]["status"], "claimed", "{replayed}");
+    assert_eq!(
+        replayed["claim"]["control_id"], control_id,
+        "no second claim"
+    );
+    h.stop(&terminal).await;
+}
+
+/// #1620 R6 — a human takeover applied back to back with the Planner's own
+/// grant never shows `owner == me` on the Planner's connection. The claim
+/// ends on the counted `OwnerChanged` and reports the takeover instead of
+/// idling to its 7 s budget. Delivery on the Planner's connection is held
+/// from inside the claim window until the human has taken over, so the grant
+/// and the takeover are applied in one go.
+#[tokio::test]
+async fn open_with_claim_reports_a_takeover_folded_with_its_grant() {
+    use std::sync::{Arc, Mutex};
+    let h = Harness::start().await;
+    let user = uuid::Uuid::new_v4();
+    type HumanClient = (
+        tokio::task::AbortHandle,
+        tokio::sync::mpsc::Sender<calm_session::ClientMsg>,
+    );
+    let human: Arc<Mutex<Option<HumanClient>>> = Arc::new(Mutex::new(None));
+    let seam_human = human.clone();
+    let renderer = h.state.terminal_renderer.clone();
+    let service = h.interaction();
+    h.interaction()
+        .set_claim_window_seam(Box::new(move |terminal_id: String| {
+            Box::pin(async move {
+                let held = service
+                    .hold_delivery(&terminal_id)
+                    .await
+                    .expect("the open established the Planner's client");
+                let entry = renderer.get(&terminal_id).unwrap();
+                tokio::spawn(async move {
+                    // The Planner's claim-if-unowned is granted (the registry
+                    // names an owner) while its OwnerChanged sits behind the gate.
+                    let start = std::time::Instant::now();
+                    while entry
+                        .handle
+                        .owner_registry
+                        .lock()
+                        .unwrap()
+                        .current_owner()
+                        .is_none()
+                    {
+                        assert!(
+                            start.elapsed() < Duration::from_secs(5),
+                            "grant never landed"
+                        );
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    let client = human_takeover(&entry, &terminal_id, user).await;
+                    *seam_human.lock().unwrap() = Some(client);
+                    drop(held);
+                });
+            })
+        }));
+    let started = std::time::Instant::now();
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"folded","claim":true}),
+        )
+        .await;
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the claim must not idle to its budget"
+    );
+    assert!(human.lock().unwrap().is_some(), "the human took over");
+    assert_eq!(opened["claim"]["status"], "unavailable", "{opened}");
+    assert_eq!(
+        opened["claim"]["reason"], "terminal control was taken by another client",
+        "{opened}"
+    );
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    assert_eq!(
+        entry.handle.owner_registry.lock().unwrap().current_owner(),
+        Some(user),
+        "the human keeps control"
+    );
+    if let Some((pump, _incoming)) = human.lock().unwrap().take() {
+        pump.abort();
+    }
     h.stop(&terminal).await;
 }

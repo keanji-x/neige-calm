@@ -1,10 +1,12 @@
 use crate::terminal_renderer::{
-    ClientInputScope, ClientPumpContext, PumpCommand, RendererEntry, run_client_pump_with_commands,
+    ClientInputScope, ClientPumpContext, INPUT_REVOKED_BEFORE_WRITE, PumpCommand, RendererEntry,
+    run_client_pump_with_commands,
 };
 use anyhow::{Result, ensure};
+use calm_session::terminal_session::INPUT_REQUIRES_OWNER_ROLE;
 use calm_session::{
-    ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
-    RenderEncoding, Role,
+    ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION,
+    ProtocolErrorCode, PtySize, RenderEncoding, Role,
 };
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -41,6 +43,21 @@ pub struct ScreenState {
     /// claim that is still in flight.
     pub protocol_errors: u64,
     pub last_protocol_error: Option<String>,
+    /// `OwnerChanged` deliveries applied on this connection. A claim waits on
+    /// this counter, not only on `owner == me`: a grant and a takeover applied
+    /// back to back leave `owner` naming the other client, and the claim must
+    /// still be told (#1620).
+    pub owner_changes: u64,
+}
+/// Whether a protocol error is the refusal of a pending input, so the input's
+/// fate is known and `pending` may become `refused`. Both input refusals and
+/// ownership-claim refusals use `NotOwner` and the wire carries no input seq,
+/// so the two input messages are matched exactly; every other error (a
+/// refused claim-if-unowned, a revoked claim scope, a lease exhaustion) leaves
+/// a pending input UNKNOWN and later writes stay fenced (#1620 R5).
+pub fn refers_to_pending_input(code: ProtocolErrorCode, message: &str) -> bool {
+    code == ProtocolErrorCode::NotOwner
+        && (message == INPUT_REQUIRES_OWNER_ROLE || message == INPUT_REVOKED_BEFORE_WRITE)
 }
 impl ScreenState {
     fn apply(&mut self, message: DaemonMsg, id: Uuid) -> Result<()> {
@@ -52,13 +69,16 @@ impl ScreenState {
                 } else {
                     None
                 };
+                self.owner_changes = self.owner_changes.wrapping_add(1);
             }
             DaemonMsg::InputAck { input_seq } => {
                 self.ack = input_seq;
                 self.pending = None;
             }
-            DaemonMsg::ProtocolError { message, .. } => {
-                if let Some(pending) = self.pending.take() {
+            DaemonMsg::ProtocolError { code, message, .. } => {
+                if refers_to_pending_input(code, &message)
+                    && let Some(pending) = self.pending.take()
+                {
                     self.refused = pending;
                 }
                 self.protocol_errors = self.protocol_errors.wrapping_add(1);
@@ -85,6 +105,11 @@ pub struct Client {
     pub requests: Mutex<std::collections::HashMap<String, (String, serde_json::Value)>>,
     pub last_used: Arc<StdMutex<std::time::Instant>>,
     pub latest_observation: StdMutex<Option<LatestObservation>>,
+    /// Test seam (#1620): the reader takes this lock before applying each
+    /// daemon message, so a test can hold protocol delivery (an
+    /// `OwnerChanged`, a refusal) on this connection while the registry moves.
+    #[cfg(feature = "fixtures")]
+    pub delivery_gate: Arc<Mutex<()>>,
     incoming: mpsc::Sender<ClientMsg>,
     commands: mpsc::Sender<PumpCommand>,
     changed: watch::Receiver<u64>,
@@ -189,8 +214,13 @@ impl Client {
             pending: None,
             protocol_errors: 0,
             last_protocol_error: None,
+            owner_changes: 0,
         };
         let screen = Arc::new(StdMutex::new(state));
+        #[cfg(feature = "fixtures")]
+        let delivery_gate = Arc::new(Mutex::new(()));
+        #[cfg(feature = "fixtures")]
+        let reader_gate = delivery_gate.clone();
         let (notify, changed) = watch::channel(0u64);
         let reader_screen = screen.clone();
         let last_used = Arc::new(StdMutex::new(std::time::Instant::now()));
@@ -202,6 +232,8 @@ impl Client {
                 tokio::select! {
                     message = outgoing.recv() => {
                         let Some(message) = message else { break; };
+                        #[cfg(feature = "fixtures")]
+                        let _delivery = reader_gate.lock().await;
                         let Ok(mut state) = reader_screen.lock() else { break; };
                         if state.apply(message,id).is_err() { state.available=false; }
                         notify.send_modify(|sequence| *sequence=sequence.wrapping_add(1));
@@ -231,6 +263,8 @@ impl Client {
             requests: Mutex::new(std::collections::HashMap::new()),
             last_used,
             latest_observation: StdMutex::new(None),
+            #[cfg(feature = "fixtures")]
+            delivery_gate,
             incoming,
             commands,
             changed,
@@ -287,5 +321,123 @@ impl Client {
             .send(PumpCommand::ClaimIfUnowned)
             .await
             .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal_renderer::CONTROL_HELD_BY_ANOTHER_CLIENT;
+
+    fn state(pending: Option<u64>) -> ScreenState {
+        ScreenState {
+            owner: Some(Uuid::new_v4()),
+            control: Some(Uuid::new_v4()),
+            available: true,
+            exited: false,
+            ack: 2,
+            refused: 0,
+            pending,
+            protocol_errors: 0,
+            last_protocol_error: None,
+            owner_changes: 0,
+        }
+    }
+    fn error(code: ProtocolErrorCode, message: &str) -> DaemonMsg {
+        DaemonMsg::ProtocolError {
+            code,
+            message: message.to_owned(),
+            expected_version: None,
+        }
+    }
+
+    /// #1620 R5 — an ownership error never resolves an UNKNOWN input: the
+    /// reservation stays, so the next input is still fenced by
+    /// `state.pending.is_none()` ("prior input outcome unknown"). The
+    /// integration harness cannot leave `pending` set (its supervisor
+    /// acknowledges or refuses every write), so the classification is
+    /// pinned here on the state machine itself.
+    #[test]
+    fn claim_refusal_leaves_a_pending_input_unknown() {
+        let me = Uuid::new_v4();
+        for message in [
+            CONTROL_HELD_BY_ANOTHER_CLIENT,
+            "terminal control is unavailable or its scope was revoked",
+        ] {
+            let mut state = state(Some(3));
+            state
+                .apply(error(ProtocolErrorCode::NotOwner, message), me)
+                .unwrap();
+            assert_eq!(state.pending, Some(3), "{message}");
+            assert_eq!(state.refused, 0, "{message}");
+            assert_eq!(state.protocol_errors, 1);
+            assert_eq!(state.last_protocol_error.as_deref(), Some(message));
+        }
+        let mut state = state(Some(3));
+        state
+            .apply(
+                error(
+                    ProtocolErrorCode::BadSequence,
+                    "terminal owner lease generation exhausted",
+                ),
+                me,
+            )
+            .unwrap();
+        assert_eq!(state.pending, Some(3));
+        assert_eq!(state.refused, 0);
+    }
+
+    /// The two input refusals do resolve the reservation as refused.
+    #[test]
+    fn input_refusals_resolve_the_pending_input() {
+        let me = Uuid::new_v4();
+        for message in [INPUT_REQUIRES_OWNER_ROLE, INPUT_REVOKED_BEFORE_WRITE] {
+            let mut state = state(Some(3));
+            state
+                .apply(error(ProtocolErrorCode::NotOwner, message), me)
+                .unwrap();
+            assert_eq!(state.pending, None, "{message}");
+            assert_eq!(state.refused, 3, "{message}");
+        }
+        // The message alone is not enough: the code must be NotOwner.
+        let mut state = state(Some(3));
+        state
+            .apply(
+                error(ProtocolErrorCode::BadSequence, INPUT_REQUIRES_OWNER_ROLE),
+                me,
+            )
+            .unwrap();
+        assert_eq!(state.pending, Some(3));
+    }
+
+    /// #1620 R6 — every `OwnerChanged` is counted, including a grant folded
+    /// with a later takeover, which leaves `owner` naming the other client.
+    #[test]
+    fn owner_changes_counts_folded_deliveries() {
+        let me = Uuid::new_v4();
+        let human = Uuid::new_v4();
+        let mut state = state(None);
+        state.owner = None;
+        state.control = None;
+        state
+            .apply(
+                DaemonMsg::OwnerChanged {
+                    owner_client_id: Some(me),
+                },
+                me,
+            )
+            .unwrap();
+        assert!(state.control.is_some());
+        state
+            .apply(
+                DaemonMsg::OwnerChanged {
+                    owner_client_id: Some(human),
+                },
+                me,
+            )
+            .unwrap();
+        assert_eq!(state.owner, Some(human));
+        assert_eq!(state.control, None);
+        assert_eq!(state.owner_changes, 2);
     }
 }

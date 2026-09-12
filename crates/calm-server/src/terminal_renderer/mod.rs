@@ -22,6 +22,7 @@ mod attach_reader;
 mod child_ready;
 mod client_pump;
 mod control_writer;
+pub use control_writer::INPUT_REVOKED_BEFORE_WRITE;
 mod input_authority;
 mod model_view;
 pub use input_authority::{ClientInputScope, InputBarrier, WriteAuthority};

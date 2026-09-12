@@ -43,6 +43,10 @@ pub(crate) struct ReadbackBaseline {
 /// previous observation on the connection; the rest are counted as dropped).
 pub const SIGNALS_PER_OBSERVATION: usize = 20;
 
+/// Reason of an `open claim:true` whose granted claim was taken over by
+/// another client before this connection observed the grant (#1620 R6).
+pub const CONTROL_TAKEN_BY_ANOTHER_CLIENT: &str = "terminal control was taken by another client";
+
 /// Test seam run inside the open+claim window (#1620), given the terminal id.
 #[cfg(feature = "fixtures")]
 pub type ClaimWindowSeam =
@@ -324,7 +328,11 @@ impl TerminalInteraction {
     /// the claim fails with [`CONTROL_HELD_BY_ANOTHER_CLIENT`]; the same
     /// holds for a replayed open (same request_id) after a human takeover.
     /// Control already held by this connection returns the current
-    /// observation without a second claim.
+    /// observation without a second claim — "held by this connection" is
+    /// also decided against the owner registry under its lock, never from
+    /// the cached `control` alone: after a takeover whose `OwnerChanged` this
+    /// connection has not applied yet, the cache still says owner while the
+    /// registry names the human, and the replay must report that takeover.
     pub async fn claim_after_open(
         &self,
         identity: &ToolCallIdentity,
@@ -337,18 +345,34 @@ impl TerminalInteraction {
         let client = self.client(identity, &resolved.binding).await?;
         let terminal = resolved.binding.terminal_id.as_str();
         let _serial = client.serial.lock().await;
-        let (control, errors_before) = {
+        let (control, errors_before, owner_changes_before) = {
             let state = client
                 .screen
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
-            (state.control, state.protocol_errors)
+            (state.control, state.protocol_errors, state.owner_changes)
         };
         if control.is_some() {
-            let receipt = json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":control});
-            return Ok(self
-                .with_observation(identity, &client, receipt, Some(readback), None)
-                .await);
+            // The cached lease is trusted only while the registry agrees.
+            let registry_owner = client
+                .entry
+                .handle
+                .owner_registry
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal owner registry poisoned"))?
+                .current_owner();
+            match registry_owner {
+                Some(owner) if owner == client.id => {
+                    let receipt = json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":control});
+                    return Ok(self
+                        .with_observation(identity, &client, receipt, Some(readback), None)
+                        .await);
+                }
+                Some(_) => anyhow::bail!("{CONTROL_HELD_BY_ANOTHER_CLIENT}"),
+                // Released since the cache was written (its `OwnerChanged`
+                // still in flight): claim-if-unowned below decides.
+                None => {}
+            }
         }
         #[cfg(feature = "fixtures")]
         self.run_claim_window_seam(terminal).await;
@@ -368,11 +392,25 @@ impl TerminalInteraction {
             })
             .ok();
         client.claim_if_unowned().await?;
+        // Ends on the grant, on a refusal, or on an `OwnerChanged` that leaves
+        // another client as owner while the registry agrees: a grant and a
+        // human takeover applied back to back never show `owner == me`, so
+        // waiting on that alone would idle to the budget (#1620 R6). A stale
+        // `OwnerChanged` naming a client the registry no longer names keeps
+        // the wait going; the pump's own outcome ends it.
+        let registry = client.entry.handle.owner_registry.clone();
         client
             .wait(
                 |state| {
                     (state.owner == Some(client.id) && state.control != control)
                         || state.protocol_errors != errors_before
+                        || (state.owner_changes != owner_changes_before
+                            && state.owner != Some(client.id)
+                            && registry
+                                .lock()
+                                .map(|registry| registry.current_owner())
+                                .unwrap_or(None)
+                                .is_some_and(|owner| owner != client.id))
                 },
                 Duration::from_secs(7),
             )
@@ -383,10 +421,16 @@ impl TerminalInteraction {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
             if state.owner != Some(client.id) || state.control == control {
-                let reason = state
-                    .last_protocol_error
-                    .clone()
-                    .unwrap_or_else(|| CONTROL_HELD_BY_ANOTHER_CLIENT.to_owned());
+                let reason = if state.protocol_errors != errors_before {
+                    state
+                        .last_protocol_error
+                        .clone()
+                        .unwrap_or_else(|| CONTROL_HELD_BY_ANOTHER_CLIENT.to_owned())
+                } else if state.owner_changes != owner_changes_before {
+                    CONTROL_TAKEN_BY_ANOTHER_CLIENT.to_owned()
+                } else {
+                    CONTROL_HELD_BY_ANOTHER_CLIENT.to_owned()
+                };
                 anyhow::bail!("{reason}");
             }
             json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":state.control})
@@ -406,6 +450,24 @@ impl TerminalInteraction {
             .claim_window_seam
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(seam);
+    }
+    /// Test seam (#1620): hold protocol delivery on the Planner's connection
+    /// to `terminal_id` (the reader applies nothing until the guard drops).
+    /// `None` when this identity has no client on the terminal.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub async fn hold_delivery(
+        &self,
+        terminal_id: &str,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let gate = self
+            .clients
+            .lock()
+            .await
+            .values()
+            .find(|client| client.binding.terminal_id == terminal_id)
+            .map(|client| client.delivery_gate.clone())?;
+        Some(gate.lock_owned().await)
     }
     #[cfg(feature = "fixtures")]
     async fn run_claim_window_seam(&self, terminal_id: &str) {

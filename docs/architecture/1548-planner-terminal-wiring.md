@@ -60,9 +60,13 @@ action does not require taking a screenshot.
 
 Use `format=image` for color, reverse-video selection or layout-dependent TUI
 decisions; plain text does not preserve these visual cues. Image replies include
-a native MCP PNG block and `image_source`; text replies omit both. Explicit image
-errors are returned without a fallback to text. Both formats use one immutable
-captured frame for their metadata and any image.
+a native MCP PNG block and `image_source`; text replies omit both. For `observe`,
+an explicit image error is returned as the call's error, never as a text
+observation. `open` is the exception: once the create (and the claim) succeeded,
+an image that cannot be rendered never fails the open; the text observation is
+returned with `image: {status: unavailable, reason}` and no PNG (see the
+composite-actions section). Both formats use one immutable captured frame for
+their metadata and any image.
 
 For explicit image observations, the frame is immutable before rasterization. System-font-only `resvg` renders
 escaped terminal text into a bounded PNG with a fixed cell geometry. No terminal
@@ -413,7 +417,10 @@ byte-identical every turn, and the ingest key is
 posts, generated once per bridge process and kept across its retries and the
 replayable fallback file (whose stem hashes the stamped body): distinct
 invocations are distinct events, a redelivery of one invocation is still a
-duplicate. Server keys are unchanged; the field travels with the payload.
+duplicate. Server keys are unchanged; the field travels with the payload. The
+stamp is not terminal-specific: two invocations of a worker (codex or claude)
+hook with byte-identical bodies now persist as two hook events, where the
+worker dedupe cache previously collapsed the second into the first.
 
 ### Ingest → ring
 
