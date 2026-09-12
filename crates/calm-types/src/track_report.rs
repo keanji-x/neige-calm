@@ -81,7 +81,7 @@ pub struct TrackReportPayload {
 // byte-reviewed routinely and 40 lines of `\n` escapes are unreadable. cargo
 // tracks `include_str!` as a build dependency, so editing the .md recompiles.
 //
-// All three fragments are UNCLOSED (no `-->`) and therefore **private**.
+// All four fragments are UNCLOSED (no `-->`) and therefore **private**.
 // Handing out an unclosed comment fails silently and globally: a caller that
 // forgets to append `-->` makes the comment swallow the whole document, and
 // both frontends then render a completely blank report with no diagnostic
@@ -102,6 +102,18 @@ const CONTRACT_SECTION_RULES: &str = include_str!("track_report_section_rules.md
 /// Template-only addendum: the pre-set plan sections hand their prose over
 /// to the four report sections once tasks are activated. Contains no `-->`.
 const CONTRACT_PLAN_NOTE: &str = include_str!("track_report_plan_note.md");
+
+/// #1571 — the investment-research contract, **self-contained**: it carries
+/// its own copy of the two preamble paragraphs (render-time drop / no secrets,
+/// "the structure is the rule") because [`CONTRACT_WRITING_RULES`] opens with
+/// the work-brief comment header and its genre rules in one file, and cannot
+/// be split into a shared preamble without rewriting the default contract.
+/// Genre rules (thesis-first, sourced numbers, strongest counter-argument,
+/// the 1500—2500 字 budget) and the seven-section list live together here
+/// for the same reason [`CONTRACT_SECTION_RULES`] is not reusable: the
+/// structure rule is worded as "the sections are defined by the list below".
+/// Contains no `-->`.
+const CONTRACT_RESEARCH_RULES: &str = include_str!("track_report_research_rules.md");
 
 /// Closes the contract comment. Blank line after it so the first H1 starts
 /// its own block (`split_body` splits at line-initial `# ` / `## `).
@@ -141,6 +153,37 @@ pub fn report_contract_prefix_for_template() -> &'static str {
         )
     });
     &PREFIX
+}
+
+/// Which maintenance contract a template's report leads with (#1571).
+///
+/// The kernel still does not interpret sections; this only selects which
+/// closed comment [`report_contract_prefix`] hands out. A template names its
+/// contract here rather than concatenating fragments itself, so unclosed
+/// text never leaves this module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportContract {
+    /// The default work-brief contract plus the pre-set plan note — what
+    /// [`report_contract_prefix_for_template`] returns.
+    WorkBrief,
+    /// The investment-research contract: seven fixed sections, thesis-first
+    /// prose, sourced numbers, a 1500—2500 字 budget.
+    Research,
+}
+
+/// Report-body prefix for a template that names its contract, **already
+/// closed**. [`ReportContract::WorkBrief`] is exactly
+/// [`report_contract_prefix_for_template`]; [`ReportContract::Research`] is
+/// the research rules, closed.
+pub fn report_contract_prefix(contract: ReportContract) -> &'static str {
+    match contract {
+        ReportContract::WorkBrief => report_contract_prefix_for_template(),
+        ReportContract::Research => {
+            static PREFIX: std::sync::LazyLock<String> =
+                std::sync::LazyLock::new(|| format!("{CONTRACT_RESEARCH_RULES}{CONTRACT_CLOSE}"));
+            &PREFIX
+        }
+    }
 }
 
 impl TrackReportPayload {
@@ -358,5 +401,105 @@ mod tests {
         // The contract must stay one block — fragment concatenation must not
         // introduce a line-initial H1/H2.
         assert_eq!(crate::report_blocks::split_body(prefix).len(), 1);
+    }
+
+    /// #1571 — the research contract is closed exactly once, names its seven
+    /// sections, and shares the preamble the work-brief contract carries.
+    #[test]
+    fn the_research_prefix_is_closed_and_names_its_seven_sections() {
+        let prefix = report_contract_prefix(ReportContract::Research);
+        assert_eq!(
+            report_contract_prefix(ReportContract::WorkBrief),
+            report_contract_prefix_for_template(),
+            "WorkBrief must be the existing template prefix, not a third text"
+        );
+
+        assert!(prefix.starts_with("<!-- 报告维护契约（投研报告版）"));
+        assert!(
+            prefix.ends_with("-->\n\n"),
+            "never hand out an unclosed comment"
+        );
+        assert_eq!(
+            prefix.matches("-->").count(),
+            1,
+            "exactly one comment close"
+        );
+        assert!(
+            !CONTRACT_RESEARCH_RULES.contains("-->"),
+            "the fragment itself must stay unclosed"
+        );
+        assert!(!prefix.contains('\r'));
+        assert_eq!(crate::report_blocks::split_body(prefix).len(), 1);
+        assert!(
+            !prefix
+                .lines()
+                .skip(1)
+                .any(|l| l.starts_with("# ") || l.starts_with("## ")),
+            "a heading inside the contract would split it into two blocks"
+        );
+
+        // The seven research H1 names, in the order the skeleton lists them.
+        let mut last = 0;
+        for section in [
+            "结论 ——",
+            "待你定 ——",
+            "核心逻辑 ——",
+            "关键数据 ——",
+            "风险与证伪 ——",
+            "催化剂与跟踪 ——",
+            "来源与边界 ——",
+        ] {
+            let at = prefix
+                .find(section)
+                .unwrap_or_else(|| panic!("research contract must describe `{section}`"));
+            assert!(
+                at > last,
+                "section descriptions out of order at `{section}`"
+            );
+            last = at;
+        }
+        // Not the work-brief sections — a template that got both lists would
+        // carry two contradictory structure rules.
+        for foreign in ["概要 ——", "已完成 ——", "决策 ——", "Plan —— 预置计划"]
+        {
+            assert!(
+                !prefix.contains(foreign),
+                "research contract must not carry the work-brief section `{foreign}`"
+            );
+        }
+
+        // Shared preamble + the research genre rules this template exists for.
+        let body = TrackReportPayload::initial().body;
+        for shared in [
+            "不要把秘密写进来",
+            "这份报告自带的结构就是规则",
+            "写产出，不写过程",
+            "章节由下面这份清单定义",
+            "没有就省略这个 section",
+            "散文正文",
+            "不计入",
+        ] {
+            assert!(
+                prefix.contains(shared) && body.contains(shared),
+                "both contracts must carry `{shared}`"
+            );
+        }
+        for rule in [
+            "投研报告",
+            "论点先行",
+            "口径、数据日期和来源",
+            "1500—2500 字",
+            "```neige-block table``` 块",
+            "仅作研究，不构成交易建议",
+        ] {
+            assert!(
+                prefix.contains(rule),
+                "research contract must carry `{rule}`"
+            );
+        }
+        assert!(
+            !prefix.contains("优先用表格"),
+            "the 关键数据 table is a requirement, not a preference"
+        );
     }
 }

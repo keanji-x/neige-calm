@@ -44,6 +44,7 @@ use crate::support::git_helpers::attached_repo_fixture;
 const ISSUE_DEVELOPMENT: &str = "issue-development";
 const SMALL_CHANGE: &str = "small-change";
 const INVESTIGATION: &str = "investigation";
+const INVESTMENT_RESEARCH: &str = "investment-research";
 // #1300 — a hand-copied `TEMPLATE_KEYS` array lived here, as the expected
 // roster for the seeding assertions. It is gone with them, and deliberately not
 // replaced: `calm_server::templates::TEMPLATES` is the roster, and a second
@@ -1275,7 +1276,10 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
 #[tokio::test]
 async fn create_stores_the_roster_key_as_template_id() {
     let boot = boot().await;
-    for key in [ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION] {
+    // The roster is iterated rather than listed by hand so every entry —
+    // including the task-less `investment-research` — is covered, and a new
+    // one cannot land outside this loop.
+    for key in calm_server::templates::TEMPLATES.iter().map(|t| t.key()) {
         let (status, body) = post(
             boot.app.clone(),
             "/api/tracks",
@@ -1779,15 +1783,23 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
             "{leg}: the listing is the roster, in the roster's order"
         );
         // Every entry is a usable picker row. A roster id that came back with
-        // no title or no tasks is drift the id set alone cannot see.
+        // no title, or a plan template that came back with no tasks, is drift
+        // the id set alone cannot see. #1571 — `investment-research` is the one
+        // report-only template: its tasks array is present and empty, and a
+        // task showing up there is the same drift in the other direction.
         for entry in body.as_array().expect("array body") {
             assert!(
                 entry["title"].as_str().is_some_and(|t| !t.is_empty()),
                 "{leg}: {entry} has no title"
             );
             assert!(
-                !task_keys(entry).is_empty(),
-                "{leg}: {entry} advertises no tasks"
+                entry["tasks"].is_array(),
+                "{leg}: {entry} carries no tasks array"
+            );
+            assert_eq!(
+                task_keys(entry).is_empty(),
+                entry["id"] == INVESTMENT_RESEARCH,
+                "{leg}: {entry} advertises tasks iff it is a plan template"
             );
         }
         assert_eq!(
@@ -2051,10 +2063,6 @@ fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
             _ => body.push_str(&slice.raw),
         }
     }
-    assert!(
-        !tasks.is_empty(),
-        "`{key}`: the recipe parsed to no task fences, so this test would assert nothing"
-    );
     (recipe.summary, body, tasks)
 }
 
@@ -2131,7 +2139,7 @@ fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
 async fn listed_template_keys_create_their_exact_recipes() {
     // key, roster title, ordered task keys. Hand-written on purpose — this is
     // the one table in this file that must NOT be derived from production.
-    let anchors: [(&str, &str, &[&str]); 3] = [
+    let anchors: [(&str, &str, &[&str]); 4] = [
         (
             ISSUE_DEVELOPMENT,
             "Issue development",
@@ -2156,6 +2164,9 @@ async fn listed_template_keys_create_their_exact_recipes() {
             "Investigation",
             &["gather-facts", "write-findings"],
         ),
+        // #1571 — a report-only template: the research contract and its seven
+        // empty sections, no pre-set tasks. The empty key list is the anchor.
+        (INVESTMENT_RESEARCH, "Investment research", &[]),
     ];
     assert_eq!(
         anchors.len(),
@@ -2196,6 +2207,16 @@ async fn listed_template_keys_create_their_exact_recipes() {
         assert_eq!(status, StatusCode::OK, "{key}: detail={detail}");
         let payload = report_card_payload(&detail);
         let (summary, expected_body, expected_tasks) = instantiated_recipe(key);
+        // The derived oracle parsed to task fences iff this hand-written row
+        // says the template pre-sets tasks — so a plan template whose recipe
+        // quietly lost its fences cannot pass on an empty-vs-empty comparison.
+        assert_eq!(
+            expected_tasks.is_empty(),
+            expected_task_keys.is_empty(),
+            "`{key}`: the recipe parsed to {} task fences but the anchor lists {}",
+            expected_tasks.len(),
+            expected_task_keys.len()
+        );
         let actual_tasks: Vec<Value> = task_blocks(&payload).into_iter().cloned().collect();
         let created_keys: Vec<&str> = actual_tasks
             .iter()

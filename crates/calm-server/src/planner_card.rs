@@ -403,9 +403,9 @@ Track 有一份面向用户的 Markdown 报告，由你维护。它显示在 Tra
 切出来的块就是 `calm.report.blocks.upsert` 用 `id` 寻址、深链 / 反链指向的\
 那个单位。所以增删一个 H1/H2 就是增删一个块。
 
-**内核保留的唯一硬约束**：无论文档自己的契约怎么说，**散文正文**（所有 prose \
-块的文字合计；非 prose 块在 body 里的 fence 投影不计入）硬上限 **2000 字**。\
-逼近上限就 consolidate。
+**篇幅**：**散文正文**（所有 prose 块的文字合计；非 prose 块在 body 里的 fence \
+投影不计入）的字数预算以文档自己的维护契约为准；契约没有规定篇幅时，才用内核的\
+兜底上限 **2000 字**。逼近上限就 consolidate。
 
 **用中文写** — body / summary / 各种 MCP 工具调用里的 `message` 字段都用中文。\
 读者听众是同一个人，不要混语言。
@@ -1598,11 +1598,20 @@ mod tests {
         // blocks — no amount of concise prose could satisfy it.
         //
         // #1185 splits it: the 1000-word soft target is genre judgement and
-        // moved into the document's contract; the 2000-word hard ceiling is the
-        // kernel's own minimal policy floor and stays here.
+        // moved into the document's contract. #1571: the contract's own budget
+        // governs (the research contract says 1500—2500 字); the kernel's
+        // 2000 字 is the fallback only when a contract states no budget, not a
+        // ceiling laid over every contract.
         assert!(
-            p.contains("散文正文") && p.contains("2000"),
-            "prompt must keep the kernel's prose-scoped hard ceiling"
+            p.contains("散文正文")
+                && p.contains("字数预算以文档自己的维护契约为准")
+                && p.contains("契约没有规定篇幅时")
+                && p.contains("2000 字"),
+            "prompt must defer the prose budget to the document's contract, 2000 字 as fallback"
+        );
+        assert!(
+            !p.contains("硬上限") && !p.contains("无论文档自己的契约怎么说"),
+            "prompt must not override the contract's budget with a kernel ceiling"
         );
         assert!(
             p.contains("不计入"),
