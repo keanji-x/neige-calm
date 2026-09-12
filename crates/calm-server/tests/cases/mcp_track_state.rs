@@ -335,6 +335,78 @@ async fn get_track_state_returns_track_and_cards_for_planner() {
     );
 }
 
+/// Planner feedback #3 — `next` is derived from the FSM for the planner actor.
+/// With zero declared tasks only the report tools can carry a lifecycle write,
+/// and `planning → reviewing` is the self-executed conclusion path.
+#[tokio::test]
+async fn track_state_next_from_planning_without_tasks_offers_reviewing_via_report_tools() {
+    let boot = boot().await;
+    set_track_lifecycle(&boot, TrackLifecycle::Planning).await;
+    let out = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
+        .await
+        .expect("planner can read track state");
+
+    assert_eq!(
+        out.get("tasks_declared").and_then(Value::as_u64),
+        Some(0),
+        "boot fixture declares no plan tasks: {out:?}"
+    );
+    let next = out
+        .get("next")
+        .and_then(Value::as_array)
+        .expect("response carries `next`");
+    let mut targets: Vec<&str> = next
+        .iter()
+        .map(|n| n["lifecycle"].as_str().expect("lifecycle is a string"))
+        .collect();
+    targets.sort_unstable();
+    assert_eq!(targets, vec!["dispatching", "failed", "reviewing"]);
+
+    let reviewing = next
+        .iter()
+        .find(|n| n["lifecycle"] == "reviewing")
+        .expect("planning offers reviewing");
+    assert_eq!(
+        reviewing["via"],
+        json!(["calm.report.write", "calm.report.edit"]),
+        "without a declared task neither verdict nor cancel can carry the write"
+    );
+    assert!(
+        reviewing["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("self-executed")),
+        "reviewing note names the self-executed path: {reviewing:?}"
+    );
+    assert!(
+        !next.iter().any(|n| n["lifecycle"] == "done"),
+        "done is not legal straight from planning: {next:?}"
+    );
+}
+
+#[tokio::test]
+async fn track_state_next_from_reviewing_offers_done_and_from_done_is_empty() {
+    let boot = boot().await;
+    set_track_lifecycle(&boot, TrackLifecycle::Reviewing).await;
+    let out = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
+        .await
+        .expect("planner can read track state");
+    let next = out["next"].as_array().expect("`next` is an array");
+    let mut targets: Vec<&str> = next
+        .iter()
+        .map(|n| n["lifecycle"].as_str().unwrap())
+        .collect();
+    targets.sort_unstable();
+    assert_eq!(targets, vec!["done", "failed", "working"]);
+    let done = next.iter().find(|n| n["lifecycle"] == "done").unwrap();
+    assert_eq!(done["note"], json!("conclude the track"));
+
+    set_track_lifecycle(&boot, TrackLifecycle::Done).await;
+    let out = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
+        .await
+        .expect("planner can read track state");
+    assert_eq!(out["next"], json!([]), "terminal state has no planner edge");
+}
+
 #[tokio::test]
 async fn get_track_state_callable_by_worker() {
     // Confirms the planner-only soft role gate doesn't fire on read.

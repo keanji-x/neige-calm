@@ -83,6 +83,33 @@ pub(super) async fn policy(b: &Boot, policy: &str, budget: i64) {
         .unwrap();
 }
 
+/// Planner feedback #3 — once a task is declared, `calm.track.state.next`
+/// also lists the task-scoped lifecycle carriers (verdict / cancel).
+#[tokio::test]
+async fn track_state_next_lists_verdict_and_cancel_once_a_task_is_declared() {
+    use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;
+    let b = boot().await;
+    dispatch(&b, args()).await.unwrap();
+    let state = call_tool(&b, TOOL_TRACK_STATE, planner_identity(&b), json!({}))
+        .await
+        .unwrap();
+    assert_eq!(state["tasks_declared"], json!(1), "{state:?}");
+    let next = state["next"].as_array().unwrap();
+    assert!(!next.is_empty(), "{state:?}");
+    for entry in next {
+        assert_eq!(
+            entry["via"],
+            json!([
+                "calm.report.write",
+                "calm.report.edit",
+                "calm.task.verdict",
+                "calm.plan.cancel"
+            ]),
+            "{entry:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn dispatch_creates_planner_declaration_and_replays_exact_contract_without_writes() {
     let b = boot().await;

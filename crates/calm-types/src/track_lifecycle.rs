@@ -34,6 +34,7 @@
 //! | `dispatching → working`                    | no   | yes       | no     |
 //! | `working → blocked`                        | no   | yes       | no     |
 //! | `working → reviewing`                      | no   | yes       | no     |
+//! | `planning → reviewing` (self-executed)     | no   | yes       | no     |
 //! | `blocked → working`                        | yes  | yes       | no     |
 //! | `reviewing → working`                      | yes  | yes       | no     |
 //! | `done`/`canceled`/`failed` → `working`     | yes  | no        | no     |
@@ -178,6 +179,31 @@ pub fn user_can_resume(lifecycle: TrackLifecycle) -> bool {
     )
 }
 
+/// Every lifecycle the Planner Agent may move a track to from `from`,
+/// excluding the same-state no-op.
+///
+/// Derived by asking [`validate_transition`] with a planner actor for each
+/// state, so there is no second hand-written edge table to drift from the
+/// rule table above. `calm.track.state` renders this as the planner's
+/// `next` hints; the order follows [`TrackLifecycle`]'s declaration order.
+pub fn planner_allowed_targets(from: TrackLifecycle) -> Vec<TrackLifecycle> {
+    const ALL: [TrackLifecycle; 9] = [
+        TrackLifecycle::Draft,
+        TrackLifecycle::Planning,
+        TrackLifecycle::Dispatching,
+        TrackLifecycle::Working,
+        TrackLifecycle::Blocked,
+        TrackLifecycle::Reviewing,
+        TrackLifecycle::Done,
+        TrackLifecycle::Canceled,
+        TrackLifecycle::Failed,
+    ];
+    let planner = ActorId::AiPlanner(crate::ids::CardId::from(""));
+    ALL.into_iter()
+        .filter(|&to| to != from && validate_transition(from, to, &planner).is_ok())
+        .collect()
+}
+
 /// Validate a track lifecycle transition against the rule table.
 ///
 /// `Ok(())` permits the call site to proceed. When `from != to` the
@@ -305,6 +331,12 @@ pub fn validate_transition(
         (TrackLifecycle::Dispatching, TrackLifecycle::Working) => (false, true),
         (TrackLifecycle::Working, TrackLifecycle::Blocked) => (false, true),
         (TrackLifecycle::Working, TrackLifecycle::Reviewing) => (false, true),
+        // Self-executed conclusion (Planner feedback #3): the planner produced
+        // the deliverable itself without dispatching a task, so the track never
+        // left `Planning`. It may go straight to `Reviewing` to judge its own
+        // deliverable and then conclude (`done` / `failed`) through the regular
+        // review edges. `planning → done` stays illegal: review is not skipped.
+        (TrackLifecycle::Planning, TrackLifecycle::Reviewing) => (false, true),
         (TrackLifecycle::Reviewing, TrackLifecycle::Working) => (false, true),
         (TrackLifecycle::Reviewing, TrackLifecycle::Done) => (false, true),
         (TrackLifecycle::Reviewing, TrackLifecycle::Failed) => (false, true),
@@ -384,6 +416,8 @@ mod tests {
             (L::Dispatching, L::Working, ActorKind::PlannerAgent),
             (L::Working, L::Blocked, ActorKind::PlannerAgent),
             (L::Working, L::Reviewing, ActorKind::PlannerAgent),
+            // self-executed conclusion (Planner feedback #3)
+            (L::Planning, L::Reviewing, ActorKind::PlannerAgent),
             (L::Reviewing, L::Working, ActorKind::PlannerAgent),
             (L::Reviewing, L::Done, ActorKind::PlannerAgent),
             (L::Reviewing, L::Failed, ActorKind::PlannerAgent),
@@ -523,6 +557,62 @@ mod tests {
                     "must not skip to Done from {from:?} as {actor:?}: {res:?}"
                 );
             }
+        }
+    }
+
+    // ----- Planner next-step hints (Planner feedback #3) ------------------
+
+    fn sorted_targets(from: TrackLifecycle) -> Vec<TrackLifecycle> {
+        let mut v = planner_allowed_targets(from);
+        v.sort_by_key(|l| format!("{l:?}"));
+        v
+    }
+
+    fn sorted(mut v: Vec<TrackLifecycle>) -> Vec<TrackLifecycle> {
+        v.sort_by_key(|l| format!("{l:?}"));
+        v
+    }
+
+    #[test]
+    fn planner_allowed_targets_from_planning_include_self_executed_review() {
+        use TrackLifecycle as L;
+        assert_eq!(
+            sorted_targets(L::Planning),
+            sorted(vec![L::Dispatching, L::Reviewing, L::Failed])
+        );
+    }
+
+    #[test]
+    fn planner_allowed_targets_from_reviewing_conclude_or_resume() {
+        use TrackLifecycle as L;
+        assert_eq!(
+            sorted_targets(L::Reviewing),
+            sorted(vec![L::Working, L::Done, L::Failed])
+        );
+    }
+
+    #[test]
+    fn planner_allowed_targets_from_terminal_states_are_empty() {
+        use TrackLifecycle as L;
+        for from in [L::Done, L::Canceled, L::Failed] {
+            assert!(
+                planner_allowed_targets(from).is_empty(),
+                "planner has no edge out of {from:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn planner_allowed_targets_mirror_legal_edges_table() {
+        // The helper is derived from `validate_transition`; this pins it to the
+        // hand-written mirror so a drift in either direction is visible.
+        for from in ALL_STATES {
+            let expected: Vec<TrackLifecycle> = legal_edges()
+                .into_iter()
+                .filter(|(f, t, k)| *f == from && *t != from && *k == ActorKind::PlannerAgent)
+                .map(|(_, t, _)| t)
+                .collect();
+            assert_eq!(sorted_targets(from), sorted(expected), "from {from:?}");
         }
     }
 

@@ -15,6 +15,13 @@
 //!   Workers occasionally peek track state before they report; the planner
 //!   gets a full snapshot every loop iteration.
 //!
+//!   `next` (Planner feedback #3) lists the lifecycle targets the planner
+//!   may write from the track's current state, each with the tools whose
+//!   optional `lifecycle` argument carries it. It is derived from the FSM
+//!   (`track_lifecycle::planner_allowed_targets`), never hand-written, so a
+//!   planner that did the work itself without dispatching sees that
+//!   `planning → reviewing → done` is the way to conclude.
+//!
 //! * `calm.task.verdict` — Planner only. Records the planner's
 //!   accept/reject verdict on a worker's prior result. Lowers to
 //!   either `Event::TaskCompleted` (verdict = "accepted") or
@@ -63,7 +70,10 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
-use crate::model::{Card, CardRole, Track};
+use crate::mcp_server::tools::plan::TOOL_PLAN_CANCEL;
+use crate::mcp_server::tools::track_report::{TOOL_REPORT_EDIT, TOOL_REPORT_WRITE};
+use crate::model::{Card, CardRole, Track, TrackLifecycle};
+use crate::track_lifecycle::planner_allowed_targets;
 use crate::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -109,7 +119,13 @@ fn track_state_descriptor() -> ToolDescriptor {
              `runtime` (typed `CardRuntimeView` or `null` when no runtime row). \
              `report_startup_read_required` is true iff the track-report \
              summary/body is not the canonical empty initial report. \
-             Callable by planner and worker cards alike; no event is emitted."
+             `tasks_declared` counts the track's plan tasks. `next` lists the \
+             lifecycle targets the planner may write from the current state: \
+             each entry carries `lifecycle`, `via` (the tools whose optional \
+             `lifecycle` argument can carry it) and a one-line `note`; a track \
+             with no tasks lists only the report tools. Empty when the track \
+             is terminal. Callable by planner and worker cards alike; no event \
+             is emitted."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -160,11 +176,64 @@ async fn track_state(
         })
         .collect();
 
+    let tasks_declared = ctx
+        .repo
+        .tasks_by_track(track.id.as_str())
+        .await
+        .map_err(|e| RpcError::internal(format!("track_state: tasks_by_track: {e}")))?
+        .len();
+    let next = planner_next_steps(track.lifecycle, tasks_declared);
+
     Ok(json!({
         "track": track,
         "cards": cards_json,
         "report_startup_read_required": report_startup_read_required(&cards),
+        "tasks_declared": tasks_declared,
+        "next": next,
     }))
+}
+
+/// Planner feedback #3 — the lifecycle targets the planner may write from
+/// `current`, each with the tools that can carry the write. `calm.task.verdict`
+/// and `calm.plan.cancel` need a declared task to act on, so a track with no
+/// tasks lists only the report tools.
+fn planner_next_steps(current: TrackLifecycle, tasks_declared: usize) -> Vec<Value> {
+    let mut via = vec![TOOL_REPORT_WRITE, TOOL_REPORT_EDIT];
+    if tasks_declared > 0 {
+        via.push(TOOL_TASK_VERDICT);
+        via.push(TOOL_PLAN_CANCEL);
+    }
+    planner_allowed_targets(current)
+        .into_iter()
+        .map(|target| {
+            json!({
+                "lifecycle": target,
+                "via": via,
+                "note": planner_next_note(current, target),
+            })
+        })
+        .collect()
+}
+
+fn planner_next_note(current: TrackLifecycle, target: TrackLifecycle) -> &'static str {
+    use TrackLifecycle as L;
+    match (current, target) {
+        (L::Draft, L::Planning) => {
+            "start planning (the kernel also does this on your first report write)"
+        }
+        (L::Planning, L::Reviewing) => {
+            "deliverable ready for judgement (also the self-executed path when nothing was dispatched)"
+        }
+        (_, L::Reviewing) => "deliverable ready for judgement",
+        (_, L::Dispatching) => "tasks declared; the kernel advances this itself when it claims one",
+        (L::Blocked, L::Working) | (L::Reviewing, L::Working) => "resume: more work is needed",
+        (_, L::Working) => "work underway; the kernel advances this itself when it claims a task",
+        (_, L::Blocked) => "waiting on the user",
+        (_, L::Done) => "conclude the track",
+        (_, L::Failed) => "give up: the track cannot be completed",
+        (_, L::Canceled) => "cancel (user-only)",
+        (_, L::Draft) | (_, L::Planning) => "return to planning",
+    }
 }
 
 /// #1110 S3 — false only for the canonical empty initial report (or when

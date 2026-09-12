@@ -1657,6 +1657,92 @@ async fn edit_lifecycle_illegal_rolls_back_report_and_events() {
     );
 }
 
+/// Planner feedback #3 — a planner that did the work itself never left
+/// `planning`. It concludes in two hops: `reviewing` on the final report edit
+/// (previously `-32403` illegal edge), then `done`. `calm.track.state` tells it
+/// so via `next` after the first hop.
+#[tokio::test]
+async fn edit_lifecycle_planning_to_reviewing_then_done_concludes_self_executed_track() {
+    use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;
+
+    let boot = boot().await;
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        planner_identity(&boot),
+        json!({
+            "body": "deliverable draft\n",
+            "message": "seed self-executed deliverable",
+            "if_doc_rev": current_doc_rev(&boot).await
+        }),
+    )
+    .await
+    .expect("seed body");
+    let before = boot
+        .repo
+        .track_get(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.lifecycle, TrackLifecycle::Planning);
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_EDIT,
+        planner_identity(&boot),
+        json!({
+            "old_string": "draft",
+            "new_string": "final",
+            "message": "deliverable produced in-turn; ready to judge",
+            "if_doc_rev": current_doc_rev(&boot).await,
+            "lifecycle": "reviewing"
+        }),
+    )
+    .await
+    .expect("planning -> reviewing is a planner edge (self-executed conclusion)");
+    let track = boot
+        .repo
+        .track_get(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(track.lifecycle, TrackLifecycle::Reviewing);
+
+    let state = call_tool(&boot, TOOL_TRACK_STATE, planner_identity(&boot), json!({}))
+        .await
+        .expect("state read");
+    let next = state["next"].as_array().expect("`next` present");
+    assert!(
+        next.iter().any(|n| n["lifecycle"] == "done"
+            && n["via"]
+                .as_array()
+                .is_some_and(|v| v.contains(&json!("calm.report.edit")))),
+        "after the first hop `next` offers done via report.edit: {next:?}"
+    );
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_EDIT,
+        planner_identity(&boot),
+        json!({
+            "old_string": "final",
+            "new_string": "final (accepted)",
+            "message": "judged the deliverable; concluding",
+            "if_doc_rev": current_doc_rev(&boot).await,
+            "lifecycle": "done"
+        }),
+    )
+    .await
+    .expect("reviewing -> done concludes");
+    let track = boot
+        .repo
+        .track_get(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(track.lifecycle, TrackLifecycle::Done);
+}
+
 #[tokio::test]
 async fn edit_rejects_old_string_not_found() {
     let boot = boot().await;
