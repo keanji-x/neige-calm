@@ -8,6 +8,13 @@ use tokio::task::JoinHandle;
 
 use super::{PtyWrite, SupervisorControl};
 
+/// Message of the `NotOwner` protocol error an admitted-then-revoked input
+/// receives from the writer (the input's lease or scope went away before the
+/// physical write). Kernel clients match on it to tell an input refusal apart
+/// from an ownership-claim refusal.
+pub const INPUT_REVOKED_BEFORE_WRITE: &str =
+    "terminal input control or scope was revoked before write";
+
 // Copied from crates/calm-session/src/bin/daemon.rs::spawn_supervisor_control_writer as part of #388 Phase 3a lift. Daemon binary retires in 3c; until then we live with duplication.
 pub fn spawn_supervisor_control_writer(
     mut control_conn: UnixStream,
@@ -29,8 +36,7 @@ pub fn spawn_supervisor_control_writer(
                         if let Some(ack) = ack {
                             let _ = ack.send(DaemonMsg::ProtocolError {
                                 code: calm_session::ProtocolErrorCode::NotOwner,
-                                message: "terminal input control or scope was revoked before write"
-                                    .into(),
+                                message: INPUT_REVOKED_BEFORE_WRITE.into(),
                                 expected_version: None,
                             });
                         }

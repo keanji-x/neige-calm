@@ -108,6 +108,9 @@ pub struct RouteState {
     pub write: WriteContext,
     pub operation_runtime: Arc<OperationRuntime>,
     pub harness: HarnessRegistry,
+    /// #1620 — hook ingest appends Terminal-card signals to the live renderer
+    /// entry instead of projecting worker state.
+    pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub(crate) hook_ingest_cache: Arc<StdMutex<HookIngestCache>>,
     /// Issue #649 i2 — per-card serialization for `/planner/input` lazy harness
     /// recovery. Concurrent Sends racing a registry miss must not both call
@@ -270,6 +273,7 @@ impl BootState {
             HOOK_INGEST_CACHE_CAPACITY,
         )));
         let route = RouteState {
+            terminal_renderer: self.terminal_renderer.clone(),
             repo: route_repo.clone(),
             workspace_root: self.workspace_root.clone(),
             task_budget_default: self.task_budget_default,
@@ -508,6 +512,16 @@ struct OperationAdapterInputs {
     workspace_root: PathBuf,
 }
 
+/// #1620 — the terminal-create adapter's hook configuration, derived from the
+/// same client config the Claude card path uses.
+fn terminal_hook_settings(codex: &CodexClient) -> crate::terminal_hooks::TerminalHookSettings {
+    crate::terminal_hooks::TerminalHookSettings {
+        bridge_bin: codex.bridge_bin.clone(),
+        base_url: codex.ingest_url.clone(),
+        settings_dir: codex.terminal_hook_settings_dir.clone(),
+    }
+}
+
 fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn ProviderAdapter>> {
     let isolated_codex_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(crate::isolated_codex::adapter::IsolatedCodexAdapter::new(
@@ -522,20 +536,27 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
                 input.track_area_cache.clone(),
             ),
         ));
+    let hook_settings = Some(terminal_hook_settings(&input.codex));
     let terminal_adapter: Arc<dyn ProviderAdapter> =
         if let Some(spawn_hook) = input.terminal_spawn_hook.clone() {
-            Arc::new(TerminalAdapter::new_with_spawn_hook(
-                input.route_repo.clone(),
-                input.card_role_cache.clone(),
-                input.track_area_cache.clone(),
-                spawn_hook,
-            ))
+            Arc::new(
+                TerminalAdapter::new_with_spawn_hook(
+                    input.route_repo.clone(),
+                    input.card_role_cache.clone(),
+                    input.track_area_cache.clone(),
+                    spawn_hook,
+                )
+                .with_hook_settings(hook_settings),
+            )
         } else {
-            Arc::new(TerminalAdapter::new(
-                input.route_repo.clone(),
-                input.card_role_cache.clone(),
-                input.track_area_cache.clone(),
-            ))
+            Arc::new(
+                TerminalAdapter::new(
+                    input.route_repo.clone(),
+                    input.card_role_cache.clone(),
+                    input.track_area_cache.clone(),
+                )
+                .with_hook_settings(hook_settings),
+            )
         };
     let terminal_worker_adapter: Arc<dyn ProviderAdapter> =
         if let Some(spawn_hook) = input.terminal_spawn_hook {
@@ -879,6 +900,7 @@ impl AppState {
     ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+        terminal_renderer.set_hook_settings_dir(codex.terminal_hook_settings_dir.clone());
         let card_role_cache = card_role_cache.unwrap_or_default();
         let track_area_cache = track_area_cache.unwrap_or_default();
         let harness = HarnessRegistry::new();
@@ -1343,6 +1365,7 @@ impl AppState {
 
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+        terminal_renderer.set_hook_settings_dir(codex.terminal_hook_settings_dir.clone());
         mcp_server
             .terminal_interaction
             .set(Arc::new(

@@ -2,7 +2,9 @@
 use crate::db::RouteRepo;
 use crate::mcp_server::registry::ToolCallIdentity;
 use crate::model::CardRole;
-use crate::terminal_renderer::{ClientInputScope, TerminalRendererRegistry};
+use crate::terminal_renderer::{
+    CONTROL_HELD_BY_ANOTHER_CLIENT, ClaimOutcome, ClientInputScope, TerminalRendererRegistry,
+};
 use anyhow::{Result, ensure};
 use calm_session::ClientMsg;
 use calm_terminal_view::{InputSurface, Rasterizer};
@@ -25,7 +27,30 @@ pub(crate) use target::Binding;
 pub use target::Target;
 #[cfg(test)]
 pub(crate) use target::TaskBinding;
-pub use wait::{SETTLE_MS_DEFAULT, SETTLE_MS_MAX, WAIT_MS_MAX, WaitFor, WaitPlan};
+pub use wait::{
+    SETTLE_MS_DEFAULT, SETTLE_MS_MAX, SIGNAL_WAIT_MS_DEFAULT, WAIT_MS_MAX, WaitFor, WaitPlan,
+};
+
+/// Baseline an action readback compares against: the projection revision and
+/// the signal seq read immediately before the physical action (#1618/#1620).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReadbackBaseline {
+    pub revision: u64,
+    pub signal_seq: u64,
+}
+
+/// Signals listed on one observation (the most recent ones since the
+/// previous observation on the connection; the rest are counted as dropped).
+pub const SIGNALS_PER_OBSERVATION: usize = 20;
+
+/// Reason of an `open claim:true` whose granted claim was taken over by
+/// another client before this connection observed the grant (#1620 R6).
+pub const CONTROL_TAKEN_BY_ANOTHER_CLIENT: &str = "terminal control was taken by another client";
+
+/// Test seam run inside the open+claim window (#1620), given the terminal id.
+#[cfg(feature = "fixtures")]
+pub type ClaimWindowSeam =
+    Box<dyn FnOnce(String) -> futures::future::BoxFuture<'static, ()> + Send>;
 
 pub struct TerminalInteraction {
     repo: Arc<dyn RouteRepo>,
@@ -33,6 +58,8 @@ pub struct TerminalInteraction {
     clients: Mutex<HashMap<String, Arc<Client>>>,
     raster: OnceCell<Arc<Rasterizer>>,
     observations: StdMutex<HashMap<Uuid, Observation>>,
+    #[cfg(feature = "fixtures")]
+    claim_window_seam: StdMutex<Option<ClaimWindowSeam>>,
 }
 struct Observation {
     binding: String,
@@ -50,6 +77,8 @@ impl TerminalInteraction {
             clients: Mutex::new(HashMap::new()),
             raster: OnceCell::new(),
             observations: StdMutex::new(HashMap::new()),
+            #[cfg(feature = "fixtures")]
+            claim_window_seam: StdMutex::new(None),
         }
     }
     pub async fn authorize(repo: &dyn RouteRepo, identity: &ToolCallIdentity) -> Result<String> {
@@ -173,9 +202,9 @@ impl TerminalInteraction {
         self.capture(identity, resolved, &client, offset, wait, None, format)
             .await
     }
-    /// `baseline` is the revision a change wait compares against; `None`
-    /// means this connection's previous observation (or the revision at call
-    /// start when there is none).
+    /// `baseline` is the revision (and signal seq) a change or signal wait
+    /// compares against; `None` means this connection's previous observation
+    /// (or the state at call start when there is none).
     #[allow(clippy::too_many_arguments)]
     async fn capture(
         &self,
@@ -184,7 +213,7 @@ impl TerminalInteraction {
         client: &Client,
         offset: usize,
         wait: WaitPlan,
-        baseline: Option<u64>,
+        baseline: Option<ReadbackBaseline>,
         format: ObservationFormat,
     ) -> Result<(Value, Option<Vec<u8>>)> {
         let terminal = resolved.binding.terminal_id.clone();
@@ -192,10 +221,10 @@ impl TerminalInteraction {
             .latest_observation
             .lock()
             .map_err(|_| anyhow::anyhow!("terminal client poisoned"))?;
-        let baseline = match (baseline, previous) {
-            (Some(revision), _) => revision,
-            (None, Some(previous)) => previous.revision,
-            (None, None) => {
+        let (baseline, signal_baseline) = match (baseline, previous) {
+            (Some(baseline), _) => (baseline.revision, baseline.signal_seq),
+            (None, Some(previous)) => (previous.revision, previous.last_seq),
+            (None, None) => (
                 client
                     .entry
                     .handle
@@ -203,10 +232,11 @@ impl TerminalInteraction {
                     .lock()
                     .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
                     .capture(0)?
-                    .1
-            }
+                    .1,
+                client.entry.signals.last_seq(),
+            ),
         };
-        let waited = wait::wait(client, wait, baseline).await;
+        let waited = wait::wait(client, &wait, baseline, signal_baseline).await;
         // The wait may span a task completion or an authority change, so the
         // task status and controllability in the result are re-read after
         // waiting; the binding they belong to must still be the one the wait
@@ -234,13 +264,26 @@ impl TerminalInteraction {
             Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let observation_id = Uuid::new_v4();
         let changed_since_previous = previous.is_some_and(|prior| prior.revision != revision);
+        // #1620 — the listed signals and the recorded `last_seq` come from one
+        // ring read, so advancing this connection's baseline to `last_seq`
+        // cannot skip a signal that was never listed. Untrusted telemetry:
+        // presentation only, no fence reads it.
+        let signals = client.entry.signals.since(
+            previous
+                .map(|prior| prior.last_seq)
+                .unwrap_or(signal_baseline),
+            SIGNALS_PER_OBSERVATION,
+        );
         let mut metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
             "terminal_session_id":client.entry.handle.session_id,"control_id":control,"role":if control.is_some(){"owner"}else{"observer"},
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
             "text":frame.text,"exited":exited,"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
-            "previous_observation_revision":previous.map(|prior| prior.revision.to_string())});
+            "previous_observation_revision":previous.map(|prior| prior.revision.to_string()),
+            "signals":{"hooks_seen":signals.last_seq > 0,"last_seq":signals.last_seq,
+                "since_previous_observation":signals.signals.iter().map(|signal| signal.to_json()).collect::<Vec<_>>(),
+                "dropped_since_previous_observation":signals.dropped}});
         if png.is_some() {
             metadata["image_source"] = json!("rmux_client_projection");
         }
@@ -271,8 +314,162 @@ impl TerminalInteraction {
             id: observation_id,
             revision,
             scroll_offset: frame.scroll_offset,
+            last_seq: signals.last_seq,
         });
         Ok((metadata, png))
+    }
+    /// #1620 `open claim:true`: claim control right after creation and return
+    /// the claim receipt with its readback. Unlike an explicit
+    /// `control claim`, an open never revokes a holder: the claim is applied
+    /// by the client pump only if no other client owns the terminal, decided
+    /// under the owner-registry lock (never from this connection's cached
+    /// owner, which lags the registry by the `OwnerChanged` delivery). A
+    /// human who claimed between the create and this call keeps control and
+    /// the claim fails with [`CONTROL_HELD_BY_ANOTHER_CLIENT`]; the same
+    /// holds for a replayed open (same request_id) after a human takeover.
+    /// Control already held by this connection returns the current
+    /// observation without a second claim — "held by this connection" is
+    /// also decided against the owner registry under its lock, never from
+    /// the cached `control` alone: after a takeover whose `OwnerChanged` this
+    /// connection has not applied yet, the cache still says owner while the
+    /// registry names the human, and the replay must report that takeover.
+    pub async fn claim_after_open(
+        &self,
+        identity: &ToolCallIdentity,
+        target: &Target,
+        readback: WaitPlan,
+    ) -> Result<Value> {
+        readback.validate()?;
+        let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
+        let client = self.client(identity, &resolved.binding).await?;
+        let terminal = resolved.binding.terminal_id.as_str();
+        let _serial = client.serial.lock().await;
+        let (control, grants_before) = {
+            let state = client
+                .screen
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
+            (state.control, state.grants)
+        };
+        if control.is_some() {
+            // The cached lease is trusted only while the registry agrees.
+            let registry_owner = client
+                .entry
+                .handle
+                .owner_registry
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal owner registry poisoned"))?
+                .current_owner();
+            match registry_owner {
+                Some(owner) if owner == client.id => {
+                    let receipt = json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":control});
+                    return Ok(self
+                        .with_observation(identity, &client, receipt, Some(readback), None)
+                        .await);
+                }
+                Some(_) => anyhow::bail!("{CONTROL_HELD_BY_ANOTHER_CLIENT}"),
+                // Released since the cache was written (its `OwnerChanged`
+                // still in flight): claim-if-unowned below decides.
+                None => {}
+            }
+        }
+        #[cfg(feature = "fixtures")]
+        self.run_claim_window_seam(terminal).await;
+        // Readback waits compare against the screen and the signal seq as
+        // they were when the claim started (same as `control`).
+        let signal_seq = client.entry.signals.last_seq();
+        let baseline = client
+            .entry
+            .handle
+            .model_view
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
+            .capture(0)
+            .map(|(_, revision)| ReadbackBaseline {
+                revision,
+                signal_seq,
+            })
+            .ok();
+        // The verdict is the pump's own, decided in the same registry-lock
+        // pass that applies the claim (#1620 R6): never inferred from the
+        // `OwnerChanged` deliveries this connection happens to see (another
+        // owner's change can arrive while the claim is still queued, and a
+        // grant folded with a later takeover never shows `owner == me`).
+        let budget = Duration::from_secs(7);
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(budget, client.claim_if_unowned().await?)
+            .await
+            .map_err(|_| anyhow::anyhow!("terminal claim timed out"))?
+            .map_err(|_| anyhow::anyhow!("terminal disconnected"))?;
+        match outcome {
+            ClaimOutcome::Refused { reason } => anyhow::bail!("{reason}"),
+            ClaimOutcome::Granted => {}
+        }
+        // Granted: the `OwnerChanged` naming this connection mints the control
+        // id when applied. Wait for that application (counted even when a
+        // takeover is applied in the same go), then read what stands.
+        client
+            .wait(
+                |state| state.grants != grants_before,
+                budget.saturating_sub(started.elapsed()),
+            )
+            .await?;
+        let receipt = {
+            let state = client
+                .screen
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
+            if state.owner != Some(client.id) || state.control == control {
+                // Granted, then taken over before this connection saw it.
+                anyhow::bail!("{CONTROL_TAKEN_BY_ANOTHER_CLIENT}");
+            }
+            json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":state.control})
+        };
+        Ok(self
+            .with_observation(identity, &client, receipt, Some(readback), baseline)
+            .await)
+    }
+    /// Test seam (#1620): runs between the cached-owner read and the atomic
+    /// claim of the next [`Self::claim_after_open`] (the terminal id is not
+    /// known before the open), so a test can let a human claim inside exactly
+    /// that window. Consumed once.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn set_claim_window_seam(&self, seam: ClaimWindowSeam) {
+        *self
+            .claim_window_seam
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(seam);
+    }
+    /// Test seam (#1620): hold protocol delivery on the Planner's connection
+    /// to `terminal_id` (the reader applies nothing until the guard drops).
+    /// `None` when this identity has no client on the terminal.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub async fn hold_delivery(
+        &self,
+        terminal_id: &str,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let gate = self
+            .clients
+            .lock()
+            .await
+            .values()
+            .find(|client| client.binding.terminal_id == terminal_id)
+            .map(|client| client.delivery_gate.clone())?;
+        Some(gate.lock_owned().await)
+    }
+    #[cfg(feature = "fixtures")]
+    async fn run_claim_window_seam(&self, terminal_id: &str) {
+        let seam = self
+            .claim_window_seam
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(seam) = seam {
+            seam(terminal_id.to_owned()).await;
+        }
     }
     pub async fn control(
         &self,
@@ -281,7 +478,7 @@ impl TerminalInteraction {
         action: &str,
         observation_wait: Option<WaitPlan>,
     ) -> Result<Value> {
-        if let Some(wait) = observation_wait {
+        if let Some(wait) = &observation_wait {
             wait.validate()?;
         }
         ensure!(
@@ -331,8 +528,9 @@ impl TerminalInteraction {
         .await?;
         let client = self.client(identity, &resolved.binding).await?;
         let _serial = client.serial.lock().await;
-        // Readback change waits compare against the screen as it was when the
-        // control action started.
+        // Readback change/signal waits compare against the screen and the
+        // signal seq as they were when the control action started.
+        let signal_seq = client.entry.signals.last_seq();
         let baseline = client
             .entry
             .handle
@@ -340,7 +538,10 @@ impl TerminalInteraction {
             .lock()
             .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
             .capture(0)
-            .map(|(_, revision)| revision)
+            .map(|(_, revision)| ReadbackBaseline {
+                revision,
+                signal_seq,
+            })
             .ok();
         match action {
             "claim" => {

@@ -8,7 +8,7 @@ impl TerminalInteraction {
         client: &Arc<Client>,
         mut receipt: Value,
         wait: Option<WaitPlan>,
-        baseline: Option<u64>,
+        baseline: Option<ReadbackBaseline>,
     ) -> Value {
         let Some(wait) = wait else {
             return receipt;
@@ -69,6 +69,7 @@ pub(super) fn omit_unchanged_release_text(
         id,
         revision,
         scroll_offset: 0,
+        last_seq: _,
     }) = previous
     else {
         return;
@@ -102,6 +103,7 @@ mod release_text_tests {
             id,
             revision,
             scroll_offset,
+            last_seq: 0,
         })
     }
 

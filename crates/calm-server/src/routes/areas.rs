@@ -402,6 +402,9 @@ struct PreparedAreaDeletion {
 struct QuiescedAreaDeletion {
     prepared: PreparedAreaDeletion,
     terminal_ids: Vec<String>,
+    /// #1620 — the Terminal cards whose generated hook settings file is
+    /// removed on the committed arm only.
+    terminal_card_ids: Vec<String>,
     sealed_thread_ids: Vec<String>,
     /// #1444 — every Card under every member Track, collected while quiesce
     /// already enumerates them. Used only on the committed arm of
@@ -470,6 +473,7 @@ impl PreparedAreaDeletion {
         )
         .await?;
         let mut terminal_ids = Vec::new();
+        let mut terminal_card_ids = Vec::new();
         let mut card_ids: HashSet<String> = HashSet::new();
         let mut seals = crate::shared_codex_appserver::DeletionThreadSeals::new(
             codex.shared_codex_appserver.clone(),
@@ -491,6 +495,7 @@ impl PreparedAreaDeletion {
                     )
                     .await?;
                     terminal_ids.push(terminal.id);
+                    terminal_card_ids.push(terminal.card_id.to_string());
                 }
             }
             for thread_id in worker
@@ -504,6 +509,7 @@ impl PreparedAreaDeletion {
         Ok(QuiescedAreaDeletion {
             prepared: self,
             terminal_ids,
+            terminal_card_ids,
             sealed_thread_ids: seals.retain(),
             card_ids,
         })
@@ -515,6 +521,7 @@ impl QuiescedAreaDeletion {
         let Self {
             prepared,
             terminal_ids,
+            terminal_card_ids,
             sealed_thread_ids,
             card_ids,
         } = self;
@@ -544,6 +551,7 @@ impl QuiescedAreaDeletion {
                     quiesced: QuiescedAreaDeletion {
                         prepared,
                         terminal_ids,
+                        terminal_card_ids,
                         sealed_thread_ids,
                         card_ids,
                     },
@@ -702,6 +710,11 @@ impl RecycledAreaDeletion {
             .prepared
             .turn_daemon
             .forget_turn_state_for_deleted_threads(&self.quiesced.sealed_thread_ids);
+        // #1620 — post-commit, best effort: the generated hook settings file
+        // of every deleted Terminal card (server-derived path only).
+        for card_id in &self.quiesced.terminal_card_ids {
+            route.terminal_renderer.remove_hook_settings(card_id);
+        }
         for track_id in deleted_track_ids {
             route
                 .write

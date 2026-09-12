@@ -17,6 +17,18 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+const FAKE_BRIDGE: &str = r#"#!/bin/sh
+# test stand-in for neige-codex-bridge: same env contract (NEIGE_HOOK_URL),
+# same per-invocation occurrence stamp (#1620); POSTs stdin as the hook body.
+body=$(cat)
+occurrence="$$-$(date +%s%3N)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+case "$body" in
+  *\}) body="${body%\}},\"neige_hook_occurrence\":\"$occurrence\"}" ;;
+esac
+printf '%s' "$body" | curl -sS --noproxy '*' -o /dev/null -X POST -H 'content-type: application/json' -H 'X-Calm-Actor: ai:claude' --data-binary @- "$NEIGE_HOOK_URL"
+printf '{"continue":true}'
+"#;
+
 pub struct Harness {
     pub sql: Arc<SqlxRepo>,
     pub state: AppState,
@@ -26,6 +38,15 @@ pub struct Harness {
     socket: PathBuf,
     pub token: String,
     pub track: String,
+    /// #1620 — the production REST router over the same state, for hook
+    /// POSTs (`tower::ServiceExt::oneshot`) and card deletes.
+    pub app: axum::Router,
+    /// Loopback HTTP server serving `app`, the `NEIGE_CALM_BASE_URL` a
+    /// terminal's bridge command POSTs to.
+    pub base_url: String,
+    /// Test stand-in for `neige-codex-bridge` honoring the same env contract.
+    pub bridge: PathBuf,
+    http: tokio::task::JoinHandle<()>,
 }
 impl Harness {
     pub fn interaction(&self) -> Arc<TerminalInteraction> {
@@ -88,6 +109,22 @@ impl Harness {
         let supervisor = InProcessProcSupervisor::start().await.unwrap();
         let events = EventBus::new();
         let write = WriteContext::new(roles.clone(), areas.clone());
+        // #1620 — a real loopback ingest endpoint and a bridge stand-in so a
+        // terminal's generated hook command reaches `/internal/claude/hook`.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let bridge = root.path().join("fake-bridge.sh");
+        // Same env contract (NEIGE_HOOK_URL) and the same per-invocation
+        // `neige_hook_occurrence` stamp as the real bridge (#1620, see
+        // calm-codex-bridge/src/main.rs); POSTs stdin as the hook body.
+        std::fs::write(&bridge, FAKE_BRIDGE).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bridge, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut codex = CodexClient::new_stub();
+        codex.bridge_bin = bridge.clone();
+        codex.ingest_url = base_url.clone();
         let plugin = Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),
             repo.clone(),
@@ -105,10 +142,19 @@ impl Harness {
                 proc_supervisor_sock: Some(supervisor.sock().to_owned()),
             }),
             plugin,
-            Arc::new(CodexClient::new_stub()),
+            Arc::new(codex),
             Some(roles),
             Some(areas),
         );
+        let app = calm_server::routes::router()
+            .layer(axum::middleware::from_fn(
+                calm_server::actor::actor_middleware,
+            ))
+            .with_state(state.clone());
+        let served = app.clone();
+        let http = tokio::spawn(async move {
+            axum::serve(listener, served).await.unwrap();
+        });
         let operations = Arc::new(tokio::sync::OnceCell::new());
         operations
             .set(state.operation_runtime.clone())
@@ -147,7 +193,44 @@ impl Harness {
             socket,
             token: token.expect("planner MCP token"),
             track: track.id.to_string(),
+            app,
+            base_url,
+            bridge,
+            http,
         }
+    }
+    /// POST a hook body for `card_id` through the production ingest route.
+    pub async fn post_claude_hook(&self, card_id: &str, body: &Value) -> axum::http::StatusCode {
+        self.post_hook("claude", card_id, body).await
+    }
+    pub async fn post_codex_hook(&self, card_id: &str, body: &Value) -> axum::http::StatusCode {
+        self.post_hook("codex", card_id, body).await
+    }
+    async fn post_hook(
+        &self,
+        provider: &str,
+        card_id: &str,
+        body: &Value,
+    ) -> axum::http::StatusCode {
+        use tower::ServiceExt;
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/internal/{provider}/hook?card_id={card_id}"))
+            .header("content-type", "application/json")
+            .header("X-Calm-Actor", format!("ai:{provider}"))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        self.app.clone().oneshot(request).await.unwrap().status()
+    }
+    /// Rows of `events` persisted as worker hook events (`codex.hook` /
+    /// `claude.hook`).
+    pub async fn persisted_hook_events(&self) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE kind IN ('codex.hook', 'claude.hook')",
+        )
+        .fetch_one(self.sql.pool())
+        .await
+        .unwrap()
     }
     pub async fn call(&self, name: &str, args: Value) -> Value {
         let stream = UnixStream::connect(&self.socket).await.unwrap();
@@ -207,6 +290,7 @@ impl Harness {
     }
     pub async fn stop(self, terminal: &str) {
         self.state.terminal_renderer.drop_entry(terminal).await;
+        self.http.abort();
         drop(self.server);
         drop(self.state);
         drop(self.supervisor);

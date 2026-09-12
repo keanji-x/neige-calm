@@ -304,6 +304,11 @@ pub async fn reap_terminal_artifacts_with_renderer(
             "no live renderer entry while reaping terminal; using pid fallback if available"
         );
     }
+    // #1620 — the generated Planner hook settings file (server-owned path
+    // derived from the card id; never a path read from the row's env).
+    if let Some(renderer) = renderer {
+        renderer.remove_hook_settings(term.card_id.as_str());
+    }
 
     // 2. SIGTERM fallback. Skipped when no pid persisted (legacy rows or
     //    spawn-time write_pid failure).

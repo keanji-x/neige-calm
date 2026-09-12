@@ -40,6 +40,7 @@ use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_lifecycle::apply_requested_transition_in_tx;
+use crate::validation::reject_client_supplied_terminal_signals;
 
 use axum::{
     Json, Router,
@@ -445,6 +446,10 @@ pub(crate) async fn create_card(
             .into_response()
     })?;
     let payload = body.payload.unwrap_or(Value::Null);
+    // #1620 — hook-routing provenance is kernel-stamped, never accepted from
+    // a client (any kind): see `validation::reject_client_supplied_terminal_signals`.
+    reject_client_supplied_terminal_signals(&payload)
+        .map_err(|e| CalmError::from(e).into_response())?;
     // D4: reject malformed payloads for kernel-owned kinds. Plugin-defined
     // (`ui://*`) kinds remain opaque per the architectural invariant.
     s.card_kind_registry()
@@ -617,6 +622,10 @@ async fn create_via_tool_call(
     //    on this); `payload` defaults to JSON null when the tool omits
     //    `structuredContent`.
     let payload = creation.structured_content.unwrap_or(Value::Null);
+    // #1620 — a plugin's `structuredContent` is client input for this
+    // purpose: the provenance marker is never accepted from it.
+    reject_client_supplied_terminal_signals(&payload)
+        .map_err(|e| CalmError::from(e).into_response())?;
     // D4: validate even on the tool-call path. In practice `ui://*` kinds
     // are opaque so this is a no-op for plugin-defined views — but if a
     // tool ever names a kernel kind (e.g. `"terminal"`) via resourceUri,
@@ -728,7 +737,13 @@ pub(crate) async fn update_card(
     // D4: if the patch carries a payload, validate it against the kind that
     // will land in the DB. The kind is either the patch's new kind (when the
     // patch retargets) or the existing card's kind.
+    //
+    // #1620 — the payload may not carry the hook-routing provenance marker
+    // (server-owned, any kind → 400). Dropping it by omission is impossible:
+    // `card_update_tx` re-stamps the marker onto any replacement payload of
+    // a card that already carries it (and refuses a non-object replacement).
     if let Some(payload) = p.payload.as_ref() {
+        reject_client_supplied_terminal_signals(payload)?;
         let kind = p.kind.as_deref().unwrap_or(existing.kind.as_str());
         s.card_kind_registry().validate_payload(kind, payload)?;
     }

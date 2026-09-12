@@ -35,7 +35,10 @@ use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 #[cfg(test)]
 use crate::track_area_cache::TrackAreaCache;
-use crate::validation::{OVERLAY_ENTITY_SCOPE_REGISTRY, validate_overlay_payload};
+use crate::validation::{
+    OVERLAY_ENTITY_SCOPE_REGISTRY, reject_client_supplied_terminal_signals,
+    validate_overlay_payload,
+};
 
 use super::events::SubscriptionFilter;
 use super::mcp::{CallToolResult, McpClient, RpcError};
@@ -411,6 +414,10 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     } else {
         p.payload
     };
+    // #1620 — the hook-routing provenance marker is kernel-stamped; a plugin
+    // never writes it (any kind).
+    reject_client_supplied_terminal_signals(&payload)
+        .map_err(|e| RpcError::invalid_params(e.to_string()))?;
     // D4: kernel-owned card kinds (currently `terminal`) must match shape;
     // plugin-prefixed and ui:// kinds remain opaque.
     validate_card_kind_global(&p.kind, &payload)
@@ -511,6 +518,10 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     // D4: if the patch carries a payload, validate against the effective
     // kind (the new kind if retargeting, otherwise the existing card's kind).
     if let Some(payload) = p.payload.as_ref() {
+        // #1620 — see `card_create`; `card_update_tx` keeps a stored marker
+        // sticky across the replacement.
+        reject_client_supplied_terminal_signals(payload)
+            .map_err(|e| RpcError::invalid_params(e.to_string()))?;
         let kind = p.kind.as_deref().unwrap_or(card.kind.as_str());
         validate_card_kind_global(kind, payload)
             .map_err(|e| RpcError::invalid_params(e.to_string()))?;
@@ -1313,6 +1324,57 @@ mod tests {
         .await
         .expect("terminal card create allowed");
         assert_eq!(res["kind"], "terminal");
+    }
+
+    /// #1620 — the hook-routing provenance marker is never accepted from a
+    /// plugin, on create (any permitted kind) or update.
+    #[tokio::test]
+    async fn card_create_and_update_reject_client_terminal_signals() {
+        let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
+        for kind in ["terminal", "plugin:p1:demo"] {
+            let err = dispatch(
+                &h.ctx(),
+                "neige.card.create",
+                json!({
+                    "track_id": h.track_id,
+                    "kind": kind,
+                    "payload": { "schemaVersion": 1, "terminal_signals": true }
+                }),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.code, RpcError::INVALID_PARAMS, "kind={kind}");
+            assert!(err.message.contains("server-owned"), "{}", err.message);
+        }
+        assert!(
+            h.ctx_storage
+                .repo
+                .cards_by_track(&h.track_id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "nothing was written"
+        );
+
+        let create = dispatch(
+            &h.ctx(),
+            "neige.card.create",
+            json!({ "track_id": h.track_id, "kind": "plugin:p1:demo" }),
+        )
+        .await
+        .unwrap();
+        let cid = create["id"].as_str().unwrap().to_string();
+        let err = dispatch(
+            &h.ctx(),
+            "neige.card.update",
+            json!({ "card_id": cid, "payload": { "terminal_signals": true } }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert!(err.message.contains("server-owned"), "{}", err.message);
+        let stored = h.ctx_storage.repo.card_get(&cid).await.unwrap().unwrap();
+        assert!(stored.payload.get("terminal_signals").is_none());
     }
 
     #[tokio::test]

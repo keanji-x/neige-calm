@@ -31,6 +31,9 @@ impl CardKindHandler for TerminalCardHandler {
         struct TerminalPayload {
             #[serde(default)]
             terminal_id: Option<String>,
+            /// #1620 — see `validation::TERMINAL_SIGNALS_PAYLOAD_KEY`.
+            #[serde(default)]
+            terminal_signals: Option<bool>,
         }
 
         if payload.is_null() {

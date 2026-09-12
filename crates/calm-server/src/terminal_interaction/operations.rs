@@ -16,7 +16,7 @@ impl TerminalInteraction {
         allow_output_since_observation: bool,
         observation_wait: Option<WaitPlan>,
     ) -> Result<Value> {
-        if let Some(wait) = observation_wait {
+        if let Some(wait) = &observation_wait {
             wait.validate()?;
         }
         ensure!(
@@ -64,8 +64,27 @@ impl TerminalInteraction {
             }
         };
         if let Some(receipt) = cached {
+            // A replayed receipt's readback compares against the CURRENT
+            // state (revision and signal seq at this call), not against the
+            // state before the original write: the action already happened
+            // and the caller is asking what changed from here on.
+            let current = {
+                let signal_seq = client.entry.signals.last_seq();
+                client
+                    .entry
+                    .handle
+                    .model_view
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
+                    .capture(0)
+                    .ok()
+                    .map(|(_, revision)| ReadbackBaseline {
+                        revision,
+                        signal_seq,
+                    })
+            };
             return Ok(self
-                .with_observation(identity, &client, receipt, observation_wait, None)
+                .with_observation(identity, &client, receipt, observation_wait, current)
                 .await);
         }
         let observation = match observation {
@@ -107,7 +126,8 @@ impl TerminalInteraction {
                 "return to live viewport before input"
             );
             // Read immediately before the physical write: this is the readback
-            // baseline and the drift evidence.
+            // baseline (revision and signal seq) and the drift evidence.
+            let signal_seq = client.entry.signals.last_seq();
             let (frame, current) = client
                 .entry
                 .handle
@@ -134,11 +154,13 @@ impl TerminalInteraction {
                     current,
                 }
             } else {
-                Fence::Ready(bytes, saved.revision, current)
+                Fence::Ready(bytes, saved.revision, current, signal_seq)
             }
         };
-        let (bytes, observed_revision, input_revision) = match fence {
-            Fence::Ready(bytes, observed, current) => (bytes, observed, current),
+        let (bytes, observed_revision, input_revision, signal_seq) = match fence {
+            Fence::Ready(bytes, observed, current, signal_seq) => {
+                (bytes, observed, current, signal_seq)
+            }
             Fence::Stale { observed, current } => {
                 // No physical write and nothing cached under the request_id:
                 // a later resend with another flag or observation must not
@@ -213,7 +235,10 @@ impl TerminalInteraction {
                 &client,
                 result,
                 observation_wait,
-                Some(input_revision),
+                Some(ReadbackBaseline {
+                    revision: input_revision,
+                    signal_seq,
+                }),
             )
             .await)
     }
@@ -222,8 +247,12 @@ impl TerminalInteraction {
 /// live revisions, or a stale observation (only the exact-revision fence
 /// failed) that becomes a structured refusal rather than an error.
 enum Fence {
-    Ready(Vec<u8>, u64, u64),
-    Stale { observed: u64, current: u64 },
+    /// bytes, observed revision, live revision, signal seq before the write
+    Ready(Vec<u8>, u64, u64, u64),
+    Stale {
+        observed: u64,
+        current: u64,
+    },
 }
 /// The stale-observation result: the request was not written, and the caller
 /// is told what to compare and how to resend.
@@ -271,21 +300,41 @@ fn acknowledged_receipt(
     }
     receipt
 }
+/// The `text` field of a text-like action: nonempty, at most 16384 bytes, no
+/// control characters, and no other fields on the action.
+fn printable_text<'a>(
+    action: &'a Value,
+    object: &serde_json::Map<String, Value>,
+    kind: &str,
+) -> Result<&'a str> {
+    ensure!(
+        object.len() == 2 && object.contains_key("text"),
+        "{kind} action accepts only type/text"
+    );
+    let text = action["text"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("text required"))?;
+    ensure!(
+        text.len() <= 16384 && !text.is_empty() && !text.chars().any(char::is_control),
+        "text must be nonempty printable text; use explicit keys for Enter or controls"
+    );
+    Ok(text)
+}
 fn encode(action: &Value, frame: &InputSurface) -> Result<Vec<u8>> {
     let object = action
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("terminal action must be an object"))?;
     match action["type"].as_str() {
-        Some("text") => {
-            ensure!(object.len() == 2, "text action accepts only type/text");
-            let text = action["text"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("text required"))?;
-            ensure!(
-                text.len() <= 16384 && !text.is_empty() && !text.chars().any(char::is_control),
-                "text must be nonempty printable text; use explicit keys for Enter or controls"
-            );
-            Ok(text.as_bytes().to_vec())
+        Some("text") => Ok(printable_text(action, object, "text")?.as_bytes().to_vec()),
+        Some("submit") => {
+            // #1620 — text followed by CR in ONE physical write: one receipt,
+            // one barrier. Explicit opt-in; `text` alone never submits and
+            // `submit` never repeats.
+            let mut bytes = printable_text(action, object, "submit")?
+                .as_bytes()
+                .to_vec();
+            bytes.push(b'\r');
+            Ok(bytes)
         }
         Some("key") => {
             ensure!(
@@ -334,6 +383,35 @@ fn encode(action: &Value, frame: &InputSurface) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod receipt_tests {
     use super::*;
+
+    /// #1620 `submit`: the text bytes plus exactly one CR in one encoding;
+    /// the same text rules as `text`; no repeat, no extra fields.
+    #[test]
+    fn submit_encodes_text_and_one_cr_and_rejects_repeat() {
+        let surface = calm_terminal_view::TerminalView::new(80, 24, [220; 3], [20; 3])
+            .unwrap()
+            .frame(0)
+            .unwrap()
+            .input_surface();
+        assert_eq!(
+            encode(&json!({"type":"submit","text":"ls -la"}), &surface).unwrap(),
+            b"ls -la\r".to_vec()
+        );
+        assert_eq!(
+            encode(&json!({"type":"text","text":"ls -la"}), &surface).unwrap(),
+            b"ls -la".to_vec(),
+            "text alone never submits"
+        );
+        for invalid in [
+            json!({"type":"submit","text":"x","repeat":2}),
+            json!({"type":"submit","text":""}),
+            json!({"type":"submit","text":"a\nb"}),
+            json!({"type":"submit"}),
+            json!({"type":"submit","text":"x".repeat(16385)}),
+        ] {
+            assert!(encode(&invalid, &surface).is_err(), "{invalid}");
+        }
+    }
 
     /// The field contract is uniform: written, refused and unknown receipts
     /// all say `application_result:"unverified"`; only acknowledged ones add

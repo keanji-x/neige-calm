@@ -22,6 +22,7 @@ mod attach_reader;
 mod child_ready;
 mod client_pump;
 mod control_writer;
+pub use control_writer::INPUT_REVOKED_BEFORE_WRITE;
 mod input_authority;
 mod model_view;
 pub use input_authority::{ClientInputScope, InputBarrier, WriteAuthority};
@@ -29,9 +30,14 @@ pub use model_view::{ModelView, SharedModelView};
 #[cfg(test)]
 pub(crate) mod establishment_test_hook;
 mod output_capture;
+pub mod signals;
 mod snapshot;
+pub use signals::{IncomingSignal, SIGNAL_MESSAGE_MAX_CHARS, Signal, SignalRing, SignalsSince};
 
-pub use client_pump::{ClientPumpContext, run_client_pump};
+pub use client_pump::{
+    CONTROL_HELD_BY_ANOTHER_CLIENT, ClaimOutcome, ClientPumpContext, PumpCommand, run_client_pump,
+    run_client_pump_with_commands,
+};
 
 pub type SharedRenderPlane = Arc<StdMutex<RenderPlane>>;
 pub type SharedOwnerRegistry = Arc<StdMutex<OwnerRegistry>>;
@@ -170,6 +176,10 @@ pub struct RendererEntry {
     /// `Exited`. Late client pumps replay this immediately after
     /// `ServerHello` because broadcast receivers do not retain history.
     pub exit: SharedExitState,
+    /// #1620 hook signals for this terminal (untrusted advisory telemetry;
+    /// see `signals.rs`). Lives with the renderer generation: a respawned
+    /// terminal starts an empty ring.
+    pub signals: SignalRing,
     initial_event_rx: StdMutex<Option<broadcast::Receiver<DaemonMsg>>>,
     exited_rx: StdMutex<Option<oneshot::Receiver<Option<i32>>>>,
     /// Held apart from `tasks` because teardown must let it *finish its exit
@@ -319,6 +329,12 @@ pub struct TerminalRendererRegistry {
     /// until installed; entries spawned before installation simply skip
     /// the task hook (boot spawns nothing before `AppState` completes).
     task_hook: StdMutex<Option<Arc<crate::scheduler::TerminalTaskHook>>>,
+    /// #1620 — server-owned directory of generated Planner terminal hook
+    /// settings files (`<data_dir>/terminal-hooks/<card_id>.json`). Installed
+    /// at boot next to the adapters that write the files; teardown deletes
+    /// only paths derived from this directory and the card id, never a path
+    /// read from a terminal row's env.
+    hook_settings_dir: StdMutex<Option<PathBuf>>,
 }
 
 impl TerminalRendererRegistry {
@@ -327,6 +343,7 @@ impl TerminalRendererRegistry {
             entries: StdMutex::new(HashMap::new()),
             repo: None,
             task_hook: StdMutex::new(None),
+            hook_settings_dir: StdMutex::new(None),
         })
     }
 
@@ -335,6 +352,7 @@ impl TerminalRendererRegistry {
             entries: StdMutex::new(HashMap::new()),
             repo: Some(repo),
             task_hook: StdMutex::new(None),
+            hook_settings_dir: StdMutex::new(None),
         })
     }
 
@@ -349,6 +367,39 @@ impl TerminalRendererRegistry {
 
     fn task_hook(&self) -> Option<Arc<crate::scheduler::TerminalTaskHook>> {
         self.task_hook.lock().ok().and_then(|guard| guard.clone())
+    }
+
+    /// Install the #1620 hook settings directory (idempotent, last write wins).
+    pub fn set_hook_settings_dir(&self, dir: PathBuf) {
+        if let Ok(mut guard) = self.hook_settings_dir.lock() {
+            *guard = Some(dir);
+        }
+    }
+
+    /// Delete the generated hook settings file for `card_id`, if this
+    /// registry owns a settings directory. The path is derived here from the
+    /// server-owned directory and the card id only.
+    pub fn remove_hook_settings(&self, card_id: &str) {
+        let Some(dir) = self.hook_settings_dir.lock().ok().and_then(|g| g.clone()) else {
+            return;
+        };
+        crate::terminal_hooks::remove_settings_file(&dir, card_id);
+    }
+
+    /// Append a hook signal to the CURRENT renderer entry of `terminal_id`,
+    /// under the registry lock so a concurrent drop/ensure cannot route it to
+    /// a superseded generation. Returns the seq, `None` when there is no live
+    /// entry or the delivery was a duplicate.
+    pub fn push_signal(
+        &self,
+        terminal_id: &str,
+        idempotency_key: &str,
+        incoming: IncomingSignal,
+        now_ms: i64,
+    ) -> Option<u64> {
+        let entries = self.entries.lock().ok()?;
+        let entry = entries.get(terminal_id)?;
+        entry.signals.push(idempotency_key, incoming, now_ms)
     }
 
     /// Spawn a PTY proc on the supervisor and stand up the in-process
@@ -475,6 +526,7 @@ impl TerminalRendererRegistry {
             },
             config: cfg,
             exit,
+            signals: SignalRing::new(),
             initial_event_rx: StdMutex::new(Some(initial_event_rx)),
             exited_rx: StdMutex::new(Some(exited_rx)),
             attach_task: StdMutex::new(None),
@@ -854,6 +906,7 @@ async fn ensure_entry(
             },
             config: cfg,
             exit,
+            signals: SignalRing::new(),
             initial_event_rx: StdMutex::new(Some(initial_event_rx)),
             exited_rx: StdMutex::new(Some(exited_rx)),
             attach_task: StdMutex::new(Some(attach_task)),

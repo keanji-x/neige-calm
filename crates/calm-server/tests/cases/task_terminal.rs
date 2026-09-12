@@ -112,6 +112,7 @@ async fn worker_running(h: &Harness, kind: &str, track: &str, viewer: Option<&st
             true,
             &roles,
             theme,
+            false,
         )
         .await
         .unwrap(),

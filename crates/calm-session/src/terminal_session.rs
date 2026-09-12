@@ -408,9 +408,7 @@ impl TerminalSessionState {
                     // wire default.
                     vec![Effect::WriteToPty { data, input_seq }]
                 } else {
-                    vec![not_owner_error(
-                        "Input requires owner role or kernel_originated_input capability",
-                    )]
+                    vec![not_owner_error(INPUT_REQUIRES_OWNER_ROLE)]
                 }
             }
             ClientMsg::ResizeCommit { epoch, cols, rows } => {
@@ -677,6 +675,12 @@ impl TerminalSessionState {
 // `crate::InitialScrollback` (its `None`/`All`/`Lines` are
 // indistinguishable from the bare scope below otherwise).
 use crate::InitialScrollback as InitialScrollbackEcho;
+
+/// Message of the [`ProtocolErrorCode::NotOwner`] error that refuses a
+/// [`ClientMsg::Input`] from a non-owner. Kernel clients match on it to tell an
+/// input refusal apart from an ownership-claim refusal (both use `NotOwner`).
+pub const INPUT_REQUIRES_OWNER_ROLE: &str =
+    "Input requires owner role or kernel_originated_input capability";
 
 fn not_owner_error(message: &str) -> Effect {
     Effect::SendProtocolError {

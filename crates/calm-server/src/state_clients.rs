@@ -151,6 +151,10 @@ pub struct CodexClient {
     /// Parent directory for generated per-Claude-card `settings.json`
     /// files. This is only a hook settings sidecar, not a Claude home.
     pub claude_settings_dir: PathBuf,
+    /// #1620 — parent directory for generated Planner terminal hook settings
+    /// (`<data_dir>/terminal-hooks/<card_id>.json`). Server-owned: created,
+    /// written and deleted by the terminal-create operation and teardown.
+    pub terminal_hook_settings_dir: PathBuf,
     /// Test-only handle. When `new_stub()` constructs the client it stows
     /// a `tempfile::TempDir` here whose path contains both the legacy
     /// `codex_homes_dir` and PR1's shared `codex-home`.
@@ -186,6 +190,7 @@ impl CodexClient {
                 legacy_homes_parent,
             )),
             claude_settings_dir: data_dir.join("claude-settings"),
+            terminal_hook_settings_dir: data_dir.join("terminal-hooks"),
             _codex_homes_tempdir: None,
         }
     }
@@ -248,6 +253,7 @@ impl CodexClient {
             bridge_bin: PathBuf::from("neige-codex-bridge"),
             ingest_url: "http://127.0.0.1:0".into(),
             claude_settings_dir: codex_homes_dir.join("claude-settings"),
+            terminal_hook_settings_dir: codex_homes_dir.join("terminal-hooks"),
             codex_homes_dir,
             shared_codex_home,
             _codex_homes_tempdir: tmp,

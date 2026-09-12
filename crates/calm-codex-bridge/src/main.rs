@@ -17,6 +17,13 @@
 //! now driven by observations pushed onto their codex thread by the kernel —
 //! so Stop is no longer special-cased here.
 //!
+//! #1620: every invocation stamps `neige_hook_occurrence` (a per-process id)
+//! into the body before it is posted or hashed, so two hook occurrences with
+//! byte-identical bodies (Claude's `Stop` / idle `Notification` payloads are
+//! the same every turn) are distinct events at the server, while the retries
+//! and the replayable fallback file of ONE invocation keep one id and stay
+//! idempotent.
+//!
 //! Env contract (set by calm-server when spawning codex):
 //!   * `NEIGE_CARD_ID`        — legacy card uuid override (optional)
 //!   * `NEIGE_CALM_BASE_URL`  — e.g. `http://127.0.0.1:4040` (required)
@@ -77,6 +84,10 @@ fn main() {
     // fire-and-forget path. Stop payloads may be enriched before POST so
     // downstream projections still read only persisted event rows.
     let post_body = maybe_enrich_stop_payload(&body).unwrap_or_else(|| body.clone());
+    // #1620 — one occurrence id per bridge process, stamped before any hash
+    // or POST so retries and the fallback file carry the same body.
+    let occurrence = hook_occurrence_id();
+    let post_body = stamp_hook_occurrence(&post_body, &occurrence).unwrap_or(post_body);
     post_hook(provider, &base, &card_id, hook_url.as_deref(), &post_body);
 
     print!("{}", provider.ack());
@@ -224,6 +235,45 @@ fn maybe_enrich_stop_payload(body: &str) -> Option<String> {
             None
         }
     }
+}
+
+/// Key the bridge adds to every posted hook body (#1620).
+pub const HOOK_OCCURRENCE_KEY: &str = "neige_hook_occurrence";
+
+/// `<pid>-<captured_ms>-<random>`: unique per invocation, generated once.
+fn hook_occurrence_id() -> String {
+    format!("{}-{}-{}", std::process::id(), now_ms(), random_hex())
+}
+
+fn random_hex() -> String {
+    let mut bytes = [0u8; 8];
+    let read = std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .is_ok();
+    if !read {
+        // No entropy device: hash the process id, a nanosecond clock and a
+        // stack address instead so the id still differs across invocations.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let stack = &bytes as *const _ as usize;
+        let digest = sha256_hex(&format!("{}|{nanos}|{stack}", std::process::id()));
+        return digest[..16].to_owned();
+    }
+    hex::encode(bytes)
+}
+
+/// Insert [`HOOK_OCCURRENCE_KEY`] into a JSON object body. A body that is not
+/// a JSON object is returned as `None` and posted unchanged (the server
+/// rejects it either way).
+fn stamp_hook_occurrence(body: &str, occurrence: &str) -> Option<String> {
+    let mut payload: Value = serde_json::from_str(body).ok()?;
+    payload.as_object_mut()?.insert(
+        HOOK_OCCURRENCE_KEY.to_owned(),
+        Value::String(occurrence.to_owned()),
+    );
+    serde_json::to_string(&payload).ok()
 }
 
 fn extract_last_assistant_text(jsonl: &str) -> Option<String> {
@@ -856,6 +906,25 @@ mod tests {
     #[test]
     fn malformed_body_returns_none() {
         assert_eq!(maybe_enrich_stop_payload("not-json"), None);
+    }
+
+    /// #1620 — the occurrence id is stamped into object bodies only, keeps
+    /// every original key, and two generated ids differ.
+    #[test]
+    fn occurrence_is_stamped_into_object_bodies_and_unique_per_call() {
+        let body = json!({"hook_event_name":"Stop","session_id":"s"}).to_string();
+        let stamped = stamp_hook_occurrence(&body, "1-2-abcd").expect("object body");
+        let parsed: Value = serde_json::from_str(&stamped).unwrap();
+        assert_eq!(parsed["hook_event_name"], "Stop");
+        assert_eq!(parsed["session_id"], "s");
+        assert_eq!(parsed[HOOK_OCCURRENCE_KEY], "1-2-abcd");
+        assert_eq!(stamp_hook_occurrence("[1,2]", "x"), None);
+        assert_eq!(stamp_hook_occurrence("not-json", "x"), None);
+        let first = hook_occurrence_id();
+        let second = hook_occurrence_id();
+        assert_ne!(first, second);
+        assert!(first.starts_with(&format!("{}-", std::process::id())));
+        assert_eq!(first.split('-').count(), 3, "{first}");
     }
 
     fn write_transcript(text: &str) -> tempfile::NamedTempFile {

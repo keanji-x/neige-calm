@@ -1123,6 +1123,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
+        false,
     )
     .await
     .expect("atomic create");
@@ -1191,6 +1192,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_track() {
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
+        false,
     )
     .await
     .expect_err("unknown track must error");
@@ -1236,6 +1238,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
+        false,
     )
     .await
     .unwrap();
@@ -1273,6 +1276,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
         true,
         &calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
+        false,
     )
     .await
     .unwrap();

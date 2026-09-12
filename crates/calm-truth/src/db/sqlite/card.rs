@@ -12,6 +12,7 @@ use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
 use crate::ids::CardId;
 use crate::model::*;
+use crate::validation::TERMINAL_SIGNALS_PAYLOAD_KEY;
 
 pub async fn terminal_get_by_card_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -190,7 +191,30 @@ async fn card_update_inner_tx(
     if let Some(v) = p.sort {
         c.sort = v;
     }
-    if let Some(v) = p.payload {
+    if let Some(mut v) = p.payload {
+        // #1620 — the Planner-terminal provenance marker is sticky: the
+        // payload column is replaced wholesale, so a replacement on a card
+        // that carries `TERMINAL_SIGNALS_PAYLOAD_KEY == true` re-stamps it
+        // and no writer (REST PATCH, plugin update, kernel merge) can drop
+        // the hook routing by omission. A non-object replacement cannot
+        // carry the marker and is refused. Cards without the marker never
+        // gain it here — only `card_with_terminal_create_tx` mints it.
+        if c.payload
+            .get(TERMINAL_SIGNALS_PAYLOAD_KEY)
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            let Some(map) = v.as_object_mut() else {
+                return Err(CalmError::BadRequest(format!(
+                    "card {} carries `{TERMINAL_SIGNALS_PAYLOAD_KEY}`; its payload must stay a JSON object",
+                    c.id
+                )));
+            };
+            map.insert(
+                TERMINAL_SIGNALS_PAYLOAD_KEY.to_owned(),
+                serde_json::Value::Bool(true),
+            );
+        }
         c.payload = v;
     }
     if let Some(v) = p.title {

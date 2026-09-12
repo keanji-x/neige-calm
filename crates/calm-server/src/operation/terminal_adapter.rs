@@ -21,6 +21,7 @@ use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
 use crate::state::WriteContext;
+use crate::terminal_hooks::TerminalHookSettings;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
 
@@ -47,6 +48,9 @@ pub struct TerminalAdapter {
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     spawn_hook: Option<SpawnHook>,
+    /// #1620 — how a `planner_hooks` terminal gets its generated settings
+    /// file and bridge env. `None` refuses such requests explicitly.
+    hook_settings: Option<TerminalHookSettings>,
 }
 
 #[derive(Clone)]
@@ -70,6 +74,7 @@ impl TerminalAdapter {
             card_role_cache,
             track_area_cache,
             spawn_hook: None,
+            hook_settings: None,
         }
     }
 
@@ -84,7 +89,14 @@ impl TerminalAdapter {
             card_role_cache,
             track_area_cache,
             spawn_hook: Some(spawn_hook),
+            hook_settings: None,
         }
+    }
+
+    /// #1620 — enable `planner_hooks` terminal creation.
+    pub fn with_hook_settings(mut self, hook_settings: Option<TerminalHookSettings>) -> Self {
+        self.hook_settings = hook_settings;
+        self
     }
 
     async fn spawn_terminal_from_output(
@@ -156,6 +168,12 @@ pub struct TerminalCreateOperationPayload {
     /// a FRESH session id for a row that already had one.
     #[serde(rename = "runtime_id")]
     pub worker_session_id: Option<String>,
+    /// #1620 — set only by `calm.terminal.open`: the adapter derives the
+    /// generated hook env and settings file from the card id it allocates
+    /// (see `crate::terminal_hooks`). REST-created terminals leave it false
+    /// and get exactly the env they asked for.
+    #[serde(default)]
+    pub planner_hooks: bool,
     #[serde(flatten)]
     pub request: TerminalCreateRequestPayload,
 }
@@ -278,8 +296,21 @@ impl ProviderAdapter for TerminalAdapter {
     ) -> Result<TxOutput> {
         let payload: TerminalCreateOperationPayload = serde_json::from_value(input.clone())?;
         let program = payload.request.program.clone();
-        let env = payload.request.env.clone();
         let card_id = new_id();
+        // #1620 — the generated hook env depends on the card id allocated
+        // here, so it is derived here and persisted identically in the
+        // terminal row and the spawn output; the request env stays as sent.
+        let env = if payload.planner_hooks {
+            let settings = self.hook_settings.as_ref().ok_or_else(|| {
+                CalmError::Internal(
+                    "planner hook signals requested but the terminal adapter has no hook configuration"
+                        .into(),
+                )
+            })?;
+            settings.merge_env(&payload.request.env, &card_id)
+        } else {
+            payload.request.env.clone()
+        };
         let runtime_id = payload.worker_session_id.clone().unwrap_or_else(new_id);
         let track_id = payload.request.track_id.clone();
         // #1147 S6 — an empty request `cwd` means "the track's workspace". It is
@@ -314,6 +345,9 @@ impl ProviderAdapter for TerminalAdapter {
             true,
             &self.card_role_cache,
             payload.request.theme,
+            // #1620 — the durable provenance marker the hook ingest route
+            // keys on; stamped in the same transaction as the card.
+            payload.planner_hooks,
         )
         .await?;
         let event = Event::CardAdded(card.clone());
@@ -343,6 +377,7 @@ impl ProviderAdapter for TerminalAdapter {
             "program": program,
             "cwd": cwd,
             "env": env,
+            "planner_hooks": payload.planner_hooks,
         });
         output.post_commit_events.push(BroadcastEnvelope {
             id: event_id,
@@ -381,6 +416,19 @@ impl ProviderAdapter for TerminalAdapter {
         let program = output.output_string("program", "terminal")?;
         let cwd = output.output_string("cwd", "terminal")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
+        // #1620 — the settings file must exist before the child starts, and
+        // operation recovery re-runs this step, so it is (re)written here
+        // rather than by the MCP handler (mkdir → write → spawn, like the
+        // Claude card adapter).
+        if output.data.get("planner_hooks").and_then(Value::as_bool) == Some(true) {
+            let settings = self.hook_settings.as_ref().ok_or_else(|| {
+                CalmError::Internal(
+                    "planner hook signals requested but the terminal adapter has no hook configuration"
+                        .into(),
+                )
+            })?;
+            settings.write_settings(&card_id)?;
+        }
 
         match self
             .spawn_terminal_from_output(terminal_id.clone(), program, cwd, env, ctx)
@@ -657,6 +705,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             true,
             &self.card_role_cache,
             RequestTheme::default_dark(),
+            false,
         )
         .await?;
 

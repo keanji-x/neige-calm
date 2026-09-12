@@ -14,6 +14,7 @@ use crate::model::*;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionKind};
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
+    TERMINAL_SIGNALS_PAYLOAD_KEY,
 };
 use calm_types::worker::WorkerSessionState;
 
@@ -56,6 +57,11 @@ pub async fn card_with_terminal_create_tx(
     // stamps consistent `--terminal-fg/-bg` argv (closes the WS auto-
     // revive race observed in PR #193).
     theme: RequestTheme,
+    // #1620 — `true` only for a terminal the Planner opened with hook
+    // signals: stamps `TERMINAL_SIGNALS_PAYLOAD_KEY` into the card payload
+    // (the durable provenance the hook ingest route keys on). Every other
+    // creation path passes `false` and the key is absent.
+    planner_hooks: bool,
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — schemaVersion is stamped in
     //    step 5 once we have the terminal row.
@@ -99,9 +105,12 @@ pub async fn card_with_terminal_create_tx(
     .await?;
 
     // 3. Build the canonical terminal-card payload.
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "schemaVersion": TERMINAL_PAYLOAD_SCHEMA_VERSION,
     });
+    if planner_hooks {
+        payload[TERMINAL_SIGNALS_PAYLOAD_KEY] = serde_json::Value::Bool(true);
+    }
 
     // 4. Defense-in-depth: payload validation. The boundary call in
     //    `routes/cards.rs:141` already enforces this for direct create, but
@@ -643,6 +652,7 @@ mod tests {
     use super::*;
     use crate::db::sqlite::SqlxRepo;
     use crate::db::{RepoRead, RepoSyncDomainRaw};
+    use crate::error::CalmError;
     use serde_json::json;
 
     #[tokio::test]
@@ -793,6 +803,7 @@ mod tests {
             true,
             repo.card_role_cache(),
             RequestTheme::default_dark(),
+            false,
         )
         .await
         .unwrap();
@@ -805,6 +816,147 @@ mod tests {
                 .title
                 .as_deref(),
             Some("T")
+        );
+    }
+
+    /// #1620 — `card_update_tx` keeps a stored `terminal_signals: true`
+    /// sticky across a whole-payload replacement, refuses a replacement that
+    /// cannot carry it, and never mints it on a card that lacks it.
+    #[tokio::test]
+    async fn card_update_keeps_the_planner_terminal_marker_sticky() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let area = repo
+            .area_create(NewArea {
+                name: "marker".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "track".into(),
+                sort: None,
+                cwd: String::new(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let open = |planner_hooks: bool| {
+            let track_id = track.id.clone();
+            let repo = &repo;
+            async move {
+                let mut tx = repo.pool().begin().await.unwrap();
+                let (card, _) = card_with_terminal_create_tx(
+                    &mut tx,
+                    crate::model::new_id(),
+                    &crate::model::new_id(),
+                    None,
+                    track_id,
+                    None,
+                    None,
+                    "bash".into(),
+                    "/tmp".into(),
+                    json!({}),
+                    CardRole::Worker,
+                    true,
+                    repo.card_role_cache(),
+                    RequestTheme::default_dark(),
+                    planner_hooks,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                card
+            }
+        };
+        let marked = open(true).await;
+        let plain = open(false).await;
+        assert_eq!(marked.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
+        assert!(plain.payload.get(TERMINAL_SIGNALS_PAYLOAD_KEY).is_none());
+
+        let replaced = repo
+            .card_update(
+                marked.id.as_str(),
+                CardPatch {
+                    payload: Some(json!({ "schemaVersion": 1, "terminal_id": "x" })),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(replaced.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
+        assert_eq!(replaced.payload["terminal_id"], "x");
+        assert_eq!(
+            repo.card_get(marked.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .payload[TERMINAL_SIGNALS_PAYLOAD_KEY],
+            true
+        );
+        // Sticky across a kind retarget as well (the hook route keys on the
+        // payload, never on the patchable kind).
+        let retargeted = repo
+            .card_update(
+                marked.id.as_str(),
+                CardPatch {
+                    kind: Some("codex".into()),
+                    payload: Some(json!({ "schemaVersion": 1 })),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(retargeted.kind, "codex");
+        assert_eq!(retargeted.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
+
+        let err = repo
+            .card_update(
+                marked.id.as_str(),
+                CardPatch {
+                    payload: Some(json!("not an object")),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CalmError::Core(calm_types::error::CoreError::BadRequest(_))
+            ),
+            "{err:?}"
+        );
+        assert_eq!(
+            repo.card_get(marked.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .payload[TERMINAL_SIGNALS_PAYLOAD_KEY],
+            true,
+            "the refused replacement wrote nothing"
+        );
+
+        let plain = repo
+            .card_update(
+                plain.id.as_str(),
+                CardPatch {
+                    payload: Some(json!({ "schemaVersion": 1, "terminal_id": "y" })),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            plain.payload.get(TERMINAL_SIGNALS_PAYLOAD_KEY).is_none(),
+            "an update never mints the marker: {}",
+            plain.payload
         );
     }
 }
