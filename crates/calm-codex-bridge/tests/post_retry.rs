@@ -1,7 +1,7 @@
 use std::io::{ErrorKind, Write};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
@@ -24,10 +24,32 @@ async fn bind_stub() -> Option<(TcpListener, String)> {
 }
 
 async fn serve_statuses(listener: TcpListener, statuses: Vec<u16>, attempts: Arc<AtomicUsize>) {
+    serve_statuses_capturing(
+        listener,
+        statuses,
+        attempts,
+        Arc::new(Mutex::new(Vec::new())),
+    )
+    .await;
+}
+
+/// Like [`serve_statuses`], additionally collecting every request body.
+async fn serve_statuses_capturing(
+    listener: TcpListener,
+    statuses: Vec<u16>,
+    attempts: Arc<AtomicUsize>,
+    bodies: Arc<Mutex<Vec<String>>>,
+) {
     for status in statuses {
         let (mut stream, _) = listener.accept().await.expect("accept retry conn");
         attempts.fetch_add(1, Ordering::SeqCst);
-        let _ = read_http_request(&mut stream).await;
+        let request = read_http_request(&mut stream).await;
+        if let Some((body_start, content_len)) = request_body_bounds(request.as_bytes()) {
+            bodies
+                .lock()
+                .unwrap()
+                .push(request[body_start..body_start + content_len].to_owned());
+        }
         let phrase = if status == 204 {
             "No Content"
         } else {
@@ -230,21 +252,6 @@ async fn post_hook_writes_fallback_after_all_retries_fail() {
         .iter()
         .map(|file| file.file_name().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    let first_hash = sha256_hex(&first_body);
-    let second_hash = sha256_hex(&second_body);
-    assert!(
-        file_names
-            .iter()
-            .any(|name| name.ends_with(&format!("-{}.json", &first_hash[..16]))),
-        "files = {file_names:?}"
-    );
-    assert!(
-        file_names
-            .iter()
-            .any(|name| name.ends_with(&format!("-{}.json", &second_hash[..16]))),
-        "files = {file_names:?}"
-    );
-
     let records = files
         .iter()
         .map(|file| {
@@ -254,6 +261,37 @@ async fn post_hook_writes_fallback_after_all_retries_fail() {
             .expect("fallback json")
         })
         .collect::<Vec<_>>();
+    // The file stem ends with the hash of the body as posted: the original
+    // payload plus the #1620 occurrence id, which the replay re-posts
+    // verbatim so the server keys it exactly like the failed attempts.
+    for (name, record) in file_names.iter().zip(&records) {
+        let posted_hash = sha256_hex(&record["body"].to_string());
+        assert!(
+            name.ends_with(&format!("-{}.json", &posted_hash[..16])),
+            "file {name} does not end with the posted body hash; record = {record}"
+        );
+        let occurrence = record["body"]["neige_hook_occurrence"]
+            .as_str()
+            .unwrap_or_else(|| panic!("fallback body carries the occurrence id: {record}"));
+        assert_eq!(occurrence.split('-').count(), 3, "{occurrence}");
+    }
+    let mut stripped = records
+        .iter()
+        .map(|record| {
+            let mut body = record["body"].clone();
+            body.as_object_mut()
+                .unwrap()
+                .remove("neige_hook_occurrence");
+            body.to_string()
+        })
+        .collect::<Vec<_>>();
+    stripped.sort();
+    let mut originals = vec![first_body.clone(), second_body.clone()];
+    originals.sort();
+    assert_eq!(
+        stripped, originals,
+        "the fallback bodies are the stdin payloads plus the occurrence id"
+    );
     let event_names = records
         .iter()
         .filter_map(|record| record["body"]["hook_event_name"].as_str())
@@ -270,6 +308,73 @@ async fn post_hook_writes_fallback_after_all_retries_fail() {
                 && record["body"]["session_id"] == "retry-session"),
         "records = {records:?}"
     );
+}
+
+/// #1620 — byte-identical stdin from two bridge invocations posts two
+/// different `neige_hook_occurrence` ids (so the server sees two events),
+/// while the retries of ONE invocation repeat the same id (so a duplicate
+/// delivery stays a duplicate).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn identical_stdin_gets_a_fresh_occurrence_per_invocation_and_retries_reuse_it() {
+    let Some((listener, base)) = bind_stub().await else {
+        return;
+    };
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let bodies = Arc::new(Mutex::new(Vec::new()));
+    // Invocation one: 500 then 204 (two attempts); invocation two: 204.
+    let stub = tokio::spawn(serve_statuses_capturing(
+        listener,
+        vec![500, 204, 204],
+        attempts.clone(),
+        bodies.clone(),
+    ));
+    let fallback = tempfile::tempdir().expect("tempdir");
+    let payload = serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "same-session",
+        "stop_hook_active": false,
+    });
+    for _ in 0..2 {
+        let base_clone = base.clone();
+        let fallback_path = fallback.path().to_path_buf();
+        let payload = payload.clone();
+        let (stdout, status, stderr, _) =
+            tokio::task::spawn_blocking(move || spawn_bridge(&base_clone, &fallback_path, payload))
+                .await
+                .expect("spawn_blocking join");
+        assert!(
+            status.success(),
+            "bridge exit {status:?}; stderr:\n{stderr}"
+        );
+        assert_eq!(stdout.trim(), "{}");
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(2), stub).await;
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    let bodies = bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 3, "{bodies:?}");
+    let occurrences = bodies
+        .iter()
+        .map(|body| {
+            let parsed: serde_json::Value = serde_json::from_str(body).expect("json body");
+            assert_eq!(parsed["hook_event_name"], "Stop", "{body}");
+            assert_eq!(parsed["session_id"], "same-session", "{body}");
+            parsed["neige_hook_occurrence"]
+                .as_str()
+                .unwrap_or_else(|| panic!("occurrence missing: {body}"))
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bodies[0], bodies[1],
+        "a retry of one invocation posts the identical body"
+    );
+    assert_eq!(occurrences[0], occurrences[1]);
+    assert_ne!(
+        occurrences[1], occurrences[2],
+        "a second invocation with the same stdin gets a fresh occurrence id"
+    );
+    assert_ne!(bodies[1], bodies[2]);
+    assert!(!fallback.path().join("codex").exists());
 }
 
 fn sha256_hex(text: &str) -> String {

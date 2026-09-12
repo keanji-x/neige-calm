@@ -17,6 +17,18 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+const FAKE_BRIDGE: &str = r#"#!/bin/sh
+# test stand-in for neige-codex-bridge: same env contract (NEIGE_HOOK_URL),
+# same per-invocation occurrence stamp (#1620); POSTs stdin as the hook body.
+body=$(cat)
+occurrence="$$-$(date +%s%3N)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+case "$body" in
+  *\}) body="${body%\}},\"neige_hook_occurrence\":\"$occurrence\"}" ;;
+esac
+printf '%s' "$body" | curl -sS --noproxy '*' -o /dev/null -X POST -H 'content-type: application/json' -H 'X-Calm-Actor: ai:claude' --data-binary @- "$NEIGE_HOOK_URL"
+printf '{"continue":true}'
+"#;
+
 pub struct Harness {
     pub sql: Arc<SqlxRepo>,
     pub state: AppState,
@@ -102,13 +114,10 @@ impl Harness {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let bridge = root.path().join("fake-bridge.sh");
-        std::fs::write(
-            &bridge,
-            "#!/bin/sh\n# test stand-in for neige-codex-bridge: same env contract (NEIGE_HOOK_URL), POSTs stdin as the hook body\n\
-             curl -sS --noproxy '*' -o /dev/null -X POST -H 'content-type: application/json' -H 'X-Calm-Actor: ai:claude' --data-binary @- \"$NEIGE_HOOK_URL\"\n\
-             printf '{\"continue\":true}'\n",
-        )
-        .unwrap();
+        // Same env contract (NEIGE_HOOK_URL) and the same per-invocation
+        // `neige_hook_occurrence` stamp as the real bridge (#1620, see
+        // calm-codex-bridge/src/main.rs); POSTs stdin as the hook body.
+        std::fs::write(&bridge, FAKE_BRIDGE).unwrap();
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&bridge, std::fs::Permissions::from_mode(0o755)).unwrap();
