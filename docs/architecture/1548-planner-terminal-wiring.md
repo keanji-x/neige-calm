@@ -398,9 +398,22 @@ Idempotency: the open's `stable_payload_hash` covers the request as sent plus
 `planner_hooks`; the generated keys never enter it (they are derived after
 hashing, from the allocated card id), so a replayed `request_id` returns the
 existing terminal. The settings file is deleted by the shared terminal reap
-(`reap_terminal_artifacts_with_renderer`: card/track/area delete, sweeper,
-create compensation); only the path derived from the server-owned directory and
-the card id is ever deleted, never a path read from env.
+(`reap_terminal_artifacts_with_renderer`: card delete, sweeper, create
+compensation) and, for track and area deletion (which quiesce terminals
+through `quiesce_terminal_artifacts_for_deletion` and never reach the reap
+helper), on the committed arm of the delete only — the card ids are captured
+before the transaction and the files stay in place on rollback. Only the path
+derived from the server-owned directory and the card id is ever deleted, never
+a path read from env.
+
+Occurrence identity: Claude's `Stop` and idle `Notification` bodies are
+byte-identical every turn, and the ingest key is
+`provider|card|session|event|sha256(body)`. The bridge therefore stamps
+`neige_hook_occurrence: "<pid>-<captured_ms>-<random>"` into every body it
+posts, generated once per bridge process and kept across its retries and the
+replayable fallback file (whose stem hashes the stamped body): distinct
+invocations are distinct events, a redelivery of one invocation is still a
+duplicate. Server keys are unchanged; the field travels with the payload.
 
 ### Ingest → ring
 
@@ -409,13 +422,16 @@ parses the body into a bounded signal (`{seq, event (snake_case), notification_t
 message (≤200 chars, control characters stripped; taken from `message`, else
 `prompt`, else `reason`), claude_session_id?, received_at_ms}`), appends it to the
 CURRENT renderer entry's ring (`RendererEntry.signals`, capacity 64, under the
-registry lock so a superseded generation never receives it), marks the
-idempotency key and returns the same 2xx — BEFORE the persist / FSM projection
-path, so a terminal hook can never move a card FSM. The ring is idempotent on
-the ingest idempotency key (recent-key set), so a duplicate delivery racing the
-check-then-insert cache never appends twice; every accepted event gets a fresh
-`seq`. Malformed or unknown payloads are logged and acknowledged; codex hooks
-for terminal cards are acknowledged and ignored. A `watch<u64>` seq is published
+registry lock so a superseded generation never receives it) and returns the
+same 2xx — BEFORE the worker dedupe cache and the persist / FSM projection
+path, so a terminal hook can never move a card FSM and never occupies a slot
+of the bounded (4096-key) worker `hook_ingest_cache`: a flood of terminal
+hooks, malformed ones included, cannot evict a worker key. Dedupe for
+terminals is the ring's own recent-key set (128 keys per terminal, keyed by
+the same ingest key, which covers the bridge's occurrence id), so a
+redelivery never appends twice while every accepted event gets a fresh `seq`.
+Malformed or unknown payloads are logged and acknowledged; codex hooks for
+terminal cards are acknowledged and ignored. A `watch<u64>` seq is published
 under the ring lock (`send_modify`, retained with zero subscribers).
 
 ### Observation and waiting
@@ -429,11 +445,16 @@ revisions, and advancing it cannot skip an unlisted signal.
 `wait_for: "signal"` (budget default 15000 ms, max 20000, `settle_ms` refused,
 optional `signal_events` from the seven-event vocabulary, default
 `stop, notification, permission_request, session_end`) ends when a signal with
-`seq > wait.baseline_signal_seq` and a matching event exists, on process exit or
-disconnect, or at the budget (`outcome: unchanged`). `wait.outcome` adds `signal`
-and `wait.signal` carries the matching signal (null otherwise). The loop
-subscribes, marks the seq version seen, inspects the ring before every select
-and again on timeout. Baselines: observe → the previous observation's `last_seq`
+`seq > wait.baseline_signal_seq` and a matching event exists, on process exit,
+disconnect or projection invalidation (the attach stream failing — the same
+`stopped()` / `projection_unavailable` treatment as change mode, so the wait
+and the connection's input serial are never parked to the budget), or at the
+budget (`outcome: unchanged`). `wait.outcome` adds `signal` and `wait.signal`
+carries the matching signal (null otherwise). The loop subscribes to the seq
+channel, the projection revision channel and the protocol channel, marks the
+versions seen, inspects the ring before every select and again on timeout,
+and re-reads `stopped` on timeout (an exit coinciding with the deadline is
+`exited`, not `unchanged`). Baselines: observe → the previous observation's `last_seq`
 on this connection, else the seq at call start; input readback → the seq read
 immediately before the physical write (so a hook caused by the write is
 reported); control readback → the seq at call start; a readback of a cached
@@ -445,17 +466,27 @@ reported); control readback → the seq at call start; a readback of a cached
   (nonempty, ≤16384 bytes, no control characters), encoded as the text bytes
   plus one CR in ONE `ClientMsg::Input`, one receipt, one barrier; `repeat` is
   refused. The plain `text` action still never submits.
-* `open` `claim: true`: after creation the same claim path as
-  `calm.terminal.control` runs (`claim` with a readback) and the observation is
-  returned with `control_id`/`role: owner` and `claim: {status: claimed}`. A claim
-  failure keeps the create success and ids and reports
-  `claim: {status: unavailable, reason}`. An open never revokes control held by
-  another client (the operation runtime returns the existing operation for a
-  replayed `request_id`, so "replayed" is not distinguishable from "fresh" —
-  and on a fresh terminal nobody holds control): a replayed open after a human
-  takeover reports `unavailable` with the reason instead of reclaiming; control
-  already held on this connection returns the current observation without a
-  second claim.
+* `open` `claim: true`: after creation the claim runs through the Planner
+  client's pump as a claim-if-unowned (`PumpCommand::ClaimIfUnowned`): the
+  same grant barrier, scope check and `OwnerClaim` effects as
+  `calm.terminal.control claim`, but applied only when the owner registry —
+  read under its lock in the same pass — names no other client. The
+  connection's cached owner is never the decision (it lags the registry by
+  the `OwnerChanged` delivery), so a human who claimed between the create and
+  the claim keeps control. The observation is returned with
+  `control_id`/`role: owner` and `claim: {status: claimed}`; a refused claim
+  keeps the create success and ids and reports `claim: {status: unavailable,
+  reason: "terminal is controlled by another client"}` (other claim failures
+  carry their own reason). An open never revokes control held by another
+  client (the operation runtime returns the existing operation for a replayed
+  `request_id`, so "replayed" is not distinguishable from "fresh"): a
+  replayed open after a human takeover reports `unavailable` instead of
+  reclaiming; control already held on this connection returns the current
+  observation without a second claim. An ordinary `control claim` keeps its
+  deliberate-takeover semantics. With `format: image`, an image that cannot be
+  rendered after the create (and the claim) succeeded never fails the open:
+  the text observation is returned with `image: {status: unavailable, reason}`
+  and no PNG.
 
 ### Trust statement
 
@@ -489,7 +520,12 @@ Not covered: programs other than Claude Code (no hooks, `hooks_seen` stays false
 and the Planner falls back to `wait_for=change`); a user configuration that
 disables hooks or overrides them; `Stop` after an Escape interrupt (measured
 absent, so an interrupt must be confirmed on the screen); Notification
-`permission_prompt` timing (unmeasured before approval).
+`permission_prompt` timing (unmeasured before approval); ring overflow inside
+a wait — 64 or more signals arriving between two inspections of the ring can
+evict a matching one before `first_matching` sees it, so the wait may run to
+its budget although the event happened; only
+`signals.dropped_since_previous_observation` on the next observation reveals
+it.
 
 ## Acceptance evidence and limits
 
