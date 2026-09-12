@@ -398,6 +398,22 @@ the Planner starts Claude with `claude --settings "$NEIGE_CLAUDE_SETTINGS"`.
 Human-created terminals (`POST /api/tracks/:id/terminal-cards`) keep
 `planner_hooks: false` and get exactly the env they asked for.
 
+Provenance marker ownership: `calm.terminal.open` is the only writer that mints
+`Card.payload.terminal_signals: true` (`card_with_terminal_create_tx(planner_hooks
+= true)`); the hook ingest route keys on that payload key, never on the terminal
+row or the patchable `kind`. The key is therefore server-owned at every public
+write boundary: `POST /api/tracks/:id/cards` (direct and `via_tool_call`
+`structuredContent`), `PATCH /api/cards/:id`, and the plugin callbacks
+`neige.card.create` / `neige.card.update` refuse a payload that contains the key
+— any value, any kind — as `bad_request` naming the key as server-owned (HTTP
+400 on REST, JSON-RPC `invalid_params` on the plugin callbacks;
+`validation::reject_client_supplied_terminal_signals`). Stored payloads keep the
+key and the terminal validator still accepts it on read-back. PATCH rule: the
+payload column is replaced wholesale, so `card_update_tx` re-stamps
+`terminal_signals: true` onto any replacement payload of a card whose stored
+payload carries the marker (a non-object replacement is refused with 400); a
+card without the marker never gains it on update.
+
 Idempotency: the open's `stable_payload_hash` covers the request as sent plus
 `planner_hooks`; the generated keys never enter it (they are derived after
 hashing, from the allocated card id), so a replayed `request_id` returns the

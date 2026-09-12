@@ -294,6 +294,149 @@ async fn patch_terminal_card_with_bad_payload_returns_400() {
     assert_eq!(body["code"], "bad_request");
 }
 
+/// #1620 — `terminal_signals` is the hook-routing provenance the kernel
+/// stamps on Planner-opened terminals; no client may write it, for any kind
+/// (the hook route reads the marker from the payload, not the kind).
+#[tokio::test]
+async fn post_card_with_terminal_signals_is_rejected_for_every_kind() {
+    let (state, track_id, repo) = boot_with_repo().await;
+    for (kind, payload) in [
+        (
+            "terminal",
+            json!({ "schemaVersion": 1, "terminal_signals": true }),
+        ),
+        (
+            "codex",
+            json!({ "schemaVersion": 1, "terminal_signals": true }),
+        ),
+        (
+            "claude",
+            json!({ "schemaVersion": 1, "terminal_signals": true }),
+        ),
+        // Value-agnostic: `false` is refused too.
+        (
+            "terminal",
+            json!({ "schemaVersion": 1, "terminal_signals": false }),
+        ),
+        // Kind-agnostic: opaque kinds do not get to smuggle it either.
+        ("ui://example/view", json!({ "terminal_signals": true })),
+    ] {
+        let resp = post_card(
+            app(state.clone()),
+            &track_id,
+            json!({ "kind": kind, "payload": payload }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "kind={kind}");
+        let body = body_to_json(resp).await;
+        assert_eq!(body["code"], "bad_request", "kind={kind}");
+        let error = body["error"].as_str().unwrap();
+        assert!(
+            error.contains("terminal_signals") && error.contains("server-owned"),
+            "kind={kind}: {body:?}"
+        );
+    }
+    assert!(
+        repo.cards_by_track(&track_id).await.unwrap().is_empty(),
+        "nothing was written"
+    );
+}
+
+#[tokio::test]
+async fn patch_card_with_terminal_signals_is_rejected() {
+    let (state, track_id, repo) = boot_with_repo().await;
+    let seeded = repo
+        .card_create(NewCard {
+            track_id: track_id.clone().into(),
+            title: None,
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({ "schemaVersion": 1, "terminal_id": "t1" }),
+        })
+        .await
+        .unwrap();
+    let resp = patch_card(
+        app(state),
+        seeded.id.as_str(),
+        json!({ "payload": { "schemaVersion": 1, "terminal_id": "t1", "terminal_signals": true } }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_to_json(resp).await;
+    assert_eq!(body["code"], "bad_request");
+    assert!(
+        body["error"].as_str().unwrap().contains("server-owned"),
+        "{body:?}"
+    );
+    let stored = repo.card_get(seeded.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(
+        stored.payload, seeded.payload,
+        "the rejected PATCH wrote nothing"
+    );
+}
+
+/// #1620 — a PATCH that replaces the whole payload of a card carrying the
+/// marker cannot drop it: the kernel re-stamps `terminal_signals: true` on
+/// the replacement. A card without the marker never gains it.
+#[tokio::test]
+async fn patch_replacing_payload_keeps_the_planner_terminal_marker() {
+    let (state, track_id, repo) = boot_with_repo().await;
+    // Seeded through the repo (the kernel's own creation route), which is
+    // the only writer allowed to mint the marker.
+    let marked = repo
+        .card_create(NewCard {
+            track_id: track_id.clone().into(),
+            title: None,
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({ "schemaVersion": 1, "terminal_signals": true }),
+        })
+        .await
+        .unwrap();
+    let plain = repo
+        .card_create(NewCard {
+            track_id: track_id.clone().into(),
+            title: None,
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({ "schemaVersion": 1 }),
+        })
+        .await
+        .unwrap();
+
+    let resp = patch_card(
+        app(state.clone()),
+        marked.id.as_str(),
+        json!({ "payload": { "schemaVersion": 1, "terminal_id": "replaced" } }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp).await;
+    assert_eq!(body["payload"]["terminal_id"], "replaced");
+    assert_eq!(body["payload"]["terminal_signals"], true, "{body:?}");
+    let stored = repo.card_get(marked.id.as_str()).await.unwrap().unwrap();
+    assert_eq!(
+        stored.payload["terminal_signals"], true,
+        "{}",
+        stored.payload
+    );
+    assert_eq!(stored.payload["terminal_id"], "replaced");
+
+    let resp = patch_card(
+        app(state),
+        plain.id.as_str(),
+        json!({ "payload": { "schemaVersion": 1, "terminal_id": "replaced" } }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let stored = repo.card_get(plain.id.as_str()).await.unwrap().unwrap();
+    assert!(
+        stored.payload.get("terminal_signals").is_none(),
+        "a PATCH never mints the marker: {}",
+        stored.payload
+    );
+}
+
 #[tokio::test]
 async fn patch_ui_card_with_junk_payload_is_accepted() {
     // Patching a ui://* card must remain opaque too.

@@ -1278,6 +1278,78 @@ async fn hook_for_a_terminal_owning_card_stays_a_signal_after_a_kind_patch() {
     h.stop(&terminal).await;
 }
 
+/// #1620 — the provenance marker is server-owned: a client PATCH carrying
+/// `terminal_signals` is refused, and a PATCH that replaces the whole payload
+/// of a Planner-opened terminal keeps the marker (the kernel re-stamps it),
+/// so its hooks still route to the ring.
+#[tokio::test]
+async fn payload_patch_on_a_planner_terminal_keeps_the_marker_and_the_hook_stays_a_signal() {
+    use tower::ServiceExt;
+    let h = Harness::start().await;
+    let (opened, terminal) = open_fake_claude(&h, "hooks-payload-patch").await;
+    let card_id = opened["card_id"].as_str().unwrap().to_owned();
+    let patch = |body: String| {
+        axum::http::Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/cards/{card_id}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body))
+            .unwrap()
+    };
+
+    // A client cannot write the marker, whatever the value.
+    for body in [
+        r#"{"payload":{"schemaVersion":1,"terminal_signals":true}}"#,
+        r#"{"payload":{"schemaVersion":1,"terminal_signals":false}}"#,
+    ] {
+        let response = h.app.clone().oneshot(patch(body.to_owned())).await.unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "{body}"
+        );
+    }
+
+    // Replacing the whole payload without the key keeps it stamped.
+    let response = h
+        .app
+        .clone()
+        .oneshot(patch(
+            r#"{"payload":{"schemaVersion":1,"terminal_id":"client-replaced"}}"#.to_owned(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let card = h.state.repo.card_get(&card_id).await.unwrap().unwrap();
+    assert_eq!(card.payload["terminal_id"], "client-replaced");
+    assert_eq!(
+        card.payload[calm_server::validation::TERMINAL_SIGNALS_PAYLOAD_KEY],
+        true,
+        "the marker survives a whole-payload PATCH: {}",
+        card.payload
+    );
+
+    let mut bus = h.state.events.subscribe();
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    let before = entry.signals.last_seq();
+    let stop = json!({"hook_event_name":"Stop","session_id":"unresolved-session","message":"after payload patch"});
+    assert_eq!(h.post_claude_hook(&card_id, &stop).await, 200);
+    assert_eq!(entry.signals.last_seq(), before + 1, "the hook is a signal");
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    while let Ok(Ok(envelope)) = tokio::time::timeout_at(deadline, bus.recv()).await {
+        assert!(
+            !matches!(
+                envelope.event,
+                Event::ClaudeHook { .. } | Event::CodexHook { .. }
+            ),
+            "a hook for a Planner terminal must not be persisted as a hook event: {:?}",
+            envelope.event
+        );
+    }
+    assert_eq!(h.persisted_hook_events().await, 0);
+    h.stop(&terminal).await;
+}
+
 /// #1620 R2 — a replayed `open claim:true` after a human takeover that this
 /// connection has not applied yet (its `OwnerChanged` delivery is held) must
 /// not report `claimed` from the cached lease: "already owned by this

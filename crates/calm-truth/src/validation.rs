@@ -80,6 +80,26 @@ pub const TERMINAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// carry this fact; the marker survives a `kind` PATCH and the terminal
 /// row's deletion.
 pub const TERMINAL_SIGNALS_PAYLOAD_KEY: &str = "terminal_signals";
+
+/// #1620 — refuse a CLIENT-supplied `Card.payload` that carries
+/// [`TERMINAL_SIGNALS_PAYLOAD_KEY`]. The marker is hook-routing provenance
+/// the kernel stamps itself (`card_with_terminal_create_tx(planner_hooks =
+/// true)`) and keeps sticky on update (`card_update_tx`); a payload arriving
+/// over a public write boundary — REST card create / PATCH, the tool-call
+/// `structuredContent`, plugin `neige.card.create` / `neige.card.update` —
+/// with the key present is a `BadRequest` (HTTP 400) whatever its value and
+/// whatever the card kind. Kind-agnostic on purpose: the hook ingest route
+/// reads the marker from the payload, never from the patchable `kind`, so a
+/// `codex` / `claude` / plugin card with the key would divert its hooks too.
+/// Stored payloads keep the key (reads and round-trips are unaffected).
+pub fn reject_client_supplied_terminal_signals(payload: &Value) -> Result<()> {
+    if payload.get(TERMINAL_SIGNALS_PAYLOAD_KEY).is_some() {
+        return Err(CalmError::BadRequest(format!(
+            "`{TERMINAL_SIGNALS_PAYLOAD_KEY}` is server-owned and cannot be written through the API"
+        )));
+    }
+    Ok(())
+}
 /// `schemaVersion` for `Card.payload` when `kind == "codex"`.
 pub const CODEX_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Card.payload` when `kind == "claude"`.
