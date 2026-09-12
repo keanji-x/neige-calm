@@ -345,6 +345,9 @@ impl ProviderAdapter for TerminalAdapter {
             true,
             &self.card_role_cache,
             payload.request.theme,
+            // #1620 — the durable provenance marker the hook ingest route
+            // keys on; stamped in the same transaction as the card.
+            payload.planner_hooks,
         )
         .await?;
         let event = Event::CardAdded(card.clone());
@@ -702,6 +705,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             true,
             &self.card_role_cache,
             RequestTheme::default_dark(),
+            false,
         )
         .await?;
 

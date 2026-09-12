@@ -158,6 +158,7 @@ async fn mint_terminal_session(
         true,
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
+        false,
     )
     .await
     .unwrap();
@@ -1239,6 +1240,7 @@ async fn session_start_runtime_tx_terminal_persists_active_row() {
         true,
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
+        false,
     )
     .await
     .unwrap();
@@ -1281,6 +1283,7 @@ async fn runtime_complete_for_terminal_exited_path() {
         true,
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
+        false,
     )
     .await
     .unwrap();
@@ -1332,6 +1335,7 @@ async fn runtime_complete_for_terminal_failed_path() {
         true,
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
+        false,
     )
     .await
     .unwrap();
@@ -1389,6 +1393,7 @@ async fn runtime_set_status_for_card_noop_when_no_active() {
         true,
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
+        false,
     )
     .await
     .unwrap();
@@ -1440,6 +1445,7 @@ async fn runtime_complete_for_card_noop_when_no_active() {
         true,
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
+        false,
     )
     .await
     .unwrap();
@@ -1491,6 +1497,7 @@ async fn runtime_card_lifecycle_helpers_mark_running_and_failed() {
         true,
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
+        false,
     )
     .await
     .unwrap();

@@ -92,6 +92,7 @@ async fn queued_task_change(replace_session: bool) {
         true,
         &roles,
         theme,
+        false,
     )
     .await
     .unwrap();

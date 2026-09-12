@@ -233,6 +233,7 @@ pub(super) async fn seed_terminal_runtime(
         true,
         repo.card_role_cache(),
         RequestTheme::default_dark(),
+        false,
     )
     .await
     .expect("create terminal card");

@@ -6,6 +6,8 @@
 //! renderer ring → `wait_for=signal` is exercised end to end.
 use crate::terminal_support::Harness;
 use calm_server::event::Event;
+use calm_server::model::{CardRole, new_id};
+use calm_server::routes::theme::RequestTheme;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -344,6 +346,13 @@ async fn hook_post_for_a_terminal_card_lands_in_the_ring_and_never_projects_stat
     }
     let card = h.state.repo.card_get(&card_id).await.unwrap().unwrap();
     assert_eq!(card.kind, "terminal");
+    assert_eq!(
+        card.payload[calm_server::validation::TERMINAL_SIGNALS_PAYLOAD_KEY],
+        true,
+        "the Planner-opened terminal carries its provenance on the card: {}",
+        card.payload
+    );
+    assert_eq!(h.persisted_hook_events().await, 0);
     h.stop(&terminal).await;
 }
 
@@ -1432,4 +1441,247 @@ async fn open_with_claim_reports_a_takeover_folded_with_its_grant() {
         pump.abort();
     }
     h.stop(&terminal).await;
+}
+
+/// #1620 R3 regression (a) — a Codex Worker card created through the
+/// production path (`card_with_codex_create_tx`, which also creates a
+/// terminal row) keeps its hook contract: a codex hook is persisted as a
+/// `codex.hook` event and projected onto the card FSM. Owning a terminal
+/// row must never route a worker's hook to the terminal-signal branch.
+#[tokio::test]
+#[allow(deprecated)] // the state's role cache is the one `enforce_role` reads
+async fn codex_worker_card_hooks_are_still_persisted_and_projected() {
+    let h = Harness::start().await;
+    let card_id = new_id();
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    let (card, term, _token) = calm_server::db::sqlite::card_with_codex_create_tx(
+        &mut tx,
+        card_id.clone(),
+        &new_id(),
+        None,
+        h.track.clone().into(),
+        None,
+        None,
+        h.root.path().to_str().unwrap().into(),
+        json!({}),
+        None,
+        None,
+        None,
+        CardRole::Worker,
+        true,
+        h.state.write().role_cache(),
+        RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(card.kind, "codex");
+    assert!(
+        !calm_server::routes::codex::is_planner_terminal_card(&card),
+        "{}",
+        card.payload
+    );
+    calm_server::card_fsm::spawn(
+        h.state.repo.clone(),
+        h.state.events.clone(),
+        h.state.write().clone(),
+    );
+    tokio::task::yield_now().await;
+    let mut bus = h.state.events.subscribe();
+    let stop = json!({"hook_event_name":"Stop","session_id":"codex-worker-session"});
+    assert_eq!(h.post_codex_hook(&card_id, &stop).await, 204);
+    let hooked = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let envelope = bus.recv().await.unwrap();
+            if let Event::CodexHook { card_id: hooked, kind, .. } = envelope.event {
+                assert_eq!(hooked.as_str(), card_id);
+                assert_eq!(kind, "hook.codex.stop");
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(hooked.is_ok(), "the codex hook must be broadcast as worker state");
+    assert_eq!(h.persisted_hook_events().await, 1, "persisted, not ring-only");
+    await_card_state(&h, &card_id, "AwaitingInput").await;
+    // The same body again is deduped by the worker cache, not appended twice.
+    assert_eq!(h.post_codex_hook(&card_id, &stop).await, 204);
+    assert_eq!(h.persisted_hook_events().await, 1);
+    h.stop(&term.id).await;
+}
+
+/// #1620 R3 regression (b) — a Claude Worker card created through the
+/// production path (`card_with_claude_create_tx`, terminal row included)
+/// keeps its hook contract: a Claude `Stop` hook is persisted as a
+/// `claude.hook` event and projected onto the card FSM (`AwaitingInput`).
+#[tokio::test]
+#[allow(deprecated)] // the state's role cache is the one `enforce_role` reads
+async fn claude_worker_card_hooks_are_still_persisted_and_projected() {
+    let h = Harness::start().await;
+    let card_id = new_id();
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    let (card, term) = calm_server::db::sqlite::card_with_claude_create_tx(
+        &mut tx,
+        card_id.clone(),
+        &new_id(),
+        h.track.clone().into(),
+        None,
+        None,
+        "claude".into(),
+        h.root.path().to_str().unwrap().into(),
+        json!({}),
+        None,
+        None,
+        None,
+        h.root.path().join("settings.json").display().to_string(),
+        new_id(),
+        CardRole::Worker,
+        true,
+        h.state.write().role_cache(),
+        RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(card.kind, "claude");
+    assert!(
+        !calm_server::routes::codex::is_planner_terminal_card(&card),
+        "{}",
+        card.payload
+    );
+    calm_server::card_fsm::spawn(
+        h.state.repo.clone(),
+        h.state.events.clone(),
+        h.state.write().clone(),
+    );
+    tokio::task::yield_now().await;
+    let mut bus = h.state.events.subscribe();
+    let stop = json!({"hook_event_name":"Stop","session_id":"claude-worker-session"});
+    assert_eq!(h.post_claude_hook(&card_id, &stop).await, 200);
+    let hooked = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let envelope = bus.recv().await.unwrap();
+            if let Event::ClaudeHook { card_id: hooked, kind, .. } = envelope.event {
+                assert_eq!(hooked.as_str(), card_id);
+                assert_eq!(kind, "hook.claude.stop");
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(hooked.is_ok(), "the Claude hook must be broadcast as worker state");
+    assert_eq!(h.persisted_hook_events().await, 1, "persisted, not ring-only");
+    await_card_state(&h, &card_id, "AwaitingInput").await;
+    h.stop(&term.id).await;
+}
+
+/// #1620 R3 regression (d) — the provenance marker lives on the card: after
+/// a public PATCH retargets `kind` to `codex` AND the sweeper has reaped the
+/// terminal (row gone), a delayed Claude hook for the card is still
+/// acknowledged as a signal (dropped: no live entry) and never persisted or
+/// projected as worker state.
+#[tokio::test]
+async fn delayed_hook_after_kind_patch_and_terminal_reap_stays_a_signal() {
+    use tower::ServiceExt;
+    let h = Harness::start().await;
+    let (opened, terminal) = open_fake_claude(&h, "hooks-reaped").await;
+    let card_id = opened["card_id"].as_str().unwrap().to_owned();
+    let response = h
+        .app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{card_id}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(r#"{"kind":"codex"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let term = h
+        .state
+        .repo
+        .terminal_get_by_card(&card_id)
+        .await
+        .unwrap()
+        .unwrap();
+    calm_server::terminal_sweeper::reap_terminal_artifacts_with_renderer(
+        Some(h.state.terminal_renderer.as_ref()),
+        &term,
+    )
+    .await;
+    h.state.repo.terminal_delete(&term.id).await.unwrap();
+    let card = h.state.repo.card_get(&card_id).await.unwrap().unwrap();
+    assert_eq!(card.kind, "codex");
+    assert!(
+        h.state
+            .repo
+            .terminal_get_by_card(&card_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "the terminal row is gone"
+    );
+    assert!(
+        calm_server::routes::codex::is_planner_terminal_card(&card),
+        "the marker survives the kind PATCH: {}",
+        card.payload
+    );
+    calm_server::card_fsm::spawn(
+        h.state.repo.clone(),
+        h.state.events.clone(),
+        h.state.write().clone(),
+    );
+    tokio::task::yield_now().await;
+    let mut bus = h.state.events.subscribe();
+    let before = h.persisted_hook_events().await;
+    let stop = json!({"hook_event_name":"Stop","session_id":"late-session","message":"late"});
+    assert_eq!(h.post_claude_hook(&card_id, &stop).await, 200);
+    let codex_stop = json!({"hook_event_name":"Stop","session_id":"late-codex"});
+    assert_eq!(h.post_codex_hook(&card_id, &codex_stop).await, 204);
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    while let Ok(Ok(envelope)) = tokio::time::timeout_at(deadline, bus.recv()).await {
+        assert!(
+            !matches!(
+                envelope.event,
+                Event::ClaudeHook { .. } | Event::CodexHook { .. }
+            ),
+            "a delayed hook for a Planner-opened terminal must not become worker state: {:?}",
+            envelope.event
+        );
+    }
+    assert_eq!(h.persisted_hook_events().await, before);
+    assert!(
+        h.state
+            .repo
+            .overlays_for("card", &card_id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|overlay| overlay.kind != "status"),
+        "no FSM projection"
+    );
+    h.stop(&terminal).await;
+}
+
+/// Polls the card's `status` overlay until the FSM projected `expected`.
+async fn await_card_state(h: &Harness, card_id: &str, expected: &str) {
+    let poll = async {
+        loop {
+            let overlays = h.state.repo.overlays_for("card", card_id).await.unwrap();
+            if overlays.iter().any(|overlay| {
+                overlay.kind == "status"
+                    && overlay.payload.get("state").and_then(Value::as_str) == Some(expected)
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    };
+    if tokio::time::timeout(Duration::from_secs(3), poll).await.is_err() {
+        let overlays = h.state.repo.overlays_for("card", card_id).await.unwrap();
+        panic!("no `status: {expected}` overlay on {card_id}; overlays: {overlays:?}");
+    }
 }

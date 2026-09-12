@@ -186,23 +186,33 @@ pub(crate) async fn ingest_provider_hook(
     let kind = format!("{}.{}", provider.kind_prefix(), to_snake_case(event_name));
     let hook_idempotency_key = hook_idempotency_key(provider, &card_id_str, &payload);
 
-    // #1620 — a hook for a Terminal card is advisory telemetry for the Planner
-    // (`wait_for=signal`), never worker state: it is appended to the live
-    // renderer entry's ring and acknowledged here, BEFORE the worker dedupe
-    // cache and the persist / FSM projection path below, so it can never move
-    // a card FSM and never occupies a slot of the bounded worker cache (a
-    // flood of terminal hooks, malformed ones included, must not evict a
-    // worker key). The ring dedupes on the same key, per terminal.
+    // #1620 — a hook for a Planner-opened terminal is advisory telemetry for
+    // the Planner (`wait_for=signal`), never worker state: it is appended to
+    // the live renderer entry's ring and acknowledged here, BEFORE the worker
+    // dedupe cache and the persist / FSM projection path below, so it can
+    // never move a card FSM and never occupies a slot of the bounded worker
+    // cache (a flood of terminal hooks, malformed ones included, must not
+    // evict a worker key). The ring dedupes on the same key, per terminal.
     //
-    // The routing key is the card's durable execution identity, not only
-    // `cards.kind`: `kind` is patchable through the public card PATCH, which
-    // does not remove the terminal row, the process or the generated hook
-    // settings. A card that owns a terminal row is a terminal for hook
-    // purposes whatever its `kind` says; a `kind == "terminal"` card whose
-    // row is already gone is still never worker state.
+    // Routing, in order:
+    //   1. the card payload carries `TERMINAL_SIGNALS_PAYLOAD_KEY` — stamped
+    //      at creation only by `calm.terminal.open` (`planner_hooks`). This
+    //      is the provenance the decision rests on: it survives a `kind`
+    //      PATCH (which removes neither the process nor the generated hook
+    //      settings) and the terminal row's deletion by the sweeper.
+    //   2. else `kind == "terminal"` — a human-created Terminal card; it
+    //      registers no hooks, so this branch only keeps a stray hook out of
+    //      worker state.
+    //   3. else the worker path below, exactly as before #1620.
+    // Owning a terminal row is NOT the discriminator: Codex and Claude
+    // Worker cards own one too (`card_with_codex_create_tx`,
+    // `card_with_claude_create_tx`), and their hooks must be persisted and
+    // projected.
     let card = s.repo.card_get(&card_id_str).await?;
-    let terminal = s.repo.terminal_get_by_card(&card_id_str).await?;
-    if terminal.is_some() || card.as_ref().is_some_and(|card| card.kind == "terminal") {
+    if card.as_ref().is_some_and(is_planner_terminal_card)
+        || card.as_ref().is_some_and(|card| card.kind == "terminal")
+    {
+        let terminal = s.repo.terminal_get_by_card(&card_id_str).await?;
         return ingest_terminal_signal(
             s,
             &card_id_str,
@@ -277,6 +287,17 @@ pub(crate) async fn ingest_provider_hook(
         .expect("hook ingest cache mutex poisoned")
         .insert(hook_idempotency_key);
     Ok(())
+}
+
+/// #1620 — whether `card` was opened by the Planner with hook signals: the
+/// creation-time marker `TERMINAL_SIGNALS_PAYLOAD_KEY == true` in its
+/// payload (see `crate::validation`). Read from the card, never from the
+/// terminal row or the patchable `kind`.
+pub fn is_planner_terminal_card(card: &crate::model::Card) -> bool {
+    card.payload
+        .get(crate::validation::TERMINAL_SIGNALS_PAYLOAD_KEY)
+        .and_then(Value::as_bool)
+        == Some(true)
 }
 
 /// #1620 — Terminal-card branch of [`ingest_provider_hook`]: parse, bound and

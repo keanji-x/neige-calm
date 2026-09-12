@@ -201,15 +201,36 @@ impl Harness {
     }
     /// POST a hook body for `card_id` through the production ingest route.
     pub async fn post_claude_hook(&self, card_id: &str, body: &Value) -> axum::http::StatusCode {
+        self.post_hook("claude", card_id, body).await
+    }
+    pub async fn post_codex_hook(&self, card_id: &str, body: &Value) -> axum::http::StatusCode {
+        self.post_hook("codex", card_id, body).await
+    }
+    async fn post_hook(
+        &self,
+        provider: &str,
+        card_id: &str,
+        body: &Value,
+    ) -> axum::http::StatusCode {
         use tower::ServiceExt;
         let request = axum::http::Request::builder()
             .method("POST")
-            .uri(format!("/internal/claude/hook?card_id={card_id}"))
+            .uri(format!("/internal/{provider}/hook?card_id={card_id}"))
             .header("content-type", "application/json")
-            .header("X-Calm-Actor", "ai:claude")
+            .header("X-Calm-Actor", format!("ai:{provider}"))
             .body(axum::body::Body::from(body.to_string()))
             .unwrap();
         self.app.clone().oneshot(request).await.unwrap().status()
+    }
+    /// Rows of `events` persisted as worker hook events (`codex.hook` /
+    /// `claude.hook`).
+    pub async fn persisted_hook_events(&self) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE kind IN ('codex.hook', 'claude.hook')",
+        )
+        .fetch_one(self.sql.pool())
+        .await
+        .unwrap()
     }
     pub async fn call(&self, name: &str, args: Value) -> Value {
         let stream = UnixStream::connect(&self.socket).await.unwrap();

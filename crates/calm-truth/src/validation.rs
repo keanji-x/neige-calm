@@ -71,6 +71,15 @@ use crate::model::Overlay;
 
 /// `schemaVersion` for `Card.payload` when `kind == "terminal"`.
 pub const TERMINAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+/// #1620 — `Card.payload` key stamped `true` at creation ONLY on terminals
+/// opened by the Planner with hook signals (`calm.terminal.open`). It is the
+/// durable provenance the hook ingest route keys on: a hook for such a card
+/// is advisory telemetry (renderer ring), never worker state. Codex and
+/// Claude Worker cards also own terminal rows and REST-created Terminal
+/// cards also have `kind == "terminal"`, so neither the row nor the kind can
+/// carry this fact; the marker survives a `kind` PATCH and the terminal
+/// row's deletion.
+pub const TERMINAL_SIGNALS_PAYLOAD_KEY: &str = "terminal_signals";
 /// `schemaVersion` for `Card.payload` when `kind == "codex"`.
 pub const CODEX_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Card.payload` when `kind == "claude"`.

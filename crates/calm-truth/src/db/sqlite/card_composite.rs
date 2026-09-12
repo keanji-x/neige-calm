@@ -14,6 +14,7 @@ use crate::model::*;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionKind};
 use crate::validation::{
     CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
+    TERMINAL_SIGNALS_PAYLOAD_KEY,
 };
 use calm_types::worker::WorkerSessionState;
 
@@ -56,6 +57,11 @@ pub async fn card_with_terminal_create_tx(
     // stamps consistent `--terminal-fg/-bg` argv (closes the WS auto-
     // revive race observed in PR #193).
     theme: RequestTheme,
+    // #1620 — `true` only for a terminal the Planner opened with hook
+    // signals: stamps `TERMINAL_SIGNALS_PAYLOAD_KEY` into the card payload
+    // (the durable provenance the hook ingest route keys on). Every other
+    // creation path passes `false` and the key is absent.
+    planner_hooks: bool,
 ) -> Result<(Card, Terminal)> {
     // 1. Card row with placeholder payload — schemaVersion is stamped in
     //    step 5 once we have the terminal row.
@@ -99,9 +105,12 @@ pub async fn card_with_terminal_create_tx(
     .await?;
 
     // 3. Build the canonical terminal-card payload.
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "schemaVersion": TERMINAL_PAYLOAD_SCHEMA_VERSION,
     });
+    if planner_hooks {
+        payload[TERMINAL_SIGNALS_PAYLOAD_KEY] = serde_json::Value::Bool(true);
+    }
 
     // 4. Defense-in-depth: payload validation. The boundary call in
     //    `routes/cards.rs:141` already enforces this for direct create, but
@@ -793,6 +802,7 @@ mod tests {
             true,
             repo.card_role_cache(),
             RequestTheme::default_dark(),
+            false,
         )
         .await
         .unwrap();

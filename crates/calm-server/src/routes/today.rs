@@ -652,6 +652,7 @@ async fn today_launchpad_ensure_tx(
             false,
             s.write.role_cache(),
             RequestTheme::default_dark(),
+            false,
         )
         .await?
     };

@@ -1164,6 +1164,7 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
                 true,
                 &cache,
                 calm_server::routes::theme::RequestTheme::default_dark(),
+                false,
             )
             .await
         })
@@ -2149,6 +2150,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
                 true,
                 &cache,
                 calm_server::routes::theme::RequestTheme::default_dark(),
+                false,
             )
             .await
         })
@@ -2643,6 +2645,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
                 true,
                 &cache,
                 calm_server::routes::theme::RequestTheme::default_dark(),
+                false,
             )
             .await
         })
