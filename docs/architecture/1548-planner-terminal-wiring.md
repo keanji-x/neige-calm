@@ -102,7 +102,7 @@ scrolling uses `observe.scroll_offset`; application paging uses explicit keys.
 ## Optional action observation and repeated navigation
 
 Control (claim/release) and input accept `observe=true` with optional `wait_ms`
-(0..2000). They retain the original receipt fields and add exactly one of:
+(0..20000; see the #1618 section for `wait_for`/`settle_ms`). They retain the original receipt fields and add exactly one of:
 
 ```json
 {"observation":{"status":"available","state":{"observation_id":"...","text":["..."],"control_id":"...","role":"owner"}}}
@@ -132,7 +132,64 @@ are restricted to Left/Right/Up/Down/Backspace/Delete. Enter/Escape/Tab/control 
 cannot repeat; null, noninteger and out-of-range counts fail before input. The
 repeated encoded bytes travel in one existing input request under one ownership
 barrier. Repeat belongs to the physical action fingerprint. This does not add
-mixed-action batches, automatic Enter or relaxed observation revision checks.
+mixed-action batches or automatic Enter; the only relaxed revision check is the
+explicit `allow_output_since_observation` fence below (#1618).
+
+## Change waiting, drift-tolerant input and implicit observation (#1618)
+
+`calm.terminal.observe` and the `observe=true` readbacks of control and input
+accept `wait_for` (`elapsed`, default, or `change`), `wait_ms` (0..20000, the
+budget for either mode) and `settle_ms` (0..2000, default 150; rejected unless
+`wait_for=change`). `change` returns once the model projection's revision differs
+from the baseline and no further output arrived for `settle_ms`, or at the
+budget, or when the process exited or the client became unavailable. Baselines:
+observe uses this connection's previous observation revision (the revision at
+call start when there is none); an input readback uses the revision read
+immediately before the physical write; a control readback uses the revision at
+call start. The wait selects over `ModelView`'s `watch<u64>` revision channel
+(published under the same lock as the revision) and the client's protocol
+watch; there is no sleep-poll loop. Every observation, in either mode, carries:
+
+```json
+"wait":{"mode":"change","outcome":"changed|unchanged|exited|elapsed","waited_ms":812,"settled":true},
+"changed_since_previous_observation":true
+```
+
+`elapsed` mode reports `outcome:"elapsed"`, `settled:false`, `waited_ms` equal to
+the budget. `unchanged`/settled screens are not completion evidence; the prompt
+says so. `changed_since_previous_observation` is false when the connection had
+no previous observation.
+
+Input accepts `allow_output_since_observation` (default false; part of the
+request fingerprint). When false the exact-revision fence is unchanged. When
+true the fence becomes: same binding and connection, observation younger than
+120 s, `control` unchanged and present, client available, not exited, no pending
+unknown write, `scroll_offset == 0`, and the observation's input surface (cols,
+rows, modes) equal to the live frame's; bytes are encoded against the live
+surface. The receipt reports `output_since_observation` and, when true,
+`observation_drift: {observed_revision, input_revision}` (numbers). A resize or
+input-mode change (for example application cursor keys or the alternate screen
+switching modes) is refused with a surface-changed error even with the flag.
+
+`observation_id` is optional on input. When omitted the server uses the latest
+observation captured on this client connection (any format, including action
+readbacks); the receipt reports `observation_id_used`. All fences still apply.
+A connection with no observation is refused ("observe first"). The fingerprint
+hashes `observation_id` as given (null when omitted), so a replayed
+`request_id` returns the same receipt.
+
+Receipts: input drops `application_completed` and reports
+`application_result:"unverified"` plus `next`. Detach returns
+`{"detached":true,"had_client":bool,"terminal_id":..,"connection_id":<closed or null>,"terminal_session_id":<closed client's or null>}`;
+without a client the terminal id comes from a read-only target resolution when
+possible.
+
+Text results of the five terminal tools keep the complete state only in
+`structuredContent`; `content[0].text` is a one-line summary (ids, revision,
+role, geometry, cursor, wait outcome or receipt facts) and never contains screen
+text. Image results keep their metadata text block and native PNG block. A probe
+of Codex 0.153.4 showed the model receives both `content` and
+`structuredContent` verbatim, so the duplicate state was real.
 
 ## Provider approval entry point (#1578)
 
