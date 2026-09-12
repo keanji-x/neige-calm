@@ -110,6 +110,22 @@ confirmed physical writes. Invalid repeat counts contribute to
 `unmeasured_key_press_requests` instead of silently becoming 1. The existing
 `repeated_identical_input_actions` metric keeps its original definition.
 
+#1618 wait/drift counters (aggregated per scenario as `wait_summary` in
+`review.json` for comparison with rounds 05/06) are each read from a completed
+call's own arguments or result, never inferred. `change_wait_requests`: `observe`
+calls and `observe: true` readbacks whose arguments say `wait_for: "change"`;
+`change_wait_outcomes`: tally of those calls' returned `wait.outcome` (observe
+result or readback `observation.state`; failed calls and unavailable readbacks
+contribute none); `unsettled_change_waits`: outcome `changed` with `settled:
+false`; `elapsed_wait_requests`: explicit `wait_for: "elapsed"` or `wait_ms > 0`
+without `wait_for`; `unmeasured_wait_observations`: observations lacking a `wait`
+block (older server); `drift_allowed_inputs`: inputs requesting
+`allow_output_since_observation`; `drift_observed_inputs`: non-failed input
+receipts with `output_since_observation: true`; `implicit_observation_inputs`:
+inputs omitting `observation_id` (`observation_id_used` is informational). A
+settled or `unchanged` wait outcome, like `application_result: "unverified"`,
+is not application completion.
+
 ## Model-free driver checks
 
 These validate only collection/failure handling; they are not a fake passing
