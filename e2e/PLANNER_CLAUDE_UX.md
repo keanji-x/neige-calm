@@ -146,8 +146,11 @@ application completion); `submit_actions`: input calls whose action type is
 `open_with_claim`: `open` calls with `claim: true`; `hooks_seen_observations`:
 observations whose `signals.hooks_seen` is true; `signals_observed`: total
 `signals.since_previous_observation` entries; `unmeasured_signal_observations`:
-observations lacking a `signals` block (older server). The goals tell the
-Planner to start Claude with `--settings "$NEIGE_CLAUDE_SETTINGS"`.
+observations lacking a `signals` block (older server);
+`signal_repaint_outcomes` (#1628): tally of `wait.repaint.outcome`
+(`already`, `settled`, `none`, `unsettled`, `skipped`) over the signal waits
+that ended on a signal — a missing block (older server) adds nothing. The goals
+tell the Planner to start Claude with `--settings "$NEIGE_CLAUDE_SETTINGS"`.
 
 ## Model-free driver checks
 

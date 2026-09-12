@@ -358,7 +358,8 @@ class CollectorTests(unittest.TestCase):
                                    "unsettled_change_waits": 0, "elapsed_wait_requests": 0,
                                    "unmeasured_wait_observations": 0, "drift_allowed_inputs": 0,
                                    "drift_observed_inputs": 0, "implicit_observation_inputs": 0,
-                                   "signal_wait_requests": 0, "signal_wait_outcomes": {}, "submit_actions": 0,
+                                   "signal_wait_requests": 0, "signal_wait_outcomes": {},
+                                   "signal_repaint_outcomes": {}, "submit_actions": 0,
                                    "open_with_claim": 0, "hooks_seen_observations": 0, "signals_observed": 0,
                                    "unmeasured_signal_observations": 1})
         self.assertEqual(json.loads(json.dumps(summary)), summary)
@@ -379,6 +380,41 @@ class CollectorTests(unittest.TestCase):
                               "received_at_ms": 1780977421069}
         state.update({"wait": wait, "signals": self.signals(True, (event,))})
         return state
+
+    def test_signal_repaint_outcomes_are_tallied_from_signal_waits_and_tolerate_absence(self):
+        """#1628: `wait.repaint.outcome` counts per signal wait that ended on a signal."""
+        def signal_call(identifier, repaint):
+            call = row(identifier)
+            call["params"]["item"]["arguments"]["wait_for"] = "signal"
+            state = self.signal_wait_state()
+            if repaint is not ...:
+                state["wait"]["repaint"] = repaint
+            call["params"]["item"]["result"]["structuredContent"] = state
+            return call
+        calls = [signal_call(1, {"outcome": "settled", "waited_ms": 431}),
+                 signal_call(2, {"outcome": "already", "waited_ms": 0}),
+                 signal_call(3, {"outcome": "none", "waited_ms": 1500}),
+                 signal_call(4, {"outcome": "settled", "waited_ms": 512}),
+                 signal_call(5, ...),   # pre-#1628 server: no block, tolerated
+                 signal_call(6, None)]  # null: no signal-shaped repaint verdict
+        # A budget-ended signal wait carries no repaint block and no tally.
+        budget = row(7)
+        budget["params"]["item"]["arguments"]["wait_for"] = "signal"
+        budget["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state("elapsed")
+        # A change wait never contributes, whatever its result carries.
+        change = row(8)
+        change["params"]["item"]["arguments"]["wait_for"] = "change"
+        state = self.signal_wait_state()
+        state["wait"]["repaint"] = {"outcome": "settled", "waited_ms": 1}
+        change["params"]["item"]["result"]["structuredContent"] = state
+        result = ux.metrics(calls + [budget, change])
+        self.assertEqual(result["signal_repaint_outcomes"], {"already": 1, "none": 1, "settled": 2})
+        self.assertEqual(result["signal_wait_outcomes"], {"elapsed": 1, "signal": 6})
+        self.assertIn("signal_repaint_outcomes", ux.SIGNAL_METRIC_KEYS)
+        for repaint in ([], "settled", {"outcome": "settled"}, {"outcome": 1, "waited_ms": 1},
+                        {"outcome": "settled", "waited_ms": "1"}):
+            with self.assertRaises(ux.EvidenceError):
+                ux.metrics([signal_call(9, repaint)])
 
     def test_signal_wait_requests_and_outcomes_are_read_from_arguments_and_observations(self):
         signalled = row(1)

@@ -51,6 +51,7 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
                 "wait_for",
                 "settle_ms",
                 "signal_events",
+                "repaint_ms",
                 "format",
             ],
             vec![],
@@ -64,6 +65,7 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
                 "wait_for",
                 "settle_ms",
                 "signal_events",
+                "repaint_ms",
             ],
             vec!["action"],
         ),
@@ -78,6 +80,7 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
                 "wait_for",
                 "settle_ms",
                 "signal_events",
+                "repaint_ms",
                 "allow_output_since_observation",
             ],
             vec!["request_id", "action"],
@@ -145,9 +148,8 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
             // in the description rather than as a single JSON Schema default.
             assert_eq!(
                 schema["properties"]["wait_ms"],
-                json!({"type":"integer","minimum":0,"maximum":20000,
-                    "description":"Omitted: elapsed 0, change 2000, signal 15000"}),
-                "{name}"
+                json!({"type":"integer","minimum":0,"maximum":20000}),
+                "{name}: the per-mode defaults live in the description (schema bytes)"
             );
             assert!(
                 descriptor.description.contains("2000 for")
@@ -173,6 +175,14 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
             assert_eq!(
                 schema["properties"]["settle_ms"],
                 json!({"type":"integer","minimum":0,"maximum":2000,"default":150}),
+                "{name}"
+            );
+            // #1628 repaint window: signal mode only (refused elsewhere
+            // server-side; that and the 1500 default are stated in the
+            // descriptions to keep the input schema under the compaction cap).
+            assert_eq!(
+                schema["properties"]["repaint_ms"],
+                json!({"type":"integer","minimum":0,"maximum":5000}),
                 "{name}"
             );
         }

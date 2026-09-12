@@ -34,6 +34,34 @@ while IFS= read -r line; do
   printf 'TURN:%s:%s\n' "$n" "$line"
 done
 "#;
+/// #1628 fixture: the same settings parsing and hook command, but the PTY
+/// echo is off (so the screen changes only when the fake prints) and each
+/// stdin line selects when the answer is painted relative to the Stop hook:
+/// `late:<x>` posts Stop, then paints `ANSWER:<x>` 300 ms later (the real
+/// Claude order); `early:<x>` paints the answer, stays quiet 600 ms, then
+/// posts Stop; `prestop:<x>` paints the answer, waits 50 ms (shorter than
+/// `settle_ms`) and posts Stop, then paints nothing more; `burst` posts Stop
+/// and then paints a line every 50 ms for three seconds; anything else stays
+/// quiet 400 ms, posts Stop and paints nothing (the quiet screen at the
+/// signal has no change since the baseline, so it must not pass for
+/// `already`).
+const FAKE_CLAUDE_REPAINT: &str = r#"#!/bin/sh
+settings=""
+while [ $# -gt 0 ]; do case "$1" in --settings) settings="$2"; shift 2;; *) shift;; esac; done
+hook=$(sed -n 's/^ *"command": "\(.*\)"[,]*$/\1/p' "$settings" | head -1)
+stty -echo 2>/dev/null
+stop() { printf '{"hook_event_name":"Stop","stop_hook_active":false,"session_id":"fake-session"}' | sh -c "$hook" >/dev/null 2>&1; }
+printf 'READY %s\n' "$NEIGE_CARD_ID"
+while IFS= read -r line; do
+  case "$line" in
+    late:*) stop; sleep 0.3; printf 'ANSWER:%s\n' "${line#late:}" ;;
+    early:*) printf 'ANSWER:%s\n' "${line#early:}"; sleep 0.6; stop ;;
+    prestop:*) printf 'ANSWER:%s\n' "${line#prestop:}"; sleep 0.05; stop ;;
+    burst) stop; i=0; while [ $i -lt 60 ]; do i=$((i+1)); printf 'BURST:%s\n' "$i"; sleep 0.05; done ;;
+    *) sleep 0.4; stop ;;
+  esac
+done
+"#;
 const COUNT_PROBE: &str = "i=0; printf 'READY\\n'; while IFS= read -r line; do i=$((i+1)); printf x >> physical-lines; printf 'COUNT:%s:%s\\n' \"$i\" \"$line\"; done";
 const EXPECTED_EVENTS: [&str; 7] = [
     "SessionStart",
@@ -55,6 +83,14 @@ const INJECTED_ENV: [&str; 5] = [
 fn fake_claude_program(h: &Harness) -> String {
     let script = h.root.path().join("fake-claude.sh");
     std::fs::write(&script, FAKE_CLAUDE).unwrap();
+    format!(
+        "exec sh {} --settings \"$NEIGE_CLAUDE_SETTINGS\"",
+        script.display()
+    )
+}
+fn fake_claude_repaint_program(h: &Harness) -> String {
+    let script = h.root.path().join("fake-claude-repaint.sh");
+    std::fs::write(&script, FAKE_CLAUDE_REPAINT).unwrap();
     format!(
         "exec sh {} --settings \"$NEIGE_CLAUDE_SETTINGS\"",
         script.display()
@@ -102,6 +138,18 @@ async fn open_fake_claude(h: &Harness, request_id: &str) -> (Value, String) {
         "the child must see NEIGE_CARD_ID: {ready}"
     );
     (opened, terminal)
+}
+/// Open a claimed #1628 repaint fake and return its terminal id.
+async fn open_fake_claude_repaint(h: &Harness, request_id: &str) -> String {
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":fake_claude_repaint_program(h),"request_id":request_id,"claim":true}),
+        )
+        .await;
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    h.observe_text(&terminal, "READY").await;
+    terminal
 }
 /// One invocation of the harness bridge stand-in for `card_id` with `body` on
 /// stdin, under the env a Planner terminal's hook command carries.
@@ -382,7 +430,20 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
     assert_eq!(answered["wait"]["signal"]["event"], "stop");
     assert_eq!(answered["wait"]["baseline_signal_seq"], baseline);
     assert!(answered["wait"]["signal"]["seq"].as_u64().unwrap() > baseline);
-    assert_eq!(answered["wait"]["settled"], false);
+    // #1628: the readback settles the repaint after the signal. The echo of
+    // the submitted text may or may not have been quiet for settle_ms when
+    // the Stop landed, so either verdict is legal here; the precise cases
+    // are the `repaint_*` tests below.
+    let repaint = answered["wait"]["repaint"]["outcome"].as_str().unwrap();
+    assert!(
+        matches!(repaint, "already" | "settled"),
+        "{repaint}: {answered}"
+    );
+    assert_eq!(answered["wait"]["settled"], true, "{answered}");
+    assert!(
+        answered["wait"]["signal_at_ms"].as_u64().unwrap()
+            <= answered["wait"]["waited_ms"].as_u64().unwrap()
+    );
     assert_eq!(answered["signals"]["hooks_seen"], true);
     assert_eq!(events_of(answered), vec!["user_prompt_submit", "stop"]);
     assert_eq!(
@@ -406,6 +467,9 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
         .await;
     assert_eq!(idle["wait"]["outcome"], "unchanged", "{idle}");
     assert_eq!(idle["wait"]["signal"], Value::Null);
+    assert_eq!(idle["wait"]["signal_at_ms"], Value::Null);
+    assert_eq!(idle["wait"]["repaint"], Value::Null);
+    assert_eq!(idle["wait"]["settled"], false);
     assert!(idle["wait"]["waited_ms"].as_u64().unwrap() >= 400);
     assert_eq!(idle["signals"]["since_previous_observation"], json!([]));
 
@@ -467,8 +531,24 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
     // Argument validation.
     for (args, why) in [
         (
-            json!({"terminal_id":terminal,"wait_for":"signal","settle_ms":100}),
-            "settle_ms in signal mode",
+            json!({"terminal_id":terminal,"wait_for":"change","repaint_ms":100}),
+            "repaint_ms in change mode",
+        ),
+        (
+            json!({"terminal_id":terminal,"repaint_ms":100}),
+            "repaint_ms in elapsed mode",
+        ),
+        (
+            json!({"terminal_id":terminal,"wait_for":"signal","repaint_ms":5001}),
+            "repaint_ms above the limit",
+        ),
+        (
+            json!({"terminal_id":terminal,"wait_for":"signal","settle_ms":2001}),
+            "settle_ms above the limit",
+        ),
+        (
+            json!({"terminal_id":terminal,"settle_ms":100}),
+            "settle_ms in elapsed mode",
         ),
         (
             json!({"terminal_id":terminal,"wait_for":"change","signal_events":["stop"]}),
@@ -490,6 +570,285 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
         let response = h.call("calm.terminal.observe", args).await;
         assert!(response.get("error").is_some(), "{why}: {response}");
     }
+    h.stop(&terminal).await;
+}
+
+/// #1628 (a) — Stop lands before the answer is painted (the real Claude
+/// order): one submit + signal readback already contains the answer, with
+/// `repaint.outcome == settled`; no second observation is needed.
+#[tokio::test]
+async fn signal_readback_waits_for_the_answer_painted_after_the_stop_hook() {
+    let h = Harness::start().await;
+    let terminal = open_fake_claude_repaint(&h, "repaint-late").await;
+    let answered = submit(
+        &h,
+        &terminal,
+        "late-1",
+        "late:hello",
+        json!({"wait_for":"signal"}),
+    )
+    .await;
+    assert_eq!(receipt(&answered)["outcome"], "written", "{answered}");
+    let answered = state(&answered);
+    assert_eq!(answered["wait"]["outcome"], "signal", "{answered}");
+    assert_eq!(answered["wait"]["signal"]["event"], "stop");
+    assert_eq!(
+        answered["wait"]["repaint"]["outcome"], "settled",
+        "{answered}"
+    );
+    assert_eq!(answered["wait"]["settled"], true);
+    assert!(
+        has_line(answered, "ANSWER:hello"),
+        "the answer must be in the signal readback: {answered}"
+    );
+    let signal_at = answered["wait"]["signal_at_ms"].as_u64().unwrap();
+    let repaint = answered["wait"]["repaint"]["waited_ms"].as_u64().unwrap();
+    let waited = answered["wait"]["waited_ms"].as_u64().unwrap();
+    assert!(
+        repaint >= 300 && signal_at + repaint <= waited + 1,
+        "the answer was painted 300 ms after the stop: {answered}"
+    );
+    assert_eq!(events_of(answered), vec!["stop"]);
+    // The next observation sees nothing new: the readback was complete.
+    let again = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(
+        again["changed_since_previous_observation"], false,
+        "{again}"
+    );
+    h.stop(&terminal).await;
+}
+
+/// #1628 (b) — the answer was painted and quiet well before Stop: the
+/// readback returns at the signal with `already`, not after `repaint_ms`.
+#[tokio::test]
+async fn signal_readback_returns_at_once_when_the_screen_settled_before_the_stop_hook() {
+    let h = Harness::start().await;
+    let terminal = open_fake_claude_repaint(&h, "repaint-early").await;
+    let answered = submit(
+        &h,
+        &terminal,
+        "early-1",
+        "early:hi",
+        json!({"wait_for":"signal"}),
+    )
+    .await;
+    assert_eq!(receipt(&answered)["outcome"], "written", "{answered}");
+    let answered = state(&answered);
+    assert_eq!(answered["wait"]["outcome"], "signal", "{answered}");
+    assert_eq!(
+        answered["wait"]["repaint"]["outcome"], "already",
+        "{answered}"
+    );
+    assert_eq!(answered["wait"]["settled"], true);
+    assert!(has_line(answered, "ANSWER:hi"), "{answered}");
+    let repaint = answered["wait"]["repaint"]["waited_ms"].as_u64().unwrap();
+    assert!(
+        repaint < 500,
+        "already must not spend the repaint window ({repaint} ms): {answered}"
+    );
+    assert!(
+        answered["wait"]["signal_at_ms"].as_u64().unwrap() >= 600,
+        "the fake stays quiet 600 ms before Stop: {answered}"
+    );
+    h.stop(&terminal).await;
+}
+
+/// #1628 (b') — the answer was painted 50 ms before Stop (not yet quiet for
+/// `settle_ms`, so not `already`) and nothing follows: the quiet window runs
+/// from that paint, so the readback is `settled` about 100 ms after the
+/// signal instead of idling the whole `repaint_ms` and reporting `none`.
+#[tokio::test]
+async fn signal_readback_settles_from_an_answer_painted_just_before_the_stop_hook() {
+    let h = Harness::start().await;
+    let terminal = open_fake_claude_repaint(&h, "repaint-prestop").await;
+    let answered = submit(
+        &h,
+        &terminal,
+        "prestop-1",
+        "prestop:hey",
+        json!({"wait_for":"signal"}),
+    )
+    .await;
+    assert_eq!(receipt(&answered)["outcome"], "written", "{answered}");
+    let answered = state(&answered);
+    assert_eq!(answered["wait"]["outcome"], "signal", "{answered}");
+    assert_eq!(
+        answered["wait"]["repaint"]["outcome"], "settled",
+        "{answered}"
+    );
+    assert_eq!(answered["wait"]["settled"], true);
+    assert!(has_line(answered, "ANSWER:hey"), "{answered}");
+    let repaint = answered["wait"]["repaint"]["waited_ms"].as_u64().unwrap();
+    assert!(
+        repaint < 1_000,
+        "a change before the signal must settle, not idle repaint_ms ({repaint} ms): {answered}"
+    );
+    h.stop(&terminal).await;
+}
+
+/// #1628 (c)/(d) — Stop with nothing painted afterwards: `none` after
+/// `repaint_ms`; `repaint_ms: 0` restores the immediate return (`skipped`).
+#[tokio::test]
+async fn signal_readback_reports_none_after_repaint_ms_and_skipped_when_disabled() {
+    let h = Harness::start().await;
+    let terminal = open_fake_claude_repaint(&h, "repaint-silent").await;
+    let silent = submit(
+        &h,
+        &terminal,
+        "silent-1",
+        "silent",
+        json!({"wait_for":"signal","repaint_ms":700}),
+    )
+    .await;
+    assert_eq!(receipt(&silent)["outcome"], "written", "{silent}");
+    let silent = state(&silent);
+    assert_eq!(silent["wait"]["outcome"], "signal", "{silent}");
+    assert_eq!(silent["wait"]["repaint"]["outcome"], "none", "{silent}");
+    assert_eq!(silent["wait"]["settled"], false);
+    assert!(!has_line(silent, "ANSWER"), "{silent}");
+    let repaint = silent["wait"]["repaint"]["waited_ms"].as_u64().unwrap();
+    assert!((700..5_000).contains(&repaint), "{silent}");
+    let signal_at = silent["wait"]["signal_at_ms"].as_u64().unwrap();
+    assert!(
+        signal_at >= 400,
+        "the fake stays quiet 400 ms before Stop: {silent}"
+    );
+    assert!(silent["wait"]["waited_ms"].as_u64().unwrap() >= signal_at + 700);
+
+    let skipped = submit(
+        &h,
+        &terminal,
+        "silent-2",
+        "silent",
+        json!({"wait_for":"signal","repaint_ms":0}),
+    )
+    .await;
+    assert_eq!(receipt(&skipped)["outcome"], "written", "{skipped}");
+    let skipped = state(&skipped);
+    assert_eq!(skipped["wait"]["outcome"], "signal", "{skipped}");
+    assert_eq!(
+        skipped["wait"]["repaint"],
+        json!({"outcome":"skipped","waited_ms":0}),
+        "{skipped}"
+    );
+    assert_eq!(skipped["wait"]["settled"], false);
+    assert_eq!(
+        skipped["wait"]["signal_at_ms"], skipped["wait"]["waited_ms"],
+        "{skipped}"
+    );
+    // settle_ms is accepted in signal mode now (#1628) and only bounds the
+    // quiet window; with nothing painted the verdict is still `none`.
+    let tuned = submit(
+        &h,
+        &terminal,
+        "silent-3",
+        "silent",
+        json!({"wait_for":"signal","repaint_ms":300,"settle_ms":50}),
+    )
+    .await;
+    assert_eq!(
+        state(&tuned)["wait"]["repaint"]["outcome"],
+        "none",
+        "{tuned}"
+    );
+    h.stop(&terminal).await;
+}
+
+/// #1628 (e) — the budget ends while the post-signal burst is still
+/// painting: `unsettled`, the signal kept, `waited_ms` at the budget.
+#[tokio::test]
+async fn signal_readback_reports_unsettled_when_the_budget_ends_mid_burst() {
+    let h = Harness::start().await;
+    let terminal = open_fake_claude_repaint(&h, "repaint-burst").await;
+    let burst = submit(
+        &h,
+        &terminal,
+        "burst-1",
+        "burst",
+        json!({"wait_for":"signal","wait_ms":1200}),
+    )
+    .await;
+    assert_eq!(receipt(&burst)["outcome"], "written", "{burst}");
+    let burst = state(&burst);
+    assert_eq!(burst["wait"]["outcome"], "signal", "{burst}");
+    assert_eq!(burst["wait"]["signal"]["event"], "stop");
+    assert_eq!(burst["wait"]["repaint"]["outcome"], "unsettled", "{burst}");
+    assert_eq!(burst["wait"]["settled"], false);
+    assert!(has_line(burst, "BURST:1"), "{burst}");
+    assert!(
+        burst["wait"]["waited_ms"].as_u64().unwrap() >= 1200,
+        "{burst}"
+    );
+    // Let the burst finish before tearing the PTY down.
+    h.observe_text(&terminal, "BURST:60").await;
+    h.stop(&terminal).await;
+}
+
+/// #1628 (f) — `repaint_ms` is refused outside signal mode on every wait
+/// carrier, with the same invalid-params shape as `settle_ms`.
+#[tokio::test]
+async fn repaint_ms_is_refused_outside_signal_mode_on_every_carrier() {
+    let h = Harness::start().await;
+    let terminal = open_fake_claude_repaint(&h, "repaint-args").await;
+    let view = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    for (tool, args, why) in [
+        (
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_for":"change","repaint_ms":0}),
+            "observe change",
+        ),
+        (
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_for":"elapsed","repaint_ms":1500}),
+            "observe elapsed",
+        ),
+        (
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"claim","observe":true,"wait_for":"change","repaint_ms":100}),
+            "control change",
+        ),
+        (
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"claim","repaint_ms":100}),
+            "control without observe",
+        ),
+        (
+            "calm.terminal.input",
+            json!({"terminal_id":terminal,"observation_id":view["observation_id"],"request_id":"r-1","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","repaint_ms":100}),
+            "input change",
+        ),
+        (
+            "calm.terminal.input",
+            json!({"terminal_id":terminal,"observation_id":view["observation_id"],"request_id":"r-2","action":{"type":"key","key":"Enter"},"repaint_ms":100}),
+            "input without observe",
+        ),
+    ] {
+        let response = h.call(tool, args).await;
+        let error = response
+            .get("error")
+            .unwrap_or_else(|| panic!("{why} accepted repaint_ms: {response}"));
+        assert_eq!(error["code"], -32602, "{why}: {response}");
+    }
+    // The same shape as the settle_ms refusal in elapsed mode.
+    let settle = h
+        .call(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"settle_ms":100}),
+        )
+        .await;
+    assert_eq!(settle["error"]["code"], -32602, "{settle}");
+    // Nothing was written by the refused input calls.
+    let after = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(
+        after["changed_since_previous_observation"], false,
+        "{after}"
+    );
     h.stop(&terminal).await;
 }
 
