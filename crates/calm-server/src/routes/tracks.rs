@@ -4191,6 +4191,14 @@ impl RecycledTrackDeletion {
             .iter()
             .map(|card| card.id.to_string())
             .collect();
+        // #1620 — the Terminal cards whose generated hook settings file goes
+        // with the committed delete (kept on rollback: the card still exists).
+        let terminal_card_ids: Vec<String> = prepared
+            .plan
+            .terminals
+            .iter()
+            .map(|terminal| terminal.card_id.to_string())
+            .collect();
         let sweeps = match finish_track_deletion(route, prepared.plan, actor).await {
             Ok(sweeps) => sweeps,
             Err(error) => {
@@ -4241,6 +4249,11 @@ impl RecycledTrackDeletion {
         prepared
             .turn_daemon
             .forget_turn_state_for_deleted_threads(&sealed_thread_ids);
+        // #1620 — post-commit, best effort: `<terminal-hooks>/<card_id>.json`
+        // for every deleted Terminal card (server-derived path only).
+        for card_id in &terminal_card_ids {
+            route.terminal_renderer.remove_hook_settings(card_id);
+        }
         // This sweep is post-commit. A failure here must not restore the
         // workspace: the track row is already gone and the trash path is now
         // authoritative.
