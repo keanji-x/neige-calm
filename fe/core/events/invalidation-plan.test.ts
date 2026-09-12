@@ -260,8 +260,10 @@ describe('invalidation plan behavior', () => {
       event({ ev, data: { card_id: 'card-1', track_id: 'track-1' } }),
     ).invalidate;
     expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
+    // #1625 P1: the phase event delivers the turn outcome row, which emits no
+    // `harness.item.added` of its own.
     expect(planned('harness.phase.changed')).toEqual([
-      ['planner-run', 'card-1'], ['track-conversations', 'track-1'],
+      ['planner-run', 'card-1'], ['harness-items', 'card-1'], ['track-conversations', 'track-1'],
     ]);
     expect(planned('harness.transcript.cleared')).toEqual([
       ['harness-items', 'card-1'], ['planner-run', 'card-1'],

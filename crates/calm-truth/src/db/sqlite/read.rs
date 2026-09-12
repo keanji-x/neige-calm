@@ -31,14 +31,17 @@ struct TrackDetailRow {
     overlays_json: String,
 }
 
-/// SQL fragment restricting a `harness_items` page to the two methods a
-/// transcript can render (#1255).
+/// SQL fragment restricting a `harness_items` page to the methods a
+/// transcript can render: the two `item/*` methods (#1255) and the per-turn
+/// outcome row `turn/completed` (#1625 P1). An explicit allowlist — a new
+/// method is inert until it is named here.
 ///
 /// Spliced, not bound: it is a fixed literal in this file with no caller input
-/// in it, and `IN (?, ?)` cannot be expressed as a single bindable parameter.
+/// in it, and `IN (?, ?, ?)` cannot be expressed as a single bindable parameter.
 /// See [`RepoRead::harness_item_list_transcript_by_card`] for why the filter
 /// has to sit here, inside the `LIMIT`, rather than in the caller.
-const TRANSCRIPT_METHOD_PREDICATE: &str = " AND method IN ('item/started', 'item/completed')";
+const TRANSCRIPT_METHOD_PREDICATE: &str =
+    " AND method IN ('item/started', 'item/completed', 'turn/completed')";
 
 impl SqlxRepo {
     /// One paging query over `harness_items`, with an optional extra

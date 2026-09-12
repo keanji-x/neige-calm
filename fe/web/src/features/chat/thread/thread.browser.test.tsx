@@ -40,7 +40,7 @@ import '../../../styles/entry.css';
 import { ChatComposer, ChatThread } from './public.tsx';
 import type {
   Conversation, ConversationActivity, ConversationSystemEntry, ConversationTurn,
-  OptimisticConversationTurn, TranscriptEntry,
+  ConversationTurnOutcome, OptimisticConversationTurn, TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { Drawer } from '../../../ui/drawer/public.tsx';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
@@ -895,6 +895,46 @@ describe('the structured system disclosure in a real engine', () => {
     await userEvent.keyboard('{Enter}');
     expect(details.open).toBe(true);
     expect(getComputedStyle(disclosure).transform).not.toBe('none');
+  });
+});
+
+/*
+ * #1625 P1 — the outcome line in a real engine. jsdom can prove the words are
+ * there; only this tier can prove the error sentence *wraps* instead of riding
+ * Astryx's `nowrap` label span off the edge of a 396px column, which is the
+ * whole reason the message is its own block under the label.
+ */
+describe('a failed turn in a real engine', () => {
+  it('shows Failed with the message wrapped below it, and nothing for a completed turn', async () => {
+    const you: ConversationTurn = { id: 'you-1', author: 'you', text: 'Summarise everything.', atMs: 0 };
+    const failed: ConversationTurnOutcome = {
+      id: 'outcome-1', author: 'turn', turnId: 'turn-1', status: 'failed',
+      message: 'The conversation exceeded the model\'s context window and the request was rejected before any output was produced.',
+      code: 'contextWindowExceeded', atMs: 0,
+    };
+    const completed: ConversationTurnOutcome = {
+      id: 'outcome-2', author: 'turn', turnId: 'turn-2', status: 'completed', atMs: 0,
+    };
+    render(<RailPane turns={[you, failed, { ...you, id: 'you-2' }, completed]} />);
+    await frame();
+
+    const outcomes = document.querySelectorAll<HTMLElement>('[data-nc-turn="outcome"]');
+    expect(outcomes).toHaveLength(1);
+    const outcome = outcomes[0];
+    expect(outcome.dataset['ncTurnOutcome']).toBe('failed');
+    expect(outcome.querySelector('[role="status"]')?.textContent).toBe('Failed');
+    const message = outcome.querySelector<HTMLElement>('[data-nc-turn-outcome-message]')!;
+    expect(message.textContent).toBe(failed.message);
+    const label = outcome.querySelector<HTMLElement>('[role="status"]')!;
+    const labelBox = label.getBoundingClientRect();
+    const messageBox = message.getBoundingClientRect();
+    // Below the label, not beside it — and wrapped: taller than one line and
+    // no wider than the column the label was centred in.
+    expect(messageBox.top).toBeGreaterThanOrEqual(labelBox.bottom);
+    expect(messageBox.width).toBeLessThanOrEqual(labelBox.width + 1);
+    expect(messageBox.height).toBeGreaterThan(Number.parseFloat(getComputedStyle(message).lineHeight) * 1.5);
+    expect(outcome.querySelector('[data-nc-turn-outcome-hint]')?.textContent)
+      .toBe('The conversation no longer fits in the model’s context window.');
   });
 });
 

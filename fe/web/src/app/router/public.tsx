@@ -66,7 +66,7 @@ import {
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
-  isSendRefusalCode, kernelQueuesInput,
+  isConversationMessage, isSendRefusalCode, kernelQueuesInput,
   mergeTranscript, reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
   trackConversationCardId,
   FOLLOW_INSTALLATION_DEFAULT,
@@ -420,7 +420,7 @@ export function useConversationStore(
   );
   const serverTurns = useMemo(
     () => history.data === undefined
-      ? serverEntries.filter((entry): entry is ConversationMessage => entry.author !== 'activity')
+      ? serverEntries.filter(isConversationMessage)
       : [...items].sort((left, right) => left.id - right.id).flatMap(harnessItemToTurns),
     [history.data, items, serverEntries],
   );
@@ -845,7 +845,7 @@ export function useConversationStore(
           ? remembered
           : [...remembered, claimed].toSorted((left, right) => left.atMs - right.atMs);
         const serverMessages = knownTurns.filter((turn): turn is ConversationMessage =>
-          turn.author !== 'activity' && !isOptimisticConversationTurn(turn));
+          isConversationMessage(turn) && !isOptimisticConversationTurn(turn));
         const unresolved = reconcileOptimisticConversationTurns(serverMessages, optimistic);
         const unresolvedIds = new Set(unresolved.map((turn) => turn.id));
         const recorded = !unresolvedIds.has(echo.id);
@@ -860,7 +860,7 @@ export function useConversationStore(
             ...known,
             title: known.title ?? conversationNameFrom(text),
             updatedAt: Math.max(known.updatedAt, echo.atMs),
-            turns: nextTurns.filter((turn) => turn.author !== 'activity').length,
+            turns: nextTurns.filter(isConversationMessage).length,
           },
           turns: nextTurns,
         };

@@ -427,8 +427,9 @@ pub trait RepoRead: Send + Sync + 'static {
         descending: bool,
     ) -> Result<Vec<HarnessItem>>;
 
-    /// Page only the rows a transcript can render: `item/started` and
-    /// `item/completed`.
+    /// Page only the rows a transcript can render: `item/started`,
+    /// `item/completed`, and — since #1625 P1 — `turn/completed`, the one row
+    /// per finished turn that carries its terminal `status` and `error`.
     ///
     /// Same paging contract as [`harness_item_list_by_card`](Self::harness_item_list_by_card)
     /// (`after_id` exclusive, `limit` rows, always returned ascending), and the

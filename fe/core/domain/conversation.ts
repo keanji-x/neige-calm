@@ -1250,7 +1250,48 @@ export type ConversationActivity = Readonly<{
   atMs: number;
 }>;
 
-export type TranscriptEntry = ConversationMessage | ConversationActivity;
+/**
+ * #1625 P1 — how a turn ended. One per finished codex turn, from the
+ * `turn/completed` row the kernel writes after its own completion gates.
+ *
+ * `completed` entries are kept in the transcript — they are the anchors a
+ * later slice will group exchanges by turn on — but render as nothing. Only
+ * `interrupted` and `failed` are drawn, because those are the two the reader
+ * cannot infer from the transcript going quiet.
+ */
+export type TurnOutcomeStatus = 'completed' | 'interrupted' | 'failed';
+
+export type ConversationTurnOutcome = Readonly<{
+  id: string;
+  /** Discriminates against the speakers and the activity line. */
+  author: 'turn';
+  turnId: string;
+  status: TurnOutcomeStatus;
+  /** codex's own `error.message`, verbatim. Only a `failed` turn carries one. */
+  message?: string;
+  /**
+   * `error.codexErrorInfo` as one token: the bare enum string
+   * (`contextWindowExceeded`, `usageLimitExceeded`, …) or, for the object
+   * form (`{ httpConnectionFailed: { httpStatusCode } }`), its single key.
+   */
+  code?: string;
+  /**
+   * The wire `status` when it was not one of the three above. Such a row is
+   * surfaced as `failed` rather than dropped — an unknown terminal status is
+   * still a turn that did not end the way the reader expects — and this is
+   * what it actually said.
+   */
+  rawStatus?: string;
+  atMs: number;
+}>;
+
+export type TranscriptEntry = ConversationMessage | ConversationActivity | ConversationTurnOutcome;
+
+/** The speakers: what the conversation's turn count and echo reconciliation
+ *  are about. Neither an activity line nor a turn outcome is one. */
+export function isConversationMessage(entry: TranscriptEntry): entry is ConversationMessage {
+  return entry.author === 'you' || entry.author === 'agent' || entry.author === 'system';
+}
 
 /** `bash -lc 'neige state'` is how codex spells every command; the wrapper is
  *  noise on every single line, so the line shows what was actually run. */
@@ -1528,6 +1569,64 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
   };
 }
 
+/* The stored `turn/completed` params: codex's `Turn` minus its items. Only
+   the fields the outcome line reads are named; everything else passes through
+   `z.object`'s default stripping. `codexErrorInfo` is a schema `oneOf` — a
+   bare enum string, or a single-key object for the variants that carry an
+   HTTP status — so it is accepted as either and reduced to one token below. */
+const turnOutcomeParamsSchema = z.object({
+  id: z.string().optional(),
+  status: z.string(),
+  error: z.object({
+    message: z.string(),
+    codexErrorInfo: z.union([z.string(), z.record(z.string(), z.unknown())]).nullish(),
+  }).nullish(),
+});
+
+function codexErrorCode(info: string | Readonly<Record<string, unknown>> | null | undefined): string | undefined {
+  if (info === null || info === undefined) return undefined;
+  if (typeof info === 'string') return info;
+  const [key] = Object.keys(info);
+  return key;
+}
+
+/**
+ * #1625 P1 — the outcome line for one `turn/completed` row.
+ *
+ * `null` only when the row is not one (wrong method) or its params cannot be
+ * read as a turn at all — no `status`, unparseable JSON. A status that *is*
+ * there but is none of `completed | interrupted | failed` is NOT dropped: it
+ * comes back as `failed` with `rawStatus` set, because a turn that ended in a
+ * way this code does not know is exactly the case the reader should see.
+ *
+ * `atMs` is the kernel's `created_at_ms`, the same clock every other row is
+ * stamped from, rather than codex's `completedAt` (whole seconds, a different
+ * clock): the transcript is ordered by row id and `atMs` only decides where a
+ * time separator prints, so the row's own clock is the one that keeps the
+ * separators honest against their neighbours.
+ */
+export function harnessItemToTurnOutcome(item: HarnessItem): ConversationTurnOutcome | null {
+  if (item.method !== 'turn/completed') return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(item.params); } catch { return null; }
+  const result = turnOutcomeParamsSchema.safeParse(parsed);
+  if (!result.success) return null;
+  const { status, error } = result.data;
+  const turnId = item.turn_id ?? result.data.id;
+  if (turnId === undefined) return null;
+  const message = error?.message;
+  const code = codexErrorCode(error?.codexErrorInfo);
+  const base = {
+    id: `outcome-${item.id}`, author: 'turn' as const, turnId, atMs: item.created_at_ms,
+    ...(message === undefined ? {} : { message }),
+    ...(code === undefined ? {} : { code }),
+  };
+  if (status === 'completed' || status === 'interrupted' || status === 'failed') {
+    return { ...base, status };
+  }
+  return { ...base, status: 'failed', rawStatus: status };
+}
+
 /**
  * The only notification methods the transcript knows how to render.
  *
@@ -1546,17 +1645,24 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
  * instead of by two unrelated converters each independently happening to
  * reject it.
  *
- * Honest about what this does and does not buy: `harnessItemToTurns` and
- * `harnessItemToActivity` check the method themselves, and must keep doing so
- * (they are exported and called directly — `harnessItemToTurns` from
- * `web/src/app/router/public.tsx`). So this gate cannot change the output of
- * `buildTranscript` today and no test can make it load-bearing; deleting it
- * leaves the suite green. It is a fail-closed backstop, and stating the
+ * Honest about what this does and does not buy: `harnessItemToTurns`,
+ * `harnessItemToActivity` and `harnessItemToTurnOutcome` check the method
+ * themselves, and must keep doing so (they are exported and called directly —
+ * `harnessItemToTurns` from `web/src/app/router/public.tsx`). So *deleting*
+ * this gate leaves the suite green: the converters still reject everything it
+ * rejects. *Narrowing* it is a different matter — drop `turn/completed` from
+ * the list and outcome rows are gone before `harnessItemToTurnOutcome` sees
+ * them (`renders a turn/completed row as a turn outcome` goes red), which is
+ * the gate doing its job. It is a fail-closed backstop, and stating the
  * allowlist in the loop is what makes "the transcript renders `item/*` and
- * nothing else" readable in one place rather than inferable from two callees.
+ * `turn/completed` and nothing else" readable in one place rather than
+ * inferable from three callees.
+ *
+ * `turn/completed` (#1625 P1) is the per-turn outcome row; the server-side
+ * allowlist (`TRANSCRIPT_METHOD_PREDICATE`) names the same three.
  */
 function isTranscriptMethod(method: string): boolean {
-  return method === 'item/started' || method === 'item/completed';
+  return method === 'item/started' || method === 'item/completed' || method === 'turn/completed';
 }
 
 /**
@@ -1585,6 +1691,14 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
     // Only methods the transcript understands get past here — see
     // `isTranscriptMethod` for what this backstop is and is not worth.
     if (!isTranscriptMethod(item.method)) continue;
+    // A turn outcome is its own line, keyed by its own row: nothing pairs
+    // with it and nothing overwrites it.
+    const outcome = harnessItemToTurnOutcome(item);
+    if (outcome !== null) {
+      order.push(outcome.id);
+      byKey.set(outcome.id, outcome);
+      continue;
+    }
     const turns = harnessItemToTurns(item);
     if (turns.length > 0) {
       for (const turn of turns) {
@@ -1610,7 +1724,10 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
 
   return entries.filter((entry, index) => {
     if (entry.author !== 'activity' || entry.verb !== 'Thought') return true;
-    const next = entries[index + 1];
+    // A turn outcome does not count as "something followed": it is not a new
+    // thing the agent did, and the turn's last thought stays the last thing
+    // that happened, whether the turn then completed or failed.
+    const next = entries.slice(index + 1).find((later) => later.author !== 'turn');
     if (next === undefined) return true;
     // Collapse a run of thoughts into the last one, and drop the run entirely
     // once anything else follows it.

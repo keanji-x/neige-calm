@@ -293,7 +293,7 @@ describe('query invalidation adapter', () => {
       [
         { ...base, old_phase: 'idle', new_phase: 'turn_running' },
         'harness.phase.changed',
-        [queryKeys.plannerRun('card-1'), queryKeys.trackConversations('track-1')],
+        [queryKeys.plannerRun('card-1'), queryKeys.harnessItems('card-1'), queryKeys.trackConversations('track-1')],
       ],
       [
         { ...base, cleared_item_count: 12, cleared_params_bytes: 3400, card_age_ms_at_clear: 86400000 },
