@@ -353,12 +353,198 @@ class CollectorTests(unittest.TestCase):
             "wait": {"mode": "change", "outcome": "unchanged", "waited_ms": 5000, "settled": False},
             "changed_since_previous_observation": False})
         result = ux.metrics([observed])
-        summary = {key: result[key] for key in ux.WAIT_METRIC_KEYS}
+        summary = {key: result[key] for key in ux.SUMMARY_METRIC_KEYS}
         self.assertEqual(summary, {"change_wait_requests": 1, "change_wait_outcomes": {"unchanged": 1},
                                    "unsettled_change_waits": 0, "elapsed_wait_requests": 0,
                                    "unmeasured_wait_observations": 0, "drift_allowed_inputs": 0,
-                                   "drift_observed_inputs": 0, "implicit_observation_inputs": 0})
+                                   "drift_observed_inputs": 0, "implicit_observation_inputs": 0,
+                                   "signal_wait_requests": 0, "signal_wait_outcomes": {}, "submit_actions": 0,
+                                   "open_with_claim": 0, "hooks_seen_observations": 0, "signals_observed": 0,
+                                   "unmeasured_signal_observations": 1})
         self.assertEqual(json.loads(json.dumps(summary)), summary)
+        self.assertEqual(ux.SUMMARY_METRIC_KEYS, ux.WAIT_METRIC_KEYS + ux.SIGNAL_METRIC_KEYS)
+
+    # #1620 hook-signal counters.
+    @staticmethod
+    def signals(hooks_seen=True, events=()):
+        return {"hooks_seen": hooks_seen, "last_seq": 7, "since_previous_observation": [
+            {"seq": 7 - len(events) + index + 1, "event": event, "notification_type": None,
+             "message": None, "received_at_ms": 1780977421069} for index, event in enumerate(events)]}
+
+    def signal_wait_state(self, outcome="signal", event="Stop"):
+        state = row(1)["params"]["item"]["result"]["structuredContent"]
+        wait = {"mode": "signal", "outcome": outcome, "waited_ms": 812, "settled": True}
+        if outcome == "signal":
+            wait["signal"] = {"seq": 7, "event": event, "notification_type": None, "message": None,
+                              "received_at_ms": 1780977421069}
+        state.update({"wait": wait, "signals": self.signals(True, (event,))})
+        return state
+
+    def test_signal_wait_requests_and_outcomes_are_read_from_arguments_and_observations(self):
+        signalled = row(1)
+        signalled["params"]["item"]["arguments"].update({"wait_for": "signal", "signal_events": ["Stop"]})
+        signalled["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state()
+        budget = row(2)
+        budget["params"]["item"]["arguments"].update({"wait_for": "signal", "wait_ms": 5000})
+        budget["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state("elapsed")
+        readback = row(3, "calm.terminal.input")
+        readback["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "3100 + 41"},
+                                                         "observe": True, "wait_for": "signal"})
+        readback["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
+            "observation": {"status": "available", "state": self.signal_wait_state()}}}
+        # Refused signal wait: a request, but no observation and no outcome.
+        refused = row(4)
+        refused["params"]["item"]["arguments"]["wait_for"] = "signal"
+        refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "unsupported"}
+        # wait_for=signal on a control call without observe=true requests no observation.
+        control = row(5, "calm.terminal.control")
+        control["params"]["item"]["arguments"].update({"action": "claim", "wait_for": "signal"})
+        control["params"]["item"]["result"] = {"structuredContent": {"terminal_id": "t1", "connection_id": "c1", "control_id": "o1"}}
+        # A change wait that happens to observe a signal outcome stays in the change tally only.
+        change = row(6)
+        change["params"]["item"]["arguments"]["wait_for"] = "change"
+        change["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state("changed")
+        calls = [signalled, budget, readback, refused, control, change]
+        original = copy.deepcopy(calls)
+        result = ux.metrics(calls)
+        self.assertEqual(result["signal_wait_requests"], 4)
+        self.assertEqual(result["signal_wait_outcomes"], {"elapsed": 1, "signal": 2})
+        self.assertEqual(result["change_wait_requests"], 1)
+        self.assertEqual(result["change_wait_outcomes"], {"changed": 1})
+        self.assertEqual(result["submit_actions"], 1)
+        self.assertEqual(result["readback_available"], 1)
+        self.assertEqual(result["tool_errors"], 1)
+        self.assertEqual(result["unmeasured_signal_observations"], 0)
+        self.assertEqual(calls, original)
+        # Missing wait_for: neither a request nor an outcome, even with a signal-shaped result.
+        plain = row(7)
+        plain["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state()
+        result = ux.metrics([plain])
+        self.assertEqual(result["signal_wait_requests"], 0)
+        self.assertEqual(result["signal_wait_outcomes"], {})
+
+    def test_signal_wait_on_pre_1618_observation_is_a_request_without_outcome(self):
+        requested = row(1)
+        requested["params"]["item"]["arguments"]["wait_for"] = "signal"
+        result = ux.metrics([requested])
+        self.assertEqual(result["signal_wait_requests"], 1)
+        self.assertEqual(result["signal_wait_outcomes"], {})
+        self.assertEqual(result["unmeasured_wait_observations"], 1)
+        self.assertEqual(result["unmeasured_signal_observations"], 1)
+
+    def test_submit_actions_are_counted_from_input_arguments_only(self):
+        calls = []
+        for identifier, action in enumerate(({"type": "submit", "text": "/rewind"},
+                                             {"type": "text", "text": "/rewind"},
+                                             {"type": "key", "key": "Enter"},
+                                             {"type": "submit", "text": "again"}), start=1):
+            call = row(identifier, "calm.terminal.input")
+            call["params"]["item"]["arguments"]["action"] = action
+            calls.append(call)
+        failed = row(5, "calm.terminal.input")
+        failed["params"]["item"]["arguments"]["action"] = {"type": "submit", "text": "refused"}
+        failed["params"]["item"]["status"], failed["params"]["item"]["error"] = "failed", {"message": "no observation on this connection; observe first"}
+        calls.append(failed)
+        result = ux.metrics(calls)
+        self.assertEqual(result["submit_actions"], 3)
+        self.assertEqual(result["repeated_identical_input_actions"], 0)
+        self.assertEqual(result["observation_refusals"], 1)
+        self.assertEqual(ux.metrics([row(1), row(2, "calm.terminal.input")])["submit_actions"], 0)
+
+    def test_open_with_claim_counts_only_true_claim_arguments(self):
+        calls = []
+        for identifier, arguments in enumerate(({"claim": True}, {"claim": False}, {}, {"claim": "true"}), start=1):
+            opened = row(identifier, "calm.terminal.open")
+            opened["params"]["item"]["arguments"] = {"command": "claude", **arguments}
+            opened["params"]["item"]["result"]["structuredContent"].update({"control_id": "o1", "role": "owner"})
+            calls.append(opened)
+        unavailable = row(5, "calm.terminal.open")
+        unavailable["params"]["item"]["arguments"] = {"command": "claude", "claim": True}
+        unavailable["params"]["item"]["result"]["structuredContent"]["claim"] = {"status": "unavailable", "reason": "owned by a human"}
+        calls.append(unavailable)
+        result = ux.metrics(calls)
+        self.assertEqual(result["open_with_claim"], 2)
+        self.assertEqual(result["terminal_tool_calls"], 5)
+        self.assertEqual(result["tool_errors"], 0)
+
+    def test_hooks_seen_and_signals_observed_are_read_from_observation_signals(self):
+        seen = row(1)
+        seen["params"]["item"]["result"]["structuredContent"]["signals"] = self.signals(True, ("UserPromptSubmit", "PreToolUse", "Stop"))
+        silent = row(2)
+        silent["params"]["item"]["result"]["structuredContent"]["signals"] = self.signals(False)
+        state = row(3)["params"]["item"]["result"]["structuredContent"]
+        state["signals"] = self.signals(True, ("Notification",))
+        readback = row(3, "calm.terminal.input")
+        readback["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "hi"}, "observe": True})
+        readback["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
+            "observation": {"status": "available", "state": state}}}
+        # Pre-#1620 server: no signals block is unmeasured, never inferred.
+        older = row(4)
+        # Open results and unavailable readbacks are not observations here.
+        opened = row(5, "calm.terminal.open")
+        opened["params"]["item"]["result"]["structuredContent"]["signals"] = self.signals(True, ("Stop",))
+        unavailable = row(6, "calm.terminal.input")
+        unavailable["params"]["item"]["arguments"].update({"action": {"type": "key", "key": "Enter"}, "observe": True})
+        unavailable["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "r6", "outcome": "written", "application_result": "unverified",
+            "observation": {"status": "unavailable", "reason": "readback timeout"}}}
+        calls = [seen, silent, readback, older, opened, unavailable]
+        original = copy.deepcopy(calls)
+        result = ux.metrics(calls)
+        self.assertEqual(result["hooks_seen_observations"], 2)
+        self.assertEqual(result["signals_observed"], 4)  # 3 + 0 + 1 events over 3 measured observations
+        self.assertEqual(result["unmeasured_signal_observations"], 1)
+        self.assertEqual(result["signal_wait_requests"], 0)
+        self.assertEqual(calls, original)
+        self.assertEqual(ux.metrics([older])["hooks_seen_observations"], 0)
+        self.assertEqual(ux.metrics([older])["signals_observed"], 0)
+
+    def test_malformed_signals_block_is_rejected(self):
+        for signals in ([], "seen", {"hooks_seen": True}, {"hooks_seen": "yes", "last_seq": 1, "since_previous_observation": []},
+                        {"hooks_seen": True, "last_seq": "1", "since_previous_observation": []},
+                        {"hooks_seen": True, "last_seq": 1, "since_previous_observation": {}},
+                        {"hooks_seen": True, "last_seq": 1, "since_previous_observation": ["Stop"]}):
+            observed = row(1)
+            observed["params"]["item"]["result"]["structuredContent"]["signals"] = signals
+            with self.subTest(signals=signals), self.assertRaisesRegex(ux.EvidenceError, "signals"):
+                ux.metrics([observed])
+
+    def test_signal_wait_outcome_is_an_accepted_observation(self):
+        signalled = row(1, text=["松果 9123"])
+        signalled["params"]["item"]["arguments"].update({"wait_for": "signal", "signal_events": ["Stop"]})
+        state = self.signal_wait_state()
+        state["text"] = ["松果 9123"]
+        signalled["params"]["item"]["result"]["structuredContent"] = state
+        original = copy.deepcopy(signalled)
+        binding, observations, _, errors = ux.terminal_evidence([signalled])
+        self.assertEqual(binding["terminal_id"], "t1")
+        self.assertEqual([view["text"] for view in observations], ["松果 9123"])
+        self.assertEqual(errors, [])
+        self.assertEqual(signalled, original)
+        submit = row(2, "calm.terminal.input")
+        submit["params"]["item"]["arguments"]["action"] = {"type": "submit", "text": "/rewind"}
+        _, evidence = ux.check_scenario("rewind", [signalled, submit], None)
+        self.assertEqual(evidence["status"], "review_required")
+        self.assertEqual([view["row_id"] for view in evidence["observations"]], [1])
+
+    def test_submit_action_satisfies_scenario_input_checks_like_text_plus_enter(self):
+        for name, text in (("short", "请只回答 3100 + 41 的结果。"), ("edit", "请只回答 7200 + 19 的结果。"), ("rewind", "/rewind ")):
+            answer = {"short": "3141", "edit": "7219", "rewind": "9123"}[name]
+            submit = row(2, "calm.terminal.input")
+            submit["params"]["item"]["arguments"]["action"] = {"type": "submit", "text": text}
+            correction = row(3, "calm.terminal.input")
+            correction["params"]["item"]["arguments"]["action"] = {"type": "key", "key": "Backspace"}
+            with self.subTest(name=name):
+                _, evidence = ux.check_scenario(name, [row(1, text=[answer]), submit, correction], None)
+                self.assertEqual(evidence["status"], "review_required")
+        # A submit of other text is not a rewind; a submit without text is tolerated but is not one either.
+        for action in ({"type": "submit", "text": "/help"}, {"type": "submit"}):
+            other = row(2, "calm.terminal.input")
+            other["params"]["item"]["arguments"]["action"] = action
+            with self.subTest(action=action), self.assertRaisesRegex(ux.EvidenceError, "actual /rewind input absent"):
+                ux.check_scenario("rewind", [row(1, text=["9123"]), other], None)
 
     def test_changed_since_observation_production_refusal_is_counted(self):
         bad = row(1, "calm.terminal.input")

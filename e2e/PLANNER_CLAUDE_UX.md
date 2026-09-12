@@ -137,6 +137,18 @@ inputs omitting `observation_id` (`observation_id_used` is informational). A
 settled or `unchanged` wait outcome, like `application_result: "unverified"`,
 is not application completion.
 
+#1620 hook-signal counters (also in `wait_summary`), read the same way:
+`signal_wait_requests`: `observe` calls and `observe: true` readbacks whose
+arguments say `wait_for: "signal"`; `signal_wait_outcomes`: tally of those
+calls' returned `wait.outcome` (`signal` is an ordinary observation, not
+application completion); `submit_actions`: input calls whose action type is
+`submit` (a `submit` of `/rewind` satisfies the rewind input check like `text`);
+`open_with_claim`: `open` calls with `claim: true`; `hooks_seen_observations`:
+observations whose `signals.hooks_seen` is true; `signals_observed`: total
+`signals.since_previous_observation` entries; `unmeasured_signal_observations`:
+observations lacking a `signals` block (older server). The goals tell the
+Planner to start Claude with `--settings "$NEIGE_CLAUDE_SETTINGS"`.
+
 ## Model-free driver checks
 
 These validate only collection/failure handling; they are not a fake passing

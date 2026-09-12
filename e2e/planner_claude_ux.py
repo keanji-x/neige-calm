@@ -221,6 +221,9 @@ def tool_failed(call):
 WAIT_METRIC_KEYS = ("change_wait_requests", "change_wait_outcomes", "unsettled_change_waits",
                     "elapsed_wait_requests", "unmeasured_wait_observations", "drift_allowed_inputs",
                     "drift_observed_inputs", "implicit_observation_inputs")
+SIGNAL_METRIC_KEYS = ("signal_wait_requests", "signal_wait_outcomes", "submit_actions", "open_with_claim",
+                      "hooks_seen_observations", "signals_observed", "unmeasured_signal_observations")
+SUMMARY_METRIC_KEYS = WAIT_METRIC_KEYS + SIGNAL_METRIC_KEYS
 
 
 def wait_outcome(state):
@@ -231,6 +234,69 @@ def wait_outcome(state):
     if not isinstance(wait.get("outcome"), str) or not isinstance(wait.get("settled"), bool):
         raise EvidenceError("observation wait must carry a string outcome and a boolean settled")
     return wait
+
+
+def observation_signals(state):
+    """Return the observation's `signals` block, or None when the server sent none (#1620)."""
+    if "signals" not in state:
+        return None  # pre-#1620 server: unmeasured, never inferred
+    signals = require_object(state["signals"], "observation signals")
+    events = signals.get("since_previous_observation")
+    if (not isinstance(signals.get("hooks_seen"), bool) or type(signals.get("last_seq")) is not int
+            or not isinstance(events, list) or not all(isinstance(event, dict) for event in events)):
+        raise EvidenceError("observation signals must carry hooks_seen, last_seq and an event list")
+    return signals
+
+
+def requests_observation(call):
+    """True when a completed call's arguments ask for an observation (observe, or observe=true readback)."""
+    args = call.get("arguments", {})
+    return call["tool"] == "calm.terminal.observe" or (
+        call["tool"] in ("calm.terminal.control", "calm.terminal.input") and args.get("observe") is True)
+
+
+def signal_metrics(terminal):
+    """#1620 hook-signal counters, each read from a completed call's own arguments or result.
+
+    A signal wait is an observation-requesting call whose arguments say
+    `wait_for: "signal"`; its outcome is the returned observation's
+    `wait.outcome` (a `signal` outcome is an observation like any other, not
+    application completion). `submit_actions` and `open_with_claim` describe
+    requests, including failed ones. `hooks_seen_observations` and
+    `signals_observed` are read from each observation's `signals` block;
+    observations lacking it (older server) are `unmeasured_signal_observations`.
+    """
+    counts = collections.Counter()
+    outcomes = collections.Counter()
+    for call in terminal:
+        if not call.get("completed"):
+            continue
+        args, tool = call.get("arguments", {}), call["tool"]
+        action = args.get("action")
+        if tool == "calm.terminal.input" and isinstance(action, dict) and action.get("type") == "submit":
+            counts["submit_actions"] += 1
+        if tool == "calm.terminal.open" and args.get("claim") is True:
+            counts["open_with_claim"] += 1
+        signal_wait = requests_observation(call) and args.get("wait_for") == "signal"
+        if signal_wait:
+            counts["signal_wait_requests"] += 1
+        if tool_failed(call):
+            continue
+        state = observed_state(call, metadata(call)) if tool != "calm.terminal.open" else None
+        if state is None:
+            continue
+        wait = wait_outcome(state)
+        if signal_wait and wait is not None:
+            outcomes[wait["outcome"]] += 1
+        signals = observation_signals(state)
+        if signals is None:
+            counts["unmeasured_signal_observations"] += 1
+            continue
+        if signals["hooks_seen"] is True:
+            counts["hooks_seen_observations"] += 1
+        counts["signals_observed"] += len(signals["since_previous_observation"])
+    return {**{key: counts[key] for key in SIGNAL_METRIC_KEYS if key != "signal_wait_outcomes"},
+            "signal_wait_outcomes": dict(sorted(outcomes.items()))}
 
 
 def wait_metrics(terminal):
@@ -255,8 +321,7 @@ def wait_metrics(terminal):
                 counts["drift_allowed_inputs"] += 1
             if "observation_id" not in args:
                 counts["implicit_observation_inputs"] += 1
-        observes = tool == "calm.terminal.observe" or (
-            tool in ("calm.terminal.control", "calm.terminal.input") and args.get("observe") is True)
+        observes = requests_observation(call)
         wait_for, wait_ms = args.get("wait_for"), args.get("wait_ms")
         if observes and wait_for == "change":
             counts["change_wait_requests"] += 1
@@ -332,7 +397,7 @@ def metrics(rows):
             "requested_key_presses": requested_presses, "additional_repeated_key_presses": extra_presses,
             "unmeasured_key_press_requests": unmeasured_requests,
             "observation_refusals": sum(observation_refused(call) for call in terminal),
-            **wait_metrics(terminal),
+            **wait_metrics(terminal), **signal_metrics(terminal),
             "human_intervention": "not_measured", "token_savings": "not_measured"}
 
 
@@ -372,6 +437,8 @@ def terminal_evidence(rows, binding=None):
             raise EvidenceError("terminal call arguments are malformed")
         # `observation_id` may be omitted (#1618 C3); the receipt's
         # `observation_id_used` is informational and not checked here.
+        # A `wait.outcome` of `signal` (#1620 hook signal) and a `submit`
+        # action are ordinary observations/inputs; neither is checked here.
         # A fresh readback is observable state even when the physical receipt
         # remains unknown/refused. Do not rewrite or infer application completion.
         data = observed_state(call, metadata(call))
@@ -412,8 +479,9 @@ def check_scenario(name, rows, binding):
     if name == "edit" and not any(action.get("type") == "key" and action.get("key")
                                   in ("Backspace", "Delete", "Ctrl+U") for action in actions):
         raise EvidenceError("edit: no actual input correction action")
-    if name == "rewind" and not any(action.get("type") == "text"
-                                    and action.get("text", "").strip() == "/rewind" for action in actions):
+    # `submit` (#1620: one write with a trailing CR) counts like `text` + Enter.
+    if name == "rewind" and not any(action.get("type") in ("text", "submit")
+                                    and str(action.get("text", "")).strip() == "/rewind" for action in actions):
         raise EvidenceError("rewind: actual /rewind input absent")
     return binding, {"candidate_answer_observed": True, "tool_error_rows": errors,
                      "observations": observations, "status": "review_required"}
@@ -503,6 +571,8 @@ class Round:
                   "through your production terminal tools. Do not use shell/exec tools outside that "
                   "terminal, call model APIs directly, impersonate tool output, write files, read "
                   "credentials/settings, change OS/account/filesystem permissions, or dispatch another worker. "
+                  "Start Claude with its hook settings: `claude --settings \"$NEIGE_CLAUDE_SETTINGS\"` "
+                  "(the variable is set in the terminal). "
                   f"You may approve Claude's workspace-trust dialog only for this disposable workspace: {args.workspace!r}. "
                   "Do not trust another folder or change account permissions. If Claude "
                   "needs login or unsupported access, stop and explain. Observe text by default; use "
@@ -527,7 +597,7 @@ class Round:
         binding, findings, wait_summary = None, {}, {}
         for name, goal in goals.items():
             rows = self.send(name, goal)
-            wait_summary[name] = {key: metrics(rows)[key] for key in WAIT_METRIC_KEYS}
+            wait_summary[name] = {key: metrics(rows)[key] for key in SUMMARY_METRIC_KEYS}
             try:
                 binding, findings[name] = check_scenario(name, rows, binding)
             except EvidenceError as error:
