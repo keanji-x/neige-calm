@@ -61,3 +61,6 @@ mod mcp_task_dispatch_regressions;
 
 #[path = "cases/mcp_task_candidate_dispatch.rs"]
 mod mcp_task_candidate_dispatch;
+
+#[path = "cases/isolated_plugin_proxy.rs"]
+mod isolated_plugin_proxy;

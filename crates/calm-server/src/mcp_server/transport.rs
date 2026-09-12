@@ -32,6 +32,9 @@
 //! hundred lines of `tokio::net::UnixListener` + `BufReader::lines()`;
 //! adding an HTTP framework would only obscure the framing.
 
+mod worker_grants;
+pub(crate) use worker_grants::eligible_plugin_tools;
+
 use crate::db::{Repo, RouteRepo, SessionCardIdentity};
 use crate::forge_trust::trusted_forge_plugin;
 use crate::mcp_server::framing::{
@@ -440,10 +443,10 @@ async fn dispatch_request(
                             extend_plugin_tool_descriptors_for_role(
                                 ctx,
                                 &mut descriptors,
-                                identity.role,
+                                &identity,
                                 &scope,
                             )
-                            .await;
+                            .await?;
                             descriptors
                         }
                         None => {
@@ -487,10 +490,10 @@ async fn dispatch_request(
                             extend_plugin_tool_descriptors_for_role(
                                 ctx,
                                 &mut descriptors,
-                                identity.role,
+                                &identity,
                                 &scope,
                             )
-                            .await;
+                            .await?;
                             descriptors
                         }
                         Some(identity) => {
@@ -506,13 +509,14 @@ async fn dispatch_request(
                             ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
                         let scope = plugin_scope_for_track(ctx, Some(card.track_id.as_str())).await;
                         let mut descriptors = registry.descriptors_for_role(bound.role);
+                        let identity = card_bound_tool_identity(ctx, bound).await?;
                         extend_plugin_tool_descriptors_for_role(
                             ctx,
                             &mut descriptors,
-                            bound.role,
+                            &identity,
                             &scope,
                         )
-                        .await;
+                        .await?;
                         descriptors
                     }
                 },
@@ -547,12 +551,13 @@ async fn dispatch_request(
 async fn extend_plugin_tool_descriptors_for_role(
     ctx: &Arc<AppContext>,
     descriptors: &mut Vec<ToolDescriptor>,
-    role: CardRole,
+    identity: &ToolCallIdentity,
     scope: &TrackPluginScope,
-) {
-    if PLUGIN_TOOL_ROLES.contains(&role) {
+) -> Result<(), RpcError> {
+    if PLUGIN_TOOL_ROLES.contains(&identity.role) {
         descriptors.extend(plugin_tool_descriptors(ctx, scope).await);
     }
+    worker_grants::filter(ctx, identity, descriptors).await
 }
 
 /// Plugin tool descriptors visible under `scope` (#891 slice ④). Kernel
@@ -633,6 +638,7 @@ async fn dispatch_tools_call(
     if let Some(handler) = registry.lookup(name) {
         let identity =
             resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+        worker_grants::require(ctx, &identity, name).await?;
         let fut = handler(ctx.clone(), identity, arguments);
         // Serialize the typed envelope once. In particular, native images
         // must not be converted into text by wrapping the result again.
@@ -708,6 +714,7 @@ async fn dispatch_plugin_tools_call(
         return Err(unknown_tool());
     }
     require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
+    worker_grants::require(ctx, &identity, name).await?;
     match kind {
         None => {
             // #1164 §2.7 — ordinary tool dispatch is kind-agnostic and so goes

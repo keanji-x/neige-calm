@@ -52,6 +52,15 @@ pub const MCP_TOOL_ALLOWLIST: [&str; 4] = [
 /// the enforced envelope. The same envelope applies to every attempt of a
 /// task, including recoveries: recovery only provides a new workspace.
 pub fn executor_environment() -> Value {
+    executor_environment_with_plugins(&[])
+}
+
+pub fn executor_environment_with_plugins(plugin_tools: &[String]) -> Value {
+    let tools: Vec<&str> = MCP_TOOL_ALLOWLIST
+        .iter()
+        .copied()
+        .chain(plugin_tools.iter().map(String::as_str))
+        .collect();
     json!({
         "executor": "codex",
         "workspace": {
@@ -66,7 +75,8 @@ pub fn executor_environment() -> Value {
         "path": EXECUTOR_PATH,
         "provided_binaries": super::bootstrap::PROVIDER_BIN_NAMES,
         "host_usr": "read-only mount; contents not enumerated by the kernel",
-        "mcp_tools": MCP_TOOL_ALLOWLIST,
+        "mcp_tools": tools,
+        "plugin_tools": plugin_tools,
         "disabled_features": DISABLED_FEATURES,
         "recovery": {
             "environment": "identical",
@@ -78,10 +88,17 @@ pub fn executor_environment() -> Value {
 
 /// One sentence for recover tool descriptions and responses; the JSON above is
 /// the machine-readable form of the same fact.
-pub const RECOVER_CHANGES: &str = "Recovery re-runs in the identical execution environment with the same capabilities; only the workspace is new. It cannot resolve a failure caused by a missing capability (for example no network); change the task's goal or inputs instead.";
+pub const RECOVER_CHANGES: &str = "Recovery re-runs in the identical execution environment with the same capabilities; only the workspace is new. It cannot resolve a failure caused by a missing capability (for example no network); change the task's goal, inputs or explicit plugin grants instead. Delegated names remain fixed; current platform scope and plugin availability are rechecked on every call.";
 
 /// Fixed capability policy. No caller-provided profile or fallback sandbox.
-pub(crate) fn apply(doc: &mut DocumentMut, token: &str, socket_name: &str) -> Result<()> {
+pub(crate) fn apply(
+    doc: &mut DocumentMut,
+    token: &str,
+    socket_name: &str,
+    plugin_tools: &[String],
+) -> Result<()> {
+    calm_types::task_execution::validate_plugin_tools(plugin_tools)
+        .map_err(Error::Configuration)?;
     if token.is_empty() || socket_name.is_empty() || socket_name.contains('/') {
         return Err(Error::Configuration(
             "native MCP identity is required".into(),
@@ -132,7 +149,11 @@ pub(crate) fn apply(doc: &mut DocumentMut, token: &str, socket_name: &str) -> Re
     // Native MCP still uses the existing server's card-role admission. This
     // allowlist also prevents optional forge or external-write tools appearing.
     let mut allowed = Array::new();
-    for tool in MCP_TOOL_ALLOWLIST {
+    for tool in MCP_TOOL_ALLOWLIST
+        .iter()
+        .copied()
+        .chain(plugin_tools.iter().map(String::as_str))
+    {
         allowed.push(tool);
     }
     doc["mcp_servers"]["calm"]["enabled_tools"] = value(allowed);

@@ -255,7 +255,7 @@ async fn dispatch_and_recover_descriptions_state_the_executor_environment() {
         "fresh empty workspace",
         "no network",
         "no web search",
-        "four MCP tools",
+        "four base MCP tools",
         "read-only host /usr",
         "current.executor_environment",
     ] {

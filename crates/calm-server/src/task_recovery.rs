@@ -53,7 +53,16 @@ const LEGACY_RECOVER_CHANGES: &str = "Recovery re-runs on the same executor as t
 pub(crate) fn executor_statement(task: &Task) -> Result<ExecutorStatement> {
     if crate::isolated_codex::selected(task)? {
         return Ok(ExecutorStatement {
-            environment: crate::dedicated_codex::executor_environment(),
+            environment: {
+                let context = serde_json::from_str(&task.context_json)?;
+                let selection =
+                    calm_types::task_execution::IsolatedCodexSelection::from_context(&context)
+                        .map_err(CalmError::BadRequest)?
+                        .ok_or_else(|| {
+                            CalmError::Conflict("isolated recovery selection missing".into())
+                        })?;
+                crate::dedicated_codex::executor_environment_with_plugins(&selection.plugin_tools)
+            },
             recover_changes: crate::dedicated_codex::RECOVER_CHANGES,
         });
     }

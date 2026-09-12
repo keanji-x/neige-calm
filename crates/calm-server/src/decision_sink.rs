@@ -402,6 +402,7 @@ impl CardDecisionSink {
         card: Card,
         payload: TrackReportPayload,
         args: crate::track_report::dispatch::DispatchArgs,
+        eligible_plugin_tools: std::collections::BTreeSet<String>,
         task_budget_default: i64,
     ) -> Result<serde_json::Value, CalmError> {
         let recorder_shadow: Arc<dyn RecorderShadowProbe> =
@@ -416,6 +417,7 @@ impl CardDecisionSink {
             identity.clone(),
             ReportEditTarget::for_resolved_parts(track, card, payload)?,
             args,
+            eligible_plugin_tools,
             task_budget_default,
             recorder_shadow,
         )

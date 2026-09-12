@@ -20,6 +20,7 @@ impl Fixture {
             native: NativeMcp {
                 socket,
                 card_token: "fake-token".into(),
+                plugin_tools: Vec::new(),
             },
             root,
             _listener: listener,
@@ -69,6 +70,7 @@ fn dedicated_codex_home_concurrent_winner_repeats_publication_barrier() {
     let native = NativeMcp {
         socket: f.native.socket.clone(),
         card_token: f.native.card_token.clone(),
+        plugin_tools: Vec::new(),
     };
     let sync_root = root.clone();
     io::faults::publish_once(move || {
@@ -114,4 +116,43 @@ fn dedicated_codex_home_root_creation_and_reopen_repeat_ancestry_barriers() {
     );
     io::faults::fail_sync(None);
     PrivateHome::open(&root).unwrap();
+}
+
+#[test]
+fn dedicated_codex_plugin_grants_are_explicit_and_do_not_enable_network() {
+    let mut f = Fixture::new();
+    f.native.plugin_tools = vec!["plugin.research_lookup".into()];
+    let home = PrivateHome::open(&f.root.path().join("grant-home")).unwrap();
+    let receipt = home
+        .prepare("grant", "request", &f.seed, &f.native)
+        .unwrap();
+    let text = std::fs::read_to_string(receipt.home.join("config.toml")).unwrap();
+    let doc: toml_edit::DocumentMut = text.parse().unwrap();
+    let tools: Vec<_> = doc["mcp_servers"]["calm"]["enabled_tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tools,
+        vec![
+            "calm.task.complete",
+            "calm.task.fail",
+            "calm.report.read",
+            "calm.plan.list",
+            "plugin.research_lookup"
+        ]
+    );
+    assert_eq!(
+        doc["permissions"][super::policy::DELIVERY_PROFILE]["network"]["enabled"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(doc["web_search"].as_str(), Some("disabled"));
+    f.native.plugin_tools.push("plugin.research_detail".into());
+    assert!(
+        home.prepare("grant", "request", &f.seed, &f.native)
+            .is_err(),
+        "a prepared private home must reject a changed grant set"
+    );
 }

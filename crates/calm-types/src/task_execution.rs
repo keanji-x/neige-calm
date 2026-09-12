@@ -23,6 +23,9 @@ pub struct IsolatedCodexSelection {
     pub file_delivery: Option<FileDelivery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair: Option<CandidateRepairReference>,
+    /// Exact platform-proxied plugin grants. Historical tasks delegate none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugin_tools: Vec<String>,
 }
 impl IsolatedCodexSelection {
     /// Missing reserved field is legacy. A present invalid field is never legacy.
@@ -230,6 +233,7 @@ pub enum JsonInputPurpose {
 }
 impl IsolatedCodexSelection {
     pub fn validate_delivery(&self) -> Result<(), String> {
+        validate_plugin_tools(&self.plugin_tools)?;
         let invalid = || "neige_execution: invalid single-file delivery contract".to_string();
         if self
             .repair
@@ -584,5 +588,59 @@ mod tests {
         let mut both = producer;
         both["file_delivery"]["producer"] = json!("other");
         assert!(serde_json::from_value::<IsolatedCodexSelection>(both).is_err());
+    }
+}
+
+/// Validate an explicit bounded grant set; annotations and wildcards confer no authority.
+pub fn validate_plugin_tools(names: &[String]) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    if names.len() > 32 {
+        return Err("plugin_tools: at most 32 exact plugin tool names are allowed".into());
+    }
+    for name in names {
+        let valid = name
+            .strip_prefix("plugin.")
+            .and_then(|rest| rest.split_once('_'))
+            .is_some_and(|(plugin, tool)| !plugin.is_empty() && !tool.is_empty());
+        if !valid
+            || name.len() > 256
+            || name
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control() || c == '*')
+            || !seen.insert(name)
+        {
+            return Err("plugin_tools: expected unique exact plugin.<id>_<tool> names".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod plugin_grant_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn isolated_plugin_grants_preserve_legacy_shape_and_reject_ambiguous_names() {
+        let legacy = json!({"version":"isolated-codex-v1","workspace":"empty"});
+        let selection: IsolatedCodexSelection = serde_json::from_value(legacy.clone()).unwrap();
+        selection.validate_delivery().unwrap();
+        assert!(selection.plugin_tools.is_empty());
+        assert_eq!(serde_json::to_value(selection).unwrap(), legacy);
+        for names in [
+            vec!["*"],
+            vec!["calm.report.write"],
+            vec!["plugin.foo_*"],
+            vec!["plugin.foo_read", "plugin.foo_read"],
+            vec!["plugin.foo_read\n"],
+            vec!["plugin._read"],
+        ] {
+            assert!(
+                validate_plugin_tools(&names.into_iter().map(String::from).collect::<Vec<_>>())
+                    .is_err()
+            );
+        }
+        let granted:IsolatedCodexSelection=serde_json::from_value(json!({"version":"isolated-codex-v1","workspace":"empty","plugin_tools":["plugin.research_lookup"]})).unwrap();
+        granted.validate_delivery().unwrap();
     }
 }
