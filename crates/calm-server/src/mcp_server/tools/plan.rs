@@ -935,7 +935,7 @@ fn task_list_entry(t: &Task) -> Value {
 fn plan_recover_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_RECOVER.into(),
-        description: "Recover a failed auto-declare Planner task under its unchanged contract when the kernel recovery decision briefing or calm.plan.list reports recovery.allowed. Supported cases are preparation failures and failed isolated Codex executions after confirmed stop and failed Operation settlement. Isolated recovery starts in a new workspace. Declared immutable inputs retain their binding; previous Worker outputs are not implicitly inherited. Executed legacy workers without a supported descendant write fence remain refused. Planner may recover only once; User authorization is required for further recovery, user-owned tasks, or declare-and-wait. Use the exact attempt_id from that briefing or calm.plan.list and retain the idempotency_key when retrying the request. Acceptance does not mean the new Worker has started. Recovery re-runs in the identical execution environment with the same capabilities; only the workspace is new. It cannot resolve a failure caused by a missing capability (for example no network); change the task's goal or inputs instead. The response repeats the environment as executor_environment.".into(),
+        description: "Recover a failed auto-declare Planner task under its unchanged contract when the kernel recovery decision briefing or calm.plan.list reports recovery.allowed. Supported cases are preparation failures and failed isolated Codex executions after confirmed stop and failed Operation settlement. Isolated recovery starts in a new workspace. Declared immutable inputs retain their binding; previous Worker outputs are not implicitly inherited. Executed legacy workers without a supported descendant write fence remain refused. Planner may recover only once; User authorization is required for further recovery, user-owned tasks, or declare-and-wait. Use the exact attempt_id from that briefing or calm.plan.list and retain the idempotency_key when retrying the request. Acceptance does not mean the new Worker has started. Recovery re-runs on the executor of the failed attempt with its unchanged environment and capabilities; for isolated Codex that is the identical execution environment and only the workspace is new. It cannot resolve a failure caused by a missing capability (for example no network); change the task's goal or inputs instead. The response states the actual route as executor_environment and what recovery changes as recover_changes.".into(),
         input_schema: json!({"type": "object", "additionalProperties": false,
             "required": ["key", "expected_attempt_id", "idempotency_key", "reason"],
             "properties": {
@@ -982,12 +982,18 @@ async fn plan_recover(
     )
     .await
     .map_err(|error| map_plan_error("plan_recover", error))?;
+    // Receipt fields stay top-level for existing readers; the executor is
+    // stated from the recovered attempt's actual route so the Planner never
+    // expects an isolated envelope from a legacy re-run, or a different one
+    // from an isolated recovery.
+    let statement =
+        crate::task_recovery::executor_statement_for_receipt(ctx.repo.as_ref(), &receipt)
+            .await
+            .map_err(|error| map_plan_error("plan_recover", error))?;
     let mut response =
         serde_json::to_value(receipt).map_err(|error| RpcError::internal(error.to_string()))?;
-    // Receipt fields stay top-level for existing readers; the environment is
-    // restated so the Planner never expects a different one from recovery.
-    response["executor_environment"] = crate::dedicated_codex::executor_environment();
-    response["recover_changes"] = json!(crate::dedicated_codex::RECOVER_CHANGES);
+    response["executor_environment"] = statement.environment;
+    response["recover_changes"] = json!(statement.recover_changes);
     Ok(response)
 }
 

@@ -117,6 +117,7 @@ pub(super) async fn input_segments(
             let decision = if semantic {
                 "This turn has a bound Recover tool. Only if planner_recovery.allowed is true, decide whether to call Recover with key and reason only. The kernel supplies the exact execution and stable request identity from THIS briefing. Prefer Recover over calm.plan.recover. Retry the same reason after response loss; never substitute a newer execution or invent binding parameters. Otherwise follow the stated prerequisite: wait or request explicit User recovery. No calm.plan.list read is required solely to discover this capability."
             } else { exact_decision };
+            let executor = crate::task_recovery::executor_statement(&task)?;
             let mut briefing = json!({
                 "key": task.key,
                 "attempt_id": task_id,
@@ -140,8 +141,8 @@ pub(super) async fn input_segments(
                     "run_summary": format!("runs/{task_id}.md"),
                 },
                 "decision": decision,
-                "executor_environment": crate::dedicated_codex::executor_environment(),
-                "recover_changes": crate::dedicated_codex::RECOVER_CHANGES,
+                "executor_environment": executor.environment,
+                "recover_changes": executor.recover_changes,
                 "limitations": if crate::file_delivery::repair::for_task_tx(tx, &task).await?.is_some() || matches!(crate::file_delivery::selection(&task)?, Some(calm_types::task_execution::FileDelivery::CandidateConsumer { .. } | calm_types::task_execution::FileDelivery::CandidateReviewer { .. })) {
                     "Isolated consumer recovery starts a new workspace with the original immutable candidate file-set input binding, verification identity and original review/decision evidence when required. Previous Worker-created files are not inherited. Failed candidate outputs remain unsupported as recovery inputs. An accepted recovery receipt does not prove the Worker has started."
                 } else if matches!(crate::file_delivery::selection(&task)?, Some(calm_types::task_execution::FileDelivery::Consumer { .. })) {

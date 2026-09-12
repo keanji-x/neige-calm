@@ -19,9 +19,10 @@ use crate::db::{RepoEventWrite, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, TrackId};
-use crate::model::{TaskStatus, TrackLifecycle};
+use crate::model::{Task, TaskKind, TaskStatus, TrackLifecycle};
 use crate::state::WriteContext;
 use calm_types::task_recovery::{TaskRecoveryReceipt, TaskRecoveryRequest};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
 
@@ -31,6 +32,60 @@ pub struct RecoveryContext<'a> {
     pub repo: &'a dyn RepoEventWrite,
     pub events: &'a EventBus,
     pub write: &'a WriteContext,
+}
+
+/// What a Planner may expect from the executor a recovered attempt runs on.
+pub(crate) struct ExecutorStatement {
+    pub environment: Value,
+    pub recover_changes: &'static str,
+}
+
+const LEGACY_ENVIRONMENT_NOTE: &str =
+    "recovery re-runs on the same executor as the failed attempt; its environment is unchanged";
+const LEGACY_RECOVER_CHANGES: &str = "Recovery re-runs on the same executor as the failed attempt with its unchanged environment and capabilities. It cannot resolve a failure caused by a missing capability; change the task's goal or inputs instead.";
+
+/// Executor statement for the attempt `task` describes. The route is decided by
+/// `isolated_codex::selected`, the same pure predicate over the frozen task row
+/// that `scheduler::build_worker_payload` branches on, so the statement cannot
+/// disagree with the adapter that will run the attempt. Only the isolated Codex
+/// route carries the fixed envelope; legacy routes name their executor and
+/// promise nothing about workspace freshness, network or tools.
+pub(crate) fn executor_statement(task: &Task) -> Result<ExecutorStatement> {
+    if crate::isolated_codex::selected(task)? {
+        return Ok(ExecutorStatement {
+            environment: crate::dedicated_codex::executor_environment(),
+            recover_changes: crate::dedicated_codex::RECOVER_CHANGES,
+        });
+    }
+    let executor = match task.kind {
+        TaskKind::Codex => "shared-codex",
+        TaskKind::Claude => "claude",
+        TaskKind::Terminal => "terminal",
+    };
+    Ok(ExecutorStatement {
+        environment: json!({"executor": executor, "note": LEGACY_ENVIRONMENT_NOTE}),
+        recover_changes: LEGACY_RECOVER_CHANGES,
+    })
+}
+
+/// Statement for the replacement attempt a receipt names. The replacement row
+/// is projected in the recovery transaction; when admission capacity withheld
+/// it (`awaiting_projection`), the previous attempt carries the same frozen
+/// contract and therefore the same route.
+pub(crate) async fn executor_statement_for_receipt(
+    repo: &dyn RepoEventWrite,
+    receipt: &TaskRecoveryReceipt,
+) -> Result<ExecutorStatement> {
+    let task = match repo.task_get(&receipt.attempt_id).await? {
+        Some(task) => task,
+        None => repo
+            .task_get(&receipt.previous_attempt_id)
+            .await?
+            .ok_or_else(|| {
+                CalmError::Internal("recovered attempt has no projected execution row".into())
+            })?,
+    };
+    executor_statement(&task)
 }
 
 pub async fn recover_failed_task(
