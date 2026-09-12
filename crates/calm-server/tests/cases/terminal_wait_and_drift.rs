@@ -1,5 +1,7 @@
 //! #1618: change waiting, drift-tolerant input, implicit observation, receipt
-//! wording and one copy of the state. Actual MCP server, renderer and PTY.
+//! wording, one copy of the state, and the round 07/08 slice: structured
+//! stale refusals, baseline transparency and release readback economy.
+//! Actual MCP server, renderer and PTY.
 use crate::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -25,6 +27,42 @@ fn has_line(state: &Value, expected: &str) -> bool {
         .unwrap()
         .iter()
         .any(|line| line.as_str().unwrap().trim_end() == expected)
+}
+fn revision(state: &Value) -> u64 {
+    state["observation_revision"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+/// The live projection revision, read without registering an observation.
+fn live_revision(h: &Harness, terminal: &str) -> u64 {
+    h.state
+        .terminal_renderer
+        .get(terminal)
+        .unwrap()
+        .handle
+        .model_view
+        .lock()
+        .unwrap()
+        .capture(0)
+        .unwrap()
+        .1
+}
+/// Wait until the projection moved past `after` without observing.
+async fn wait_past(h: &Harness, terminal: &str, after: u64) -> u64 {
+    let start = std::time::Instant::now();
+    loop {
+        let now = live_revision(h, terminal);
+        if now > after {
+            return now;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "no output landed"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 fn error_text(response: &Value) -> String {
     response["error"]["message"]
@@ -97,7 +135,14 @@ async fn observe_change_wait_on_quiet_shell_reports_unchanged_at_budget() {
         .await;
     assert_eq!(
         settled["wait"],
-        json!({"mode":"elapsed","outcome":"elapsed","waited_ms":200,"settled":false})
+        json!({"mode":"elapsed","outcome":"elapsed","waited_ms":200,"settled":false,
+            "baseline_revision":settled["previous_observation_revision"]})
+    );
+    // open captured this connection's first observation, so the baseline is a
+    // real revision string, not null.
+    assert!(
+        settled["previous_observation_revision"].is_string(),
+        "{settled}"
     );
     let view = h
         .ok(
@@ -111,6 +156,15 @@ async fn observe_change_wait_on_quiet_shell_reports_unchanged_at_budget() {
     assert_eq!(view["changed_since_previous_observation"], false);
     assert_eq!(
         view["observation_revision"],
+        settled["observation_revision"]
+    );
+    // G2: both baselines are named and, on a quiet screen, coincide.
+    assert_eq!(
+        view["wait"]["baseline_revision"],
+        settled["observation_revision"]
+    );
+    assert_eq!(
+        view["previous_observation_revision"],
         settled["observation_revision"]
     );
     let rejected = h
@@ -213,6 +267,19 @@ async fn input_readback_change_wait_starts_from_the_pre_write_screen() {
     );
     assert!(has_line(state, "INJECTED"), "{state}");
     assert_eq!(state["changed_since_previous_observation"], true);
+    // G2: the readback names the pre-write baseline (before the injection)
+    // and, separately, the claim readback it is compared with.
+    let baseline: u64 = state["wait"]["baseline_revision"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(baseline < injected, "{state}");
+    assert!(baseline >= revision(observation(&claimed)), "{state}");
+    assert_eq!(
+        state["previous_observation_revision"],
+        observation(&claimed)["observation_revision"]
+    );
     // A reply 300 ms after the write is included without a second call.
     let second = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"second","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000})).await;
     let state = observation(&second);
@@ -268,13 +335,24 @@ async fn drift_tolerant_input_interrupts_streaming_output_but_not_a_changed_surf
         .await;
     assert_eq!(moved["wait"]["outcome"], "changed", "{moved}");
     let refused = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"request_id":"escape","action":{"type":"key","key":"Escape"}})).await;
-    assert!(
-        error_text(&refused).contains("terminal changed since observation"),
-        "{refused}"
+    // G1: only the revision moved, so the refusal is a structured result with
+    // a fresh observation rather than an RPC error.
+    let stale = receipt(&refused);
+    assert_eq!(stale["outcome"], "stale_observation", "{stale}");
+    assert_eq!(stale["observation_id_used"], observed["observation_id"]);
+    assert_eq!(
+        stale["observed_revision"].as_u64().unwrap(),
+        revision(&observed)
+    );
+    assert!(stale["current_revision"].as_u64().unwrap() > revision(&observed));
+    assert_ne!(
+        observation(&refused)["observation_id"],
+        observed["observation_id"]
     );
     let conflicting = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"request_id":"escape","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
-    // The refusal above never cached a receipt, so the same request_id is
-    // free; the flag is part of the fingerprint once a receipt exists.
+    // The stale result above cached nothing, so the same request_id is free
+    // with different arguments; the flag is part of the fingerprint once a
+    // receipt exists.
     let written = receipt(&conflicting);
     assert_eq!(written["outcome"], "written", "{written}");
     assert_eq!(written["output_since_observation"], true);
@@ -495,8 +573,197 @@ async fn omitted_wait_ms_in_change_mode_waits_for_a_late_reply() {
         .await;
     assert_eq!(
         immediate["wait"],
-        json!({"mode":"elapsed","outcome":"elapsed","waited_ms":0,"settled":false})
+        json!({"mode":"elapsed","outcome":"elapsed","waited_ms":0,"settled":false,
+            "baseline_revision":view["observation_revision"]})
     );
+    assert_eq!(
+        immediate["previous_observation_revision"],
+        view["observation_revision"]
+    );
+    h.stop(&terminal).await;
+}
+
+/// G1: a status-line style change between the latest observation and the
+/// next input is not an error round trip. The stale result carries a fresh
+/// observation (registered as the latest) and the same request_id can be
+/// resent with the drift flag. A change of control stays an RPC error even
+/// when the revision moved as well.
+#[tokio::test]
+async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
+    let h = Harness::start().await;
+    let terminal = open(
+        &h,
+        "printf 'READY\\n'; while [ ! -e go ]; do sleep 0.02; done; printf 'STATUS_LINE\\n'; while [ ! -e go2 ]; do sleep 0.02; done; printf 'SECOND\\n'; cat >/dev/null",
+        "stale",
+    )
+    .await;
+    h.observe_text(&terminal, "READY").await;
+    let claimed = claim(&h, &terminal).await;
+    let latest = observation(&claimed).clone();
+    assert!(!has_line(&latest, "STATUS_LINE"));
+    std::fs::write(h.root.path().join("go"), b"x").unwrap();
+    let moved = wait_past(&h, &terminal, revision(&latest)).await;
+    // No observation was taken since the claim readback: the implicit
+    // observation is stale by exactly the program's line.
+    let response = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"}})).await;
+    let stale = receipt(&response);
+    assert_eq!(stale["outcome"], "stale_observation", "{stale}");
+    assert_eq!(stale["application_result"], "unverified");
+    assert_eq!(stale["terminal_id"], terminal);
+    assert_eq!(stale["request_id"], "enter");
+    assert_eq!(stale["observation_id_used"], latest["observation_id"]);
+    assert_eq!(
+        stale["observed_revision"].as_u64().unwrap(),
+        revision(&latest)
+    );
+    assert!(
+        stale["current_revision"].as_u64().unwrap() >= moved,
+        "{stale}"
+    );
+    assert!(
+        stale["next"]
+            .as_str()
+            .unwrap()
+            .contains("resend the same request_id with allow_output_since_observation=true"),
+        "{stale}"
+    );
+    assert!(stale.get("output_since_observation").is_none());
+    let fresh = observation(&response).clone();
+    assert!(has_line(&fresh, "STATUS_LINE"), "{fresh}");
+    assert_ne!(fresh["observation_id"], latest["observation_id"]);
+    assert_eq!(
+        fresh["observation_revision"].as_str().unwrap(),
+        stale["current_revision"].as_u64().unwrap().to_string()
+    );
+    assert_eq!(
+        fresh["previous_observation_revision"],
+        latest["observation_revision"]
+    );
+    assert_eq!(fresh["changed_since_previous_observation"], true);
+    assert_eq!(
+        summary(&response),
+        format!(
+            "terminal {terminal} input stale_observation readback available; details in structuredContent"
+        )
+    );
+    // Nothing was written: no reservation is pending and the screen is as
+    // the fresh observation captured it.
+    assert!(!h.interaction().input_pending(&terminal).await);
+    assert_eq!(live_revision(&h, &terminal), revision(&fresh));
+    // Resend as advised. The fresh observation is the connection's latest
+    // and nothing was cached under "enter", so this writes rather than
+    // conflicting.
+    let resent = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"},"allow_output_since_observation":true})).await;
+    let written = receipt(&resent);
+    assert_eq!(written["outcome"], "written", "{written}");
+    assert_eq!(written["observation_id_used"], fresh["observation_id"]);
+    assert_eq!(written["output_since_observation"], false);
+    // The written receipt is cached with the flag in its fingerprint.
+    let replay = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"}})).await;
+    assert!(
+        error_text(&replay).contains("reused with different arguments"),
+        "{replay}"
+    );
+    // Control changed and the revision moved: still an RPC error, never a
+    // stale_observation result that would invite a flagged resend.
+    let released = h
+        .ok(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"release"}),
+        )
+        .await;
+    assert_eq!(released["control_id"], Value::Null);
+    std::fs::write(h.root.path().join("go2"), b"x").unwrap();
+    wait_past(&h, &terminal, revision(&fresh)).await;
+    let refused = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":fresh["observation_id"],"request_id":"after-release","action":{"type":"key","key":"Enter"}})).await;
+    assert!(
+        error_text(&refused).contains("terminal control changed; observe before input"),
+        "{refused}"
+    );
+    h.stop(&terminal).await;
+}
+
+/// G3: a release readback of an unchanged screen omits the text array and
+/// names the observation it repeats; after output it includes the text.
+/// Claim readbacks always include text.
+#[tokio::test]
+async fn release_readback_omits_text_only_when_unchanged_since_previous_observation() {
+    let h = Harness::start().await;
+    let terminal = open(&h, "printf 'READY\\n'; cat >/dev/null", "release-text").await;
+    h.observe_text(&terminal, "READY").await;
+    let claimed = claim(&h, &terminal).await;
+    let latest = observation(&claimed).clone();
+    assert!(has_line(&latest, "READY"));
+    let released = h
+        .call(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"release","observe":true}),
+        )
+        .await;
+    assert_eq!(receipt(&released)["control_id"], Value::Null);
+    let state = observation(&released);
+    assert!(state.get("text").is_none(), "{state}");
+    assert_eq!(
+        state["text_omitted"],
+        json!(format!(
+            "unchanged since previous observation {}",
+            latest["observation_id"].as_str().unwrap()
+        ))
+    );
+    // Every other field stays, including the ids and geometry.
+    assert_eq!(
+        state["observation_revision"],
+        latest["observation_revision"]
+    );
+    assert_eq!(
+        state["previous_observation_revision"],
+        latest["observation_revision"]
+    );
+    assert_eq!(state["changed_since_previous_observation"], false);
+    assert_eq!(state["role"], "observer");
+    assert_eq!(state["cols"], latest["cols"]);
+    assert_eq!(state["cursor"], latest["cursor"]);
+    assert!(state["observation_id"].is_string());
+    assert_ne!(state["observation_id"], latest["observation_id"]);
+    assert_eq!(state["wait"]["outcome"], "elapsed");
+    // A claim readback of the same unchanged screen still carries text.
+    let reclaimed = claim(&h, &terminal).await;
+    let reclaimed_state = observation(&reclaimed);
+    assert!(has_line(reclaimed_state, "READY"), "{reclaimed_state}");
+    assert!(reclaimed_state.get("text_omitted").is_none());
+    assert_eq!(
+        reclaimed_state["observation_revision"],
+        latest["observation_revision"]
+    );
+    // Output after the claim readback: the release readback includes it.
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    entry
+        .handle
+        .render_plane
+        .lock()
+        .unwrap()
+        .on_pty_chunk(b"OUTPUT\r\n".to_vec());
+    let released = h
+        .call(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"release","observe":true}),
+        )
+        .await;
+    let state = observation(&released);
+    assert!(has_line(state, "OUTPUT"), "{state}");
+    assert!(state.get("text_omitted").is_none());
+    // G2 on a control readback: the wait baseline is the call-start revision
+    // (already past the injected output), while the previous-observation
+    // fields still point at the claim readback.
+    assert_eq!(
+        state["wait"]["baseline_revision"],
+        state["observation_revision"]
+    );
+    assert_eq!(
+        state["previous_observation_revision"],
+        reclaimed_state["observation_revision"]
+    );
+    assert_eq!(state["changed_since_previous_observation"], true);
     h.stop(&terminal).await;
 }
 

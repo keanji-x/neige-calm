@@ -157,14 +157,27 @@ call start. The wait selects over `ModelView`'s `watch<u64>` revision channel
 watch; there is no sleep-poll loop. Every observation, in either mode, carries:
 
 ```json
-"wait":{"mode":"change","outcome":"changed|unchanged|exited|elapsed","waited_ms":812,"settled":true},
-"changed_since_previous_observation":true
+"wait":{"mode":"change","outcome":"changed|unchanged|exited|elapsed","waited_ms":812,"settled":true,"baseline_revision":"41"},
+"changed_since_previous_observation":true,
+"previous_observation_revision":"41"
 ```
 
 `elapsed` mode reports `outcome:"elapsed"`, `settled:false`, `waited_ms` equal to
 the budget. `unchanged`/settled screens are not completion evidence; the prompt
 says so. `changed_since_previous_observation` is false when the connection had
 no previous observation.
+
+Baseline transparency (rounds 07/08): `wait.baseline_revision` is the revision
+the wait compared against, as a string like `observation_revision`; it is
+reported in elapsed mode too, where it is the same baseline a change wait
+would have used (the previous observation for observe, the pre-write revision
+for an input readback, the call-start revision for a control readback).
+`previous_observation_revision` is the revision of this connection's previous
+observation, or `null` on a fresh connection, and is what
+`changed_since_previous_observation` is computed from. The two differ after an
+action: an input readback's wait baseline is the pre-write read, while
+`changed_since_previous_observation` still compares with the last observation
+the Planner saw.
 
 Input accepts `allow_output_since_observation` (default false; part of the
 request fingerprint). When false the exact-revision fence is unchanged. When
@@ -182,10 +195,59 @@ modes-only comparison would let a menu that appeared over the shell pass.
 
 `observation_id` is optional on input. When omitted the server uses the latest
 observation captured on this client connection (any format, including action
-readbacks); the receipt reports `observation_id_used`. All fences still apply.
-A connection with no observation is refused ("observe first"). The fingerprint
-hashes `observation_id` as given (null when omitted), so a replayed
-`request_id` returns the same receipt.
+readbacks and the fresh observation of a stale result); the receipt reports
+`observation_id_used`. All fences still apply. A connection with no
+observation is refused ("observe first"). The fingerprint hashes
+`observation_id` as given (null when omitted), so a replayed `request_id`
+returns the same receipt. The prompt's input example omits `observation_id`
+and says to pass it only after an image observation or to act deliberately on
+an older observation.
+
+### Structured stale refusal (rounds 07/08)
+
+In round 07 three inputs were refused with the RPC error "terminal changed
+since observation; observe again" because only Claude's bottom status line had
+changed between a settled readback and the next input; each refusal cost a
+separate observe round trip. Now, when every other fence passes (binding,
+connection, age, availability, no pending unknown write, control, live
+viewport and input surface) and only the exact revision differs, input returns
+a successful tool result instead of an error:
+
+```json
+{"terminal_id":"..","request_id":"enter-3","outcome":"stale_observation","application_result":"unverified",
+ "observation_id_used":"<old>","observed_revision":41,"current_revision":42,
+ "next":"inspect observation.state; if only status text changed, resend the same request_id with allow_output_since_observation=true, else act on the new state",
+ "observation":{"status":"available","state":{"observation_id":"<fresh>","text":["..."],"previous_observation_revision":"41", ...}}}
+```
+
+No physical write happens and nothing is cached under the `request_id`, so a
+later resend with a different flag or observation id does not conflict. The
+fresh observation is a text capture taken at once and registered as this
+connection's latest, so the advised resend may omit `observation_id`; when the
+capture fails the receipt says `observation:{"status":"unavailable","reason"}`.
+`observed_revision`/`current_revision` are numbers like `observation_drift`.
+Every other refusal — including a revision change combined with a control or
+surface change — stays an RPC error; without the flag the surface fence is
+now checked too, so a resize plus output reports the surface error rather than
+inviting a flagged resend. The summary line reads `input stale_observation
+readback available`.
+
+### Release readback economy (rounds 07/08)
+
+A release rarely changes the screen, and its readback repeated the unchanged
+text. For `control` action `release` with `observe=true`, when the captured
+revision equals this connection's previous observation revision (read before
+the readback registers itself), `observation.state` omits the `text` array and
+carries `"text_omitted":"unchanged since previous observation <id>"`; every
+other field (ids, revision, geometry, cursor, wait, task status) stays. After
+output the text is included as before. Claim readbacks and observe always
+include text. The tool descriptions and prompt also say that claim/release
+readbacks should use `wait_for=elapsed` or a change budget of at most 500 ms,
+keeping long change budgets for program output after Enter, and that
+`allow_output_since_observation=true` is for Escape/Ctrl+C while a program
+streams and for typing or submitting in an input field whose surrounding
+status text keeps changing (after inspecting the fresh state), never for menu
+selection or clicks.
 
 Receipts: input drops `application_completed` and reports
 `application_result:"unverified"` on every outcome — written, refused and
@@ -200,7 +262,10 @@ Text results of the five terminal tools keep the complete state only in
 role, geometry, cursor, wait outcome, receipt facts, or the operation id and
 outcome of an open that did not succeed) and never contains screen text.
 Collectors that read terminal results must read `structuredContent`; the
-summary is not parseable metadata.
+summary is not parseable metadata. The UX collector counts a completed input
+whose receipt outcome is `stale_observation` as an observation refusal (next
+to the error-string refusals) and accepts a release readback whose state has
+`text_omitted` instead of `text` without adding an observation entry for it.
 
 Readback ordering: an action readback re-resolves the target after its wait,
 not only before it. The wait (up to 20 s) can span a task completion or an

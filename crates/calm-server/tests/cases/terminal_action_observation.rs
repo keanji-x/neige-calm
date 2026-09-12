@@ -100,7 +100,35 @@ async fn terminal_actions_return_fresh_text_observations() {
         observation(&released)["connection_id"],
         before["connection_id"]
     );
-    assert!(has_line(observation(&released), "ACTION_OBSERVED"));
+    // #1618 G3: a release readback repeats text only when the screen moved
+    // since the previous observation (the `entered` readback); the shell
+    // prompt may or may not have repainted by now, so both shapes are legal
+    // and each is checked exactly. The deterministic cases live in
+    // terminal_wait_and_drift.rs.
+    let released_state = observation(&released);
+    match released_state.get("text") {
+        Some(_) => {
+            assert!(has_line(released_state, "ACTION_OBSERVED"));
+            assert!(released_state.get("text_omitted").is_none());
+            assert_ne!(
+                released_state["observation_revision"],
+                after["observation_revision"]
+            );
+        }
+        None => {
+            assert_eq!(
+                released_state["text_omitted"],
+                json!(format!(
+                    "unchanged since previous observation {}",
+                    after["observation_id"].as_str().unwrap()
+                ))
+            );
+            assert_eq!(
+                released_state["observation_revision"],
+                after["observation_revision"]
+            );
+        }
+    }
     h.stop(&terminal).await;
 }
 

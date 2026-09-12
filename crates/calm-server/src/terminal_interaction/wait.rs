@@ -91,6 +91,9 @@ pub struct WaitReport {
     pub outcome: WaitOutcome,
     pub waited: Duration,
     pub settled: bool,
+    /// The revision the wait compared against (reported in elapsed mode too,
+    /// where it is the same baseline a change wait would have used).
+    pub baseline: u64,
 }
 impl WaitReport {
     pub fn to_json(&self) -> Value {
@@ -101,7 +104,8 @@ impl WaitReport {
             WaitOutcome::Elapsed => "elapsed",
         };
         json!({"mode":self.mode.name(),"outcome":outcome,
-            "waited_ms":u64::try_from(self.waited.as_millis()).unwrap_or(u64::MAX),"settled":self.settled})
+            "waited_ms":u64::try_from(self.waited.as_millis()).unwrap_or(u64::MAX),"settled":self.settled,
+            "baseline_revision":self.baseline.to_string()})
     }
 }
 
@@ -121,6 +125,7 @@ pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport 
             outcome: WaitOutcome::Elapsed,
             waited: budget,
             settled: false,
+            baseline,
         };
     }
     let deadline = started + budget;
@@ -133,6 +138,7 @@ pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport 
                 outcome: WaitOutcome::Unchanged,
                 waited: started.elapsed(),
                 settled: false,
+                baseline,
             };
         }
     };
@@ -167,6 +173,7 @@ pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport 
         outcome,
         waited: started.elapsed(),
         settled: settled && !exited,
+        baseline,
     }
 }
 
@@ -253,6 +260,32 @@ mod tests {
 
     fn spec(wait_for: Option<WaitFor>, wait_ms: Option<u64>) -> WaitSpec {
         WaitSpec::new(wait_for, wait_ms, None).unwrap()
+    }
+
+    /// `baseline_revision` is the string form of the revision the wait
+    /// compared against, in both modes, next to the existing fields.
+    #[test]
+    fn wait_report_names_its_baseline_revision() {
+        let report = WaitReport {
+            mode: WaitFor::Elapsed,
+            outcome: WaitOutcome::Elapsed,
+            waited: Duration::from_millis(0),
+            settled: false,
+            baseline: 42,
+        };
+        assert_eq!(
+            report.to_json(),
+            json!({"mode":"elapsed","outcome":"elapsed","waited_ms":0,"settled":false,"baseline_revision":"42"})
+        );
+        let report = WaitReport {
+            mode: WaitFor::Change,
+            outcome: WaitOutcome::Changed,
+            waited: Duration::from_millis(812),
+            settled: true,
+            baseline: 7,
+        };
+        assert_eq!(report.to_json()["baseline_revision"], "7");
+        assert_eq!(report.to_json()["outcome"], "changed");
     }
 
     #[test]

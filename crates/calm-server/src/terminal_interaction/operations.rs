@@ -71,7 +71,7 @@ impl TerminalInteraction {
                     anyhow::anyhow!("no observation on this connection; observe first")
                 })?,
         };
-        let (bytes, observed_revision, input_revision) = {
+        let fence = {
             let observations = self
                 .observations
                 .lock()
@@ -107,24 +107,40 @@ impl TerminalInteraction {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
                 .capture(0)?;
-            let surface = if allow_output_since_observation {
-                let now = frame.input_surface();
-                ensure!(
-                    saved.surface.cols == now.cols
-                        && saved.surface.rows == now.rows
-                        && saved.surface.modes == now.modes
-                        && saved.surface.alternate == now.alternate,
-                    "terminal surface changed since observation (size, input modes or alternate screen); observe again"
-                );
-                now
+            let now = frame.input_surface();
+            ensure!(
+                saved.surface.cols == now.cols
+                    && saved.surface.rows == now.rows
+                    && saved.surface.modes == now.modes
+                    && saved.surface.alternate == now.alternate,
+                "terminal surface changed since observation (size, input modes or alternate screen); observe again"
+            );
+            if !allow_output_since_observation && saved.revision != current {
+                // Every other fence passed and only the exact revision differs:
+                // a structured result with a fresh observation instead of an
+                // error, so the caller can decide without a separate observe.
+                Fence::Stale {
+                    observed: saved.revision,
+                    current,
+                }
             } else {
-                ensure!(
-                    saved.revision == current,
-                    "terminal changed since observation; observe again"
-                );
-                saved.surface
-            };
-            (encode(&action, &surface)?, saved.revision, current)
+                // Without the flag the revision is unchanged, so the live
+                // surface equals the saved one; with it, encode against the
+                // live surface (which the fence above proved equal).
+                Fence::Ready(encode(&action, &now)?, saved.revision, current)
+            }
+        };
+        let (bytes, observed_revision, input_revision) = match fence {
+            Fence::Ready(bytes, observed, current) => (bytes, observed, current),
+            Fence::Stale { observed, current } => {
+                // No physical write and nothing cached under the request_id:
+                // a later resend with another flag or observation must not
+                // conflict. The capture registers as this connection's latest.
+                let receipt = stale_receipt(terminal, request_key, observation, observed, current);
+                return Ok(self
+                    .with_observation(identity, &client, receipt, Some(WaitSpec::default()), None)
+                    .await);
+            }
         };
         let drift = if input_revision != observed_revision {
             Some(json!({"observed_revision":observed_revision,"input_revision":input_revision}))
@@ -194,6 +210,27 @@ impl TerminalInteraction {
             )
             .await)
     }
+}
+/// Outcome of the pre-write fences: bytes to write with the observed and
+/// live revisions, or a stale observation (only the exact-revision fence
+/// failed) that becomes a structured refusal rather than an error.
+enum Fence {
+    Ready(Vec<u8>, u64, u64),
+    Stale { observed: u64, current: u64 },
+}
+/// The stale-observation result: the request was not written, and the caller
+/// is told what to compare and how to resend.
+fn stale_receipt(
+    terminal: &str,
+    request_key: &str,
+    observation: Uuid,
+    observed_revision: u64,
+    current_revision: u64,
+) -> Value {
+    json!({"terminal_id":terminal,"request_id":request_key,"outcome":"stale_observation",
+        "application_result":"unverified","observation_id_used":observation,
+        "observed_revision":observed_revision,"current_revision":current_revision,
+        "next":"inspect observation.state; if only status text changed, resend the same request_id with allow_output_since_observation=true, else act on the new state"})
 }
 /// Every input receipt, whatever its outcome, carries
 /// `application_result:"unverified"`: an acknowledgement says bytes reached the
@@ -323,5 +360,21 @@ mod receipt_tests {
             unknown_receipt("t1", "r1", observation, Some(&drift))["observation_drift"],
             drift
         );
+        let stale = stale_receipt("t1", "r1", observation, 3, 5);
+        assert_eq!(stale["outcome"], "stale_observation");
+        assert_eq!(stale["application_result"], "unverified");
+        assert_eq!(stale["terminal_id"], "t1");
+        assert_eq!(stale["request_id"], "r1");
+        assert_eq!(stale["observation_id_used"], json!(observation));
+        assert_eq!(stale["observed_revision"], 3);
+        assert_eq!(stale["current_revision"], 5);
+        assert!(
+            stale["next"]
+                .as_str()
+                .unwrap()
+                .contains("allow_output_since_observation=true")
+        );
+        assert!(stale.get("output_since_observation").is_none());
+        assert!(stale.get("observation_drift").is_none());
     }
 }

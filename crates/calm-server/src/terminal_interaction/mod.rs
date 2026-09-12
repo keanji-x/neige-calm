@@ -225,7 +225,8 @@ impl TerminalInteraction {
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
-            "text":frame.text,"exited":exited,"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous});
+            "text":frame.text,"exited":exited,"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
+            "previous_observation_revision":previous.map(|(_, prior)| prior.to_string())});
         if png.is_some() {
             metadata["image_source"] = json!("rmux_client_projection");
         }
@@ -347,8 +348,17 @@ impl TerminalInteraction {
             let state = client.screen.lock().unwrap();
             json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":state.control})
         };
-        Ok(self
+        // Read before the readback registers its own capture as the latest.
+        let previous = *client
+            .latest_observation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terminal client poisoned"))?;
+        let mut receipt = self
             .with_observation(identity, &client, receipt, observation_wait, baseline)
-            .await)
+            .await;
+        if action == "release" {
+            action_observation::omit_unchanged_release_text(&mut receipt, previous);
+        }
+        Ok(receipt)
     }
 }

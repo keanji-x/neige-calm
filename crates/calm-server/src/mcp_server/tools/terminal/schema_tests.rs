@@ -157,6 +157,27 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
             );
         }
     }
+    // #1618 round 07/08 guidance lives in the descriptions, not the schema.
+    let description = |name: &str| {
+        descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == name)
+            .unwrap()
+            .description
+            .clone()
+    };
+    let observe = description("calm.terminal.observe");
+    assert!(
+        observe.contains("baseline_revision") && observe.contains("previous_observation_revision")
+    );
+    let control = description("calm.terminal.control");
+    assert!(control.contains("text_omitted") && control.contains("500 ms"));
+    let input_description = description("calm.terminal.input");
+    assert!(
+        input_description.contains("stale_observation")
+            && input_description.contains("never for menu selection or clicks")
+            && input_description.contains("Omit observation_id")
+    );
     let input = &descriptors
         .iter()
         .find(|descriptor| descriptor.name == "calm.terminal.input")
