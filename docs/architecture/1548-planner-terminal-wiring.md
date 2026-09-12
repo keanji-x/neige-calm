@@ -139,10 +139,16 @@ explicit `allow_output_since_observation` fence below (#1618).
 
 `calm.terminal.observe` and the `observe=true` readbacks of control and input
 accept `wait_for` (`elapsed`, default, or `change`), `wait_ms` (0..20000, the
-budget for either mode) and `settle_ms` (0..2000, default 150; rejected unless
+budget for either mode; when omitted it is 0 for `elapsed` and 2000 for
+`change`, so the prompt's recommended `observe=true, wait_for=change` readback
+actually waits) and `settle_ms` (0..2000, default 150; rejected unless
 `wait_for=change`). `change` returns once the model projection's revision differs
-from the baseline and no further output arrived for `settle_ms`, or at the
-budget, or when the process exited or the client became unavailable. Baselines:
+from the baseline and no further revision arrived for `settle_ms`, or at the
+budget, or when the process exited or the client became unavailable. Only a new
+revision starts or extends the quiet window; protocol events (acks, ownership)
+do not, and when the quiet timer completes the revision and exit state are read
+again before `settled:true` is reported, because `select!` may pick the timer
+while a newer revision notification is already ready. Baselines:
 observe uses this connection's previous observation revision (the revision at
 call start when there is none); an input readback uses the revision read
 immediately before the physical write; a control readback uses the revision at
@@ -165,11 +171,14 @@ request fingerprint). When false the exact-revision fence is unchanged. When
 true the fence becomes: same binding and connection, observation younger than
 120 s, `control` unchanged and present, client available, not exited, no pending
 unknown write, `scroll_offset == 0`, and the observation's input surface (cols,
-rows, modes) equal to the live frame's; bytes are encoded against the live
-surface. The receipt reports `output_since_observation` and, when true,
-`observation_drift: {observed_revision, input_revision}` (numbers). A resize or
-input-mode change (for example application cursor keys or the alternate screen
-switching modes) is refused with a surface-changed error even with the flag.
+rows, modes, alternate) equal to the live frame's; bytes are encoded against the
+live surface. The receipt reports `output_since_observation` and, when true,
+`observation_drift: {observed_revision, input_revision}` (numbers). A resize, an
+input-mode change (for example application cursor keys) or an alternate-screen
+switch in either direction is refused with a surface-changed error even with
+the flag. The alternate screen is compared as the projection's `alternate`
+flag: rmux tracks it through the saved grid, not through a mode bit, so a
+modes-only comparison would let a menu that appeared over the shell pass.
 
 `observation_id` is optional on input. When omitted the server uses the latest
 observation captured on this client connection (any format, including action

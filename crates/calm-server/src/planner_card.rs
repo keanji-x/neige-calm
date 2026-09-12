@@ -118,7 +118,8 @@ control and a fresh text observation in the same call. For claim/release and inp
 observe=true adds observation.status=available with the current observation.state, \
 or status=unavailable with a reason while preserving the action receipt. \
 Optional wait_ms (0..20000) requires observe=true. After an action prefer observe=true \
-with wait_for=change (settle_ms default 150) so the readback follows the repaint; to wait \
+with wait_for=change (settle_ms default 150) so the readback follows the repaint; with \
+wait_ms omitted, wait_for=change waits up to 2000 ms and wait_for=elapsed does not wait. To wait \
 for a program's answer, observe with {\"wait_for\":\"change\",\"wait_ms\":15000}. \
 Every observation reports wait.outcome (changed|unchanged|exited|elapsed), settled and \
 changed_since_previous_observation; outcome unchanged or a settled screen is not proof \

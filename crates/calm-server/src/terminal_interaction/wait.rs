@@ -5,11 +5,18 @@ use super::client::Client;
 use anyhow::{Result, ensure};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::sync::watch;
+// tokio's Instant equals std's on a live runtime and follows the paused
+// clock in tests, so the loop and its timers share one time base.
+use tokio::time::Instant;
 
 pub const WAIT_MS_MAX: u64 = 20_000;
 pub const SETTLE_MS_MAX: u64 = 2_000;
 pub const SETTLE_MS_DEFAULT: u64 = 150;
+/// Budget when `wait_ms` is omitted in change mode. Elapsed mode keeps 0 so an
+/// observation without waiting arguments stays an immediate read.
+pub const CHANGE_WAIT_MS_DEFAULT: u64 = 2_000;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -35,8 +42,18 @@ pub struct WaitSpec {
     pub settle_ms: u64,
 }
 impl WaitSpec {
-    pub fn new(wait_for: Option<WaitFor>, wait_ms: u64, settle_ms: Option<u64>) -> Result<Self> {
+    /// `wait_ms == None` selects the mode's default budget:
+    /// [`CHANGE_WAIT_MS_DEFAULT`] for change, 0 for elapsed.
+    pub fn new(
+        wait_for: Option<WaitFor>,
+        wait_ms: Option<u64>,
+        settle_ms: Option<u64>,
+    ) -> Result<Self> {
         let mode = wait_for.unwrap_or_default();
+        let wait_ms = wait_ms.unwrap_or(match mode {
+            WaitFor::Change => CHANGE_WAIT_MS_DEFAULT,
+            WaitFor::Elapsed => 0,
+        });
         ensure!(wait_ms <= WAIT_MS_MAX, "wait_ms must be 0..{WAIT_MS_MAX}");
         ensure!(
             settle_ms.is_none_or(|settle| settle <= SETTLE_MS_MAX),
@@ -108,7 +125,7 @@ pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport 
     }
     let deadline = started + budget;
     let settle = Duration::from_millis(spec.settle_ms);
-    let mut revisions = match client.entry.handle.model_view.lock() {
+    let revisions = match client.entry.handle.model_view.lock() {
         Ok(view) => view.subscribe(),
         Err(_) => {
             return WaitReport {
@@ -119,8 +136,8 @@ pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport 
             };
         }
     };
-    let mut events = client.changed();
-    let stopped = |client: &Client| {
+    let events = client.changed();
+    let stopped = || {
         client
             .screen
             .lock()
@@ -133,49 +150,11 @@ pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport 
                 .map(|exit| exit.is_some())
                 .unwrap_or(true)
     };
-    let mut changed = false;
-    let mut settled = false;
-    let mut exited = false;
-    loop {
-        events.borrow_and_update();
-        let current = *revisions.borrow_and_update();
-        if current != baseline {
-            changed = true;
-        }
-        if stopped(client) {
-            exited = true;
-            break;
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            break;
-        }
-        let quiet_until = if changed {
-            (now + settle).min(deadline)
-        } else {
-            deadline
-        };
-        tokio::select! {
-            result = revisions.changed() => {
-                if result.is_err() {
-                    break;
-                }
-            }
-            result = events.changed() => {
-                if result.is_err() {
-                    break;
-                }
-            }
-            _ = tokio::time::sleep_until(quiet_until.into()) => {
-                if changed && quiet_until < deadline {
-                    settled = true;
-                }
-                if changed || quiet_until >= deadline {
-                    break;
-                }
-            }
-        }
-    }
+    let Progress {
+        changed,
+        settled,
+        exited,
+    } = wait_for_change(revisions, events, stopped, baseline, deadline, settle).await;
     let outcome = if exited {
         WaitOutcome::Exited
     } else if changed {
@@ -188,5 +167,247 @@ pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport 
         outcome,
         waited: started.elapsed(),
         settled: settled && !exited,
+    }
+}
+
+struct Progress {
+    changed: bool,
+    settled: bool,
+    exited: bool,
+}
+
+/// The change-mode loop, separated from the client so its timing can be
+/// tested under a paused clock. `revisions` is the projection revision
+/// channel, `events` the client's protocol channel (ownership, acks, exit,
+/// disconnect). Only a new revision starts or extends the quiet window; a
+/// protocol event re-evaluates `stopped` and otherwise leaves the window as
+/// it was. When the quiet timer completes, the revision and stopped state are
+/// read again before `settled` is reported: with several branches ready,
+/// `select!` may pick the timer although a newer revision is already waiting.
+async fn wait_for_change(
+    mut revisions: watch::Receiver<u64>,
+    mut events: watch::Receiver<u64>,
+    stopped: impl Fn() -> bool,
+    baseline: u64,
+    deadline: Instant,
+    settle: Duration,
+) -> Progress {
+    let mut progress = Progress {
+        changed: false,
+        settled: false,
+        exited: false,
+    };
+    let mut seen = baseline;
+    let mut quiet_until = deadline;
+    loop {
+        events.borrow_and_update();
+        let current = *revisions.borrow_and_update();
+        let now = Instant::now();
+        if current != seen {
+            seen = current;
+            progress.changed = true;
+            quiet_until = (now + settle).min(deadline);
+        }
+        if stopped() {
+            progress.exited = true;
+            break;
+        }
+        if now >= deadline {
+            break;
+        }
+        tokio::select! {
+            result = revisions.changed() => {
+                if result.is_err() {
+                    break;
+                }
+            }
+            result = events.changed() => {
+                if result.is_err() {
+                    break;
+                }
+            }
+            _ = tokio::time::sleep_until(quiet_until) => {
+                if *revisions.borrow_and_update() != seen {
+                    // A revision landed while the timer was completing: the
+                    // window restarts at the top of the loop.
+                    continue;
+                }
+                if stopped() {
+                    progress.exited = true;
+                    break;
+                }
+                if progress.changed && quiet_until < deadline {
+                    progress.settled = true;
+                }
+                break;
+            }
+        }
+    }
+    progress
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::watch;
+
+    fn spec(wait_for: Option<WaitFor>, wait_ms: Option<u64>) -> WaitSpec {
+        WaitSpec::new(wait_for, wait_ms, None).unwrap()
+    }
+
+    #[test]
+    fn omitted_wait_ms_defaults_per_mode() {
+        assert_eq!(spec(None, None).budget_ms, 0);
+        assert_eq!(spec(Some(WaitFor::Elapsed), None).budget_ms, 0);
+        assert_eq!(
+            spec(Some(WaitFor::Change), None).budget_ms,
+            CHANGE_WAIT_MS_DEFAULT
+        );
+        assert_eq!(CHANGE_WAIT_MS_DEFAULT, 2_000);
+        assert_eq!(spec(Some(WaitFor::Change), Some(0)).budget_ms, 0);
+        assert_eq!(spec(Some(WaitFor::Change), Some(15_000)).budget_ms, 15_000);
+        assert!(WaitSpec::new(Some(WaitFor::Change), Some(WAIT_MS_MAX + 1), None).is_err());
+        assert!(WaitSpec::new(None, None, Some(10)).is_err());
+    }
+
+    struct Fixture {
+        revisions: watch::Sender<u64>,
+        events: watch::Sender<u64>,
+        stopped: Arc<AtomicBool>,
+    }
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    fn start(
+        settle_ms: u64,
+        budget_ms: u64,
+    ) -> (Fixture, tokio::task::JoinHandle<(Progress, Duration)>) {
+        let (revisions, revisions_rx) = watch::channel(0u64);
+        let (events, events_rx) = watch::channel(0u64);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let flag = stopped.clone();
+        let started = Instant::now();
+        let task = tokio::spawn(async move {
+            let progress = wait_for_change(
+                revisions_rx,
+                events_rx,
+                move || flag.load(Ordering::SeqCst),
+                0,
+                started + Duration::from_millis(budget_ms),
+                Duration::from_millis(settle_ms),
+            )
+            .await;
+            (progress, started.elapsed())
+        });
+        (
+            Fixture {
+                revisions,
+                events,
+                stopped,
+            },
+            task,
+        )
+    }
+    fn bump(sender: &watch::Sender<u64>) {
+        sender.send_modify(|value| *value += 1);
+    }
+
+    /// The quiet timer and a revision notification become ready in the same
+    /// poll: a helper task's earlier sleep fires in the same driver pass as
+    /// the waiter's quiet timer and bumps the revision before the waiter is
+    /// polled. The loop must not report a settled screen that has already
+    /// moved on. Repeated because `select!` picks among ready branches at
+    /// random.
+    #[tokio::test(start_paused = true)]
+    async fn timer_completion_rechecks_the_revision_before_settling() {
+        for _ in 0..64 {
+            let (fixture, task) = start(150, 5_000);
+            tokio::task::yield_now().await;
+            bump(&fixture.revisions);
+            tokio::task::yield_now().await;
+            let revisions = fixture.revisions.clone();
+            let helper = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                bump(&revisions);
+            });
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_millis(200)).await;
+            helper.await.unwrap();
+            tokio::task::yield_now().await;
+            assert!(
+                !task.is_finished(),
+                "settled although a revision was pending"
+            );
+            tokio::time::advance(Duration::from_millis(150)).await;
+            let (progress, waited) = task.await.unwrap();
+            assert!(progress.changed && progress.settled && !progress.exited);
+            assert_eq!(waited, Duration::from_millis(350));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timer_completion_rechecks_the_stopped_state() {
+        let (fixture, task) = start(150, 5_000);
+        tokio::task::yield_now().await;
+        bump(&fixture.revisions);
+        tokio::task::yield_now().await;
+        fixture.stopped.store(true, Ordering::SeqCst);
+        tokio::time::advance(Duration::from_millis(150)).await;
+        let (progress, _) = task.await.unwrap();
+        assert!(progress.exited && !progress.settled);
+    }
+
+    /// Protocol events (acks, ownership) must not extend the quiet window.
+    #[tokio::test(start_paused = true)]
+    async fn protocol_events_do_not_restart_the_quiet_window() {
+        let (fixture, task) = start(150, 5_000);
+        tokio::task::yield_now().await;
+        bump(&fixture.revisions);
+        tokio::task::yield_now().await;
+        for _ in 0..4 {
+            tokio::time::advance(Duration::from_millis(40)).await;
+            bump(&fixture.events);
+            tokio::task::yield_now().await;
+        }
+        let (progress, waited) = task.await.unwrap();
+        assert!(progress.changed && progress.settled);
+        assert_eq!(waited, Duration::from_millis(160));
+    }
+
+    /// Every revision restarts the window; a sustained burst settles only
+    /// after it ends, and a budget that ends mid-burst reports unsettled.
+    #[tokio::test(start_paused = true)]
+    async fn revisions_extend_the_quiet_window_until_the_burst_ends() {
+        let (fixture, task) = start(150, 5_000);
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+            bump(&fixture.revisions);
+            tokio::time::advance(Duration::from_millis(30)).await;
+        }
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        tokio::time::advance(Duration::from_millis(150)).await;
+        let (progress, waited) = task.await.unwrap();
+        assert!(progress.changed && progress.settled);
+        assert_eq!(waited, Duration::from_millis(750));
+
+        let (fixture, task) = start(150, 300);
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+            bump(&fixture.revisions);
+            tokio::time::advance(Duration::from_millis(30)).await;
+        }
+        let (progress, waited) = task.await.unwrap();
+        assert!(progress.changed && !progress.settled && !progress.exited);
+        assert_eq!(waited, Duration::from_millis(300));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_change_reports_unchanged_at_the_budget() {
+        let (fixture, task) = start(150, 300);
+        tokio::time::advance(Duration::from_millis(300)).await;
+        let (progress, waited) = task.await.unwrap();
+        assert!(!progress.changed && !progress.settled && !progress.exited);
+        assert_eq!(waited, Duration::from_millis(300));
+        drop(fixture);
     }
 }

@@ -132,10 +132,18 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
         );
         if name != "calm.terminal.resolve" {
             // #1618 waiting arguments: raised budget, change mode and settle.
+            // The omitted-budget default depends on wait_for, so it is stated
+            // in the description rather than as a single JSON Schema default.
             assert_eq!(
                 schema["properties"]["wait_ms"],
-                json!({"type":"integer","minimum":0,"maximum":20000}),
+                json!({"type":"integer","minimum":0,"maximum":20000,
+                    "description":"Omitted: 0 for wait_for=elapsed, 2000 for wait_for=change"}),
                 "{name}"
+            );
+            assert!(
+                descriptor.description.contains("2000 for")
+                    && descriptor.description.contains("change"),
+                "{name}: tool description states the change-mode default budget"
             );
             assert_eq!(
                 schema["properties"]["wait_for"],

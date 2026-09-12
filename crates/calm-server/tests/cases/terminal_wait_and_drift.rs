@@ -72,7 +72,9 @@ async fn observe_change_wait_returns_after_late_output_and_settles() {
     assert_eq!(view["wait"]["outcome"], "changed", "{view}");
     assert_eq!(view["wait"]["settled"], true, "{view}");
     let waited = view["wait"]["waited_ms"].as_u64().unwrap();
-    assert!((400..5000).contains(&waited), "waited_ms={waited}");
+    // The 0.5 s sleep starts when the marker file lands, possibly before the
+    // observe call is issued; only a loose lower bound is load-safe.
+    assert!((200..5000).contains(&waited), "waited_ms={waited}");
     assert!(has_line(view, "LATE"), "{view}");
     assert_eq!(view["changed_since_previous_observation"], true);
     assert!(
@@ -249,7 +251,15 @@ async fn drift_tolerant_input_interrupts_streaming_output_but_not_a_changed_surf
     .await;
     let claimed = claim(&h, &terminal).await;
     let observed = observation(&claimed).clone();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Wait for output to land rather than sleeping a fixed time; this
+    // observation is not the one the inputs below name.
+    let moved = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_for":"change","wait_ms":3000}),
+        )
+        .await;
+    assert_eq!(moved["wait"]["outcome"], "changed", "{moved}");
     let refused = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":observed["observation_id"],"request_id":"escape","action":{"type":"key","key":"Escape"}})).await;
     assert!(
         error_text(&refused).contains("terminal changed since observation"),
@@ -299,7 +309,7 @@ async fn omitted_observation_id_uses_the_latest_observation_on_this_connection()
     let terminal = open(&h, "exec /bin/sh", "implicit").await;
     let claimed = claim(&h, &terminal).await;
     let latest = observation(&claimed)["observation_id"].clone();
-    let typed = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"type","action":{"type":"text","text":"printf 'IMPLICIT_OK\\n'"},"observe":true,"wait_for":"change"})).await;
+    let typed = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"type","action":{"type":"text","text":"printf 'IMPLICIT_OK\\n'"},"observe":true,"wait_for":"change","wait_ms":3000})).await;
     assert_eq!(receipt(&typed)["outcome"], "written", "{typed}");
     assert_eq!(receipt(&typed)["observation_id_used"], latest);
     assert_eq!(receipt(&typed)["output_since_observation"], false);
@@ -311,7 +321,7 @@ async fn omitted_observation_id_uses_the_latest_observation_on_this_connection()
     assert_eq!(receipt(&replay)["observation_id_used"], latest);
     let explicit = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":latest,"request_id":"type","action":{"type":"text","text":"printf 'IMPLICIT_OK\\n'"}})).await;
     assert!(error_text(&explicit).contains("reused with different arguments"));
-    let entered = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change"})).await;
+    let entered = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"enter","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000})).await;
     assert_eq!(receipt(&entered)["observation_id_used"], readback);
     assert!(has_line(observation(&entered), "IMPLICIT_OK"), "{entered}");
     // A fresh connection has no observation to fall back to.
@@ -329,6 +339,156 @@ async fn omitted_observation_id_uses_the_latest_observation_on_this_connection()
     assert!(
         error_text(&none).contains("no observation on this connection; observe first"),
         "{none}"
+    );
+    h.stop(&terminal).await;
+}
+
+/// Observe until the projection reports the requested alternate-screen state
+/// (and, optionally, a marker line), driven by change waits, not sleeps.
+async fn observe_until(h: &Harness, terminal: &str, alternate: bool, line: Option<&str>) -> Value {
+    let start = std::time::Instant::now();
+    loop {
+        let view = h
+            .ok(
+                "calm.terminal.observe",
+                json!({"terminal_id":terminal,"wait_for":"change","wait_ms":1000}),
+            )
+            .await;
+        if view["alternate"] == alternate && line.is_none_or(|line| has_line(&view, line)) {
+            return view;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "alternate={alternate} line={line:?} never observed: {view}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn drift_tolerant_input_refuses_an_alternate_screen_switch_in_either_direction() {
+    let h = Harness::start().await;
+    // Enter and leave the alternate screen without resizing or touching any
+    // input mode; rmux tracks the switch through its saved grid.
+    let terminal = open(
+        &h,
+        "printf 'NORMAL\\n'; while [ ! -e go ]; do sleep 0.02; done; printf '\\033[?1049h\\033[2J\\033[HMENU\\n'; while [ ! -e back ]; do sleep 0.02; done; printf '\\033[?1049l'; printf 'AGAIN\\n'; cat >/dev/null",
+        "altscreen",
+    )
+    .await;
+    let claimed = claim(&h, &terminal).await;
+    let normal = observation(&claimed).clone();
+    assert_eq!(normal["alternate"], false, "{normal}");
+    assert!(has_line(&normal, "NORMAL"), "{normal}");
+    std::fs::write(h.root.path().join("go"), b"x").unwrap();
+    let menu = observe_until(&h, &terminal, true, Some("MENU")).await;
+    assert_eq!(
+        menu["cols"], normal["cols"],
+        "the switch must not be a resize"
+    );
+    assert_eq!(menu["rows"], normal["rows"]);
+    let into_menu = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":normal["observation_id"],"request_id":"esc-normal","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+    let message = error_text(&into_menu);
+    assert!(
+        message.contains("terminal surface changed since observation")
+            && message.contains("alternate screen"),
+        "{into_menu}"
+    );
+    std::fs::write(h.root.path().join("back"), b"x").unwrap();
+    let again = observe_until(&h, &terminal, false, Some("AGAIN")).await;
+    let out_of_menu = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":menu["observation_id"],"request_id":"esc-menu","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+    let message = error_text(&out_of_menu);
+    assert!(
+        message.contains("terminal surface changed since observation")
+            && message.contains("alternate screen"),
+        "{out_of_menu}"
+    );
+    // Same screen kind as the live frame: the flag still writes.
+    let same = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":again["observation_id"],"request_id":"esc-again","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+    assert_eq!(receipt(&same)["outcome"], "written", "{same}");
+    h.stop(&terminal).await;
+}
+
+/// Twenty lines 30 ms apart (~600 ms), gated on a marker file so the wait
+/// starts before the burst does.
+const BURST: &str = "while [ ! -e go ]; do sleep 0.02; done; i=0; while [ $i -lt 20 ]; do printf \"B$i\\n\"; i=$((i+1)); sleep 0.03; done; printf 'END\\n'; cat >/dev/null";
+
+#[tokio::test]
+async fn change_wait_settles_only_after_a_sustained_burst_ends() {
+    let h = Harness::start().await;
+    let terminal = open(&h, BURST, "burst").await;
+    std::fs::write(h.root.path().join("go"), b"x").unwrap();
+    let view = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_for":"change","settle_ms":150,"wait_ms":3000}),
+        )
+        .await;
+    assert_eq!(view["wait"]["outcome"], "changed", "{view}");
+    assert_eq!(view["wait"]["settled"], true, "{view}");
+    let waited = view["wait"]["waited_ms"].as_u64().unwrap();
+    assert!((600..3000).contains(&waited), "waited_ms={waited}: {view}");
+    assert!(
+        has_line(&view, "END"),
+        "settled before the burst ended: {view}"
+    );
+    h.stop(&terminal).await;
+}
+
+#[tokio::test]
+async fn change_wait_budget_ends_mid_burst_unsettled() {
+    let h = Harness::start().await;
+    let terminal = open(&h, BURST, "burst-budget").await;
+    std::fs::write(h.root.path().join("go"), b"x").unwrap();
+    let view = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_for":"change","settle_ms":150,"wait_ms":300}),
+        )
+        .await;
+    assert_eq!(view["wait"]["outcome"], "changed", "{view}");
+    assert_eq!(view["wait"]["settled"], false, "{view}");
+    let waited = view["wait"]["waited_ms"].as_u64().unwrap();
+    assert!((300..600).contains(&waited), "waited_ms={waited}: {view}");
+    assert!(!has_line(&view, "END"), "{view}");
+    // The burst is still running; a fresh change wait sees more of it.
+    let later = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_for":"change","wait_ms":3000}),
+        )
+        .await;
+    assert_eq!(later["changed_since_previous_observation"], true, "{later}");
+    h.stop(&terminal).await;
+}
+
+#[tokio::test]
+async fn omitted_wait_ms_in_change_mode_waits_for_a_late_reply() {
+    let h = Harness::start().await;
+    // 0.4 s of silence after the marker: a zero budget would report unchanged.
+    let terminal = open(
+        &h,
+        "while [ ! -e go ]; do sleep 0.02; done; sleep 0.4; printf 'DEFAULTED\\n'; cat >/dev/null",
+        "default-budget",
+    )
+    .await;
+    std::fs::write(h.root.path().join("go"), b"x").unwrap();
+    let view = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_for":"change"}),
+        )
+        .await;
+    assert_eq!(view["wait"]["outcome"], "changed", "{view}");
+    assert!(has_line(&view, "DEFAULTED"), "{view}");
+    let waited = view["wait"]["waited_ms"].as_u64().unwrap();
+    assert!((200..2000).contains(&waited), "waited_ms={waited}: {view}");
+    // Elapsed mode without wait_ms still returns at once.
+    let immediate = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(
+        immediate["wait"],
+        json!({"mode":"elapsed","outcome":"elapsed","waited_ms":0,"settled":false})
     );
     h.stop(&terminal).await;
 }

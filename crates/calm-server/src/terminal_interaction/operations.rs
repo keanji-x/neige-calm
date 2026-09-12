@@ -108,8 +108,9 @@ impl TerminalInteraction {
                 ensure!(
                     saved.surface.cols == now.cols
                         && saved.surface.rows == now.rows
-                        && saved.surface.modes == now.modes,
-                    "terminal surface changed since observation (size or input modes); observe again"
+                        && saved.surface.modes == now.modes
+                        && saved.surface.alternate == now.alternate,
+                    "terminal surface changed since observation (size, input modes or alternate screen); observe again"
                 );
                 now
             } else {
