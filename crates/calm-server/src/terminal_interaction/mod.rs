@@ -345,12 +345,17 @@ impl TerminalInteraction {
         let client = self.client(identity, &resolved.binding).await?;
         let terminal = resolved.binding.terminal_id.as_str();
         let _serial = client.serial.lock().await;
-        let (control, errors_before, owner_changes_before) = {
+        let (control, errors_before, owner_changes_before, grants_before) = {
             let state = client
                 .screen
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
-            (state.control, state.protocol_errors, state.owner_changes)
+            (
+                state.control,
+                state.protocol_errors,
+                state.owner_changes,
+                state.grants,
+            )
         };
         if control.is_some() {
             // The cached lease is trusted only while the registry agrees.
@@ -426,9 +431,12 @@ impl TerminalInteraction {
                         .last_protocol_error
                         .clone()
                         .unwrap_or_else(|| CONTROL_HELD_BY_ANOTHER_CLIENT.to_owned())
-                } else if state.owner_changes != owner_changes_before {
+                } else if state.grants != grants_before {
+                    // Granted, then taken over before this connection saw it.
                     CONTROL_TAKEN_BY_ANOTHER_CLIENT.to_owned()
                 } else {
+                    // Never granted: the other client's ownership was applied
+                    // (and the registry agrees) before the pump's refusal.
                     CONTROL_HELD_BY_ANOTHER_CLIENT.to_owned()
                 };
                 anyhow::bail!("{reason}");

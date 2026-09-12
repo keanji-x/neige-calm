@@ -48,6 +48,10 @@ pub struct ScreenState {
     /// back to back leave `owner` naming the other client, and the claim must
     /// still be told (#1620).
     pub owner_changes: u64,
+    /// `OwnerChanged` deliveries that named this connection (control was
+    /// granted). Tells a claim that was granted and then taken over apart
+    /// from one that was never granted because another client held control.
+    pub grants: u64,
 }
 /// Whether a protocol error is the refusal of a pending input, so the input's
 /// fate is known and `pending` may become `refused`. Both input refusals and
@@ -65,6 +69,7 @@ impl ScreenState {
             DaemonMsg::OwnerChanged { owner_client_id } => {
                 self.owner = owner_client_id;
                 self.control = if self.owner == Some(id) {
+                    self.grants = self.grants.wrapping_add(1);
                     Some(Uuid::new_v4())
                 } else {
                     None
@@ -215,6 +220,7 @@ impl Client {
             protocol_errors: 0,
             last_protocol_error: None,
             owner_changes: 0,
+            grants: 0,
         };
         let screen = Arc::new(StdMutex::new(state));
         #[cfg(feature = "fixtures")]
@@ -341,6 +347,7 @@ mod tests {
             protocol_errors: 0,
             last_protocol_error: None,
             owner_changes: 0,
+            grants: 0,
         }
     }
     fn error(code: ProtocolErrorCode, message: &str) -> DaemonMsg {
@@ -439,5 +446,6 @@ mod tests {
         assert_eq!(state.owner, Some(human));
         assert_eq!(state.control, None);
         assert_eq!(state.owner_changes, 2);
+        assert_eq!(state.grants, 1, "the folded grant is still counted");
     }
 }
