@@ -22,7 +22,7 @@ use std::time::Duration;
 pub(crate) const TOOL: &str = "Recover";
 pub(crate) fn descriptor() -> Value {
     json!({"type":"function", "name":TOOL,
-        "description":"Recover the task from this turn's kernel recovery briefing using only key and reason. Use only when that briefing permits recovery. The kernel binds the original execution and checks current permission. Receipt means accepted/allotted, not Worker started. New workspace; declared immutable inputs retain their binding. Previous Worker outputs are not implicitly inherited. Retry unchanged reason after response loss.",
+        "description":"Recover the task from this turn's kernel recovery briefing using only key and reason. Use only when that briefing permits recovery. The kernel binds the original execution and checks current permission. Receipt means accepted/allotted, not Worker started. New workspace; declared immutable inputs retain their binding. Previous Worker outputs are not implicitly inherited. Retry unchanged reason after response loss. Recovery re-runs on the executor of the failed attempt with its unchanged environment and capabilities; for isolated Codex that is the identical execution environment and only the workspace is new. It cannot resolve a failure caused by a missing capability (for example no network); change the task's goal or inputs instead. The response states the actual route as executor_environment.",
         "inputSchema":{"type":"object","additionalProperties":false,"required":["key","reason"],
         "properties":{"key":{"type":"string","minLength":1,"maxLength":200},"reason":{"type":"string","minLength":1,"maxLength":4000}}}})
 }
@@ -184,9 +184,16 @@ impl RecoveryService {
             bound.clone(),
         )
         .await?;
-        Ok(
-            json!({"status":"accepted","receipt":receipt,"limitations":"Accepted/allotted does not prove Worker startup. New workspace; declared immutable inputs retain their binding. Previous Worker outputs are not implicitly inherited."}),
-        )
+        let statement =
+            crate::task_recovery::executor_statement_for_receipt(self.repo.as_ref(), &receipt)
+                .await?;
+        Ok(json!({
+            "status": "accepted",
+            "receipt": receipt,
+            "limitations": "Accepted/allotted does not prove Worker startup. New workspace; declared immutable inputs retain their binding. Previous Worker outputs are not implicitly inherited.",
+            "executor_environment": statement.environment,
+            "recover_changes": statement.recover_changes,
+        }))
     }
 }
 

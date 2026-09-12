@@ -106,6 +106,21 @@ async fn recovery_briefing_uses_receiving_planner_permission_in_actual_turn() {
             .unwrap()
             .contains("new empty workspace")
     );
+    assert_eq!(brief["executor_environment"]["network"]["enabled"], false);
+    assert_eq!(
+        brief["executor_environment"]["recovery"]["environment"],
+        "identical"
+    );
+    assert_eq!(
+        brief["executor_environment"]["mcp_tools"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    let changes = brief["recover_changes"].as_str().unwrap();
+    assert!(changes.contains("identical execution environment"));
+    assert!(changes.contains("only the workspace is new"));
 }
 
 async fn planner_failure() -> (Fixture, Task) {

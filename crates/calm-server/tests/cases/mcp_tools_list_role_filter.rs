@@ -234,3 +234,43 @@ async fn plan_upsert_hidden_shim_retains_original_input_schema() {
         "hidden shim must retain the complete legacy input schema"
     );
 }
+
+#[tokio::test]
+async fn dispatch_and_recover_descriptions_state_the_executor_environment() {
+    let registry = calm_server::mcp_server::build_default_registry();
+    let descriptors = registry.descriptors();
+    let description = |name: &str| {
+        descriptors
+            .iter()
+            .find(|d| d.name == name)
+            .unwrap_or_else(|| panic!("{name} descriptor"))
+            .description
+            .clone()
+    };
+    let dispatch = description("calm.task.dispatch");
+    for needle in [
+        "fresh empty workspace",
+        "no network",
+        "no web search",
+        "four MCP tools",
+        "read-only host /usr",
+        "current.executor_environment",
+    ] {
+        assert!(
+            dispatch.contains(needle),
+            "dispatch description lacks {needle:?}"
+        );
+    }
+    let recover = description("calm.plan.recover");
+    for needle in [
+        "identical execution environment",
+        "only the workspace is new",
+        "missing capability",
+        "executor_environment",
+    ] {
+        assert!(
+            recover.contains(needle),
+            "recover description lacks {needle:?}"
+        );
+    }
+}

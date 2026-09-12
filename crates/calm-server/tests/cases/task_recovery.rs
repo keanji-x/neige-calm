@@ -776,3 +776,33 @@ async fn task_recovery_terminal_leader_exit_never_proves_descendant_write_stop()
         assert!(view.recovery.reason.contains("before worker preparation"));
     }
 }
+
+/// A legacy (non-isolated) attempt is recovered onto the same legacy adapter
+/// the scheduler routes it through; the response must state that route, never
+/// the isolated Codex envelope.
+#[tokio::test]
+async fn task_recovery_of_legacy_attempt_states_its_actual_executor() {
+    let boot = boot().await;
+    declare(&boot, declaration("b", &[])).await;
+    let b = current(&boot, "b").await;
+    finish(&boot, &b, false).await;
+    let receipt = recover(&boot, &b, "request-b").await;
+    let replacement = current(&boot, "b").await;
+    assert_eq!(receipt["attempt_id"], replacement.id);
+    let (operation_kind, _) = calm_server::scheduler::build_worker_payload(&replacement).unwrap();
+    assert_eq!(operation_kind, "terminal-worker");
+    assert_eq!(
+        receipt["executor_environment"],
+        json!({
+            "executor": "terminal",
+            "note": "recovery re-runs on the same executor as the failed attempt; its environment is unchanged",
+        })
+    );
+    let changes = receipt["recover_changes"].as_str().unwrap();
+    assert!(changes.contains("same executor as the failed attempt"));
+    assert!(changes.contains("missing capability"));
+    assert!(!changes.contains("only the workspace is new"));
+    // Replays carry the same statement.
+    let replay = recover(&boot, &b, "request-b").await;
+    assert_eq!(replay, receipt);
+}

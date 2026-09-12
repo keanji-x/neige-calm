@@ -101,28 +101,43 @@ pub(super) async fn helper_capabilities(executable: &Path) -> Result<()> {
     }
 }
 
+/// Names the codex binary is reachable under inside `/provider-bin`.
+const CODEX_ALIASES: [&str; 4] = [
+    "codex",
+    "codex-linux-sandbox",
+    "apply_patch",
+    "codex-execve-wrapper",
+];
+const CODE_MODE_HOST_NAME: &str = "codex-code-mode-host";
+const BWRAP_NAME: &str = "bwrap";
+/// Every executable the kernel injects under `/provider-bin`; nothing else in
+/// the executor's PATH is provided by the kernel.
+pub(super) const PROVIDER_BIN_NAMES: [&str; 6] = [
+    CODEX_ALIASES[0],
+    CODEX_ALIASES[1],
+    CODEX_ALIASES[2],
+    CODEX_ALIASES[3],
+    CODE_MODE_HOST_NAME,
+    BWRAP_NAME,
+];
+
 pub(super) fn executable_mounts(config: &ControllerConfig) -> Vec<Mount> {
     let mut mounts = Vec::new();
-    for name in [
-        "codex",
-        "codex-linux-sandbox",
-        "apply_patch",
-        "codex-execve-wrapper",
-    ] {
+    for name in CODEX_ALIASES {
         mounts.push(Mount {
             source: config.codex_binary.clone(),
-            destination: format!("/provider-bin/{name}").into(),
+            destination: format!("{}/{name}", super::policy::PROVIDER_BIN).into(),
             writable: false,
         });
     }
     mounts.push(Mount {
         source: config.code_mode_host_binary.clone(),
-        destination: "/provider-bin/codex-code-mode-host".into(),
+        destination: format!("{}/{CODE_MODE_HOST_NAME}", super::policy::PROVIDER_BIN).into(),
         writable: false,
     });
     mounts.push(Mount {
         source: config.sandbox_bwrap.clone(),
-        destination: "/provider-bin/bwrap".into(),
+        destination: format!("{}/{BWRAP_NAME}", super::policy::PROVIDER_BIN).into(),
         writable: false,
     });
     mounts.push(Mount {

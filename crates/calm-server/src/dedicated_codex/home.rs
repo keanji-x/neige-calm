@@ -374,7 +374,7 @@ pub(crate) fn provider_environment(
     let mut result = BTreeMap::from([
         ("CODEX_HOME".into(), policy::PROVIDER_HOME.into()),
         ("HOME".into(), "/provider".into()),
-        ("PATH".into(), "/provider-bin:/usr/bin:/bin".into()),
+        ("PATH".into(), policy::EXECUTOR_PATH.into()),
         ("LANG".into(), "C.UTF-8".into()),
     ]);
     for (name, value) in values {

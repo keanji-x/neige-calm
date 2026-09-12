@@ -123,6 +123,17 @@ async fn semantic_recovery_binds_actual_harness_input_before_ack_and_replays_one
     assert_eq!(value["receipt"]["previous_attempt_id"], first.id);
     assert_eq!(value["receipt"]["generation"], 2);
     assert_eq!(value["status"], "accepted");
+    assert_eq!(value["executor_environment"]["executor"], "codex");
+    assert_eq!(
+        value["executor_environment"]["recovery"]["environment"],
+        "identical"
+    );
+    assert!(
+        value["recover_changes"]
+            .as_str()
+            .unwrap()
+            .contains("only the workspace is new")
+    );
     // Finish harness before further assertions; this does not supersede its session.
     handle.shutdown().await.unwrap();
     assert_eq!(

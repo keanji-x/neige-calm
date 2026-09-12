@@ -322,6 +322,54 @@ fn worker_payload_is_pure_function_of_the_row() {
     assert_eq!(p["cwd"], json!("/repo"));
 }
 
+/// The recovery executor statement and the worker payload branch on the same
+/// row predicate: every legacy kind names its adapter's executor and the
+/// isolated selection alone carries the fixed envelope.
+#[test]
+fn recovery_executor_statement_follows_the_worker_payload_route() {
+    let legacy = [
+        (TaskKind::Codex, "codex-worker", "shared-codex"),
+        (TaskKind::Claude, "claude-worker", "claude"),
+        (TaskKind::Terminal, "terminal-worker", "terminal"),
+    ];
+    for (kind, operation_kind, executor) in legacy {
+        let mut task = task("a", TaskStatus::Pending, &[], 0);
+        task.kind = kind;
+        assert_eq!(build_worker_payload(&task).unwrap().0, operation_kind);
+        let statement = crate::task_recovery::executor_statement(&task).unwrap();
+        assert_eq!(
+            statement.environment,
+            json!({
+                "executor": executor,
+                "note": "recovery re-runs on the same executor as the failed attempt; its environment is unchanged",
+            })
+        );
+        assert!(
+            !statement
+                .recover_changes
+                .contains("only the workspace is new"),
+            "{kind:?} must not promise a fresh isolated workspace"
+        );
+    }
+    let mut isolated = task("i", TaskStatus::Pending, &[], 0);
+    isolated.context_json =
+        json!({"neige_execution": {"version": "isolated-codex-v1", "workspace": "empty"}})
+            .to_string();
+    assert_eq!(
+        build_worker_payload(&isolated).unwrap().0,
+        crate::isolated_codex::OPERATION_KIND
+    );
+    let statement = crate::task_recovery::executor_statement(&isolated).unwrap();
+    assert_eq!(
+        statement.environment,
+        crate::dedicated_codex::executor_environment()
+    );
+    assert_eq!(
+        statement.recover_changes,
+        crate::dedicated_codex::RECOVER_CHANGES
+    );
+}
+
 #[test]
 fn codex_payload_ignores_task_cwd_for_hash_stability() {
     let mut codex = task("a", TaskStatus::Pending, &[], 0);

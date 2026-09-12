@@ -93,3 +93,71 @@ async fn recovery_briefing_read_failure_retains_input_and_paces_retry() {
     );
     assert!(fx.harness.issuance_block().await.is_none());
 }
+
+/// A settled legacy attempt is briefed with its actual executor route; the
+/// isolated Codex envelope belongs only to isolated selections.
+#[tokio::test]
+async fn recovery_briefing_states_legacy_executor_route_not_isolated_envelope() {
+    let fx = Fixture::new().await;
+    let inner = &fx.harness.inner;
+    let task_id = "legacy-terminal-attempt";
+    sqlx::query(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,status_detail,created_at_ms,updated_at_ms) \
+         VALUES(?1,?2,'legacy','terminal','false','null','failed','spawn-failed: controlled preparation failure',1,1)",
+    )
+    .bind(task_id)
+    .bind(inner.track_id.as_str())
+    .execute(fx.repo.pool())
+    .await
+    .unwrap();
+    let event = Event::TaskExecutionSettled {
+        task_id: task_id.into(),
+        operation_id: "legacy-operation".into(),
+    };
+    let mut tx = fx.repo.pool().begin().await.unwrap();
+    let id = append_decision_event_in_tx(
+        &mut tx,
+        &ActorId::KernelDispatcher,
+        &harness_event_scope(inner, "task.execution_settled"),
+        None,
+        &event,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let notice = QueueEntry::system(
+        crate::dispatcher::harness_observation_from_event(&inner.track_id, &event, None).unwrap(),
+        Some(id),
+    )
+    .unwrap();
+    fx.enqueue(vec![notice]).await;
+    maybe_issue_turn(inner).await.unwrap();
+    assert_eq!(inner.daemon.turn_start_count_for_test(), 1);
+    let issued = fx.stored().await.issued_input_segments.unwrap();
+    let text = issued
+        .segments
+        .iter()
+        .find_map(|segment| {
+            segment
+                .text
+                .split_once("Recovery decision briefing (kernel snapshot):\n")
+                .map(|(_, rest)| {
+                    rest.split_once("\nEnd recovery decision briefing.")
+                        .unwrap()
+                        .0
+                })
+        })
+        .expect("legacy settlement must still be briefed");
+    let brief: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(brief["attempt_id"], task_id);
+    assert_eq!(
+        brief["executor_environment"],
+        serde_json::json!({
+            "executor": "terminal",
+            "note": "recovery re-runs on the same executor as the failed attempt; its environment is unchanged",
+        })
+    );
+    let changes = brief["recover_changes"].as_str().unwrap();
+    assert!(changes.contains("same executor as the failed attempt"));
+    assert!(!changes.contains("only the workspace is new"));
+}

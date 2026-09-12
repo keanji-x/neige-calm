@@ -516,3 +516,58 @@ async fn dispatch_promotes_only_new_draft_declarations_and_replay_has_no_lifecyc
     assert_eq!(replay["current"]["track"]["lifecycle"], "draft");
     assert_eq!(counts(&b).await, saved);
 }
+
+#[tokio::test]
+async fn dispatch_response_states_the_fixed_executor_environment_up_front() {
+    let b = boot().await;
+    policy(&b, "auto-declare", 3).await;
+    let first = dispatch(&b, args()).await.unwrap();
+    let environment = &first["current"]["executor_environment"];
+    assert_eq!(environment["executor"], "codex");
+    assert_eq!(environment["network"]["enabled"], false);
+    assert_eq!(environment["network"]["web_search"], false);
+    assert_eq!(
+        environment["mcp_tools"],
+        json!([
+            "calm.task.complete",
+            "calm.task.fail",
+            "calm.report.read",
+            "calm.plan.list"
+        ])
+    );
+    assert_eq!(
+        environment["workspace"]["writable"],
+        json!(["/workspace", "/tmp"])
+    );
+    assert_eq!(environment["recovery"]["environment"], "identical");
+    // Replays restate the same envelope; it is not attempt-specific.
+    let replay = dispatch(&b, args()).await.unwrap();
+    assert_eq!(replay["current"]["executor_environment"], *environment);
+}
+
+#[tokio::test]
+async fn recover_response_restates_identical_environment_with_new_workspace() {
+    let b = boot().await;
+    policy(&b, "auto-declare", 3).await;
+    let original = dispatch(&b, args()).await.unwrap();
+    let key = original["receipt"]["task_key"].as_str().unwrap();
+    let task = crate::task_recovery::current(&b, key).await;
+    crate::task_recovery::finish(&b, &task, false).await;
+    let recovery = call_tool(
+        &b,
+        "calm.plan.recover",
+        planner_identity(&b),
+        crate::task_recovery::recovery_args(&task, "dispatch-environment"),
+    )
+    .await
+    .unwrap();
+    assert!(recovery["attempt_id"].is_string());
+    assert_eq!(
+        recovery["executor_environment"],
+        original["current"]["executor_environment"]
+    );
+    let changes = recovery["recover_changes"].as_str().unwrap();
+    assert!(changes.contains("identical execution environment"));
+    assert!(changes.contains("only the workspace is new"));
+    assert!(changes.contains("missing capability"));
+}
