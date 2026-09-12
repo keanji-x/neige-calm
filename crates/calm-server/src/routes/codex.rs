@@ -200,6 +200,16 @@ pub(crate) async fn ingest_provider_hook(
         }
     }
 
+    // #1620 — a hook for a Terminal card is advisory telemetry for the Planner
+    // (`wait_for=signal`), never worker state: it is appended to the live
+    // renderer entry's ring and acknowledged here, BEFORE the persist / FSM
+    // projection path below, so it can never move a card FSM.
+    let card = s.repo.card_get(&card_id_str).await?;
+    if card.as_ref().is_some_and(|card| card.kind == "terminal") {
+        return ingest_terminal_signal(s, &card_id_str, &payload, provider, hook_idempotency_key)
+            .await;
+    }
+
     let resolved_session = cross_check_session_card(s, &card_id_str, &payload, provider).await?;
 
     // PR3 (#136) — reattribute the hook to the codex card that produced
@@ -216,7 +226,7 @@ pub(crate) async fn ingest_provider_hook(
     // deleted. The gate's unknown-card branch then refuses the write,
     // which is what we want: a hook for a deleted card is an audit
     // smell.
-    let scope = match s.repo.card_get(&card_id_str).await? {
+    let scope = match card {
         Some(c) => match s.repo.track_get(c.track_id.as_str()).await? {
             Some(w) => EventScope::Card {
                 card: c.id,
@@ -242,6 +252,65 @@ pub(crate) async fn ingest_provider_hook(
         )
         .await?;
     // Concurrent duplicates during this log call may pass; dispatcher watermarks and harness LRU dedupe them.
+    s.hook_ingest_cache
+        .lock()
+        .expect("hook ingest cache mutex poisoned")
+        .insert(hook_idempotency_key);
+    Ok(())
+}
+
+/// #1620 — Terminal-card branch of [`ingest_provider_hook`]: parse, bound and
+/// append the signal to the CURRENT renderer entry, then mark the idempotency
+/// key. Malformed or unknown payloads are logged and acknowledged (the hook
+/// must never fail Claude); a duplicate delivery never appends twice (the ring
+/// is idempotent on the key even when two deliveries race this function).
+async fn ingest_terminal_signal(
+    s: &RouteState,
+    card_id: &str,
+    payload: &Value,
+    provider: HookProvider,
+    hook_idempotency_key: String,
+) -> Result<()> {
+    match (
+        provider,
+        crate::terminal_hooks::parse_terminal_signal(payload),
+    ) {
+        (HookProvider::Claude, Ok(incoming)) => match s.repo.terminal_get_by_card(card_id).await? {
+            Some(term) => {
+                let event = incoming.event.clone();
+                let seq = s.terminal_renderer.push_signal(
+                    &term.id,
+                    &hook_idempotency_key,
+                    incoming,
+                    crate::model::now_ms(),
+                );
+                tracing::info!(
+                    target: "hook.ingest.terminal_signal",
+                    card_id = %card_id,
+                    terminal_id = %term.id,
+                    event = %event,
+                    seq = ?seq,
+                    "terminal hook signal appended (None: no live renderer entry or duplicate)"
+                );
+            }
+            None => tracing::warn!(
+                target: "hook.ingest.terminal_signal_dropped",
+                card_id = %card_id,
+                "terminal card has no terminal row; hook signal dropped"
+            ),
+        },
+        (HookProvider::Codex, _) => tracing::warn!(
+            target: "hook.ingest.terminal_signal_dropped",
+            card_id = %card_id,
+            "codex hook for a terminal card; accepted and ignored"
+        ),
+        (_, Err(reason)) => tracing::warn!(
+            target: "hook.ingest.terminal_signal_dropped",
+            card_id = %card_id,
+            reason = %reason,
+            "malformed or unknown hook payload for a terminal card; accepted and ignored"
+        ),
+    }
     s.hook_ingest_cache
         .lock()
         .expect("hook ingest cache mutex poisoned")

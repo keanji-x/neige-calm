@@ -242,9 +242,21 @@ pub(crate) fn claude_hook_command(bridge_bin: &str, card_id: &str, base_url: &st
 }
 
 pub(crate) fn build_claude_settings_json(hook_command: &str) -> String {
+    build_claude_settings_json_for(
+        hook_command,
+        crate::card_fsm::CLAUDE_WORKER_HOOKS.iter().copied(),
+    )
+}
+
+/// Hooks-only settings JSON registering exactly `hooks` (#1620 Planner
+/// terminals register a seven-event subset of the worker table).
+pub(crate) fn build_claude_settings_json_for(
+    hook_command: &str,
+    hooks_to_register: impl IntoIterator<Item = crate::card_fsm::ClaudeWorkerHook>,
+) -> String {
     let hook = json!({ "type": "command", "command": hook_command });
     let mut hooks = serde_json::Map::new();
-    for h in crate::card_fsm::CLAUDE_WORKER_HOOKS {
+    for h in hooks_to_register {
         let group = if h.matcher {
             json!({ "matcher": "*", "hooks": [hook.clone()] })
         } else {

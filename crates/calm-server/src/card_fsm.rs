@@ -210,6 +210,7 @@ fn codex_kind_to_state(kind: &str) -> Option<State> {
 ///
 /// Event names + matcher applicability verified against
 /// https://code.claude.com/docs/en/hooks (2026-05).
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ClaudeWorkerHook {
     /// PascalCase event name, used verbatim as the key in the settings
     /// `hooks` map (exactly what Claude Code reads).
