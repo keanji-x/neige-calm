@@ -13,7 +13,9 @@ use std::time::Duration;
 /// Parses `--settings <file>`, extracts the registered hook command, prints
 /// `READY <card id>` and then, per stdin line, runs the hook command with
 /// synthetic Claude Code payloads (`perm` → a permission Notification,
-/// anything else → UserPromptSubmit then Stop) before echoing the turn.
+/// anything else → UserPromptSubmit then Stop) before echoing the turn. Like
+/// the real Claude, the Stop body is byte-identical every turn: only the
+/// bridge's per-invocation occurrence id tells the turns apart.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 settings=""
 while [ $# -gt 0 ]; do case "$1" in --settings) settings="$2"; shift 2;; *) shift;; esac; done
@@ -23,9 +25,9 @@ n=0
 while IFS= read -r line; do
   n=$((n+1))
   case "$line" in
-    perm) printf '{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash","session_id":"fake-session","turn":%s}' "$n" | sh -c "$hook" >/dev/null 2>&1 ;;
-    *) printf '{"hook_event_name":"UserPromptSubmit","prompt":"%s","session_id":"fake-session","turn":%s}' "$line" "$n" | sh -c "$hook" >/dev/null 2>&1
-       printf '{"hook_event_name":"Stop","stop_hook_active":false,"session_id":"fake-session","turn":%s}' "$n" | sh -c "$hook" >/dev/null 2>&1 ;;
+    perm) printf '{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash","session_id":"fake-session"}' | sh -c "$hook" >/dev/null 2>&1 ;;
+    *) printf '{"hook_event_name":"UserPromptSubmit","prompt":"%s","session_id":"fake-session"}' "$line" | sh -c "$hook" >/dev/null 2>&1
+       printf '{"hook_event_name":"Stop","stop_hook_active":false,"session_id":"fake-session"}' | sh -c "$hook" >/dev/null 2>&1 ;;
   esac
   printf 'TURN:%s:%s\n' "$n" "$line"
 done
@@ -98,6 +100,37 @@ async fn open_fake_claude(h: &Harness, request_id: &str) -> (Value, String) {
         "the child must see NEIGE_CARD_ID: {ready}"
     );
     (opened, terminal)
+}
+/// One invocation of the harness bridge stand-in for `card_id` with `body` on
+/// stdin, under the env a Planner terminal's hook command carries.
+async fn run_bridge(h: &Harness, card_id: &str, body: &str) {
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("sh")
+        .arg(&h.bridge)
+        .env("NEIGE_CARD_ID", card_id)
+        .env("NEIGE_CALM_BASE_URL", &h.base_url)
+        .env("NEIGE_HOOK_PROVIDER", "claude")
+        .env(
+            "NEIGE_HOOK_URL",
+            format!("{}/internal/claude/hook?card_id={card_id}", h.base_url),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(body.as_bytes())
+        .await
+        .unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"continue\":true}"
+    );
 }
 async fn submit(h: &Harness, terminal: &str, request: &str, text: &str, wait: Value) -> Value {
     let mut args = json!({"terminal_id":terminal,"request_id":request,"action":{"type":"submit","text":text},"observe":true});
@@ -351,7 +384,9 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
         answered["signals"]["since_previous_observation"][1]["claude_session_id"],
         "fake-session"
     );
-    assert!(has_line(answered, "TURN:1:hello"), "{answered}");
+    // The fake posts Stop before it prints the turn, so the turn line is
+    // awaited on the screen rather than expected in the signal readback.
+    h.observe_text(&terminal, "TURN:1:hello").await;
 
     // No new signal: the budget elapses with outcome unchanged and no signal.
     let idle = h
@@ -457,16 +492,43 @@ async fn readback_signal_baseline_is_read_before_the_physical_write() {
     // BEFORE the input call must not satisfy the readback wait: the readback
     // baseline is the seq read just before the physical write, not the
     // previous observation.
+    // Direct POSTs stand in for two bridge invocations: the body differs only
+    // by the per-invocation occurrence id the bridge stamps.
     assert_eq!(
-        h.post_claude_hook(&card_id, &json!({"hook_event_name":"Stop","turn":1}))
-            .await,
+        h.post_claude_hook(
+            &card_id,
+            &json!({"hook_event_name":"Stop","neige_hook_occurrence":"1-1-a"})
+        )
+        .await,
         200
     );
     let poster = {
         let h_card = card_id.clone();
         let app = h.app.clone();
+        let entry = h.state.terminal_renderer.get(&terminal).unwrap();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(700)).await;
+            // The physical write precedes its echo on the screen, and the
+            // readback baseline is read before the physical write: once the
+            // marker is projected, this signal is above that baseline.
+            let start = std::time::Instant::now();
+            loop {
+                let projected = entry
+                    .handle
+                    .model_view
+                    .lock()
+                    .unwrap()
+                    .capture(0)
+                    .map(|(frame, _)| frame.text.iter().any(|line| line.contains("COUNT:1:PROBE")))
+                    .unwrap_or(false);
+                if projected {
+                    break;
+                }
+                assert!(
+                    start.elapsed() < Duration::from_secs(10),
+                    "the submit never reached the screen"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
             use tower::ServiceExt;
             let request = axum::http::Request::builder()
                 .method("POST")
@@ -474,7 +536,7 @@ async fn readback_signal_baseline_is_read_before_the_physical_write() {
                 .header("content-type", "application/json")
                 .header("X-Calm-Actor", "ai:claude")
                 .body(axum::body::Body::from(
-                    json!({"hook_event_name":"Stop","turn":2}).to_string(),
+                    json!({"hook_event_name":"Stop","neige_hook_occurrence":"2-2-b"}).to_string(),
                 ))
                 .unwrap();
             assert_eq!(app.oneshot(request).await.unwrap().status(), 200);
@@ -704,11 +766,8 @@ async fn open_with_claim_reports_takeover_on_replay_instead_of_reclaiming() {
     assert_eq!(replayed["role"], "observer", "{replayed}");
     assert_eq!(replayed["control_id"], Value::Null);
     assert_eq!(replayed["claim"]["status"], "unavailable", "{replayed}");
-    assert!(
-        replayed["claim"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("human takeover"),
+    assert_eq!(
+        replayed["claim"]["reason"], "terminal is controlled by another client",
         "{replayed}"
     );
     assert_eq!(
@@ -752,6 +811,306 @@ async fn hook_settings_file_is_removed_when_the_card_is_deleted() {
     assert!(
         !settings_path.exists(),
         "settings file must go with the card"
+    );
+    assert!(sibling.exists());
+    assert!(h.state.terminal_renderer.get(&terminal).is_none());
+    h.stop(&terminal).await;
+}
+
+/// #1620 F1 — Claude's `Stop` body is byte-identical every turn. Two bridge
+/// invocations with the same stdin must produce two ring entries (seq 1 and
+/// 2): the bridge's per-invocation occurrence id is what keys them apart at
+/// the server, while a retry of one invocation (same body) stays a duplicate.
+#[tokio::test]
+async fn two_byte_identical_stop_bodies_from_two_bridge_invocations_get_seq_1_and_2() {
+    let h = Harness::start().await;
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":COUNT_PROBE,"request_id":"occurrence","claim":true}),
+        )
+        .await;
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    let card_id = opened["card_id"].as_str().unwrap().to_owned();
+    h.observe_text(&terminal, "READY").await;
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    assert_eq!(entry.signals.last_seq(), 0);
+    let stop = r#"{"hook_event_name":"Stop","stop_hook_active":false,"session_id":"fake-session"}"#;
+    run_bridge(&h, &card_id, stop).await;
+    assert_eq!(entry.signals.last_seq(), 1);
+    run_bridge(&h, &card_id, stop).await;
+    assert_eq!(
+        entry.signals.last_seq(),
+        2,
+        "a second invocation with an identical body is a second event"
+    );
+    let view = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    let listed = view["signals"]["since_previous_observation"]
+        .as_array()
+        .unwrap();
+    assert_eq!(listed.len(), 2, "{view}");
+    assert_eq!(listed[0]["seq"], 1);
+    assert_eq!(listed[1]["seq"], 2);
+    assert!(listed.iter().all(|signal| signal["event"] == "stop"));
+    h.stop(&terminal).await;
+}
+
+/// #1620 F3 — terminal hook POSTs never occupy the bounded worker dedupe
+/// cache: a flood of them (more than the cache holds) must not evict a worker
+/// key, so a duplicate delivery of that worker hook is still suppressed.
+#[tokio::test]
+#[allow(deprecated)] // the production ingest gate reads the same raw role cache
+async fn terminal_hook_floods_do_not_evict_worker_dedupe_keys() {
+    use calm_server::db::prelude::*;
+    use calm_server::model::NewCard;
+    use tower::ServiceExt;
+    let h = Harness::start().await;
+    let (opened, terminal) = open_fake_claude(&h, "hooks-flood").await;
+    let card_id = opened["card_id"].as_str().unwrap().to_owned();
+    let worker = h
+        .sql
+        .card_create(NewCard {
+            track_id: h.track.clone().into(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    h.sql
+        .seed_card_role_cache(h.state.write().role_cache())
+        .await
+        .unwrap();
+    let mut bus = h.state.events.subscribe();
+    let worker_body = json!({"hook_event_name":"Stop","session_id":"worker-session","transcript_path":"/tmp/w.jsonl","transcript_size_bytes":7}).to_string();
+    let post_worker = || async {
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/internal/codex/hook?card_id={}", worker.id))
+            .header("content-type", "application/json")
+            .header("X-Calm-Actor", "ai:codex")
+            .body(axum::body::Body::from(worker_body.clone()))
+            .unwrap();
+        h.app.clone().oneshot(request).await.unwrap().status()
+    };
+    assert_eq!(post_worker().await, 204);
+    let first = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Event::CodexHook { card_id, .. } = bus.recv().await.unwrap().event {
+                break card_id;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(first.as_str(), worker.id.as_str());
+
+    // More terminal hooks than the worker cache holds (4096), valid and
+    // malformed alike; each is acknowledged and none touches the cache.
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    for i in 0..4100u32 {
+        let body = if i % 2 == 0 {
+            json!({"hook_event_name":"Stop","neige_hook_occurrence":format!("flood-{i}")})
+        } else {
+            json!({"message":"no event name","n":i})
+        };
+        assert_eq!(h.post_claude_hook(&card_id, &body).await, 200, "{i}");
+    }
+    assert_eq!(entry.signals.last_seq(), 2050);
+
+    // The worker key survived: a duplicate delivery is still suppressed.
+    assert_eq!(post_worker().await, 204);
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    while let Ok(Ok(envelope)) = tokio::time::timeout_at(deadline, bus.recv()).await {
+        assert!(
+            !matches!(envelope.event, Event::CodexHook { .. }),
+            "the worker hook was ingested twice: {:?}",
+            envelope.event
+        );
+    }
+    h.stop(&terminal).await;
+}
+
+/// #1620 F2 — a human who claims control between the Planner's create and
+/// its claim keeps control: the claim is applied by the pump only if nobody
+/// else owns the terminal at that moment (decided under the registry lock,
+/// never from the Planner connection's cached owner, which was read before
+/// the human claimed and may not have seen the `OwnerChanged` yet).
+#[tokio::test]
+async fn open_with_claim_yields_to_a_human_who_claimed_inside_the_claim_window() {
+    use calm_server::terminal_renderer::{ClientInputScope, ClientPumpContext, run_client_pump};
+    use calm_session::{
+        ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
+        RenderEncoding,
+    };
+    use std::sync::{Arc, Mutex};
+    let h = Harness::start().await;
+    let user = uuid::Uuid::new_v4();
+    let human: Arc<
+        Mutex<
+            Option<(
+                tokio::task::JoinHandle<_>,
+                tokio::sync::mpsc::Sender<ClientMsg>,
+            )>,
+        >,
+    > = Arc::new(Mutex::new(None));
+    let seam_human = human.clone();
+    let renderer = h.state.terminal_renderer.clone();
+    h.interaction().set_claim_window_seam(Box::new(move |terminal_id: String| {
+        Box::pin(async move {
+            let entry = renderer.get(&terminal_id).unwrap();
+            let (incoming, rx) = tokio::sync::mpsc::channel(8);
+            let (tx, mut outgoing) = tokio::sync::mpsc::channel(32);
+            let pump = tokio::spawn(run_client_pump(
+                rx,
+                tx,
+                ClientPumpContext {
+                    input_barrier: entry.handle.input_barrier.clone(),
+                    input_scope: ClientInputScope::InteractiveUser,
+                    event_rx: entry.subscribe(),
+                    event_tx: entry.handle.event_tx.clone(),
+                    render_plane: entry.handle.render_plane.clone(),
+                    exit: entry.exit.clone(),
+                    supervisor_tx: entry.handle.supervisor_tx.clone(),
+                    owner_registry: entry.handle.owner_registry.clone(),
+                    session_id: entry.handle.session_id,
+                    terminal_id: terminal_id.clone(),
+                },
+            ));
+            incoming
+                .send(ClientMsg::ClientHello {
+                    protocol_version: PROTOCOL_VERSION,
+                    terminal_id,
+                    client_id: user,
+                    desired_size: PtySize {
+                        cols: 80,
+                        rows: 24,
+                        pixel_width: None,
+                        pixel_height: None,
+                    },
+                    cell_size: None,
+                    initial_scrollback: InitialScrollback::None,
+                    resume_from: None,
+                    role_hint: None,
+                    capabilities: ClientCapabilities {
+                        render_encodings: vec![RenderEncoding::Vt],
+                        supports_scrollback: true,
+                        supports_sixel: false,
+                        supports_images: false,
+                        kernel_originated_input: false,
+                    },
+                })
+                .await
+                .unwrap();
+            assert!(matches!(
+                outgoing.recv().await,
+                Some(DaemonMsg::ServerHello { .. })
+            ));
+            incoming.send(ClientMsg::OwnerClaim).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if matches!(outgoing.recv().await, Some(DaemonMsg::OwnerChanged { owner_client_id: Some(id) }) if id == user) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                entry.handle.owner_registry.lock().unwrap().current_owner(),
+                Some(user)
+            );
+            *seam_human.lock().unwrap() = Some((pump, incoming));
+        })
+    }));
+
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/sh","request_id":"contended","claim":true}),
+        )
+        .await;
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    assert!(
+        human.lock().unwrap().is_some(),
+        "the seam ran inside the claim window"
+    );
+    assert_eq!(opened["claim"]["status"], "unavailable", "{opened}");
+    assert_eq!(
+        opened["claim"]["reason"], "terminal is controlled by another client",
+        "{opened}"
+    );
+    assert!(opened["card_id"].is_string(), "creation facts survive");
+    assert_eq!(opened["role"], "observer");
+    assert_eq!(opened["control_id"], Value::Null);
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    assert_eq!(
+        entry.handle.owner_registry.lock().unwrap().current_owner(),
+        Some(user),
+        "the human keeps control"
+    );
+    let view = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(view["role"], "observer", "{view}");
+    // A deliberate `control claim` keeps its takeover semantics.
+    let claimed = h
+        .ok(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"claim"}),
+        )
+        .await;
+    assert!(claimed["control_id"].is_string(), "{claimed}");
+    assert_ne!(
+        entry.handle.owner_registry.lock().unwrap().current_owner(),
+        Some(user)
+    );
+    if let Some((pump, _incoming)) = human.lock().unwrap().take() {
+        pump.abort();
+    }
+    h.stop(&terminal).await;
+}
+
+/// #1620 F4 — track deletion goes through the quiesce path, not the reap
+/// helper; the generated settings file must still go with the committed
+/// delete.
+#[tokio::test]
+async fn hook_settings_file_is_removed_when_the_track_is_deleted() {
+    use tower::ServiceExt;
+    let h = Harness::start().await;
+    let (opened, terminal) = open_fake_claude(&h, "hooks-track-delete").await;
+    let card_id = opened["card_id"].as_str().unwrap().to_owned();
+    let settings_path = h
+        .state
+        .codex
+        .terminal_hook_settings_dir
+        .join(format!("{card_id}.json"));
+    assert!(settings_path.exists());
+    let sibling = h.state.codex.terminal_hook_settings_dir.join("other.json");
+    std::fs::write(&sibling, "{}").unwrap();
+    let response = h
+        .app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/tracks/{}", h.track))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+    assert!(
+        h.state.repo.track_get(&h.track).await.unwrap().is_none(),
+        "the track row is gone"
+    );
+    assert!(
+        !settings_path.exists(),
+        "settings file must go with the track"
     );
     assert!(sibling.exists());
     assert!(h.state.terminal_renderer.get(&terminal).is_none());
