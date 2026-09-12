@@ -404,8 +404,9 @@ async fn isolated_worker_plugin_binding_corruption_never_becomes_legacy_access()
                 sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.isolated_execution.request.identity.session_id','different-session') WHERE id='isolated-operation'").execute(&pool).await.unwrap();
             }
             "wrong-task-track" => {
-                sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) VALUES('foreign-test',?1,'foreign-test','codex','foreign','{}','pending',1,1)")
+                sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) VALUES('foreign-test',?1,'foreign-test','codex','foreign',?2,'running',1,1)")
                     .bind(&fx.bound_track_id)
+                    .bind(json!({"neige_execution":{"version":"isolated-codex-v1","workspace":"empty","plugin_tools":[EXPOSED_NAME]}}).to_string())
                     .execute(&pool)
                     .await
                     .unwrap();
@@ -427,4 +428,30 @@ async fn isolated_worker_plugin_binding_corruption_never_becomes_legacy_access()
         let called = recv_frame(&mut rd).await;
         assert!(called.get("error").is_some(), "{corruption}: {called}");
     }
+}
+
+#[tokio::test]
+async fn isolated_worker_plugin_discovery_before_startup_ack_uses_operation_binding() {
+    let fx = boot_fixture().await;
+    bind_isolated(&fx, &[EXPOSED_NAME]).await;
+    sqlx::query(
+        "UPDATE tasks SET status='dispatched',worker_card_id=NULL WHERE id='isolated-test'",
+    )
+    .execute(&fx.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &fx.raw_token).await;
+    send_frame(
+        &mut wr,
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+    )
+    .await;
+    let list = recv_frame(&mut rd).await;
+    let names = tool_names_from_response(&list);
+    assert!(names.contains(&EXPOSED_NAME.to_string()), "{list}");
+    assert!(
+        !names.contains(&COLLIDING_EXPOSED_NAME.to_string()),
+        "{list}"
+    );
 }
