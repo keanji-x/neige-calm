@@ -184,6 +184,20 @@ pub(crate) async fn ingest_provider_hook(
         .unwrap_or("unknown");
     let kind = format!("{}.{}", provider.kind_prefix(), to_snake_case(event_name));
     let hook_idempotency_key = hook_idempotency_key(provider, &card_id_str, &payload);
+
+    // #1620 — a hook for a Terminal card is advisory telemetry for the Planner
+    // (`wait_for=signal`), never worker state: it is appended to the live
+    // renderer entry's ring and acknowledged here, BEFORE the worker dedupe
+    // cache and the persist / FSM projection path below, so it can never move
+    // a card FSM and never occupies a slot of the bounded worker cache (a
+    // flood of terminal hooks, malformed ones included, must not evict a
+    // worker key). The ring dedupes on the same key, per terminal.
+    let card = s.repo.card_get(&card_id_str).await?;
+    if card.as_ref().is_some_and(|card| card.kind == "terminal") {
+        return ingest_terminal_signal(s, &card_id_str, &payload, provider, hook_idempotency_key)
+            .await;
+    }
+
     {
         let cache = s
             .hook_ingest_cache
@@ -198,16 +212,6 @@ pub(crate) async fn ingest_provider_hook(
             );
             return Ok(());
         }
-    }
-
-    // #1620 — a hook for a Terminal card is advisory telemetry for the Planner
-    // (`wait_for=signal`), never worker state: it is appended to the live
-    // renderer entry's ring and acknowledged here, BEFORE the persist / FSM
-    // projection path below, so it can never move a card FSM.
-    let card = s.repo.card_get(&card_id_str).await?;
-    if card.as_ref().is_some_and(|card| card.kind == "terminal") {
-        return ingest_terminal_signal(s, &card_id_str, &payload, provider, hook_idempotency_key)
-            .await;
     }
 
     let resolved_session = cross_check_session_card(s, &card_id_str, &payload, provider).await?;
@@ -260,10 +264,11 @@ pub(crate) async fn ingest_provider_hook(
 }
 
 /// #1620 — Terminal-card branch of [`ingest_provider_hook`]: parse, bound and
-/// append the signal to the CURRENT renderer entry, then mark the idempotency
-/// key. Malformed or unknown payloads are logged and acknowledged (the hook
-/// must never fail Claude); a duplicate delivery never appends twice (the ring
-/// is idempotent on the key even when two deliveries race this function).
+/// append the signal to the CURRENT renderer entry. Malformed or unknown
+/// payloads are logged and acknowledged (the hook must never fail Claude); a
+/// duplicate delivery never appends twice (the ring is idempotent on the key,
+/// which covers the bridge's per-invocation `neige_hook_occurrence`). The
+/// worker `hook_ingest_cache` is never read or written here.
 async fn ingest_terminal_signal(
     s: &RouteState,
     card_id: &str,
@@ -311,10 +316,6 @@ async fn ingest_terminal_signal(
             "malformed or unknown hook payload for a terminal card; accepted and ignored"
         ),
     }
-    s.hook_ingest_cache
-        .lock()
-        .expect("hook ingest cache mutex poisoned")
-        .insert(hook_idempotency_key);
     Ok(())
 }
 
