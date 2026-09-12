@@ -40,7 +40,9 @@ done
 /// `late:<x>` posts Stop, then paints `ANSWER:<x>` 300 ms later (the real
 /// Claude order); `early:<x>` paints the answer, stays quiet 600 ms, then
 /// posts Stop; `burst` posts Stop and then paints a line every 50 ms for
-/// three seconds; anything else posts Stop and paints nothing.
+/// three seconds; anything else stays quiet 400 ms, posts Stop and paints
+/// nothing (the quiet screen at the signal has no change since the baseline,
+/// so it must not pass for `already`).
 const FAKE_CLAUDE_REPAINT: &str = r#"#!/bin/sh
 settings=""
 while [ $# -gt 0 ]; do case "$1" in --settings) settings="$2"; shift 2;; *) shift;; esac; done
@@ -53,7 +55,7 @@ while IFS= read -r line; do
     late:*) stop; sleep 0.3; printf 'ANSWER:%s\n' "${line#late:}" ;;
     early:*) printf 'ANSWER:%s\n' "${line#early:}"; sleep 0.6; stop ;;
     burst) stop; i=0; while [ $i -lt 60 ]; do i=$((i+1)); printf 'BURST:%s\n' "$i"; sleep 0.05; done ;;
-    *) stop ;;
+    *) sleep 0.4; stop ;;
   esac
 done
 "#;
@@ -672,10 +674,12 @@ async fn signal_readback_reports_none_after_repaint_ms_and_skipped_when_disabled
     assert!(!has_line(silent, "ANSWER"), "{silent}");
     let repaint = silent["wait"]["repaint"]["waited_ms"].as_u64().unwrap();
     assert!((700..5_000).contains(&repaint), "{silent}");
+    let signal_at = silent["wait"]["signal_at_ms"].as_u64().unwrap();
     assert!(
-        silent["wait"]["waited_ms"].as_u64().unwrap()
-            >= silent["wait"]["signal_at_ms"].as_u64().unwrap() + 700
+        signal_at >= 400,
+        "the fake stays quiet 400 ms before Stop: {silent}"
     );
+    assert!(silent["wait"]["waited_ms"].as_u64().unwrap() >= signal_at + 700);
 
     let skipped = submit(
         &h,

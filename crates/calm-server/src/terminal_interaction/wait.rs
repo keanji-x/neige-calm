@@ -1168,23 +1168,27 @@ mod tests {
         assert_eq!(waited, Duration::from_millis(550));
     }
 
-    /// #1628 `none`: no revision within `repaint` of the signal. A revision
-    /// that preceded the signal but was not yet quiet does not count as
-    /// `already`; the loop still waits for the next one.
+    /// #1628 `none`: no revision within `repaint` of the signal. A screen
+    /// that has been quiet since the start (longer than `settle`) without
+    /// any revision is not `already`, and a revision that preceded the
+    /// signal but was not yet quiet does not count as `already` either; the
+    /// loop waits for the next one in both cases.
     #[tokio::test(start_paused = true)]
     async fn repaint_none_when_nothing_lands_within_the_repaint_window() {
         let ring = stop_ring();
         let (fixture, task) = start_signal_repaint(ring.clone(), 0, 5_000, REPAINT);
         tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::time::advance(Duration::from_millis(400)).await;
         ring.push("a", incoming("stop"), 0);
         tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "quiet without a change is not already");
         tokio::time::advance(Duration::from_millis(1_499)).await;
         assert!(!task.is_finished(), "gave up before repaint_ms");
         tokio::time::advance(Duration::from_millis(1)).await;
         let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.signal_at, Some(Duration::from_millis(400)));
         assert_eq!(verdict.repaint, repaint(RepaintOutcome::None, 1_500));
-        assert_eq!(waited, Duration::from_millis(1_600));
+        assert_eq!(waited, Duration::from_millis(1_900));
         drop(fixture);
 
         let (fixture, task) = start_signal_repaint(ring.clone(), 1, 5_000, REPAINT);
