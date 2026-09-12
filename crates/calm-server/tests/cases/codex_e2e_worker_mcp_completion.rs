@@ -379,6 +379,7 @@ contract, report task completion exactly once now, then stop."
             &thread_id,
             vec![InputItem::text(&prompt)],
             &TurnModelSelection::inherit(),
+            None,
         )
         .await
         .expect("turn_start");

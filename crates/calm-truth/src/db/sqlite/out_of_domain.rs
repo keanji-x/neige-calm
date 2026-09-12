@@ -452,6 +452,78 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(row.get::<i64, _>("id"))
     }
 
+    // ---- #1625 P2 — projection rows (see the trait for the key) ----------
+
+    async fn harness_item_projection_id(
+        &self,
+        card_id: &str,
+        client_id: &str,
+    ) -> Result<Option<i64>> {
+        let row = sqlx::query(
+            r#"SELECT id FROM harness_items
+               WHERE card_id = ?1 AND item_uuid = ?2 AND turn_id IS NULL
+                 AND method = 'item/completed'
+               ORDER BY id DESC LIMIT 1"#,
+        )
+        .bind(card_id)
+        .bind(client_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| row.get::<i64, _>("id")))
+    }
+
+    async fn harness_item_projection_upgrade(
+        &self,
+        card_id: &str,
+        client_id: &str,
+        turn_id: Option<&str>,
+        item_uuid: &str,
+        params: &str,
+    ) -> Result<Option<i64>> {
+        // #930 uniform rule: writing transactions always BEGIN IMMEDIATE.
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        // `RETURNING` on UPDATE: sqlite ≥ 3.35, which the bundled sqlx
+        // driver is. `LIMIT 1` is not available on UPDATE in the bundled
+        // build, so the row is chosen by the subquery instead — the newest
+        // projection with this key, which is also what `_projection_id`
+        // reads.
+        let row = sqlx::query(
+            r#"UPDATE harness_items
+               SET turn_id = ?3, item_uuid = ?4, params = ?5
+               WHERE id = (
+                   SELECT id FROM harness_items
+                   WHERE card_id = ?1 AND item_uuid = ?2 AND turn_id IS NULL
+                     AND method = 'item/completed'
+                   ORDER BY id DESC LIMIT 1
+               )
+               RETURNING id"#,
+        )
+        .bind(card_id)
+        .bind(client_id)
+        .bind(turn_id)
+        .bind(item_uuid)
+        .bind(params)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.map(|row| row.get::<i64, _>("id")))
+    }
+
+    async fn harness_item_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64> {
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let done = sqlx::query(
+            r#"DELETE FROM harness_items
+               WHERE card_id = ?1 AND item_uuid = ?2 AND turn_id IS NULL
+                 AND method = 'item/completed'"#,
+        )
+        .bind(card_id)
+        .bind(client_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(done.rows_affected())
+    }
+
     // ---- worker message-flow capture (#695 PR2) -------------------------
 
     #[allow(clippy::too_many_arguments)]

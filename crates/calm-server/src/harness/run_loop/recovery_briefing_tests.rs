@@ -81,16 +81,11 @@ async fn recovery_briefing_read_failure_retains_input_and_paces_retry() {
     assert_eq!(inner.daemon.turn_start_count_for_test(), 1);
     let issued = fx.stored().await;
     assert!(issued.pending_entries().is_empty());
-    assert!(
-        issued
-            .issued_input_segments
-            .unwrap()
-            .segments
-            .iter()
-            .any(|segment| segment
-                .text
-                .contains("Please explain the retained failure."))
-    );
+    assert!(fx.projected_segments().await.iter().any(|segment| {
+        segment
+            .text
+            .contains("Please explain the retained failure.")
+    }));
     assert!(fx.harness.issuance_block().await.is_none());
 }
 

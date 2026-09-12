@@ -28,10 +28,11 @@ use crate::harness::queue::{
     FoldOutcome, MutationResult, QueueEntry, QueueEntryId, QueueMutation, apply_mutation,
     try_fold_tail,
 };
-use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments};
+use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
 use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, TrackId};
+use crate::model::HarnessInputSegment;
 use crate::planner_attachments::bind::BoundAttachment;
 use crate::planner_model::{
     CardModelSelection, FailureKind, InstallationDefaults, TurnModelSelection,
@@ -202,7 +203,6 @@ pub(super) struct Inner {
     last_turn_id: Mutex<Option<String>>,
     issued_turn_id: Mutex<Option<String>>,
     issued_turn_head: Mutex<Option<track_vcs::CommitHash>>,
-    issued_input_segments: Mutex<Option<IssuedInputSegments>>,
     last_report_body_sha256: Mutex<Option<String>>,
     last_seen_head: Mutex<Option<track_vcs::CommitHash>>,
     /// #1255 S3 — latest context-window reading from `thread/tokenUsage/updated`.
@@ -319,13 +319,20 @@ impl<'a> IssueTurnHandle<'a> {
     /// `selection` is required, not defaulted: #1505 S4-3 makes "which model
     /// runs this turn" part of what issuance means, and a default here would
     /// be a silent answer to it.
+    ///
+    /// `client_user_message_id` is the key of the projection row the drain
+    /// wrote for this batch (#1625 P2); codex hands it back as
+    /// `item.clientId` on the echoed `userMessage`.
     pub(super) async fn issue(
         &self,
         thread_id: &str,
         input: Vec<InputItem>,
         selection: &TurnModelSelection,
+        client_user_message_id: Option<&str>,
     ) -> Result<String> {
-        self.daemon.turn_start(thread_id, input, selection).await
+        self.daemon
+            .turn_start(thread_id, input, selection, client_user_message_id)
+            .await
     }
 }
 
@@ -900,7 +907,6 @@ impl PlannerHarness {
         // emit an unexpected phase event. `issued_turn_id` likewise belongs
         // to the superseded state.
         *self.inner.issued_turn_id.lock().await = None;
-        *self.inner.issued_input_segments.lock().await = None;
         *self.inner.interrupt_deadline.lock().await = None;
         persist_snapshot(&self.inner).await?;
         Ok((old_phase, tag))
@@ -1020,7 +1026,6 @@ fn inner_from_params(
         last_turn_id: Mutex::new(snapshot.last_turn_id),
         issued_turn_id: Mutex::new(None),
         issued_turn_head: Mutex::new(snapshot.issued_turn_head),
-        issued_input_segments: Mutex::new(snapshot.issued_input_segments),
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
         last_seen_head: Mutex::new(snapshot.last_seen_head),
         // Round-trips through the snapshot so the reading survives a reboot
@@ -1734,60 +1739,101 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned);
             let turn_id = item_turn_id(&params).map(ToOwned::to_owned);
-            let input_segments_json =
-                if matches!(item_type.as_deref(), Some("userMessage" | "user_message")) {
-                    let issued = inner.issued_input_segments.lock().await;
-                    issued
-                        .as_ref()
-                        .filter(|issued| turn_id.as_deref() == Some(issued.turn_id.as_str()))
-                        .map(|issued| serde_json::to_string(&issued.segments))
-                        .transpose()?
-                } else {
-                    None
-                };
             let params_json = serde_json::to_string(&params)?;
-            let consumes_input_segments =
-                method == "item/completed" && input_segments_json.is_some();
-            let item_db_id = inner
-                .repo
-                .harness_item_insert(
-                    &inner.worker_session_id,
-                    inner.card_id.as_str(),
-                    inner.track_id.as_str(),
-                    &thread_id,
-                    turn_id.as_deref(),
-                    item_uuid.as_deref(),
-                    item_type.as_deref(),
-                    &method,
-                    &params_json,
-                    input_segments_json.as_deref(),
-                )
-                .await?;
-            let scope = harness_event_scope(inner, "harness.item.added");
-            inner
-                .repo
-                .log_pure_event(
-                    ActorId::Kernel,
-                    scope,
-                    None,
-                    &inner.events,
-                    &inner.card_role_cache,
-                    &inner.track_area_cache,
-                    Event::HarnessItemAdded {
-                        worker_session_id: inner.worker_session_id.clone(),
-                        card_id: inner.card_id.clone(),
-                        track_id: inner.track_id.clone(),
-                        item_db_id,
-                        item_uuid,
-                        item_type,
-                        turn_id,
-                        method,
-                    },
-                )
-                .await?;
-            if consumes_input_segments {
-                *inner.issued_input_segments.lock().await = None;
-            }
+            // #1625 P2 — a `userMessage` echo carrying `item.clientId` is
+            // codex handing back the id the drain sent as
+            // `clientUserMessageId`, and that id names the projection row the
+            // drain wrote before `turn/start` went out (`write_projection_row`).
+            // That row is the person's sentence, already on every screen; the
+            // echo upgrades it in place (turn, codex item id, verbatim params)
+            // and must never become a second copy of it. The `input_segments`
+            // column stays as the drain wrote it — it is the kernel's record
+            // of what was sent, which the echo cannot improve on.
+            //
+            // Codex announces the same item twice, `item/started` then
+            // `item/completed`, and only a completed `userMessage` renders
+            // (`fe/core/domain/conversation.ts`, `harnessItemToTurns`). The
+            // projection is already a completed row, so a started echo that
+            // names it is not stored at all: stored, it would stand beside
+            // the projection as a row the frontend pairs with nothing — the
+            // pairing key is `item_uuid`, and the projection's is the client
+            // id until the completed echo arrives — and a started row for a
+            // user message has never carried anything the completed one does
+            // not. An echo whose client id names no projection (the row was
+            // cleared under it, or codex invented one) is stored exactly as
+            // before this slice.
+            //
+            // Exactly ONE row renders per drained turn, before the echo and
+            // after it: that is the invariant this arm keeps.
+            let projection_client_id = if is_user_message_type(item_type.as_deref()) {
+                item.get("clientId")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            } else {
+                None
+            };
+            let item_db_id = match (projection_client_id.as_deref(), method.as_str()) {
+                (Some(client_id), "item/completed") => {
+                    let upgraded = match item_uuid.as_deref() {
+                        Some(codex_item_id) => {
+                            inner
+                                .repo
+                                .harness_item_projection_upgrade(
+                                    inner.card_id.as_str(),
+                                    client_id,
+                                    turn_id.as_deref(),
+                                    codex_item_id,
+                                    &params_json,
+                                )
+                                .await?
+                        }
+                        None => None,
+                    };
+                    match upgraded {
+                        Some(row_id) => row_id,
+                        None => {
+                            insert_item_row(
+                                inner,
+                                &thread_id,
+                                turn_id.as_deref(),
+                                item_uuid.as_deref(),
+                                item_type.as_deref(),
+                                &method,
+                                &params_json,
+                            )
+                            .await?
+                        }
+                    }
+                }
+                (Some(client_id), "item/started")
+                    if inner
+                        .repo
+                        .harness_item_projection_id(inner.card_id.as_str(), client_id)
+                        .await?
+                        .is_some() =>
+                {
+                    tracing::debug!(
+                        runtime_id = %inner.worker_session_id,
+                        card_id = %inner.card_id,
+                        client_id,
+                        "planner harness skipping item/started echo of a projected user message"
+                    );
+                    return persist_snapshot(inner).await;
+                }
+                _ => {
+                    insert_item_row(
+                        inner,
+                        &thread_id,
+                        turn_id.as_deref(),
+                        item_uuid.as_deref(),
+                        item_type.as_deref(),
+                        &method,
+                        &params_json,
+                    )
+                    .await?
+                }
+            };
+            emit_item_added(inner, item_db_id, item_uuid, item_type, turn_id, method).await?;
         }
         // `turn/plan/updated` — codex's own TODO checklist for the running
         // turn (`{ threadId, turnId, explanation, plan: [{ step, status }] }`,
@@ -1997,6 +2043,179 @@ fn item_turn_id(params: &Value) -> Option<&str> {
 
 fn should_persist_item_method(method: &str) -> bool {
     matches!(method, "item/started" | "item/completed")
+}
+
+/// Both spellings, for the same reason `fe/core/domain/conversation.ts`
+/// accepts both: live codex sends `userMessage`; the kernel stores
+/// `item.type` verbatim and its own tests have used the snake case.
+fn is_user_message_type(item_type: Option<&str>) -> bool {
+    matches!(item_type, Some("userMessage" | "user_message"))
+}
+
+/// One `harness_items` row for a codex `item/*` notification, exactly as
+/// this file inserted it before #1625 P2. `input_segments` is always NULL
+/// here: the segments of a batch live on the projection row the drain
+/// wrote, and an echo that reaches this insert is one no projection claims.
+async fn insert_item_row(
+    inner: &Arc<Inner>,
+    thread_id: &str,
+    turn_id: Option<&str>,
+    item_uuid: Option<&str>,
+    item_type: Option<&str>,
+    method: &str,
+    params_json: &str,
+) -> Result<i64> {
+    Ok(inner
+        .repo
+        .harness_item_insert(
+            &inner.worker_session_id,
+            inner.card_id.as_str(),
+            inner.track_id.as_str(),
+            thread_id,
+            turn_id,
+            item_uuid,
+            item_type,
+            method,
+            params_json,
+            None,
+        )
+        .await?)
+}
+
+async fn emit_item_added(
+    inner: &Arc<Inner>,
+    item_db_id: i64,
+    item_uuid: Option<String>,
+    item_type: Option<String>,
+    turn_id: Option<String>,
+    method: String,
+) -> Result<()> {
+    let scope = harness_event_scope(inner, "harness.item.added");
+    inner
+        .repo
+        .log_pure_event(
+            ActorId::Kernel,
+            scope,
+            None,
+            &inner.events,
+            &inner.card_role_cache,
+            &inner.track_area_cache,
+            Event::HarnessItemAdded {
+                worker_session_id: inner.worker_session_id.clone(),
+                card_id: inner.card_id.clone(),
+                track_id: inner.track_id.clone(),
+                item_db_id,
+                item_uuid,
+                item_type,
+                turn_id,
+                method,
+            },
+        )
+        .await?;
+    Ok(())
+}
+
+/// #1625 P2 (#1475) — the drained batch, written to the transcript BEFORE
+/// `turn/start` goes out.
+///
+/// Until this row exists the person's own sentence is readable from nowhere
+/// but the tab that sent it: the queue read (`GET /planner/run`) stops
+/// listing an entry the moment it drains, and `harness_items` used to gain a
+/// row only when codex echoed the turn back. Reload, or a second device, saw
+/// an empty thread beside a `Working` dot for as long as codex took — or for
+/// ever, when the turn never came back.
+///
+/// The row is a `userMessage` in the shape codex will echo (schema:
+/// `UserMessageThreadItem { id, clientId, type, content: [TextUserInput] }`),
+/// keyed so the echo can find it: `item_uuid` = `client_id`, which is what
+/// the drain sends codex as `clientUserMessageId` and codex sends back as
+/// `item.clientId`; `turn_id` NULL, because there is no turn yet; `method`
+/// `item/completed`, because that is the only method a user message renders
+/// under. `_projection: true` marks the params as kernel-written until the
+/// echo replaces them. `input_segments` carries the per-entry segments, with
+/// attachments — the column the transcript renders a user row from.
+///
+/// One row per drained turn, not per entry: the drain joins every entry into
+/// ONE `InputItem::Text` (#1505 GAP-A3), so codex echoes ONE `userMessage`
+/// per turn with ONE `clientId`. `client_id` is the first entry's id; the
+/// other entries are readable through `input_segments`.
+///
+/// A projection with this key may already stand. The snapshot persisted at
+/// the top of `maybe_issue_turn` still lists the batch, so a harness
+/// restarted between that write and `persist_issuance_outcome` drains the
+/// same entries again under the same ids (`state_from_snapshot`: an
+/// `IssuingTurn` phase comes back as `TurnCompleted`/`Resumed`, and the
+/// queue is intact); a failed `turn/start` whose delete failed leaves one
+/// too. Either way it is stale — this drain is the batch's current
+/// issuance — so it is replaced, not joined. That is also why the delete in
+/// the failure arm of `maybe_issue_turn` only warns when it fails.
+async fn write_projection_row(
+    inner: &Arc<Inner>,
+    thread_id: &str,
+    client_id: &str,
+    segments: &[HarnessInputSegment],
+) -> Result<i64> {
+    let stale = inner
+        .repo
+        .harness_item_projection_delete(inner.card_id.as_str(), client_id)
+        .await?;
+    if stale > 0 {
+        tracing::debug!(
+            runtime_id = %inner.worker_session_id,
+            card_id = %inner.card_id,
+            client_id,
+            stale,
+            "planner harness replaced a stale user-message projection"
+        );
+    }
+    // Without the diff block: that block is context the kernel prepends for
+    // codex, and no transcript reader wants it (both frontends strip it from
+    // the echo; here there is nothing to strip).
+    let text = segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let params = serde_json::json!({
+        "item": {
+            "id": client_id,
+            "clientId": client_id,
+            "type": "userMessage",
+            "content": [{ "type": "text", "text": text }],
+        },
+        "_projection": true,
+    });
+    let params_json = serde_json::to_string(&params)?;
+    let input_segments = serde_json::to_string(segments)?;
+    let item_db_id = inner
+        .repo
+        .harness_item_insert(
+            &inner.worker_session_id,
+            inner.card_id.as_str(),
+            inner.track_id.as_str(),
+            thread_id,
+            None,
+            Some(client_id),
+            Some("userMessage"),
+            "item/completed",
+            &params_json,
+            Some(&input_segments),
+        )
+        .await?;
+    // The existing per-row event, so every client refetches the transcript
+    // now rather than at the echo (`fe/core/events/invalidation-plan.ts`
+    // maps `harness.item.added` to `['harness-items', card_id]`). No new
+    // event kind, no change to the invalidation plan.
+    emit_item_added(
+        inner,
+        item_db_id,
+        Some(client_id.to_string()),
+        Some("userMessage".to_string()),
+        None,
+        "item/completed".to_string(),
+    )
+    .await?;
+    Ok(item_db_id)
 }
 
 /// 5s defensive cap on the track-vcs diff-block fetch inside `maybe_issue_turn`.
@@ -2863,7 +3082,6 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     *inner.issued_turn_id.lock().await = None;
     *inner.issued_turn_head.lock().await = None;
-    *inner.issued_input_segments.lock().await = None;
     persist_snapshot(inner).await?;
 
     let drained = {
@@ -3048,6 +3266,16 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             .flat_map(QueueEntry::attachments)
             .map(|attachment| InputItem::local_image(attachment.path.clone())),
     );
+    // #1625 P2 — the key shared by the projection row and `turn/start`'s
+    // `clientUserMessageId`: the first drained entry that has an id. A batch
+    // of system entries alone (a commit notification, a task result) has
+    // none, and still becomes one turn and one echoed `userMessage`, so it
+    // gets a minted one from the same namespace.
+    let client_id = drained
+        .iter()
+        .find_map(QueueEntry::id)
+        .cloned()
+        .unwrap_or_else(QueueEntryId::mint);
     let issued = async {
         if !prepared.actions.is_empty()
             && let Some(problem) = crate::semantic_recovery::binding_problem(
@@ -3086,8 +3314,11 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 .await?,
             )
         };
+        // Written before `turn/start` goes out, and after the last edit to
+        // `prepared.segments` above, so the row says what codex is told.
+        write_projection_row(inner, &thread_id, client_id.as_str(), &prepared.segments).await?;
         let turn = IssueTurnHandle::from_reconciliation(inner)
-            .issue(&thread_id, items, &selection)
+            .issue(&thread_id, items, &selection, Some(client_id.as_str()))
             .await?;
         if let Some(issuance) = issuance {
             crate::semantic_recovery::bind_turn(inner.repo.as_ref(), &issuance, &turn).await?;
@@ -3113,10 +3344,6 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
             *inner.issued_turn_id.lock().await = Some(turn_id.clone());
             *inner.issued_turn_head.lock().await = diff.current_head.clone();
-            *inner.issued_input_segments.lock().await = Some(IssuedInputSegments {
-                turn_id,
-                segments: prepared.segments,
-            });
             persist_issuance_outcome(inner).await?;
         }
         Err(e) => {
@@ -3162,6 +3389,23 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             apply_refusal(inner, &refusal).await;
             #[cfg(feature = "fixtures")]
             inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
+            // #1625 P2 — the batch goes back on the queue, so the row that
+            // said it was sent goes too; the queue region lists it again.
+            // A failed delete is logged, not propagated: the next drain of
+            // this batch replaces the row (`write_projection_row`).
+            if let Err(delete_error) = inner
+                .repo
+                .harness_item_projection_delete(inner.card_id.as_str(), client_id.as_str())
+                .await
+            {
+                tracing::warn!(
+                    runtime_id = %inner.worker_session_id,
+                    card_id = %inner.card_id,
+                    client_id = %client_id,
+                    error = %delete_error,
+                    "planner harness could not delete the projection of a re-buffered batch"
+                );
+            }
             rebuffer_head(inner, drained).await;
             *inner.state.lock().await = prior_turn
                 .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
@@ -3520,7 +3764,6 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let last_thread_id = inner.thread_id.read().await.clone();
     let last_turn_id = inner.last_turn_id.lock().await.clone();
     let issued_turn_head = inner.issued_turn_head.lock().await.clone();
-    let issued_input_segments = inner.issued_input_segments.lock().await.clone();
     let last_report_body_sha256 = inner.last_report_body_sha256.lock().await.clone();
     let last_seen_head = inner.last_seen_head.lock().await.clone();
     let token_usage = inner.token_usage.lock().await.clone();
@@ -3534,7 +3777,6 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     );
     snapshot.last_seen_head = last_seen_head;
     snapshot.issued_turn_head = issued_turn_head;
-    snapshot.issued_input_segments = issued_input_segments;
     snapshot.token_usage = token_usage;
     snapshot
 }

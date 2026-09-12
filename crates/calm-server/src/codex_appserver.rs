@@ -772,10 +772,18 @@ async fn connect_timeout_diagnostic(sock_path: &Path, awaited: &str, peer_state:
 /// side of this feature uses `model_reasoning_effort` — a different struct
 /// with different casing rules — and confusing the two produces a frame codex
 /// silently ignores.
+///
+/// `client_user_message_id` is codex's `TurnStartParams.clientUserMessageId`
+/// (`Option<String>`, omitted when `None` for the same reason as the two
+/// keys above). Codex copies it verbatim onto the `userMessage` item it
+/// echoes for this turn as `item.clientId`, which is the only key the kernel
+/// has for matching that echo back to the row it wrote at drain time (#1625
+/// P2). One value per turn, because codex echoes one `userMessage` per turn.
 fn turn_start_params(
     thread_id: &str,
     input: &[InputItem],
     selection: &TurnModelSelection,
+    client_user_message_id: Option<&str>,
 ) -> Value {
     let mut params = json!({ "threadId": thread_id, "input": input });
     let map = params
@@ -786,6 +794,12 @@ fn turn_start_params(
     }
     if let Some(effort) = selection.effort.as_deref() {
         map.insert("effort".into(), Value::String(effort.to_string()));
+    }
+    if let Some(client_id) = client_user_message_id {
+        map.insert(
+            "clientUserMessageId".into(),
+            Value::String(client_id.to_string()),
+        );
     }
     params
 }
@@ -1151,9 +1165,23 @@ impl CodexAppServer {
         input: Vec<InputItem>,
         selection: &TurnModelSelection,
     ) -> Result<TurnStartResult> {
+        self.turn_start_with_client_id(thread_id, input, selection, None)
+            .await
+    }
+
+    /// `turn/start` carrying `clientUserMessageId` — see `turn_start_params`.
+    /// The planner drain is the one caller with an id to send; every other
+    /// turn goes through [`Self::turn_start`], which sends none.
+    pub async fn turn_start_with_client_id(
+        &self,
+        thread_id: &str,
+        input: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        client_user_message_id: Option<&str>,
+    ) -> Result<TurnStartResult> {
         self.request(
             "turn/start",
-            turn_start_params(thread_id, &input, selection),
+            turn_start_params(thread_id, &input, selection, client_user_message_id),
         )
         .await
     }
@@ -2430,6 +2458,7 @@ mod tests {
                 model: Some("gpt-5".into()),
                 effort: Some("high".into()),
             },
+            None,
         );
         assert_eq!(frame["threadId"], json!("thread-1"));
         assert_eq!(frame["model"], json!("gpt-5"));
@@ -2449,6 +2478,7 @@ mod tests {
                 model: catalog_entry["model"].as_str().map(ToOwned::to_owned),
                 effort: None,
             },
+            None,
         );
         assert_eq!(frame["model"], json!("gpt-5"));
         assert_ne!(frame["model"], json!("preset-abc"));
@@ -2459,7 +2489,7 @@ mod tests {
     /// which would be a value we chose to send rather than silence.
     #[test]
     fn inherit_sends_neither_key_and_not_a_null_either() {
-        let frame = turn_start_params("thread-1", &[], &TurnModelSelection::inherit());
+        let frame = turn_start_params("thread-1", &[], &TurnModelSelection::inherit(), None);
         let map = frame.as_object().expect("params is an object");
         assert!(!map.contains_key("model"), "frame was {frame}");
         assert!(!map.contains_key("effort"), "frame was {frame}");
@@ -2477,6 +2507,7 @@ mod tests {
                 model: Some("gpt-5".into()),
                 effort: None,
             },
+            None,
         );
         assert_eq!(model_only["model"], json!("gpt-5"));
         assert!(!model_only.as_object().unwrap().contains_key("effort"));
@@ -2488,6 +2519,7 @@ mod tests {
                 model: None,
                 effort: Some("low".into()),
             },
+            None,
         );
         assert_eq!(effort_only["effort"], json!("low"));
         assert!(!effort_only.as_object().unwrap().contains_key("model"));
@@ -2505,8 +2537,25 @@ mod tests {
                 model: None,
                 effort: Some("ludicrous".into()),
             },
+            None,
         );
         assert_eq!(frame["effort"], json!("ludicrous"));
+    }
+
+    /// #1625 P2 — the drain's client id reaches the frame under codex's own
+    /// key, and its absence is an absent key rather than a `null`.
+    #[test]
+    fn a_client_user_message_id_reaches_the_frame_and_is_omitted_otherwise() {
+        let frame = turn_start_params("t", &[], &TurnModelSelection::inherit(), Some("entry-0001"));
+        assert_eq!(frame["clientUserMessageId"], json!("entry-0001"));
+        let bare = turn_start_params("t", &[], &TurnModelSelection::inherit(), None);
+        assert!(
+            !bare
+                .as_object()
+                .unwrap()
+                .contains_key("clientUserMessageId"),
+            "frame was {bare}"
+        );
     }
 
     #[test]

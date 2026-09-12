@@ -363,6 +363,7 @@ After the second call returns, output the single word OK and stop.";
             &thread_id,
             vec![InputItem::text(prompt)],
             &TurnModelSelection::inherit(),
+            None,
         )
         .await
         .expect("turn_start");

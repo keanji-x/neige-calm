@@ -13,7 +13,6 @@ use crate::harness::Observation;
 use crate::harness::queue::{QueueEntry, QueueEntryId};
 use crate::harness::state::{HarnessState, IssuingKind};
 use crate::harness::token_usage::TokenUsage;
-use crate::model::HarnessInputSegment;
 use crate::planner_attachments::bind::BoundAttachment;
 
 // #679 PR1 — `HarnessPhaseTag` moved to `calm_types::harness` (TS-exported,
@@ -24,17 +23,6 @@ pub use calm_types::harness::HarnessPhaseTag;
 
 pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 pub const HARNESS_MODE: &str = "harness";
-
-/// Presentation metadata retained until the echoed input completes (or the
-/// next input batch supersedes it).
-/// Keeping the turn id with it prevents a late notification from inheriting a
-/// newer turn's classification, and persisting it lets a harness recovered
-/// mid-turn classify the remaining item notifications without reading English.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct IssuedInputSegments {
-    pub turn_id: String,
-    pub segments: Vec<HarnessInputSegment>,
-}
 
 /// #1505 PR1 — the persisted half of a [`QueueEntry::User`].
 ///
@@ -286,8 +274,11 @@ pub struct HarnessSnapshot {
     pub last_seen_head: Option<String>,
     #[serde(default)]
     pub issued_turn_head: Option<String>,
-    #[serde(default)]
-    pub issued_input_segments: Option<IssuedInputSegments>,
+    // `issued_input_segments` lived here from #1505 S6 to #1625 P2. The
+    // segments of the batch in flight are now the `input_segments` column of
+    // the projection row the drain writes to `harness_items`, which is
+    // durable on its own; a snapshot on disk that still carries the old key
+    // is read without it (no `deny_unknown_fields`, see `token_usage`).
     #[serde(default)]
     pub wedged_reason: Option<String>,
     /// #1255 S3 — latest `thread/tokenUsage/updated` reading for this thread.
@@ -350,7 +341,6 @@ impl HarnessSnapshot {
             last_report_body_sha256: None,
             last_seen_head: None,
             issued_turn_head: None,
-            issued_input_segments: None,
             wedged_reason: None,
             token_usage: None,
         };
@@ -385,7 +375,6 @@ impl HarnessSnapshot {
             last_report_body_sha256,
             last_seen_head: None,
             issued_turn_head: None,
-            issued_input_segments: None,
             // Set by `snapshot_for` from `Inner`, exactly like
             // `last_seen_head` / `issued_turn_head` above: `from_state` sees
             // only `HarnessState`, and token usage does not live there.
@@ -645,7 +634,7 @@ impl From<&HarnessState> for HarnessPhaseTag {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{HarnessInputPresentation, HarnessInputSegment};
+
     use serde_json::json;
 
     /// Forward compatibility as an executed test rather than an asserted
@@ -700,10 +689,6 @@ mod tests {
         );
         assert_eq!(snapshot.push_watermark, 42, "the rest still round-trips");
         assert_eq!(snapshot.last_thread_id.as_deref(), Some("thread-pre-1255"));
-        assert_eq!(
-            snapshot.issued_input_segments, None,
-            "pre-#1270 snapshots have no structured input classification"
-        );
     }
 
     /// #1505 PR1 §11.1 #3 — the snapshot-layer half of "PR1 never silently
@@ -896,28 +881,25 @@ mod tests {
         );
     }
 
+    /// #1625 P2 — a snapshot written between #1505 S6 and this slice carries
+    /// an `issued_input_segments` key. The field is gone (the batch in flight
+    /// is now the projection row in `harness_items`), and such a snapshot
+    /// must still load: the key is ignored, nothing else is disturbed.
     #[test]
-    fn issued_input_segments_round_trip_without_a_schema_bump() {
-        let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-        let segments = vec![HarnessInputSegment {
-            presentation: HarnessInputPresentation::SystemReportEdited,
-            text: "report changed".into(),
-            attachments: Vec::new(),
-        }];
-        snapshot.issued_input_segments = Some(IssuedInputSegments {
-            turn_id: "turn-structured".into(),
-            segments: segments.clone(),
+    fn a_snapshot_with_the_retired_issued_input_segments_key_still_loads() {
+        let mut value =
+            serde_json::to_value(HarnessSnapshot::initial(7, vec![])).expect("serialize snapshot");
+        value["issued_input_segments"] = serde_json::json!({
+            "turn_id": "turn-structured",
+            "segments": [{
+                "presentation": "system_report_edited",
+                "text": "report changed",
+                "attachments": [],
+            }],
         });
-
-        let value = serde_json::to_value(snapshot).expect("serialize snapshot");
         let recovered = HarnessSnapshot::from_value_strict(value);
-        assert_eq!(
-            recovered.issued_input_segments,
-            Some(IssuedInputSegments {
-                turn_id: "turn-structured".into(),
-                segments,
-            })
-        );
+        assert_eq!(recovered.push_watermark, 7);
+        assert!(recovered.pending_entries().is_empty());
     }
 
     /// #1514 review — the compatibility argument covers the OTHER direction

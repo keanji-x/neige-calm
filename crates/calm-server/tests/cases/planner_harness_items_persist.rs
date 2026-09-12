@@ -291,8 +291,12 @@ async fn item_notification_persists_row_and_emits_event() {
     harness.shutdown().await.unwrap();
 }
 
+/// #1625 P2 — the segments of a mixed batch are on the transcript from the
+/// moment the batch drains, on the projection row the drain writes; codex's
+/// echo upgrades that row and never adds a second one. Before this slice the
+/// segments waited in the snapshot (`issued_input_segments`) for the echo.
 #[tokio::test]
-async fn issued_mixed_observation_segments_are_persisted_on_the_echoed_user_message() {
+async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive_the_echo() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let pending = vec![
@@ -326,15 +330,24 @@ async fn issued_mixed_observation_segments_are_persisted_on_the_echoed_user_mess
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
+    let client_id = daemon.started_turn_client_ids_for_test()[0]
+        .clone()
+        .expect("the drain sends clientUserMessageId");
 
-    let issued = harness
-        .snapshot()
-        .await
-        .issued_input_segments
-        .expect("issued segments must survive in the harness snapshot");
+    // The projection row: written before `turn/start`, so it is there the
+    // moment the turn is.
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    let projection = &rows[0];
+    assert_eq!(projection.item_type.as_deref(), Some("userMessage"));
+    assert_eq!(projection.method, "item/completed");
+    assert_eq!(projection.turn_id, None);
+    assert_eq!(projection.item_uuid.as_deref(), Some(client_id.as_str()));
+    let issued_segments = projection
+        .input_segments
+        .clone()
+        .expect("the projection carries the batch's segments");
     assert_eq!(
-        issued
-            .segments
+        issued_segments
             .iter()
             .map(|segment| segment.presentation)
             .collect::<Vec<_>>(),
@@ -346,17 +359,17 @@ async fn issued_mixed_observation_segments_are_persisted_on_the_echoed_user_mess
     );
     assert_eq!(
         issued_text,
-        issued
-            .segments
+        issued_segments
             .iter()
             .map(|segment| segment.text.as_str())
             .collect::<Vec<_>>()
             .join("\n"),
         "the structured segments must be the exact strings flattened for Codex"
     );
-    let issued_turn_id = issued.turn_id;
-    let issued_segments = issued.segments;
+    let issued_turn_id = "fake-turn-0001";
 
+    // A user message echo that names no projection is stored as its own row
+    // and inherits nothing: provenance is the projection's alone.
     daemon.emit_notification_for_test(Notification::Item {
         method: "item/completed".into(),
         params: json!({
@@ -369,12 +382,14 @@ async fn issued_mixed_observation_segments_are_persisted_on_the_echoed_user_mess
             }
         }),
     });
-    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    let rows = wait_for_rows(&repo, &card_id, 2).await;
     assert_eq!(
-        rows[0].input_segments, None,
-        "a late or foreign user-message must not inherit the active turn's provenance"
+        rows[1].input_segments, None,
+        "a late or foreign user-message must not inherit the batch's provenance"
     );
 
+    // The real echo upgrades the projection in place: same row id, codex's
+    // turn and item id, the segments untouched, and still two rows.
     daemon.emit_notification_for_test(Notification::Item {
         method: "item/completed".into(),
         params: json!({
@@ -382,31 +397,45 @@ async fn issued_mixed_observation_segments_are_persisted_on_the_echoed_user_mess
             "turn": { "id": issued_turn_id },
             "item": {
                 "id": "item-user-structured-source",
+                "clientId": client_id,
                 "type": "userMessage",
-                "content": [{ "type": "text", "text": issued_text }]
+                "content": [{ "type": "text", "text": issued_text.clone() }]
             }
         }),
     });
-
-    let rows = wait_for_rows(&repo, &card_id, 2).await;
-    assert_eq!(rows[1].input_segments, Some(issued_segments));
-    let params: Value = serde_json::from_str(&rows[1].params).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let rows = loop {
+        let rows = repo
+            .harness_item_list_by_card(&card_id, 0, 100, false)
+            .await
+            .unwrap();
+        if rows[0].turn_id.is_some() {
+            break rows;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the echo to upgrade the projection row"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(rows.len(), 2, "the echo upgrades; it never appends");
+    assert_eq!(rows[0].id, projection.id);
+    assert_eq!(rows[0].turn_id.as_deref(), Some(issued_turn_id));
+    assert_eq!(
+        rows[0].item_uuid.as_deref(),
+        Some("item-user-structured-source")
+    );
+    assert_eq!(rows[0].input_segments, Some(issued_segments));
+    let params: Value = serde_json::from_str(&rows[0].params).unwrap();
     assert_eq!(
         params["item"]["content"][0]["text"], issued_text,
         "provenance belongs in its own column; the upstream frame stays verbatim"
     );
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        if harness.snapshot().await.issued_input_segments.is_none() {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "once the completed user-message owns the segments, later item notifications must not \
-             keep rewriting the full batch through the runtime snapshot"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    assert_eq!(
+        params.get("_projection"),
+        None,
+        "codex's frame replaces the kernel-written one wholesale"
+    );
 
     harness.shutdown().await.unwrap();
 }
