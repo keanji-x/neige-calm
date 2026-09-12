@@ -260,6 +260,57 @@ fn action_observation(
     }
     wait_plan(wait_for, wait_ms, settle_ms, signal_events).map(Some)
 }
+/// The observation an open returns. With `format=image` a failed render
+/// falls back to the text observation plus `image: {status: unavailable,
+/// reason}`; only a failed text observation is an error.
+async fn observe_for_open(
+    service: &TerminalInteraction,
+    identity: &ToolCallIdentity,
+    terminal_id: &str,
+    format: ObservationFormat,
+) -> anyhow::Result<(Value, Option<Vec<u8>>)> {
+    let target = Target::Terminal(terminal_id.to_owned());
+    let attempt = service
+        .observe(identity, &target, 0, WaitPlan::default(), format)
+        .await;
+    match attempt {
+        Ok(observed) => Ok(observed),
+        Err(error) if format == ObservationFormat::Image => {
+            let (mut metadata, mut png) = service
+                .observe(
+                    identity,
+                    &target,
+                    0,
+                    WaitPlan::default(),
+                    ObservationFormat::Text,
+                )
+                .await?;
+            apply_image_outcome(&mut metadata, &mut png, Err(error));
+            Ok((metadata, png))
+        }
+        Err(error) => Err(error),
+    }
+}
+/// Merge the outcome of an explicit image observation into an open result
+/// that already carries a text observation (#1620 F6): success replaces the
+/// state and PNG; failure keeps the text state and creation/claim facts and
+/// reports `image: {status: unavailable, reason}` with no PNG.
+fn apply_image_outcome(
+    metadata: &mut Value,
+    png: &mut Option<Vec<u8>>,
+    image: anyhow::Result<(Value, Option<Vec<u8>>)>,
+) {
+    match image {
+        Ok((image_metadata, image_png)) => {
+            *metadata = image_metadata;
+            *png = image_png;
+        }
+        Err(error) => {
+            *png = None;
+            metadata["image"] = json!({"status":"unavailable","reason":error.to_string()});
+        }
+    }
+}
 /// #1620 — the idempotency hash view of an open request. The generated hook
 /// env (`TERMINAL_HOOK_ENV_KEYS`) is derived by the adapter from the card id
 /// it allocates and never enters this view, so a replayed request_id hashes
@@ -373,20 +424,15 @@ async fn call(
                 .map_err(failure)?
                 .ok_or_else(|| RpcError::internal("created card has no terminal"))?;
             // Establish the observation client before the Planner enters a TUI.
-            let (metadata, png) = service
-                .observe(
-                    &identity,
-                    &Target::Terminal(terminal.id.clone()),
-                    0,
-                    WaitPlan::default(),
-                    args.format,
-                )
-                .await
-                .map_err(failure)?;
-            let (mut metadata, mut png) = (metadata, png);
+            // The created ids survive an image failure: the text observation
+            // is returned with `image: unavailable` instead of an error.
+            let (mut metadata, mut png) =
+                observe_for_open(service, &identity, &terminal.id, args.format)
+                    .await
+                    .map_err(failure)?;
             if args.claim {
-                // Same claim path as calm.terminal.control; the open already
-                // succeeded whatever the claim does.
+                // Same claim path as calm.terminal.control (claim-if-unowned);
+                // the open already succeeded whatever the claim does.
                 match service
                     .claim_after_open(
                         &identity,
@@ -397,8 +443,10 @@ async fn call(
                 {
                     Ok(receipt) if receipt["observation"]["status"] == "available" => {
                         let claim = json!({"status":"claimed","control_id":receipt["control_id"]});
+                        metadata = receipt["observation"]["state"].clone();
+                        png = None;
                         if args.format == ObservationFormat::Image {
-                            let (image, image_png) = service
+                            let image = service
                                 .observe(
                                     &identity,
                                     &Target::Terminal(terminal.id.clone()),
@@ -406,12 +454,8 @@ async fn call(
                                     WaitPlan::default(),
                                     args.format,
                                 )
-                                .await
-                                .map_err(failure)?;
-                            metadata = image;
-                            png = image_png;
-                        } else {
-                            metadata = receipt["observation"]["state"].clone();
+                                .await;
+                            apply_image_outcome(&mut metadata, &mut png, image);
                         }
                         metadata["claim"] = claim;
                     }
@@ -508,6 +552,48 @@ mod schema_tests;
 #[cfg(test)]
 mod summary_tests {
     use super::*;
+
+    /// #1620 F6 — an image failure after creation, claim and text readback
+    /// keeps the text state, the claim and the ids, drops the PNG and reports
+    /// the reason; an image success replaces state and PNG.
+    #[test]
+    fn open_image_failure_keeps_the_text_state_and_reports_image_unavailable() {
+        let text = json!({"terminal_id":"t-1","text":["READY"],"role":"owner","control_id":"c-1"});
+        let mut metadata = text.clone();
+        let mut png = Some(vec![1, 2, 3]);
+        apply_image_outcome(
+            &mut metadata,
+            &mut png,
+            Err(anyhow::anyhow!("terminal image unavailable: zero geometry")),
+        );
+        assert!(png.is_none(), "no PNG on an image failure");
+        assert_eq!(
+            metadata["image"],
+            json!({"status":"unavailable","reason":"terminal image unavailable: zero geometry"})
+        );
+        for key in ["terminal_id", "text", "role", "control_id"] {
+            assert_eq!(metadata[key], text[key], "{key} must survive");
+        }
+        metadata["claim"] = json!({"status":"claimed","control_id":"c-1"});
+        metadata["card_id"] = json!("card-1");
+        let wire =
+            serde_json::to_value(observation_result(metadata.clone(), png).unwrap()).unwrap();
+        assert_eq!(wire["structuredContent"], metadata);
+        assert_eq!(wire["content"].as_array().unwrap().len(), 1, "text only");
+        assert_eq!(wire["content"][0]["type"], "text");
+
+        let mut metadata = text.clone();
+        let mut png = None;
+        let rendered =
+            json!({"terminal_id":"t-1","text":["READY"],"image_source":"rmux_client_projection"});
+        apply_image_outcome(
+            &mut metadata,
+            &mut png,
+            Ok((rendered.clone(), Some(vec![9]))),
+        );
+        assert_eq!(metadata, rendered);
+        assert_eq!(png, Some(vec![9]));
+    }
 
     #[test]
     fn terminal_open_failure_is_a_one_line_summary_with_structured_detail() {
