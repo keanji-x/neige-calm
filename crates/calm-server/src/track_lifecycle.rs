@@ -16,8 +16,8 @@ use sqlx::{Sqlite, Transaction};
 // #679 PR1 — moved vocabulary, re-exported at the old paths. Source
 // definitions live in calm-types; do NOT re-declare them here.
 pub use calm_types::track_lifecycle::{
-    ActorKind, TransitionError, actor_is_planner_author, actor_kind, user_can_resume,
-    validate_transition,
+    ActorKind, TransitionError, actor_is_planner_author, actor_kind, planner_allowed_targets,
+    user_can_resume, validate_transition,
 };
 
 /// Auto-promote a draft track to planning from inside an audited write tx.

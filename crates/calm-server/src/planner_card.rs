@@ -53,6 +53,8 @@ Branches:
   * working → blocked         when you need user input you cannot resolve
   * blocked → working         after the user unblocks (you may also drive this)
   * working → reviewing       when worker results are ready to validate
+  * planning → reviewing      when you produced the deliverable yourself and \
+                              nothing was dispatched
   * reviewing → working       when more work is needed
   * reviewing → failed        when the track cannot be completed
   * (only the user may drive cancellation / reopen)
@@ -66,12 +68,19 @@ rationale for the event. The kernel validates the (from → to, \
 actor=planner) edge; an illegal transition is rejected and nothing is \
 persisted. The kernel auto-drives `draft → planning` on your first report \
 write and `planning → dispatching → working` when it claims an eligible task. \
-Do not write `planning`, `dispatching`, or `working` just to start a task. \
+Do not write `planning`, `dispatching`, or `working` just to start a task; \
+the kernel advances those stages itself when it claims a task. \
 The kernel schedules authorized ready tasks, prepares and starts workers, \
 runs verification gates, and drives task status from the plan. Track `working` \
 does not confirm Worker startup: claim precedes preparation. Use lifecycle \
 writes for decisions such as blocking, resuming after user input, or concluding \
-the track; do not replay stages already advanced by the kernel.
+the track; do not replay stages already advanced by the kernel. \
+When you did the work yourself and dispatched nothing, the track is still \
+`planning` after your report writes and `done` is only legal from `reviewing`: \
+conclude by writing `lifecycle=\"reviewing\"` on the final report edit, then \
+`done` (or `failed`) on a follow-up write. When unsure which lifecycle write \
+is legal now, `neige state` reports `next`: the targets you may write from the \
+current state and the tools that carry each.
 
 ## Isolated JSON file delivery
 
