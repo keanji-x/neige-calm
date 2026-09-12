@@ -25,7 +25,7 @@ pub(crate) use target::Binding;
 pub use target::Target;
 #[cfg(test)]
 pub(crate) use target::TaskBinding;
-pub use wait::{SETTLE_MS_DEFAULT, SETTLE_MS_MAX, WAIT_MS_MAX, WaitFor, WaitSpec};
+pub use wait::{SETTLE_MS_DEFAULT, SETTLE_MS_MAX, WAIT_MS_MAX, WaitFor, WaitPlan};
 
 pub struct TerminalInteraction {
     repo: Arc<dyn RouteRepo>,
@@ -164,7 +164,7 @@ impl TerminalInteraction {
         identity: &ToolCallIdentity,
         target: &Target,
         offset: usize,
-        wait: WaitSpec,
+        wait: WaitPlan,
         format: ObservationFormat,
     ) -> Result<(Value, Option<Vec<u8>>)> {
         wait.validate()?;
@@ -183,7 +183,7 @@ impl TerminalInteraction {
         resolved: target::Resolved,
         client: &Client,
         offset: usize,
-        wait: WaitSpec,
+        wait: WaitPlan,
         baseline: Option<u64>,
         format: ObservationFormat,
     ) -> Result<(Value, Option<Vec<u8>>)> {
@@ -279,7 +279,7 @@ impl TerminalInteraction {
         identity: &ToolCallIdentity,
         target: &Target,
         action: &str,
-        observation_wait: Option<WaitSpec>,
+        observation_wait: Option<WaitPlan>,
     ) -> Result<Value> {
         if let Some(wait) = observation_wait {
             wait.validate()?;

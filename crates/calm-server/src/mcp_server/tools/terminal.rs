@@ -12,7 +12,7 @@ use crate::operation::terminal_adapter::{
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::terminal_interaction::{
-    ObservationFormat, Target, TerminalInteraction, WaitFor, WaitSpec,
+    ObservationFormat, Target, TerminalInteraction, WaitFor, WaitPlan,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -224,12 +224,12 @@ fn open_failure_result(receipt: Value) -> ToolResult {
     let summary = open_failure_summary(&receipt);
     ToolResult::structured_with_summary(receipt, summary)
 }
-fn wait_spec(
+fn wait_plan(
     wait_for: Option<WaitFor>,
     wait_ms: Option<u64>,
     settle_ms: Option<u64>,
-) -> Result<WaitSpec, RpcError> {
-    WaitSpec::new(wait_for, wait_ms, settle_ms)
+) -> Result<WaitPlan, RpcError> {
+    WaitPlan::new(wait_for, wait_ms, settle_ms)
         .map_err(|error| RpcError::invalid_params(error.to_string()))
 }
 fn action_observation(
@@ -238,7 +238,7 @@ fn action_observation(
     wait_for: Option<WaitFor>,
     settle_ms: Option<u64>,
     detach: bool,
-) -> Result<Option<WaitSpec>, RpcError> {
+) -> Result<Option<WaitPlan>, RpcError> {
     if ((wait_ms.is_some() || wait_for.is_some() || settle_ms.is_some()) && !observe)
         || (detach && observe)
     {
@@ -249,7 +249,7 @@ fn action_observation(
     if !observe {
         return Ok(None);
     }
-    wait_spec(wait_for, wait_ms, settle_ms).map(Some)
+    wait_plan(wait_for, wait_ms, settle_ms).map(Some)
 }
 async fn call(
     name: &str,
@@ -352,7 +352,7 @@ async fn call(
                     &identity,
                     &Target::Terminal(terminal.id.clone()),
                     0,
-                    WaitSpec::default(),
+                    WaitPlan::default(),
                     args.format,
                 )
                 .await
@@ -369,7 +369,7 @@ async fn call(
                     "scroll_offset exceeds history limit",
                 ));
             }
-            let wait = wait_spec(args.wait_for, args.wait_ms, args.settle_ms)?;
+            let wait = wait_plan(args.wait_for, args.wait_ms, args.settle_ms)?;
             let (metadata, png) = service
                 .observe(
                     &identity,

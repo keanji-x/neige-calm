@@ -14,7 +14,7 @@ impl TerminalInteraction {
         request_key: &str,
         action: Value,
         allow_output_since_observation: bool,
-        observation_wait: Option<WaitSpec>,
+        observation_wait: Option<WaitPlan>,
     ) -> Result<Value> {
         if let Some(wait) = observation_wait {
             wait.validate()?;
@@ -145,7 +145,7 @@ impl TerminalInteraction {
                 // conflict. The capture registers as this connection's latest.
                 let receipt = stale_receipt(terminal, request_key, observation, observed, current);
                 return Ok(self
-                    .with_observation(identity, &client, receipt, Some(WaitSpec::default()), None)
+                    .with_observation(identity, &client, receipt, Some(WaitPlan::default()), None)
                     .await);
             }
         };

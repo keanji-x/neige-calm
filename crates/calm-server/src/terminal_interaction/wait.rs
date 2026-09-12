@@ -37,12 +37,12 @@ impl WaitFor {
 
 /// Validated waiting arguments shared by observe and action readbacks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct WaitSpec {
+pub struct WaitPlan {
     pub mode: WaitFor,
     pub budget_ms: u64,
     pub settle_ms: u64,
 }
-impl WaitSpec {
+impl WaitPlan {
     /// `wait_ms == None` selects the mode's default budget:
     /// [`CHANGE_WAIT_MS_DEFAULT`] for change, 0 for elapsed.
     pub fn new(
@@ -110,19 +110,19 @@ impl WaitReport {
     }
 }
 
-/// Wait according to `spec` against `baseline` (the revision whose change the
+/// Wait according to `plan` against `baseline` (the revision whose change the
 /// caller cares about). Change mode returns once the projection revision
 /// differs from the baseline and stayed quiet for `settle_ms`, or at the
 /// budget, or when the process exited / the client went away.
-pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport {
+pub async fn wait(client: &Client, plan: WaitPlan, baseline: u64) -> WaitReport {
     let started = Instant::now();
-    let budget = Duration::from_millis(spec.budget_ms);
-    if spec.mode == WaitFor::Elapsed {
-        if spec.budget_ms > 0 {
+    let budget = Duration::from_millis(plan.budget_ms);
+    if plan.mode == WaitFor::Elapsed {
+        if plan.budget_ms > 0 {
             tokio::time::sleep(budget).await;
         }
         return WaitReport {
-            mode: spec.mode,
+            mode: plan.mode,
             outcome: WaitOutcome::Elapsed,
             waited: budget,
             settled: false,
@@ -130,12 +130,12 @@ pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport 
         };
     }
     let deadline = started + budget;
-    let settle = Duration::from_millis(spec.settle_ms);
+    let settle = Duration::from_millis(plan.settle_ms);
     let revisions = match client.entry.handle.model_view.lock() {
         Ok(view) => view.subscribe(),
         Err(_) => {
             return WaitReport {
-                mode: spec.mode,
+                mode: plan.mode,
                 outcome: WaitOutcome::Unchanged,
                 waited: started.elapsed(),
                 settled: false,
@@ -171,7 +171,7 @@ pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport 
         WaitOutcome::Unchanged
     };
     WaitReport {
-        mode: spec.mode,
+        mode: plan.mode,
         outcome,
         waited: started.elapsed(),
         settled: settled && !exited,
@@ -270,8 +270,8 @@ mod tests {
     use super::*;
     use tokio::sync::watch;
 
-    fn spec(wait_for: Option<WaitFor>, wait_ms: Option<u64>) -> WaitSpec {
-        WaitSpec::new(wait_for, wait_ms, None).unwrap()
+    fn plan(wait_for: Option<WaitFor>, wait_ms: Option<u64>) -> WaitPlan {
+        WaitPlan::new(wait_for, wait_ms, None).unwrap()
     }
 
     /// `baseline_revision` is the string form of the revision the wait
@@ -302,17 +302,17 @@ mod tests {
 
     #[test]
     fn omitted_wait_ms_defaults_per_mode() {
-        assert_eq!(spec(None, None).budget_ms, 0);
-        assert_eq!(spec(Some(WaitFor::Elapsed), None).budget_ms, 0);
+        assert_eq!(plan(None, None).budget_ms, 0);
+        assert_eq!(plan(Some(WaitFor::Elapsed), None).budget_ms, 0);
         assert_eq!(
-            spec(Some(WaitFor::Change), None).budget_ms,
+            plan(Some(WaitFor::Change), None).budget_ms,
             CHANGE_WAIT_MS_DEFAULT
         );
         assert_eq!(CHANGE_WAIT_MS_DEFAULT, 2_000);
-        assert_eq!(spec(Some(WaitFor::Change), Some(0)).budget_ms, 0);
-        assert_eq!(spec(Some(WaitFor::Change), Some(15_000)).budget_ms, 15_000);
-        assert!(WaitSpec::new(Some(WaitFor::Change), Some(WAIT_MS_MAX + 1), None).is_err());
-        assert!(WaitSpec::new(None, None, Some(10)).is_err());
+        assert_eq!(plan(Some(WaitFor::Change), Some(0)).budget_ms, 0);
+        assert_eq!(plan(Some(WaitFor::Change), Some(15_000)).budget_ms, 15_000);
+        assert!(WaitPlan::new(Some(WaitFor::Change), Some(WAIT_MS_MAX + 1), None).is_err());
+        assert!(WaitPlan::new(None, None, Some(10)).is_err());
     }
 
     struct Fixture {

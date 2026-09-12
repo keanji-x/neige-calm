@@ -7,7 +7,7 @@ impl TerminalInteraction {
         identity: &ToolCallIdentity,
         client: &Arc<Client>,
         mut receipt: Value,
-        wait: Option<WaitSpec>,
+        wait: Option<WaitPlan>,
         baseline: Option<u64>,
     ) -> Value {
         let Some(wait) = wait else {
