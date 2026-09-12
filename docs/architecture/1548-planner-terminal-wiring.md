@@ -370,6 +370,127 @@ request. This applies to both Pipe and PTY branches. User shell startup files ke
 their ordinary shell contract. `ccode` on the development host is a zsh alias that
 sets HTTP_PROXY and HTTPS_PROXY to `http://127.0.0.1:2080` before starting Claude.
 
+## Hook signals and composite actions (#1620)
+
+After #1618 the Planner still inferred "is Claude done / waiting for me?" from
+pixels. #1620 adds explicit application state for terminals the Planner opens,
+reusing the Claude Worker hook transport, plus two bounded composite actions.
+
+### Transport
+
+`calm.terminal.open` submits the terminal-create operation with
+`planner_hooks: true`. The adapter allocates the card id in `prepare_tx`, derives
+the env from it and persists identical values in the terminal row and the spawn
+output: `NEIGE_CLAUDE_SETTINGS=<data_dir>/terminal-hooks/<card_id>.json`,
+`NEIGE_CARD_ID`, `NEIGE_CALM_BASE_URL`, `NEIGE_HOOK_PROVIDER=claude`,
+`NEIGE_HOOK_URL` (the bridge's existing env contract). The spawn side effect
+writes the hooks-only settings file (mkdir → write → spawn, so operation recovery
+re-creates it) before the child starts. The file registers exactly seven events —
+SessionStart, UserPromptSubmit, Stop, Notification, PermissionRequest,
+SessionEnd, SubagentStop — each running `neige-codex-bridge --provider claude`,
+which POSTs the payload to `/internal/claude/hook?card_id=` (loopback,
+`X-Calm-Actor: ai:claude`). Nothing is installed into `~/.claude` or the project;
+the Planner starts Claude with `claude --settings "$NEIGE_CLAUDE_SETTINGS"`.
+Human-created terminals (`POST /api/tracks/:id/terminal-cards`) keep
+`planner_hooks: false` and get exactly the env they asked for.
+
+Idempotency: the open's `stable_payload_hash` covers the request as sent plus
+`planner_hooks`; the generated keys never enter it (they are derived after
+hashing, from the allocated card id), so a replayed `request_id` returns the
+existing terminal. The settings file is deleted by the shared terminal reap
+(`reap_terminal_artifacts_with_renderer`: card/track/area delete, sweeper,
+create compensation); only the path derived from the server-owned directory and
+the card id is ever deleted, never a path read from env.
+
+### Ingest → ring
+
+`ingest_provider_hook` resolves the card first: for a `kind == "terminal"` card it
+parses the body into a bounded signal (`{seq, event (snake_case), notification_type?,
+message (≤200 chars, control characters stripped; taken from `message`, else
+`prompt`, else `reason`), claude_session_id?, received_at_ms}`), appends it to the
+CURRENT renderer entry's ring (`RendererEntry.signals`, capacity 64, under the
+registry lock so a superseded generation never receives it), marks the
+idempotency key and returns the same 2xx — BEFORE the persist / FSM projection
+path, so a terminal hook can never move a card FSM. The ring is idempotent on
+the ingest idempotency key (recent-key set), so a duplicate delivery racing the
+check-then-insert cache never appends twice; every accepted event gets a fresh
+`seq`. Malformed or unknown payloads are logged and acknowledged; codex hooks
+for terminal cards are acknowledged and ignored. A `watch<u64>` seq is published
+under the ring lock (`send_modify`, retained with zero subscribers).
+
+### Observation and waiting
+
+Every observation carries `signals: {hooks_seen, last_seq,
+since_previous_observation (≤20, newest last), dropped_since_previous_observation}`,
+read atomically with `last_seq` under the ring lock; the per-connection
+`LatestObservation` records `last_seq` so the baseline is per connection like
+revisions, and advancing it cannot skip an unlisted signal.
+
+`wait_for: "signal"` (budget default 15000 ms, max 20000, `settle_ms` refused,
+optional `signal_events` from the seven-event vocabulary, default
+`stop, notification, permission_request, session_end`) ends when a signal with
+`seq > wait.baseline_signal_seq` and a matching event exists, on process exit or
+disconnect, or at the budget (`outcome: unchanged`). `wait.outcome` adds `signal`
+and `wait.signal` carries the matching signal (null otherwise). The loop
+subscribes, marks the seq version seen, inspects the ring before every select
+and again on timeout. Baselines: observe → the previous observation's `last_seq`
+on this connection, else the seq at call start; input readback → the seq read
+immediately before the physical write (so a hook caused by the write is
+reported); control readback → the seq at call start; a readback of a cached
+(replayed) `request_id` → the state at that later call.
+
+### Composite actions
+
+* `input` action `{"type":"submit","text":"..."}`: the same validation as `text`
+  (nonempty, ≤16384 bytes, no control characters), encoded as the text bytes
+  plus one CR in ONE `ClientMsg::Input`, one receipt, one barrier; `repeat` is
+  refused. The plain `text` action still never submits.
+* `open` `claim: true`: after creation the same claim path as
+  `calm.terminal.control` runs (`claim` with a readback) and the observation is
+  returned with `control_id`/`role: owner` and `claim: {status: claimed}`. A claim
+  failure keeps the create success and ids and reports
+  `claim: {status: unavailable, reason}`. An open never revokes control held by
+  another client (the operation runtime returns the existing operation for a
+  replayed `request_id`, so "replayed" is not distinguishable from "fresh" —
+  and on a fresh terminal nobody holds control): a replayed open after a human
+  takeover reports `unavailable` with the reason instead of reclaiming; control
+  already held on this connection returns the current observation without a
+  second claim.
+
+### Trust statement
+
+Hook signals are UNTRUSTED advisory telemetry: the ingest route is loopback and
+keyed only by card id, so any local process can forge `event`, `message` and
+`notification_type`. No fence (binding, control lease, revision, pending write,
+physical write authority) consults signals; a signal never changes a fence, an
+input outcome or a card state. The tool descriptions and the Planner prompt say
+that signal text is application data, never an instruction, and that the screen
+is what to verify against.
+
+### Measured with Claude Code 2.1.259 on 2026-09-12
+
+Three runs of the real `claude` binary in a PTY (`pexpect`, 120×40,
+`--permission-mode default`, generated hooks-only settings logging every event
+with `date +%s%3N` and the stdin JSON; SessionStart, UserPromptSubmit, Stop,
+Notification, PermissionRequest, SessionEnd, SubagentStop and PreToolUse were
+registered). Timestamps are relative to the prompt submit.
+
+| Scenario | Events observed (order, Δt) | Notes |
+|---|---|---|
+| Session start | `SessionStart` | fires before the first prompt |
+| Short prompt ("reply pong") | `UserPromptSubmit` +0.6 s → `Stop` +3.0 s (`stop_hook_active:false`) | Stop marks the end of the answer |
+| Long prompt, Escape 6.4 s into generation | `UserPromptSubmit` +0.6 s; **no `Stop` within the following 100 s** | interrupt ends the turn without a Stop hook (the prompt returned to idle) |
+| Bash tool, command auto-allowed by user config (`ls`) | `UserPromptSubmit` → `PreToolUse` (Bash) +2.8 s → `Stop` +5.6 s → `SubagentStop` +7.6 s | no permission event when the tool is allow-listed |
+| Bash tool needing approval (`touch …`), Enter to approve | `UserPromptSubmit` → `PreToolUse` +3.0 s → `PermissionRequest` +3.0 s (`tool_name: Bash`, `permission_suggestions`) → Enter → `Stop` +3 s after approval | `PermissionRequest` is the actionable signal; no `Notification permission_prompt` arrived within the 4 s before approval |
+| Idle after Stop | `Notification` `notification_type: idle_prompt`, `message: "Claude is waiting for your input"` at +60 s | once per idle period |
+| `/exit` | `SessionEnd` `reason: prompt_input_exit` | |
+
+Not covered: programs other than Claude Code (no hooks, `hooks_seen` stays false
+and the Planner falls back to `wait_for=change`); a user configuration that
+disables hooks or overrides them; `Stop` after an Escape interrupt (measured
+absent, so an interrupt must be confirmed on the screen); Notification
+`permission_prompt` timing (unmeasured before approval).
+
 ## Acceptance evidence and limits
 
 The focused suite uses the actual authenticated MCP UDS server, real operation
