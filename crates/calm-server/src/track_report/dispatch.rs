@@ -346,7 +346,9 @@ pub(super) async fn snapshot_tx(
             "blocking_reason": blocking_reason, "declaration_present": declaration_present,
             "declaration_unavailable": !declaration_present, "declaration_withdrawn": declaration_withdrawn, "diagnostics": verdicts,
             "allocation": allocation,
-            "task": task.map(|t| json!({"attempt_id": t.id, "status": t.status, "status_detail": t.status_detail, "worker_card_id": t.worker_card_id}))
+            "task": task.map(|t| json!({"attempt_id": t.id, "status": t.status, "status_detail": t.status_detail, "worker_card_id": t.worker_card_id})),
+            // Stated up front so a Planner never learns the envelope at failure time.
+            "executor_environment": crate::dedicated_codex::executor_environment()
         }
     });
     if let Some(input) = candidate_input {

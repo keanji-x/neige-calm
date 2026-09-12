@@ -140,6 +140,8 @@ pub(super) async fn input_segments(
                     "run_summary": format!("runs/{task_id}.md"),
                 },
                 "decision": decision,
+                "executor_environment": crate::dedicated_codex::executor_environment(),
+                "recover_changes": crate::dedicated_codex::RECOVER_CHANGES,
                 "limitations": if crate::file_delivery::repair::for_task_tx(tx, &task).await?.is_some() || matches!(crate::file_delivery::selection(&task)?, Some(calm_types::task_execution::FileDelivery::CandidateConsumer { .. } | calm_types::task_execution::FileDelivery::CandidateReviewer { .. })) {
                     "Isolated consumer recovery starts a new workspace with the original immutable candidate file-set input binding, verification identity and original review/decision evidence when required. Previous Worker-created files are not inherited. Failed candidate outputs remain unsupported as recovery inputs. An accepted recovery receipt does not prove the Worker has started."
                 } else if matches!(crate::file_delivery::selection(&task)?, Some(calm_types::task_execution::FileDelivery::Consumer { .. })) {

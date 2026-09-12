@@ -10,7 +10,7 @@ mod session;
 pub use admission::{TurnAdmission, TurnLaunch};
 pub use bootstrap::WorkspaceRequirement;
 pub use home::{HomeReceipt, HomeSeed, NativeMcp, PrivateHome, ProviderSettings};
-pub use policy::DELIVERY_PROFILE;
+pub use policy::{DELIVERY_PROFILE, RECOVER_CHANGES, executor_environment};
 pub use session::*;
 
 #[derive(Debug, thiserror::Error)]

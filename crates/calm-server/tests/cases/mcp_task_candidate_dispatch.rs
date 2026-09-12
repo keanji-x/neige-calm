@@ -143,6 +143,7 @@ async fn dispatch_legacy_empty_json_payload_and_reply_remain_compatible() {
             "declaration_unavailable",
             "declaration_withdrawn",
             "diagnostics",
+            "executor_environment",
             "task",
             "track"
         ]

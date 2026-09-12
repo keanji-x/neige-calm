@@ -455,3 +455,18 @@ async fn semantic_recovery_action_count_boundary_preserves_the_storage_guard() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[test]
+fn semantic_recover_description_states_identical_environment() {
+    let description = descriptor()["description"].as_str().unwrap().to_string();
+    for needle in [
+        "identical execution environment",
+        "only the workspace is new",
+        "missing capability",
+    ] {
+        assert!(
+            description.contains(needle),
+            "Recover description lacks {needle:?}"
+        );
+    }
+}
