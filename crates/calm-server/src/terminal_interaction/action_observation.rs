@@ -14,8 +14,9 @@ impl TerminalInteraction {
             return receipt;
         };
         let captured = async {
-            // Re-read task/control state, but pin the physical client and its
-            // complete execution binding to the action that already ran.
+            // Pin the physical client and its complete execution binding to
+            // the action that already ran; `capture` re-reads task/control
+            // state again after its wait, against this same binding.
             let resolved = Self::resolve_target(
                 self.repo.as_ref(),
                 identity,

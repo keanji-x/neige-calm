@@ -333,6 +333,65 @@ async fn task_completion_revokes_control_but_preserves_current_output() {
     stop(&h, &w).await;
 }
 
+/// The readback wait can outlive the task. A control readback with a change
+/// wait parks on a quiet worker terminal; once it has subscribed to the
+/// projection (so its pre-wait resolution is over) the task is finished and
+/// output is injected to end the wait. The emitted status must be the
+/// post-wait one: `done` and not controllable.
+#[tokio::test]
+async fn readback_reports_a_task_that_finished_during_the_wait() {
+    let h = Harness::start().await;
+    let w = worker(&h, "claude", &h.track, true).await;
+    h.ok(
+        "calm.terminal.control",
+        json!({"task_id":w.task,"action":"claim"}),
+    )
+    .await;
+    let entry = h.state.terminal_renderer.get(&w.terminal).unwrap();
+    let waiters = || entry.handle.model_view.lock().unwrap().change_waiters();
+    let before = waiters();
+    let released = h.call(
+        "calm.terminal.control",
+        json!({"task_id":w.task,"action":"release","observe":true,"wait_for":"change","wait_ms":10000}),
+    );
+    let finish = async {
+        while waiters() == before {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
+            .bind(&w.task)
+            .bind(now_ms())
+            .execute(h.sql.pool())
+            .await
+            .unwrap();
+        entry
+            .handle
+            .render_plane
+            .lock()
+            .unwrap()
+            .on_pty_chunk(b"TASK_DONE\r\n".to_vec());
+    };
+    let (released, ()) = tokio::join!(released, finish);
+    assert!(released.get("error").is_none(), "{released}");
+    let receipt = &released["result"]["structuredContent"];
+    assert_eq!(receipt["control_id"], Value::Null, "{receipt}");
+    assert_eq!(receipt["observation"]["status"], "available", "{receipt}");
+    let state = &receipt["observation"]["state"];
+    assert_eq!(state["wait"]["outcome"], "changed", "{state}");
+    assert!(
+        state["text"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line.as_str().unwrap().trim_end() == "TASK_DONE"),
+        "{state}"
+    );
+    assert_eq!(state["task_status"], "done", "{state}");
+    assert_eq!(state["controllable"], false, "{state}");
+    assert_eq!(state["task"]["task_id"], w.task);
+    stop(&h, &w).await;
+}
+
 #[tokio::test]
 async fn worker_session_replacement_invalidates_previous_task_observations() {
     use calm_server::db::sqlite::session_supersede_and_start_tx;

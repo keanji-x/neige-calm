@@ -28,6 +28,9 @@ pub struct Harness {
     pub track: String,
 }
 impl Harness {
+    pub fn interaction(&self) -> Arc<TerminalInteraction> {
+        self.server.terminal_interaction.get().unwrap().clone()
+    }
     pub fn supervisor_socket(&self) -> PathBuf {
         self.supervisor.sock().to_owned()
     }

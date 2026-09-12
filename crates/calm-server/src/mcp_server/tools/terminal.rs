@@ -210,6 +210,20 @@ fn receipt_result(action: &str, receipt: Value) -> ToolResult {
     let summary = receipt_summary(action, &receipt);
     ToolResult::structured_with_summary(receipt, summary)
 }
+/// An open whose card operation did not succeed: no terminal id exists yet,
+/// so the summary names the operation; the outcome detail stays in
+/// structuredContent like every other terminal result.
+fn open_failure_summary(receipt: &Value) -> String {
+    format!(
+        "terminal open {} operation {}; details in structuredContent",
+        receipt["outcome"].as_str().unwrap_or("null"),
+        receipt["operation_id"].as_str().unwrap_or("null")
+    )
+}
+fn open_failure_result(receipt: Value) -> ToolResult {
+    let summary = open_failure_summary(&receipt);
+    ToolResult::structured_with_summary(receipt, summary)
+}
 fn wait_spec(
     wait_for: Option<WaitFor>,
     wait_ms: Option<u64>,
@@ -321,7 +335,7 @@ async fn call(
                     serde_json::from_value(result).map_err(failure)?
                 }
                 other => {
-                    return Ok(ToolResult::structured(
+                    return Ok(open_failure_result(
                         json!({"operation_id":operation,"outcome":"unavailable","detail":format!("{other:?}")}),
                     ));
                 }
@@ -417,3 +431,27 @@ async fn call(
 
 #[cfg(test)]
 mod schema_tests;
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_open_failure_is_a_one_line_summary_with_structured_detail() {
+        let receipt = json!({"operation_id":"op-7","outcome":"unavailable","detail":"Failed { error: \"spawn refused\" }"});
+        let wire = serde_json::to_value(open_failure_result(receipt.clone())).unwrap();
+        assert_eq!(wire["structuredContent"], receipt);
+        let content = wire["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(
+            content[0]["text"],
+            "terminal open unavailable operation op-7; details in structuredContent"
+        );
+        assert!(
+            !content[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("spawn refused"),
+            "the detail must live only in structuredContent"
+        );
+    }
+}

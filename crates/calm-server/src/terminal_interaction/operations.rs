@@ -27,6 +27,10 @@ impl TerminalInteraction {
         Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
         let terminal = resolved.binding.terminal_id.as_str();
         let client = self.client(identity, &resolved.binding).await?;
+        // One action at a time per connection, readback wait included (up to
+        // WAIT_MS_MAX): a second input from the same Planner on this terminal
+        // queues here rather than writing into the screen the first one is
+        // still waiting to read back. Other connections are not serialized.
         let _serial = client.serial.lock().await;
         let key = request_key.to_owned();
         // The fingerprint hashes the argument as given (null when omitted) so
@@ -139,14 +143,7 @@ impl TerminalInteraction {
             state.pending = Some(sequence);
             sequence
         };
-        let mut unknown = json!({"terminal_id":terminal,"request_id":request_key,"outcome":"unknown","repeat_input":false,
-            "observation_id_used":observation});
-        if let Some(drift) = &drift {
-            unknown["output_since_observation"] = json!(true);
-            unknown["observation_drift"] = drift.clone();
-        } else {
-            unknown["output_since_observation"] = json!(false);
-        }
+        let unknown = unknown_receipt(terminal, request_key, observation, drift.as_ref());
         client
             .requests
             .lock()
@@ -170,14 +167,14 @@ impl TerminalInteraction {
                 .await
             {
                 Ok(()) => {
-                    let state = client.screen.lock().unwrap();
-                    let mut receipt = json!({"terminal_id":terminal,"request_id":request_key,"outcome":if state.ack>=sequence{"written"}else{"refused"},
-                        "application_result":"unverified","next":"observe the application result",
-                        "observation_id_used":observation,"output_since_observation":drift.is_some()});
-                    if let Some(drift) = drift {
-                        receipt["observation_drift"] = drift;
-                    }
-                    receipt
+                    let written = client.screen.lock().unwrap().ack >= sequence;
+                    acknowledged_receipt(
+                        terminal,
+                        request_key,
+                        observation,
+                        drift.as_ref(),
+                        written,
+                    )
                 }
                 Err(_) => unknown,
             }
@@ -197,6 +194,38 @@ impl TerminalInteraction {
             )
             .await)
     }
+}
+/// Every input receipt, whatever its outcome, carries
+/// `application_result:"unverified"`: an acknowledgement says bytes reached the
+/// PTY, an unknown outcome says not even that is known, and neither says what
+/// the application did with them.
+fn unknown_receipt(
+    terminal: &str,
+    request_key: &str,
+    observation: Uuid,
+    drift: Option<&Value>,
+) -> Value {
+    let mut receipt = json!({"terminal_id":terminal,"request_id":request_key,"outcome":"unknown","repeat_input":false,
+        "application_result":"unverified","observation_id_used":observation,"output_since_observation":drift.is_some()});
+    if let Some(drift) = drift {
+        receipt["observation_drift"] = drift.clone();
+    }
+    receipt
+}
+fn acknowledged_receipt(
+    terminal: &str,
+    request_key: &str,
+    observation: Uuid,
+    drift: Option<&Value>,
+    written: bool,
+) -> Value {
+    let mut receipt = json!({"terminal_id":terminal,"request_id":request_key,"outcome":if written{"written"}else{"refused"},
+        "application_result":"unverified","next":"observe the application result",
+        "observation_id_used":observation,"output_since_observation":drift.is_some()});
+    if let Some(drift) = drift {
+        receipt["observation_drift"] = drift.clone();
+    }
+    receipt
 }
 fn encode(action: &Value, frame: &InputSurface) -> Result<Vec<u8>> {
     let object = action
@@ -255,5 +284,44 @@ fn encode(action: &Value, frame: &InputSurface) -> Result<Vec<u8>> {
             click_bytes(coordinate("column")?, coordinate("row")?, frame)
         }
         _ => anyhow::bail!("unknown terminal action"),
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    /// The field contract is uniform: written, refused and unknown receipts
+    /// all say `application_result:"unverified"`; only acknowledged ones add
+    /// `next`, and drift evidence is copied whenever it exists.
+    #[test]
+    fn every_terminal_input_receipt_outcome_reports_application_result_unverified() {
+        let observation = Uuid::new_v4();
+        let drift = json!({"observed_revision":3,"input_revision":5});
+        let unknown = unknown_receipt("t1", "r1", observation, None);
+        let written = acknowledged_receipt("t1", "r1", observation, None, true);
+        let refused = acknowledged_receipt("t1", "r1", observation, Some(&drift), false);
+        for (receipt, outcome) in [
+            (&unknown, "unknown"),
+            (&written, "written"),
+            (&refused, "refused"),
+        ] {
+            assert_eq!(receipt["outcome"], outcome, "{receipt}");
+            assert_eq!(receipt["application_result"], "unverified", "{receipt}");
+            assert_eq!(receipt["terminal_id"], "t1");
+            assert_eq!(receipt["request_id"], "r1");
+            assert_eq!(receipt["observation_id_used"], json!(observation));
+            assert!(receipt.get("application_completed").is_none());
+        }
+        assert_eq!(unknown["repeat_input"], false);
+        assert!(unknown.get("next").is_none());
+        assert_eq!(unknown["output_since_observation"], false);
+        assert_eq!(written["next"], "observe the application result");
+        assert_eq!(refused["output_since_observation"], true);
+        assert_eq!(refused["observation_drift"], drift);
+        assert_eq!(
+            unknown_receipt("t1", "r1", observation, Some(&drift))["observation_drift"],
+            drift
+        );
     }
 }

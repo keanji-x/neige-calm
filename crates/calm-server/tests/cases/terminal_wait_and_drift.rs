@@ -155,8 +155,15 @@ async fn input_readback_change_wait_starts_from_the_pre_write_screen() {
     // wait the whole budget.
     let entry = h.state.terminal_renderer.get(&terminal).unwrap();
     let held = entry.handle.input_barrier.grant().await.unwrap();
+    let service = h.interaction();
     let inject = async {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // The input reserves its sequence right after reading the baseline
+        // and before the write reaches the held barrier; injecting once that
+        // reservation is visible puts the change after the baseline, without
+        // a fixed sleep.
+        while !service.input_pending(&terminal).await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         entry
             .handle
             .render_plane

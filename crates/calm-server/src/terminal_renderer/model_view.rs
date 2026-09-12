@@ -26,6 +26,11 @@ impl ModelView {
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.published.subscribe()
     }
+    /// Live revision subscribers: a change wait counts from the moment it
+    /// subscribes until it returns. Test observability of a wait in progress.
+    pub fn change_waiters(&self) -> usize {
+        self.published.receiver_count()
+    }
     pub fn capture(&self, offset: usize) -> anyhow::Result<(Frame, u64)> {
         let view = self
             .view

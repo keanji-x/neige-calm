@@ -133,6 +133,19 @@ impl TerminalInteraction {
             control: scope_check(true),
         }
     }
+    /// Whether a Planner input on `terminal_id` is reserved but not yet
+    /// acknowledged or refused (the write is parked at the physical barrier
+    /// or in flight). Test observability only; no tool reports it.
+    #[doc(hidden)]
+    pub async fn input_pending(&self, terminal_id: &str) -> bool {
+        self.clients.lock().await.values().any(|client| {
+            client.binding.terminal_id == terminal_id
+                && client
+                    .screen
+                    .lock()
+                    .is_ok_and(|state| state.pending.is_some())
+        })
+    }
     pub async fn observe(
         &self,
         identity: &ToolCallIdentity,
@@ -161,7 +174,7 @@ impl TerminalInteraction {
         baseline: Option<u64>,
         format: ObservationFormat,
     ) -> Result<(Value, Option<Vec<u8>>)> {
-        let terminal = resolved.binding.terminal_id.as_str();
+        let terminal = resolved.binding.terminal_id.clone();
         let previous = *client
             .latest_observation
             .lock()
@@ -180,7 +193,12 @@ impl TerminalInteraction {
             }
         };
         let waited = wait::wait(client, wait, baseline).await;
-        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
+        // The wait may span a task completion or an authority change, so the
+        // task status and controllability in the result are re-read after
+        // waiting; the binding they belong to must still be the one the wait
+        // started on, otherwise the observation is refused.
+        let resolved =
+            Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let (control, exited) = {
             let state = client
                 .screen
@@ -197,7 +215,9 @@ impl TerminalInteraction {
             .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?
             .capture(offset)?;
         let png = format.render_image(&self.raster, &frame).await?;
-        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
+        // Rendering takes time too: the emitted status is the last read.
+        let resolved =
+            Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let observation_id = Uuid::new_v4();
         let changed_since_previous = previous.is_some_and(|(_, prior)| prior != revision);
         let mut metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,

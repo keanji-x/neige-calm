@@ -188,15 +188,36 @@ hashes `observation_id` as given (null when omitted), so a replayed
 `request_id` returns the same receipt.
 
 Receipts: input drops `application_completed` and reports
-`application_result:"unverified"` plus `next`. Detach returns
+`application_result:"unverified"` on every outcome — written, refused and
+unknown (enqueue failure, acknowledgement timeout, cancelled replay) — plus
+`next` on acknowledged ones. Detach returns
 `{"detached":true,"had_client":bool,"terminal_id":..,"connection_id":<closed or null>,"terminal_session_id":<closed client's or null>}`;
 without a client the terminal id comes from a read-only target resolution when
 possible.
 
 Text results of the five terminal tools keep the complete state only in
 `structuredContent`; `content[0].text` is a one-line summary (ids, revision,
-role, geometry, cursor, wait outcome or receipt facts) and never contains screen
-text. Image results keep their metadata text block and native PNG block. A probe
+role, geometry, cursor, wait outcome, receipt facts, or the operation id and
+outcome of an open that did not succeed) and never contains screen text.
+Collectors that read terminal results must read `structuredContent`; the
+summary is not parseable metadata.
+
+Readback ordering: an action readback re-resolves the target after its wait,
+not only before it. The wait (up to 20 s) can span a task completion or an
+authority change, so `task_status` and `controllable` in the returned state
+are the post-wait values; if the execution binding changed during the wait the
+readback is `unavailable` with the reason and the action receipt stands.
+
+Serialization: one connection runs one action at a time, and the readback wait
+is part of the action. A second input or control call from the same Planner on
+the same terminal queues behind a readback in progress (bounded by the wait
+budget) instead of writing into the screen the first call is still waiting to
+read back. Releasing the serial before the readback would keep the fences
+sound (the pending reservation is cleared by the acknowledgement and the
+revision fence still applies) but would let the second write end the first
+wait with output that is not the first action's reply, so the readback stays
+inside the serialized section. Connections of other Planners or humans are not
+serialized by it. Image results keep their metadata text block and native PNG block. A probe
 of Codex 0.153.4 showed the model receives both `content` and
 `structuredContent` verbatim, so the duplicate state was real.
 
