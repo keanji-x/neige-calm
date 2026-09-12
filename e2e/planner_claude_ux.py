@@ -168,9 +168,26 @@ def final_texts(rows):
             and isinstance(row["params"]["item"].get("text"), str)]
 
 
+def stale_observation_result(call):
+    """A completed input whose receipt says `outcome: "stale_observation"`.
+
+    Since #1618 rounds 07/08 a stale observation with every other fence intact
+    is a successful tool result carrying a fresh observation, not an RPC error;
+    it still counts as an observation refusal because nothing was written.
+    """
+    if call.get("tool") != "calm.terminal.input" or not call.get("completed") or tool_failed(call):
+        return False
+    result = call.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("structuredContent"), dict):
+        return False
+    return result["structuredContent"].get("outcome") == "stale_observation"
+
+
 def observation_refused(call):
     if call.get("tool") != "calm.terminal.input":
         return False
+    if stale_observation_result(call):
+        return True
     messages = []
     if call.get("error") is not None:
         messages.append(require_object(call["error"], "MCP error").get("message"))
@@ -367,9 +384,15 @@ def terminal_evidence(rows, binding=None):
             if current != binding:
                 raise EvidenceError("terminal or session changed during UX round")
             lines = data.get("text")  # Frame.text is Vec<String>, not a scalar.
-            if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+            if lines is None and isinstance(data.get("text_omitted"), str):
+                # A release readback of a screen unchanged since the previous
+                # observation (#1618 rounds 07/08) carries no text on purpose;
+                # its identity was checked above but it adds no view.
+                pass
+            elif not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
                 raise EvidenceError("terminal observation text must be an array of strings")
-            observations.append({"row_id": call["row_id"], "text": "\n".join(lines)})
+            else:
+                observations.append({"row_id": call["row_id"], "text": "\n".join(lines)})
         if binding and args.get("terminal_id", binding["terminal_id"]) != binding["terminal_id"]:
             raise EvidenceError("Planner targeted another terminal")
     if not observations:

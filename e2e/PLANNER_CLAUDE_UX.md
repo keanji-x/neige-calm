@@ -103,7 +103,13 @@ Human intervention and token savings are explicitly unmeasured.
 
 `readback_available` and `readback_unavailable` count the corresponding nested
 results on completed control/input calls, separately from tool errors. Neither
-means the application finished. `requested_key_presses` sums key actions'
+means the application finished. `observation_refusals` counts input calls
+refused by an observation fence: the exact production error strings, plus
+completed input calls whose receipt `outcome` is `stale_observation` (#1618
+rounds 07/08: nothing written, a fresh observation returned instead of an
+error). A release readback whose state carries `text_omitted` instead of `text`
+(screen unchanged since the previous observation) is accepted as evidence of
+the same terminal/session but adds no observation entry. `requested_key_presses` sums key actions'
 `repeat` (default 1); `additional_repeated_key_presses` sums the extra `repeat - 1`
 presses. These describe requests, including failed or replayed requests, not
 confirmed physical writes. Invalid repeat counts contribute to
