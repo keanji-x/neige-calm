@@ -107,3 +107,71 @@ pub(crate) async fn recorded_worker_kind_tx(
         )),
     }
 }
+
+/// Resolve tool grants before the provider startup acknowledgement has attached
+/// worker_card_id to the task. The immutable Operation/session binding is already
+/// committed at this point. A missing or contradictory isolated binding is never legacy.
+pub(crate) async fn delegated_plugin_tools(
+    repo: &dyn RepoEventWrite,
+    card_id: &str,
+    session_id: &str,
+    track_id: &str,
+) -> Result<Option<Vec<String>>> {
+    let (card, session, track) = (
+        card_id.to_string(),
+        session_id.to_string(),
+        track_id.to_string(),
+    );
+    write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            if !is_isolated_card_tx(tx, &card).await? {
+                return Ok(None);
+            }
+            let op_id: Option<String> = sqlx::query_scalar(
+                "SELECT spawn_op_id FROM worker_sessions WHERE id=?1 AND card_id=?2",
+            )
+            .bind(&session)
+            .bind(&card)
+            .fetch_optional(&mut **tx)
+            .await?
+            .flatten();
+            let op_id = op_id.ok_or_else(|| {
+                CalmError::Conflict("isolated plugin session binding missing".into())
+            })?;
+            let record = journal::load_tx(tx, &op_id).await?;
+            if record.request.identity.session_id != session
+                || record.request.identity.card_id != card
+                || record.track_id != track
+            {
+                return Err(CalmError::Conflict(
+                    "isolated plugin identity mismatch".into(),
+                ));
+            }
+            let task = crate::db::sqlite::task_get_tx(tx, &record.request.identity.attempt_id)
+                .await?
+                .ok_or_else(|| CalmError::Conflict("isolated plugin task missing".into()))?;
+            if task.track_id != track || !super::selected(&task)? {
+                return Err(CalmError::Conflict(
+                    "isolated plugin task binding changed".into(),
+                ));
+            }
+            let context = serde_json::from_str(&task.context_json)?;
+            let selection =
+                calm_types::task_execution::IsolatedCodexSelection::from_context(&context)
+                    .map_err(CalmError::BadRequest)?
+                    .ok_or_else(|| {
+                        CalmError::Conflict("isolated plugin selection missing".into())
+                    })?;
+            if record.admission == super::record::Admission::Closed
+                || !matches!(
+                    task.status,
+                    crate::model::TaskStatus::Dispatched | crate::model::TaskStatus::Running
+                )
+            {
+                return Ok(Some(Vec::new()));
+            }
+            Ok(Some(selection.plugin_tools))
+        })
+    })
+    .await
+}

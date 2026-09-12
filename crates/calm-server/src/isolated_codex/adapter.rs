@@ -78,12 +78,37 @@ impl IsolatedCodexAdapter {
                 "isolated workspace request changed".into(),
             ));
         }
+        let task = self
+            .repo
+            .task_get(&record.request.identity.attempt_id)
+            .await?
+            .ok_or_else(|| {
+                CalmError::Conflict("isolated task missing during preparation".into())
+            })?;
+        if task.track_id != record.track_id
+            || task
+                .worker_card_id
+                .as_deref()
+                .is_some_and(|id| id != record.request.identity.card_id)
+        {
+            return Err(CalmError::Conflict(
+                "isolated task binding changed during preparation".into(),
+            ));
+        }
+        let context: serde_json::Value = serde_json::from_str(&task.context_json)?;
+        let selection = calm_types::task_execution::IsolatedCodexSelection::from_context(&context)
+            .map_err(CalmError::BadRequest)?
+            .ok_or_else(|| CalmError::Conflict("isolated task selection missing".into()))?;
+        selection
+            .validate_delivery()
+            .map_err(CalmError::BadRequest)?;
         let native = NativeMcp {
             socket: self
                 .socket
                 .clone()
                 .ok_or_else(|| CalmError::Conflict("native MCP unavailable".into()))?,
             card_token: record.native_token.clone(),
+            plugin_tools: selection.plugin_tools,
         };
         let endpoint = backend
             .controller

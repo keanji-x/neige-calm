@@ -10,7 +10,10 @@ mod session;
 pub use admission::{TurnAdmission, TurnLaunch};
 pub use bootstrap::WorkspaceRequirement;
 pub use home::{HomeReceipt, HomeSeed, NativeMcp, PrivateHome, ProviderSettings};
-pub use policy::{DELIVERY_PROFILE, RECOVER_CHANGES, executor_environment};
+pub(crate) use policy::MCP_TOOL_ALLOWLIST;
+pub use policy::{
+    DELIVERY_PROFILE, RECOVER_CHANGES, executor_environment, executor_environment_with_plugins,
+};
 pub use session::*;
 
 #[derive(Debug, thiserror::Error)]

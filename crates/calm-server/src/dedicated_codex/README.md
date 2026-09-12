@@ -153,7 +153,11 @@ let controller = Controller::new(ControllerConfig {
     request_timeout: Duration::from_secs(30),
 })?;
 let seed = HomeSeed::read(&configured_config_toml, &configured_auth_json)?;
-let native = NativeMcp { socket: isolated_kernel_mcp_socket, card_token };
+let native = NativeMcp {
+    socket: isolated_kernel_mcp_socket,
+    card_token,
+    plugin_tools: Vec::new(), // No delegated plugins for this standalone probe.
+};
 let endpoint = controller.prepare(frozen_request, &seed, &native).await?;
 let initial = SessionRecord::prepared(endpoint);
 // Parent writes initial into its already-existing Operation transaction.
@@ -177,6 +181,10 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   cargo nextest run --locked -p calm-server --lib --test dedicated_codex \
   dedicated_codex --test-threads 8 --no-fail-fast
 ```
+
+Platform-owned task execution supplies `NativeMcp.plugin_tools` from the frozen task
+contract, not from an unfiltered live plugin catalog. The platform rechecks current
+scope, ordinary tool kind, plugin availability and execution identity on every call.
 
 The ignored fake-provider entry is invoked only as a child of production runtime
 tests; no additional fake-provider production binary is shipped. The parent must

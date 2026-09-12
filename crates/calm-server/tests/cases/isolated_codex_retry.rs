@@ -533,3 +533,44 @@ mod files;
 
 #[path = "isolated_codex_recovery_wake.rs"]
 pub(super) mod recovery_wake;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn isolated_plugin_grants_recovery_preserves_frozen_tools() {
+    let fx = fixture("controlled").await;
+    let grants = json!(["plugin.research_search", "plugin.research_detail"]);
+    crate::task_recovery::declare(&fx.boot,json!({"key":"retry","kind":"codex","goal":"Analyze delegated material","declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,"ready":true,"no_gate_reason":"Research fixture",
+        "context":{"neige_execution":{"version":"isolated-codex-v1","workspace":"empty","plugin_tools":grants}}})).await;
+    let (first, workspace) = launch(&fx).await;
+    let original = finish(&fx, &first, &workspace, false).await;
+    let (status, receipt) = rest(&fx, "POST", &route(&fx, "recover"), recovery(&first)).await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    let (second, workspace) = launch(&fx).await;
+    assert_ne!(first.id, second.id);
+    assert_eq!(first.context_json, second.context_json);
+    assert_eq!(
+        serde_json::from_str::<Value>(&second.context_json).unwrap()["neige_execution"]["plugin_tools"],
+        grants
+    );
+    let replacement = finish(&fx, &second, &workspace, true).await;
+    for output in [original, replacement] {
+        let home =
+            output["data"]["isolated_execution"]["provider"]["record"]["endpoint"]["home"]["home"]
+                .as_str()
+                .unwrap();
+        let config: toml_edit::DocumentMut =
+            std::fs::read_to_string(std::path::Path::new(home).join("config.toml"))
+                .unwrap()
+                .parse()
+                .unwrap();
+        let tools: Vec<_> = config["mcp_servers"]["calm"]["enabled_tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(tools.len(), 6);
+        assert!(
+            tools.contains(&"plugin.research_search") && tools.contains(&"plugin.research_detail")
+        );
+    }
+}

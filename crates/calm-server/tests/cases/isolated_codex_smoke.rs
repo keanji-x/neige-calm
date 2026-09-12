@@ -54,6 +54,10 @@ pub(super) struct Fixture {
 }
 
 pub(super) async fn fixture(scenario: &str) -> Fixture {
+    fixture_with_plugin(scenario, None).await
+}
+
+pub(super) async fn fixture_with_plugin(scenario: &str, manifest: Option<Value>) -> Fixture {
     let boot = boot().await;
     let root = tempfile::Builder::new()
         .prefix("single-loop-")
@@ -114,23 +118,64 @@ pub(super) async fn fixture(scenario: &str) -> Fixture {
     let areas = calm_server::track_area_cache::TrackAreaCache::new();
     boot.repo.seed_track_area_cache(&areas).await.unwrap();
     let write = WriteContext::new(boot.card_role_cache.clone(), areas.clone());
+    let registry = if let Some(manifest) = manifest {
+        let directory = root.path().join("plugins/research");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("secrets.json"),
+            r#"{"key":"fixture-only-secret"}"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            directory.join("secrets.json"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        boot.repo
+            .plugin_install(calm_server::model::NewPlugin {
+                id: "research".into(),
+                version: "0.1.0".into(),
+                manifest: manifest.clone(),
+                install_path: directory.display().to_string(),
+                user_config: json!({}),
+                enabled: true,
+            })
+            .await
+            .unwrap();
+        Arc::new(
+            PluginRegistry::builder()
+                .with(
+                    calm_server::plugin_host::Manifest::parse(&manifest.to_string()).unwrap(),
+                    Some(directory),
+                )
+                .build(),
+        )
+    } else {
+        Arc::new(PluginRegistry::empty())
+    };
+    let plugin_host = Arc::new(PluginHost::new_full(
+        registry,
+        boot.repo.clone(),
+        PathBuf::new(),
+        root.path().join("plugins-data"),
+        vec![],
+        events.clone(),
+        write.clone(),
+    ));
+    if plugin_host.registry().get("research").is_some() {
+        plugin_host.spawn("research").await.unwrap();
+    }
     let state = AppState::from_parts(
         boot.repo.clone(),
         events.clone(),
         Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
-            boot.repo.clone(),
-            PathBuf::new(),
-            root.path().join("plugins"),
-            vec![],
-            events.clone(),
-            write.clone(),
-        )),
+        plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
         Some(boot.card_role_cache.clone()),
         Some(areas),
     );
+    let plugins = Arc::new(tokio::sync::OnceCell::new());
+    assert!(plugins.set(plugin_host).is_ok());
     let mcp = McpServer::spawn(
         boot.repo.clone(),
         events.clone(),
@@ -143,7 +188,7 @@ pub(super) async fn fixture(scenario: &str) -> Fixture {
             Arc::new(registry)
         },
         None,
-        Arc::new(tokio::sync::OnceCell::new()),
+        plugins,
         Arc::new(tokio::sync::OnceCell::new()),
         root.path().join("gates"),
         calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,

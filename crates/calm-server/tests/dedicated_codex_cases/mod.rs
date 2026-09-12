@@ -90,6 +90,7 @@ impl Fixture {
         let native = NativeMcp {
             socket,
             card_token: "MCP_SECRET".into(),
+            plugin_tools: Vec::new(),
         };
         Self {
             root,

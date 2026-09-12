@@ -38,6 +38,7 @@ impl std::fmt::Debug for HomeSeed {
 pub struct NativeMcp {
     pub socket: PathBuf,
     pub card_token: String,
+    pub plugin_tools: Vec<String>,
 }
 impl std::fmt::Debug for NativeMcp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -181,7 +182,12 @@ impl PrivateHome {
             .and_then(|name| name.to_str())
             .ok_or_else(|| Error::Configuration("invalid MCP socket path".into()))?;
         let mut document = seed.settings.document.clone();
-        policy::apply(&mut document, &native.card_token, socket_name)?;
+        policy::apply(
+            &mut document,
+            &native.card_token,
+            socket_name,
+            &native.plugin_tools,
+        )?;
         let bytes = document.to_string().into_bytes();
         let root = self.root.join(run_id);
         let receipt = HomeReceipt {

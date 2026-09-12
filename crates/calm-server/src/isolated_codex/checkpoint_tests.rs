@@ -108,6 +108,7 @@ impl Fixture {
                 &NativeMcp {
                     socket,
                     card_token: "FAKE-NATIVE".into(),
+                    plugin_tools: Vec::new(),
                 },
             )
             .await

@@ -273,6 +273,9 @@ writes are transactional.
      Explain the recorded prerequisite or preparation failure; do not invent an attempt or claim startup from a write receipt.
    * For one independent Codex task with an empty isolated workspace and semantic acceptance, use \
      `calm.task.dispatch(name, goal, acceptance, executor: \"codex\", workspace: \"empty\")`. \
+     For plugin-backed work, pass `plugin_tools` with the exact `plugin.<id>_<tool>` names the Worker needs. \
+     The isolated Worker has no shell network or web search; it uses these tools through platform MCP with platform-held credentials. \
+     Grants are frozen with the task; recovery does not add tools. Current Track scope and plugin availability still apply. \
      Choose a readable business name: Dispatch names are unique within this Track, trim surrounding whitespace only, \
      and preserve exact case and Unicode. Same name and exact contract replays the original identity across calls or sessions; \
      a changed contract conflicts. Use a new meaningful name for new work and existing recovery for execution repair. \

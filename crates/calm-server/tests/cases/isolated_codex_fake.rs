@@ -79,7 +79,8 @@ pub fn run() {
                         let artifacts = if scenario=="files" {
                             serde_json::from_str(&std::fs::read_to_string("/workspace/reported-files.json").unwrap()).unwrap()
                         } else {Vec::new()};
-                        tokio::task::spawn_blocking(move||report(&env,&task,success,artifacts)).await.unwrap();
+                        let plugin_proxy = scenario=="plugin-proxy";
+                        tokio::task::spawn_blocking(move||report(&env,&task,success,artifacts,plugin_proxy)).await.unwrap();
                     }
                     let _=peer.send(tokio_tungstenite::tungstenite::Message::Text(json!({"jsonrpc":"2.0","method":"turn/completed",
                         "params":{"threadId":thread_id,"turn":{"id":turn_id,"status":"completed","items":[]}}}).to_string())).await;
@@ -88,7 +89,13 @@ pub fn run() {
         }
     });
 }
-fn report(env: &[(String, String)], task: &str, success: bool, artifacts: Vec<String>) {
+fn report(
+    env: &[(String, String)],
+    task: &str,
+    success: bool,
+    artifacts: Vec<String>,
+    plugin_proxy: bool,
+) {
     use std::process::{Command, Stdio};
     let mut child = Command::new("/mcp-shim")
         .env_clear()
@@ -110,6 +117,9 @@ fn report(env: &[(String, String)], task: &str, success: bool, artifacts: Vec<St
         response.get("error").is_none(),
         "native initialize failed: {response}"
     );
+    if plugin_proxy {
+        probe_plugin_proxy(&mut input, &mut output);
+    }
     let args = if success {
         {
             let result = if std::path::Path::new("/workspace/report-result.json").exists() {
@@ -164,4 +174,79 @@ fn create_files() {
             .set_len(size)
             .unwrap();
     }
+}
+
+fn probe_plugin_proxy(input: &mut impl Write, output: &mut impl BufRead) {
+    let text = std::fs::read_to_string("/provider/home/config.toml").unwrap();
+    assert!(
+        !text.contains("fixture-only-secret"),
+        "external plugin secret must stay on platform"
+    );
+    let config: toml_edit::DocumentMut = text.parse().unwrap();
+    let tools: Vec<_> = config["mcp_servers"]["calm"]["enabled_tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(tools.len(), 6);
+    assert!(tools.contains(&"plugin.research_search") && tools.contains(&"plugin.research_detail"));
+    assert!(!tools.contains(&"plugin.research_ungranted"));
+    let mut rpc = |id: u64, method: &str, params: Value| {
+        writeln!(
+            input,
+            "{}",
+            json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+        )
+        .unwrap();
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+    let listed = rpc(10, "tools/list", json!({}));
+    let names: Vec<_> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"plugin.research_search") && names.contains(&"plugin.research_detail"),
+        "{listed}"
+    );
+    assert!(!names.contains(&"plugin.research_ungranted"), "{listed}");
+    let denied = rpc(
+        11,
+        "tools/call",
+        json!({"name":"plugin.research_ungranted","arguments":{}}),
+    );
+    assert_eq!(denied["error"]["code"], -32601, "{denied}");
+    let search = rpc(
+        12,
+        "tools/call",
+        json!({"name":"plugin.research_search","arguments":{"query":"research"}}),
+    );
+    let found: Value =
+        serde_json::from_str(search["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let detail = rpc(
+        13,
+        "tools/call",
+        json!({"name":"plugin.research_detail","arguments":{"id":found["id"]}}),
+    );
+    let data: Value =
+        serde_json::from_str(detail["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(data["answer"], 42);
+    // Provider transport needs network. This fixture checks the actual command
+    // policy, not the provider's own socket access or a copied sandbox.
+    assert_eq!(
+        config["permissions"]["neige-delivery-v1"]["network"]["enabled"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(config["web_search"].as_str(), Some("disabled"));
+    std::fs::write(
+        "/workspace/report-result.json",
+        json!({"source":found["id"],"answer":data["answer"],"command_network_policy":false})
+            .to_string(),
+    )
+    .unwrap();
 }
