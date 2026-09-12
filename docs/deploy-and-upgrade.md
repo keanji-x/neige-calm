@@ -479,7 +479,9 @@ curl -s http://127.0.0.1:4040/api/version
 
 From #1209 onward, the ids a trusted plugin declares in its manifest
 **must** be keys in the kernel's track-template roster — today
-`issue-development`, `small-change`, `investigation`.
+`issue-development`, `small-change`, `investigation`, `investment-research`
+(the last is a report-only template: the investment-research maintenance
+contract and its seven empty sections, no pre-set tasks).
 
 **#1268 renamed the array itself: `workflows[]` is now `templates[]`.**
 The entries are unchanged (`{ "id": "<kernel template id>" }`); only the
@@ -606,7 +608,7 @@ for m in <plugins_dir>/*/manifest.json; do
                                # empty; the kernel treats that as an empty
                                # registry, and an unmatched glob would otherwise
                                # hand jq a literal path and error out
-  jq -r --argjson roster '["issue-development","small-change","investigation"]' \
+  jq -r --argjson roster '["issue-development","small-change","investigation","investment-research"]' \
     'if has("workflows") then
        "\(input_filename): retired `workflows` key — rename it to `templates`"
      else empty end,

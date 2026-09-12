@@ -187,7 +187,8 @@ pub struct Manifest {
     /// note.** Declaring an id is *claiming an existing template*, never
     /// *creating* one. The ids the kernel knows are the track-template roster
     /// (`crate::templates::TEMPLATES`: today
-    /// `issue-development`, `small-change`, `investigation`), and
+    /// `issue-development`, `small-change`, `investigation`,
+    /// `investment-research`), and
     /// `POST /api/tracks` admits an id **iff it is in that roster** — plugin
     /// declarations do not widen the set. An id outside the roster is
     /// therefore inert: it is parsed, it is not rejected here, and it can

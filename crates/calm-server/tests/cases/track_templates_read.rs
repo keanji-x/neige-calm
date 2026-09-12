@@ -35,6 +35,7 @@ const ECHO_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-echo");
 const ISSUE_DEVELOPMENT: &str = "issue-development";
 const SMALL_CHANGE: &str = "small-change";
 const INVESTIGATION: &str = "investigation";
+const INVESTMENT_RESEARCH: &str = "investment-research";
 
 /// Mirrors `forge_trust::trusted_forge_plugin`'s default so the stub is
 /// trusted without mutating process env.
@@ -222,13 +223,22 @@ async fn lists_every_template_with_its_kernel_title() {
         .collect();
     assert_eq!(
         ids,
-        vec![ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION],
+        vec![
+            ISSUE_DEVELOPMENT,
+            SMALL_CHANGE,
+            INVESTIGATION,
+            INVESTMENT_RESEARCH
+        ],
         "the read must expose exactly the kernel's template keys, in order"
     );
     // Titles come from `TEMPLATES`, not from this test's wishes.
     assert_eq!(row(&body, ISSUE_DEVELOPMENT)["title"], "Issue development");
     assert_eq!(row(&body, SMALL_CHANGE)["title"], "Small change");
     assert_eq!(row(&body, INVESTIGATION)["title"], "Investigation");
+    assert_eq!(
+        row(&body, INVESTMENT_RESEARCH)["title"],
+        "Investment research"
+    );
     // No `description` field anywhere — #1209: the kernel has no such fact and
     // this endpoint does not invent one.
     for entry in body.as_array().expect("array body") {
@@ -249,9 +259,9 @@ async fn bound_template_carries_the_plugin_input_schema() {
         stub_input_schema(),
         "a bound template must carry its owning plugin's manifest schema verbatim"
     );
-    // The two unbound templates are the same request, same registry: the only
-    // reason they differ is the binding.
-    for key in [SMALL_CHANGE, INVESTIGATION] {
+    // The three unbound templates are the same request, same registry: the
+    // only reason they differ is the binding.
+    for key in [SMALL_CHANGE, INVESTIGATION, INVESTMENT_RESEARCH] {
         assert!(
             row(&body, key).get("input_schema").is_none(),
             "unbound template `{key}` must not advertise an input schema: {body}"
@@ -305,6 +315,14 @@ async fn every_template_lists_the_tasks_its_report_pre_sets() {
     );
     assert_eq!(keys(SMALL_CHANGE), vec!["inspect", "implement", "verify"]);
     assert_eq!(keys(INVESTIGATION), vec!["gather-facts", "write-findings"]);
+    // #1571 — a report-only template advertises an empty (present) tasks array:
+    // the picker's tooltip has nothing to list, and the key must still carry
+    // the array rather than omit it.
+    assert_eq!(
+        keys(INVESTMENT_RESEARCH),
+        Vec::<String>::new(),
+        "investment-research pre-sets no tasks"
+    );
 
     // Every task carries a non-empty goal: the key alone is a slug, and the
     // tooltip's whole value is saying what the step is for.
@@ -334,7 +352,12 @@ async fn unbound_templates_carry_no_input_schema() {
     let boot = boot(false).await;
     let (status, body) = list_templates(boot.app).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    for key in [ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION] {
+    for key in [
+        ISSUE_DEVELOPMENT,
+        SMALL_CHANGE,
+        INVESTIGATION,
+        INVESTMENT_RESEARCH,
+    ] {
         assert!(
             row(&body, key).get("input_schema").is_none(),
             "with no plugin running, `{key}` must advertise no schema: {body}"

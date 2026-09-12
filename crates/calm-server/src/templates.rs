@@ -1,8 +1,10 @@
 //! Template recipes — the report a `template_id` create starts from.
 //!
-//! Three recipes hold the former git-forge plan as report `task` blocks, as
-//! **Rust constants**: [`TEMPLATES`] is the roster, and each entry carries its
-//! own recipe builder ([`Template::recipe`]) beside its key and title.
+//! Three recipes hold the former git-forge plan as report `task` blocks, and a
+//! fourth (`investment-research`, #1571) is a task-less report skeleton under
+//! its own maintenance contract — all as **Rust constants**: [`TEMPLATES`] is
+//! the roster, and each entry carries its own recipe builder
+//! ([`Template::recipe`]) beside its key and title.
 //! `POST /api/tracks` with a matching `template_id` builds that report inside
 //! its own create transaction (`routes::tracks::prepare_template_report`),
 //! reading nothing from the database.
@@ -28,12 +30,15 @@ use calm_types::report_blocks::render_fence;
 // (`routes::tracks::InitialReportSnapshot::task_block_payloads`).
 #[cfg(test)]
 use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
-use calm_types::track_report::report_contract_prefix_for_template;
+use calm_types::track_report::{ReportContract, report_contract_prefix};
 use serde_json::{Value, json};
 
 pub const ISSUE_DEVELOPMENT: &str = "issue-development";
 pub const SMALL_CHANGE: &str = "small-change";
 pub const INVESTIGATION: &str = "investigation";
+/// #1571 — a report-only template: the investment-research contract and its
+/// seven empty sections, no pre-set `task` blocks.
+pub const INVESTMENT_RESEARCH: &str = "investment-research";
 
 /// One roster entry. **Constructible only inside this module and its
 /// descendants — in safe Rust.**
@@ -44,7 +49,7 @@ pub const INVESTIGATION: &str = "investigation";
 /// moved out of a borrow either. That is what the compiler checks about "a
 /// `&'static Template` came from [`TEMPLATES`]": in **safe** Rust, outside
 /// this module's subtree the only way to name a `Template` value at all is to
-/// borrow one of the three roster entries.
+/// borrow one of the four roster entries.
 ///
 /// #1318 S2 (第三轮评审) — the scope of that sentence is exactly *safe Rust
 /// outside this subtree*, and no wider. This crate does not carry
@@ -99,7 +104,8 @@ impl Template {
     /// instantiates from.
     ///
     /// Freshly built on every call — the recipes are `String`-valued constants
-    /// assembled by [`report_from_tasks`], not a cached value — so nothing a
+    /// assembled by [`report_from_tasks`] / [`report_skeleton`], not a cached
+    /// value — so nothing a
     /// caller does to the returned payload is visible to the next caller.
     ///
     /// This is the *un*compiled recipe. `POST /api/tracks` and
@@ -113,7 +119,7 @@ impl Template {
 
 /// The template roster. `static`, not `const`, so [`template_by_key`] can
 /// hand out `&'static` borrows into it instead of into a per-use temporary.
-pub static TEMPLATES: [Template; 3] = [
+pub static TEMPLATES: [Template; 4] = [
     Template {
         key: ISSUE_DEVELOPMENT,
         title: "Issue development",
@@ -128,6 +134,11 @@ pub static TEMPLATES: [Template; 3] = [
         key: INVESTIGATION,
         title: "Investigation",
         build_recipe: investigation_report,
+    },
+    Template {
+        key: INVESTMENT_RESEARCH,
+        title: "Investment research",
+        build_recipe: investment_research_report,
     },
 ];
 
@@ -278,12 +289,14 @@ fn task(
     }
 }
 
+/// A plan template's recipe: the work-brief contract, the intro prose, then
+/// one `task` fence per listed task.
 fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> TrackReportPayload {
     // #1185 §1.5 B — these templates bypass `TrackReportPayload::initial()`, so
     // without this prefix they ship with no maintenance contract at all: no
     // section list, no word budget, no current-snapshot rule. The prefix is
     // already closed; never concatenate an unclosed fragment here.
-    let mut body = report_contract_prefix_for_template().to_string();
+    let mut body = report_contract_prefix(ReportContract::WorkBrief).to_string();
     body.push_str(intro.trim_end());
     body.push_str("\n\n");
     for task in tasks {
@@ -307,6 +320,31 @@ fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> Tra
         body.push('\n');
     }
     TrackReportPayload::new(summary, body)
+}
+
+/// A report-only template's recipe (#1571): the named contract, already
+/// closed, then the empty section skeleton and **no** `task` blocks. The
+/// skeleton's H1s are left empty on purpose, as in
+/// `TrackReportPayload::initial()`: a placeholder would render, and the agent
+/// would read it as content to delete.
+fn report_skeleton(contract: ReportContract, summary: &str, skeleton: &str) -> TrackReportPayload {
+    let mut body = report_contract_prefix(contract).to_string();
+    body.push_str(skeleton);
+    TrackReportPayload::new(summary, body)
+}
+
+/// The seven research sections, in contract order — the same list the
+/// research contract's 「各章节」 describes, and the skeleton that ran live
+/// against a real planner before this template was added (#1571).
+const INVESTMENT_RESEARCH_SKELETON: &str = "# 结论\n\n# 待你定\n\n# 核心逻辑\n\n# 关键数据\n\n\
+# 风险与证伪\n\n# 催化剂与跟踪\n\n# 来源与边界\n";
+
+fn investment_research_report() -> TrackReportPayload {
+    report_skeleton(
+        ReportContract::Research,
+        "Investment research",
+        INVESTMENT_RESEARCH_SKELETON,
+    )
 }
 
 fn issue_development_report() -> TrackReportPayload {
@@ -489,7 +527,20 @@ mod tests {
         (investigation_report, investigation_tasks),
     ];
 
-    /// [`RECIPE_AND_TASKS`] covers exactly the roster's recipes.
+    /// #1571 — recipes built by `report_skeleton`, which pre-set **no** tasks
+    /// and therefore have no `*_tasks()` to pair with. Listed separately rather
+    /// than paired with an empty `Vec` so that "this recipe lists no tasks" is
+    /// a claim the tests check (`task_less_recipes_carry_no_task_blocks`), not a
+    /// vacuous pairing the set-equality below would accept for any recipe.
+    const TASK_LESS_RECIPES: [BuildRecipe; 1] = [investment_research_report];
+
+    fn recipe_identity(build_recipe: BuildRecipe) -> (String, String) {
+        let recipe = build_recipe();
+        (recipe.summary, recipe.body)
+    }
+
+    /// [`RECIPE_AND_TASKS`] and [`TASK_LESS_RECIPES`] together cover exactly the
+    /// roster's recipes.
     ///
     /// #1321 S3 (评审 MAJOR) — without this the table is a *silent* subset. The
     /// tests that consume it (`the_body_projection_matches_the_constant_task_list`
@@ -526,11 +577,14 @@ mod tests {
     fn the_recipe_and_tasks_table_covers_every_roster_recipe() {
         let paired: BTreeSet<(String, String)> = RECIPE_AND_TASKS
             .iter()
-            .map(|(build_recipe, _)| {
-                let recipe = build_recipe();
-                (recipe.summary, recipe.body)
-            })
+            .map(|(build_recipe, _)| recipe_identity(*build_recipe))
+            .chain(TASK_LESS_RECIPES.iter().map(|b| recipe_identity(*b)))
             .collect();
+        assert_eq!(
+            paired.len(),
+            RECIPE_AND_TASKS.len() + TASK_LESS_RECIPES.len(),
+            "a recipe listed in both tables, or twice in one, would hide a dropped one"
+        );
         let roster: BTreeSet<(String, String)> = TEMPLATES
             .iter()
             .map(|template| {
@@ -545,8 +599,8 @@ mod tests {
             .collect();
         assert!(
             missing.is_empty(),
-            "roster recipes with no RECIPE_AND_TASKS pair, so nothing in this \
-             module tests them: {missing:?}"
+            "roster recipes in neither RECIPE_AND_TASKS nor TASK_LESS_RECIPES, so \
+             nothing in this module tests them: {missing:?}"
         );
 
         let extra: Vec<&str> = paired
@@ -555,8 +609,8 @@ mod tests {
             .collect();
         assert!(
             extra.is_empty(),
-            "RECIPE_AND_TASKS pairs whose recipe is not on the roster, so they \
-             test something no template can instantiate: {extra:?}"
+            "table entries whose recipe is not on the roster, so they test \
+             something no template can instantiate: {extra:?}"
         );
     }
 
@@ -574,11 +628,20 @@ mod tests {
     /// report's blocks and not about this module's constants.
     #[test]
     fn parsing_a_task_fence_and_rendering_it_back_is_an_identity() {
+        let task_less: BTreeSet<(String, String)> = TASK_LESS_RECIPES
+            .iter()
+            .map(|b| recipe_identity(*b))
+            .collect();
         for template in &TEMPLATES {
             let key = template.key();
-            let body = template.recipe().body;
+            let recipe = template.recipe();
+            let body = recipe.body.clone();
             let payloads = template_task_payloads_from_body(&body);
-            assert!(!payloads.is_empty(), "{key}: no task payloads parsed");
+            assert_eq!(
+                payloads.is_empty(),
+                task_less.contains(&(recipe.summary, recipe.body)),
+                "{key}: task payloads parsed iff the recipe is a plan template"
+            );
             for payload in &payloads {
                 let fence = render_fence(KIND_TASK, payload);
                 assert!(
@@ -685,7 +748,10 @@ mod tests {
     /// guardrails would vanish on exactly the first-party templates.
     #[test]
     fn every_builtin_template_carries_the_maintenance_contract() {
-        let prefix = report_contract_prefix_for_template();
+        // The three plan templates; `investment-research` carries the research
+        // contract instead and is pinned in
+        // `investment_research_is_a_task_less_research_skeleton`.
+        let prefix = report_contract_prefix(ReportContract::WorkBrief);
         for (name, report) in [
             ("issue-development", issue_development_report()),
             ("small-change", small_change_report()),
@@ -751,6 +817,79 @@ mod tests {
             assert!(
                 intro.contains("task blocks"),
                 "{name} must scope activation to task blocks"
+            );
+        }
+    }
+
+    /// #1571 — the `investment-research` recipe: research contract first, the
+    /// seven H1s in contract order and nothing else, zero `task` blocks.
+    #[test]
+    fn investment_research_is_a_task_less_research_skeleton() {
+        let report = investment_research_report();
+        let prefix = report_contract_prefix(ReportContract::Research);
+        assert_eq!(report.summary, "Investment research");
+        assert!(
+            report.body.starts_with(prefix),
+            "must lead with the closed research contract"
+        );
+        assert!(
+            !report
+                .body
+                .starts_with(report_contract_prefix(ReportContract::WorkBrief)),
+            "must not carry the work-brief contract"
+        );
+        assert_eq!(report.body.matches("-->").count(), 1);
+        assert!(report.report_startup_read_required());
+
+        let slices = split_body(&report.body);
+        let heads: Vec<&str> = slices[1..]
+            .iter()
+            .map(|slice| slice.raw.lines().next().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            heads,
+            [
+                "# 结论",
+                "# 待你定",
+                "# 核心逻辑",
+                "# 关键数据",
+                "# 风险与证伪",
+                "# 催化剂与跟踪",
+                "# 来源与边界",
+            ],
+            "exactly the seven research H1s, in order, after the contract block"
+        );
+        assert!(slices[0].raw.ends_with("-->\n\n"));
+        for slice in &slices[1..] {
+            assert!(
+                slice.raw.lines().skip(1).all(|line| line.trim().is_empty()),
+                "sections start empty: {:?}",
+                slice.raw
+            );
+        }
+        assert!(
+            slices.iter().all(|s| parse_fence(&s.raw).is_none()),
+            "no fences of any kind in the skeleton"
+        );
+        assert!(template_task_payloads_from_body(&report.body).is_empty());
+        assert!(!report.body.contains("# Plan"));
+    }
+
+    /// The task-less table is honest: none of its recipes renders a `task`
+    /// fence (a recipe that did would belong in `RECIPE_AND_TASKS`).
+    #[test]
+    fn task_less_recipes_carry_no_task_blocks() {
+        for build_recipe in TASK_LESS_RECIPES {
+            let recipe = build_recipe();
+            let fenced = split_body(&recipe.body)
+                .into_iter()
+                .filter_map(|slice| parse_fence(&slice.raw))
+                .filter(|fence| fence.kind == KIND_TASK)
+                .count();
+            assert_eq!(
+                fenced, 0,
+                "{}: a task-less recipe renders task blocks",
+                recipe.summary
             );
         }
     }
@@ -874,8 +1013,8 @@ mod tests {
     /// ## What this can and cannot catch
     ///
     /// Today it is **a construction guard, not a drift detector**: every
-    /// `*_report()` in this module is built by `report_from_tasks` from the
-    /// matching `*_tasks()` — the same `Vec`, one call apart — so a divergence
+    /// paired `*_report()` in this module is built by `report_from_tasks` from
+    /// the matching `*_tasks()` — the same `Vec`, one call apart — so a divergence
     /// is not expressible and this test is green by construction. What it
     /// guards is the *next* edit: a `*_report()` that stops taking its blocks
     /// from its own `*_tasks()` (hand-written fences, an extra block appended,
