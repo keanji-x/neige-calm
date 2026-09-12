@@ -1,0 +1,65 @@
+{
+  "_provenance": [
+    "HAND-AUTHORED FROM THE PINNED UPSTREAM SCHEMA. This is NOT a capture.",
+    "Transcribed from `codex app-server generate-json-schema` as emitted by",
+    "codex-cli 0.153.4 (~/.codex/packages/standalone/current/bin/codex, the",
+    "binary this box spawns), file v2/TurnCompletedNotification.json. No codex",
+    "turn was run to produce it: the only machine available here is production,",
+    "and #1255 forbids running real turns on it.",
+    "",
+    "Shape: { threadId, turn: Turn }. Turn = { id, status, error, startedAt,",
+    "completedAt, durationMs, items, itemsView }; required: id, items, status.",
+    "TurnStatus enum: completed | interrupted | failed | inProgress.",
+    "TurnError = { message (required), codexErrorInfo?, additionalDetails?,",
+    "misalignment? }; `error` is 'only populated when the Turn's status is failed'.",
+    "CodexErrorInfo is a oneOf: EITHER a bare string from the enum",
+    "[contextWindowExceeded, sessionBudgetExceeded, usageLimitExceeded,",
+    "rateLimitExceeded, serverOverloaded, cyberPolicy, misalignmentPolicyViolation,",
+    "internalServerError, unauthorized, badRequest, threadRollbackFailed,",
+    "sandboxError, other] OR a single-key object such as",
+    "{ \"httpConnectionFailed\": { \"httpStatusCode\": 502 } } (also",
+    "responseStreamConnectionFailed, responseStreamDisconnected,",
+    "responseTooManyFailedAttempts, activeTurnNotSteerable). Every spelling is",
+    "camelCase on the app-server wire, as `threadId` / `durationMs` here are.",
+    "",
+    "`startedAt` / `completedAt` are Unix SECONDS (int64), not milliseconds.",
+    "",
+    "`items` and `itemsView` are transcribed so the kernel test can prove they are",
+    "STRIPPED from the stored row: every item already has rows of its own.",
+    "",
+    "`threadId` here is a PLACEHOLDER and is not part of the transcription. The",
+    "kernel's `on_notification` prologue drops any notification whose `threadId` is",
+    "not the harness's current thread, so the test substitutes its own seeded id",
+    "(`SEED_THREAD_ID` in tests/cases/planner_harness_items_persist.rs) over this",
+    "value before emitting the frame.",
+    "",
+    "Once #1625 P1 ships, `SELECT params FROM harness_items WHERE",
+    "method='turn/completed' AND json_extract(params,'$.status')='failed'` on a",
+    "production DB promotes this to a captured payload."
+  ],
+  "params": {
+    "threadId": "PLACEHOLDER-substituted-by-the-test",
+    "turn": {
+      "id": "turn-outcome-failed-1",
+      "status": "failed",
+      "error": {
+        "message": "The conversation exceeded the model's context window.",
+        "codexErrorInfo": "contextWindowExceeded",
+        "additionalDetails": null,
+        "misalignment": null
+      },
+      "startedAt": 1789000000,
+      "completedAt": 1789000042,
+      "durationMs": 42000,
+      "items": [
+        {
+          "id": "item-user-in-failed-turn",
+          "type": "userMessage",
+          "clientId": null,
+          "content": [{ "type": "text", "text": "summarise everything so far" }]
+        }
+      ],
+      "itemsView": "full"
+    }
+  }
+}

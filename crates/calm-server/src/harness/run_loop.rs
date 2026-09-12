@@ -1643,6 +1643,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     last_turn_id: target_turn_id,
                 };
                 *inner.interrupt_deadline.lock().await = None;
+                persist_turn_outcome(inner, &turn).await;
                 return persist_snapshot_stamping_issued_head(inner).await;
             }
             let state = inner.state.lock().await.clone();
@@ -1663,8 +1664,12 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 last_turn_id: turn_id,
             };
             *inner.interrupt_deadline.lock().await = None;
+            persist_turn_outcome(inner, &turn).await;
             return persist_snapshot_stamping_issued_head(inner).await;
         }
+        // #1625 P1: the turn-outcome row is written only from `TurnCompleted`
+        // above — codex 0.153.4 has no `turn/aborted` notification; an
+        // interrupt arrives as `turn/completed` with `status: "interrupted"`.
         Notification::Other { method, params } if method == "turn/aborted" => {
             let Some(aborted_turn_id) = other_turn_id(&params).map(ToOwned::to_owned) else {
                 tracing::debug!("planner harness ignoring turn/aborted without a turn id");
@@ -3623,6 +3628,88 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// #1625 P1 — make a turn's terminal status durable and readable.
+///
+/// One `harness_items` row per finished turn, `method = "turn/completed"`,
+/// `params` = codex's final `turn` object minus `items` / `itemsView` (the
+/// items are already rows of their own; what is new here is `status`,
+/// `error { message, codexErrorInfo }` and the timings). Written from the
+/// `TurnCompleted` arm only, AFTER its non-target and stale-completion gates —
+/// a completion the FSM ignores leaves no row — and BEFORE
+/// `persist_snapshot_stamping_issued_head`, so by the time the resulting
+/// `HarnessPhaseChanged` reaches a client the row is already there to fetch.
+/// That ordering is what lets the phase event double as the delivery signal:
+/// no `HarnessItemAdded` is emitted for this row (one fewer track-vcs commit
+/// per turn), and `fe/core/events/invalidation-plan.ts` invalidates
+/// `['harness-items', card_id]` on `harness.phase.changed` instead.
+///
+/// Best-effort on purpose: a failed insert is logged, never propagated. The
+/// FSM has already moved to `TurnCompleted` and the snapshot commit that
+/// follows is what unblocks the next turn; a missing outcome line must not
+/// stall the harness.
+async fn persist_turn_outcome(inner: &Arc<Inner>, turn: &Value) {
+    // `turn_id` is the row's whole identity here — the id is what a future
+    // per-turn grouping keys on — so a frame without one writes nothing.
+    let Some(turn_id) = turn.get("id").and_then(Value::as_str) else {
+        tracing::warn!(
+            runtime_id = %inner.worker_session_id,
+            card_id = %inner.card_id,
+            "planner harness skipping turn/completed row: the turn object carries no id"
+        );
+        return;
+    };
+    // Same guard as the `turn/plan/updated` arm: `harness_items.thread_id` is
+    // NOT NULL, and `Notification::TurnCompleted.thread_id` is
+    // `unwrap_or_default()` upstream, so the harness's own thread is the only
+    // value that is never `""`.
+    let Some(thread_id) = inner.thread_id.read().await.clone() else {
+        tracing::warn!(
+            runtime_id = %inner.worker_session_id,
+            card_id = %inner.card_id,
+            turn_id,
+            "planner harness skipping turn/completed row: no thread is known yet"
+        );
+        return;
+    };
+    let mut outcome = turn.clone();
+    if let Some(object) = outcome.as_object_mut() {
+        object.remove("items");
+        object.remove("itemsView");
+    }
+    let params_json = match serde_json::to_string(&outcome) {
+        Ok(json) => json,
+        Err(error) => {
+            tracing::warn!(error = %error, turn_id, "planner harness could not serialize turn outcome");
+            return;
+        }
+    };
+    if let Err(error) = inner
+        .repo
+        .harness_item_insert(
+            &inner.worker_session_id,
+            inner.card_id.as_str(),
+            inner.track_id.as_str(),
+            &thread_id,
+            Some(turn_id),
+            // A turn is not an item: no `item_uuid`, no `item_type`.
+            None,
+            None,
+            "turn/completed",
+            &params_json,
+            None,
+        )
+        .await
+    {
+        tracing::warn!(
+            runtime_id = %inner.worker_session_id,
+            card_id = %inner.card_id,
+            turn_id,
+            error = %error,
+            "planner harness could not persist turn outcome row"
+        );
+    }
 }
 
 async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {

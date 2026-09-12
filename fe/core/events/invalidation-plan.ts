@@ -248,8 +248,17 @@ function policies(): PolicyMap {
   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
+  /*
+   * #1625 P1 — `harness-items` is here because the phase event IS the
+   * delivery signal for the per-turn outcome row. The kernel writes the
+   * `turn/completed` row before the snapshot commit that emits
+   * `TurnRunning → TurnCompleted` (`run_loop.rs`, `persist_turn_outcome`), and
+   * emits no `harness.item.added` for it: one refetch per turn end, rather
+   * than an extra event plus a track-vcs commit per turn.
+   */
   'harness.phase.changed': plan((event) => result([
-    ['planner-run', event.data.card_id], ...conversationLists(event.data.track_id),
+    ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
+    ...conversationLists(event.data.track_id),
   ])),
   'harness.transcript.cleared': plan((event) => result([
     ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
