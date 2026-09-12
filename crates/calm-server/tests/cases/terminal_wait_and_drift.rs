@@ -944,7 +944,7 @@ async fn drift_tolerant_input_refuses_mode_change_and_history_views() {
 /// an explicit projection error long before its 10 s budget.
 #[tokio::test]
 async fn change_wait_stops_when_the_output_source_disconnects() {
-    wait_stops_when_the_output_source_disconnects("change").await;
+    wait_stops_when_the_projection_is_invalidated("change", ProjectionLoss::Disconnect).await;
 }
 
 /// #1620 F5 — a signal wait subscribes to the projection too, so an
@@ -952,14 +952,55 @@ async fn change_wait_stops_when_the_output_source_disconnects() {
 /// instead of parking it to the budget.
 #[tokio::test]
 async fn signal_wait_stops_when_the_output_source_disconnects() {
-    wait_stops_when_the_output_source_disconnects("signal").await;
+    wait_stops_when_the_projection_is_invalidated("signal", ProjectionLoss::Disconnect).await;
 }
 
-async fn wait_stops_when_the_output_source_disconnects(wait_for: &str) {
+/// A supervisor replay gap invalidates the projection while the attach
+/// stream keeps running and no protocol message is sent: the revision
+/// subscription is the only wake, in both modes.
+#[tokio::test]
+async fn change_wait_stops_on_a_projection_gap() {
+    wait_stops_when_the_projection_is_invalidated("change", ProjectionLoss::Gap).await;
+}
+
+#[tokio::test]
+async fn signal_wait_stops_on_a_projection_gap() {
+    wait_stops_when_the_projection_is_invalidated("signal", ProjectionLoss::Gap).await;
+}
+
+#[derive(Clone, Copy)]
+enum ProjectionLoss {
+    /// The attach task is aborted (`ObservationSource` drop:
+    /// "terminal output source disconnected").
+    Disconnect,
+    /// The same call the attach reader makes on `ControlReply::Gap`, with
+    /// the stream and every other task left running.
+    Gap,
+}
+
+async fn wait_stops_when_the_projection_is_invalidated(wait_for: &str, loss: ProjectionLoss) {
     let h = Harness::start().await;
     let terminal = open(&h, "printf 'READY\\n'; cat >/dev/null", "source-loss").await;
     h.observe_text(&terminal, "READY").await;
     let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    // The one-shot ChildReady broadcast lands tens of ms after launch; let it
+    // pass first, so no protocol message reaches the client during the wait
+    // and only the projection subscription can end it.
+    let ready = std::time::Instant::now();
+    while !entry
+        .handle
+        .render_plane
+        .lock()
+        .unwrap()
+        .child_ready_fired()
+    {
+        assert!(
+            ready.elapsed() < Duration::from_secs(5),
+            "ChildReady never fired"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
     let waiters = || entry.handle.model_view.lock().unwrap().change_waiters();
     let subscribed = waiters();
     let sever = async {
@@ -971,7 +1012,15 @@ async fn wait_stops_when_the_output_source_disconnects(wait_for: &str) {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        entry.disconnect_output_source_for_test();
+        match loss {
+            ProjectionLoss::Disconnect => entry.disconnect_output_source_for_test(),
+            ProjectionLoss::Gap => entry
+                .handle
+                .render_plane
+                .lock()
+                .unwrap()
+                .invalidate_observation("terminal output gap"),
+        }
     };
     let started = std::time::Instant::now();
     let (response, ()) = tokio::join!(
@@ -987,9 +1036,12 @@ async fn wait_stops_when_the_output_source_disconnects(wait_for: &str) {
         "the {wait_for} wait idled towards its budget: {elapsed:?} {response}"
     );
     let message = error_text(&response);
+    let reason = match loss {
+        ProjectionLoss::Disconnect => "terminal output source disconnected",
+        ProjectionLoss::Gap => "terminal output gap",
+    };
     assert!(
-        message.contains("terminal projection unavailable")
-            && message.contains("terminal output source disconnected"),
+        message.contains("terminal projection unavailable") && message.contains(reason),
         "{response}"
     );
     h.stop(&terminal).await;
