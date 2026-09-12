@@ -527,14 +527,13 @@ mod tests {
     /// Spawn a signal wait for `stop` above `baseline` with every sender kept
     /// alive by the fixture (a dropped sender ends the loop at once, which
     /// would make a budget test vacuous).
+    /// The loop's verdict and the paused-clock time it took.
+    type SignalTask = tokio::task::JoinHandle<((Option<Signal>, bool), Duration)>;
     fn start_signal(
         ring: Arc<crate::terminal_renderer::SignalRing>,
         baseline: u64,
         budget_ms: u64,
-    ) -> (
-        SignalFixture,
-        tokio::task::JoinHandle<((Option<Signal>, bool), Duration)>,
-    ) {
+    ) -> (SignalFixture, SignalTask) {
         let (revisions, revisions_rx) = watch::channel(0u64);
         let (events, events_rx) = watch::channel(0u64);
         let stopped = Arc::new(AtomicBool::new(false));

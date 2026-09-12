@@ -949,14 +949,13 @@ async fn open_with_claim_yields_to_a_human_who_claimed_inside_the_claim_window()
     use std::sync::{Arc, Mutex};
     let h = Harness::start().await;
     let user = uuid::Uuid::new_v4();
-    let human: Arc<
-        Mutex<
-            Option<(
-                tokio::task::JoinHandle<_>,
-                tokio::sync::mpsc::Sender<ClientMsg>,
-            )>,
-        >,
-    > = Arc::new(Mutex::new(None));
+    // The human's pump (abort handle) and its input channel, kept alive by
+    // the test after the seam returns.
+    type HumanClient = (
+        tokio::task::AbortHandle,
+        tokio::sync::mpsc::Sender<ClientMsg>,
+    );
+    let human: Arc<Mutex<Option<HumanClient>>> = Arc::new(Mutex::new(None));
     let seam_human = human.clone();
     let renderer = h.state.terminal_renderer.clone();
     h.interaction().set_claim_window_seam(Box::new(move |terminal_id: String| {
@@ -1023,7 +1022,7 @@ async fn open_with_claim_yields_to_a_human_who_claimed_inside_the_claim_window()
                 entry.handle.owner_registry.lock().unwrap().current_owner(),
                 Some(user)
             );
-            *seam_human.lock().unwrap() = Some((pump, incoming));
+            *seam_human.lock().unwrap() = Some((pump.abort_handle(), incoming));
         })
     }));
 
