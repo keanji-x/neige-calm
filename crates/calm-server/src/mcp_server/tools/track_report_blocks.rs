@@ -9,10 +9,11 @@
 //! | Tool | Shape | Notes |
 //! |---|---|---|
 //! | `calm.report.blocks.kinds`  | `{}` | Self-describing kind vocabulary (static). |
-//! | `calm.report.blocks.upsert` | `{ id?, kind, markdown?, payload?, if_rev?, if_doc_rev?, position? }` | Create (`id` absent + mandatory `if_doc_rev`) or replace (`id` + mandatory `if_rev`). Returns `{ id, rev, updated_at, docRev }`. |
+//! | `calm.report.blocks.upsert` | `{ id?, kind, markdown?, payload?, if_rev?, if_doc_rev?, position?, message?, lifecycle? }` | Create (`id` absent + mandatory `if_doc_rev`) or replace (`id` + mandatory `if_rev`). Returns `{ id, rev, updated_at, docRev }`. |
 //! | `calm.report.blocks.move`   | `{ id, to_index, if_doc_rev }` | Reorder; rev untouched. |
 //! | `calm.report.blocks.delete` | `{ id, if_rev }` | `if_rev` mandatory. |
-//! | `calm.report.write_markdown`| `{ body, summary?, if_doc_rev }` | The id-preserving whole-document write: guarded full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. |
+//! | `calm.report.write_markdown`| `{ body, summary?, if_doc_rev, message?, lifecycle? }` | The id-preserving whole-document write: guarded full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. |
+//! | `calm.report.commit`        | `{ if_doc_rev, message, ops?, summary?, lifecycle? }` | Planner-only: one user-intent update — an ordered list of block ops (`upsert`/`move`/`delete`, each in its single-op shape minus `if_doc_rev`) + optional summary + optional lifecycle, under ONE `if_doc_rev`. Returns `{ updated_at, docRev, blocks: [{ id, kind, rev }], lifecycle }`. |
 //!
 //! ## Concurrency contract
 //!
@@ -23,7 +24,10 @@
 //! carrying both revs), the transaction aborts, nothing is written and
 //! no events are emitted. A successful op keeps the dual-event
 //! invariant: exactly one `CardUpdated` + one `TrackReportEdited`
-//! (flat-projection `body_before/after`), and never touches `summary`.
+//! (flat-projection `body_before/after`). The block ops never touch
+//! `summary`; `calm.report.commit` is the one block-channel write that
+//! may (its optional `summary`), still inside the same single
+//! transaction and the same event pair.
 //!
 //! ## Authorization
 //!
@@ -34,10 +38,15 @@
 //! gating and `EditAuthor` attribution stay uniform.
 //!
 //! The block channel — not `calm.report.write`/`.edit` — is where the
-//! assistant role lives, because a `ReportDocOp` cannot carry a
-//! `lifecycle` field at all (§3.2). What the channel being open does
-//! *not* mean is that an assistant may write anything a planner may: the
-//! sink attributes its ops as `EditAuthor::Assistant` and suppresses
+//! assistant role lives. `blocks.upsert` and `write_markdown` accept an
+//! optional `message` (persisted as `agent_message`) and, for a
+//! **Planner** caller only, an optional `lifecycle`; an assistant passing
+//! `lifecycle` is refused at the entry (`-32403`) before anything is
+//! resolved — that is the §3.2 dividing line, and `calm.report.commit`
+//! (which always carries a message and may carry a lifecycle) is
+//! planner-only outright. What the channel being open does *not* mean
+//! is that an assistant may write anything a planner may: the sink
+//! attributes its ops as `EditAuthor::Assistant` and suppresses
 //! auto-promote, and `track_report_edit_guard` refuses any op of its
 //! that would touch a task declaration block. A Worker token is still
 //! refused here outright.
@@ -46,11 +55,13 @@ use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
-    AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry, require_role_any,
+    AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry, require_role,
+    require_role_any,
 };
+use crate::mcp_server::tools::lifecycle_args::{parse_optional_write_args, parse_write_args};
 use crate::mcp_server::tools::track_report::{resolve_report_for_caller, updated_report_doc_rev};
-use crate::model::CardRole;
-use crate::track_report::{BlockOpOutcome, ReportDocOp};
+use crate::model::{CardRole, TrackLifecycle};
+use crate::track_report::{BatchBlockOp, BlockOpOutcome, MAX_BATCH_OPS, ReportDocOp};
 use calm_types::report_blocks;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -58,8 +69,8 @@ use std::sync::Arc;
 mod contracts;
 
 use contracts::{
-    delete_descriptor, kinds_descriptor, kinds_table, move_descriptor, upsert_descriptor,
-    write_markdown_descriptor,
+    commit_descriptor, delete_descriptor, kinds_descriptor, kinds_table, move_descriptor,
+    upsert_descriptor, write_markdown_descriptor,
 };
 
 pub const TOOL_REPORT_BLOCKS_KINDS: &str = "calm.report.blocks.kinds";
@@ -67,6 +78,7 @@ pub const TOOL_REPORT_BLOCKS_UPSERT: &str = "calm.report.blocks.upsert";
 pub const TOOL_REPORT_BLOCKS_MOVE: &str = "calm.report.blocks.move";
 pub const TOOL_REPORT_BLOCKS_DELETE: &str = "calm.report.blocks.delete";
 pub const TOOL_REPORT_WRITE_MARKDOWN: &str = "calm.report.write_markdown";
+pub const TOOL_REPORT_COMMIT: &str = "calm.report.commit";
 
 /// JSON-RPC error code for an `if_rev` optimistic-concurrency
 /// conflict (kernel-extension range; see framing.rs).
@@ -78,6 +90,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(move_descriptor(), wrap(blocks_move));
     registry.register(delete_descriptor(), wrap(blocks_delete));
     registry.register(write_markdown_descriptor(), wrap(write_markdown));
+    registry.register(commit_descriptor(), wrap(commit));
 }
 
 /// Boxed-future wrapper, same shape as the other tool modules.
@@ -122,6 +135,384 @@ async fn blocks_upsert(
     let tool = TOOL_REPORT_BLOCKS_UPSERT;
     let obj = require_object(&args, tool)?;
     let id = optional_string(obj, "id", tool)?;
+    let (kind, content) = resolve_upsert_content(obj, tool)?;
+    let if_rev = optional_u32(obj, "if_rev", tool)?;
+    let position = optional_index(obj, "position", tool)?;
+    let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?;
+    let carried = parse_optional_write_args(&args, tool)?;
+    planner_only_lifecycle(&identity, carried.lifecycle, tool)?;
+    if id.is_some() {
+        if if_doc_rev.is_some() {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `if_doc_rev` is not valid when `id` is given; updates with `id` must use \
+                 `if_rev` (the block-level rev)"
+            )));
+        }
+        if if_rev.is_none() {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `if_rev` is required when `id` is given (read the \
+                 current rev from calm.report.read's blocks index)"
+            )));
+        }
+        if position.is_some() {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `position` is only valid when creating a new block; \
+                 use calm.report.blocks.move to reorder"
+            )));
+        }
+    } else if if_rev.is_some() {
+        return Err(RpcError::invalid_params(format!(
+            "{tool}: `if_rev` without `id` is meaningless — omit it when \
+             creating a new block"
+        )));
+    } else if if_doc_rev.is_none() {
+        return Err(RpcError::invalid_params(format!(
+            "{tool}: `if_doc_rev` is now required when creating a block; read `docRev` from \
+             `calm.report.read`, then retry with that value"
+        )));
+    }
+
+    let outcome = commit_block_op(
+        &ctx,
+        &identity,
+        tool,
+        ReportDocOp::UpsertBlock {
+            id,
+            kind,
+            content,
+            if_rev,
+            if_doc_rev,
+            position,
+        },
+        carried.message,
+        carried.lifecycle,
+    )
+    .await?;
+    let (card, block) = outcome;
+    let block = block
+        .ok_or_else(|| RpcError::internal(format!("{tool}: upsert produced no block outcome")))?;
+    let doc_rev = updated_report_doc_rev(&card, tool)?;
+    Ok(
+        json!({ "id": block.id, "rev": block.rev, "updated_at": card.updated_at, "docRev": doc_rev }),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// calm.report.blocks.move
+// ---------------------------------------------------------------------------
+
+async fn blocks_move(
+    ctx: Arc<AppContext>,
+    identity: ToolCallIdentity,
+    args: Value,
+) -> Result<Value, RpcError> {
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
+    let tool = TOOL_REPORT_BLOCKS_MOVE;
+    let obj = require_object(&args, tool)?;
+    let id = required_string(obj, "id", tool)?;
+    let to_index = optional_index(obj, "to_index", tool)?
+        .ok_or_else(|| RpcError::invalid_params(format!("{tool}: missing `to_index` (integer)")))?;
+    let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?.ok_or_else(|| {
+        RpcError::invalid_params(format!(
+            "{tool}: `if_doc_rev` is now required; read `docRev` from \
+             `calm.report.read`, then retry with that value"
+        ))
+    })?;
+
+    let (card, block) = commit_block_op(
+        &ctx,
+        &identity,
+        tool,
+        ReportDocOp::MoveBlock {
+            id,
+            to_index,
+            if_doc_rev,
+        },
+        None,
+        None,
+    )
+    .await?;
+    let block = block
+        .ok_or_else(|| RpcError::internal(format!("{tool}: move produced no block outcome")))?;
+    let doc_rev = updated_report_doc_rev(&card, tool)?;
+    Ok(
+        json!({ "id": block.id, "rev": block.rev, "updated_at": card.updated_at, "docRev": doc_rev }),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// calm.report.blocks.delete
+// ---------------------------------------------------------------------------
+
+/// #1189 ruling — the assistant may delete *prose* blocks here, and no
+/// task blocks at all. Deleting one is not a right it grows into later:
+/// it cannot create a task block in the first place (`author_name`
+/// gives `EditAuthor::Assistant` no attribution name), so "delete the
+/// ones I declared" is the empty set, and everything it *could* reach is
+/// a declaration some planner or user made. The refusal is enforced one
+/// layer down, in `track_report_edit_guard::guard_task_declarations`, so
+/// it covers the whole-document shapes too — this entry point stays open
+/// so the prose case works.
+async fn blocks_delete(
+    ctx: Arc<AppContext>,
+    identity: ToolCallIdentity,
+    args: Value,
+) -> Result<Value, RpcError> {
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
+    let tool = TOOL_REPORT_BLOCKS_DELETE;
+    let obj = require_object(&args, tool)?;
+    let id = required_string(obj, "id", tool)?;
+    let if_rev = optional_u32(obj, "if_rev", tool)?.ok_or_else(|| {
+        RpcError::invalid_params(format!(
+            "{tool}: `if_rev` is required for delete (read the current rev \
+             from calm.report.read's blocks index)"
+        ))
+    })?;
+
+    let (card, _none) = commit_block_op(
+        &ctx,
+        &identity,
+        tool,
+        ReportDocOp::DeleteBlock { id, if_rev },
+        None,
+        None,
+    )
+    .await?;
+    let doc_rev = updated_report_doc_rev(&card, tool)?;
+    Ok(json!({ "updated_at": card.updated_at, "docRev": doc_rev }))
+}
+
+// ---------------------------------------------------------------------------
+// calm.report.write_markdown
+// ---------------------------------------------------------------------------
+
+async fn write_markdown(
+    ctx: Arc<AppContext>,
+    identity: ToolCallIdentity,
+    args: Value,
+) -> Result<Value, RpcError> {
+    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
+    let tool = TOOL_REPORT_WRITE_MARKDOWN;
+    let obj = require_object(&args, tool)?;
+    let body = required_string(obj, "body", tool)?;
+    let summary_override = optional_string(obj, "summary", tool)?;
+    let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?.ok_or_else(|| {
+        RpcError::invalid_params(format!(
+            "{tool}: `if_doc_rev` is required (use 0 for a new document)"
+        ))
+    })?;
+    let carried = parse_optional_write_args(&args, tool)?;
+    planner_only_lifecycle(&identity, carried.lifecycle, tool)?;
+
+    let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
+    // Omitted summary = keep the existing one. The op carries `None`
+    // and the persist layer resolves it against the doc INSIDE the
+    // transaction — resolving from the `current` snapshot here would
+    // let a concurrent summary write be silently reverted (TOCTOU,
+    // #960 PR2 review).
+    let op = ReportDocOp::WriteMarkdown {
+        summary: summary_override,
+        body,
+        if_doc_rev,
+    };
+    let (card, _none) = match CardDecisionSink::from_app_context(&ctx)
+        .commit_report_op(
+            &identity,
+            track,
+            report_card,
+            current,
+            op,
+            carried.message,
+            carried.lifecycle,
+        )
+        .await
+    {
+        Ok(out) => out,
+        Err(e) => return Err(map_commit_err(tool, e)),
+    };
+    let doc_rev = updated_report_doc_rev(&card, tool)?;
+    Ok(json!({ "updated_at": card.updated_at, "docRev": doc_rev }))
+}
+
+// ---------------------------------------------------------------------------
+// calm.report.commit
+// ---------------------------------------------------------------------------
+
+/// Planner feedback #1 — the one-call update: `{ ops, summary?, lifecycle?,
+/// message, if_doc_rev }`. Every op is parsed with the same rules as its
+/// single-op tool (content via [`resolve_upsert_content`], `if_rev` shape
+/// rules, `to_index`), then the whole list lands as one
+/// [`ReportDocOp::Batch`] inside one persist transaction: one doc-rev
+/// check, one docRev bump, one `CardUpdated` + one `TrackReportEdited`,
+/// plus the lifecycle events when a transition applies.
+async fn commit(
+    ctx: Arc<AppContext>,
+    identity: ToolCallIdentity,
+    args: Value,
+) -> Result<Value, RpcError> {
+    require_role(&identity, CardRole::Planner)?;
+    let tool = TOOL_REPORT_COMMIT;
+    let obj = require_object(&args, tool)?;
+    let write_args = parse_write_args(&args, tool)?;
+    let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?.ok_or_else(|| {
+        RpcError::invalid_params(format!(
+            "{tool}: `if_doc_rev` is required; read `docRev` from `calm.report.read`"
+        ))
+    })?;
+    let summary = optional_string(obj, "summary", tool)?;
+    let raw_ops = match obj.get("ops") {
+        None | Some(Value::Null) => &[][..],
+        Some(Value::Array(ops)) => ops.as_slice(),
+        Some(_) => {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `ops` must be an array of op objects"
+            )));
+        }
+    };
+    if raw_ops.len() > MAX_BATCH_OPS {
+        return Err(RpcError::invalid_params(format!(
+            "{tool}: `ops` carries {} entries; at most {MAX_BATCH_OPS} per commit",
+            raw_ops.len()
+        )));
+    }
+    if raw_ops.is_empty() && summary.is_none() && write_args.lifecycle.is_none() {
+        return Err(RpcError::invalid_params(format!(
+            "{tool}: nothing to commit — pass at least one of `ops`, `summary`, `lifecycle`"
+        )));
+    }
+    let ops = raw_ops
+        .iter()
+        .enumerate()
+        .map(|(index, raw)| parse_batch_op(raw, index, tool))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let (card, _none) = commit_block_op(
+        &ctx,
+        &identity,
+        tool,
+        ReportDocOp::Batch {
+            if_doc_rev,
+            summary,
+            ops,
+        },
+        Some(write_args.message),
+        write_args.lifecycle,
+    )
+    .await?;
+    let doc_rev = updated_report_doc_rev(&card, tool)?;
+    // The response index is read off the persisted payload — the doc's
+    // own post-op snapshot — so it is exactly what the next
+    // `calm.report.read` would return.
+    let blocks = card
+        .payload
+        .get("blocks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| RpcError::internal(format!("{tool}: updated report payload has no blocks")))?
+        .iter()
+        .map(|block| {
+            json!({
+                "id": block.get("id").cloned().unwrap_or(Value::Null),
+                "kind": block.get("kind").cloned().unwrap_or(Value::Null),
+                "rev": block.get("rev").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    let lifecycle = match write_args.lifecycle {
+        Some(lifecycle) => serde_json::to_value(lifecycle)
+            .map_err(|e| RpcError::internal(format!("{tool}: serialize lifecycle: {e}")))?,
+        None => Value::Null,
+    };
+    Ok(json!({
+        "updated_at": card.updated_at,
+        "docRev": doc_rev,
+        "blocks": blocks,
+        "lifecycle": lifecycle,
+    }))
+}
+
+/// One `ops[i]` of `calm.report.commit`: `{ op: "upsert" | "move" |
+/// "delete", ... }` in the single-op tool's argument shape, minus
+/// `if_doc_rev` (the batch carries one for all).
+fn parse_batch_op(raw: &Value, index: usize, tool: &str) -> Result<BatchBlockOp, RpcError> {
+    let at = format!("{tool}: ops[{index}]");
+    let obj = raw
+        .as_object()
+        .ok_or_else(|| RpcError::invalid_params(format!("{at}: must be an object")))?;
+    if obj.contains_key("if_doc_rev") {
+        return Err(RpcError::invalid_params(format!(
+            "{at}: `if_doc_rev` belongs on the commit, not on an op"
+        )));
+    }
+    let op = obj.get("op").and_then(Value::as_str).ok_or_else(|| {
+        RpcError::invalid_params(format!(
+            "{at}: missing `op` (one of \"upsert\", \"move\", \"delete\")"
+        ))
+    })?;
+    match op {
+        "upsert" => {
+            let id = optional_string(obj, "id", &at)?;
+            let (kind, content) = resolve_upsert_content(obj, &at)?;
+            let if_rev = optional_u32(obj, "if_rev", &at)?;
+            let position = optional_index(obj, "position", &at)?;
+            if id.is_some() {
+                if if_rev.is_none() {
+                    return Err(RpcError::invalid_params(format!(
+                        "{at}: `if_rev` is required when `id` is given (read the current rev \
+                         from calm.report.read's blocks index)"
+                    )));
+                }
+                if position.is_some() {
+                    return Err(RpcError::invalid_params(format!(
+                        "{at}: `position` is only valid when creating a new block; use a \
+                         `move` op to reorder"
+                    )));
+                }
+            } else if if_rev.is_some() {
+                return Err(RpcError::invalid_params(format!(
+                    "{at}: `if_rev` without `id` is meaningless — omit it when creating a new \
+                     block"
+                )));
+            }
+            Ok(BatchBlockOp::Upsert {
+                id,
+                kind,
+                content,
+                if_rev,
+                position,
+            })
+        }
+        "move" => {
+            let id = required_string(obj, "id", &at)?;
+            let to_index = optional_index(obj, "to_index", &at)?.ok_or_else(|| {
+                RpcError::invalid_params(format!("{at}: missing `to_index` (integer)"))
+            })?;
+            Ok(BatchBlockOp::Move { id, to_index })
+        }
+        "delete" => {
+            let id = required_string(obj, "id", &at)?;
+            let if_rev = optional_u32(obj, "if_rev", &at)?.ok_or_else(|| {
+                RpcError::invalid_params(format!(
+                    "{at}: `if_rev` is required for delete (read the current rev from \
+                     calm.report.read's blocks index)"
+                ))
+            })?;
+            Ok(BatchBlockOp::Delete { id, if_rev })
+        }
+        other => Err(RpcError::invalid_params(format!(
+            "{at}: unknown op `{other}` (one of \"upsert\", \"move\", \"delete\")"
+        ))),
+    }
+}
+
+/// Resolve `(kind, content)` from an upsert-shaped object: `prose` takes
+/// its markdown top-level or in `payload.markdown` and is checked for
+/// smuggled fences; data kinds take a schema-validated `payload` and
+/// store its canonical fence. Shared by `calm.report.blocks.upsert` and
+/// every `upsert` op of `calm.report.commit`, so the two cannot drift.
+fn resolve_upsert_content(
+    obj: &serde_json::Map<String, Value>,
+    tool: &str,
+) -> Result<(String, String), RpcError> {
     let kind = obj
         .get("kind")
         .and_then(Value::as_str)
@@ -183,184 +574,7 @@ async fn blocks_upsert(
             report_blocks::unknown_kind_message(&kind)
         )));
     };
-    let if_rev = optional_u32(obj, "if_rev", tool)?;
-    let position = optional_index(obj, "position", tool)?;
-    let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?;
-    if id.is_some() {
-        if if_doc_rev.is_some() {
-            return Err(RpcError::invalid_params(format!(
-                "{tool}: `if_doc_rev` is not valid when `id` is given; updates with `id` must use \
-                 `if_rev` (the block-level rev)"
-            )));
-        }
-        if if_rev.is_none() {
-            return Err(RpcError::invalid_params(format!(
-                "{tool}: `if_rev` is required when `id` is given (read the \
-                 current rev from calm.report.read's blocks index)"
-            )));
-        }
-        if position.is_some() {
-            return Err(RpcError::invalid_params(format!(
-                "{tool}: `position` is only valid when creating a new block; \
-                 use calm.report.blocks.move to reorder"
-            )));
-        }
-    } else if if_rev.is_some() {
-        return Err(RpcError::invalid_params(format!(
-            "{tool}: `if_rev` without `id` is meaningless — omit it when \
-             creating a new block"
-        )));
-    } else if if_doc_rev.is_none() {
-        return Err(RpcError::invalid_params(format!(
-            "{tool}: `if_doc_rev` is now required when creating a block; read `docRev` from \
-             `calm.report.read`, then retry with that value"
-        )));
-    }
-
-    let outcome = commit_block_op(
-        &ctx,
-        &identity,
-        tool,
-        ReportDocOp::UpsertBlock {
-            id,
-            kind,
-            content,
-            if_rev,
-            if_doc_rev,
-            position,
-        },
-    )
-    .await?;
-    let (card, block) = outcome;
-    let block = block
-        .ok_or_else(|| RpcError::internal(format!("{tool}: upsert produced no block outcome")))?;
-    let doc_rev = updated_report_doc_rev(&card, tool)?;
-    Ok(
-        json!({ "id": block.id, "rev": block.rev, "updated_at": card.updated_at, "docRev": doc_rev }),
-    )
-}
-
-// ---------------------------------------------------------------------------
-// calm.report.blocks.move
-// ---------------------------------------------------------------------------
-
-async fn blocks_move(
-    ctx: Arc<AppContext>,
-    identity: ToolCallIdentity,
-    args: Value,
-) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
-    let tool = TOOL_REPORT_BLOCKS_MOVE;
-    let obj = require_object(&args, tool)?;
-    let id = required_string(obj, "id", tool)?;
-    let to_index = optional_index(obj, "to_index", tool)?
-        .ok_or_else(|| RpcError::invalid_params(format!("{tool}: missing `to_index` (integer)")))?;
-    let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?.ok_or_else(|| {
-        RpcError::invalid_params(format!(
-            "{tool}: `if_doc_rev` is now required; read `docRev` from \
-             `calm.report.read`, then retry with that value"
-        ))
-    })?;
-
-    let (card, block) = commit_block_op(
-        &ctx,
-        &identity,
-        tool,
-        ReportDocOp::MoveBlock {
-            id,
-            to_index,
-            if_doc_rev,
-        },
-    )
-    .await?;
-    let block = block
-        .ok_or_else(|| RpcError::internal(format!("{tool}: move produced no block outcome")))?;
-    let doc_rev = updated_report_doc_rev(&card, tool)?;
-    Ok(
-        json!({ "id": block.id, "rev": block.rev, "updated_at": card.updated_at, "docRev": doc_rev }),
-    )
-}
-
-// ---------------------------------------------------------------------------
-// calm.report.blocks.delete
-// ---------------------------------------------------------------------------
-
-/// #1189 ruling — the assistant may delete *prose* blocks here, and no
-/// task blocks at all. Deleting one is not a right it grows into later:
-/// it cannot create a task block in the first place (`author_name`
-/// gives `EditAuthor::Assistant` no attribution name), so "delete the
-/// ones I declared" is the empty set, and everything it *could* reach is
-/// a declaration some planner or user made. The refusal is enforced one
-/// layer down, in `track_report_edit_guard::guard_task_declarations`, so
-/// it covers the whole-document shapes too — this entry point stays open
-/// so the prose case works.
-async fn blocks_delete(
-    ctx: Arc<AppContext>,
-    identity: ToolCallIdentity,
-    args: Value,
-) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
-    let tool = TOOL_REPORT_BLOCKS_DELETE;
-    let obj = require_object(&args, tool)?;
-    let id = required_string(obj, "id", tool)?;
-    let if_rev = optional_u32(obj, "if_rev", tool)?.ok_or_else(|| {
-        RpcError::invalid_params(format!(
-            "{tool}: `if_rev` is required for delete (read the current rev \
-             from calm.report.read's blocks index)"
-        ))
-    })?;
-
-    let (card, _none) = commit_block_op(
-        &ctx,
-        &identity,
-        tool,
-        ReportDocOp::DeleteBlock { id, if_rev },
-    )
-    .await?;
-    let doc_rev = updated_report_doc_rev(&card, tool)?;
-    Ok(json!({ "updated_at": card.updated_at, "docRev": doc_rev }))
-}
-
-// ---------------------------------------------------------------------------
-// calm.report.write_markdown
-// ---------------------------------------------------------------------------
-
-async fn write_markdown(
-    ctx: Arc<AppContext>,
-    identity: ToolCallIdentity,
-    args: Value,
-) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
-    let tool = TOOL_REPORT_WRITE_MARKDOWN;
-    let obj = require_object(&args, tool)?;
-    let body = required_string(obj, "body", tool)?;
-    let summary_override = optional_string(obj, "summary", tool)?;
-    let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?.ok_or_else(|| {
-        RpcError::invalid_params(format!(
-            "{tool}: `if_doc_rev` is required (use 0 for a new document)"
-        ))
-    })?;
-
-    let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
-    // Omitted summary = keep the existing one. The op carries `None`
-    // and the persist layer resolves it against the doc INSIDE the
-    // transaction — resolving from the `current` snapshot here would
-    // let a concurrent summary write be silently reverted (TOCTOU,
-    // #960 PR2 review).
-    let op = ReportDocOp::WriteMarkdown {
-        summary: summary_override,
-        body,
-        if_doc_rev,
-    };
-    let (card, _none) = match CardDecisionSink::from_app_context(&ctx)
-        .commit_report_op(&identity, track, report_card, current, op, None, None)
-        .await
-    {
-        Ok(out) => out,
-        Err(e) => return Err(map_commit_err(tool, e)),
-    };
-    let doc_rev = updated_report_doc_rev(&card, tool)?;
-    Ok(json!({ "updated_at": card.updated_at, "docRev": doc_rev }))
+    Ok((kind, content))
 }
 
 // ---------------------------------------------------------------------------
@@ -369,17 +583,51 @@ async fn write_markdown(
 
 /// Resolve the caller's report and run one block-level op through the
 /// decision sink (same identity/attribution path as `report.write`).
+/// `agent_message` / `lifecycle` ride the same persist call; callers
+/// have already applied [`planner_only_lifecycle`] (or are planner-only).
 async fn commit_block_op(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
     tool: &str,
     op: ReportDocOp,
+    agent_message: Option<String>,
+    lifecycle: Option<TrackLifecycle>,
 ) -> Result<(crate::model::Card, Option<BlockOpOutcome>), RpcError> {
     let (track, _, report_card, current) = resolve_report_for_caller(ctx, identity).await?;
     CardDecisionSink::from_app_context(ctx)
-        .commit_report_op(identity, track, report_card, current, op, None, None)
+        .commit_report_op(
+            identity,
+            track,
+            report_card,
+            current,
+            op,
+            agent_message,
+            lifecycle,
+        )
         .await
         .map_err(|e| map_commit_err(tool, e))
+}
+
+/// §3.2 — `lifecycle` is the planner's field. The block tools are open to
+/// the assistant role, so the refusal is per-argument rather than
+/// per-tool: an assistant that passes `lifecycle` is refused `-32403`
+/// before the report is even resolved, and nothing is written.
+fn planner_only_lifecycle(
+    identity: &ToolCallIdentity,
+    lifecycle: Option<TrackLifecycle>,
+    tool: &str,
+) -> Result<(), RpcError> {
+    if lifecycle.is_some() && identity.role != CardRole::Planner {
+        return Err(RpcError::custom(
+            -32403,
+            format!(
+                "{tool}: forbidden: `lifecycle` is accepted from the Planner role only; \
+                 role {:?} must omit it",
+                identity.role
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// `CalmError` → JSON-RPC for the block tools:

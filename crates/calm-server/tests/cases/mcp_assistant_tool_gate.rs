@@ -36,10 +36,11 @@ use support::mcp::{boot_with_role, connect, handshake, recv_frame, send_frame};
 /// are planner property".
 ///
 /// #1189 S2 (§3.2b) opened the block channel too: `blocks.*` and
-/// `write_markdown` are the only write surface an assistant has, and none
-/// of them can carry a `lifecycle` field. What keeps that from being a
-/// state-machine grant lives below the entry gate — no auto-promote, and
-/// the task-block guard — not in this list.
+/// `write_markdown` are the only write surface an assistant has. Their
+/// optional `lifecycle` argument is refused per-argument for a non-Planner
+/// caller (`mcp_track_report_blocks::assistant_cannot_pass_lifecycle_on_block_tools`).
+/// What keeps the channel from being a state-machine grant lives below the
+/// entry gate — no auto-promote, and the task-block guard — not in this list.
 const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
     "calm.report.read",
     "calm.report.blocks.kinds",
@@ -55,6 +56,7 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Report write channel — carries lifecycle, hence planner-only (§3.2).
     "calm.report.write",
     "calm.report.edit",
+    "calm.report.commit",
     // Cross-track / cross-area report discovery reads.
     "calm.area.outline",
     "calm.report.links.backlinks",

@@ -35,6 +35,54 @@ pub(crate) fn parse_write_args(args: &Value, tool: &str) -> Result<WriteArgs, Rp
     Ok(WriteArgs { message, lifecycle })
 }
 
+/// The optional twin of [`parse_write_args`] for the block channel
+/// (`calm.report.blocks.upsert`, `calm.report.write_markdown`): `message`
+/// may be omitted, but when present it must be a non-empty string;
+/// `lifecycle` parses exactly as on `calm.report.write`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct OptionalWriteArgs {
+    pub message: Option<String>,
+    pub lifecycle: Option<TrackLifecycle>,
+}
+
+pub(crate) fn parse_optional_write_args(
+    args: &Value,
+    tool: &str,
+) -> Result<OptionalWriteArgs, RpcError> {
+    let obj = args
+        .as_object()
+        .ok_or_else(|| RpcError::invalid_params(format!("{tool}: arguments must be an object")))?;
+    let message = match obj.get("message") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Err(RpcError::invalid_params(format!(
+                    "{tool}: `message` must be non-empty when provided"
+                )));
+            }
+            Some(trimmed.to_string())
+        }
+        Some(other) => {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `message` must be a string, got {}",
+                shape_of(other)
+            )));
+        }
+    };
+    let lifecycle = match obj.get("lifecycle") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(parse_lifecycle_name(s, tool)?),
+        Some(other) => {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `lifecycle` must be a string, got {}",
+                shape_of(other)
+            )));
+        }
+    };
+    Ok(OptionalWriteArgs { message, lifecycle })
+}
+
 pub(crate) fn parse_lifecycle_name(s: &str, tool: &str) -> Result<TrackLifecycle, RpcError> {
     match s {
         "draft" => Ok(TrackLifecycle::Draft),

@@ -1,11 +1,13 @@
 use super::{
     TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_KINDS, TOOL_REPORT_BLOCKS_MOVE,
-    TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
+    TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE_MARKDOWN,
 };
 use crate::mcp_server::registry::{
     ToolDescriptor, read_only_annotations, role_gated_write_annotations,
 };
+use crate::mcp_server::tools::lifecycle_args::{lifecycle_schema, message_schema};
 use crate::model::CardRole;
+use crate::track_report::MAX_BATCH_OPS;
 use calm_types::report_blocks;
 use serde_json::{Value, json};
 
@@ -312,7 +314,10 @@ pub(super) fn upsert_descriptor() -> ToolDescriptor {
              (and must NOT pass `markdown`). Returns `{ id, rev, \
              updated_at, docRev }` — keep the returned rev for your next edit \
              of the same block. Get ids/revs from `calm.report.read`'s \
-             `blocks` index. The report summary is not touched."
+             `blocks` index. The report summary is not touched. Optional \
+             `message` is persisted as `agent_message`; optional `lifecycle` \
+             (Planner only) advances the track in the same write. For several \
+             blocks + summary + lifecycle at once use `calm.report.commit`."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -324,7 +329,9 @@ pub(super) fn upsert_descriptor() -> ToolDescriptor {
                 "payload": { "type": "object", "description": "Kind-specific payload: required for data kinds; for prose, `{ markdown }` is accepted as an alternative to the top-level `markdown`." },
                 "if_rev": { "type": "integer", "minimum": 0, "description": "Required when `id` is given: the block rev you last read." },
                 "if_doc_rev": { "type": "integer", "minimum": 0, "description": "Required when creating: read docRev from calm.report.read." },
-                "position": { "type": "integer", "minimum": 0, "description": "Insertion index for a NEW block (default: append)." }
+                "position": { "type": "integer", "minimum": 0, "description": "Insertion index for a NEW block (default: append)." },
+                "message": optional_message_schema(),
+                "lifecycle": planner_only_lifecycle_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -403,8 +410,9 @@ pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
              drop it to delete it — every fence must be well-formed \
              and schema-valid or the whole write is rejected (-32602). \
              Use `calm.report.blocks.*` for targeted \
-             edits; use this for large restructurings. Takes no \
-             `message`/`lifecycle`. Omitting \
+             edits; use this for large restructurings. Optional `message` \
+             is persisted as `agent_message`; optional `lifecycle` (Planner \
+             only) advances the track in the same write. Omitting \
              `summary` keeps the existing one. Returns \
              `{ updated_at, docRev }`."
             .into(),
@@ -414,13 +422,101 @@ pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
             "properties": {
                 "body": { "type": "string", "description": "Full report Markdown, optionally with `<!-- neige:b_xxxx -->` marker lines." },
                 "if_doc_rev": { "type": "integer", "minimum": 0, "description": "The document-wide docRev returned by calm.report.read; not a block rev." },
-                "summary": { "type": "string" }
+                "summary": { "type": "string" },
+                "message": optional_message_schema(),
+                "lifecycle": planner_only_lifecycle_schema()
             }
         }),
         annotations: Some(role_gated_write_annotations()),
         // #1189 — the block channel is the assistant's report write
         // surface (discovery only; the handler's `require_role` relaxes in S2).
         visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
+    }
+}
+
+/// `message` on the block channel is optional (the single-op tools never
+/// required one); when present it follows `message_schema()`'s rules.
+fn optional_message_schema() -> Value {
+    json!({
+        "type": "string",
+        "minLength": 1,
+        "description": "Optional human-readable rationale for this write, persisted as \
+            agent_message on the emitted event (and on TrackUpdated.agent_message when a \
+            lifecycle transition is requested)."
+    })
+}
+
+/// `lifecycle_schema()` plus the role caveat the block channel needs: the
+/// tools are open to the assistant role, the field is not.
+fn planner_only_lifecycle_schema() -> Value {
+    let mut schema = lifecycle_schema();
+    if let Some(description) = schema.get_mut("description")
+        && let Some(text) = description.as_str()
+    {
+        *description = Value::String(format!(
+            "{text} Accepted from the Planner role only; an assistant passing it is \
+             refused (-32403) and nothing is written."
+        ));
+    }
+    schema
+}
+
+pub(super) fn commit_descriptor() -> ToolDescriptor {
+    ToolDescriptor {
+        name: TOOL_REPORT_COMMIT.into(),
+        description: "Planner-only: commit ONE user-intent update to the track \
+             report in ONE call — an ordered list of block ops, an optional \
+             new `summary`, and an optional `lifecycle` transition, all under \
+             a single `if_doc_rev` check and a single `message`. Use this \
+             instead of chaining `blocks.upsert` calls, re-reading, and \
+             writing the whole document back just to change the summary or \
+             to carry a lifecycle. Each entry of `ops` is the argument shape \
+             of its single-op tool plus an `op` tag, minus `if_doc_rev`: \
+             `{ op: \"upsert\", id, if_rev, kind, markdown|payload }` replaces \
+             an existing block; `{ op: \"upsert\", kind, markdown|payload, \
+             position? }` creates one; `{ op: \"delete\", id, if_rev }`; \
+             `{ op: \"move\", id, to_index }`. Ops apply in order; any failure \
+             (stale `if_doc_rev` → -32001, stale per-block `if_rev` → -32001, \
+             invalid content → -32602, illegal lifecycle → -32403) aborts the \
+             WHOLE commit — nothing is written and no event is emitted. \
+             `ops` may be empty when only `summary` and/or `lifecycle` change. \
+             A batch `delete` cannot retire a live task block; use \
+             `calm.report.blocks.delete` for that. Returns `{ updated_at, \
+             docRev, blocks: [{ id, kind, rev }], lifecycle }` — the full \
+             post-commit block index (keep the revs for your next edit) and \
+             the lifecycle applied, or null."
+            .into(),
+        input_schema: json!({
+            "type": "object",
+            "required": ["if_doc_rev", "message"],
+            "properties": {
+                "if_doc_rev": { "type": "integer", "minimum": 0, "description": "The document-wide docRev returned by calm.report.read; checked once for the whole commit." },
+                "message": message_schema(),
+                "summary": { "type": "string", "description": "New sidebar summary (~80 chars). Omit to keep the existing one." },
+                "lifecycle": lifecycle_schema(),
+                "ops": {
+                    "type": "array",
+                    "maxItems": MAX_BATCH_OPS,
+                    "description": "Ordered block ops; may be omitted or empty.",
+                    "items": {
+                        "type": "object",
+                        "required": ["op"],
+                        "properties": {
+                            "op": { "type": "string", "enum": ["upsert", "move", "delete"] },
+                            "id": { "type": "string", "description": "upsert (replace) / move / delete: the existing block id. Omit on upsert to create." },
+                            "if_rev": { "type": "integer", "minimum": 0, "description": "Required on upsert-with-id and delete: that block's rev you last read." },
+                            "kind": { "type": "string", "enum": ["prose", "chart.candles", "table", "app", "task"], "description": "upsert: block kind." },
+                            "markdown": { "type": "string", "description": "upsert, kind=prose: the content." },
+                            "payload": { "type": "object", "description": "upsert, data kinds: the schema-validated payload (see calm.report.blocks.kinds)." },
+                            "position": { "type": "integer", "minimum": 0, "description": "upsert-create only: insertion index (default append)." },
+                            "to_index": { "type": "integer", "minimum": 0, "description": "move: final 0-based index." }
+                        }
+                    }
+                }
+            }
+        }),
+        annotations: Some(role_gated_write_annotations()),
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 

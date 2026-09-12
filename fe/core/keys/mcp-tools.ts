@@ -16,12 +16,14 @@
 
 /** Everything that changes the report. `blocks.upsert` is what the planner agent
  *  actually calls today; `write`/`write_markdown`/`edit` are the older and
- *  whole-document routes, all still served. */
+ *  whole-document routes, all still served. `commit` is the batched form
+ *  (blocks + summary + lifecycle in one call). */
 export const REPORT_WRITE_TOOLS: readonly string[] = Object.freeze([
   'calm.report.write',
   'calm.report.write_markdown',
   'calm.report.edit',
   'calm.report.blocks.upsert',
+  'calm.report.commit',
 ]);
 
 export const REPORT_MOVE_TOOL = 'calm.report.blocks.move';

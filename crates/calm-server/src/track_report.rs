@@ -420,6 +420,48 @@ pub enum ReportDocOp {
     },
     /// `calm.report.blocks.delete`: `if_rev` is mandatory.
     DeleteBlock { id: String, if_rev: u32 },
+    /// `calm.report.commit` (planner feedback #1): one user-intent update
+    /// = an ordered list of block ops + an optional summary, under ONE
+    /// document-wide `if_doc_rev` check. Each op runs through the same
+    /// code path as its single-op sibling (`if_rev` per existing block,
+    /// content rules, index bounds), so a failure anywhere aborts the
+    /// whole persist transaction — nothing lands, nothing is emitted.
+    /// The doc rev still advances exactly once for the whole batch.
+    /// `summary: None` keeps the current summary.
+    ///
+    /// A `Delete` inside a batch carries no live-task exemption: only the
+    /// single `DeleteBlock` op may retire a live task declaration
+    /// (`guard_task_declarations`, #1179), so a batch that makes a live
+    /// task block disappear is refused for every author.
+    Batch {
+        if_doc_rev: u64,
+        summary: Option<String>,
+        ops: Vec<BatchBlockOp>,
+    },
+}
+
+/// One step of a [`ReportDocOp::Batch`]. Mirrors the three block-level
+/// single ops minus their document-wide anchor, which the batch carries
+/// once.
+#[derive(Debug, Clone)]
+pub enum BatchBlockOp {
+    /// `id: Some` replaces (needs `if_rev`); `id: None` creates at
+    /// `position` (default append).
+    Upsert {
+        id: Option<String>,
+        kind: String,
+        content: String,
+        if_rev: Option<u32>,
+        position: Option<usize>,
+    },
+    Move {
+        id: String,
+        to_index: usize,
+    },
+    Delete {
+        id: String,
+        if_rev: u32,
+    },
 }
 
 /// `(id, rev)` a block-level [`ReportDocOp`] resolved to: the created/
@@ -440,27 +482,114 @@ pub(crate) fn block_not_found(id: &str) -> CalmError {
 /// propagates it, aborting the transaction, so a conflicting op writes
 /// nothing and emits nothing. Unknown ids / out-of-range indexes are
 /// `CalmError::BadRequest`.
+fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError> {
+    // A malformed doc/rev is Internal (corruption), never folded
+    // into "block not found" (BadRequest).
+    let current = doc
+        .block_rev(id)
+        .map_err(|e| CalmError::Internal(format!("track_report: block rev: {e}")))?
+        .ok_or_else(|| block_not_found(id))?;
+    if current != expected {
+        return Err(CalmError::Conflict(format!(
+            "rev conflict on block {id}: current rev is {current}, expected if_rev {expected} \
+             — re-read the report and retry with the current rev"
+        )));
+    }
+    Ok(current)
+}
+
+fn block_op_internal(e: anyhow::Error) -> CalmError {
+    CalmError::Internal(format!("track_report: block op: {e}"))
+}
+
+/// Replace an existing block: `if_rev` against the CRDT truth, then the
+/// caller-content rule (`validate_caller_content` is false only for the
+/// tombstone `normalize_report_op` synthesizes — see the #1269 note on
+/// `caller_block_content` in [`apply_report_op`]), then the doc write.
+/// Shared by the single `UpsertBlock` op and every batch `Upsert`.
+fn apply_upsert_existing(
+    doc: &mut ReportDoc,
+    id: &str,
+    kind: &str,
+    content: &str,
+    expected_rev: u32,
+    validate_caller_content: bool,
+) -> Result<BlockOpOutcome, CalmError> {
+    check_rev(doc, id, expected_rev)?;
+    if validate_caller_content {
+        validate_block_content(kind, content)?;
+    }
+    let (id, rev) = doc
+        .upsert_block(Some(id), kind, content)
+        .map_err(block_op_internal)?;
+    Ok(BlockOpOutcome { id, rev })
+}
+
+/// Create a block at `position` (default append). The document-wide
+/// anchor is the caller's business: the single op checks its own
+/// `if_doc_rev` first, the batch checks one for all its steps.
+fn apply_upsert_new(
+    doc: &mut ReportDoc,
+    kind: &str,
+    content: &str,
+    position: Option<usize>,
+    validate_caller_content: bool,
+) -> Result<BlockOpOutcome, CalmError> {
+    if validate_caller_content {
+        validate_block_content(kind, content)?;
+    }
+    let len = doc.block_index().map_err(block_op_internal)?.len();
+    if let Some(position) = position
+        && position > len
+    {
+        return Err(CalmError::BadRequest(format!(
+            "position {position} out of range (report has {len} blocks)"
+        )));
+    }
+    let (id, rev) = doc
+        .upsert_block(None, kind, content)
+        .map_err(block_op_internal)?;
+    if let Some(position) = position
+        && position < len
+    {
+        doc.move_block(&id, position).map_err(block_op_internal)?;
+    }
+    Ok(BlockOpOutcome { id, rev })
+}
+
+/// Reorder only; rev untouched.
+fn apply_move(doc: &mut ReportDoc, id: &str, to_index: usize) -> Result<BlockOpOutcome, CalmError> {
+    let current = doc
+        .block_rev(id)
+        .map_err(|e| CalmError::Internal(format!("track_report: block rev: {e}")))?
+        .ok_or_else(|| block_not_found(id))?;
+    let len = doc.block_index().map_err(block_op_internal)?.len();
+    if to_index >= len {
+        return Err(CalmError::BadRequest(format!(
+            "to_index {to_index} out of range (report has {len} blocks)"
+        )));
+    }
+    doc.move_block(id, to_index).map_err(block_op_internal)?;
+    Ok(BlockOpOutcome {
+        id: id.to_string(),
+        rev: current,
+    })
+}
+
+fn apply_delete(doc: &mut ReportDoc, id: &str, if_rev: u32) -> Result<(), CalmError> {
+    check_rev(doc, id, if_rev)?;
+    doc.delete_block(id).map_err(block_op_internal)
+}
+
+/// Upper bound on the ops one `calm.report.commit` may carry.
+pub const MAX_BATCH_OPS: usize = 64;
+
 pub(crate) fn apply_report_op(
     doc: &mut ReportDoc,
     op: &ReportDocOp,
     author: EditAuthor,
 ) -> Result<Option<BlockOpOutcome>, CalmError> {
-    fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError> {
-        // A malformed doc/rev is Internal (corruption), never folded
-        // into "block not found" (BadRequest).
-        let current = doc
-            .block_rev(id)
-            .map_err(|e| CalmError::Internal(format!("track_report: block rev: {e}")))?
-            .ok_or_else(|| block_not_found(id))?;
-        if current != expected {
-            return Err(CalmError::Conflict(format!(
-                "rev conflict on block {id}: current rev is {current}, expected if_rev {expected} \
-                 — re-read the report and retry with the current rev"
-            )));
-        }
-        Ok(current)
-    }
-    let internal = |e: anyhow::Error| CalmError::Internal(format!("track_report: block op: {e}"));
+    let internal = block_op_internal;
     // `summary: None` = keep the current summary. Resolved HERE,
     // inside the persist transaction, from the doc itself — never from
     // a caller-side snapshot (which could revert a summary written
@@ -540,96 +669,109 @@ pub(crate) fn apply_report_op(
             if_rev,
             if_doc_rev,
             position,
-        } => match id {
-            Some(id) => {
-                let expected = if_rev.ok_or_else(|| {
-                    CalmError::BadRequest(
-                        "if_rev is required when replacing an existing block".into(),
-                    )
-                })?;
-                check_rev(doc, id, expected)?;
-                // #1269 (+ follow-up) — defence in depth at the op
-                // layer, on both halves of `kind`. All `ReportDoc::
-                // upsert_block` asks of the content is `parse_fence` +
-                // a kind match, so a direct `apply_report_op` call used
-                // to carry a ```neige-block fence straight into a
-                // `kind: "prose"` block, and a schema-invalid payload
-                // straight into a data block. Content a user sends to
-                // the block *upsert* endpoints (MCP #971 / REST #990)
-                // never arrives that way — they run
-                // `check_prose_markdown` on a prose argument and build
-                // data content with `render_data_block` — and the point
-                // is that the op stops depending on them to do so.
-                // `caller_block_content` is read before the delete
-                // rewrite, so the tombstone that rewrite synthesizes is
-                // not judged here; see its comment above. Which rule
-                // each `kind` gets and what is left to `upsert_block`
-                // (and so still surfaces as a 500 rather than a 400) is
-                // written up once on `validate_block_content` rather
-                // than restated here.
-                if let Some((kind, content)) = caller_block_content {
-                    validate_block_content(kind, content)?;
+        } => {
+            // #1269 (+ follow-up) — defence in depth at the op layer, on
+            // both halves of `kind`. All `ReportDoc::upsert_block` asks of
+            // the content is `parse_fence` + a kind match, so a direct
+            // `apply_report_op` call used to carry a ```neige-block fence
+            // straight into a `kind: "prose"` block, and a schema-invalid
+            // payload straight into a data block. Content a user sends to
+            // the block *upsert* endpoints (MCP #971 / REST #990) never
+            // arrives that way — they run `check_prose_markdown` on a
+            // prose argument and build data content with
+            // `render_data_block` — and the point is that the op stops
+            // depending on them to do so. `caller_block_content` is read
+            // before the delete rewrite, so the tombstone that rewrite
+            // synthesizes is not judged here; see its comment above. Which
+            // rule each `kind` gets and what is left to `upsert_block`
+            // (and so still surfaces as a 500 rather than a 400) is
+            // written up once on `validate_block_content`. Both arms
+            // check — leaving either unchecked would leave the op-layer
+            // gap open (the delete rewrite only ever produces the replace
+            // arm, since it carries the stored block's id).
+            let validate = caller_block_content.is_some();
+            match id {
+                Some(id) => {
+                    let expected = if_rev.ok_or_else(|| {
+                        CalmError::BadRequest(
+                            "if_rev is required when replacing an existing block".into(),
+                        )
+                    })?;
+                    apply_upsert_existing(doc, id, kind, content, expected, validate).map(Some)
                 }
-                let (id, rev) = doc
-                    .upsert_block(Some(id), kind, content)
-                    .map_err(internal)?;
-                Ok(Some(BlockOpOutcome { id, rev }))
+                None => {
+                    let expected = if_doc_rev.ok_or_else(|| {
+                        CalmError::BadRequest("if_doc_rev is required when creating a block".into())
+                    })?;
+                    check_doc_rev(doc, expected)?;
+                    apply_upsert_new(doc, kind, content, *position, validate).map(Some)
+                }
             }
-            None => {
-                let expected = if_doc_rev.ok_or_else(|| {
-                    CalmError::BadRequest("if_doc_rev is required when creating a block".into())
-                })?;
-                check_doc_rev(doc, expected)?;
-                // #1269 (+ follow-up) — same check on the create arm;
-                // leaving either arm unchecked would leave the op-layer
-                // gap open. (The delete rewrite only ever produces the
-                // replace arm above, since it carries the stored block's
-                // id, so this arm sees caller content in every case.)
-                if let Some((kind, content)) = caller_block_content {
-                    validate_block_content(kind, content)?;
-                }
-                let len = doc.block_index().map_err(internal)?.len();
-                if let Some(position) = position
-                    && *position > len
-                {
-                    return Err(CalmError::BadRequest(format!(
-                        "position {position} out of range (report has {len} blocks)"
-                    )));
-                }
-                let (id, rev) = doc.upsert_block(None, kind, content).map_err(internal)?;
-                if let Some(position) = position
-                    && *position < len
-                {
-                    doc.move_block(&id, *position).map_err(internal)?;
-                }
-                Ok(Some(BlockOpOutcome { id, rev }))
-            }
-        },
+        }
         ReportDocOp::MoveBlock {
             id,
             to_index,
             if_doc_rev,
         } => {
             check_doc_rev(doc, *if_doc_rev)?;
-            let current = doc
-                .block_rev(id)
-                .map_err(|e| CalmError::Internal(format!("track_report: block rev: {e}")))?
-                .ok_or_else(|| block_not_found(id))?;
-            let len = doc.block_index().map_err(internal)?.len();
-            if *to_index >= len {
+            apply_move(doc, id, *to_index).map(Some)
+        }
+        ReportDocOp::DeleteBlock { id, if_rev } => apply_delete(doc, id, *if_rev).map(|()| None),
+        ReportDocOp::Batch {
+            if_doc_rev,
+            summary,
+            ops,
+        } => {
+            check_doc_rev(doc, *if_doc_rev)?;
+            if ops.len() > MAX_BATCH_OPS {
                 return Err(CalmError::BadRequest(format!(
-                    "to_index {to_index} out of range (report has {len} blocks)"
+                    "batch carries {} ops; at most {MAX_BATCH_OPS} per commit",
+                    ops.len()
                 )));
             }
-            doc.move_block(id, *to_index).map_err(internal)?;
-            Ok(Some(BlockOpOutcome {
-                id: id.clone(),
-                rev: current,
-            }))
-        }
-        ReportDocOp::DeleteBlock { id, if_rev } => {
-            check_rev(doc, id, *if_rev)?;
-            doc.delete_block(id).map_err(internal)?;
+            // Ops run in order against the doc as the previous ones left
+            // it — a `Move` may address a block an earlier `Upsert` in the
+            // same batch created only through its returned id, which the
+            // caller does not have yet, so batches address existing
+            // blocks. The first `?` aborts the whole persist tx.
+            for (index, block_op) in ops.iter().enumerate() {
+                let step = |e: CalmError| match e {
+                    CalmError::Conflict(m) => CalmError::Conflict(format!("ops[{index}]: {m}")),
+                    CalmError::BadRequest(m) => CalmError::BadRequest(format!("ops[{index}]: {m}")),
+                    other => other,
+                };
+                match block_op {
+                    BatchBlockOp::Upsert {
+                        id,
+                        kind,
+                        content,
+                        if_rev,
+                        position,
+                    } => match id {
+                        Some(id) => {
+                            let expected = if_rev.ok_or_else(|| {
+                                CalmError::BadRequest(
+                                    "if_rev is required when replacing an existing block".into(),
+                                )
+                            })?;
+                            apply_upsert_existing(doc, id, kind, content, expected, true)
+                                .map_err(step)?;
+                        }
+                        None => {
+                            apply_upsert_new(doc, kind, content, *position, true).map_err(step)?;
+                        }
+                    },
+                    BatchBlockOp::Move { id, to_index } => {
+                        apply_move(doc, id, *to_index).map_err(step)?;
+                    }
+                    BatchBlockOp::Delete { id, if_rev } => {
+                        apply_delete(doc, id, *if_rev).map_err(step)?;
+                    }
+                }
+            }
+            if let Some(summary) = summary {
+                doc.set_summary(summary).map_err(internal)?;
+            }
             Ok(None)
         }
     };

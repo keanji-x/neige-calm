@@ -20,6 +20,9 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.report.blocks.kinds",
         "calm.report.blocks.move",
         "calm.report.blocks.upsert",
+        // Planner feedback #1 — the batched report write (blocks + summary +
+        // lifecycle); carries lifecycle, hence planner-only.
+        "calm.report.commit",
         "calm.report.edit",
         "calm.report.links.backlinks",
         "calm.report.read",
