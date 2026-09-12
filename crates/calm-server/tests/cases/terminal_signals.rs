@@ -1496,7 +1496,12 @@ async fn codex_worker_card_hooks_are_still_persisted_and_projected() {
     let hooked = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let envelope = bus.recv().await.unwrap();
-            if let Event::CodexHook { card_id: hooked, kind, .. } = envelope.event {
+            if let Event::CodexHook {
+                card_id: hooked,
+                kind,
+                ..
+            } = envelope.event
+            {
                 assert_eq!(hooked.as_str(), card_id);
                 assert_eq!(kind, "hook.codex.stop");
                 break;
@@ -1504,8 +1509,15 @@ async fn codex_worker_card_hooks_are_still_persisted_and_projected() {
         }
     })
     .await;
-    assert!(hooked.is_ok(), "the codex hook must be broadcast as worker state");
-    assert_eq!(h.persisted_hook_events().await, 1, "persisted, not ring-only");
+    assert!(
+        hooked.is_ok(),
+        "the codex hook must be broadcast as worker state"
+    );
+    assert_eq!(
+        h.persisted_hook_events().await,
+        1,
+        "persisted, not ring-only"
+    );
     await_card_state(&h, &card_id, "AwaitingInput").await;
     // The same body again is deduped by the worker cache, not appended twice.
     assert_eq!(h.post_codex_hook(&card_id, &stop).await, 204);
@@ -1564,7 +1576,12 @@ async fn claude_worker_card_hooks_are_still_persisted_and_projected() {
     let hooked = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let envelope = bus.recv().await.unwrap();
-            if let Event::ClaudeHook { card_id: hooked, kind, .. } = envelope.event {
+            if let Event::ClaudeHook {
+                card_id: hooked,
+                kind,
+                ..
+            } = envelope.event
+            {
                 assert_eq!(hooked.as_str(), card_id);
                 assert_eq!(kind, "hook.claude.stop");
                 break;
@@ -1572,8 +1589,15 @@ async fn claude_worker_card_hooks_are_still_persisted_and_projected() {
         }
     })
     .await;
-    assert!(hooked.is_ok(), "the Claude hook must be broadcast as worker state");
-    assert_eq!(h.persisted_hook_events().await, 1, "persisted, not ring-only");
+    assert!(
+        hooked.is_ok(),
+        "the Claude hook must be broadcast as worker state"
+    );
+    assert_eq!(
+        h.persisted_hook_events().await,
+        1,
+        "persisted, not ring-only"
+    );
     await_card_state(&h, &card_id, "AwaitingInput").await;
     h.stop(&term.id).await;
 }
@@ -1683,7 +1707,10 @@ async fn await_card_state(h: &Harness, card_id: &str, expected: &str) {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     };
-    if tokio::time::timeout(Duration::from_secs(3), poll).await.is_err() {
+    if tokio::time::timeout(Duration::from_secs(3), poll)
+        .await
+        .is_err()
+    {
         let overlays = h.state.repo.overlays_for("card", card_id).await.unwrap();
         panic!("no `status: {expected}` overlay on {card_id}; overlays: {overlays:?}");
     }

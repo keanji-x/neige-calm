@@ -30,7 +30,9 @@ pub enum PumpCommand {
     /// and a later takeover can be applied back to back on its connection
     /// and another client's `OwnerChanged` can arrive while this claim is
     /// still queued.
-    ClaimIfUnowned { reply: oneshot::Sender<ClaimOutcome> },
+    ClaimIfUnowned {
+        reply: oneshot::Sender<ClaimOutcome>,
+    },
 }
 
 /// The pump's own decision on a [`PumpCommand::ClaimIfUnowned`].
