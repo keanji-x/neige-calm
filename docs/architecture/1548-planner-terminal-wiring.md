@@ -502,14 +502,17 @@ start counts as a change at the start — and when the last one landed):
 * At the signal, a revision since the baseline that has been quiet for
   `settle_ms` (0..2000, default 150, now accepted in signal mode) → `already`,
   return now.
-* Otherwise wait for the next revision until `repaint_ms` after the signal,
-  bounded by the budget → `none` (the Planner observes once more with
-  `wait_for=change`); once one lands, wait until the screen has been quiet
-  for `settle_ms`, bounded by the budget → `settled`, or `unsettled` when the
+* Otherwise the loop keys on whether any revision landed since the wait's
+  baseline, before or after the signal. With none, wait for the first one
+  until `repaint_ms` after the signal, bounded by the budget → `none` (the
+  Planner observes once more with `wait_for=change`); once a change exists,
+  wait until the screen has been quiet for `settle_ms` (measured from the
+  last revision), bounded by the budget → `settled`, or `unsettled` when the
   budget ends first. A timer wake re-reads the revision before settling, as in
   change mode. A revision that preceded the signal but was not yet quiet does
-  not count as `already`; the loop waits for the next one (a spinner frame
-  just before `Stop` must not pass for the answer).
+  not count as `already`, but it does start the quiet window: an answer
+  painted 50 ms before `Stop` settles 100 ms after it (settle 150) instead of
+  idling `repaint_ms`.
 * Exit, disconnect and projection invalidation end the phase with the verdict
   reached so far; the signal is kept (`wait.outcome: signal`).
 

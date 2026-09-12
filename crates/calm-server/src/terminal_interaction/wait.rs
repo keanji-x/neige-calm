@@ -503,12 +503,16 @@ async fn wait_for_signal(
 
 /// The repaint phase of a signal wait (#1628). At the signal: a revision
 /// since the baseline that has been quiet for `settle` is `Already`. Else
-/// the loop waits for the next revision until `repaint` after the signal
-/// (or the budget) → `None`, and once one lands, until the screen has been
-/// quiet for `settle` → `Settled`, or the budget → `Unsettled`. Exit,
-/// disconnect and projection invalidation (`stopped`, re-read on every wake)
-/// end the phase with the verdict the screen had reached. As in change
-/// mode, a timer wake re-reads the revision before settling.
+/// the loop keys on `screen.changed` (any revision since the wait's
+/// baseline, before or after the signal): while nothing has changed it
+/// waits for the first revision until `repaint` after the signal (or the
+/// budget) → `None`; once a change exists it waits until the screen has
+/// been quiet for `settle` → `Settled`, or the budget → `Unsettled`. So a
+/// revision 50 ms before the signal settles 100 ms after it (settle 150)
+/// rather than idling `repaint`. Exit, disconnect and projection
+/// invalidation (`stopped`, re-read on every wake) end the phase with the
+/// verdict the screen had reached. As in change mode, a timer wake re-reads
+/// the revision before settling.
 async fn settle_after_signal(
     mut revisions: watch::Receiver<u64>,
     mut events: watch::Receiver<u64>,
@@ -530,9 +534,10 @@ async fn settle_after_signal(
         return report(RepaintOutcome::Already);
     }
     let repaint_deadline = (signal_at + plan.repaint).min(deadline);
-    let mut changed_after_signal = false;
-    let verdict = |changed_after_signal: bool| {
-        if changed_after_signal {
+    // A change exists (since the baseline) but never went quiet before the
+    // phase ended → `Unsettled`; no change at all → `None`.
+    let verdict = |changed: bool| {
+        if changed {
             RepaintOutcome::Unsettled
         } else {
             RepaintOutcome::None
@@ -541,22 +546,20 @@ async fn settle_after_signal(
     loop {
         events.borrow_and_update();
         let now = Instant::now();
-        if screen.observe(*revisions.borrow_and_update(), now) {
-            changed_after_signal = true;
-        }
-        if changed_after_signal && screen.quiet_for(now) >= plan.settle {
+        screen.observe(*revisions.borrow_and_update(), now);
+        if screen.changed && screen.quiet_for(now) >= plan.settle {
             return report(RepaintOutcome::Settled);
         }
         if stopped() {
-            return report(verdict(changed_after_signal));
+            return report(verdict(screen.changed));
         }
-        let timer = if changed_after_signal {
+        let timer = if screen.changed {
             (screen.last_change + plan.settle).min(deadline)
         } else {
             repaint_deadline
         };
         if now >= timer {
-            return report(verdict(changed_after_signal));
+            return report(verdict(screen.changed));
         }
         let ended = tokio::select! {
             result = revisions.changed() => result.is_err(),
@@ -564,7 +567,7 @@ async fn settle_after_signal(
             _ = tokio::time::sleep_until(timer) => false,
         };
         if ended {
-            return report(verdict(changed_after_signal));
+            return report(verdict(screen.changed));
         }
     }
 }
@@ -1170,13 +1173,11 @@ mod tests {
 
     /// #1628 `none`: no revision within `repaint` of the signal. A screen
     /// that has been quiet since the start (longer than `settle`) without
-    /// any revision is not `already`, and a revision that preceded the
-    /// signal but was not yet quiet does not count as `already` either; the
-    /// loop waits for the next one in both cases.
+    /// any revision is not `already`; the loop waits for the first one.
     #[tokio::test(start_paused = true)]
     async fn repaint_none_when_nothing_lands_within_the_repaint_window() {
         let ring = stop_ring();
-        let (fixture, task) = start_signal_repaint(ring.clone(), 0, 5_000, REPAINT);
+        let (_fixture, task) = start_signal_repaint(ring.clone(), 0, 5_000, REPAINT);
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(400)).await;
         ring.push("a", incoming("stop"), 0);
@@ -1189,19 +1190,31 @@ mod tests {
         assert_eq!(verdict.signal_at, Some(Duration::from_millis(400)));
         assert_eq!(verdict.repaint, repaint(RepaintOutcome::None, 1_500));
         assert_eq!(waited, Duration::from_millis(1_900));
-        drop(fixture);
+    }
 
-        let (fixture, task) = start_signal_repaint(ring.clone(), 1, 5_000, REPAINT);
+    /// #1628 `settled` from a change that preceded the signal: the revision
+    /// lands at t=0, the signal 50 ms later (not yet quiet, so not
+    /// `already`), nothing else follows. The quiet window is measured from
+    /// the revision, so the wait ends 100 ms after the signal — it neither
+    /// idles `repaint` nor reports `none`.
+    #[tokio::test(start_paused = true)]
+    async fn repaint_settles_from_a_revision_that_preceded_the_signal() {
+        let ring = stop_ring();
+        let (fixture, task) = start_signal_repaint(ring.clone(), 0, 5_000, REPAINT);
         tokio::task::yield_now().await;
         bump(&fixture.revisions);
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(50)).await;
-        ring.push("b", incoming("stop"), 0);
+        ring.push("a", incoming("stop"), 0);
         tokio::task::yield_now().await;
-        assert!(!task.is_finished(), "a revision 50 ms old is not quiet");
-        tokio::time::advance(Duration::from_millis(1_500)).await;
-        let (verdict, _) = task.await.unwrap();
-        assert_eq!(verdict.repaint, repaint(RepaintOutcome::None, 1_500));
+        assert!(!task.is_finished(), "a revision 50 ms old is not already");
+        tokio::time::advance(Duration::from_millis(99)).await;
+        assert!(!task.is_finished(), "settled before the quiet window");
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.signal_at, Some(Duration::from_millis(50)));
+        assert_eq!(verdict.repaint, repaint(RepaintOutcome::Settled, 100));
+        assert_eq!(waited, Duration::from_millis(150));
     }
 
     /// #1628: the repaint window and the quiet window are both bounded by

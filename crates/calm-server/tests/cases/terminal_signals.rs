@@ -39,10 +39,12 @@ done
 /// stdin line selects when the answer is painted relative to the Stop hook:
 /// `late:<x>` posts Stop, then paints `ANSWER:<x>` 300 ms later (the real
 /// Claude order); `early:<x>` paints the answer, stays quiet 600 ms, then
-/// posts Stop; `burst` posts Stop and then paints a line every 50 ms for
-/// three seconds; anything else stays quiet 400 ms, posts Stop and paints
-/// nothing (the quiet screen at the signal has no change since the baseline,
-/// so it must not pass for `already`).
+/// posts Stop; `prestop:<x>` paints the answer, waits 50 ms (shorter than
+/// `settle_ms`) and posts Stop, then paints nothing more; `burst` posts Stop
+/// and then paints a line every 50 ms for three seconds; anything else stays
+/// quiet 400 ms, posts Stop and paints nothing (the quiet screen at the
+/// signal has no change since the baseline, so it must not pass for
+/// `already`).
 const FAKE_CLAUDE_REPAINT: &str = r#"#!/bin/sh
 settings=""
 while [ $# -gt 0 ]; do case "$1" in --settings) settings="$2"; shift 2;; *) shift;; esac; done
@@ -54,6 +56,7 @@ while IFS= read -r line; do
   case "$line" in
     late:*) stop; sleep 0.3; printf 'ANSWER:%s\n' "${line#late:}" ;;
     early:*) printf 'ANSWER:%s\n' "${line#early:}"; sleep 0.6; stop ;;
+    prestop:*) printf 'ANSWER:%s\n' "${line#prestop:}"; sleep 0.05; stop ;;
     burst) stop; i=0; while [ $i -lt 60 ]; do i=$((i+1)); printf 'BURST:%s\n' "$i"; sleep 0.05; done ;;
     *) sleep 0.4; stop ;;
   esac
@@ -648,6 +651,39 @@ async fn signal_readback_returns_at_once_when_the_screen_settled_before_the_stop
     assert!(
         answered["wait"]["signal_at_ms"].as_u64().unwrap() >= 600,
         "the fake stays quiet 600 ms before Stop: {answered}"
+    );
+    h.stop(&terminal).await;
+}
+
+/// #1628 (b') — the answer was painted 50 ms before Stop (not yet quiet for
+/// `settle_ms`, so not `already`) and nothing follows: the quiet window runs
+/// from that paint, so the readback is `settled` about 100 ms after the
+/// signal instead of idling the whole `repaint_ms` and reporting `none`.
+#[tokio::test]
+async fn signal_readback_settles_from_an_answer_painted_just_before_the_stop_hook() {
+    let h = Harness::start().await;
+    let terminal = open_fake_claude_repaint(&h, "repaint-prestop").await;
+    let answered = submit(
+        &h,
+        &terminal,
+        "prestop-1",
+        "prestop:hey",
+        json!({"wait_for":"signal"}),
+    )
+    .await;
+    assert_eq!(receipt(&answered)["outcome"], "written", "{answered}");
+    let answered = state(&answered);
+    assert_eq!(answered["wait"]["outcome"], "signal", "{answered}");
+    assert_eq!(
+        answered["wait"]["repaint"]["outcome"], "settled",
+        "{answered}"
+    );
+    assert_eq!(answered["wait"]["settled"], true);
+    assert!(has_line(answered, "ANSWER:hey"), "{answered}");
+    let repaint = answered["wait"]["repaint"]["waited_ms"].as_u64().unwrap();
+    assert!(
+        repaint < 1_000,
+        "a change before the signal must settle, not idle repaint_ms ({repaint} ms): {answered}"
     );
     h.stop(&terminal).await;
 }
