@@ -221,8 +221,10 @@ def tool_failed(call):
 WAIT_METRIC_KEYS = ("change_wait_requests", "change_wait_outcomes", "unsettled_change_waits",
                     "elapsed_wait_requests", "unmeasured_wait_observations", "drift_allowed_inputs",
                     "drift_observed_inputs", "implicit_observation_inputs")
-SIGNAL_METRIC_KEYS = ("signal_wait_requests", "signal_wait_outcomes", "submit_actions", "open_with_claim",
-                      "hooks_seen_observations", "signals_observed", "unmeasured_signal_observations")
+SIGNAL_METRIC_KEYS = ("signal_wait_requests", "signal_wait_outcomes", "signal_repaint_outcomes", "submit_actions",
+                      "open_with_claim", "hooks_seen_observations", "signals_observed",
+                      "unmeasured_signal_observations")
+SIGNAL_METRIC_TALLIES = ("signal_wait_outcomes", "signal_repaint_outcomes")
 SUMMARY_METRIC_KEYS = WAIT_METRIC_KEYS + SIGNAL_METRIC_KEYS
 
 
@@ -234,6 +236,23 @@ def wait_outcome(state):
     if not isinstance(wait.get("outcome"), str) or not isinstance(wait.get("settled"), bool):
         raise EvidenceError("observation wait must carry a string outcome and a boolean settled")
     return wait
+
+
+def signal_repaint(wait):
+    """Return a signal wait's `wait.repaint` block (#1628), or None when the server sent none.
+
+    Only a `signal` outcome carries one; an older server omits it, which is
+    tolerated (unmeasured), while a present block must be well formed.
+    """
+    if wait.get("outcome") != "signal" or "repaint" not in wait:
+        return None
+    repaint = wait["repaint"]
+    if repaint is None:
+        return None
+    repaint = require_object(repaint, "observation wait.repaint")
+    if not isinstance(repaint.get("outcome"), str) or type(repaint.get("waited_ms")) is not int:
+        raise EvidenceError("observation wait.repaint must carry a string outcome and an integer waited_ms")
+    return repaint
 
 
 def observation_signals(state):
@@ -265,9 +284,12 @@ def signal_metrics(terminal):
     requests, including failed ones. `hooks_seen_observations` and
     `signals_observed` are read from each observation's `signals` block;
     observations lacking it (older server) are `unmeasured_signal_observations`.
+    `signal_repaint_outcomes` (#1628) tallies `wait.repaint.outcome` of the
+    signal waits that ended on a signal; a missing block is tolerated.
     """
     counts = collections.Counter()
     outcomes = collections.Counter()
+    repaints = collections.Counter()
     for call in terminal:
         if not call.get("completed"):
             continue
@@ -288,6 +310,9 @@ def signal_metrics(terminal):
         wait = wait_outcome(state)
         if signal_wait and wait is not None:
             outcomes[wait["outcome"]] += 1
+            repaint = signal_repaint(wait)
+            if repaint is not None:
+                repaints[repaint["outcome"]] += 1
         signals = observation_signals(state)
         if signals is None:
             counts["unmeasured_signal_observations"] += 1
@@ -295,8 +320,9 @@ def signal_metrics(terminal):
         if signals["hooks_seen"] is True:
             counts["hooks_seen_observations"] += 1
         counts["signals_observed"] += len(signals["since_previous_observation"])
-    return {**{key: counts[key] for key in SIGNAL_METRIC_KEYS if key != "signal_wait_outcomes"},
-            "signal_wait_outcomes": dict(sorted(outcomes.items()))}
+    return {**{key: counts[key] for key in SIGNAL_METRIC_KEYS if key not in SIGNAL_METRIC_TALLIES},
+            "signal_wait_outcomes": dict(sorted(outcomes.items())),
+            "signal_repaint_outcomes": dict(sorted(repaints.items()))}
 
 
 def wait_metrics(terminal):

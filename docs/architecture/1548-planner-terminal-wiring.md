@@ -110,7 +110,8 @@ scrolling uses `observe.scroll_offset`; application paging uses explicit keys.
 ## Optional action observation and repeated navigation
 
 Control (claim/release) and input accept `observe=true` with optional `wait_ms`
-(0..20000; see the #1618 section for `wait_for`/`settle_ms`). They retain the original receipt fields and add exactly one of:
+(0..20000; see the #1618 section for `wait_for`/`settle_ms` and the #1620 section for
+`signal_events`/`repaint_ms`). They retain the original receipt fields and add exactly one of:
 
 ```json
 {"observation":{"status":"available","state":{"observation_id":"...","text":["..."],"control_id":"...","role":"owner"}}}
@@ -149,8 +150,9 @@ explicit `allow_output_since_observation` fence below (#1618).
 accept `wait_for` (`elapsed`, default, or `change`), `wait_ms` (0..20000, the
 budget for either mode; when omitted it is 0 for `elapsed` and 2000 for
 `change`, so the prompt's recommended `observe=true, wait_for=change` readback
-actually waits) and `settle_ms` (0..2000, default 150; rejected unless
-`wait_for=change`). `change` returns once the model projection's revision differs
+actually waits) and `settle_ms` (0..2000, default 150; rejected in `elapsed`
+mode; in `signal` mode it is the post-signal quiet window, see #1628 below).
+`change` returns once the model projection's revision differs
 from the baseline and no further revision arrived for `settle_ms`, or at the
 budget, or when the process exited, the client became unavailable or the
 projection was invalidated (`ModelView::invalidate` wakes subscribers without
@@ -465,10 +467,11 @@ read atomically with `last_seq` under the ring lock; the per-connection
 `LatestObservation` records `last_seq` so the baseline is per connection like
 revisions, and advancing it cannot skip an unlisted signal.
 
-`wait_for: "signal"` (budget default 15000 ms, max 20000, `settle_ms` refused,
-optional `signal_events` from the seven-event vocabulary, default
+`wait_for: "signal"` (budget default 15000 ms, max 20000, optional
+`signal_events` from the seven-event vocabulary, default
 `stop, notification, permission_request, session_end`) ends when a signal with
-`seq > wait.baseline_signal_seq` and a matching event exists, on process exit,
+`seq > wait.baseline_signal_seq` and a matching event exists (followed by the
+repaint settle below, #1628), on process exit,
 disconnect or projection invalidation (the attach stream failing — the same
 `stopped()` / `projection_unavailable` treatment as change mode, so the wait
 and the connection's input serial are never parked to the budget), or at the
@@ -482,6 +485,44 @@ on this connection, else the seq at call start; input readback → the seq read
 immediately before the physical write (so a hook caused by the write is
 reported); control readback → the seq at call start; a readback of a cached
 (replayed) `request_id` → the state at that later call.
+
+### Repaint settle after the signal (#1628)
+
+Real-Planner rounds 11/12 showed that Claude's `Stop` hook fires before the
+TUI paints the answer: a signal readback that returned at the signal still
+showed the spinner, and the Planner spent one more observe every turn. A
+signal wait therefore keeps running after the matching signal, driven by the
+same revision channel it already subscribed to (`wait::settle_after_signal`,
+state in `wait::Repaint`: the last revision seen, whether any revision landed
+since the wait's baseline — a revision already above the baseline at the
+start counts as a change at the start — and when the last one landed):
+
+* `repaint_ms: 0` (accepted in signal mode only, 0..5000, default 1500) →
+  return at the signal as before, `repaint.outcome: skipped`.
+* At the signal, a revision since the baseline that has been quiet for
+  `settle_ms` (0..2000, default 150, now accepted in signal mode) → `already`,
+  return now.
+* Otherwise wait for the next revision until `repaint_ms` after the signal,
+  bounded by the budget → `none` (the Planner observes once more with
+  `wait_for=change`); once one lands, wait until the screen has been quiet
+  for `settle_ms`, bounded by the budget → `settled`, or `unsettled` when the
+  budget ends first. A timer wake re-reads the revision before settling, as in
+  change mode. A revision that preceded the signal but was not yet quiet does
+  not count as `already`; the loop waits for the next one (a spinner frame
+  just before `Stop` must not pass for the answer).
+* Exit, disconnect and projection invalidation end the phase with the verdict
+  reached so far; the signal is kept (`wait.outcome: signal`).
+
+Every signal-mode observation reports `wait.signal_at_ms` (elapsed when the
+signal was found) and `wait.repaint: {outcome: already|settled|none|unsettled|skipped,
+waited_ms}` (time spent after the signal); both are `null` when no signal
+arrived. `wait.settled` is true for `already` and `settled`. `waited_ms` is
+the whole wait. Change and elapsed observations do not carry the fields, and
+`repaint_ms` outside signal mode is refused like `settle_ms` in elapsed mode.
+The tool descriptions and the Planner prompt say that the signal readback
+already shows the settled answer and to observe again only on `none`. The
+`already` rule is a timing heuristic: a TUI whose screen happens to be quiet
+for `settle_ms` at the signal returns at once even if a later repaint follows.
 
 ### Composite actions
 

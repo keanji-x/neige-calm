@@ -22,6 +22,11 @@ pub const CHANGE_WAIT_MS_DEFAULT: u64 = 2_000;
 /// Budget when `wait_ms` is omitted in signal mode (#1620): a model answer
 /// takes seconds, and the wait ends early on the signal anyway.
 pub const SIGNAL_WAIT_MS_DEFAULT: u64 = 15_000;
+/// Signal mode (#1628): how long after the signal to wait for the first
+/// repaint. Claude's `Stop` hook fires before the TUI paints the answer, so
+/// a signal readback that returned at once would still show the spinner.
+pub const REPAINT_MS_MAX: u64 = 5_000;
+pub const REPAINT_MS_DEFAULT: u64 = 1_500;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -49,17 +54,22 @@ pub struct WaitPlan {
     pub settle_ms: u64,
     /// Signal mode only: snake_case hook events that end the wait.
     pub signal_events: Vec<String>,
+    /// Signal mode only: how long after the signal to wait for a repaint
+    /// (0 returns at the signal as before #1628). 0 in the other modes.
+    pub repaint_ms: u64,
 }
 impl WaitPlan {
     /// `wait_ms == None` selects the mode's default budget:
     /// [`CHANGE_WAIT_MS_DEFAULT`] for change, [`SIGNAL_WAIT_MS_DEFAULT`] for
     /// signal, 0 for elapsed. `signal_events == None` selects
-    /// [`DEFAULT_SIGNAL_EVENTS`] in signal mode.
+    /// [`DEFAULT_SIGNAL_EVENTS`] in signal mode; `repaint_ms == None` selects
+    /// [`REPAINT_MS_DEFAULT`] there.
     pub fn new(
         wait_for: Option<WaitFor>,
         wait_ms: Option<u64>,
         settle_ms: Option<u64>,
         signal_events: Option<Vec<String>>,
+        repaint_ms: Option<u64>,
     ) -> Result<Self> {
         let mode = wait_for.unwrap_or_default();
         let wait_ms = wait_ms.unwrap_or(match mode {
@@ -73,12 +83,20 @@ impl WaitPlan {
             "settle_ms must be 0..{SETTLE_MS_MAX}"
         );
         ensure!(
-            settle_ms.is_none() || mode == WaitFor::Change,
-            "settle_ms requires wait_for=change"
+            settle_ms.is_none() || matches!(mode, WaitFor::Change | WaitFor::Signal),
+            "settle_ms requires wait_for=change or wait_for=signal"
         );
         ensure!(
             signal_events.is_none() || mode == WaitFor::Signal,
             "signal_events requires wait_for=signal"
+        );
+        ensure!(
+            repaint_ms.is_none_or(|repaint| repaint <= REPAINT_MS_MAX),
+            "repaint_ms must be 0..{REPAINT_MS_MAX}"
+        );
+        ensure!(
+            repaint_ms.is_none() || mode == WaitFor::Signal,
+            "repaint_ms requires wait_for=signal"
         );
         let signal_events = match mode {
             WaitFor::Signal => {
@@ -107,11 +125,17 @@ impl WaitPlan {
             budget_ms: wait_ms,
             settle_ms: settle_ms.unwrap_or(SETTLE_MS_DEFAULT),
             signal_events,
+            repaint_ms: match mode {
+                WaitFor::Signal => repaint_ms.unwrap_or(REPAINT_MS_DEFAULT),
+                _ => 0,
+            },
         })
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.budget_ms <= WAIT_MS_MAX && self.settle_ms <= SETTLE_MS_MAX,
+            self.budget_ms <= WAIT_MS_MAX
+                && self.settle_ms <= SETTLE_MS_MAX
+                && self.repaint_ms <= REPAINT_MS_MAX,
             "observation wait exceeds limits"
         );
         ensure!(
@@ -144,6 +168,52 @@ pub struct WaitReport {
     pub signal_baseline: u64,
     /// Signal mode: the signal that ended the wait.
     pub signal: Option<Signal>,
+    /// Signal mode: elapsed time when the signal arrived.
+    pub signal_at: Option<Duration>,
+    /// Signal mode: what happened on the screen after the signal (#1628).
+    pub repaint: Option<RepaintReport>,
+}
+/// Signal mode (#1628): the screen's behaviour after the signal arrived.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepaintOutcome {
+    /// A revision had already landed since the baseline and the screen had
+    /// been quiet for `settle_ms` when the signal arrived.
+    Already,
+    /// A revision landed after the signal and the screen then stayed quiet
+    /// for `settle_ms`.
+    Settled,
+    /// No revision landed within `repaint_ms` of the signal (or the budget).
+    None,
+    /// A revision landed after the signal but the budget ended before the
+    /// screen was quiet for `settle_ms`.
+    Unsettled,
+    /// `repaint_ms: 0`: returned at the signal without looking at the screen.
+    Skipped,
+}
+impl RepaintOutcome {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Already => "already",
+            Self::Settled => "settled",
+            Self::None => "none",
+            Self::Unsettled => "unsettled",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RepaintReport {
+    pub outcome: RepaintOutcome,
+    /// Time spent after the signal.
+    pub waited: Duration,
+}
+impl RepaintReport {
+    fn to_json(self) -> Value {
+        json!({"outcome":self.outcome.name(),"waited_ms":millis(self.waited)})
+    }
+}
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 impl WaitReport {
     pub fn to_json(&self) -> Value {
@@ -155,7 +225,7 @@ impl WaitReport {
             WaitOutcome::Signal => "signal",
         };
         let mut report = json!({"mode":self.mode.name(),"outcome":outcome,
-            "waited_ms":u64::try_from(self.waited.as_millis()).unwrap_or(u64::MAX),"settled":self.settled,
+            "waited_ms":millis(self.waited),"settled":self.settled,
             "baseline_revision":self.baseline.to_string(),
             "baseline_signal_seq":self.signal_baseline});
         if self.mode == WaitFor::Signal {
@@ -163,6 +233,11 @@ impl WaitReport {
                 .signal
                 .as_ref()
                 .map(Signal::to_json)
+                .unwrap_or(Value::Null);
+            report["signal_at_ms"] = self.signal_at.map(millis).map_or(Value::Null, Value::from);
+            report["repaint"] = self
+                .repaint
+                .map(RepaintReport::to_json)
                 .unwrap_or(Value::Null);
         }
         report
@@ -192,6 +267,8 @@ pub async fn wait(
         baseline,
         signal_baseline,
         signal,
+        signal_at: None,
+        repaint: None,
     };
     if plan.mode == WaitFor::Elapsed {
         if plan.budget_ms > 0 {
@@ -229,14 +306,34 @@ pub async fn wait(
         let ring = &client.entry.signals;
         let signals = ring.subscribe();
         let find = || ring.first_matching(signal_baseline, &plan.signal_events);
-        let (signal, exited) =
-            wait_for_signal(signals, revisions, events, stopped, find, deadline).await;
+        let repaint = RepaintPlan {
+            repaint: Duration::from_millis(plan.repaint_ms),
+            settle: Duration::from_millis(plan.settle_ms),
+        };
+        let SignalWait {
+            signal,
+            exited,
+            signal_at,
+            repaint,
+        } = wait_for_signal(
+            signals, revisions, events, stopped, find, baseline, started, deadline, repaint,
+        )
+        .await;
         let outcome = match (&signal, exited) {
             (Some(_), _) => WaitOutcome::Signal,
             (None, true) => WaitOutcome::Exited,
             (None, false) => WaitOutcome::Unchanged,
         };
-        return report(outcome, started.elapsed(), false, signal);
+        let settled = repaint.is_some_and(|repaint| {
+            matches!(
+                repaint.outcome,
+                RepaintOutcome::Already | RepaintOutcome::Settled
+            )
+        });
+        let mut report = report(outcome, started.elapsed(), settled, signal);
+        report.signal_at = signal_at;
+        report.repaint = repaint;
+        return report;
     }
     let settle = Duration::from_millis(plan.settle_ms);
     let Progress {
@@ -264,63 +361,210 @@ fn projection_unavailable(model_view: &SharedModelView) -> bool {
         .unwrap_or(true)
 }
 
+/// Signal mode (#1628): the repaint window after the signal and the quiet
+/// window that ends it. `repaint == 0` skips the phase.
+#[derive(Clone, Copy, Debug)]
+pub struct RepaintPlan {
+    pub repaint: Duration,
+    pub settle: Duration,
+}
+impl RepaintPlan {
+    #[cfg(test)]
+    pub fn skip() -> Self {
+        Self {
+            repaint: Duration::ZERO,
+            settle: Duration::ZERO,
+        }
+    }
+}
+/// The signal loop's verdict.
+#[derive(Debug)]
+pub struct SignalWait {
+    pub signal: Option<Signal>,
+    /// Exit / disconnect / invalidation ended the wait without a signal.
+    pub exited: bool,
+    /// Elapsed since the wait started when the signal was found.
+    pub signal_at: Option<Duration>,
+    /// Present exactly when a signal was found.
+    pub repaint: Option<RepaintReport>,
+}
+/// Revision bookkeeping across both phases of a signal wait: whether any
+/// revision landed since the wait's baseline and when the last one did. A
+/// revision already above the baseline when the wait starts counts as a
+/// change at the start (its real time is unknown, so the quiet window is
+/// measured from the start, never earlier).
+struct Repaint {
+    seen: u64,
+    changed: bool,
+    last_change: Instant,
+}
+impl Repaint {
+    fn new(baseline: u64, current: u64, started: Instant) -> Self {
+        Self {
+            seen: current,
+            changed: current != baseline,
+            last_change: started,
+        }
+    }
+    /// Record `current`; true when it is a new revision.
+    fn observe(&mut self, current: u64, now: Instant) -> bool {
+        if current == self.seen {
+            return false;
+        }
+        self.seen = current;
+        self.changed = true;
+        self.last_change = now;
+        true
+    }
+    fn quiet_for(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_change)
+    }
+}
+
 /// The signal-mode loop (#1620), separated from the client so its timing can
 /// be tested under a paused clock. `signals` is the ring's seq channel,
 /// `revisions` the projection revision channel (a revision itself never ends
 /// a signal wait; its wake re-evaluates `stopped`, which covers projection
-/// invalidation), `events` the client's protocol channel, `find` the ring
-/// lookup for a matching signal above the baseline. The ring is inspected
-/// before every select and again on timeout, after the seq channel version
-/// has been marked seen, so a signal that lands between the lookup and the
-/// select is never missed and one that lands as the budget expires is still
-/// reported; the timeout branch re-reads `stopped` as well, so an exit that
-/// coincides with the deadline is reported as exited, never as unchanged.
+/// invalidation, and is recorded for the repaint phase), `events` the
+/// client's protocol channel, `find` the ring lookup for a matching signal
+/// above the baseline. The ring is inspected before every select and again
+/// on timeout, after the seq channel version has been marked seen, so a
+/// signal that lands between the lookup and the select is never missed and
+/// one that lands as the budget expires is still reported; the timeout
+/// branch re-reads `stopped` as well, so an exit that coincides with the
+/// deadline is reported as exited, never as unchanged. Once the signal is
+/// found the wait continues in [`settle_after_signal`] (#1628) unless
+/// `repaint.repaint` is zero.
+#[allow(clippy::too_many_arguments)]
 async fn wait_for_signal(
     mut signals: watch::Receiver<u64>,
     mut revisions: watch::Receiver<u64>,
     mut events: watch::Receiver<u64>,
     stopped: impl Fn() -> bool,
     find: impl Fn() -> Option<Signal>,
+    baseline: u64,
+    started: Instant,
     deadline: Instant,
-) -> (Option<Signal>, bool) {
+    repaint: RepaintPlan,
+) -> SignalWait {
+    let mut screen = Repaint::new(baseline, *revisions.borrow(), started);
+    let none = |exited: bool| SignalWait {
+        signal: None,
+        exited,
+        signal_at: None,
+        repaint: None,
+    };
     // A matching signal wins over every other verdict; otherwise `stopped`
     // is read at the moment the wait ends.
-    let finish = |exited_unless_found: bool| match find() {
-        Some(signal) => (Some(signal), false),
-        None => (None, exited_unless_found),
-    };
-    loop {
+    let signal = loop {
         signals.borrow_and_update();
-        revisions.borrow_and_update();
+        screen.observe(*revisions.borrow_and_update(), Instant::now());
         events.borrow_and_update();
         if let Some(signal) = find() {
-            return (Some(signal), false);
+            break signal;
         }
         if stopped() {
-            return (None, true);
+            return none(true);
         }
         if Instant::now() >= deadline {
-            return (None, false);
+            return none(false);
         }
-        tokio::select! {
-            result = signals.changed() => {
-                if result.is_err() {
-                    return finish(stopped());
-                }
+        let ended = tokio::select! {
+            result = signals.changed() => result.is_err(),
+            result = revisions.changed() => result.is_err(),
+            result = events.changed() => result.is_err(),
+            _ = tokio::time::sleep_until(deadline) => true,
+        };
+        if ended {
+            match find() {
+                Some(signal) => break signal,
+                None => return none(stopped()),
             }
-            result = revisions.changed() => {
-                if result.is_err() {
-                    return finish(stopped());
-                }
-            }
-            result = events.changed() => {
-                if result.is_err() {
-                    return finish(stopped());
-                }
-            }
-            _ = tokio::time::sleep_until(deadline) => {
-                return finish(stopped());
-            }
+        }
+    };
+    let signal_at = Instant::now();
+    let report = settle_after_signal(
+        revisions,
+        events,
+        stopped,
+        &mut screen,
+        signal_at,
+        deadline,
+        repaint,
+    )
+    .await;
+    SignalWait {
+        signal: Some(signal),
+        exited: false,
+        signal_at: Some(signal_at.saturating_duration_since(started)),
+        repaint: Some(report),
+    }
+}
+
+/// The repaint phase of a signal wait (#1628). At the signal: a revision
+/// since the baseline that has been quiet for `settle` is `Already`. Else
+/// the loop waits for the next revision until `repaint` after the signal
+/// (or the budget) → `None`, and once one lands, until the screen has been
+/// quiet for `settle` → `Settled`, or the budget → `Unsettled`. Exit,
+/// disconnect and projection invalidation (`stopped`, re-read on every wake)
+/// end the phase with the verdict the screen had reached. As in change
+/// mode, a timer wake re-reads the revision before settling.
+async fn settle_after_signal(
+    mut revisions: watch::Receiver<u64>,
+    mut events: watch::Receiver<u64>,
+    stopped: impl Fn() -> bool,
+    screen: &mut Repaint,
+    signal_at: Instant,
+    deadline: Instant,
+    plan: RepaintPlan,
+) -> RepaintReport {
+    let report = |outcome| RepaintReport {
+        outcome,
+        waited: Instant::now().saturating_duration_since(signal_at),
+    };
+    if plan.repaint.is_zero() {
+        return report(RepaintOutcome::Skipped);
+    }
+    screen.observe(*revisions.borrow_and_update(), signal_at);
+    if screen.changed && screen.quiet_for(signal_at) >= plan.settle {
+        return report(RepaintOutcome::Already);
+    }
+    let repaint_deadline = (signal_at + plan.repaint).min(deadline);
+    let mut changed_after_signal = false;
+    let verdict = |changed_after_signal: bool| {
+        if changed_after_signal {
+            RepaintOutcome::Unsettled
+        } else {
+            RepaintOutcome::None
+        }
+    };
+    loop {
+        events.borrow_and_update();
+        let now = Instant::now();
+        if screen.observe(*revisions.borrow_and_update(), now) {
+            changed_after_signal = true;
+        }
+        if changed_after_signal && screen.quiet_for(now) >= plan.settle {
+            return report(RepaintOutcome::Settled);
+        }
+        if stopped() {
+            return report(verdict(changed_after_signal));
+        }
+        let timer = if changed_after_signal {
+            (screen.last_change + plan.settle).min(deadline)
+        } else {
+            repaint_deadline
+        };
+        if now >= timer {
+            return report(verdict(changed_after_signal));
+        }
+        let ended = tokio::select! {
+            result = revisions.changed() => result.is_err(),
+            result = events.changed() => result.is_err(),
+            _ = tokio::time::sleep_until(timer) => false,
+        };
+        if ended {
+            return report(verdict(changed_after_signal));
         }
     }
 }
@@ -407,7 +651,7 @@ mod tests {
     use tokio::sync::watch;
 
     fn plan(wait_for: Option<WaitFor>, wait_ms: Option<u64>) -> WaitPlan {
-        WaitPlan::new(wait_for, wait_ms, None, None).unwrap()
+        WaitPlan::new(wait_for, wait_ms, None, None, None).unwrap()
     }
 
     /// `baseline_revision` is the string form of the revision the wait
@@ -422,6 +666,8 @@ mod tests {
             baseline: 42,
             signal_baseline: 3,
             signal: None,
+            signal_at: None,
+            repaint: None,
         };
         assert_eq!(
             report.to_json(),
@@ -435,12 +681,19 @@ mod tests {
             baseline: 7,
             signal_baseline: 0,
             signal: None,
+            signal_at: None,
+            repaint: None,
         };
         assert_eq!(report.to_json()["baseline_revision"], "7");
         assert_eq!(report.to_json()["outcome"], "changed");
         assert!(
             report.to_json().get("signal").is_none(),
             "signal only in signal mode"
+        );
+        assert!(
+            report.to_json().get("repaint").is_none()
+                && report.to_json().get("signal_at_ms").is_none(),
+            "repaint fields only in signal mode"
         );
         let signal = Signal {
             seq: 4,
@@ -458,10 +711,43 @@ mod tests {
             baseline: 7,
             signal_baseline: 3,
             signal: Some(signal.clone()),
+            signal_at: Some(Duration::from_millis(3)),
+            repaint: Some(RepaintReport {
+                outcome: RepaintOutcome::Settled,
+                waited: Duration::from_millis(2),
+            }),
         };
         assert_eq!(report.to_json()["outcome"], "signal");
         assert_eq!(report.to_json()["signal"], signal.to_json());
         assert_eq!(report.to_json()["baseline_signal_seq"], 3);
+        assert_eq!(report.to_json()["signal_at_ms"], 3);
+        assert_eq!(
+            report.to_json()["repaint"],
+            json!({"outcome":"settled","waited_ms":2})
+        );
+        // No signal: both fields present and null, like `signal`.
+        let report = WaitReport {
+            mode: WaitFor::Signal,
+            outcome: WaitOutcome::Unchanged,
+            waited: Duration::from_millis(5),
+            settled: false,
+            baseline: 7,
+            signal_baseline: 3,
+            signal: None,
+            signal_at: None,
+            repaint: None,
+        };
+        assert_eq!(report.to_json()["signal_at_ms"], Value::Null);
+        assert_eq!(report.to_json()["repaint"], Value::Null);
+        for (outcome, name) in [
+            (RepaintOutcome::Already, "already"),
+            (RepaintOutcome::Settled, "settled"),
+            (RepaintOutcome::None, "none"),
+            (RepaintOutcome::Unsettled, "unsettled"),
+            (RepaintOutcome::Skipped, "skipped"),
+        ] {
+            assert_eq!(outcome.name(), name);
+        }
     }
 
     #[test]
@@ -475,36 +761,108 @@ mod tests {
         assert_eq!(CHANGE_WAIT_MS_DEFAULT, 2_000);
         assert_eq!(plan(Some(WaitFor::Change), Some(0)).budget_ms, 0);
         assert_eq!(plan(Some(WaitFor::Change), Some(15_000)).budget_ms, 15_000);
-        assert!(WaitPlan::new(Some(WaitFor::Change), Some(WAIT_MS_MAX + 1), None, None).is_err());
-        assert!(WaitPlan::new(None, None, Some(10), None).is_err());
+        assert!(
+            WaitPlan::new(
+                Some(WaitFor::Change),
+                Some(WAIT_MS_MAX + 1),
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
+        assert!(WaitPlan::new(None, None, Some(10), None, None).is_err());
+        assert!(
+            WaitPlan::new(Some(WaitFor::Change), None, None, None, Some(0)).is_err(),
+            "repaint_ms outside signal mode"
+        );
+        assert!(WaitPlan::new(None, None, None, None, Some(0)).is_err());
+        assert_eq!(plan(Some(WaitFor::Change), None).repaint_ms, 0);
     }
 
     /// #1620 signal mode: its own default budget, the default event set, the
-    /// same 20 s ceiling, no settle window and a validated event vocabulary.
+    /// same 20 s ceiling, a validated event vocabulary and (#1628) a settle
+    /// window plus a bounded repaint window.
     #[test]
     fn signal_mode_defaults_and_validation() {
         let signal = plan(Some(WaitFor::Signal), None);
         assert_eq!(signal.budget_ms, SIGNAL_WAIT_MS_DEFAULT);
         assert_eq!(SIGNAL_WAIT_MS_DEFAULT, 15_000);
+        assert_eq!(signal.repaint_ms, REPAINT_MS_DEFAULT);
+        assert_eq!(REPAINT_MS_DEFAULT, 1_500);
+        assert_eq!(signal.settle_ms, SETTLE_MS_DEFAULT);
+        let tuned = WaitPlan::new(Some(WaitFor::Signal), None, Some(300), None, Some(0)).unwrap();
+        assert_eq!((tuned.settle_ms, tuned.repaint_ms), (300, 0));
+        assert!(
+            WaitPlan::new(
+                Some(WaitFor::Signal),
+                None,
+                None,
+                None,
+                Some(REPAINT_MS_MAX + 1)
+            )
+            .is_err()
+        );
+        assert!(
+            WaitPlan::new(
+                Some(WaitFor::Signal),
+                None,
+                Some(SETTLE_MS_MAX + 1),
+                None,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            WaitPlan {
+                repaint_ms: REPAINT_MS_MAX + 1,
+                ..plan(Some(WaitFor::Signal), None)
+            }
+            .validate()
+            .is_err()
+        );
         assert_eq!(
             signal.signal_events,
             vec!["stop", "notification", "permission_request", "session_end"]
         );
         assert!(plan(Some(WaitFor::Change), None).signal_events.is_empty());
-        assert!(WaitPlan::new(Some(WaitFor::Signal), Some(WAIT_MS_MAX + 1), None, None).is_err());
-        assert!(WaitPlan::new(Some(WaitFor::Signal), None, Some(150), None).is_err());
         assert!(
-            WaitPlan::new(Some(WaitFor::Change), None, None, Some(vec!["stop".into()])).is_err()
+            WaitPlan::new(
+                Some(WaitFor::Signal),
+                Some(WAIT_MS_MAX + 1),
+                None,
+                None,
+                None
+            )
+            .is_err()
         );
-        assert!(WaitPlan::new(Some(WaitFor::Signal), None, None, Some(vec![])).is_err());
         assert!(
-            WaitPlan::new(Some(WaitFor::Signal), None, None, Some(vec!["Stop".into()])).is_err()
+            WaitPlan::new(
+                Some(WaitFor::Change),
+                None,
+                None,
+                Some(vec!["stop".into()]),
+                None
+            )
+            .is_err()
+        );
+        assert!(WaitPlan::new(Some(WaitFor::Signal), None, None, Some(vec![]), None).is_err());
+        assert!(
+            WaitPlan::new(
+                Some(WaitFor::Signal),
+                None,
+                None,
+                Some(vec!["Stop".into()]),
+                None
+            )
+            .is_err()
         );
         let only = WaitPlan::new(
             Some(WaitFor::Signal),
             Some(0),
             None,
             Some(vec!["session_end".into()]),
+            None,
         )
         .unwrap();
         assert_eq!(only.signal_events, vec!["session_end"]);
@@ -528,11 +886,21 @@ mod tests {
     /// alive by the fixture (a dropped sender ends the loop at once, which
     /// would make a budget test vacuous).
     /// The loop's verdict and the paused-clock time it took.
-    type SignalTask = tokio::task::JoinHandle<((Option<Signal>, bool), Duration)>;
+    type SignalTask = tokio::task::JoinHandle<(SignalWait, Duration)>;
     fn start_signal(
         ring: Arc<crate::terminal_renderer::SignalRing>,
         baseline: u64,
         budget_ms: u64,
+    ) -> (SignalFixture, SignalTask) {
+        start_signal_repaint(ring, baseline, budget_ms, RepaintPlan::skip())
+    }
+    /// #1628: the same, with a repaint plan; the revision channel starts at
+    /// 0 and the wait's revision baseline is 0.
+    fn start_signal_repaint(
+        ring: Arc<crate::terminal_renderer::SignalRing>,
+        baseline: u64,
+        budget_ms: u64,
+        repaint: RepaintPlan,
     ) -> (SignalFixture, SignalTask) {
         let (revisions, revisions_rx) = watch::channel(0u64);
         let (events, events_rx) = watch::channel(0u64);
@@ -548,7 +916,10 @@ mod tests {
                 events_rx,
                 move || flag.load(Ordering::SeqCst),
                 move || waiter.first_matching(baseline, &stop),
+                0,
+                started,
                 started + Duration::from_millis(budget_ms),
+                repaint,
             )
             .await;
             (result, started.elapsed())
@@ -574,10 +945,19 @@ mod tests {
         ring.push("a", incoming("user_prompt_submit"), 0);
         ring.push("b", incoming("stop"), 0);
         let (fixture, task) = start_signal(ring.clone(), 0, 5_000);
-        let ((signal, exited), waited) = task.await.unwrap();
-        assert_eq!(signal.map(|s| s.seq), Some(2));
-        assert!(!exited);
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.signal.map(|s| s.seq), Some(2));
+        assert!(!verdict.exited);
         assert_eq!(waited, Duration::ZERO);
+        assert_eq!(verdict.signal_at, Some(Duration::ZERO));
+        assert_eq!(
+            verdict.repaint,
+            Some(RepaintReport {
+                outcome: RepaintOutcome::Skipped,
+                waited: Duration::ZERO
+            }),
+            "repaint 0 returns at the signal"
+        );
         drop(fixture);
         // Present but at or below the baseline: ignored; a later one wakes.
         let (fixture, task) = start_signal(ring.clone(), 2, 5_000);
@@ -595,14 +975,15 @@ mod tests {
         assert!(!task.is_finished(), "a non-matching event keeps waiting");
         ring.push("d", incoming("stop"), 0);
         tokio::task::yield_now().await;
-        let ((signal, exited), _) = task.await.unwrap();
-        assert_eq!(signal.map(|s| s.seq), Some(4));
-        assert!(!exited);
+        let (verdict, _) = task.await.unwrap();
+        assert_eq!(verdict.signal.map(|s| s.seq), Some(4));
+        assert!(!verdict.exited);
         // Stopped before the wait starts reports exited at once.
         let (fixture, task) = start_signal(ring.clone(), 4, 300);
         fixture.stopped.store(true, Ordering::SeqCst);
-        let ((signal, exited), _) = task.await.unwrap();
-        assert!(signal.is_none() && exited);
+        let (verdict, _) = task.await.unwrap();
+        assert!(verdict.signal.is_none() && verdict.exited);
+        assert!(verdict.signal_at.is_none() && verdict.repaint.is_none());
     }
 
     /// The budget: with every sender alive the loop runs to the deadline and
@@ -617,8 +998,8 @@ mod tests {
         tokio::time::advance(Duration::from_millis(299)).await;
         assert!(!task.is_finished(), "ended before the budget");
         tokio::time::advance(Duration::from_millis(1)).await;
-        let ((signal, exited), waited) = task.await.unwrap();
-        assert!(signal.is_none() && !exited);
+        let (verdict, waited) = task.await.unwrap();
+        assert!(verdict.signal.is_none() && !verdict.exited);
         assert_eq!(waited, Duration::from_millis(300));
         drop(fixture);
 
@@ -648,7 +1029,10 @@ mod tests {
                         received_at_ms: 0,
                     })
                 },
+                0,
+                started,
                 started + Duration::from_millis(300),
+                RepaintPlan::skip(),
             )
             .await;
             (result, started.elapsed())
@@ -658,9 +1042,13 @@ mod tests {
         assert!(!task.is_finished());
         visible.store(true, Ordering::SeqCst);
         tokio::time::advance(Duration::from_millis(1)).await;
-        let ((signal, exited), waited) = task.await.unwrap();
-        assert_eq!(signal.map(|s| s.seq), Some(1), "signal at the deadline");
-        assert!(!exited);
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(
+            verdict.signal.map(|s| s.seq),
+            Some(1),
+            "signal at the deadline"
+        );
+        assert!(!verdict.exited);
         assert_eq!(waited, Duration::from_millis(300));
         drop((signals_tx, revisions_tx, events_tx));
     }
@@ -677,9 +1065,9 @@ mod tests {
         // reaches it before the timer), so only the timer branch can see it.
         fixture.stopped.store(true, Ordering::SeqCst);
         tokio::time::advance(Duration::from_millis(300)).await;
-        let ((signal, exited), waited) = task.await.unwrap();
-        assert!(signal.is_none());
-        assert!(exited, "exit at the deadline reported as unchanged");
+        let (verdict, waited) = task.await.unwrap();
+        assert!(verdict.signal.is_none());
+        assert!(verdict.exited, "exit at the deadline reported as unchanged");
         assert_eq!(waited, Duration::from_millis(300));
     }
 
@@ -704,7 +1092,10 @@ mod tests {
                 events_rx,
                 move || projection_unavailable(&stopped_view),
                 move || waiter.first_matching(0, &stop),
+                0,
+                started,
                 started + Duration::from_millis(5_000),
+                RepaintPlan::skip(),
             )
             .await;
             (result, started.elapsed())
@@ -714,10 +1105,186 @@ mod tests {
         assert!(!task.is_finished(), "a live projection keeps waiting");
         view.lock().unwrap().invalidate("simulated source gap");
         tokio::task::yield_now().await;
-        let ((signal, exited), waited) = task.await.unwrap();
-        assert!(signal.is_none() && exited);
+        let (verdict, waited) = task.await.unwrap();
+        assert!(verdict.signal.is_none() && verdict.exited);
         assert_eq!(waited, Duration::from_millis(100));
         drop(events);
+    }
+
+    const REPAINT: RepaintPlan = RepaintPlan {
+        repaint: Duration::from_millis(1_500),
+        settle: Duration::from_millis(150),
+    };
+    fn repaint(outcome: RepaintOutcome, waited_ms: u64) -> Option<RepaintReport> {
+        Some(RepaintReport {
+            outcome,
+            waited: Duration::from_millis(waited_ms),
+        })
+    }
+    fn stop_ring() -> Arc<crate::terminal_renderer::SignalRing> {
+        Arc::new(crate::terminal_renderer::SignalRing::new())
+    }
+
+    /// #1628 `already`: a revision since the baseline that has been quiet
+    /// for `settle` when the signal arrives ends the wait at the signal.
+    #[tokio::test(start_paused = true)]
+    async fn repaint_already_when_a_quiet_revision_preceded_the_signal() {
+        let ring = stop_ring();
+        let (fixture, task) = start_signal_repaint(ring.clone(), 0, 5_000, REPAINT);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+        bump(&fixture.revisions);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(200)).await;
+        ring.push("a", incoming("stop"), 0);
+        tokio::task::yield_now().await;
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.signal.as_ref().map(|s| s.seq), Some(1));
+        assert_eq!(verdict.signal_at, Some(Duration::from_millis(300)));
+        assert_eq!(verdict.repaint, repaint(RepaintOutcome::Already, 0));
+        assert_eq!(waited, Duration::from_millis(300));
+    }
+
+    /// #1628 `settled`: no revision at the signal; the repaint lands 300 ms
+    /// later and the wait ends once it has been quiet for `settle`.
+    #[tokio::test(start_paused = true)]
+    async fn repaint_settles_after_a_revision_that_follows_the_signal() {
+        let ring = stop_ring();
+        let (fixture, task) = start_signal_repaint(ring.clone(), 0, 5_000, REPAINT);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+        ring.push("a", incoming("stop"), 0);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(300)).await;
+        assert!(!task.is_finished(), "returned at the signal");
+        bump(&fixture.revisions);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(149)).await;
+        assert!(!task.is_finished(), "settled before the quiet window");
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.signal_at, Some(Duration::from_millis(100)));
+        assert_eq!(verdict.repaint, repaint(RepaintOutcome::Settled, 450));
+        assert_eq!(waited, Duration::from_millis(550));
+    }
+
+    /// #1628 `none`: no revision within `repaint` of the signal. A revision
+    /// that preceded the signal but was not yet quiet does not count as
+    /// `already`; the loop still waits for the next one.
+    #[tokio::test(start_paused = true)]
+    async fn repaint_none_when_nothing_lands_within_the_repaint_window() {
+        let ring = stop_ring();
+        let (fixture, task) = start_signal_repaint(ring.clone(), 0, 5_000, REPAINT);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+        ring.push("a", incoming("stop"), 0);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(1_499)).await;
+        assert!(!task.is_finished(), "gave up before repaint_ms");
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.repaint, repaint(RepaintOutcome::None, 1_500));
+        assert_eq!(waited, Duration::from_millis(1_600));
+        drop(fixture);
+
+        let (fixture, task) = start_signal_repaint(ring.clone(), 1, 5_000, REPAINT);
+        tokio::task::yield_now().await;
+        bump(&fixture.revisions);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        ring.push("b", incoming("stop"), 0);
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "a revision 50 ms old is not quiet");
+        tokio::time::advance(Duration::from_millis(1_500)).await;
+        let (verdict, _) = task.await.unwrap();
+        assert_eq!(verdict.repaint, repaint(RepaintOutcome::None, 1_500));
+    }
+
+    /// #1628: the repaint window and the quiet window are both bounded by
+    /// the budget: `none` at the budget when nothing landed, `unsettled` when
+    /// revisions were still landing.
+    #[tokio::test(start_paused = true)]
+    async fn repaint_windows_are_bounded_by_the_budget() {
+        let ring = stop_ring();
+        let (fixture, task) = start_signal_repaint(ring.clone(), 0, 800, REPAINT);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+        ring.push("a", incoming("stop"), 0);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(700)).await;
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.repaint, repaint(RepaintOutcome::None, 700));
+        assert_eq!(waited, Duration::from_millis(800));
+        drop(fixture);
+
+        let (fixture, task) = start_signal_repaint(ring.clone(), 1, 1_000, REPAINT);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+        ring.push("b", incoming("stop"), 0);
+        for _ in 0..30 {
+            tokio::task::yield_now().await;
+            bump(&fixture.revisions);
+            tokio::time::advance(Duration::from_millis(30)).await;
+        }
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.signal.as_ref().map(|s| s.seq), Some(2));
+        assert_eq!(verdict.repaint, repaint(RepaintOutcome::Unsettled, 900));
+        assert_eq!(waited, Duration::from_millis(1_000));
+    }
+
+    /// #1628: a revision that lands as the quiet timer completes restarts
+    /// the window (the timer wake re-reads the revision), and an exit during
+    /// the repaint phase ends it with the verdict reached so far while the
+    /// signal is kept.
+    #[tokio::test(start_paused = true)]
+    async fn repaint_timer_rereads_the_revision_and_an_exit_ends_the_phase() {
+        for _ in 0..32 {
+            let ring = stop_ring();
+            let (fixture, task) = start_signal_repaint(ring.clone(), 0, 5_000, REPAINT);
+            tokio::task::yield_now().await;
+            ring.push("a", incoming("stop"), 0);
+            tokio::task::yield_now().await;
+            bump(&fixture.revisions);
+            tokio::task::yield_now().await;
+            let revisions = fixture.revisions.clone();
+            let helper = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                bump(&revisions);
+            });
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_millis(150)).await;
+            helper.await.unwrap();
+            tokio::task::yield_now().await;
+            assert!(
+                !task.is_finished(),
+                "settled although a revision was pending"
+            );
+            // The pending revision is observed at the timer wake (150 ms),
+            // so the quiet window restarts there, as in change mode.
+            tokio::time::advance(Duration::from_millis(150)).await;
+            let (verdict, waited) = task.await.unwrap();
+            assert_eq!(verdict.repaint, repaint(RepaintOutcome::Settled, 300));
+            assert_eq!(waited, Duration::from_millis(300));
+        }
+
+        let ring = stop_ring();
+        let (fixture, task) = start_signal_repaint(ring.clone(), 0, 5_000, REPAINT);
+        tokio::task::yield_now().await;
+        ring.push("a", incoming("stop"), 0);
+        tokio::task::yield_now().await;
+        bump(&fixture.revisions);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        fixture.stopped.store(true, Ordering::SeqCst);
+        bump(&fixture.events);
+        tokio::task::yield_now().await;
+        let (verdict, waited) = task.await.unwrap();
+        assert!(
+            verdict.signal.is_some() && !verdict.exited,
+            "the signal wins"
+        );
+        assert_eq!(verdict.repaint, repaint(RepaintOutcome::Unsettled, 50));
+        assert_eq!(waited, Duration::from_millis(50));
     }
 
     struct Fixture {
