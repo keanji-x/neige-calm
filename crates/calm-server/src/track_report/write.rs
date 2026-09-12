@@ -948,10 +948,9 @@ async fn persist(
                         return Err(CalmError::Conflict(DISPATCH_REPLAY.into()));
                     }
                 }
-                if let PersistPurpose::Dispatch { args, eligible_plugin_tools, .. } = &purpose {
-                    if args.plugin_tools().iter().any(|name| !eligible_plugin_tools.contains(name)) {
-                        return Err(CalmError::Forbidden("plugin_tools contains an unavailable, out-of-scope or execution-backed tool".into()));
-                    }
+                if let PersistPurpose::Dispatch { args, eligible_plugin_tools, .. } = &purpose
+                    && args.plugin_tools().iter().any(|name| !eligible_plugin_tools.contains(name)) {
+                    return Err(CalmError::Forbidden("plugin_tools contains an unavailable, out-of-scope or execution-backed tool".into()));
                 }
                 // A new Planner declaration preserves the existing Draft promotion.
                 // Receipt replay returned above and cannot promote or resume work.
