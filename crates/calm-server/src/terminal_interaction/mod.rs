@@ -3,7 +3,7 @@ use crate::db::RouteRepo;
 use crate::mcp_server::registry::ToolCallIdentity;
 use crate::model::CardRole;
 use crate::terminal_renderer::{
-    CONTROL_HELD_BY_ANOTHER_CLIENT, ClientInputScope, TerminalRendererRegistry,
+    CONTROL_HELD_BY_ANOTHER_CLIENT, ClaimOutcome, ClientInputScope, TerminalRendererRegistry,
 };
 use anyhow::{Result, ensure};
 use calm_session::ClientMsg;
@@ -345,17 +345,12 @@ impl TerminalInteraction {
         let client = self.client(identity, &resolved.binding).await?;
         let terminal = resolved.binding.terminal_id.as_str();
         let _serial = client.serial.lock().await;
-        let (control, errors_before, owner_changes_before, grants_before) = {
+        let (control, grants_before) = {
             let state = client
                 .screen
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
-            (
-                state.control,
-                state.protocol_errors,
-                state.owner_changes,
-                state.grants,
-            )
+            (state.control, state.grants)
         };
         if control.is_some() {
             // The cached lease is trusted only while the registry agrees.
@@ -396,28 +391,28 @@ impl TerminalInteraction {
                 signal_seq,
             })
             .ok();
-        client.claim_if_unowned().await?;
-        // Ends on the grant, on a refusal, or on an `OwnerChanged` that leaves
-        // another client as owner while the registry agrees: a grant and a
-        // human takeover applied back to back never show `owner == me`, so
-        // waiting on that alone would idle to the budget (#1620 R6). A stale
-        // `OwnerChanged` naming a client the registry no longer names keeps
-        // the wait going; the pump's own outcome ends it.
-        let registry = client.entry.handle.owner_registry.clone();
+        // The verdict is the pump's own, decided in the same registry-lock
+        // pass that applies the claim (#1620 R6): never inferred from the
+        // `OwnerChanged` deliveries this connection happens to see (another
+        // owner's change can arrive while the claim is still queued, and a
+        // grant folded with a later takeover never shows `owner == me`).
+        let budget = Duration::from_secs(7);
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(budget, client.claim_if_unowned().await?)
+            .await
+            .map_err(|_| anyhow::anyhow!("terminal claim timed out"))?
+            .map_err(|_| anyhow::anyhow!("terminal disconnected"))?;
+        match outcome {
+            ClaimOutcome::Refused { reason } => anyhow::bail!("{reason}"),
+            ClaimOutcome::Granted => {}
+        }
+        // Granted: the `OwnerChanged` naming this connection mints the control
+        // id when applied. Wait for that application (counted even when a
+        // takeover is applied in the same go), then read what stands.
         client
             .wait(
-                |state| {
-                    (state.owner == Some(client.id) && state.control != control)
-                        || state.protocol_errors != errors_before
-                        || (state.owner_changes != owner_changes_before
-                            && state.owner != Some(client.id)
-                            && registry
-                                .lock()
-                                .map(|registry| registry.current_owner())
-                                .unwrap_or(None)
-                                .is_some_and(|owner| owner != client.id))
-                },
-                Duration::from_secs(7),
+                |state| state.grants != grants_before,
+                budget.saturating_sub(started.elapsed()),
             )
             .await?;
         let receipt = {
@@ -426,20 +421,8 @@ impl TerminalInteraction {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
             if state.owner != Some(client.id) || state.control == control {
-                let reason = if state.protocol_errors != errors_before {
-                    state
-                        .last_protocol_error
-                        .clone()
-                        .unwrap_or_else(|| CONTROL_HELD_BY_ANOTHER_CLIENT.to_owned())
-                } else if state.grants != grants_before {
-                    // Granted, then taken over before this connection saw it.
-                    CONTROL_TAKEN_BY_ANOTHER_CLIENT.to_owned()
-                } else {
-                    // Never granted: the other client's ownership was applied
-                    // (and the registry agrees) before the pump's refusal.
-                    CONTROL_HELD_BY_ANOTHER_CLIENT.to_owned()
-                };
-                anyhow::bail!("{reason}");
+                // Granted, then taken over before this connection saw it.
+                anyhow::bail!("{CONTROL_TAKEN_BY_ANOTHER_CLIENT}");
             }
             json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":state.control})
         };

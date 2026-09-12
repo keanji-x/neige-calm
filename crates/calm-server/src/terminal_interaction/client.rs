@@ -1,6 +1,6 @@
 use crate::terminal_renderer::{
-    ClientInputScope, ClientPumpContext, INPUT_REVOKED_BEFORE_WRITE, PumpCommand, RendererEntry,
-    run_client_pump_with_commands,
+    ClaimOutcome, ClientInputScope, ClientPumpContext, INPUT_REVOKED_BEFORE_WRITE, PumpCommand,
+    RendererEntry, run_client_pump_with_commands,
 };
 use anyhow::{Result, ensure};
 use calm_session::terminal_session::INPUT_REQUIRES_OWNER_ROLE;
@@ -12,7 +12,7 @@ use calm_session::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -43,14 +43,11 @@ pub struct ScreenState {
     /// claim that is still in flight.
     pub protocol_errors: u64,
     pub last_protocol_error: Option<String>,
-    /// `OwnerChanged` deliveries applied on this connection. A claim waits on
-    /// this counter, not only on `owner == me`: a grant and a takeover applied
-    /// back to back leave `owner` naming the other client, and the claim must
-    /// still be told (#1620).
-    pub owner_changes: u64,
     /// `OwnerChanged` deliveries that named this connection (control was
-    /// granted). Tells a claim that was granted and then taken over apart
-    /// from one that was never granted because another client held control.
+    /// granted). A granted claim-if-unowned waits on this counter, not on
+    /// `owner == me`: a grant and a takeover applied back to back leave
+    /// `owner` naming the other client, and the claim must still read the
+    /// takeover instead of idling to its budget (#1620 R6).
     pub grants: u64,
 }
 /// Whether a protocol error is the refusal of a pending input, so the input's
@@ -74,7 +71,6 @@ impl ScreenState {
                 } else {
                     None
                 };
-                self.owner_changes = self.owner_changes.wrapping_add(1);
             }
             DaemonMsg::InputAck { input_seq } => {
                 self.ack = input_seq;
@@ -219,7 +215,6 @@ impl Client {
             pending: None,
             protocol_errors: 0,
             last_protocol_error: None,
-            owner_changes: 0,
             grants: 0,
         };
         let screen = Arc::new(StdMutex::new(state));
@@ -320,13 +315,15 @@ impl Client {
         self.incoming.send(message).await.map_err(Into::into)
     }
     /// #1620 — ask the pump to claim control only if no other client holds
-    /// it (decided under the owner-registry lock). The outcome arrives as an
-    /// `OwnerChanged` naming this client or as a protocol error.
-    pub async fn claim_if_unowned(&self) -> Result<()> {
+    /// it (decided under the owner-registry lock). The pump's own verdict
+    /// arrives on the returned channel (R6); a grant is additionally
+    /// delivered as an `OwnerChanged` naming this client (`grants`).
+    pub async fn claim_if_unowned(&self) -> Result<oneshot::Receiver<ClaimOutcome>> {
+        let (reply, outcome) = oneshot::channel();
         self.commands
-            .send(PumpCommand::ClaimIfUnowned)
-            .await
-            .map_err(Into::into)
+            .send(PumpCommand::ClaimIfUnowned { reply })
+            .await?;
+        Ok(outcome)
     }
 }
 
@@ -346,7 +343,6 @@ mod tests {
             pending,
             protocol_errors: 0,
             last_protocol_error: None,
-            owner_changes: 0,
             grants: 0,
         }
     }
@@ -417,10 +413,10 @@ mod tests {
         assert_eq!(state.pending, Some(3));
     }
 
-    /// #1620 R6 — every `OwnerChanged` is counted, including a grant folded
-    /// with a later takeover, which leaves `owner` naming the other client.
+    /// #1620 R6 — a grant is counted even when folded with a later takeover,
+    /// which leaves `owner` naming the other client.
     #[test]
-    fn owner_changes_counts_folded_deliveries() {
+    fn grants_count_a_folded_grant() {
         let me = Uuid::new_v4();
         let human = Uuid::new_v4();
         let mut state = state(None);
@@ -445,7 +441,6 @@ mod tests {
             .unwrap();
         assert_eq!(state.owner, Some(human));
         assert_eq!(state.control, None);
-        assert_eq!(state.owner_changes, 2);
         assert_eq!(state.grants, 1, "the folded grant is still counted");
     }
 }

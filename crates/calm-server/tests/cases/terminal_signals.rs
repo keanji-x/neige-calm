@@ -1363,11 +1363,14 @@ async fn open_with_claim_replay_reports_takeover_before_the_owner_change_is_deli
 }
 
 /// #1620 R6 — a human takeover applied back to back with the Planner's own
-/// grant never shows `owner == me` on the Planner's connection. The claim
-/// ends on the counted `OwnerChanged` and reports the takeover instead of
-/// idling to its 7 s budget. Delivery on the Planner's connection is held
-/// from inside the claim window until the human has taken over, so the grant
-/// and the takeover are applied in one go.
+/// grant never shows `owner == me` on the Planner's connection. The verdict
+/// comes from the pump's reply (`Granted`, sent under the registry lock and
+/// independent of protocol delivery); the claim then waits for that grant to
+/// be applied and reads the takeover instead of idling to its 7 s budget.
+/// Delivery on the Planner's connection is held from inside the claim window
+/// until the human has taken over, so the grant and the takeover are applied
+/// in one go — a deterministic fold, not a timing window: the outcome does
+/// not depend on which delivery the reader applies first.
 #[tokio::test]
 async fn open_with_claim_reports_a_takeover_folded_with_its_grant() {
     use std::sync::{Arc, Mutex};
