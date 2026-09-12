@@ -30,7 +30,10 @@ impl TerminalInteraction {
         // WAIT_MS_MAX): a second input from the same Planner on this terminal
         // queues here rather than writing into the screen the first one is
         // still waiting to read back. Other connections are not serialized.
-        let _serial = client.serial.lock().await;
+        let _serial = {
+            let _queued = client.queued_for_serial();
+            client.serial.lock().await
+        };
         // Write authority is decided under the serial lock: an input queued
         // behind a long readback must see the task/session state as it is
         // when its turn comes, not as it was when the call arrived. Checked
@@ -131,11 +134,11 @@ impl TerminalInteraction {
                     current,
                 }
             } else {
-                Fence::Ready(bytes, saved.revision, current, now)
+                Fence::Ready(bytes, saved.revision, current)
             }
         };
-        let (bytes, observed_revision, input_revision, surface) = match fence {
-            Fence::Ready(bytes, observed, current, surface) => (bytes, observed, current, surface),
+        let (bytes, observed_revision, input_revision) = match fence {
+            Fence::Ready(bytes, observed, current) => (bytes, observed, current),
             Fence::Stale { observed, current } => {
                 // No physical write and nothing cached under the request_id:
                 // a later resend with another flag or observation must not
@@ -163,10 +166,6 @@ impl TerminalInteraction {
             state.pending = Some(sequence);
             sequence
         };
-        // The physical writer re-checks this surface under the input barrier
-        // immediately before the PTY write (see `bound_scope`); cleared once
-        // the write is acknowledged, refused or its outcome is unknown.
-        client.expect_surface(Some(surface));
         let unknown = unknown_receipt(terminal, request_key, observation, drift.as_ref());
         client
             .requests
@@ -203,7 +202,6 @@ impl TerminalInteraction {
                 Err(_) => unknown,
             }
         };
-        client.expect_surface(None);
         client
             .requests
             .lock()
@@ -221,11 +219,10 @@ impl TerminalInteraction {
     }
 }
 /// Outcome of the pre-write fences: bytes to write with the observed and
-/// live revisions and the surface they were encoded against, or a stale
-/// observation (only the exact-revision fence failed) that becomes a
-/// structured refusal rather than an error.
+/// live revisions, or a stale observation (only the exact-revision fence
+/// failed) that becomes a structured refusal rather than an error.
 enum Fence {
-    Ready(Vec<u8>, u64, u64, InputSurface),
+    Ready(Vec<u8>, u64, u64),
     Stale { observed: u64, current: u64 },
 }
 /// The stale-observation result: the request was not written, and the caller

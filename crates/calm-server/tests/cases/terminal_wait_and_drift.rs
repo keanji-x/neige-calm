@@ -935,49 +935,51 @@ async fn drift_tolerant_input_refuses_mode_change_and_history_views() {
     h.stop(&terminal).await;
 }
 
-/// The surface fence is evaluated again at physical admission. The write
-/// passed its pre-write fences and is parked at the held input barrier; the
-/// application then switches to the alternate screen; when the barrier is
-/// released the queued bytes are refused instead of landing in the menu. An
-/// input against an observation of the menu still writes.
+/// A change wait stops when the projection is invalidated through the
+/// production route rather than idling to its budget. The supervisor output
+/// stream is severed the way a lost attach connection severs it (the attach
+/// reader's drop guard calls `RenderPlane::invalidate_observation`, which
+/// reaches `ModelView::invalidate` through `RenderObserver::unavailable`),
+/// only once the observe has subscribed to the projection; the call returns
+/// an explicit projection error long before its 10 s budget.
 #[tokio::test]
-async fn queued_write_is_refused_when_the_surface_changes_before_the_physical_write() {
+async fn change_wait_stops_when_the_output_source_disconnects() {
     let h = Harness::start().await;
-    let terminal = open(&h, "printf 'READY\\n'; cat >/dev/null", "admission").await;
+    let terminal = open(&h, "printf 'READY\\n'; cat >/dev/null", "source-loss").await;
     h.observe_text(&terminal, "READY").await;
-    claim(&h, &terminal).await;
     let entry = h.state.terminal_renderer.get(&terminal).unwrap();
-    let held = entry.handle.input_barrier.grant().await.unwrap();
-    let service = h.interaction();
-    let switch = async {
+    let waiters = || entry.handle.model_view.lock().unwrap().change_waiters();
+    let subscribed = waiters();
+    let sever = async {
         let start = std::time::Instant::now();
-        while !service.input_pending(&terminal).await {
-            assert!(start.elapsed() < Duration::from_secs(10));
+        while waiters() == subscribed {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "the change wait never subscribed"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        entry
-            .handle
-            .render_plane
-            .lock()
-            .unwrap()
-            .on_pty_chunk(b"\x1b[?1049h\x1b[2J\x1b[HMENU\r\n".to_vec());
-        drop(held);
+        entry.disconnect_output_source_for_test();
     };
+    let started = std::time::Instant::now();
     let (response, ()) = tokio::join!(
-        h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"parked","action":{"type":"text","text":"x"}})),
-        switch
+        h.call(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"wait_for":"change","wait_ms":10000})
+        ),
+        sever
     );
-    let refused = receipt(&response);
-    assert_eq!(refused["outcome"], "refused", "{refused}");
-    assert_eq!(refused["application_result"], "unverified");
-    assert!(!h.interaction().input_pending(&terminal).await);
-    let menu = h
-        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
-        .await;
-    assert_eq!(menu["alternate"], true, "{menu}");
-    assert!(has_line(&menu, "MENU"), "{menu}");
-    let written = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":menu["observation_id"],"request_id":"in-menu","action":{"type":"text","text":"y"}})).await;
-    assert_eq!(receipt(&written)["outcome"], "written", "{written}");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the wait idled towards its budget: {elapsed:?} {response}"
+    );
+    let message = error_text(&response);
+    assert!(
+        message.contains("terminal projection unavailable")
+            && message.contains("terminal output source disconnected"),
+        "{response}"
+    );
     h.stop(&terminal).await;
 }
 

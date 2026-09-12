@@ -2,7 +2,7 @@
 use crate::db::RouteRepo;
 use crate::mcp_server::registry::ToolCallIdentity;
 use crate::model::CardRole;
-use crate::terminal_renderer::{ClientInputScope, SharedModelView, TerminalRendererRegistry};
+use crate::terminal_renderer::{ClientInputScope, TerminalRendererRegistry};
 use anyhow::{Result, ensure};
 use calm_session::ClientMsg;
 use calm_terminal_view::{InputSurface, Rasterizer};
@@ -20,7 +20,7 @@ mod operations;
 pub use observation::ObservationFormat;
 mod target;
 mod wait;
-use client::{Client, ExpectedSurface, LatestObservation};
+use client::{Client, LatestObservation};
 pub(crate) use target::Binding;
 pub use target::Target;
 #[cfg(test)]
@@ -102,46 +102,28 @@ impl TerminalInteraction {
             return Ok(client.clone());
         }
         ensure!(clients.len() < 128, "Planner terminal client limit reached");
-        let expected_surface: ExpectedSurface = Arc::new(StdMutex::new(None));
-        let scope = Self::bound_scope(
-            self.repo.clone(),
-            identity,
-            resolved,
-            Some((entry.handle.model_view.clone(), expected_surface.clone())),
-        );
-        let client =
-            Arc::new(Client::attach(entry, scope, resolved.clone(), expected_surface).await?);
+        let scope = Self::bound_scope(self.repo.clone(), identity, resolved);
+        let client = Arc::new(Client::attach(entry, scope, resolved.clone()).await?);
         clients.insert(binding, client.clone());
         Ok(client)
     }
-    /// `admission` is the projection and the client's expected-surface slot:
-    /// the control callback, which the physical writer runs under the input
-    /// barrier immediately before the PTY write, refuses the write when the
-    /// slot names a surface and the live projection's differs (a mode,
-    /// alternate-screen or size change between queueing and the write).
     pub(crate) fn bound_scope(
         repo: Arc<dyn RouteRepo>,
         identity: &ToolCallIdentity,
         resolved: &Binding,
-        admission: Option<(SharedModelView, ExpectedSurface)>,
     ) -> ClientInputScope {
         let scope_check = |write: bool| {
             let repo = repo.clone();
             let actor = identity.clone();
             let expected = resolved.clone();
-            let admission = admission.clone().filter(|_| write);
             Arc::new(move || {
                 let repo = repo.clone();
                 let actor = actor.clone();
                 let expected = expected.clone();
-                let admission = admission.clone();
                 Box::pin(async move {
                     Self::check_binding(repo.as_ref(), &actor, &expected, write)
                         .await
                         .is_ok()
-                        && admission
-                            .as_ref()
-                            .is_none_or(|(view, slot)| surface_still_expected(view, slot))
                 }) as futures::future::BoxFuture<'static, bool>
             })
                 as Arc<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>
@@ -163,6 +145,19 @@ impl TerminalInteraction {
                     .lock()
                     .is_ok_and(|state| state.pending.is_some())
         })
+    }
+    /// Inputs on `terminal_id` waiting for their connection's serial lock
+    /// (queued behind an action still in progress). Test observability only;
+    /// no tool reports it.
+    #[doc(hidden)]
+    pub async fn serial_waiters(&self, terminal_id: &str) -> usize {
+        self.clients
+            .lock()
+            .await
+            .values()
+            .filter(|client| client.binding.terminal_id == terminal_id)
+            .map(|client| client.serial_waiters())
+            .sum()
     }
     pub async fn observe(
         &self,
@@ -391,16 +386,4 @@ pub(crate) fn same_input_surface(saved: &InputSurface, live: &InputSurface) -> b
         && saved.rows == live.rows
         && saved.modes == live.modes
         && saved.alternate == live.alternate
-}
-/// Physical-admission surface fence: true when no write is queued on this
-/// client, or when the live projection still has the surface the queued
-/// write was encoded against. An unavailable projection fails closed.
-fn surface_still_expected(view: &SharedModelView, slot: &ExpectedSurface) -> bool {
-    let Some(expected) = slot.lock().ok().and_then(|slot| *slot) else {
-        return true;
-    };
-    view.lock()
-        .ok()
-        .and_then(|view| view.capture(0).ok())
-        .is_some_and(|(frame, _)| same_input_surface(&expected, &frame.input_surface()))
 }

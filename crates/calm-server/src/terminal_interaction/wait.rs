@@ -447,8 +447,10 @@ mod tests {
     }
 
     /// An invalidated projection wakes the loop without a revision; with the
-    /// production `stopped` predicate the wait ends at once as exited rather
-    /// than idling to the budget.
+    /// `projection_unavailable` predicate that production `wait()` composes
+    /// into `stopped`, the loop ends at once as exited rather than idling to
+    /// the budget. The production composition itself is covered by the MCP
+    /// test `change_wait_stops_when_the_output_source_disconnects`.
     #[tokio::test(start_paused = true)]
     async fn invalidated_projection_stops_the_wait_before_the_budget() {
         use crate::terminal_renderer::ModelView;

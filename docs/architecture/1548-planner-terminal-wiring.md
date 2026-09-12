@@ -76,15 +76,11 @@ Scope comes from live MCP session/card/Track identity and is checked at tool
 admission and again by the queued write's scope callback. A connection owns a
 server-issued lease. The final writer rechecks that lease under a barrier shared
 with ownership grants, then retains the barrier until the supervisor acknowledges
-the physical PTY write. Queued stale writes are refused. The queued Planner
-write also carries the input surface (size, input modes, alternate screen) it
-was encoded against: the same scope callback compares it with the live
-projection under the barrier immediately before the PTY write, so a mode,
-alternate-screen or size change between queueing and the physical write
-refuses the write (`outcome:"refused"`, no bytes reach the PTY) instead of
-landing in the new screen. The exact revision is not re-checked there: output
-between queueing and the write is reported by the readback, and the residual
-window between that check and the supervisor's write is the PTY write itself. If a sent write loses its
+the physical PTY write. Queued stale writes are refused. The input-surface
+fence (size, modes, alternate screen) is evaluated once, at admission of the
+tool call before the write is queued. A surface change between that check and
+the physical PTY write is not re-checked; the queued write still revalidates
+scope, ownership lease and task binding. If a sent write loses its
 acknowledgement, the barrier becomes uncertain and refuses new ownership grants;
 cancelling a Rust future does not prove the supervisor's blocking write stopped.
 Existing kernel-originated input remains a distinct trusted capability.

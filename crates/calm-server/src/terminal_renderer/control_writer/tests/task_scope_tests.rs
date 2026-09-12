@@ -120,7 +120,7 @@ async fn queued_task_change(replace_session: bool) {
         }),
     };
     // This is the same factory used by real Planner clients, not a test policy.
-    let scope = TerminalInteraction::bound_scope(sql.clone(), &identity, &binding, None);
+    let scope = TerminalInteraction::bound_scope(sql.clone(), &identity, &binding);
     assert!(scope.allowed().await);
     assert!(scope.control_allowed().await);
     let barrier = Arc::new(crate::terminal_renderer::InputBarrier::default());

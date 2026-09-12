@@ -415,11 +415,14 @@ async fn readback_reports_a_task_that_finished_during_the_wait() {
 /// round 2). An input readback with a long change wait holds the serial on a
 /// quiet task terminal (no echo, so typing changes nothing); a second input is
 /// called while the task still runs and queues behind it; the task then
-/// finishes and injected output ends the first wait. When the queued input's
-/// turn comes it must be refused with the write-authority error. A check
-/// taken before the serial would have passed while the task was running and,
-/// with the revision moved and the saved control still current, answered
-/// `stale_observation` although write authority is gone.
+/// finishes and injected output ends the first wait. The task is finished
+/// only once the second input is counted as waiting for the serial
+/// (`serial_waiters`), so it provably reached the lock while the task still
+/// ran. When the queued input's turn comes it must be refused with the
+/// write-authority error. A check taken before the serial would have passed
+/// while the task was running and, with the revision moved and the saved
+/// control still current, answered `stale_observation` although write
+/// authority is gone.
 #[tokio::test]
 async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_serial() {
     let h = Harness::start().await;
@@ -450,15 +453,22 @@ async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_seria
             assert!(start.elapsed() < std::time::Duration::from_secs(10));
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        // The queued input is called while the task is still running. The
-        // fixed code decides authority only once it holds the serial; the
-        // short sleep only gives a pre-serial check the window to pass.
+        // The queued input is called while the task is still running and the
+        // task is finished only once that input is waiting for the serial.
         let queued = h.call(
             "calm.terminal.input",
             json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"queued","action":{"type":"text","text":"b"}}),
         );
+        let service = h.interaction();
         let finish = async {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let start = std::time::Instant::now();
+            while service.serial_waiters(&w.terminal).await == 0 {
+                assert!(
+                    start.elapsed() < std::time::Duration::from_secs(10),
+                    "the queued input never reached the serial"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
             sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
                 .bind(&w.task)
                 .bind(now_ms())
