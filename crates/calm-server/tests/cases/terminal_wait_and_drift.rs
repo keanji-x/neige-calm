@@ -87,6 +87,36 @@ async fn claim(h: &Harness, terminal: &str) -> Value {
     )
     .await
 }
+/// Run `call` and write `marker` into the workspace only once the call's
+/// change wait has subscribed to the projection, so a program that polls for
+/// the marker starts producing after the wait began, whatever the RPC
+/// latency was.
+async fn call_then_release(
+    h: &Harness,
+    terminal: &str,
+    marker: &str,
+    call: impl std::future::Future<Output = Value>,
+) -> Value {
+    let entry = h.state.terminal_renderer.get(terminal).unwrap();
+    let waiters = || entry.handle.model_view.lock().unwrap().change_waiters();
+    let subscribed = waiters();
+    let release = async {
+        let start = std::time::Instant::now();
+        while waiters() == subscribed {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "the change wait never subscribed"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        std::fs::write(h.root.path().join(marker), b"x").unwrap();
+    };
+    let (response, ()) = tokio::join!(call, release);
+    response
+}
+/// Forty lines then a marker: the live viewport has history above it, so an
+/// observation with `scroll_offset > 0` is a real history view.
+const SCROLLBACK: &str = "i=0; while [ $i -lt 40 ]; do printf \"L$i\\n\"; i=$((i+1)); done; printf 'READY\\n'; cat >/dev/null";
 
 #[tokio::test]
 async fn observe_change_wait_returns_after_late_output_and_settles() {
@@ -98,21 +128,24 @@ async fn observe_change_wait_returns_after_late_output_and_settles() {
     )
     .await;
     // open already captured this connection's first observation (quiet screen).
-    std::fs::write(h.root.path().join("go"), b"x").unwrap();
-    let response = h
-        .call(
+    let response = call_then_release(
+        &h,
+        &terminal,
+        "go",
+        h.call(
             "calm.terminal.observe",
             json!({"terminal_id":terminal,"wait_for":"change","wait_ms":5000}),
-        )
-        .await;
+        ),
+    )
+    .await;
     let view = receipt(&response);
     assert_eq!(view["wait"]["mode"], "change", "{view}");
     assert_eq!(view["wait"]["outcome"], "changed", "{view}");
     assert_eq!(view["wait"]["settled"], true, "{view}");
     let waited = view["wait"]["waited_ms"].as_u64().unwrap();
-    // The 0.5 s sleep starts when the marker file lands, possibly before the
-    // observe call is issued; only a loose lower bound is load-safe.
-    assert!((200..5000).contains(&waited), "waited_ms={waited}");
+    // Exact timing is covered by the paused-clock unit tests; here only the
+    // budget is an upper bound, the wait ended on the output.
+    assert!(waited < 5000, "waited_ms={waited}");
     assert!(has_line(view, "LATE"), "{view}");
     assert_eq!(view["changed_since_previous_observation"], true);
     assert!(
@@ -284,10 +317,6 @@ async fn input_readback_change_wait_starts_from_the_pre_write_screen() {
     let second = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"second","action":{"type":"key","key":"Enter"},"observe":true,"wait_for":"change","wait_ms":3000})).await;
     let state = observation(&second);
     assert_eq!(state["wait"]["outcome"], "changed", "{state}");
-    assert!(
-        state["wait"]["waited_ms"].as_u64().unwrap() >= 300,
-        "{state}"
-    );
     assert!(has_line(state, "LATER"), "{state}");
     assert_eq!(
         summary(&second),
@@ -501,19 +530,23 @@ const BURST: &str = "while [ ! -e go ]; do sleep 0.02; done; i=0; while [ $i -lt
 async fn change_wait_settles_only_after_a_sustained_burst_ends() {
     let h = Harness::start().await;
     let terminal = open(&h, BURST, "burst").await;
-    std::fs::write(h.root.path().join("go"), b"x").unwrap();
-    let view = h
-        .ok(
+    let response = call_then_release(
+        &h,
+        &terminal,
+        "go",
+        h.call(
             "calm.terminal.observe",
             json!({"terminal_id":terminal,"wait_for":"change","settle_ms":150,"wait_ms":3000}),
-        )
-        .await;
+        ),
+    )
+    .await;
+    let view = receipt(&response);
     assert_eq!(view["wait"]["outcome"], "changed", "{view}");
     assert_eq!(view["wait"]["settled"], true, "{view}");
     let waited = view["wait"]["waited_ms"].as_u64().unwrap();
-    assert!((600..3000).contains(&waited), "waited_ms={waited}: {view}");
+    assert!(waited < 3000, "waited_ms={waited}: {view}");
     assert!(
-        has_line(&view, "END"),
+        has_line(view, "END"),
         "settled before the burst ended: {view}"
     );
     h.stop(&terminal).await;
@@ -523,18 +556,24 @@ async fn change_wait_settles_only_after_a_sustained_burst_ends() {
 async fn change_wait_budget_ends_mid_burst_unsettled() {
     let h = Harness::start().await;
     let terminal = open(&h, BURST, "burst-budget").await;
-    std::fs::write(h.root.path().join("go"), b"x").unwrap();
-    let view = h
-        .ok(
+    let response = call_then_release(
+        &h,
+        &terminal,
+        "go",
+        h.call(
             "calm.terminal.observe",
             json!({"terminal_id":terminal,"wait_for":"change","settle_ms":150,"wait_ms":300}),
-        )
-        .await;
+        ),
+    )
+    .await;
+    let view = receipt(&response);
     assert_eq!(view["wait"]["outcome"], "changed", "{view}");
     assert_eq!(view["wait"]["settled"], false, "{view}");
+    // The budget is a deadline inside the wait, so it is a safe lower bound;
+    // the burst started after the wait subscribed, so END cannot be there.
     let waited = view["wait"]["waited_ms"].as_u64().unwrap();
-    assert!((300..600).contains(&waited), "waited_ms={waited}: {view}");
-    assert!(!has_line(&view, "END"), "{view}");
+    assert!(waited >= 300, "waited_ms={waited}: {view}");
+    assert!(!has_line(view, "END"), "{view}");
     // The burst is still running; a fresh change wait sees more of it.
     let later = h
         .ok(
@@ -556,17 +595,21 @@ async fn omitted_wait_ms_in_change_mode_waits_for_a_late_reply() {
         "default-budget",
     )
     .await;
-    std::fs::write(h.root.path().join("go"), b"x").unwrap();
-    let view = h
-        .ok(
+    let response = call_then_release(
+        &h,
+        &terminal,
+        "go",
+        h.call(
             "calm.terminal.observe",
             json!({"terminal_id":terminal,"wait_for":"change"}),
-        )
-        .await;
+        ),
+    )
+    .await;
+    let view = receipt(&response);
     assert_eq!(view["wait"]["outcome"], "changed", "{view}");
-    assert!(has_line(&view, "DEFAULTED"), "{view}");
+    assert!(has_line(view, "DEFAULTED"), "{view}");
     let waited = view["wait"]["waited_ms"].as_u64().unwrap();
-    assert!((200..2000).contains(&waited), "waited_ms={waited}: {view}");
+    assert!(waited < 2000, "waited_ms={waited}: {view}");
     // Elapsed mode without wait_ms still returns at once.
     let immediate = h
         .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
@@ -628,6 +671,28 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
         "{stale}"
     );
     assert!(stale.get("output_since_observation").is_none());
+    // The action is validated before stale is decided: against the same
+    // stale observation an invalid action is an RPC error, never a
+    // successful stale result, and nothing is reserved.
+    for (request, action, expected) in [
+        (
+            "enter-x2",
+            json!({"type":"key","key":"Enter","repeat":2}),
+            "only navigation and editing keys may repeat",
+        ),
+        (
+            "click-no-mouse",
+            json!({"type":"click","column":0,"row":0}),
+            "application has not enabled terminal mouse input",
+        ),
+    ] {
+        let invalid = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":latest["observation_id"],"request_id":request,"action":action})).await;
+        assert!(
+            error_text(&invalid).contains(expected),
+            "{request}: {invalid}"
+        );
+        assert!(!h.interaction().input_pending(&terminal).await);
+    }
     let fresh = observation(&response).clone();
     assert!(has_line(&fresh, "STATUS_LINE"), "{fresh}");
     assert_ne!(fresh["observation_id"], latest["observation_id"]);
@@ -764,6 +829,155 @@ async fn release_readback_omits_text_only_when_unchanged_since_previous_observat
         reclaimed_state["observation_revision"]
     );
     assert_eq!(state["changed_since_previous_observation"], true);
+    h.stop(&terminal).await;
+}
+
+/// The release elision compares live viewports only. The previous
+/// observation is a history view (`scroll_offset` 1) of the same revision:
+/// its text is not the live text, so the release readback on the quiet
+/// screen must carry its own text. After a live observation the elision
+/// applies again.
+#[tokio::test]
+async fn release_readback_keeps_text_after_a_history_view_of_the_same_revision() {
+    let h = Harness::start().await;
+    let terminal = open(&h, SCROLLBACK, "release-history").await;
+    h.observe_text(&terminal, "READY").await;
+    claim(&h, &terminal).await;
+    let history = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"scroll_offset":1}),
+        )
+        .await;
+    assert_eq!(history["scroll_offset"], 1, "{history}");
+    assert!(history["history_rows"].as_u64().unwrap() >= 1);
+    let released = h
+        .call(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"release","observe":true}),
+        )
+        .await;
+    let state = observation(&released);
+    assert_eq!(
+        state["observation_revision"],
+        history["observation_revision"]
+    );
+    assert_eq!(state["scroll_offset"], 0);
+    assert!(state.get("text_omitted").is_none(), "{state}");
+    assert!(has_line(state, "READY"), "{state}");
+    // A live claim readback of the same revision: the release elides again.
+    claim(&h, &terminal).await;
+    let released = h
+        .call(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"release","observe":true}),
+        )
+        .await;
+    let state = observation(&released);
+    assert!(state.get("text").is_none(), "{state}");
+    assert!(state["text_omitted"].is_string());
+    h.stop(&terminal).await;
+}
+
+/// Drift-tolerant input negative table. With `allow_output_since_observation`
+/// set, (a) an input-mode change (DECCKM) since the observation is refused by
+/// the surface fence and (b) an observation taken as a history view is
+/// refused by the live-viewport fence; a live observation of the changed
+/// surface still writes. (c) The "prior input outcome unknown" fence (a
+/// pending write whose acknowledgement was lost) is not reachable in this
+/// harness: the in-process supervisor acknowledges or refuses every write,
+/// which clears the reservation, so no tool sequence leaves `pending` set.
+/// It is covered by `input_pending` observability only, not by a table row.
+#[tokio::test]
+async fn drift_tolerant_input_refuses_mode_change_and_history_views() {
+    let h = Harness::start().await;
+    let terminal = open(&h, SCROLLBACK, "drift-table").await;
+    h.observe_text(&terminal, "READY").await;
+    let claimed = claim(&h, &terminal).await;
+    let live_before_mode = observation(&claimed).clone();
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    entry
+        .handle
+        .render_plane
+        .lock()
+        .unwrap()
+        .on_pty_chunk(b"\x1b[?1h".to_vec());
+    wait_past(&h, &terminal, revision(&live_before_mode)).await;
+    let history = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"scroll_offset":1}),
+        )
+        .await;
+    assert_eq!(history["scroll_offset"], 1, "{history}");
+    let live = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(live["scroll_offset"], 0);
+    for (name, observation, expected) in [
+        (
+            "input-mode-change",
+            &live_before_mode,
+            "terminal surface changed since observation (size, input modes or alternate screen)",
+        ),
+        (
+            "history-view",
+            &history,
+            "return to live viewport before input",
+        ),
+    ] {
+        let refused = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":observation["observation_id"],"request_id":name,"action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+        assert!(error_text(&refused).contains(expected), "{name}: {refused}");
+        assert!(!h.interaction().input_pending(&terminal).await, "{name}");
+    }
+    let written = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":live["observation_id"],"request_id":"live","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+    assert_eq!(receipt(&written)["outcome"], "written", "{written}");
+    h.stop(&terminal).await;
+}
+
+/// The surface fence is evaluated again at physical admission. The write
+/// passed its pre-write fences and is parked at the held input barrier; the
+/// application then switches to the alternate screen; when the barrier is
+/// released the queued bytes are refused instead of landing in the menu. An
+/// input against an observation of the menu still writes.
+#[tokio::test]
+async fn queued_write_is_refused_when_the_surface_changes_before_the_physical_write() {
+    let h = Harness::start().await;
+    let terminal = open(&h, "printf 'READY\\n'; cat >/dev/null", "admission").await;
+    h.observe_text(&terminal, "READY").await;
+    claim(&h, &terminal).await;
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    let held = entry.handle.input_barrier.grant().await.unwrap();
+    let service = h.interaction();
+    let switch = async {
+        let start = std::time::Instant::now();
+        while !service.input_pending(&terminal).await {
+            assert!(start.elapsed() < Duration::from_secs(10));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        entry
+            .handle
+            .render_plane
+            .lock()
+            .unwrap()
+            .on_pty_chunk(b"\x1b[?1049h\x1b[2J\x1b[HMENU\r\n".to_vec());
+        drop(held);
+    };
+    let (response, ()) = tokio::join!(
+        h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"parked","action":{"type":"text","text":"x"}})),
+        switch
+    );
+    let refused = receipt(&response);
+    assert_eq!(refused["outcome"], "refused", "{refused}");
+    assert_eq!(refused["application_result"], "unverified");
+    assert!(!h.interaction().input_pending(&terminal).await);
+    let menu = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(menu["alternate"], true, "{menu}");
+    assert!(has_line(&menu, "MENU"), "{menu}");
+    let written = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":menu["observation_id"],"request_id":"in-menu","action":{"type":"text","text":"y"}})).await;
+    assert_eq!(receipt(&written)["outcome"], "written", "{written}");
     h.stop(&terminal).await;
 }
 

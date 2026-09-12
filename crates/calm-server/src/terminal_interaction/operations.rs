@@ -24,7 +24,6 @@ impl TerminalInteraction {
             "invalid input request key"
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
-        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
         let terminal = resolved.binding.terminal_id.as_str();
         let client = self.client(identity, &resolved.binding).await?;
         // One action at a time per connection, readback wait included (up to
@@ -32,6 +31,12 @@ impl TerminalInteraction {
         // queues here rather than writing into the screen the first one is
         // still waiting to read back. Other connections are not serialized.
         let _serial = client.serial.lock().await;
+        // Write authority is decided under the serial lock: an input queued
+        // behind a long readback must see the task/session state as it is
+        // when its turn comes, not as it was when the call arrived. Checked
+        // before the serial, a task that finished during the queue would be
+        // answered with stale_observation although write authority is gone.
+        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
         let key = request_key.to_owned();
         // The fingerprint hashes the argument as given (null when omitted) so
         // a replayed request_id returns the same receipt.
@@ -66,7 +71,7 @@ impl TerminalInteraction {
                 .latest_observation
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal client poisoned"))?
-                .map(|(id, _)| id)
+                .map(|latest| latest.id)
                 .ok_or_else(|| {
                     anyhow::anyhow!("no observation on this connection; observe first")
                 })?,
@@ -109,12 +114,14 @@ impl TerminalInteraction {
                 .capture(0)?;
             let now = frame.input_surface();
             ensure!(
-                saved.surface.cols == now.cols
-                    && saved.surface.rows == now.rows
-                    && saved.surface.modes == now.modes
-                    && saved.surface.alternate == now.alternate,
+                same_input_surface(&saved.surface, &now),
                 "terminal surface changed since observation (size, input modes or alternate screen); observe again"
             );
+            // Encode against the live surface (proved equal to the saved one)
+            // before deciding stale vs ready: an invalid action is an RPC
+            // error whatever the revision did, so only the exact-revision
+            // fence is relaxed by the stale result.
+            let bytes = encode(&action, &now)?;
             if !allow_output_since_observation && saved.revision != current {
                 // Every other fence passed and only the exact revision differs:
                 // a structured result with a fresh observation instead of an
@@ -124,14 +131,11 @@ impl TerminalInteraction {
                     current,
                 }
             } else {
-                // Without the flag the revision is unchanged, so the live
-                // surface equals the saved one; with it, encode against the
-                // live surface (which the fence above proved equal).
-                Fence::Ready(encode(&action, &now)?, saved.revision, current)
+                Fence::Ready(bytes, saved.revision, current, now)
             }
         };
-        let (bytes, observed_revision, input_revision) = match fence {
-            Fence::Ready(bytes, observed, current) => (bytes, observed, current),
+        let (bytes, observed_revision, input_revision, surface) = match fence {
+            Fence::Ready(bytes, observed, current, surface) => (bytes, observed, current, surface),
             Fence::Stale { observed, current } => {
                 // No physical write and nothing cached under the request_id:
                 // a later resend with another flag or observation must not
@@ -159,6 +163,10 @@ impl TerminalInteraction {
             state.pending = Some(sequence);
             sequence
         };
+        // The physical writer re-checks this surface under the input barrier
+        // immediately before the PTY write (see `bound_scope`); cleared once
+        // the write is acknowledged, refused or its outcome is unknown.
+        client.expect_surface(Some(surface));
         let unknown = unknown_receipt(terminal, request_key, observation, drift.as_ref());
         client
             .requests
@@ -195,6 +203,7 @@ impl TerminalInteraction {
                 Err(_) => unknown,
             }
         };
+        client.expect_surface(None);
         client
             .requests
             .lock()
@@ -212,10 +221,11 @@ impl TerminalInteraction {
     }
 }
 /// Outcome of the pre-write fences: bytes to write with the observed and
-/// live revisions, or a stale observation (only the exact-revision fence
-/// failed) that becomes a structured refusal rather than an error.
+/// live revisions and the surface they were encoded against, or a stale
+/// observation (only the exact-revision fence failed) that becomes a
+/// structured refusal rather than an error.
 enum Fence {
-    Ready(Vec<u8>, u64, u64),
+    Ready(Vec<u8>, u64, u64, InputSurface),
     Stale { observed: u64, current: u64 },
 }
 /// The stale-observation result: the request was not written, and the caller

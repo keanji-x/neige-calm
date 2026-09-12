@@ -7,11 +7,26 @@ use calm_session::{
     RenderEncoding, Role,
 };
 
+use calm_terminal_view::InputSurface;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
+
+/// The most recent observation captured on a connection (any format,
+/// including action readbacks). `scroll_offset` is the history offset it was
+/// captured at: a history view shares the live revision but not its text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LatestObservation {
+    pub id: Uuid,
+    pub revision: u64,
+    pub scroll_offset: usize,
+}
+/// The input surface the one queued Planner write on a client was encoded
+/// against, set by `input` from reservation to acknowledgement and compared
+/// with the live projection by the control scope at physical admission.
+pub type ExpectedSurface = Arc<StdMutex<Option<InputSurface>>>;
 
 pub struct ScreenState {
     pub owner: Option<Uuid>,
@@ -59,9 +74,8 @@ pub struct Client {
     pub serial: Mutex<()>,
     pub requests: Mutex<std::collections::HashMap<String, (String, serde_json::Value)>>,
     pub last_used: Arc<StdMutex<std::time::Instant>>,
-    /// The most recent observation captured on this connection (any format,
-    /// including action readbacks): `(observation_id, model-view revision)`.
-    pub latest_observation: StdMutex<Option<(Uuid, u64)>>,
+    pub latest_observation: StdMutex<Option<LatestObservation>>,
+    pub expected_surface: ExpectedSurface,
     incoming: mpsc::Sender<ClientMsg>,
     changed: watch::Receiver<u64>,
     pump: JoinHandle<anyhow::Result<()>>,
@@ -78,6 +92,7 @@ impl Client {
         entry: Arc<RendererEntry>,
         scope: ClientInputScope,
         binding: super::Binding,
+        expected_surface: ExpectedSurface,
     ) -> Result<Self> {
         let id = Uuid::new_v4();
         let size = entry
@@ -196,6 +211,7 @@ impl Client {
             requests: Mutex::new(std::collections::HashMap::new()),
             last_used,
             latest_observation: StdMutex::new(None),
+            expected_surface,
             incoming,
             changed,
             pump,
@@ -225,6 +241,13 @@ impl Client {
             }
         })
         .await?
+    }
+    /// Set (or clear) the surface the queued write must still find at
+    /// physical admission. Poisoning is treated as "no expectation".
+    pub fn expect_surface(&self, surface: Option<InputSurface>) {
+        if let Ok(mut slot) = self.expected_surface.lock() {
+            *slot = surface;
+        }
     }
     /// Wakes on every protocol message (ownership, ack/refusal, exit) and on
     /// disconnect; the model-view revision channel covers screen output.

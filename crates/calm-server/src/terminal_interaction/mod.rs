@@ -2,7 +2,7 @@
 use crate::db::RouteRepo;
 use crate::mcp_server::registry::ToolCallIdentity;
 use crate::model::CardRole;
-use crate::terminal_renderer::{ClientInputScope, TerminalRendererRegistry};
+use crate::terminal_renderer::{ClientInputScope, SharedModelView, TerminalRendererRegistry};
 use anyhow::{Result, ensure};
 use calm_session::ClientMsg;
 use calm_terminal_view::{InputSurface, Rasterizer};
@@ -20,7 +20,7 @@ mod operations;
 pub use observation::ObservationFormat;
 mod target;
 mod wait;
-use client::Client;
+use client::{Client, ExpectedSurface, LatestObservation};
 pub(crate) use target::Binding;
 pub use target::Target;
 #[cfg(test)]
@@ -102,28 +102,46 @@ impl TerminalInteraction {
             return Ok(client.clone());
         }
         ensure!(clients.len() < 128, "Planner terminal client limit reached");
-        let scope = Self::bound_scope(self.repo.clone(), identity, resolved);
-        let client = Arc::new(Client::attach(entry, scope, resolved.clone()).await?);
+        let expected_surface: ExpectedSurface = Arc::new(StdMutex::new(None));
+        let scope = Self::bound_scope(
+            self.repo.clone(),
+            identity,
+            resolved,
+            Some((entry.handle.model_view.clone(), expected_surface.clone())),
+        );
+        let client =
+            Arc::new(Client::attach(entry, scope, resolved.clone(), expected_surface).await?);
         clients.insert(binding, client.clone());
         Ok(client)
     }
+    /// `admission` is the projection and the client's expected-surface slot:
+    /// the control callback, which the physical writer runs under the input
+    /// barrier immediately before the PTY write, refuses the write when the
+    /// slot names a surface and the live projection's differs (a mode,
+    /// alternate-screen or size change between queueing and the write).
     pub(crate) fn bound_scope(
         repo: Arc<dyn RouteRepo>,
         identity: &ToolCallIdentity,
         resolved: &Binding,
+        admission: Option<(SharedModelView, ExpectedSurface)>,
     ) -> ClientInputScope {
         let scope_check = |write: bool| {
             let repo = repo.clone();
             let actor = identity.clone();
             let expected = resolved.clone();
+            let admission = admission.clone().filter(|_| write);
             Arc::new(move || {
                 let repo = repo.clone();
                 let actor = actor.clone();
                 let expected = expected.clone();
+                let admission = admission.clone();
                 Box::pin(async move {
                     Self::check_binding(repo.as_ref(), &actor, &expected, write)
                         .await
                         .is_ok()
+                        && admission
+                            .as_ref()
+                            .is_none_or(|(view, slot)| surface_still_expected(view, slot))
                 }) as futures::future::BoxFuture<'static, bool>
             })
                 as Arc<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>
@@ -180,7 +198,8 @@ impl TerminalInteraction {
             .lock()
             .map_err(|_| anyhow::anyhow!("terminal client poisoned"))?;
         let baseline = match (baseline, previous) {
-            (Some(revision), _) | (None, Some((_, revision))) => revision,
+            (Some(revision), _) => revision,
+            (None, Some(previous)) => previous.revision,
             (None, None) => {
                 client
                     .entry
@@ -219,14 +238,14 @@ impl TerminalInteraction {
         let resolved =
             Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let observation_id = Uuid::new_v4();
-        let changed_since_previous = previous.is_some_and(|(_, prior)| prior != revision);
+        let changed_since_previous = previous.is_some_and(|prior| prior.revision != revision);
         let mut metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
             "terminal_session_id":client.entry.handle.session_id,"control_id":control,"role":if control.is_some(){"owner"}else{"observer"},
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
             "text":frame.text,"exited":exited,"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
-            "previous_observation_revision":previous.map(|(_, prior)| prior.to_string())});
+            "previous_observation_revision":previous.map(|prior| prior.revision.to_string())});
         if png.is_some() {
             metadata["image_source"] = json!("rmux_client_projection");
         }
@@ -253,8 +272,11 @@ impl TerminalInteraction {
         *client
             .latest_observation
             .lock()
-            .map_err(|_| anyhow::anyhow!("terminal client poisoned"))? =
-            Some((observation_id, revision));
+            .map_err(|_| anyhow::anyhow!("terminal client poisoned"))? = Some(LatestObservation {
+            id: observation_id,
+            revision,
+            scroll_offset: frame.scroll_offset,
+        });
         Ok((metadata, png))
     }
     pub async fn control(
@@ -361,4 +383,24 @@ impl TerminalInteraction {
         }
         Ok(receipt)
     }
+}
+/// The input-surface fence: size, input modes and alternate screen. The
+/// scroll offset is a separate fence (live viewport only).
+pub(crate) fn same_input_surface(saved: &InputSurface, live: &InputSurface) -> bool {
+    saved.cols == live.cols
+        && saved.rows == live.rows
+        && saved.modes == live.modes
+        && saved.alternate == live.alternate
+}
+/// Physical-admission surface fence: true when no write is queued on this
+/// client, or when the live projection still has the surface the queued
+/// write was encoded against. An unavailable projection fails closed.
+fn surface_still_expected(view: &SharedModelView, slot: &ExpectedSurface) -> bool {
+    let Some(expected) = slot.lock().ok().and_then(|slot| *slot) else {
+        return true;
+    };
+    view.lock()
+        .ok()
+        .and_then(|view| view.capture(0).ok())
+        .is_some_and(|(frame, _)| same_input_surface(&expected, &frame.input_surface()))
 }

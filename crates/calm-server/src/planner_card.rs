@@ -123,11 +123,12 @@ wait_ms omitted, wait_for=change waits up to 2000 ms and wait_for=elapsed does n
 for a program's answer, observe with {\"wait_for\":\"change\",\"wait_ms\":15000}. \
 Claim and release rarely change the screen: use wait_for=elapsed or a change budget of at \
 most 500 ms there, and reserve long change budgets for program output after Enter. \
-Every observation reports wait.outcome (changed|unchanged|exited|elapsed), settled, \
+Every observation reports wait.outcome (changed|unchanged|exited|elapsed), wait.settled, \
 wait.baseline_revision (what wait.outcome compared against), previous_observation_revision and \
 changed_since_previous_observation; outcome unchanged or a settled screen is not proof \
 the program finished. A release readback of a screen unchanged since your previous observation \
-omits text and reports text_omitted. The full state is in structuredContent; the text block is a summary. \
+omits text and reports text_omitted. With format=text the full state is in structuredContent and \
+the text block is a one-line summary; format=image results keep their JSON metadata text block and add the PNG. \
 Detach cannot request observation; its receipt reports had_client, connection_id and \
 terminal_session_id. \
 Both open and observe default to format=text; use this for routine reading and text/key input. \

@@ -76,7 +76,15 @@ Scope comes from live MCP session/card/Track identity and is checked at tool
 admission and again by the queued write's scope callback. A connection owns a
 server-issued lease. The final writer rechecks that lease under a barrier shared
 with ownership grants, then retains the barrier until the supervisor acknowledges
-the physical PTY write. Queued stale writes are refused. If a sent write loses its
+the physical PTY write. Queued stale writes are refused. The queued Planner
+write also carries the input surface (size, input modes, alternate screen) it
+was encoded against: the same scope callback compares it with the live
+projection under the barrier immediately before the PTY write, so a mode,
+alternate-screen or size change between queueing and the physical write
+refuses the write (`outcome:"refused"`, no bytes reach the PTY) instead of
+landing in the new screen. The exact revision is not re-checked there: output
+between queueing and the write is reported by the readback, and the residual
+window between that check and the supervisor's write is the PTY write itself. If a sent write loses its
 acknowledgement, the barrier becomes uncertain and refuses new ownership grants;
 cancelling a Rust future does not prove the supervisor's blocking write stopped.
 Existing kernel-originated input remains a distinct trusted capability.
@@ -144,8 +152,11 @@ budget for either mode; when omitted it is 0 for `elapsed` and 2000 for
 actually waits) and `settle_ms` (0..2000, default 150; rejected unless
 `wait_for=change`). `change` returns once the model projection's revision differs
 from the baseline and no further revision arrived for `settle_ms`, or at the
-budget, or when the process exited or the client became unavailable. Only a new
-revision starts or extends the quiet window; protocol events (acks, ownership)
+budget, or when the process exited, the client became unavailable or the
+projection was invalidated (`ModelView::invalidate` wakes subscribers without
+a revision; the wait stops there and the capture after it fails explicitly
+instead of idling to the budget). Only a new revision starts or extends the
+quiet window; protocol events (acks, ownership)
 do not, and when the quiet timer completes the revision and exit state are read
 again before `settled:true` is reported, because `select!` may pick the timer
 while a newer revision notification is already ready. Baselines:
@@ -193,6 +204,16 @@ the flag. The alternate screen is compared as the projection's `alternate`
 flag: rmux tracks it through the saved grid, not through a mode bit, so a
 modes-only comparison would let a menu that appeared over the shell pass.
 
+Under the same fence the action is validated (encoded against the live
+surface) before stale is decided, so an invalid action — Enter with `repeat`,
+a click without mouse mode — is an RPC error whatever the revision did; only
+the exact-revision fence is relaxed by the stale result. Write authority
+(`check_binding(write)`: task running, worker session active) is decided
+under the connection's serial lock, after any readback in progress, so an
+input queued behind a long readback sees the task state as it is when its
+turn comes; a task that finished during the queue refuses the input rather
+than answering `stale_observation`.
+
 `observation_id` is optional on input. When omitted the server uses the latest
 observation captured on this client connection (any format, including action
 readbacks and the fresh observation of a stale result); the receipt reports
@@ -237,10 +258,13 @@ readback available`.
 A release rarely changes the screen, and its readback repeated the unchanged
 text. For `control` action `release` with `observe=true`, when the captured
 revision equals this connection's previous observation revision (read before
-the readback registers itself), `observation.state` omits the `text` array and
-carries `"text_omitted":"unchanged since previous observation <id>"`; every
-other field (ids, revision, geometry, cursor, wait, task status) stays. After
-output the text is included as before. Claim readbacks and observe always
+the readback registers itself) and both captures are live viewports
+(`scroll_offset` 0; the connection's latest observation stores its offset),
+`observation.state` omits the `text` array and carries
+`"text_omitted":"unchanged since previous observation <id>"`; every other
+field (ids, revision, geometry, cursor, wait, task status) stays. A history
+view shares the live revision but not its text, so after one the release
+readback includes the text. After output the text is included as before. Claim readbacks and observe always
 include text. The tool descriptions and prompt also say that claim/release
 readbacks should use `wait_for=elapsed` or a change budget of at most 500 ms,
 keeping long change budgets for program output after Enter, and that

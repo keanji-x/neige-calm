@@ -17,7 +17,14 @@ struct Worker {
     session: String,
     terminal: String,
 }
+const ECHO_WORKER: &str = "printf 'WORKER_READY\\n'; while IFS= read -r line; do printf 'WORKER_REPLY:%s\\n' \"$line\"; done";
 async fn worker(h: &Harness, kind: &str, track: &str, viewer: bool) -> Worker {
+    worker_running(h, kind, track, viewer.then_some(ECHO_WORKER)).await
+}
+/// `viewer` is the shell script of the worker's PTY viewer, spawned before
+/// the task row is stamped (as the scheduler does); `None` leaves the task
+/// without a live view.
+async fn worker_running(h: &Harness, kind: &str, track: &str, viewer: Option<&str>) -> Worker {
     let key = new_id();
     let task = format!("{track}:{key}");
     let card = new_id();
@@ -118,8 +125,8 @@ async fn worker(h: &Harness, kind: &str, track: &str, viewer: bool) -> Worker {
         )
         .await
         .unwrap();
-    if viewer {
-        spawn_viewer(h, &terminal.id).await;
+    if let Some(script) = viewer {
+        spawn_viewer_running(h, &terminal.id, script).await;
     }
     // Stamp the task/worker association after its viewer exists, as the scheduler does.
     sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,'test','[]','running',?5,'user',?6,?6)")
@@ -132,10 +139,22 @@ async fn worker(h: &Harness, kind: &str, track: &str, viewer: bool) -> Worker {
     }
 }
 async fn spawn_viewer(h: &Harness, terminal: &str) {
-    let mut config=RendererConfig{terminal_id:terminal.to_owned(),cols:80,rows:24,buffer_bytes:8192,
-            terminal_fg:(220,220,220),terminal_bg:(15,20,24),program:"/bin/sh".into(),
-            args:vec!["-c".into(),"printf 'WORKER_READY\\n'; while IFS= read -r line; do printf 'WORKER_REPLY:%s\\n' \"$line\"; done".into()],
-            envs:vec![],cwd:h.root.path().to_str().unwrap().to_owned(),supervisor_sock:std::path::PathBuf::new()};
+    spawn_viewer_running(h, terminal, ECHO_WORKER).await;
+}
+async fn spawn_viewer_running(h: &Harness, terminal: &str, script: &str) {
+    let mut config = RendererConfig {
+        terminal_id: terminal.to_owned(),
+        cols: 80,
+        rows: 24,
+        buffer_bytes: 8192,
+        terminal_fg: (220, 220, 220),
+        terminal_bg: (15, 20, 24),
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), script.into()],
+        envs: vec![],
+        cwd: h.root.path().to_str().unwrap().to_owned(),
+        supervisor_sock: std::path::PathBuf::new(),
+    };
     config.supervisor_sock = h.supervisor_socket();
     h.state.terminal_renderer.ensure(config).await.unwrap();
 }
@@ -389,6 +408,88 @@ async fn readback_reports_a_task_that_finished_during_the_wait() {
     assert_eq!(state["task_status"], "done", "{state}");
     assert_eq!(state["controllable"], false, "{state}");
     assert_eq!(state["task"]["task_id"], w.task);
+    stop(&h, &w).await;
+}
+
+/// Write authority is decided under the connection's serial lock (#1618
+/// round 2). An input readback with a long change wait holds the serial on a
+/// quiet task terminal (no echo, so typing changes nothing); a second input is
+/// called while the task still runs and queues behind it; the task then
+/// finishes and injected output ends the first wait. When the queued input's
+/// turn comes it must be refused with the write-authority error. A check
+/// taken before the serial would have passed while the task was running and,
+/// with the revision moved and the saved control still current, answered
+/// `stale_observation` although write authority is gone.
+#[tokio::test]
+async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_serial() {
+    let h = Harness::start().await;
+    let w = worker_running(
+        &h,
+        "claude",
+        &h.track,
+        Some("stty -echo; printf 'WORKER_READY\\n'; cat >/dev/null"),
+    )
+    .await;
+    h.observe_text(&w.terminal, "WORKER_READY").await;
+    h.ok(
+        "calm.terminal.control",
+        json!({"task_id":w.task,"action":"claim"}),
+    )
+    .await;
+    let before = snapshot(&h, json!({"task_id":w.task})).await;
+    let entry = h.state.terminal_renderer.get(&w.terminal).unwrap();
+    let waiters = || entry.handle.model_view.lock().unwrap().change_waiters();
+    let subscribed = waiters();
+    let holder = h.call(
+        "calm.terminal.input",
+        json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"hold","action":{"type":"text","text":"a"},"observe":true,"wait_for":"change","wait_ms":10000}),
+    );
+    let driver = async {
+        let start = std::time::Instant::now();
+        while waiters() == subscribed {
+            assert!(start.elapsed() < std::time::Duration::from_secs(10));
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // The queued input is called while the task is still running. The
+        // fixed code decides authority only once it holds the serial; the
+        // short sleep only gives a pre-serial check the window to pass.
+        let queued = h.call(
+            "calm.terminal.input",
+            json!({"task_id":w.task,"observation_id":before["observation_id"],"request_id":"queued","action":{"type":"text","text":"b"}}),
+        );
+        let finish = async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
+                .bind(&w.task)
+                .bind(now_ms())
+                .execute(h.sql.pool())
+                .await
+                .unwrap();
+            entry
+                .handle
+                .render_plane
+                .lock()
+                .unwrap()
+                .on_pty_chunk(b"TASK_DONE\r\n".to_vec());
+        };
+        let (queued, ()) = tokio::join!(queued, finish);
+        queued
+    };
+    let (held, queued) = tokio::join!(holder, driver);
+    assert!(held.get("error").is_none(), "{held}");
+    let receipt = &held["result"]["structuredContent"];
+    assert_eq!(receipt["outcome"], "written", "{receipt}");
+    assert_eq!(receipt["observation"]["status"], "available", "{receipt}");
+    assert_eq!(receipt["observation"]["state"]["task_status"], "done");
+    assert_eq!(receipt["observation"]["state"]["controllable"], false);
+    let message = queued["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("queued input must be refused, got {queued}"));
+    assert!(
+        message.contains("task or worker session is not running; terminal control refused"),
+        "{queued}"
+    );
+    assert!(!h.interaction().input_pending(&w.terminal).await);
     stop(&h, &w).await;
 }
 

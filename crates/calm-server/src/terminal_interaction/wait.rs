@@ -2,6 +2,7 @@
 //! protocol events, never on a sleep-poll loop. Waiting is presentation; it
 //! never touches a receipt or the physical action.
 use super::client::Client;
+use crate::terminal_renderer::SharedModelView;
 use anyhow::{Result, ensure};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -155,6 +156,7 @@ pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport 
                 .lock()
                 .map(|exit| exit.is_some())
                 .unwrap_or(true)
+            || projection_unavailable(&client.entry.handle.model_view)
     };
     let Progress {
         changed,
@@ -175,6 +177,16 @@ pub async fn wait(client: &Client, spec: WaitSpec, baseline: u64) -> WaitReport 
         settled: settled && !exited,
         baseline,
     }
+}
+
+/// `ModelView::invalidate` wakes revision subscribers without a new
+/// revision; a change wait must stop there (the capture after it fails
+/// explicitly) instead of idling to its budget.
+fn projection_unavailable(model_view: &SharedModelView) -> bool {
+    model_view
+        .lock()
+        .map(|view| view.capture(0).is_err())
+        .unwrap_or(true)
 }
 
 struct Progress {
@@ -432,6 +444,40 @@ mod tests {
         let (progress, waited) = task.await.unwrap();
         assert!(progress.changed && !progress.settled && !progress.exited);
         assert_eq!(waited, Duration::from_millis(300));
+    }
+
+    /// An invalidated projection wakes the loop without a revision; with the
+    /// production `stopped` predicate the wait ends at once as exited rather
+    /// than idling to the budget.
+    #[tokio::test(start_paused = true)]
+    async fn invalidated_projection_stops_the_wait_before_the_budget() {
+        use crate::terminal_renderer::ModelView;
+        let view = ModelView::new(80, 24, (220, 220, 220), (15, 20, 24));
+        let revisions = view.lock().unwrap().subscribe();
+        let (events, events_rx) = watch::channel(0u64);
+        let started = Instant::now();
+        let stopped_view = view.clone();
+        let task = tokio::spawn(async move {
+            let progress = wait_for_change(
+                revisions,
+                events_rx,
+                move || projection_unavailable(&stopped_view),
+                0,
+                started + Duration::from_millis(5_000),
+                Duration::from_millis(150),
+            )
+            .await;
+            (progress, started.elapsed())
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+        assert!(!task.is_finished(), "a live projection keeps waiting");
+        view.lock().unwrap().invalidate("simulated source gap");
+        tokio::task::yield_now().await;
+        let (progress, waited) = task.await.unwrap();
+        assert!(progress.exited && !progress.changed && !progress.settled);
+        assert_eq!(waited, Duration::from_millis(100));
+        drop(events);
     }
 
     #[tokio::test(start_paused = true)]

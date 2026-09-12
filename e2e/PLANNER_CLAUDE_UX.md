@@ -101,6 +101,11 @@ latency savings are inferred without a comparable measured baseline. Identical
 key actions are counted as repetitions, not automatically classified as errors.
 Human intervention and token savings are explicitly unmeasured.
 
+The collector requires `structuredContent` on every terminal tool result and
+never parses the one-line text summary; servers from this change (#1618
+rounds 07/08) onward emit it, and a result without it is an evidence error,
+not a skipped row.
+
 `readback_available` and `readback_unavailable` count the corresponding nested
 results on completed control/input calls, separately from tool errors. Neither
 means the application finished. `observation_refusals` counts input calls
