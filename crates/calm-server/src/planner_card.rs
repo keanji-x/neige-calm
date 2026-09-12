@@ -363,9 +363,9 @@ writes are transactional.
      the single source for the whole area, including your own track. Links resolve \
      only within the area; missing anchors fall back to the whole report.
    * Keep the track report current — see the Track Report section below \
-     for which write tool to use. Only `calm.report.write` and \
-     `calm.report.edit` take `message` (required) and optional \
-     `lifecycle`; the block-addressed writes do not.
+     for which write tool to use. One user-intent update = one \
+     `calm.report.commit` call: its block ops, the summary and the \
+     lifecycle transition land together under one `if_doc_rev`.
 3. **END YOUR TURN.** Do NOT poll or loop waiting for the next event. \
    The kernel schedules ready tasks, runs gates, and pushes the next \
    observation as a fresh turn the moment it arrives — you will be \
@@ -419,12 +419,18 @@ READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是
     replace_all?, message, lifecycle?)` 字符串替换。⚠️ 这两个没有标记通道：\
     整体替换会 best-effort 重新推导块 id，可能把已有块打散（深链 / 反链失效）；\
     而且新正文里每个非 prose 块的 ```neige-block <kind>``` fence 必须 \
-    逐字节原样带回，碰坏一个整次写就被守卫拒绝。所以只在小范围精修、或需要带上 \
-    `message` / `lifecycle` 时才用它们，不要拿它们做大改写。
-  * `message` / `lifecycle` 只有 `calm.report.write` / `calm.report.edit` 接受；\
-    `calm.report.blocks.*` 与 `calm.report.write_markdown` 不接受这两个参数，\
-    需要推进 lifecycle 时改用 `calm.task.verdict` / `calm.plan.cancel` 上的 \
-    `lifecycle`。
+    逐字节原样带回，碰坏一个整次写就被守卫拒绝。所以只在小范围精修时才用它们，\
+    不要拿它们做大改写；需要带 `message` / `lifecycle` 时用 `calm.report.commit`。
+  * **一次用户意图 = 一次 `calm.report.commit`** — `calm.report.commit(if_doc_rev, \
+    message, ops?, summary?, lifecycle?)`：`ops` 是有序的块操作列表（每项是 \
+    `blocks.upsert` / `.delete` / `.move` 的参数形状加 `op` 标签，去掉 `if_doc_rev`），\
+    加可选的 `summary` 与可选的 `lifecycle`，整批只校验一次 `if_doc_rev`，块 id 与 \
+    各块 `if_rev` 照常保留；任一项失败整次提交回滚。改几个块 + 改 summary + 推进 \
+    lifecycle 就用这一个调用，不要「逐块 upsert → 重读 → 整文档写回改 summary → \
+    再调一次带 lifecycle」，也不要用 `calm.report.edit` 传相同的 old/new 字符串来\
+    搭载 lifecycle。`ops` 可为空（只改 summary / lifecycle）。\
+    `calm.report.blocks.upsert` 与 `calm.report.write_markdown` 也接受可选的 \
+    `message` / `lifecycle`；`.move` / `.delete` 不接受。
 
 整文档写必须把最近一次 `calm.report.read` 返回的 `docRev` 原样作为
 `if_doc_rev` 传入；写响应会返回新的 `docRev`，后续写使用这个新锚。它不是
@@ -1667,11 +1673,24 @@ mod tests {
             !p.contains("整体替换 （首选"),
             "prompt must NOT re-promote calm.report.write as the preferred write"
         );
-        // `message`/`lifecycle` are NOT accepted by write_markdown or
-        // blocks.*; the prompt must not leave the agent guessing.
+        // Planner feedback #1 — one user-intent update is ONE
+        // `calm.report.commit` (blocks + summary + lifecycle under one
+        // `if_doc_rev`); the prompt must route message/lifecycle there and
+        // must no longer sanction same-text `calm.report.edit` as a
+        // lifecycle carrier.
         assert!(
-            p.contains("`calm.report.blocks.*` 与 `calm.report.write_markdown` 不接受这两个参数"),
-            "prompt must state that the block-addressed writes take no message/lifecycle"
+            p.contains("**一次用户意图 = 一次 `calm.report.commit`**")
+                && p.contains("calm.report.commit(if_doc_rev,")
+                && p.contains("任一项失败整次提交回滚"),
+            "prompt must route blocks + summary + lifecycle through calm.report.commit"
+        );
+        assert!(
+            p.contains("不要用 `calm.report.edit` 传相同的 old/new 字符串"),
+            "prompt must forbid same-text report.edit as a lifecycle carrier"
+        );
+        assert!(
+            !p.contains("不接受这两个参数") && !p.contains("或需要带上"),
+            "prompt must not keep the pre-commit message/lifecycle routing"
         );
     }
 

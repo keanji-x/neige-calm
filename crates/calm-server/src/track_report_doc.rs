@@ -324,6 +324,17 @@ impl ReportDoc {
         self.apply_aligned_blocks(&current, &aligned)
     }
 
+    /// Summary-only write behind `calm.report.commit`: replaces the
+    /// sidebar summary text and leaves the block map untouched (no block
+    /// rev moves, no order rewrite). The document-wide rev is advanced by
+    /// the persist layer like every other op.
+    pub fn set_summary(&mut self, new_summary: &str) -> Result<()> {
+        let summary_id = self.summary_text_id()?;
+        self.0
+            .update_text(&summary_id, new_summary)
+            .context("update summary text")
+    }
+
     /// Marker-aware wholesale replace behind `calm.report.write_markdown`
     /// (#960 PR2). Same landing semantics as [`Self::update`], but the
     /// caller supplies pre-split slices plus per-slice id hints
