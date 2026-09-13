@@ -5430,7 +5430,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description `if_entry_rev` does not match (code `planner_input_stale`, body carries the current text and rev); or no turn is running / codex refused the steer (code `planner_steer_no_running_turn`, body `PlannerSteerRefusedBody` — the entry stays queued and drains into the next turn); or the harness is shutting down (code `conflict`) */
+            /** @description Stale rev (`planner_input_stale`); no running turn or codex refused (`planner_steer_no_running_turn`); shutting down */
             409: {
                 headers: {
                     [name: string]: unknown;

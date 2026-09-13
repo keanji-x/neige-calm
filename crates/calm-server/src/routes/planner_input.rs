@@ -377,7 +377,10 @@ pub(crate) async fn delete_planner_input(
         (status = 401, description = "Unauthenticated", body = ErrorBody),
         (status = 403, description = "Not `X-Calm-Actor: user`, or the card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found, or the entry is no longer in the pending queue", body = ErrorBody),
-        (status = 409, description = "`if_entry_rev` does not match (code `planner_input_stale`, body carries the current text and rev); or no turn is running / codex refused the steer (code `planner_steer_no_running_turn`, body `PlannerSteerRefusedBody` — the entry stays queued and drains into the next turn); or the harness is shutting down (code `conflict`)", body = PlannerInputStaleBody),
+        // Three codes share this status; `PlannerSteerRefusedBody` documents
+        // the steer's own (`planner_steer_no_running_turn`: the entry stays
+        // queued and drains into the next turn).
+        (status = 409, description = "Stale rev (`planner_input_stale`); no running turn or codex refused (`planner_steer_no_running_turn`); shutting down", body = PlannerInputStaleBody),
         (status = 500, description = "Internal error", body = ErrorBody),
         (status = 503, description = "Harness command channel saturated — retry shortly", body = ErrorBody),
     ),
