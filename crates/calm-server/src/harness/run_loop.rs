@@ -386,17 +386,22 @@ enum HarnessObservationCommand {
     /// #1625 P3 — a human asking for one queued entry to go into the turn
     /// that is running right now, instead of waiting for the next one.
     ///
-    /// Same channel and same `select!` arm as `Mutate`, and here the arm IS
-    /// what the argument rests on: `handle_steer` takes the entry out of the
-    /// queue and then AWAITS codex's answer to `turn/steer`, and for as long
-    /// as that await lasts nothing else on this task runs — no tick, so no
-    /// `maybe_issue_turn`; no notification, so no `TurnCompleted`. The order
-    /// "leave the queue, then ask codex" is therefore not merely the order of
-    /// two statements: the drain that could send the same entry a second time
-    /// cannot start until the steer has either succeeded (the entry is gone)
-    /// or been refused (the entry is back at the head). Asking codex first
-    /// and removing afterwards was the shape the design forbade, and this arm
-    /// is why the forbidden shape is also the only one that could go wrong.
+    /// Same channel and same `select!` arm as `Mutate`, and for a steer the
+    /// arm is load-bearing where for a mutation it was not: `handle_steer`
+    /// AWAITS codex's answer to `turn/steer`, and for as long as that await
+    /// lasts nothing else on this task runs — no tick, so no
+    /// `maybe_issue_turn`; no notification, so no `TurnCompleted`; no other
+    /// command. That is what rules out the double delivery the design named
+    /// (the turn ends under the steer, the tick drains the entry into the
+    /// next turn, codex delivers it in both): the completion cannot be
+    /// processed, and the drain cannot start, until the steer is answered
+    /// and the entry is either gone or back at the head. The entry leaves
+    /// the queue BEFORE codex is asked — the drain's own order, which empties
+    /// the queue before `turn/start` — so at no instant does the queue list
+    /// a sentence codex may already hold. On this task the reverse order
+    /// would be serialised just the same; the design pinned this one, and
+    /// `planner_steer.rs`'s completion-race test holds the RPC open and
+    /// completes the turn under it to show the entry is delivered once.
     ///
     /// The cost is the mirror image: a slow `turn/steer` holds the loop for
     /// its duration, exactly as a slow `turn/start` already does in the tick
@@ -1360,7 +1365,8 @@ async fn run_loop(
 /// It runs on the run-loop task (or, under the fixtures ingress, on the
 /// caller's — there is no loop there to hand it to). An edit or a delete is
 /// answered from memory and the database alone; codex is not asked, so
-/// neither can hold the loop for longer than a snapshot write. A steer is the
+/// neither holds the loop for longer than a snapshot write and an event
+/// insert. A steer is the
 /// command on this channel that DOES await codex, and it does so on purpose —
 /// see `HarnessObservationCommand::Steer` and `handle_steer`, which is why a
 /// `QueueMutation::Steer` handed to this function is refused rather than
@@ -1474,8 +1480,8 @@ async fn rearm_debounce_after_departure(inner: &Inner, applied: &MutationApplied
 ///     the departure; on anything else: delete the row, put the entry back at
 ///     the head with its id and rev (`rebuffer_head`), persist, refuse.
 ///
-/// Step 3 before step 5 is the invariant, and `HarnessObservationCommand::Steer`
-/// explains why the run-loop task is what makes it sufficient. The input is
+/// Step 3 before step 5 is the pinned order, and `HarnessObservationCommand::Steer`
+/// explains why the run-loop task is what makes it safe. The input is
 /// the entry's own text plus one `localImage` per attachment — the same
 /// segment the drain would build for it — and nothing the drain prepends:
 /// no track diff, no recovery briefing, no result receipts. Those are context
@@ -1490,8 +1496,9 @@ async fn rearm_debounce_after_departure(inner: &Inner, applied: &MutationApplied
 /// entry id) upgrades the row in place through the same
 /// `transcript_projection_upgrade` path the drain's row takes.
 ///
-/// What a refusal means for the person: nothing was lost. The entry is where
-/// it was, with the id and rev they read, and it goes with the next turn.
+/// What a refusal means for the person: nothing was lost. The entry is in
+/// the queue — untouched for steps 1 and 2, at the head after step 6 — with
+/// the id and rev they read, and it goes with the next turn.
 async fn handle_steer(
     inner: &Arc<Inner>,
     entry_id: &QueueEntryId,
