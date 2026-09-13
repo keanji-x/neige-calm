@@ -847,7 +847,9 @@ const plannerSteerSchema: z.ZodType<PlannerSteer> = z.object({
  * refusing if somebody moved it first — the same compare-and-swap token as the
  * delete. A 409 with code `planner_steer_no_running_turn` means no turn took
  * it (none was running, or codex declined); the message is still queued and
- * goes with the next turn.
+ * goes with the next turn. A 409 with code `planner_steer_unknown_outcome`
+ * means codex never answered: the message is queued again just the same, but
+ * whether it also reached the running turn is not known.
  */
 export function steerPlannerInputOperation(
   cardId: string, entryId: string, ifEntryRev: number,
@@ -897,6 +899,7 @@ export function isPlannerInputGoneFailure(failure: ApiFailure | null): boolean {
 }
 
 const plannerSteerRefusedSchema = z.object({ code: z.literal('planner_steer_no_running_turn') });
+const plannerSteerUnansweredSchema = z.object({ code: z.literal('planner_steer_unknown_outcome') });
 
 /**
  * Whether a failure is the steer's own 409 (#1625 P3): no turn took the
@@ -910,15 +913,29 @@ export function isPlannerSteerNotRunningFailure(failure: ApiFailure | null): boo
 }
 
 /**
+ * Whether a failure is the steer's OTHER 409 (#1625 P3 review round 1): codex
+ * never answered, so the kernel does not know whether the running turn took
+ * the message. It is queued again and goes with the next turn either way;
+ * what differs from `not_running` is the claim — "nothing happened" cannot be
+ * made here, and the notice must not make it.
+ */
+export function isPlannerSteerUnansweredFailure(failure: ApiFailure | null): boolean {
+  return failure !== null && failure.kind === 'http' && failure.status === 409
+    && plannerSteerUnansweredSchema.safeParse(failure.body).success;
+}
+
+/**
  * What one write to the pending queue turned into.
  *
- * Five cases, and they are not degrees of failure — they differ in what the
+ * Six cases, and they are not degrees of failure — they differ in what the
  * reader is now holding. `done`: the server has their text. `stale`: it does
  * not, and the entry says something else, quoted here so they can decide.
  * `gone`: the entry left the queue (drained into a turn, or somebody else
  * deleted it), so there is nothing left to write to. `not_running` (#1625 P3,
  * the steer only): the entry is exactly where it was, because no turn was
- * there to take it. `failed`: unknown.
+ * there to take it. `unanswered` (the steer only): the entry is back in the
+ * queue, and whether the running turn ALSO got it is not known — codex never
+ * replied. `failed`: unknown.
  *
  * Collapsing `stale` and `gone` into one "did not work" is the shape this
  * slice exists to avoid: they call for opposite next moves — retry against the
@@ -929,6 +946,7 @@ export type PlannerQueueWriteOutcome =
   | Readonly<{ kind: 'stale'; text: string; rev: number }>
   | Readonly<{ kind: 'gone' }>
   | Readonly<{ kind: 'not_running' }>
+  | Readonly<{ kind: 'unanswered' }>
   | Readonly<{ kind: 'failed'; message: string }>;
 
 /** Classifies a rejected queue write. Never called for a success. */
@@ -939,6 +957,7 @@ export function plannerQueueWriteFailure(
   if (stale !== null) return { kind: 'stale', text: stale.text, rev: stale.rev };
   if (isPlannerInputGoneFailure(failure)) return { kind: 'gone' };
   if (isPlannerSteerNotRunningFailure(failure)) return { kind: 'not_running' };
+  if (isPlannerSteerUnansweredFailure(failure)) return { kind: 'unanswered' };
   return { kind: 'failed', message };
 }
 

@@ -218,6 +218,24 @@ describe('PendingQueue', () => {
     expect(screen.getByRole('button', { name: 'Delete this message' })).toBeTruthy();
   });
 
+  /* The steer's other refusal (review round 1): codex never answered. The
+     sentence must NOT say nothing happened — it says the outcome is not
+     known, that the message stays queued, and that it may also show up. A
+     warning, not an info notice: there is a doubt to hold. */
+  it('says the outcome is not known when codex never answered the steer', async () => {
+    const onSteer = vi.fn<NonNullable<PendingQueueProps['onSteer']>>(
+      () => Promise.resolve({ kind: 'unanswered' }),
+    );
+    renderQueue({ onSteer });
+    await userEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+    expect(await screen.findByText(/Still queued — not confirmed/)).toBeTruthy();
+    const notice = screen.getByText(/not known whether this message reached/);
+    expect(notice.textContent).toMatch(/stays queued and will go with the next turn/);
+    expect(notice.textContent).toMatch(/will also show up in the conversation/);
+    expect(notice.textContent).not.toMatch(/nothing happened/);
+    expect(rows()).toHaveLength(1);
+  });
+
   /* One lock for the strip covers the new control too: while a steer is in
      flight, the cross on the same row and every control on the other row are
      held, because `refusal` still holds one entry's answer. */

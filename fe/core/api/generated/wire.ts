@@ -319,14 +319,14 @@ export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" |
 /**
  * #1505 PR2 — what happened to one entry in the harness pending queue.
  *
- * Four values. Two got their emitter in that slice, `dropped` in PR2b and
- * `steered` in #1625 P3; all four were declared at once because the wire
- * vocabulary is a versioned artifact: adding a value to a client-visible
- * enum is the same class of change as adding the event, and doing it once
- * is cheaper than doing it three times. Each variant says below what emits
- * it.
+ * Five values. Two got their emitter in that slice, `dropped` in PR2b,
+ * `steered` in #1625 P3 and `restored` in its first review round; the first
+ * four were declared at once because the wire vocabulary is a versioned
+ * artifact: adding a value to a client-visible enum is the same class of
+ * change as adding the event, and doing it once is cheaper than doing it
+ * three times. Each variant says below what emits it.
  */
-export type HarnessQueueChange = "edited" | "deleted" | "steered" | "dropped";
+export type HarnessQueueChange = "edited" | "deleted" | "steered" | "restored" | "dropped";
 
 export type McpCheckResult = { tools: Array<string>, };
 

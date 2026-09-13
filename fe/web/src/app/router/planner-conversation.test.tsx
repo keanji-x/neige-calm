@@ -873,6 +873,39 @@ describe('planner conversation regressions', () => {
     expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
   });
 
+  /* The steer's other 409 (review round 1): codex never answered. The notice
+     must not say nothing happened — the message may have reached the turn
+     AND is queued again — and the bubble stays, because it is queued. */
+  it('says the outcome is not known when the steer times out on the kernel side', async () => {
+    const entry = { entry_id: 'entry-9', text: 'did it land', rev: 0, queued_at_ms: 5 };
+    setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 });
+      }
+      if (request.method === 'POST' && request.path.endsWith('/steer')) {
+        return {
+          status: 409, statusText: 'Conflict',
+          body: {
+            error: 'codex did not answer in time', code: 'planner_steer_unknown_outcome',
+            entry_id: entry.entry_id, phase: 'turn_running',
+          },
+        };
+      }
+      return undefined;
+    });
+    await openConversation();
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+
+    const notice = await screen.findByText(/not known whether this message reached/);
+    expect(notice.textContent).toMatch(/stays queued and will go with the next turn/);
+    expect(notice.textContent).not.toMatch(/nothing happened/);
+    expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+  });
+
   /*
    * #1505 PR4 rule 4 — a deleted queued message is gone, not hidden.
    *

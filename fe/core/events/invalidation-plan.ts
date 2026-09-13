@@ -285,13 +285,13 @@ function policies(): PolicyMap {
    * is the one this event exists for.
    *
    * `harness-items` is here for `change: 'steered'` (#1625 P3): the kernel
-   * writes the steered entry's transcript row before it asks codex and
-   * announces both — this event and the row's own `harness.item.added` —
-   * once codex has taken it, so a client that sees the entry leave the queue
-   * fetches the row that replaces it in the same round of refetches. The three
-   * other values do not need it. One plan that over-invalidates by a single
-   * key on three of four values is cheaper than two plans that can drift
-   * apart, and the key is invalidated on every send already.
+   * writes the steered entry's transcript row once codex has taken it and
+   * announces both — this event and the row's own `harness.item.added` — so
+   * a client that sees the entry leave the queue fetches the row that
+   * replaces it in the same round; and for `'restored'` (review round 1),
+   * whose completion-sweep emitter deletes that row again. The three other
+   * values do not need it. One plan that over-invalidates by a single key on
+   * three of five values is cheaper than two that can drift apart.
    */
   'harness.queue.changed': plan((event) => result([
     ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],

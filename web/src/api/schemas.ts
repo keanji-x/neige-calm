@@ -489,9 +489,11 @@ export const actorIdSchema = z.union([
  * discarded by the kernel.
  *
  * `steered` is emitted by the run loop once codex takes a queued entry into
- * the running turn (#1625 P3); `dropped` by the kernel's load-time queue
- * truncation (#1505 PR2b). This legacy bundle has no queue UI and reads
- * neither; they are in the union because the value set is the wire contract.
+ * the running turn (#1625 P3); `restored` when that entry goes back to the
+ * queue (codex refused or never answered, or the turn ended before codex
+ * recorded it); `dropped` by the kernel's load-time queue truncation (#1505
+ * PR2b). This legacy bundle has no queue UI and reads none of them; they are
+ * in the union because the value set is the wire contract.
  *
  * `actor` is here rather than read off the envelope because the websocket
  * frame is `{ev, data}` and carries no envelope actor at all.
@@ -507,6 +509,7 @@ export const harnessQueueChangedSchema = z.object({
       z.literal('edited'),
       z.literal('deleted'),
       z.literal('steered'),
+      z.literal('restored'),
       z.literal('dropped'),
     ]),
     actor: actorIdSchema,

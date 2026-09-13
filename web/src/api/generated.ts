@@ -2901,19 +2901,34 @@ export interface components {
             used_tokens: number;
         };
         /**
-         * @description #1625 P3 — 409 body for a steer that delivered nothing because there was
-         *     no turn to deliver into.
+         * @description #1625 P3 review round 1 — the steer route's 409, which has two typed
+         *     shapes told apart by `code`: `PlannerInputStaleBody` (`planner_input_stale`,
+         *     the compare-and-swap lost; carries the entry's current text and rev) and
+         *     `PlannerSteerRefusedBody` (`planner_steer_no_running_turn` /
+         *     `planner_steer_unknown_outcome`, the entry is still queued). utoipa binds
+         *     one body per status, so the pair is declared as this untagged union; the
+         *     stale arm is produced by `refusal_response`, shared with PATCH/DELETE, and
+         *     the refused arm by `steer_refused_response`. A third 409, the harness
+         *     shutting down, is a plain `ErrorBody` with code `conflict`.
+         */
+        PlannerSteerConflictBody: components["schemas"]["PlannerInputStaleBody"] | components["schemas"]["PlannerSteerRefusedBody"];
+        /**
+         * @description #1625 P3 — 409 body for a steer that delivered nothing, or nothing known.
          *
-         *     One `code` for both ways of getting here — the harness saw no running turn
-         *     and did not ask, or codex was asked and said no (the turn had just ended,
-         *     or a different one was running) — because they license the same next move
-         *     and nothing else: the message is still queued, with the `rev` the client
-         *     read, and it goes with the next turn. `error` says which of the two it
-         *     was, for the person reading the notice; `phase` is the harness's own
-         *     phase at the moment it answered.
+         *     Two codes. `planner_steer_no_running_turn` covers both ways of KNOWING
+         *     nothing was delivered — the harness saw no running turn and did not ask,
+         *     or codex was asked and said no (the turn had just ended, or a different
+         *     one was running) — because they license the same next move and nothing
+         *     else: the message is still queued, with the `rev` the client read, and it
+         *     goes with the next turn. `planner_steer_unknown_outcome` (review round 1)
+         *     is codex NOT answering — the request timed out or the connection dropped
+         *     — where the message is queued again just the same but may ALSO have
+         *     reached the turn; it is its own code because "nothing happened" would be
+         *     a claim this side cannot make. `error` says which, for the person reading
+         *     the notice; `phase` is the harness's own phase at the moment it answered.
          */
         PlannerSteerRefusedBody: {
-            /** @description Always `planner_steer_no_running_turn`. */
+            /** @description `planner_steer_no_running_turn` or `planner_steer_unknown_outcome`. */
             code: string;
             entry_id: string;
             error: string;
@@ -5430,13 +5445,13 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Stale rev (`planner_input_stale`); no running turn or codex refused (`planner_steer_no_running_turn`); shutting down */
+            /** @description By `code`: `planner_input_stale`; `planner_steer_no_running_turn`; `planner_steer_unknown_outcome`; `conflict` (shutting down) */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PlannerInputStaleBody"];
+                    "application/json": components["schemas"]["PlannerSteerConflictBody"];
                 };
             };
             /** @description Internal error */

@@ -53,9 +53,11 @@
 // passes `onSteer`, and the router passes it only in `turn_running` — not
 // `issuing_turn`, where the kernel would answer 409 for a turn that does not
 // exist yet, and not `issuing_interrupt`, where the turn is being stopped.
-// The refusal it can get (`not_running`) is the one honest answer for a
-// press that lands after the turn ended: nothing happened, the message is
-// still queued, it goes with the next turn.
+// It can get two refusals. `not_running` is the honest answer for a press
+// that lands after the turn ended: nothing happened, the message is still
+// queued, it goes with the next turn. `unanswered` is codex never replying:
+// the message is queued again, and whether the turn ALSO got it is not known
+// — the notice says so rather than claiming nothing happened.
 
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -143,6 +145,14 @@ function noticeText(outcome: PlannerQueueWriteOutcome): string | null {
     return 'The turn ended before this message could be handed to it, so nothing '
       + 'happened. It stays queued and will go with the next turn.';
   }
+  /* #1625 P3 review round 1 — codex never answered the steer. The kernel put
+     the message back, but it cannot say whether the turn took it too, and
+     neither can this sentence: it says "not known", and what follows. */
+  if (outcome.kind === 'unanswered') {
+    return 'Codex did not answer in time, so it is not known whether this message '
+      + 'reached the current turn. It stays queued and will go with the next turn; '
+      + 'if it did reach this one, it will also show up in the conversation.';
+  }
   /* The server's own sentence and nothing added to it: a delete that failed
      leaves the message exactly where it was, which the strip already shows. */
   if (outcome.kind === 'failed') return outcome.message;
@@ -153,17 +163,19 @@ function noticeHeading(outcome: PlannerQueueWriteOutcome): string {
   if (outcome.kind === 'stale') return 'Nothing happened';
   if (outcome.kind === 'gone') return 'No longer in the queue';
   if (outcome.kind === 'not_running') return 'Still queued';
+  if (outcome.kind === 'unanswered') return 'Still queued — not confirmed';
   return 'Could not be changed';
 }
 
 /**
  * `stale` is a race the reader can still win by trying again; `gone` is the
  * queue having moved on without them, with nothing to retry; `not_running` is
- * the queue NOT having moved, with nothing to do; `failed` is the server
- * refusing.
+ * the queue NOT having moved, with nothing to do; `unanswered` is a doubt the
+ * reader should hold (the message may be said twice), so a warning like
+ * `stale`; `failed` is the server refusing.
  */
 function noticeStatus(outcome: PlannerQueueWriteOutcome): 'warning' | 'info' | 'error' {
-  if (outcome.kind === 'stale') return 'warning';
+  if (outcome.kind === 'stale' || outcome.kind === 'unanswered') return 'warning';
   if (outcome.kind === 'gone' || outcome.kind === 'not_running') return 'info';
   return 'error';
 }

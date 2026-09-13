@@ -459,9 +459,11 @@ export const actorIdSchema = z.union([
  * discarded by the kernel.
  *
  * `steered` is emitted by the run loop once codex takes a queued entry into
- * the running turn (#1625 P3). `dropped` is emitted by the kernel's load-time
- * queue truncation (#1505 PR2b) and is the only announcement an entry
- * discarded that way ever gets.
+ * the running turn (#1625 P3); `restored` when that entry goes back to the
+ * queue — codex refused or never answered the steer, or the turn ended
+ * before codex recorded the input (its review round 1). `dropped` is emitted
+ * by the kernel's load-time queue truncation (#1505 PR2b) and is the only
+ * announcement an entry discarded that way ever gets.
  *
  * `actor` is here rather than read off the envelope because the websocket
  * frame is `{ev, data}` and carries no envelope actor at all.
@@ -477,6 +479,7 @@ export const harnessQueueChangedSchema = z.object({
       z.literal('edited'),
       z.literal('deleted'),
       z.literal('steered'),
+      z.literal('restored'),
       z.literal('dropped'),
     ]),
     actor: actorIdSchema,

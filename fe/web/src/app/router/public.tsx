@@ -915,8 +915,8 @@ export function useConversationStore(
   /*
    * #1625 P3 — the steer. On `done` the entry is forgotten (its bubble goes
    * at once, as a deleted one does) but its echo is NOT retired: unlike a
-   * delete, a steer delivers the sentence, and the kernel has already written
-   * its transcript row (announced on the same 200). The echo therefore
+   * delete, a steer delivers the sentence, and the kernel wrote its transcript
+   * row once codex took it (announced on the same 200). The echo therefore
    * un-hides the moment the bubble goes and is reconciled by that row on the
    * refetch `harness.item.added` triggers — the same path a drained entry
    * takes. Offered only in `turn_running`; see `ConversationStore.steerQueuedEntry`.
