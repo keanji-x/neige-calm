@@ -324,7 +324,13 @@ async fn candidate_review_settlement_actual_briefing_never_binds_recover() {
             brief.get("failure").is_none() && brief.get("planner_recovery").is_none(),
             "{brief}"
         );
-        assert!(!text.contains("Recovery decision briefing"), "{text}");
+        // No task-recovery briefing frame anywhere in the turn (#1635 S1c:
+        // the frame is the fragment's opening, not a copy of its words).
+        let briefing_head = include_str!("../../prompts/recovery-briefing/briefing.md")
+            .split_once("{briefing_json}")
+            .unwrap()
+            .0;
+        assert!(!text.contains(briefing_head), "{text}");
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM planner_recovery_issuances")
             .fetch_one(&fx.boot.repo.sqlite_pool().unwrap())
             .await

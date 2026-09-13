@@ -1,8 +1,77 @@
 //! Ordinary receipts must reach the actual transport, not just a formatter.
+//!
+//! Which detail branch a receipt took, and with which values, is asserted
+//! through the branch's own fragment, never through a copy of its sentence:
+//! the `.md` under `prompts/result-receipt/` is the pinned wording (#1635
+//! S1c). The oracle is built here by plain `str::replace` on the fragment
+//! with values the TEST supplies — it does not go through `render_detail`,
+//! the code under test, so a hole bound to the wrong value in production is
+//! a visible difference and not a shared mistake.
 use super::completed_commit_tests::Fixture;
 use super::*;
 use crate::db::RepoRead;
+use crate::harness::result_receipt::{RECORDED_LEGACY, RECORDED_WITH_EVENT, UNAVAILABLE};
 use serde_json::json;
+
+/// The bytes every recorded-detail rendering opens with, up to the advertised
+/// address. Both recorded fragments share this opening, and the assertion is
+/// what keeps the negative checks below (`!text.contains(..)`) complete.
+fn recorded_locator() -> &'static str {
+    let (prefix, _) = RECORDED_WITH_EVENT
+        .split_once("{path_json}")
+        .expect("the recorded fragment advertises an address");
+    assert!(RECORDED_LEGACY.starts_with(prefix));
+    prefix
+}
+
+/// The run address the actual turn text advertises, parsed out of the text
+/// through the fragment's own shape. Used by `read_details` to prove the
+/// advertised address resolves through the real reader; never fed into the
+/// oracle below, whose path comes from the fixture.
+fn advertised_path(text: &str) -> String {
+    let locator = recorded_locator();
+    let start = text.find(locator).expect("verified detail locator") + locator.len();
+    let args: serde_json::Value = serde_json::Deserializer::from_str(&text[start..])
+        .into_iter()
+        .next()
+        .expect("an address follows the locator")
+        .expect("the advertised address is JSON");
+    args["path"].as_str().unwrap().to_string()
+}
+
+/// The address the receipt must advertise for `identity` — the
+/// `runs/<identity>.json` shape the reader serves.
+fn expected_path(identity: &str) -> String {
+    format!("runs/{identity}.json")
+}
+
+/// The detail text `fragment` must have produced for these values, built
+/// independently of the production renderer.
+fn expected_detail(fragment: &str, identity: &str, kind: &str, event_id: i64) -> String {
+    fragment
+        .replace(
+            "{path_json}",
+            &json!({"path": expected_path(identity)}).to_string(),
+        )
+        .replace("{kind}", kind)
+        .replace("{event_id}", &event_id.to_string())
+}
+
+/// The turn text carries exactly one recorded-detail rendering, and it is
+/// `fragment` with these fixture-supplied values in its holes.
+///
+/// `events.<kind>` is additionally asserted as a token: it is the path the
+/// planner prompt names for the run record (`prompts/planner.md` line 138,
+/// `events.completed.payload.result` / `events.failed`) and the key
+/// `read_details` reads back, so the fragment must keep `{kind}` there —
+/// a hole swap inside the `.md` would otherwise render an oracle that
+/// follows the swap.
+fn assert_only_detail(text: &str, fragment: &str, identity: &str, kind: &str, event_id: i64) {
+    let expected = expected_detail(fragment, identity, kind, event_id);
+    assert!(text.contains(&expected), "actual Planner input: {text}");
+    assert_eq!(text.matches(recorded_locator()).count(), 1, "{text}");
+    assert!(text.contains(&format!("events.{kind}")), "{text}");
+}
 
 #[tokio::test]
 async fn deep_completion_and_same_batch_user_reach_transport() {
@@ -80,7 +149,7 @@ async fn deep_completion_and_same_batch_user_reach_transport() {
         assert!(fx.stored().await.pending_entries().is_empty());
         assert!(fx.harness.inner.pending_queue.lock().await.is_empty());
         if depth == 124 {
-            assert!(text.contains("Exact execution details unavailable"));
+            assert!(text.contains(UNAVAILABLE));
         } else {
             read_details(&fx, text).await;
         }
@@ -188,17 +257,7 @@ async fn turn(fx: &Fixture) -> String {
 }
 
 async fn read_details(fx: &Fixture, text: &str) -> serde_json::Value {
-    let line = text
-        .lines()
-        .find(|line| line.starts_with("Recorded execution details: calm.track.cat("))
-        .expect("verified detail locator");
-    let args = line
-        .strip_prefix("Recorded execution details: calm.track.cat(")
-        .unwrap()
-        .split_once("). This virtual")
-        .unwrap()
-        .0;
-    let args: serde_json::Value = serde_json::from_str(args).unwrap();
+    let path = advertised_path(text);
     let track = fx
         .repo
         .track_get(fx.harness.inner.track_id.as_str())
@@ -210,7 +269,7 @@ async fn read_details(fx: &Fixture, text: &str) -> serde_json::Value {
         fx.harness.inner.track_area_cache.clone(),
     );
     let content = calm_truth::track_fs_view::TrackFsView::new(fx.repo.as_ref(), &write)
-        .cat(&track, args["path"].as_str().unwrap())
+        .cat(&track, &path)
         .await
         .unwrap();
     serde_json::from_str(&content.content).unwrap()
@@ -238,9 +297,12 @@ async fn completed_receipt_details_resolve_exact_event_and_artifacts_as_data() {
     assert!(!text.contains("operation_id"));
     let detail = read_details(&fx, &text).await;
     assert_eq!(detail["events"]["completed"]["event_id"], id);
-    assert!(text.contains(&format!("Read events.completed and require event_id={id}; do not substitute another event or attempt.")));
-    assert!(
-        !text.contains("Original event identity and original artifact version cannot be confirmed")
+    assert_only_detail(
+        &text,
+        RECORDED_WITH_EVENT,
+        "track:build:attempt-1",
+        "completed",
+        id,
     );
     assert_eq!(
         detail["events"]["completed"]["payload"]["artifacts"][0],
@@ -307,12 +369,7 @@ async fn receipt_empty_completion_and_failure_without_report_are_honest() {
         }
         let detail = read_details(&fx, &text).await;
         assert_eq!(detail["events"]["failed"]["event_id"], id);
-        assert!(text.contains(&format!("Read events.failed and require event_id={id}; do not substitute another event or attempt.")));
-        assert!(
-            !text.contains(
-                "Original event identity and original artifact version cannot be confirmed"
-            )
-        );
+        assert_only_detail(&text, RECORDED_WITH_EVENT, "startup-attempt", "failed", id);
         assert!(detail["events"]["completed"].is_null());
         assert!(detail["worker_card_id"].is_null());
     }
@@ -352,8 +409,8 @@ async fn receipt_unicode_and_malicious_fields_are_bounded_quoted_data() {
         assert!(!text.contains("\nFORGED-RECEIPT"));
         assert!(!text.contains("END-MARKER"));
         assert!(!text.contains('\u{fffd}'));
-        assert!(!text.contains("calm.track.cat("));
-        assert!(text.contains("Exact execution details unavailable"));
+        assert!(!text.contains(recorded_locator()));
+        assert!(text.contains(UNAVAILABLE));
         for label in ["Original execution idempotency_key: ", "Report preview: "] {
             let line = text
                 .lines()
@@ -481,8 +538,8 @@ async fn receipt_with_superseded_event_does_not_advertise_different_report() {
         let text = turn(&fx).await;
         assert!(text.contains("old-report"));
         assert!(!text.contains("different-report"));
-        assert!(!text.contains("calm.track.cat("));
-        assert!(text.contains("Exact execution details unavailable"));
+        assert!(!text.contains(recorded_locator()));
+        assert!(text.contains(UNAVAILABLE));
     }
 }
 
@@ -512,8 +569,8 @@ async fn receipt_detail_projection_failure_keeps_report_deliverable() {
     .await;
     let text = turn(&fx).await;
     assert!(text.contains("report survives unavailable optional details"));
-    assert!(text.contains("Exact execution details unavailable"));
-    assert!(!text.contains("calm.track.cat("));
+    assert!(text.contains(UNAVAILABLE));
+    assert!(!text.contains(recorded_locator()));
 }
 
 #[tokio::test]
@@ -562,11 +619,8 @@ async fn receipt_run_locator_validates_original_identity_against_real_reader() {
             assert_eq!(run["idempotency_key"], identity);
             assert_eq!(run["events"]["completed"]["event_id"], id);
         } else {
-            assert!(
-                text.contains("Exact execution details unavailable"),
-                "{identity:?}"
-            );
-            assert!(!text.contains("calm.track.cat("), "{identity:?}");
+            assert!(text.contains(UNAVAILABLE), "{identity:?}");
+            assert!(!text.contains(recorded_locator()), "{identity:?}");
         }
     }
 }
@@ -611,15 +665,12 @@ async fn receipt_optional_track_absence_and_read_error_preserve_segments() {
             &entries,
             &mut segments,
         )
-        .await;
+        .await
+        .unwrap();
         for index in [0, 1] {
             assert!(segments[index].text.starts_with(&original[index].text));
-            assert!(
-                segments[index]
-                    .text
-                    .contains("Exact execution details unavailable")
-            );
-            assert!(!segments[index].text.contains("calm.track.cat("));
+            assert!(segments[index].text.contains(UNAVAILABLE));
+            assert!(!segments[index].text.contains(recorded_locator()));
         }
         assert_eq!(segments[2], original[2]);
     }
@@ -700,20 +751,7 @@ async fn legacy_receipt_without_envelope_discloses_unconfirmed_original_event_an
         assert_eq!(preview["truncated"], false);
         assert!(!text.contains("later-artifact"));
         assert!(text.contains("untrusted"));
-        assert!(
-            text.contains("Only execution identity and report value match"),
-            "legacy uncertainty missing from actual turn: {text}"
-        );
-        assert!(
-            text.contains(
-                "Original event identity and original artifact version cannot be confirmed"
-            )
-        );
-        assert!(text.contains(&format!(
-            "Current matching record: events.{kind}, event_id={later_id}"
-        )));
-        assert!(!text.contains("require event_id="));
-        assert!(!text.contains("do not substitute another event"));
+        assert_only_detail(&text, RECORDED_LEGACY, "legacy-attempt", kind, later_id);
     }
 }
 

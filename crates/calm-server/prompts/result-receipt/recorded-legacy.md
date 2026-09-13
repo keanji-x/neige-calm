@@ -1,0 +1,2 @@
+
+Recorded execution details: calm.track.cat({path_json}). This virtual JSON record contains the recorded events and any artifact claims; it is not a worker report file or independent verification. Current matching record: events.{kind}, event_id={event_id}. Only execution identity and report value match; this legacy receipt has no queued event ID. Original event identity and original artifact version cannot be confirmed. Retain the original queued report preview.

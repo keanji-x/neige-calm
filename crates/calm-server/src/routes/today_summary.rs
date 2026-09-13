@@ -69,6 +69,7 @@ use crate::operation::planner_harness_start_adapter::{
     HarnessProfile, OpeningBriefing, PlannerHarnessStartOperationPayload,
 };
 use crate::per_card_lock::lock_card;
+use crate::prompts::render_named;
 use crate::routes::cards::{
     SendPlannerInputRequest, run_planner_card_operation, send_planner_input,
 };
@@ -277,11 +278,13 @@ fn synthetic_actor() -> Actor {
 /// same key with a different hash and 409s permanently. That window is narrow,
 /// fail-closed and already named in D5's residual-window paragraph; what it is
 /// not is impossible, and an earlier wording here said it was.
-pub const TODAY_SUMMARY_BOOTSTRAP_TEXT: &str = "You are this workspace's daily-progress writer. \
-     Stand by and do nothing yet: do not read or touch the track report until a \
-     later message tells you the day's activity. When that message arrives, \
-     rewrite the report in full following the maintenance contract carried in \
-     its body.";
+pub const TODAY_SUMMARY_BOOTSTRAP_TEXT: &str =
+    include_str!("../../prompts/today-summary/bootstrap.md");
+
+/// The summary prompt's prose (#1635 S1c), with `{counts}` where the
+/// server-counted activity block goes. The counts block stays code
+/// (`activity_counts_block` is data formatting, not prose).
+const TODAY_SUMMARY_WRITE_TEXT: &str = include_str!("../../prompts/today-summary/write.md");
 
 /// A rendezvous the create-under-a-fixed-key race can be **created** at.
 ///
@@ -383,19 +386,11 @@ pub struct TodaySummaryStarted {
 /// The counts are stated as counts, and the prompt says so: the agent has no
 /// way to query for more (design D4 deleted that layer), so a prompt implying
 /// it could would be an instruction to hallucinate.
-fn summary_prompt(activity: &WorkspaceActivityWindow) -> String {
-    format!(
-        "Write today's progress into this track's report card, following the \
-         maintenance contract carried in the report body: it is a snapshot of \
-         now, it has four fixed sections, and each write REWRITES it in full.\n\
-         \n\
-         Today's activity across the workspace, counted by the server. These \
-         counts are all the activity data available to you — there is no tool \
-         to query for more, so write about what these numbers plus the \
-         workspace itself support, and do not invent specifics:\n\
-         {}",
-        activity_counts_block(activity),
-    )
+fn summary_prompt(activity: &WorkspaceActivityWindow) -> Result<String> {
+    Ok(render_named(
+        TODAY_SUMMARY_WRITE_TEXT,
+        &[("counts", &activity_counts_block(activity))],
+    )?)
 }
 
 #[utoipa::path(
@@ -687,7 +682,7 @@ pub(crate) async fn write_today_summary(
 
     // Unconditional. This is the only channel the summary ever travels on, and
     // the create above never carries it.
-    send_summary(&s, &w, &cs, &derived.card_id, summary_prompt(&activity)).await?;
+    send_summary(&s, &w, &cs, &derived.card_id, summary_prompt(&activity)?).await?;
 
     Ok(Json(TodaySummaryStarted {
         track_id,
@@ -884,7 +879,8 @@ mod tests {
             task_completed: i64::MIN,
             task_failed: i64::MIN,
             tracks_touched: i64::MIN,
-        });
+        })
+        .unwrap();
         assert!(
             widest.chars().count() < crate::routes::cards::MAX_PLANNER_INPUT_CHARS,
             "the prompt must fit `planner/input` for every possible count; it is \

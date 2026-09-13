@@ -1,0 +1,2 @@
+No semantic actions are bound for this batch: {reason}. Recover is unavailable for this turn. Use the exact MCP interface after checking the precise evidence; retain the expected attempt and request identity on retries.
+{text}

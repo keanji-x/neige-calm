@@ -1,0 +1,2 @@
+
+Recorded execution details: calm.track.cat({path_json}). This virtual JSON record contains the recorded events and any artifact claims; it is not a worker report file or independent verification. Read events.{kind} and require event_id={event_id}; do not substitute another event or attempt.

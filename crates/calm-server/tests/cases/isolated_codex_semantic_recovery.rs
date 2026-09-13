@@ -265,7 +265,13 @@ async fn issued_text_or_fail(handle: &PlannerHarness, daemon: &SharedCodexAppSer
 }
 
 async fn assert_exact_fallback(fx: &Fixture, text: &str) {
-    assert!(text.contains("No semantic actions are bound for this batch"));
+    // The exact-interface notice is recognised by its own fragment's opening,
+    // up to the bound reason (#1635 S1c).
+    let notice = include_str!("../../prompts/recovery-briefing/exact-interface.md")
+        .split_once("{reason}")
+        .unwrap()
+        .0;
+    assert!(text.contains(notice), "{text}");
     assert!(text.contains("calm.plan.recover"));
     assert!(!text.contains("Prefer Recover over"));
     assert!(!text.contains("This turn has a bound Recover tool"));
