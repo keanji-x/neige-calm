@@ -2355,6 +2355,18 @@ async fn create_track_structure(
                     }
                     let (summary, blocks) =
                         report_blocks_snapshot_tx(tx, source_track_id).await?;
+                    // #1628 S2 (D3 / S2.13) — the resolved `chart.series`
+                    // rows travel with the report, all of them: block ids
+                    // survive the fork, so the rows keep their identity, and
+                    // an unpinned frozen row is still the chart the reader
+                    // saw. Pinned rows stay immutable in the child; unpinned
+                    // rows refresh per track from here on.
+                    crate::report_series::store::copy_rows_tx(
+                        tx,
+                        source_track_id,
+                        track_id.as_str(),
+                    )
+                    .await?;
                     Some(prepare_fork_report(
                         summary,
                         blocks,

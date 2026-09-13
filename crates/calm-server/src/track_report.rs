@@ -68,18 +68,44 @@ use crate::track_lifecycle::{
 };
 use crate::track_report_doc::ReportDoc;
 
+const REPORT_SNAPSHOT_ROW_SQL: &str =
+    "SELECT json(payload),body_crdt FROM cards WHERE track_id=?1 AND kind='track-report'";
+
 /// Read the report snapshot from the caller's transaction. A missing report
 /// card is an invariant violation: every track eligible for fork has one.
 pub(crate) async fn report_blocks_snapshot_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track_id: &str,
 ) -> crate::error::Result<(String, Vec<ReportBlock>)> {
-    let report: Option<(String, Option<Vec<u8>>)> = sqlx::query_as(
-        "SELECT json(payload),body_crdt FROM cards WHERE track_id=?1 AND kind='track-report'",
-    )
-    .bind(track_id)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let report: Option<(String, Option<Vec<u8>>)> = sqlx::query_as(REPORT_SNAPSHOT_ROW_SQL)
+        .bind(track_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    report_blocks_snapshot_from_row(track_id, report)
+}
+
+/// The same snapshot as ONE autocommit statement on the pool — no
+/// transaction. #1628 S2's drain-side admission reads here: a deferred read
+/// transaction is one party of the #930 deadlock ring (R locks held across
+/// statements against an IMMEDIATE writer), so production code opens none.
+pub(crate) async fn report_blocks_snapshot(
+    pool: &sqlx::SqlitePool,
+    track_id: &str,
+) -> crate::error::Result<(String, Vec<ReportBlock>)> {
+    let report: Option<(String, Option<Vec<u8>>)> = sqlx::query_as(REPORT_SNAPSHOT_ROW_SQL)
+        .bind(track_id)
+        .fetch_optional(pool)
+        .await?;
+    report_blocks_snapshot_from_row(track_id, report)
+}
+
+/// Decode one `cards` row (`json(payload)`, `body_crdt`) into the report's
+/// summary and block snapshot. Shared by the transactional and the
+/// autocommit readers above so the two cannot drift.
+fn report_blocks_snapshot_from_row(
+    track_id: &str,
+    report: Option<(String, Option<Vec<u8>>)>,
+) -> crate::error::Result<(String, Vec<ReportBlock>)> {
     let Some((payload, body_crdt)) = report else {
         return Err(CalmError::Internal(format!(
             "track_report: track {track_id} is missing its report card"

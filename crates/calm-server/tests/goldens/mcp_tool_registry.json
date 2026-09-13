@@ -794,9 +794,20 @@
   },
   {
     "name": "calm.report.read",
-    "description_sha256": "40760fcee8baf0aa95d70c53a2f37f9e2b94af128513ad8c91c6ad6dddf7bc37",
+    "description_sha256": "d4a03b47f209968f85c15b6f8b6f5d3550e0215ad456997c15e1c03863214bdd",
     "input_schema": {
       "properties": {
+        "resolve": {
+          "additionalProperties": {
+            "enum": [
+              "full",
+              "none"
+            ],
+            "type": "string"
+          },
+          "description": "Per-block hydration override for `chart.series` and live `table` blocks: `{ [block_id]: \"full\" | \"none\" }`. Default (no entry) is the summary.",
+          "type": "object"
+        },
         "with_markers": {
           "description": "Inject a `<!-- neige:b_xxxx -->` marker line before each block in `text` (default false).",
           "type": "boolean"

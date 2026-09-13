@@ -232,6 +232,25 @@ struct OutboundFrame(Vec<u8>);
 
 type ResponderMap = Arc<Mutex<HashMap<RequestId, oneshot::Sender<Result<Value, RpcError>>>>>;
 
+/// RAII ownership of one entry in the [`ResponderMap`] for the lifetime of
+/// the `call` future that registered it (#1628 S2). Dropping the guard —
+/// normal return, early error, or the future being cancelled by a timeout —
+/// removes the entry; removing an entry the reader task already took is a
+/// no-op.
+struct ResponderSlot<'a> {
+    map: &'a ResponderMap,
+    id: RequestId,
+}
+
+impl Drop for ResponderSlot<'_> {
+    fn drop(&mut self) {
+        self.map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
+    }
+}
+
 /// Wire-name of the experimental capability that opts a plugin into the
 /// `neige.*` host-callback namespace. Plugins that never call back into the
 /// kernel can omit this and still run; see `PluginHost::spawn` for the
@@ -665,11 +684,19 @@ impl McpClient {
         let id = RequestId::from_u64(self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
         self.responders.lock().unwrap().insert(id.clone(), tx);
+        // #1628 S2 (D2 step 5) — the slot leaves the map with THIS future,
+        // however the future ends: a reply (the reader already removed it, the
+        // second remove is a no-op), a dead writer, or the caller dropping us
+        // — `tokio::time::timeout` cancelling a hung `tools/call` is the case
+        // that used to leak one slot per timeout, unbounded across blocks and
+        // TTL cycles.
+        let _slot = ResponderSlot {
+            map: &self.responders,
+            id: id.clone(),
+        };
 
         let frame = build_request_frame(&id, method, &params);
         if self.out_tx.send(OutboundFrame(frame)).await.is_err() {
-            // Writer task is gone. Drop our responder slot so we don't leak.
-            self.responders.lock().unwrap().remove(&id);
             return Err(RpcError::internal("mcp writer task gone"));
         }
 
@@ -677,6 +704,17 @@ impl McpClient {
             Ok(res) => res,
             Err(_) => Err(RpcError::internal("response channel dropped")),
         }
+    }
+
+    /// Number of kernel → plugin requests still waiting for a reply. The
+    /// witness for the responder guard above: after a timed-out call this
+    /// must be back to what it was before the call.
+    #[cfg(test)]
+    pub(crate) fn pending_responders(&self) -> usize {
+        self.responders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Outbound notification (kernel → plugin). No response expected.
@@ -1153,6 +1191,85 @@ mod tests {
             Some("ui://stub/status")
         );
         assert_eq!(result.structured_content, Some(json!({ "msg": "hi" })));
+        drop(client);
+        let _ = tokio::time::timeout(Duration::from_millis(200), plugin_task).await;
+    }
+
+    /// #1628 S2 A5b — a peer that completes `initialize` and then never
+    /// answers anything. Two `tools/call`s cancelled by `timeout` must leave
+    /// the responder map exactly as empty as it was before them: the
+    /// `ResponderSlot` guard, not the peer, clears the slot.
+    #[tokio::test]
+    async fn timed_out_calls_leave_no_responder() {
+        let (kernel, plugin) = tokio::io::duplex(8 * 1024);
+        let (k_r, k_w) = tokio::io::split(kernel);
+        let (p_r, p_w) = tokio::io::split(plugin);
+
+        let plugin_task = tokio::spawn(async move {
+            let mut reader = BufReader::new(p_r);
+            let mut writer = p_w;
+            let mut buf = String::new();
+            loop {
+                buf.clear();
+                let n = reader.read_line(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    return;
+                }
+                let v: Value = match serde_json::from_str(buf.trim()) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let Some(id) = v.get("id").cloned() else {
+                    continue;
+                };
+                if v.get("method").and_then(|m| m.as_str()) != Some("initialize") {
+                    // Never reply: the request is swallowed on purpose.
+                    continue;
+                }
+                let reply = json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "protocolVersion": KERNEL_PROTOCOL_VERSION,
+                        "serverInfo": { "name": "stub", "version": "0.0.0" },
+                        "capabilities": {}
+                    }
+                });
+                let mut s = serde_json::to_string(&reply).unwrap();
+                s.push('\n');
+                writer.write_all(s.as_bytes()).await.unwrap();
+                writer.flush().await.unwrap();
+            }
+        });
+
+        let client = McpClient::connect_with_auth(
+            k_r,
+            k_w,
+            InitializeMeta {
+                expected_echo: None,
+                config: None,
+            },
+        )
+        .await
+        .expect("connect");
+        assert_eq!(client.pending_responders(), 0, "clean after initialize");
+
+        for attempt in 0..2 {
+            let outcome = tokio::time::timeout(
+                Duration::from_millis(300),
+                client.call("tools/call", json!({ "name": "hang", "arguments": {} })),
+            )
+            .await;
+            assert!(
+                outcome.is_err(),
+                "attempt {attempt}: the call must time out"
+            );
+        }
+        assert_eq!(
+            client.pending_responders(),
+            0,
+            "a cancelled call must not leave its responder slot behind"
+        );
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), plugin_task).await;
     }

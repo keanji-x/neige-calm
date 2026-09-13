@@ -233,6 +233,11 @@ pub struct AppContext {
     /// Late-bound operation runtime handle. Plugin forge-action tools need to
     /// submit durable operations, but MCP boot precedes runtime construction.
     pub operation_runtime: Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>,
+    /// #1628 S2 — the `chart.series` background resolver. `calm.report.read`
+    /// enqueues into it; the drain tasks call plugins and write
+    /// `report_series` rows. Built once at `McpServer::spawn` from the repo's
+    /// sqlite pool.
+    pub series_resolver: Arc<crate::report_series::SeriesResolver>,
 }
 
 /// Boxed future returned by a tool handler. Handlers are async fns;
@@ -563,6 +568,7 @@ mod tests {
             task_budget_default: crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
             plugin_host: Arc::new(tokio::sync::OnceCell::new()),
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+            series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
         })
     }
 

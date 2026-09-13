@@ -13,6 +13,8 @@ mod mcp_plugin_tools;
 mod mcp_report_concurrent_sessions;
 #[path = "cases/mcp_report_links.rs"]
 mod mcp_report_links;
+#[path = "cases/mcp_report_series_read.rs"]
+mod mcp_report_series_read;
 #[path = "cases/mcp_track_file.rs"]
 mod mcp_track_file;
 #[path = "cases/mcp_track_rename.rs"]
@@ -25,6 +27,16 @@ mod mcp_track_report_blocks;
 mod mcp_track_report_chart_series;
 #[path = "cases/mcp_track_state.rs"]
 mod mcp_track_state;
+#[path = "cases/report_series_checklist.rs"]
+mod report_series_checklist;
+#[path = "cases/report_series_fixture.rs"]
+mod report_series_fixture;
+#[path = "cases/report_series_fork.rs"]
+mod report_series_fork;
+#[path = "cases/report_series_lanes.rs"]
+mod report_series_lanes;
+#[path = "cases/report_series_resolver.rs"]
+mod report_series_resolver;
 #[path = "cases/report_write_characterization.rs"]
 mod report_write_characterization;
 #[path = "cases/task_projection_acceptance.rs"]

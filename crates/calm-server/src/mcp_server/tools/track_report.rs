@@ -68,6 +68,7 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
+use crate::mcp_server::tools::track_report_hydrate::{hydrated_block_index, parse_resolve_arg};
 use crate::model::{Card, CardRole, Track, TrackLifecycle};
 use crate::track_report::{ReportDocOp, TrackReportPayload};
 use crate::track_report_read::load_report_read_snapshot;
@@ -116,6 +117,15 @@ fn read_descriptor() -> ToolDescriptor {
                 "with_markers": {
                     "type": "boolean",
                     "description": "Inject a `<!-- neige:b_xxxx -->` marker line before each block in `text` (default false)."
+                },
+                "resolve": {
+                    "type": "object",
+                    "description": concat!(
+                        "Per-block hydration override for `chart.series` and live `table` ",
+                        "blocks: `{ [block_id]: \"full\" | \"none\" }`. ",
+                        "Default (no entry) is the summary."
+                    ),
+                    "additionalProperties": { "type": "string", "enum": ["full", "none"] }
                 }
             }
         }),
@@ -148,7 +158,8 @@ pub(crate) async fn report_read(
     // `resolve_report_for_caller` only supplies auth + the report
     // card id; the response body comes from ONE fresh row snapshot so
     // `summary`/`text`/`blocks` can never tear against each other.
-    let (_, _, report_card, _) = resolve_report_for_caller(&ctx, &identity).await?;
+    let resolve_modes = parse_resolve_arg(&args, "calm.report.read")?;
+    let (track, _, report_card, _) = resolve_report_for_caller(&ctx, &identity).await?;
     let snapshot = load_report_read_snapshot(
         ctx.repo.as_ref(),
         report_card.id.as_str(),
@@ -172,11 +183,11 @@ pub(crate) async fn report_read(
     } else {
         snapshot.body.clone()
     };
-    let index: Vec<Value> = snapshot
-        .blocks
-        .iter()
-        .map(|block| json!({ "id": block.id, "kind": block.kind, "rev": block.rev }))
-        .collect();
+    // #1628 S2 (D4) — `resolved` on `chart.series` and live `table` blocks:
+    // rows and overlays only. This read never calls a plugin and never
+    // writes; a series block without a fresh row is enqueued in memory.
+    let index: Vec<Value> =
+        hydrated_block_index(&ctx, track.id.as_str(), &snapshot.blocks, &resolve_modes).await;
     let mut response = json!({
         "text": text,
         // Legacy alias — same value as `text`, kept so existing

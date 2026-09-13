@@ -196,6 +196,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
         task_budget_default: crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+        series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
     });
     let event = if expected == crate::model::TaskStatus::Failed {
         Event::TaskFailed {

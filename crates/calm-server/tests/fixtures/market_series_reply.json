@@ -1,0 +1,80 @@
+{
+  "_comment": "#1628 S2/S3 seam: one market.series request, the plugin's structuredContent reply, and the resolved summary calm.report.read hands out for it. S2 reads `reply` through the fake plugin and asserts `resolved`; S3 asserts its own plugin produces `reply` for `request`.",
+  "block": {
+    "source": "neige://plugin/dev-neige-market/market.series",
+    "series": ["US:NVDA", "HK:9988"],
+    "range": "1M",
+    "as_of": "2026-09-10"
+  },
+  "request": {
+    "series": ["US:NVDA", "HK:9988"],
+    "fields": ["close"],
+    "period": "day",
+    "mode": "frozen",
+    "start": "2026-08-10",
+    "as_of": "2026-09-10"
+  },
+  "reply": {
+    "series": [
+      {
+        "asset": "US:NVDA",
+        "currency": "USD",
+        "status": "ok",
+        "complete_through": "2026-09-11",
+        "points": [
+          [1786406400000, 118.2],
+          [1787011200000, 125.0],
+          [1787616000000, 101.4],
+          [1788220800000, 181.3],
+          [1788825600000, 150.0],
+          [1788998400000, 176.9]
+        ]
+      },
+      {
+        "asset": "HK:9988",
+        "currency": "HKD",
+        "status": "ok",
+        "complete_through": "2026-09-11",
+        "points": [
+          [1786406400000, 100.0],
+          [1788998400000, 90.0]
+        ]
+      }
+    ]
+  },
+  "resolved": {
+    "status": "ok",
+    "as_of": "2026-09-10",
+    "pinned": true,
+    "view": "line",
+    "field": "close",
+    "period": "day",
+    "range": "1M",
+    "series": [
+      {
+        "asset": "US:NVDA",
+        "currency": "USD",
+        "status": "ok",
+        "complete_through": "2026-09-11",
+        "n": 6,
+        "first": ["2026-08-11", 118.2],
+        "last": ["2026-09-10", 176.9],
+        "change_pct": 49.66,
+        "high": 181.3,
+        "low": 101.4
+      },
+      {
+        "asset": "HK:9988",
+        "currency": "HKD",
+        "status": "ok",
+        "complete_through": "2026-09-11",
+        "n": 2,
+        "first": ["2026-08-11", 100.0],
+        "last": ["2026-09-10", 90.0],
+        "change_pct": -10.0,
+        "high": 100.0,
+        "low": 90.0
+      }
+    ]
+  }
+}

@@ -1,0 +1,238 @@
+//! #1628 S2 (D4) — the `resolved` projection `calm.report.read` attaches to
+//! its block index.
+//!
+//! Two block kinds are hydrated: `chart.series` (from the `report_series`
+//! row for the block's current request hash) and a live `table` (from the
+//! plugin-written overlay the block's `source` names). Everything here is a
+//! database read plus, for a `chart.series` block without a fresh row, one
+//! in-memory `enqueue`. Nothing calls a plugin, nothing writes.
+//!
+//! The optional `resolve` argument is `{ [block_id]: "full" | "none" }`:
+//! `full` adds the points (or the table's rows), `none` skips the block.
+//! Summary is the default and not a value. Unknown block ids are ignored.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use serde_json::{Value, json};
+
+use crate::mcp_server::framing::RpcError;
+use crate::mcp_server::registry::AppContext;
+use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_track};
+use crate::report_series::{
+    Detail, Enqueue, Resolved, SeriesRequest, resolved_at_text, row_is_fresh, store,
+};
+use calm_types::report_blocks::kinds::LIVE_SOURCE_PREFIX;
+use calm_types::report_blocks::{KIND_CHART_SERIES, KIND_TABLE};
+use calm_types::track_report::ReportBlock;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResolveMode {
+    Summary,
+    Full,
+    None,
+}
+
+/// Parse the `resolve` argument. Absent / null → every block gets the
+/// default summary.
+pub(crate) fn parse_resolve_arg(
+    args: &Value,
+    tool: &str,
+) -> Result<HashMap<String, ResolveMode>, RpcError> {
+    let mut out = HashMap::new();
+    match args.get("resolve") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(map)) => {
+            for (block_id, mode) in map {
+                let mode = match mode.as_str() {
+                    Some("full") => ResolveMode::Full,
+                    Some("none") => ResolveMode::None,
+                    _ => {
+                        return Err(RpcError::invalid_params(format!(
+                            "{tool}: `resolve.{block_id}` must be \"full\" or \"none\""
+                        )));
+                    }
+                };
+                out.insert(block_id.clone(), mode);
+            }
+        }
+        Some(_) => {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `resolve` must be an object of block id to \"full\" | \"none\""
+            )));
+        }
+    }
+    Ok(out)
+}
+
+/// The block index with `resolved` attached where it applies.
+pub(crate) async fn hydrated_block_index(
+    ctx: &Arc<AppContext>,
+    track_id: &str,
+    blocks: &[ReportBlock],
+    modes: &HashMap<String, ResolveMode>,
+) -> Vec<Value> {
+    let needs_scope = blocks.iter().any(|block| {
+        block.kind == KIND_CHART_SERIES && modes.get(&block.id).copied() != Some(ResolveMode::None)
+    });
+    // One scope resolution per read (F4.18), and only when a series block
+    // may need enqueueing.
+    let scope = if needs_scope {
+        Some(plugin_scope_for_track(ctx, Some(track_id)).await)
+    } else {
+        None
+    };
+    let overlays = if blocks.iter().any(is_live_table) {
+        ctx.repo
+            .overlays_for("track", track_id)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let mut index = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let mut entry = json!({ "id": block.id, "kind": block.kind, "rev": block.rev });
+        let mode = modes
+            .get(&block.id)
+            .copied()
+            .unwrap_or(ResolveMode::Summary);
+        if mode == ResolveMode::None {
+            index.push(entry);
+            continue;
+        }
+        if block.kind == KIND_CHART_SERIES {
+            let scope = scope.as_ref().unwrap_or(&TrackPluginScope::All);
+            entry["resolved"] = hydrate_chart_series(ctx, track_id, block, mode, scope).await;
+        } else if is_live_table(block) {
+            entry["resolved"] = hydrate_live_table(track_id, block, mode, &overlays);
+        }
+        index.push(entry);
+    }
+    index
+}
+
+fn is_live_table(block: &ReportBlock) -> bool {
+    block.kind == KIND_TABLE && block.payload.get("source").is_some_and(Value::is_string)
+}
+
+async fn hydrate_chart_series(
+    ctx: &Arc<AppContext>,
+    track_id: &str,
+    block: &ReportBlock,
+    mode: ResolveMode,
+    scope: &TrackPluginScope,
+) -> Value {
+    let request = match SeriesRequest::from_payload(&block.payload) {
+        Ok(request) => request,
+        Err(error) => {
+            return Resolved::Pending {
+                reason: Some(format!("payload does not derive a request: {error}")),
+            }
+            .to_json();
+        }
+    };
+    let resolver = &ctx.series_resolver;
+    let detail = match mode {
+        ResolveMode::Full => Detail::Full,
+        ResolveMode::Summary | ResolveMode::None => Detail::Summary,
+    };
+    let row = match resolver.pool() {
+        Some(pool) => {
+            match store::select_row(pool, track_id, &block.id, &request.request_hash, detail).await
+            {
+                Ok(row) => row,
+                Err(error) => {
+                    tracing::warn!(
+                        track_id,
+                        block_id = block.id,
+                        error = %error,
+                        "report_series: row read failed; reporting pending"
+                    );
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    let now = resolver.now_ms();
+    let fresh = row.as_ref().is_some_and(|row| {
+        row_is_fresh(
+            &row.status,
+            row.summary.as_ref(),
+            row.pinned,
+            row.resolved_at,
+            now,
+        )
+    });
+    let mut resolved = Resolved::from_row(row);
+    if !fresh {
+        let outcome = resolver
+            .enqueue_scoped(ctx, track_id, &block.id, &request, scope)
+            .await;
+        if let (Resolved::Pending { reason }, Enqueue::Miss(miss)) = (&mut resolved, outcome) {
+            *reason = Some(miss);
+        }
+    }
+    let mut out = resolved.to_json();
+    out["view"] = Value::String(request.view.clone());
+    out["field"] = Value::String(request.field.clone());
+    out["period"] = Value::String(request.period.clone());
+    out["range"] = Value::String(request.range.clone());
+    out
+}
+
+/// A live table resolves from the overlay `(plugin_id, kind)` its `source`
+/// names — the same rule the frontend applies (`liveTableOverlayPayload`).
+fn hydrate_live_table(
+    track_id: &str,
+    block: &ReportBlock,
+    mode: ResolveMode,
+    overlays: &[crate::model::Overlay],
+) -> Value {
+    let source = block
+        .payload
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let target = source
+        .strip_prefix(LIVE_SOURCE_PREFIX)
+        .and_then(|rest| rest.split_once('/'))
+        .filter(|(plugin_id, kind)| {
+            !plugin_id.is_empty() && !kind.is_empty() && !kind.contains('/')
+        });
+    let Some((plugin_id, kind)) = target else {
+        return json!({ "status": "unavailable", "reason": "source is not a plugin overlay" });
+    };
+    let Some(overlay) = overlays.iter().find(|overlay| {
+        overlay.entity_kind == "track"
+            && overlay.entity_id == track_id
+            && overlay.plugin_id == plugin_id
+            && overlay.kind == kind
+    }) else {
+        return json!({ "status": "pending" });
+    };
+    let columns = overlay.payload.get("columns").and_then(Value::as_array);
+    let rows = overlay.payload.get("rows").and_then(Value::as_array);
+    let (Some(columns), Some(rows)) = (columns, rows) else {
+        return json!({
+            "status": "unavailable",
+            "reason": "overlay payload is not a table",
+            "resolved_at": resolved_at_text(overlay.updated_at),
+        });
+    };
+    let mut out = json!({
+        "status": "ok",
+        "resolved_at": resolved_at_text(overlay.updated_at),
+        "columns": columns.len(),
+        "rows": rows.len(),
+    });
+    if let Some(caption) = overlay.payload.get("caption").and_then(Value::as_str) {
+        out["caption"] = Value::String(caption.to_string());
+    }
+    if mode == ResolveMode::Full {
+        out["table"] = overlay.payload.clone();
+    }
+    out
+}

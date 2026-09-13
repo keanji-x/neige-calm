@@ -1995,6 +1995,7 @@ mod tests {
             task_budget_default: crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
             plugin_host,
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+            series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
         })
     }
 
