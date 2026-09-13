@@ -80,6 +80,17 @@ pub struct Config {
     #[arg(long, env = "CALM_PLUGINS_DISABLED", value_delimiter = ',', num_args = 0..)]
     pub plugins_disabled: Vec<String>,
 
+    /// Directory of operator-provided track templates (`*.md` with `+++` TOML
+    /// front matter). Each file's `id` must equal its stem and is exposed as
+    /// `site/<stem>`. Read once at boot, fail-closed: a file that does not
+    /// load stops the process with an error naming it (#1635 S5).
+    ///
+    /// Flag only, no `env =` — like `isolated_codex_config` and
+    /// `mobile_access_config`, the two other opt-in path flags with no
+    /// default. Under neige-app, pass it through `[child].extra_args`.
+    #[arg(long)]
+    pub templates_dir: Option<PathBuf>,
+
     /// Override path for the `codex` CLI binary. Defaults to `codex` (PATH
     /// lookup). The docker compose stack bind-mounts the musl static
     /// binary directly into the container as `/usr/local/bin/codex`.

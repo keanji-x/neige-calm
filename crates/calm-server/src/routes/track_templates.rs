@@ -6,8 +6,10 @@
 //! authorities and this endpoint *joins* them; it never copies or invents a
 //! third:
 //!
-//! * `id` / `title` — the roster (`RouteState.templates`, the built-in
-//!   template files since #1635 S4) `POST /api/tracks` instantiates from.
+//! * `id` / `title` — the roster (`RouteState.templates`: the built-in
+//!   template files since #1635 S4, plus the operator's `site/<stem>` files
+//!   under `--templates-dir` since #1635 S5) `POST /api/tracks` instantiates
+//!   from.
 //! * `input_schema` — the **owning plugin's** manifest `input_schema`, reached
 //!   through the same [`resolve_template_binding`] the create path uses. Absent
 //!   when no running trusted plugin declares that id, which is exactly the set
@@ -223,7 +225,11 @@ struct Definition {
 /// at test time: there is no seam to inject an entry through, and in **safe**
 /// Rust no substitute can be built either, since every field of `Template` —
 /// `body` included — is private and a literal outside `templates.rs` is
-/// `E0451`. That safe-Rust scope is the one `templates::Template`'s own doc
+/// `E0451`. #1635 S5's `--templates-dir` is not such a seam either: its
+/// loader runs this same `compile_template` over every operator file at boot
+/// and refuses to start on a failure, so a `site/` entry that would reach
+/// this arm never reaches the roster. That safe-Rust scope is the one
+/// `templates::Template`'s own doc
 /// states and no wider; a `transmute`-built entry is outside it, with the
 /// consequences registered on `routes::tracks::admit_template`. It was
 /// verified by mutation instead (before #1635 S4 moved the intro into

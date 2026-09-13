@@ -409,6 +409,52 @@ mod tests {
         );
     }
 
+    /// #1635 S5 — `--templates-dir` pointing at a directory with a file that
+    /// does not load fails the boot: `AppState::new` (the one production
+    /// caller of `TemplateRoster::for_boot`) returns `Err`, which `main`'s
+    /// `?` turns into a non-zero exit. The error names the file. Tested on
+    /// the function, not the binary; the fail-closed variants live in
+    /// `templates::site_dir_tests`.
+    #[tokio::test]
+    async fn a_bad_templates_dir_fails_the_boot_naming_the_file() {
+        let runtime = tempfile::tempdir().unwrap();
+        let templates = tempfile::tempdir().unwrap();
+        let bad = templates.path().join("broken.md");
+        std::fs::write(&bad, b"# a template file without front matter\n").unwrap();
+
+        let mut cfg = calm_server::config::Config::parse_from([
+            "calm-server",
+            "--templates-dir",
+            templates.path().to_str().unwrap(),
+        ]);
+        cfg.data_dir = Some(runtime.path().join("data"));
+        cfg.plugins_dir = Some(runtime.path().join("plugins"));
+        cfg.plugins_data_dir = Some(runtime.path().join("plugins-data"));
+        let repo: Arc<dyn calm_server::db::Repo> = Arc::new(
+            calm_server::db::sqlite::SqlxRepo::open("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        let error = match calm_server::state::AppState::new(&cfg, repo).await {
+            Ok(_) => panic!("a broken operator template must fail the boot"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(&bad.display().to_string()),
+            "the boot error must name the file: {error}"
+        );
+        assert!(
+            error.contains("must open with a `+++`"),
+            "and carry the loader's reason: {error}"
+        );
+        // Fail-closed means fail *before* side effects: the roster is built
+        // first, so no runtime directory was created on the way to the error.
+        assert!(
+            !runtime.path().join("plugins").exists(),
+            "the plugins dir must not be created when the boot refuses the templates dir"
+        );
+    }
+
     #[tokio::test]
     async fn frontend_root_tracks_the_configured_bundle() {
         let assets = tempfile::tempdir().unwrap();

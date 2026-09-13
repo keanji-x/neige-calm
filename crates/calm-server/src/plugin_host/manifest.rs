@@ -2784,11 +2784,19 @@ mod tests {
         assert_full_golden_eq(expected, &rendered);
     }
 
+    /// The last three rows are #1635 S5's: `TemplateDescriptor::validate`'s
+    /// alphabet (`key_is_valid`, `^[a-z0-9][a-z0-9._-]{0,63}$`) has no `/`,
+    /// so a plugin cannot claim an operator template's `site/<stem>` key, nor
+    /// the reserved `plugin/…` one — `templates::SITE_PREFIX` is composed by
+    /// the kernel's loader only.
     #[test]
     fn template_descriptor_rejects_invalid_shapes() {
         let cases: Vec<(&str, Value, &str)> = vec![
             ("empty id", json!(""), "templates[0].id"),
             ("bad id", json!("Bad Id"), "templates[0].id"),
+            ("site prefix", json!("site/x"), "templates[0].id"),
+            ("plugin prefix", json!("plugin/x"), "templates[0].id"),
+            ("any slash", json!("a/b"), "templates[0].id"),
         ];
         for (label, id, field) in cases {
             let mut v = template_manifest_value();

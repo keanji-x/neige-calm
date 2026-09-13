@@ -10,15 +10,17 @@
 //!   * `template_roster_cannot_be_constructed.rs` — **field privacy** of
 //!     `TemplateRoster`: a struct literal is E0451 on `entries`;
 //!   * `template_roster_constructors_are_private.rs` — **constructor privacy,
-//!     by name**: `TemplateRoster::from_sources` and `TemplateRoster::load` are
-//!     E0624. This clause is only as wide as the two names it spells; a third
-//!     constructor added under another name is not covered until it is listed
-//!     here;
+//!     by name**: `TemplateRoster::from_sources`, `TemplateRoster::load` and
+//!     (#1635 S5) `TemplateRoster::for_boot` are E0624. This clause is only as
+//!     wide as the three names it spells; a fourth constructor added under
+//!     another name is not covered until it is listed here;
 //!   * `template_roster_is_readable.rs` — the green fixture: the public surface
 //!     (`builtin`, `entries`, `get`, `key`, `title`, `recipe`) stays reachable.
 //!
 //! Together: the only `&'static Template` a downstream crate can name is a
-//! borrow of a `TemplateRoster::builtin()` entry. The in-crate half (accessor ↔
+//! borrow of a roster entry — `TemplateRoster::builtin()`'s, or (through the
+//! `fixtures`-gated `AppState::with_templates_dir`, which runs the production
+//! `for_boot` over a directory) `RouteState.templates`'. The in-crate half (accessor ↔
 //! private field pointer identity, `get` returning the roster's own borrow)
 //! lives in `templates::tests`, because those comparisons name the private
 //! fields and cannot be written from outside the defining module.

@@ -151,6 +151,16 @@ TOML
 Set the owner password in the config before starting, and run
 `chmod 600 ~/.config/neige-app/config.toml`. Do not use the example password.
 
+**Operator templates (`--templates-dir`, #1635 S5).** To offer your own track
+templates next to the built-in ones, point calm-server at a directory of `*.md`
+files — under neige-app, `[child] extra_args = ["--templates-dir", "/path/to/templates"]`.
+Each file opens with `+++` TOML front matter (`id`, `title`), the `id` must equal
+the file's stem, and the template is listed and created as `site/<stem>` (a
+`site/` id can never collide with a built-in or a plugin template). The directory
+is read once at boot and is fail-closed: a file that does not load (bad front
+matter, `id` ≠ stem, a body the create path would refuse) stops the boot with an
+error naming that file, so check the journal after adding or editing one.
+
 ### 2.5 Install + start the systemd user unit
 
 First create the stable executable path named by `[systemd].bin`:

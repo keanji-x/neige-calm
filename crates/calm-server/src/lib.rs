@@ -669,7 +669,8 @@ pub mod workspace_repoint;
 pub use calm_types::track_fs_dto;
 pub mod report_backlinks;
 /// The template roster: the built-in template files (`templates/builtin/*.md`,
-/// #1635 S4), parsed once.
+/// #1635 S4), parsed once, plus — when the process runs with `--templates-dir`
+/// — the operator's `*.md` files as `site/<stem>` entries (#1635 S5).
 ///
 /// `pub` for the same reason `routes::tracks::planner_harness_card_payload` is: an
 /// integration test that transcribes kilobytes of production prose by hand

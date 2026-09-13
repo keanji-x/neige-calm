@@ -112,9 +112,15 @@ pub struct RouteState {
     /// admits `template_id` against it, `GET /api/track-templates` lists it,
     /// the area default-template check consults it. `&'static` because the
     /// entries are borrowed across a create transaction and the admitted key's
-    /// bytes are what `tracks.template_id` stores. Today always
-    /// [`crate::templates::TemplateRoster::builtin`]; S5 substitutes a roster
-    /// merged with an operator directory here, and nothing downstream changes.
+    /// bytes are what `tracks.template_id` stores.
+    ///
+    /// In production this is [`crate::templates::TemplateRoster::for_boot`]'s
+    /// value (`AppState::new`): the builtin entries, plus one `site/<stem>`
+    /// entry per file under `--templates-dir` when that flag was given (#1635
+    /// S5). `from_parts` carries
+    /// [`crate::templates::TemplateRoster::builtin`]; the `fixtures`-gated
+    /// [`AppState::with_templates_dir`] puts a merged roster here through the
+    /// same `for_boot`. Nothing downstream tells the two kinds apart.
     pub templates: &'static crate::templates::TemplateRoster,
     /// #1620 — hook ingest appends Terminal-card signals to the live renderer
     /// entry instead of projecting worker state.
@@ -1102,6 +1108,28 @@ impl AppState {
         self
     }
 
+    /// #1635 S5 test seam — the roster `--templates-dir <dir>` would give this
+    /// process, on a `from_parts` state.
+    ///
+    /// Goes through [`crate::templates::TemplateRoster::for_boot`], the same
+    /// function `AppState::new` calls, so an integration test exercises the
+    /// production loader (file listing, front matter, `id == stem`, the
+    /// `site/` prefix, the compile and header checks) and not a
+    /// re-implementation of it.
+    /// Panics with the loader's own error on a directory that does not load —
+    /// the fail-closed cases are unit tests in `crate::templates`, where the
+    /// error variants are nameable; this seam is for the happy path.
+    ///
+    /// Only `RouteState.templates` reads the roster, so nothing else is
+    /// rebuilt. Placed after a complete function, per the warning on
+    /// [`Self::with_system_area_mint_rendezvous`].
+    #[cfg(feature = "fixtures")]
+    pub fn with_templates_dir(mut self, dir: &std::path::Path) -> Self {
+        self.route.templates = crate::templates::TemplateRoster::for_boot(Some(dir))
+            .unwrap_or_else(|error| panic!("with_templates_dir({}): {error}", dir.display()));
+        self
+    }
+
     #[cfg(feature = "fixtures")]
     fn rebuild_operation_runtime(&mut self) {
         let route_repo: Arc<dyn RouteRepo> = self.raw.clone();
@@ -1193,6 +1221,15 @@ impl AppState {
     /// Shared CODEX_HOME seeding stays here because it is colocated with the
     /// CodexClient owner and `AppState::new` is the boot-time-only path.
     pub async fn new(cfg: &Config, repo: Arc<dyn Repo>) -> anyhow::Result<Self> {
+        // #1635 S4/S5 — the template roster, built once per process. The
+        // builtin files are parsed at this first use so a broken one fails the
+        // boot here rather than the first create; `--templates-dir`, when
+        // given, is read here too, fail-closed — `main` exits non-zero on the
+        // error, which names the offending file. First, before any directory
+        // is created or any task spawned, so a bad operator file leaves no
+        // side effect behind.
+        let templates = crate::templates::TemplateRoster::for_boot(cfg.templates_dir.as_deref())
+            .map_err(|error| anyhow::anyhow!("template roster: {error}"))?;
         let isolated_codex_backend = match &cfg.isolated_codex_config {
             Some(path) => {
                 let config: IsolatedCodexConfig = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -1548,9 +1585,8 @@ impl AppState {
             // `main.rs`, so this is the boot-scoped id the rest of the
             // server hands out via `/api/version`.
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
-            // #1635 S4 — the built-in files, parsed at this first use so a
-            // broken one fails the boot here rather than the first create.
-            templates: crate::templates::TemplateRoster::builtin(),
+            // #1635 S4/S5 — built at the top of this function; see there.
+            templates,
             card_role_cache,
             track_area_cache,
             card_kind_registry,
