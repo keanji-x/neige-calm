@@ -219,6 +219,19 @@
 #   list must be regenerated against the FINAL diff — a list produced before a
 #   later commit or a merge is expired evidence, not an audit trail.
 #
+#   A THIRD raise, taken ONCE by #1635 S4, under the FIRST class (the persisted
+#   literal) and written as an enumeration. The built-in templates became data
+#   files, and every `task` fence in the three plan files carries the persisted
+#   `"declared_by": "spec"` literal that one deleted Rust line
+#   (`payload["declared_by"] = json!("spec")`, old `templates.rs:318`) used to
+#   emit at instantiation. Code sites emitting the literal went 1 -> 0; the
+#   literal itself is now visible as data, 8 + 3 + 2 times. Not one added
+#   occurrence is prose or an identifier. The list is closed:
+#
+#     crates/calm-server/templates/builtin/*.md                       0 ->  13
+#     crates/calm-server/src/templates.rs                             1 ->   0
+#                                                          net      499 -> 511
+#
 # REQUIRED-FIELD INITIALISERS ON TYPES THIS SLICE DOES NOT OWN
 #   The `spec` note above splits the world in two: prose can be reworded, a
 #   persisted literal cannot. There is a THIRD case, and the `runtime_id` cell
