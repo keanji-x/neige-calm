@@ -386,18 +386,28 @@ describe('ReportDocument', () => {
       expect(screen.getByText('t-1')).toBeTruthy();
     });
 
-    // #1628 S1: a `chart.series` block has no figure yet. It must still read
-    // as "a chart is pending here", naming what it asks for, and not as an
-    // unsupported kind — the kernel accepted it, so the document is whole.
-    it('renders a chart.series block as one note naming its series', () => {
-      const { container } = render(<ReportDocument report={blocked(
-        { id: 'b-1', kind: 'chart.series', payload: { source: 'neige://plugin/dev-neige-market/market.series', series: ['US:NVDA', 'HK:9988'], range: '6M', caption: 'Big tech' } },
-      )} empty={EMPTY} />);
-      const note = screen.getByRole('note');
-      expect(note.textContent).toContain('chart.series · US:NVDA, HK:9988 · 6M day line');
-      expect(note.textContent).toContain('chart rendering lands in a later slice');
+    // #1628 S4: a `chart.series` block asks the app for its data by
+    // `(blockId, rev)`. A surface that injects no resolver says so — the
+    // same sentence shape a live table uses — and never reads as an
+    // unsupported kind: the kernel accepted the block, so the document is
+    // whole. With a resolver, the block gets exactly its own id and rev.
+    it('renders a chart.series block through the injected resolver, by block id and rev', () => {
+      const block: ReportBlock = { id: 'b-1', kind: 'chart.series', rev: 3, payload: {
+        source: 'neige://plugin/dev-neige-market/market.series', series: ['US:NVDA', 'HK:9988'], range: '6M', caption: 'Big tech',
+      } };
+      const { container } = render(<ReportDocument report={blocked(block)} empty={EMPTY} />);
+      expect(screen.getByRole('note').textContent).toContain('this view does not carry its data');
       expect(screen.getByText('Big tech')).toBeTruthy();
       expect(container.textContent).not.toContain('unsupported block kind');
+      cleanup();
+
+      const asked: [string, number][] = [];
+      render(<ReportDocument report={blocked(block)} empty={EMPTY} resolveSeries={(blockId, rev) => {
+        asked.push([blockId, rev]);
+        return { status: 'pending', reason: 'plugin dev-neige-market is not running', view: 'line', field: 'close', period: 'day', range: '6M' };
+      }} />);
+      expect(asked).toEqual([['b-1', 3]]);
+      expect(screen.getByRole('note').textContent).toContain('Pending — plugin dev-neige-market is not running');
     });
 
     // The entrance fee of the block model, stated as a test: the reader keeps

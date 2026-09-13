@@ -32,8 +32,25 @@ describe('readTrackReport — chart.series', () => {
     expect(readSeries({ source: SOURCE, series: ['US:NVDA', 'HK:9988'], as_of: '2026-09-10' })).toEqual({
       id: 'b-1',
       kind: 'chart.series',
+      rev: 1,
       payload: { source: SOURCE, series: ['US:NVDA', 'HK:9988'], as_of: '2026-09-10' },
     });
+  });
+
+  // #1628 S4 — the data request is bound to the block revision, so a series
+  // block is the one kind that carries `rev` out of the wire. Without one it
+  // cannot ask for anything and degrades like an unreadable payload.
+  it('carries the wire rev on a series block and degrades one without it', () => {
+    const report = readTrackReport([card({
+      body: 'x',
+      blocks: [
+        { id: 'b-1', kind: 'chart.series', rev: 7, payload: { source: SOURCE, series: ['US:NVDA'] } },
+        { id: 'b-2', kind: 'chart.series', payload: { source: SOURCE, series: ['US:NVDA'] } },
+        { id: 'b-3', kind: 'prose', payload: { markdown: 'no rev needed' } },
+      ],
+    })]);
+    expect(report?.blocks?.map((block) => (block.kind === 'chart.series' ? block.rev : block.kind)))
+      .toEqual([7, 'unsupported', 'prose']);
   });
 
   it('accepts every optional field at once, and candles with one series', () => {

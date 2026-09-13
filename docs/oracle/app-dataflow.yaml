@@ -2151,7 +2151,7 @@
   why: >
     HTTP 响应与事件流没有固定到达顺序。尤其 Area 创建响应返回前，另一窗口可以先更新同一 Area；
     若创建响应无条件替换 cache，编辑后的默认 template/cwd 会在 refetch 前回滚并被 New Track 快照。
-  source: fe/core/domain/area.ts:60-70; fe/web/src/app/providers/queries.ts:865-906
+  source: fe/core/domain/area.ts:60-70; fe/web/src/app/providers/queries.ts:907-948
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:179-210;
     fe/web/src/app/providers/queries.contract.test.ts:246-292,315-353
   owner_slice: app/providers
@@ -2172,7 +2172,7 @@
     响应可能在服务端提交后丢失。等待 refetch 可让错误/重试界面先观察最新 Area 列表，并让更新后的
     template/cwd 回到 cache。创建重试另由已协商的服务器幂等能力与稳定操作键保护；
     refetch 不通过同名查找推断某次创建是否提交。
-  source: fe/web/src/app/providers/queries.ts:975-1027
+  source: fe/web/src/app/providers/queries.ts:1017-1069
   authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:259-305
   owner_slice: app/providers
   runtime_layer: app

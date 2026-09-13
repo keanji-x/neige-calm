@@ -1,23 +1,162 @@
 @layer features {
-  /* The chart.series placeholder (#1628 S1). No figure yet: the block draws
-     one line of prose in the table's caption register, so a report that
-     already carries a series block reads as "a chart goes here" rather than
-     as a broken document. The rendering lands in a later slice. */
+  /*
+   * The chart.series block (#1628 S4): lines, rebased lines, bars, or the
+   * candles figure, drawn in SVG and coloured by tokens only.
+   *
+   * Eight series need eight hues that stay apart in both themes, and the
+   * tokens offer exactly one such set: the area identity ring `--area-1` …
+   * `--area-8` (pairwise-distinct hues, pinned by the tokens contract). It is
+   * aliased here, module-locally, the way the candles block aliases `--error`
+   * / `--success` for its polarity: `styles/` is a frozen interface, so a
+   * `--series-*` family belongs in a change request, not in a feature. "Which
+   * line is which" is an identity question — the same job the ring does for
+   * areas — never a state, so §7.5's reservation of colour for state is not
+   * spent here.
+   */
+  .figure {
+    --nc-series-1: var(--area-1);
+    --nc-series-2: var(--area-2);
+    --nc-series-3: var(--area-3);
+    --nc-series-4: var(--area-4);
+    --nc-series-5: var(--area-5);
+    --nc-series-6: var(--area-6);
+    --nc-series-7: var(--area-7);
+    --nc-series-8: var(--area-8);
+
+    margin: 0;
+  }
+
+  /* The notice states (loading / pending / unavailable / waiting): the live
+     table's shape — caption plus one line, in the caption register. */
   .wrap {
     overflow-x: auto;
   }
 
   .caption {
-    margin-block-end: var(--space-4);
+    margin-block: 0 var(--space-4);
+    font-family: var(--font-sans);
     font-size: var(--text-xs);
+    line-height: var(--leading-snug);
     color: var(--text-3);
     text-align: start;
   }
 
-  .note {
-    margin: 0;
-    font-family: var(--font-mono);
+  .figure .caption {
+    margin-block: var(--space-4) 0;
+  }
+
+  .head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-4);
+    padding-block-end: var(--space-3);
+    border-block-end: 1px solid var(--hairline);
+    font-family: var(--font-sans);
     font-size: var(--text-xs);
+    line-height: var(--leading-none);
     color: var(--text-3);
+  }
+
+  .assets {
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+    color: var(--text);
+  }
+
+  .meta {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pinned {
+    color: var(--text-2);
+  }
+
+  /* A frozen block the source has not yet published past: the one thing on
+     this figure a reader must not miss, so it takes the warn register. */
+  .unpinned {
+    color: var(--warn-text);
+  }
+
+  .svg {
+    display: block;
+    inline-size: 100%;
+    block-size: 208px;
+    margin-block: var(--space-5);
+  }
+
+  .line {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.25;
+  }
+
+  /* MA overlays: the series' own hue, dashed, so the average reads as a
+     derivative of its line and not as a ninth series. */
+  .overlay {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1;
+    stroke-dasharray: 4 3;
+  }
+
+  .baseline {
+    stroke: var(--hairline-strong);
+    stroke-width: 1;
+  }
+
+  .bar {
+    fill: currentColor;
+    fill-opacity: 0.85;
+  }
+
+  /* The identity classes set `color`; line, bar and swatch all paint with
+     `currentColor`, so one class colours every representation of a series. */
+  .s1 { color: var(--nc-series-1); }
+  .s2 { color: var(--nc-series-2); }
+  .s3 { color: var(--nc-series-3); }
+  .s4 { color: var(--nc-series-4); }
+  .s5 { color: var(--nc-series-5); }
+  .s6 { color: var(--nc-series-6); }
+  .s7 { color: var(--nc-series-7); }
+  .s8 { color: var(--nc-series-8); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3) var(--space-5);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+
+  .legendItem {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .legendAsset {
+    font-family: var(--font-mono);
+    color: var(--text);
+  }
+
+  .legendMeta {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .swatch {
+    inline-size: 12px;
+    block-size: 2px;
+    background: currentColor;
+  }
+
+  .swatchOverlay {
+    color: var(--text-3);
+    background: repeating-linear-gradient(to right, currentColor 0 4px, transparent 4px 7px);
   }
 }

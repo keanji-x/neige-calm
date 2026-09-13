@@ -1,6 +1,6 @@
-//! #1628 S2 — resolved `chart.series` data: the background resolver, the
+//! #1628 S2/S4 — resolved `chart.series` data: the background resolver, the
 //! `report_series` rows, and the `resolved` projection `calm.report.read`
-//! (and later the HTTP route) hand out.
+//! and `GET /api/tracks/{id}/report/series/{block_id}` hand out.
 //!
 //! The model in one paragraph (design §2.8): a `chart.series` block names its
 //! data; nothing happens when it is written. The first *read* of the block
@@ -15,9 +15,10 @@
 //! Modules: `request` (payload → request + fingerprint), `store` (rows),
 //! `validate` (the reply checklist), `summary` (what the row keeps for the
 //! default read, and the row TTL), `resolver` (in-flight keys, lanes, the
-//! job itself).
+//! job itself), `hydrate` (the read-side step both readers share).
 
 mod admission;
+pub(crate) mod hydrate;
 pub mod request;
 pub mod resolver;
 #[cfg(any(test, feature = "fixtures"))]

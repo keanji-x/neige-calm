@@ -38,6 +38,9 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'TaskArtifactFileResponse',
   'ViewCatalogEntry', 'TrackBacklinksResponse', 'TrackDetail', 'TrackFsContent', 'TrackFsEntry',
   'TrackReportReadResponse', 'TrackTemplate',
+  // calm-server/routes/track_report_series.rs DTOs (#1628 S4);
+  // core/domain/report-series.ts owns the zod decoders for both.
+  'ReportSeriesResolved', 'ReportSeriesRevConflict',
 ]);
 
 function object(value: unknown): value is JsonObject {

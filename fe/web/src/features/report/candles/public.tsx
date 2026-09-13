@@ -23,6 +23,7 @@
 
 import { useState } from '../../../ui/state/public.ts';
 import type { ChartCandlesPayload } from '../../../../../core/domain/report.ts';
+import { CandlesFigure, formatPrice } from './figure.tsx';
 import styles from './candles.module.css';
 
 type Candle = ChartCandlesPayload['candles'][number];
@@ -44,47 +45,7 @@ function rangeDays(key: RangeKey): number | null {
 
 const PERIOD_LABELS = Object.freeze({ day: '日线', week: '周线', month: '月线' });
 
-// The drawing box. It is a `viewBox`, so these are ratios rather than pixels:
-// the figure scales to whatever width the breakout gives it.
-const VIEW_W = 740;
-const PRICE_H = 208;
-const VOLUME_H = 40;
-const GAP_H = 8;
-const VIEW_H = PRICE_H + GAP_H + VOLUME_H;
-const PAD_X = 4;
-
 const DAY_MS = 86_400_000;
-
-function movingAverage(closes: readonly number[], window: number): (number | null)[] {
-  const out: (number | null)[] = new Array<number | null>(closes.length).fill(null);
-  let sum = 0;
-  for (let index = 0; index < closes.length; index += 1) {
-    sum += closes[index] ?? 0;
-    if (index >= window) sum -= closes[index - window] ?? 0;
-    if (index >= window - 1) out[index] = sum / window;
-  }
-  return out;
-}
-
-function formatPrice(value: number): string {
-  return value.toFixed(2);
-}
-
-function formatVolume(value: number): string {
-  if (value >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
-  if (value >= 1e4) return `${(value / 1e4).toFixed(0)}万`;
-  return String(Math.round(value));
-}
-
-/** UTC, deliberately: the payload's timestamps are the kernel's, and a chart
- *  that shifted its dates by the reader's timezone would disagree with the
- *  prose next to it. */
-function formatDate(tsMs: number): string {
-  const date = new Date(tsMs);
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  return `${date.getUTCFullYear()}-${month}-${day}`;
-}
 
 export function ReportCandlesBlock({ payload }: { payload: ChartCandlesPayload }) {
   const [rangeKey, setRangeKey] = useState<RangeKey>('All');
@@ -99,30 +60,6 @@ export function ReportCandlesBlock({ payload }: { payload: ChartCandlesPayload }
   // it draws nothing meaningful, so it falls back to the full series rather
   // than to an empty box.
   const candles = visible.length >= 2 ? visible : all;
-
-  const closes = candles.map((candle) => candle[4]);
-  const highs = candles.map((candle) => candle[2]);
-  const lows = candles.map((candle) => candle[3]);
-  const volumes = candles.map((candle) => candle[5] ?? 0);
-  const high = Math.max(...highs);
-  const low = Math.min(...lows);
-  const span = high > low ? high - low : 1;
-  const volumeMax = Math.max(...volumes) || 1;
-
-  const step = (VIEW_W - PAD_X * 2) / candles.length;
-  const bodyWidth = Math.max(1, Math.min(9, step * 0.68));
-  const centerX = (index: number) => PAD_X + step * (index + 0.5);
-  const priceY = (value: number) => ((high - value) / span) * PRICE_H;
-
-  const overlays = payload.overlays ?? [];
-  const overlayLines = overlays.map((overlay) => ({
-    key: overlay,
-    className: overlay === 'ma20' ? styles.ma20 : styles.ma60,
-    points: movingAverage(closes, overlay === 'ma20' ? 20 : 60)
-      .map((value, index) => (value === null ? null : `${centerX(index)},${priceY(value)}`))
-      .filter((point): point is string => point !== null)
-      .join(' '),
-  }));
 
   const first = candles[0];
   const last = candles[candles.length - 1];
@@ -155,93 +92,9 @@ export function ReportCandlesBlock({ payload }: { payload: ChartCandlesPayload }
         </span>
       </figcaption>
 
-      {/*
-        The chart is a figure, not a control: the whole of it is described once,
-        in words, for a reader who is not going to look at 200 rectangles. The
-        rectangles themselves are `aria-hidden` — announcing each candle would
-        be a worse experience than announcing none.
-      */}
-      <svg
-        className={styles.svg}
-        viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-        preserveAspectRatio="none"
-        role="img"
-        aria-label={
-          `${payload.symbol}: ${candles.length} candles from ${formatDate(candles[0]?.[0] ?? 0)}`
-          + ` to ${formatDate(last?.[0] ?? 0)}, ${formatPrice(low)} to ${formatPrice(high)},`
-          + ` ${change >= 0 ? 'up' : 'down'} ${Math.abs(change).toFixed(2)}% over the range.`
-        }
-      >
-        <g aria-hidden="true">
-          {candles.map((candle, index) => {
-            const [ts, open, candleHigh, candleLow, close, volume] = candle;
-            const up = close >= open;
-            const x = centerX(index);
-            const bodyTop = priceY(Math.max(open, close));
-            const bodyBottom = priceY(Math.min(open, close));
-            const volumeHeight = ((volume ?? 0) / volumeMax) * VOLUME_H;
-            return (
-              <g key={`${ts}-${index}`} className={up ? styles.up : styles.down}>
-                <line
-                  className={styles.wick}
-                  x1={x} x2={x}
-                  y1={priceY(candleHigh)} y2={priceY(candleLow)}
-                  vectorEffect="non-scaling-stroke"
-                />
-                <rect
-                  className={styles.body}
-                  x={x - bodyWidth / 2}
-                  y={bodyTop}
-                  width={bodyWidth}
-                  /* A doji has open === close; without a floor its body would
-                     be a zero-height rect, i.e. invisible exactly where the
-                     market did nothing — which is information. */
-                  height={Math.max(1, bodyBottom - bodyTop)}
-                  vectorEffect="non-scaling-stroke"
-                />
-                {volume != null && (
-                  <rect
-                    className={styles.volume}
-                    x={x - bodyWidth / 2}
-                    y={PRICE_H + GAP_H + (VOLUME_H - volumeHeight)}
-                    width={bodyWidth}
-                    height={Math.max(0.5, volumeHeight)}
-                  />
-                )}
-              </g>
-            );
-          })}
-          {overlayLines.map((line) => (
-            <polyline
-              key={line.key}
-              className={`${styles.overlay} ${line.className}`}
-              points={line.points}
-              vectorEffect="non-scaling-stroke"
-            />
-          ))}
-        </g>
-      </svg>
-
-      <div className={styles.legend}>
-        <span className={styles.swatchUp} aria-hidden="true" />
-        <span>涨（空心）</span>
-        <span className={styles.swatchDown} aria-hidden="true" />
-        <span>跌（实心）</span>
-        {overlays.map((overlay) => (
-          <span key={overlay} className={styles.legendMa}>
-            <span
-              className={overlay === 'ma20' ? styles.swatchMa20 : styles.swatchMa60}
-              aria-hidden="true"
-            />
-            {overlay.toUpperCase()}
-          </span>
-        ))}
-        <span className={styles.legendRange}>
-          {formatDate(candles[0]?.[0] ?? 0)} – {formatDate(last?.[0] ?? 0)}
-          {' · '}
-          {formatVolume(volumes.reduce((sum, value) => sum + value, 0))}
-        </span>
-      </div>
+      {/* The drawing is shared with `chart.series` (`figure.tsx`, #1628 S4.5);
+          only the chrome above and the caption below are this block's. */}
+      <CandlesFigure candles={candles} overlays={payload.overlays ?? []} label={payload.symbol} />
 
       {payload.caption != null && payload.caption !== '' && (
         <p className={styles.caption}>{payload.caption}</p>

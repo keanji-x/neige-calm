@@ -120,6 +120,8 @@ use utoipa::OpenApi;
         crate::routes::track_report_blocks::update_block,
         crate::routes::track_report_blocks::delete_block,
         crate::routes::track_report_blocks::move_block,
+        // #1628 S4 — one `chart.series` block's resolved data
+        crate::routes::track_report_series::get_report_series,
         crate::routes::tracks::list_track_files,
         crate::routes::tracks::cat_track_file,
         crate::routes::today::ensure_today_launchpad,
@@ -253,6 +255,11 @@ use utoipa::OpenApi;
         DeleteReportBlockBody,
         MoveReportBlockBody,
         ReportBlockWriteResponse,
+        // #1628 S4 — `GET /api/tracks/{id}/report/series/{block_id}`
+        crate::routes::track_report_series::ReportSeriesDetail,
+        crate::routes::track_report_series::ReportSeriesEntry,
+        crate::routes::track_report_series::ReportSeriesResolved,
+        crate::routes::track_report_series::ReportSeriesRevConflict,
         TrackDetail,
         Card,
         CardRuntimeView,
