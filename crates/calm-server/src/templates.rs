@@ -33,6 +33,9 @@ use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
 use calm_types::track_report::{ReportContract, report_contract_prefix};
 use serde_json::{Value, json};
 
+/// #1635 S4 — the `+++` TOML front matter a template file opens with.
+pub mod front_matter;
+
 pub const ISSUE_DEVELOPMENT: &str = "issue-development";
 pub const SMALL_CHANGE: &str = "small-change";
 pub const INVESTIGATION: &str = "investigation";
