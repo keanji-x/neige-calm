@@ -134,18 +134,19 @@ async fn recovery_briefing_states_legacy_executor_route_not_isolated_envelope() 
     maybe_issue_turn(inner).await.unwrap();
     assert_eq!(inner.daemon.turn_start_count_for_test(), 1);
     let issued = fx.stored().await.issued_input_segments.unwrap();
+    // Locate the kernel-snapshot JSON through the briefing fragment's own
+    // frame, never through a copy of its wording (#1635 S1c).
+    let (head, tail) = crate::harness::recovery_briefing::BRIEFING
+        .split_once("{briefing_json}")
+        .unwrap();
     let text = issued
         .segments
         .iter()
         .find_map(|segment| {
             segment
                 .text
-                .split_once("Recovery decision briefing (kernel snapshot):\n")
-                .map(|(_, rest)| {
-                    rest.split_once("\nEnd recovery decision briefing.")
-                        .unwrap()
-                        .0
-                })
+                .split_once(head)
+                .map(|(_, rest)| rest.split_once(tail).unwrap().0)
         })
         .expect("legacy settlement must still be briefed");
     let brief: serde_json::Value = serde_json::from_str(text).unwrap();

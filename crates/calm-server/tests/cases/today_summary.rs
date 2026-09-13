@@ -839,10 +839,18 @@ fn count_needles(texts: &[String], needles: &[&str]) -> Vec<usize> {
         .collect()
 }
 
-/// A phrase that appears in the summary prompt and in nothing else, so a
-/// delivered message can be identified as the summary by its content rather
-/// than by its size.
-const SUMMARY_MARKER: &str = "Today's activity across the workspace";
+/// The summary prompt's prose ahead of its counts block — text that appears
+/// in the summary prompt and in nothing else, so a delivered message can be
+/// identified as the summary by its content rather than by its size. Taken
+/// from the fragment itself (#1635 S1c) so this file carries no copy of the
+/// wording; the counts block is excluded because the opening briefing renders
+/// the same block.
+fn summary_marker() -> &'static str {
+    include_str!("../../prompts/today-summary/write.md")
+        .split_once("{counts}")
+        .expect("the summary fragment binds the counts block")
+        .0
+}
 
 /// A phrase carried by #1343's opening briefing and by nothing else, including
 /// the summary prompt.
@@ -893,7 +901,7 @@ async fn a_launchpad_conversation_opens_with_todays_activity_before_the_users_me
     assert_eq!(
         b.delivered(
             &card_id,
-            &[BRIEFING_MARKER, "What happened today?", SUMMARY_MARKER],
+            &[BRIEFING_MARKER, "What happened today?", summary_marker()],
             2,
         )
         .await,
@@ -1170,8 +1178,12 @@ async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_
     assert_eq!(status, StatusCode::OK, "body={body}");
     let card_id = body["card_id"].as_str().unwrap().to_string();
     assert_eq!(
-        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 2)
-            .await,
+        b.delivered(
+            &card_id,
+            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
+            2
+        )
+        .await,
         vec![1, 1],
         "the first trigger must deliver the bootstrap AND the summary — matched \
          by their bytes, because a length check cannot tell the bootstrap from \
@@ -1185,8 +1197,12 @@ async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_
     assert_eq!(status, StatusCode::OK, "body={body}");
 
     assert_eq!(
-        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 4)
-            .await,
+        b.delivered(
+            &card_id,
+            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
+            4
+        )
+        .await,
         vec![1, 3],
         "three triggers deliver 2 + 1 + 1 messages: exactly ONE bootstrap, ever, \
          and one summary per press. A second trigger delivering nothing is the \
@@ -1487,8 +1503,12 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
      * this assertion exists to hold.
      */
     assert_eq!(
-        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 3)
-            .await,
+        b.delivered(
+            &card_id,
+            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
+            3
+        )
+        .await,
         vec![2, 1],
         "the recovery must deliver the SUMMARY the trigger was for, onto a \
          restarted session that was given the standing instruction first: the \
@@ -1593,8 +1613,12 @@ async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
     // are gone. Baseline them so the assertion below is about what THIS trigger
     // added rather than about what the mint left behind.
     assert_eq!(
-        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 2)
-            .await,
+        b.delivered(
+            &card_id,
+            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
+            2
+        )
+        .await,
         vec![1, 1],
         "the mint really did deliver both"
     );
@@ -1608,8 +1632,12 @@ async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
     );
 
     assert_eq!(
-        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 4)
-            .await,
+        b.delivered(
+            &card_id,
+            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
+            4
+        )
+        .await,
         vec![2, 2],
         "the trigger that finds an empty transcript must deliver BOTH the \
          bootstrap and the summary — one more of each, matched by their bytes. \
@@ -1778,8 +1806,12 @@ async fn a_stranded_bootstrap_on_a_failed_session_is_re_sent_by_the_next_trigger
          the restarted session"
     );
     assert_eq!(
-        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 2)
-            .await,
+        b.delivered(
+            &card_id,
+            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
+            2
+        )
+        .await,
         vec![1, 1],
         "the trigger after a stranded bootstrap must deliver BOTH the bootstrap \
          and the summary onto the restarted session. The old predicate delivered \
@@ -1792,8 +1824,12 @@ async fn a_stranded_bootstrap_on_a_failed_session_is_re_sent_by_the_next_trigger
     let (status, third) = b.summary(None).await;
     assert_eq!(status, StatusCode::OK, "body={third}");
     assert_eq!(
-        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 3)
-            .await,
+        b.delivered(
+            &card_id,
+            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
+            3
+        )
+        .await,
         vec![1, 2],
         "the runtime has now been spoken to, so a third press sends the summary \
          only: re-sending on every trigger is what a constant-false predicate does"
@@ -1925,8 +1961,12 @@ async fn evidence_bound_to_a_replaced_runtime_is_not_read_as_evidence() {
     // AND a summary sitting on R2's queue. A predicate still fooled by R1's rows
     // sends the summary alone and reads [1, 2] over 3.
     assert_eq!(
-        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 4)
-            .await,
+        b.delivered(
+            &card_id,
+            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
+            4
+        )
+        .await,
         vec![2, 2],
         "the trigger after the replacement must deliver BOTH the bootstrap and \
          the summary onto the new runtime — `delivered`'s queued half reads the \
@@ -2073,7 +2113,7 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
             &card_id,
             &[
                 TODAY_SUMMARY_BOOTSTRAP_TEXT,
-                SUMMARY_MARKER,
+                summary_marker(),
                 "a different first message",
                 BRIEFING_MARKER,
             ],
@@ -2145,7 +2185,7 @@ async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() 
     // messages too. Staging is shut down and its residue cleared rather than
     // waited on — see the helper for why waiting cannot work here.
     staging
-        .quiesce_and_clear_queue(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER])
+        .quiesce_and_clear_queue(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()])
         .await;
     // The empty-transcript state, staged exactly as the single-request case
     // stages it (and documented there): the card stays, its evidence rows go.
@@ -2245,7 +2285,7 @@ async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() 
     assert_eq!(
         b.delivered(
             &card_id,
-            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER],
+            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
             enqueued
         )
         .await,

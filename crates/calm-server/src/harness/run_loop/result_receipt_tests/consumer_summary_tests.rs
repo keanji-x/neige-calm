@@ -31,7 +31,14 @@ async fn consumer_summary_transport_retains_full_exact_event() {
     assert!(text.contains(report["summary"].as_str().unwrap()));
     assert!(!text.contains("meaningful-long-verification-script"));
     assert!(text.contains("Worker summary (untrusted claims)"));
-    assert!(text.contains(&format!("require event_id={id}")));
+    assert_only_detail(
+        &text,
+        &Detail::RecordedWithEvent {
+            path: &advertised_path(&text),
+            kind: "completed",
+            event_id: id,
+        },
+    );
     let details = read_details(&fx, &text).await;
     assert_eq!(details["events"]["completed"]["event_id"], id);
     assert_eq!(details["events"]["completed"]["payload"]["result"], report);
@@ -64,13 +71,7 @@ async fn consumer_summary_reference_requires_full_value_event_and_attempt() {
             text.contains(original["summary"].as_str().unwrap()),
             "{mismatch}: {text}"
         );
-        assert!(
-            text.contains("Exact execution details unavailable"),
-            "{mismatch}: {text}"
-        );
-        assert!(
-            !text.contains("Recorded execution details: calm.track.cat("),
-            "{mismatch}: {text}"
-        );
+        assert!(text.contains(UNAVAILABLE), "{mismatch}: {text}");
+        assert!(!text.contains(recorded_locator()), "{mismatch}: {text}");
     }
 }

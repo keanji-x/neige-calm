@@ -3,6 +3,14 @@ use super::*;
 use calm_server::codex_appserver::InputItem;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 
+/// The frame the kernel-snapshot JSON is wrapped in, taken from the briefing
+/// fragment itself so this file carries no copy of its wording (#1635 S1c).
+fn briefing_frame() -> (&'static str, &'static str) {
+    include_str!("../../prompts/recovery-briefing/briefing.md")
+        .split_once("{briefing_json}")
+        .unwrap()
+}
+
 async fn queued_settlement(fx: &Fixture, handle: &PlannerHarness) {
     let events = fx
         .boot
@@ -57,11 +65,12 @@ async fn issued_briefing(handle: &PlannerHarness, daemon: &SharedCodexAppServer)
             "persisted and actual model input must agree"
         );
     }
+    let (head, tail) = briefing_frame();
     let body = text
-        .split_once("Recovery decision briefing (kernel snapshot):\n")
+        .split_once(head)
         .expect("actual turn must contain a decision-ready recovery briefing")
         .1
-        .split_once("\nEnd recovery decision briefing.")
+        .split_once(tail)
         .unwrap()
         .0;
     serde_json::from_str(body).unwrap()
@@ -248,11 +257,7 @@ async fn recovery_briefing_rechecks_queued_policy_after_snapshot_restore() {
     );
     let turns = daemon.started_turns_for_test();
     let text = serde_json::to_string(&turns[0].1).unwrap();
-    assert_eq!(
-        text.matches("Recovery decision briefing (kernel snapshot)")
-            .count(),
-        1
-    );
+    assert_eq!(text.matches(briefing_frame().0.trim_end()).count(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
