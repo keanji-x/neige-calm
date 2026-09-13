@@ -1957,11 +1957,12 @@ async fn document_order_is_ceiling_priority_and_move_reprojects_pending_rows() {
     upsert(&boot, None, task("first")).await;
     let (second, _) = upsert(&boot, None, task("second")).await;
     assert_eq!(keys(&boot).await, ["first"]);
+    // block 0 is the contract header block; the funnel rejects displacing it (#1635 S2c)
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         planner_identity(&boot),
-        json!({"id":second,"to_index":0,"if_doc_rev":read(&boot).await["docRev"]}),
+        json!({"id":second,"to_index":1,"if_doc_rev":read(&boot).await["docRev"]}),
     )
     .await
     .unwrap();

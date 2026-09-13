@@ -1196,6 +1196,29 @@ async fn write_report_row_and_project_tx(
     declarations: &[calm_types::report_blocks::tasks::TaskDeclaration],
     diagnostics: &[Vec<calm_types::report_blocks::tasks::Diagnostic>],
 ) -> Result<(Card, TaskProjectionOutcome), CalmError> {
+    // #1635 D2 — the one-shot contract-header check, on the flat projection
+    // of every write through the two doors, before the row write and inside
+    // the caller's transaction: a rejection aborts the persist and no event
+    // is emitted. Both doors get it here — no per-arm `check_document` in
+    // `apply_report_op`.
+    match calm_types::report_contract::check_document(&payload.body) {
+        Ok(_) => {}
+        Err(error @ HeaderError::Internal(_)) => {
+            // A non-canonical header here means an ingress skipped
+            // `normalize_header` — a kernel bug, not the caller's. KNOWN GAP
+            // (#1635 S2c, issue §6): either door, for a row whose line 1 was
+            // stored non-canonical before S2c — forking/instantiating it, or
+            // any edit that leaves line 1 untouched — is this 500, not a 400.
+            return Err(CalmError::Internal(format!(
+                "track_report: report contract header: {error}"
+            )));
+        }
+        Err(error) => {
+            return Err(CalmError::BadRequest(format!(
+                "report contract header: {error}"
+            )));
+        }
+    }
     let payload_value = serde_json::to_value(payload).map_err(|e| {
         CalmError::Internal(format!("track_report: serialize projected payload: {e}"))
     })?;

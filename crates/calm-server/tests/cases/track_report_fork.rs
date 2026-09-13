@@ -2440,3 +2440,79 @@ async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
         "the append probe is not wired, so the fork assertion above proved nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1635 S2c — the structural door runs the contract-header funnel too
+// ---------------------------------------------------------------------------
+
+/// A fork copies the source's blocks and lands them through
+/// `structural_init_report_tx`, the same funnel every edit goes through. A
+/// birth-body source leads with the canonical header; the fork keeps it on
+/// line 1, byte for byte, and the whole projected document is one the funnel
+/// accepts (`canonical_fresh_null_crdt_source_forks_through_the_rest_path`
+/// pins the body equality; this pins the header itself, so a fork that
+/// re-spelled or dropped the line would be caught here and not by a diff of
+/// two long strings).
+#[tokio::test]
+async fn a_fork_of_a_headered_source_keeps_the_header_canonical_on_line_1() {
+    use calm_types::report_contract::{canonical_line, check_document};
+    use calm_types::track_report::work_brief_header;
+
+    let boot = boot().await;
+    let (status, source_track) = request_json(
+        &boot.app,
+        "POST",
+        "/api/tracks".into(),
+        &boot.cookie,
+        Some(json!({
+            "area_id": boot.area_id,
+            "title": "headered source",
+            "sort": null,
+            "cwd": target_cwd("-headered-source"),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {source_track}");
+    let source_id = source_track["id"].as_str().unwrap();
+    let (status, target_track) = request_json(
+        &boot.app,
+        "POST",
+        "/api/tracks".into(),
+        &boot.cookie,
+        Some(json!({
+            "area_id": boot.area_id,
+            "title": "headered target",
+            "sort": null,
+            "cwd": target_cwd("-headered-target"),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": source_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {target_track}");
+    let target_id = target_track["id"].as_str().unwrap();
+    let (status, target_report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/tracks/{target_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body = target_report["body"].as_str().expect("report body");
+    let canonical = canonical_line(&work_brief_header());
+    assert_eq!(
+        body.split('\n').next().unwrap_or_default(),
+        canonical,
+        "line 1 of the fork is the canonical work-brief header"
+    );
+    assert_eq!(
+        check_document(body),
+        Ok(Some(work_brief_header())),
+        "the forked document passes the funnel's own check"
+    );
+}

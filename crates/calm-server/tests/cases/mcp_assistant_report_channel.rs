@@ -265,11 +265,12 @@ async fn assistant_drives_the_whole_block_channel() {
     .await
     .expect("blocks.upsert replace serves an assistant");
 
+    // block 0 is the contract header block; the funnel rejects displacing it (#1635 S2c)
     call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         assistant_identity(&boot),
-        json!({ "id": id, "to_index": 0, "if_doc_rev": doc_rev(&boot).await }),
+        json!({ "id": id, "to_index": 1, "if_doc_rev": doc_rev(&boot).await }),
     )
     .await
     .expect("blocks.move serves an assistant");
