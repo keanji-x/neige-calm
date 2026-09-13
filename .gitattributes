@@ -10,3 +10,9 @@ fe/tools/mutation/fixtures/** -text
 # rule is exactly the failure it exists to prevent — nothing here breaks if the
 # pattern is wider than the set of files that ever appears.
 crates/calm-types/src/track_report*.md -text
+
+# `report/legacy_initial_v4.md` is the frozen pre-header default body (#1635
+# S2a): byte-exact input to the header-less compatibility fallback of
+# `report_startup_read_required`. A CRLF checkout would silently change the
+# frozen bytes and every pre-header track would read as "written".
+crates/calm-types/src/report/*.md -text
