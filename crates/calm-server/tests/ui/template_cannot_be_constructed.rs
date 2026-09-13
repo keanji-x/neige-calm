@@ -3,10 +3,14 @@
 //! `Default` — so the only `Template` a downstream crate can name is a borrow
 //! of a roster entry (#1318 S2, restated for files by #1635 S4).
 //!
-//! Making any field `pub`, or adding a `pub fn new`, makes this file compile,
-//! which is exactly the mutation this case exists to catch. (A forgery through
-//! `transmute` is outside what this fixture can say; it is registered under
-//! `## KNOWN GAPS` on `routes::tracks::admit_template`.)
+//! What this pins is **field privacy**: making any one of the three fields
+//! `pub` makes this file compile (E0451 names all three, so a single field
+//! going `pub` changes the pinned diagnostic too). It says nothing about
+//! constructors — a `pub fn new` would not make a struct literal compile;
+//! constructor privacy is `template_roster_constructors_are_private.rs`'s
+//! statement, pinned by name. (A forgery through `transmute` is outside what
+//! this fixture can say; it is registered under `## KNOWN GAPS` on
+//! `routes::tracks::admit_template`.)
 
 use calm_server::templates::Template;
 

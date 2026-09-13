@@ -4899,6 +4899,90 @@ mod tests {
         }
     }
 
+    /// #1635 S4 review — the value relation the deleted
+    /// `templates::tests::the_body_projection_matches_the_constant_task_list`
+    /// kept, restated against the files: for every builtin entry, the picker
+    /// projection (`compile_template` → `task_block_payloads` →
+    /// `task_payload_key_and_instruction`, the exact road
+    /// `routes::track_templates::current_definition` takes) yields, per key
+    /// and in order, the `goal` the fence in the file carries — and the
+    /// compiled block carries the fence's `acceptance` verbatim.
+    ///
+    /// The fences are read with the independent reader (`split_body` +
+    /// `parse_fence` straight off `Template::recipe().body`), not off the
+    /// compiled blocks, so the two sides do not share the producer. A
+    /// projection that swapped `goal` and `acceptance` — or a compiler that
+    /// restamped either — goes red here; nothing else holds the picker's
+    /// `goal` to the file's.
+    #[test]
+    fn the_picker_projection_carries_each_fences_own_goal_and_acceptance() {
+        use crate::templates::task_payload_key_and_instruction;
+        use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
+
+        let roster = TemplateRoster::builtin();
+        let mut fences_seen = 0;
+        for template in roster.entries() {
+            let key = template.key();
+            let body = template.recipe().body;
+            let fences: Vec<serde_json::Value> = split_body(&body)
+                .iter()
+                .filter_map(|slice| parse_fence(&slice.raw))
+                .filter(|fence| fence.kind == KIND_TASK)
+                .map(|fence| fence.payload)
+                .collect();
+            let compiled = super::compile_template(template)
+                .unwrap_or_else(|error| panic!("`{key}` must compile: {error}"));
+            let blocks = compiled
+                .task_block_payloads()
+                .unwrap_or_else(|error| panic!("`{key}` must carry blocks: {error}"));
+            let projected: Vec<(String, String)> = blocks
+                .iter()
+                .filter_map(|payload| task_payload_key_and_instruction(payload))
+                .collect();
+            assert_eq!(
+                projected.len(),
+                fences.len(),
+                "`{key}`: the picker projects one row per task fence in the file"
+            );
+            assert_eq!(
+                blocks.len(),
+                fences.len(),
+                "`{key}`: one compiled block per fence"
+            );
+            for ((projected_key, projected_goal), fence) in projected.iter().zip(&fences) {
+                let fence_key = fence["key"].as_str().expect("fence key");
+                let fence_goal = fence["goal"].as_str().expect("fence goal");
+                let fence_acceptance = fence["acceptance"].as_str().expect("fence acceptance");
+                assert_ne!(
+                    fence_goal, fence_acceptance,
+                    "`{key}`/{fence_key}: fixture — goal and acceptance must differ, or a \
+                     swapped projection would be invisible"
+                );
+                assert_eq!(projected_key, fence_key, "`{key}`: projected key, in order");
+                assert_eq!(
+                    projected_goal, fence_goal,
+                    "`{key}`/{fence_key}: the picker's goal must be the fence's goal"
+                );
+            }
+            for (block, fence) in blocks.iter().zip(&fences) {
+                let fence_key = fence["key"].as_str().expect("fence key");
+                assert_eq!(
+                    block["goal"], fence["goal"],
+                    "`{key}`/{fence_key}: compiled goal is the fence's"
+                );
+                assert_eq!(
+                    block["acceptance"], fence["acceptance"],
+                    "`{key}`/{fence_key}: compiled acceptance is the fence's"
+                );
+            }
+            fences_seen += fences.len();
+        }
+        assert!(
+            fences_seen > 0,
+            "the roster must carry at least one task fence for this to test anything"
+        );
+    }
+
     /// A recipe whose body does not parse is refused, not silently thinned.
     ///
     /// ## The two shapes, and why one guard covers both

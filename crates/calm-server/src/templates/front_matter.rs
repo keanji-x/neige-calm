@@ -27,9 +27,10 @@
 //! prefix; the `site/` prefix (operator-supplied templates) and the `plugin/`
 //! prefix are **reserved** for #1635 S5, which composes them *outside* the
 //! front matter — a file's own `id` never names its origin. Rejecting `/` here
-//! is what keeps a builtin file from claiming an operator id, and the
-//! `TemplateDescriptor::validate` alphabet on the plugin side is the mirror
-//! image (no `/` either), so neither side can spell the other's prefix.
+//! is what keeps a builtin file from claiming an operator id. The plugin-side
+//! alphabet (`TemplateDescriptor::validate`, `^[a-z0-9][a-z0-9._-]{0,63}$`) is
+//! wider than this one — it admits `.` and `_` — but neither admits `/`, so
+//! neither side can spell the other's prefix.
 
 use serde::Deserialize;
 
@@ -68,7 +69,11 @@ impl std::fmt::Display for FrontMatterError {
             Self::MissingOpen => {
                 write!(f, "template file must open with a `+++` front matter line")
             }
-            Self::Unclosed => write!(f, "template front matter has no closing `+++` line"),
+            Self::Unclosed => write!(
+                f,
+                "template front matter has no closing line that is exactly `+++` (no \
+                 trailing whitespace or CR)"
+            ),
             Self::Toml(message) => write!(f, "template front matter: {message}"),
             Self::BadId(id) => write!(
                 f,
