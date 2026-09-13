@@ -786,6 +786,7 @@ fn strip_comment(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::test_temp_dir;
 
     #[test]
     fn config_defaults_have_expected_paths() {
@@ -1050,15 +1051,6 @@ db_migration_policy = "additive"
         let path = tmp.join("missing.toml");
         let err = AppConfig::load(Some(&path)).expect_err("explicit missing config must fail");
         assert!(err.to_string().contains("does not exist"));
-    }
-
-    fn test_temp_dir(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("neige-app-{name}-{}", std::process::id()));
-        if path.exists() {
-            fs::remove_dir_all(&path).expect("remove stale temp dir");
-        }
-        fs::create_dir_all(&path).expect("create temp dir");
-        path
     }
 }
 

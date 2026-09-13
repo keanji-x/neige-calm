@@ -131,6 +131,7 @@ where
 mod tests {
     use super::*;
     use crate::manifest::{Compatibility, DbMigrationPolicy, ReleaseUnit, RestartPolicy};
+    use crate::test_support::test_temp_dir;
 
     fn state() -> InstalledState {
         let mut units = BTreeMap::new();
@@ -222,14 +223,5 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
             .count();
         assert_eq!(leftovers, 0, "temporary file must be cleaned after failure");
-    }
-
-    fn test_temp_dir(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("neige-app-{name}-{}", std::process::id()));
-        if path.exists() {
-            fs::remove_dir_all(&path).expect("remove stale temp dir");
-        }
-        fs::create_dir_all(&path).expect("create temp dir");
-        path
     }
 }

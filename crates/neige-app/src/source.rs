@@ -229,6 +229,7 @@ fn unix_ts() -> anyhow::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::test_temp_dir;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -312,15 +313,6 @@ mod tests {
             source_mode(&cfg, Some(PreflightMode::WebOnly)).expect("mode"),
             Some(PreflightMode::WebOnly)
         );
-    }
-
-    fn test_temp_dir(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("neige-app-{name}-{}", std::process::id()));
-        if path.exists() {
-            std::fs::remove_dir_all(&path).expect("remove stale temp dir");
-        }
-        std::fs::create_dir_all(&path).expect("create temp dir");
-        path
     }
 
     fn fake_build_output(source: &Path) {

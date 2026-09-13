@@ -1,5 +1,6 @@
 use super::*;
 use crate::manifest::{ReleaseManifestV2, RestartPolicy, UnitName};
+use crate::test_support::test_temp_dir;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Mutex;
 
@@ -325,15 +326,6 @@ fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
         Some(value) => unsafe { std::env::set_var(key, value) },
         None => unsafe { std::env::remove_var(key) },
     }
-}
-
-fn test_temp_dir(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("neige-app-{name}-{}", std::process::id()));
-    if path.exists() {
-        fs::remove_dir_all(&path).expect("remove stale temp dir");
-    }
-    fs::create_dir_all(&path).expect("create temp dir");
-    path
 }
 
 #[test]
