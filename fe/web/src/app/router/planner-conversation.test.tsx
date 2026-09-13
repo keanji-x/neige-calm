@@ -693,6 +693,60 @@ describe('planner conversation regressions', () => {
   });
 
   /*
+   * #1625 P2 review round 1 (C4) — rule 3 holds for the kernel's own row too.
+   *
+   * The drain writes the projection row and emits `harness.item.added` before
+   * `turn/start` goes out; the queue region drops the entry only when
+   * `planner-run` is refetched after `turn/start` answers. In that window the
+   * transcript would draw the sentence beside the queue region's copy of it.
+   */
+  it('draws a drained message once while the queue region still lists its entry', async () => {
+    const entry = { entry_id: 'entry-9', text: 'sent once', rev: 0, queued_at_ms: 5 };
+    const projection = {
+      id: 7, worker_session_id: 'runtime', card_id: CARD.id, track_id: TRACK.id, thread_id: 'thread',
+      turn_id: null, item_uuid: entry.entry_id, item_type: 'userMessage', method: 'item/completed',
+      params: JSON.stringify({
+        item: { id: entry.entry_id, clientId: entry.entry_id, type: 'userMessage', content: [{ type: 'text', text: 'sent once' }] },
+        _projection: true,
+      }),
+      input_segments: [{ presentation: 'user', text: 'sent once', attachments: [] }],
+      created_at_ms: 7,
+    };
+    let listed = true;
+    const { client } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({
+          ...PLANNER_RUN_IDLE, phase: 'issuing_turn',
+          pending: listed ? [entry] : [], pending_overflow: 0,
+        });
+      }
+      if (request.path.includes('/harness/items')) return ok([projection]);
+      return undefined;
+    });
+    await openConversation();
+
+    // The row is on the server and the queue region still lists the entry:
+    // one renderer, the queue region.
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')?.textContent).toContain('sent once');
+    });
+    expect(screen.getAllByText('sent once')).toHaveLength(1);
+    expect(document.querySelector('[data-nc-turn="you"]')).toBeNull();
+
+    // The phase change after `turn/start` refetches `planner-run`; the entry
+    // is gone from it, and the row is the sentence's one renderer now.
+    listed = false;
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: queryKeys.plannerRun(CARD.id) });
+    });
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-turn="you"]')?.textContent).toContain('sent once');
+    });
+    expect(screen.getAllByText('sent once')).toHaveLength(1);
+    expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
+  });
+
+  /*
    * #1505 PR4 — the compare-and-swap reaches the wire.
    *
    * The revision is the entry's, read from the page the reader was shown, not

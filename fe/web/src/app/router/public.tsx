@@ -412,11 +412,24 @@ export function useConversationStore(
      unknown — initial pending, a failed read, or a query that was collected
      after the drawer closed. Once any query data exists, the server wins even
      when its answer is genuinely empty. */
+  /*
+   * #1625 P2 — rule 3 applied to the kernel's own row. The drain writes the
+   * projection row (`item_uuid` = the entry id) and emits `harness.item.added`
+   * BEFORE `turn/start` goes out; the queue region stops listing the entry only
+   * when `planner-run` is refetched on the phase change AFTER `turn/start`
+   * answers. For that one round trip the same sentence has two renderers, so
+   * the row steps aside exactly as the echo does: an entry the queue region is
+   * currently listing is drawn there and nowhere else. The moment the entry
+   * leaves `pending` the row is visible again. Only the rendered transcript is
+   * filtered — `serverTurns` below still sees the row, so the echo it
+   * reconciles away is retired at once and the send's high-water mark is the
+   * real one.
+   */
   const serverEntries = useMemo(
     () => history.data === undefined
       ? registry.turnsOf(cardId).filter((entry) => !isOptimisticConversationTurn(entry))
-      : buildTranscript(items),
-    [cardId, history.data, items, registry],
+      : buildTranscript(items.filter((row) => row.item_uuid === null || !pendingQueueIds.has(row.item_uuid))),
+    [cardId, history.data, items, pendingQueueIds, registry],
   );
   const serverTurns = useMemo(
     () => history.data === undefined
