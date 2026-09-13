@@ -36,5 +36,7 @@ mod track_template_tracks;
 
 #[path = "cases/track_templates_read.rs"]
 mod track_templates_read;
+#[path = "cases/track_templates_site_dir.rs"]
+mod track_templates_site_dir;
 #[path = "cases/track_vcs.rs"]
 mod track_vcs;

@@ -24,13 +24,16 @@
 //! ## The `id` alphabet, and why `/` is not in it
 //!
 //! An id matches `^[a-z0-9][a-z0-9-]*$`. The kernel's built-in ids carry no
-//! prefix; the `site/` prefix (operator-supplied templates) and the `plugin/`
-//! prefix are **reserved** for #1635 S5, which composes them *outside* the
-//! front matter — a file's own `id` never names its origin. Rejecting `/` here
-//! is what keeps a builtin file from claiming an operator id. The plugin-side
-//! alphabet (`TemplateDescriptor::validate`, `^[a-z0-9][a-z0-9._-]{0,63}$`) is
-//! wider than this one — it admits `.` and `_` — but neither admits `/`, so
-//! neither side can spell the other's prefix.
+//! prefix; the `site/` prefix (operator-supplied templates, #1635 S5 —
+//! `templates::SITE_PREFIX`, composed by the loader from the file stem) and
+//! the still-reserved `plugin/` prefix live *outside* the front matter — a
+//! file's own `id` never names its origin. Rejecting `/` here is what keeps a
+//! builtin file from spelling `site/…`; what keeps an operator file from
+//! shadowing a builtin id is the other half — the loader composes its key as
+//! `site/<stem>`, so the file's own `id` is never a key. The plugin-side
+//! alphabet (`TemplateDescriptor::validate`, `^[a-z0-9][a-z0-9._-]{0,63}$`)
+//! is wider than this one — it admits `.` and `_` — but neither admits `/`,
+//! so neither side can spell the `site/` prefix.
 
 use serde::Deserialize;
 

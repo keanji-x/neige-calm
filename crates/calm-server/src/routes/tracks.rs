@@ -950,11 +950,13 @@ fn user_visible_track(track: &Track) -> bool {
 /// whole-body call has not already rejected. Two reviewers independently failed
 /// to construct an input that reaches it.
 ///
-/// `Internal`, not `BadRequest`: every byte here comes from a template file
-/// compiled into the binary and no caller can influence it, so a failure is a
-/// kernel defect rather than a bad request. (`prepare_fork_report` answers
-/// `BadRequest` for the same checks because its input is another track's user
-/// content.)
+/// `Internal`, not `BadRequest`: every byte here comes from a roster file — one
+/// compiled into the binary, or (#1635 S5) an operator file under
+/// `--templates-dir` that the boot already ran through this same
+/// [`compile_template`] and would have refused to start on — and no request
+/// can influence it, so a failure is a kernel defect rather than a bad
+/// request. (`prepare_fork_report` answers `BadRequest` for the same checks
+/// because its input is another track's user content.)
 ///
 /// #1635 S4 — the roster is a parameter, not a global: it is
 /// `RouteState.templates`, captured before the create transaction's closure,
@@ -969,16 +971,20 @@ fn prepare_template_report(
     compile_template(template)
 }
 
-/// Compile one **built-in roster** entry: recipe bytes in, validated report
-/// plus task declarations out.
+/// Compile one **roster** entry: recipe bytes in, validated report plus task
+/// declarations out.
 ///
-/// #1321 S3 — the one compiler for the roster half. Two callers reach it:
-/// `POST /api/tracks` through [`prepare_template_report`], and
+/// #1321 S3 — the one compiler for the roster half. Three callers reach it:
+/// `POST /api/tracks` through [`prepare_template_report`],
 /// `GET /api/track-templates` (`routes::track_templates::current_definition`),
 /// which projects the picker's task list off the result rather than re-parsing
-/// the rendered body. Method for "two": `grep -rn "compile_template(" crates/`
-/// returns three lines — this definition and those two calls — and `crates/`
-/// holds every workspace member, so a Rust caller cannot be outside it.
+/// the rendered body, and — since #1635 S5 — the boot loader
+/// (`templates::TemplateRoster::load_site_file`), which runs it over every
+/// operator file so a `site/` entry that would 500 here never reaches the
+/// roster. Method for "three": `grep -rn "compile_template(" crates/` returns
+/// six lines — this definition, those three calls, this sentence, and one
+/// `#[cfg(test)]` call in this file's own tests — and `crates/` holds every
+/// workspace member, so a production caller cannot be outside it.
 ///
 /// This governs the roster half only. User-authored recipes (#1292) are
 /// validated at their write boundary in `routes::track_recipes`, which answers
@@ -986,7 +992,10 @@ fn prepare_template_report(
 /// that does not compile is a kernel defect and stays `Internal`. Both
 /// eventually run the same [`prepare_initial_report_payload`] core; what
 /// differs is which failures each side can produce and how it answers them.
-pub(super) fn compile_template(template: &Template) -> Result<InitialReportSnapshot> {
+///
+/// `pub(crate)` for the boot loader; it was `pub(super)` while the two
+/// request-time callers were the only ones.
+pub(crate) fn compile_template(template: &Template) -> Result<InitialReportSnapshot> {
     prepare_initial_report_payload(template.key(), template.recipe())
 }
 
@@ -2693,7 +2702,12 @@ async fn start_planner_harness(
 /// same four things, and a tuple made
 /// `.2` vs `.3` — declarations vs diagnostics, both `Vec`s — a positional
 /// question.
-pub(super) struct InitialReportSnapshot {
+///
+/// `pub(crate)` only because [`compile_template`] returns it and the #1635 S5
+/// boot loader (`crate::templates`) calls that; the fields stay private to
+/// this module, so outside `routes` the value can be held and dropped, not
+/// read.
+pub(crate) struct InitialReportSnapshot {
     payload: TrackReportPayload,
     doc: ReportDoc,
     declarations: Vec<calm_types::report_blocks::tasks::TaskDeclaration>,
@@ -2728,6 +2742,14 @@ impl InitialReportSnapshot {
             .filter(|block| block.kind == calm_types::report_blocks::KIND_TASK)
             .map(|block| &block.payload)
             .collect())
+    }
+
+    /// #1635 S5 — the compiled (projected) body, the exact text the persist
+    /// funnel (`track_report::write::write_report_row_and_project_tx`) runs
+    /// `check_document` over. The boot loader checks the same text so an
+    /// operator file passes at boot iff it would pass at create.
+    pub(crate) fn body(&self) -> &str {
+        &self.payload.body
     }
 }
 

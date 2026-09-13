@@ -112,9 +112,16 @@ pub struct RouteState {
     /// admits `template_id` against it, `GET /api/track-templates` lists it,
     /// the area default-template check consults it. `&'static` because the
     /// entries are borrowed across a create transaction and the admitted key's
-    /// bytes are what `tracks.template_id` stores. Today always
-    /// [`crate::templates::TemplateRoster::builtin`]; S5 substitutes a roster
-    /// merged with an operator directory here, and nothing downstream changes.
+    /// bytes are what `tracks.template_id` stores.
+    ///
+    /// In production this is [`crate::templates::TemplateRoster::for_boot`]'s
+    /// value, built by [`AppState::boot`] before storage is opened and handed
+    /// to [`AppState::new`]: the builtin entries, plus one `site/<stem>`
+    /// entry per file under `--templates-dir` when that flag was given (#1635
+    /// S5). `from_parts` carries
+    /// [`crate::templates::TemplateRoster::builtin`]; the `fixtures`-gated
+    /// [`AppState::with_templates_dir`] puts a merged roster here through the
+    /// same `for_boot`. Nothing downstream tells the two kinds apart.
     pub templates: &'static crate::templates::TemplateRoster,
     /// #1620 — hook ingest appends Terminal-card signals to the live renderer
     /// entry instead of projecting worker state.
@@ -1102,6 +1109,30 @@ impl AppState {
         self
     }
 
+    /// #1635 S5 test seam — the roster `--templates-dir <dir>` would give this
+    /// process, on a `from_parts` state.
+    ///
+    /// Goes through [`crate::templates::TemplateRoster::for_boot`], the same
+    /// function [`AppState::boot`] calls, so an integration test exercises the
+    /// production loader (file listing, front matter, `id == stem`, the
+    /// `site/` prefix, the compile and header checks) and not a
+    /// re-implementation of it. What it does not exercise is the boot order
+    /// (roster before storage) and the hand-over into [`AppState::new`];
+    /// those are `main.rs`'s tests, on [`AppState::boot`] itself.
+    /// Panics with the loader's own error on a directory that does not load —
+    /// the fail-closed cases are unit tests in `crate::templates`, where the
+    /// error variants are nameable; this seam is for the happy path.
+    ///
+    /// Only `RouteState.templates` reads the roster, so nothing else is
+    /// rebuilt. Placed after a complete function, per the warning on
+    /// [`Self::with_system_area_mint_rendezvous`].
+    #[cfg(feature = "fixtures")]
+    pub fn with_templates_dir(mut self, dir: &std::path::Path) -> Self {
+        self.route.templates = crate::templates::TemplateRoster::for_boot(Some(dir))
+            .unwrap_or_else(|error| panic!("with_templates_dir({}): {error}", dir.display()));
+        self
+    }
+
     #[cfg(feature = "fixtures")]
     fn rebuild_operation_runtime(&mut self) {
         let route_repo: Arc<dyn RouteRepo> = self.raw.clone();
@@ -1178,6 +1209,37 @@ impl AppState {
         &self.route.write
     }
 
+    /// The production boot, in the order that keeps a refused configuration
+    /// free of persistent side effects (#1635 S5):
+    ///
+    ///   1. the template roster — `--templates-dir` is read and validated
+    ///      here, fail-closed, before anything is created; the error names
+    ///      the offending file and `main`'s `?` exits non-zero on it;
+    ///   2. storage — `cfg.db_url`, or an in-memory `SqlxRepo` for `mock`
+    ///      (`sqlite::memory:`, so dev parity with the sqlite backend is
+    ///      exact: cascades, FK enforcement); this is where the database
+    ///      file, its WAL and the migrations come into being;
+    ///   3. [`Self::new`], which creates the plugin / data / workspace
+    ///      directories and spawns the boot tasks.
+    ///
+    /// `main` calls exactly this and nothing else before serving, so a test
+    /// on this function is a test of the boot: `main.rs`'s
+    /// `a_bad_templates_dir_fails_the_boot_before_storage_exists` and
+    /// `a_templates_dir_reaches_the_picker_through_the_boot`.
+    pub async fn boot(cfg: &Config) -> anyhow::Result<Self> {
+        let templates = crate::templates::TemplateRoster::for_boot(cfg.templates_dir.as_deref())
+            .map_err(|error| anyhow::anyhow!("template roster: {error}"))?;
+        let repo: Arc<dyn Repo> = if cfg.db_url == "mock" {
+            tracing::warn!(
+                "calm-server starting with in-memory SqlxRepo (sqlite::memory:, non-durable)"
+            );
+            Arc::new(crate::db::sqlite::SqlxRepo::open("sqlite::memory:").await?)
+        } else {
+            Arc::new(crate::db::sqlite::SqlxRepo::open(&cfg.db_url).await?)
+        };
+        Self::new(cfg, repo, templates).await
+    }
+
     /// Real boot-time constructor. Loads the plugin manifest registry from
     /// `cfg.plugins_dir`, creating the directory if it doesn't exist (fresh
     /// install path), wires up `DaemonClient` + `EventBus` + `PluginHost`,
@@ -1192,7 +1254,18 @@ impl AppState {
     /// count below is a summary, the per-entry detail is in those warnings.
     /// Shared CODEX_HOME seeding stays here because it is colocated with the
     /// CodexClient owner and `AppState::new` is the boot-time-only path.
-    pub async fn new(cfg: &Config, repo: Arc<dyn Repo>) -> anyhow::Result<Self> {
+    ///
+    /// `templates` is a parameter, not read from `cfg` here (#1635 S5): the
+    /// roster is validated by [`Self::boot`] *before* `repo` exists, so a bad
+    /// `--templates-dir` never creates a database. This function only carries
+    /// it onto `RouteState.templates`; `main.rs`'s
+    /// `a_templates_dir_reaches_the_picker_through_the_boot` is what holds
+    /// that hand-over (writing `builtin()` here instead turns it red).
+    pub async fn new(
+        cfg: &Config,
+        repo: Arc<dyn Repo>,
+        templates: &'static crate::templates::TemplateRoster,
+    ) -> anyhow::Result<Self> {
         let isolated_codex_backend = match &cfg.isolated_codex_config {
             Some(path) => {
                 let config: IsolatedCodexConfig = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -1544,13 +1617,12 @@ impl AppState {
             plugin,
             codex,
             // See struct doc for `db_instance_id`: one fresh UUID v4 per
-            // process boot. `AppState::new` is called exactly once from
-            // `main.rs`, so this is the boot-scoped id the rest of the
-            // server hands out via `/api/version`.
+            // process boot. `AppState::new` is called exactly once per boot
+            // (from `AppState::boot`), so this is the boot-scoped id the rest
+            // of the server hands out via `/api/version`.
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
-            // #1635 S4 — the built-in files, parsed at this first use so a
-            // broken one fails the boot here rather than the first create.
-            templates: crate::templates::TemplateRoster::builtin(),
+            // #1635 S4/S5 — the `templates` parameter, built by `Self::boot`.
+            templates,
             card_role_cache,
             track_area_cache,
             card_kind_registry,

@@ -12,9 +12,22 @@
 //!
 //! The roster reaches the routes as `RouteState.templates`
 //! (`&'static TemplateRoster`), so `POST /api/tracks`, `GET /api/track-templates`
-//! and the area default-template check all read one value. Today that value is
-//! always [`TemplateRoster::builtin`]; #1635 S5 substitutes a roster merged
-//! with an operator directory (`site/<stem>` ids) without touching the readers.
+//! and the area default-template check all read one value. That value is
+//! [`TemplateRoster::for_boot`]'s: the builtin entries, followed — when the
+//! process was started with `--templates-dir` (#1635 S5) — by one entry per
+//! `*.md` file in that directory, keyed `site/<stem>`. The readers do not
+//! know which kind an entry is; the prefix is the only difference.
+//!
+//! #1635 S5 — the operator directory is read **once, at boot, fail-closed**:
+//! a file that does not open, does not parse, declares an `id` other than its
+//! stem, collides with an existing key, or whose body
+//! `routes::tracks::compile_template` or the contract-header funnel
+//! (`check_document`) refuses, stops the boot with an error naming the file. There is no "skip the bad file" arm, on purpose — a
+//! shorter picker is a silent failure, and the directory is deployer-trusted
+//! (§6 gap 2), so refusing is the operator's own feedback loop. A builtin id
+//! cannot be overridden from the directory: every site key carries the
+//! `site/` prefix and no file id may contain `/`, so the collision check is
+//! asserted rather than relied on.
 //!
 //! #1321 S3 — the key→recipe association used to be a second `match` beside
 //! the roster (`template_report`), plus a third `#[cfg(test)]` one
@@ -38,6 +51,7 @@ use crate::track_report::TrackReportPayload;
 #[cfg(test)]
 use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// #1635 S4 — the `+++` TOML front matter a template file opens with.
@@ -53,6 +67,16 @@ pub const INVESTIGATION: &str = "investigation";
 /// #1571 — a report-only template: the investment-research contract and its
 /// seven empty sections, no pre-set `task` blocks.
 pub const INVESTMENT_RESEARCH: &str = "investment-research";
+
+/// #1635 S5 — the key prefix of an operator-provided template: a file
+/// `<dir>/<stem>.md` under `--templates-dir` is exposed as `site/<stem>`.
+///
+/// Composed here, by the loader, and never spelled in a file: a front matter
+/// `id` may not contain `/` ([`front_matter`]), and neither may a plugin
+/// manifest's `templates[].id` (`plugin_host::manifest::TemplateDescriptor`,
+/// `^[a-z0-9][a-z0-9._-]{0,63}$`). So no builtin file and no plugin can claim
+/// a `site/…` key, and no site file can claim a builtin one.
+pub const SITE_PREFIX: &str = "site/";
 
 /// The builtin template files, in roster order — which is the order the
 /// picker lists them (`GET /api/track-templates`).
@@ -108,10 +132,12 @@ static BUILTIN_SOURCES: [&str; 4] = [
 /// The accessors hand back `&'static str`, not `&'a str` tied to `&self`: the
 /// bytes live for the whole process, and downstream (`TemplateAdmission::key`,
 /// `TrackInit::Template`, the `tracks.template_id` column) depends on carrying
-/// the roster's own buffer rather than a copy of it. For the builtin roster
+/// the roster's own buffer rather than a copy of it. For the builtin entries
 /// `body` is a slice of the `include_str!` source; `key` and `title` are the
 /// front matter's decoded strings, leaked once per process when the roster is
-/// built (#1635 §6 gap 8 — one roster per process, and tests share it).
+/// built (#1635 §6 gap 8 — one roster per process, and tests share it). For a
+/// `site/` entry (#1635 S5) the file's text is read and leaked once at boot,
+/// `body` is a slice of it, and `key` is the leaked `site/<stem>` string.
 pub struct Template {
     key: &'static str,
     title: &'static str,
@@ -149,19 +175,24 @@ impl Template {
     }
 }
 
-/// The roster: every template `POST /api/tracks` admits, in picker order.
+/// The roster: every template `POST /api/tracks` admits, in picker order —
+/// the builtin entries first, then the `site/` entries in file-name order.
 ///
 /// Like [`Template`], constructible only inside this module's subtree: the
 /// field is private and there is no public constructor, so a downstream module
 /// cannot hand the routes a roster of its own. The one production value is
-/// [`TemplateRoster::builtin`], carried on `RouteState.templates`.
+/// [`TemplateRoster::for_boot`]'s, carried on `RouteState.templates`; it *is*
+/// [`TemplateRoster::builtin`] when no `--templates-dir` was given.
 pub struct TemplateRoster {
     entries: Vec<Template>,
 }
 
 /// Why a set of template sources did not become a roster.
+///
+/// `pub(crate)` since #1635 S5: [`TemplateRoster::for_boot`] hands it to
+/// `AppState::boot`, which turns it into the boot error `main` exits on.
 #[derive(Debug)]
-enum RosterError {
+pub(crate) enum RosterError {
     /// Source number `index` (0-based, in [`BUILTIN_SOURCES`] order) did not
     /// parse as a template file.
     FrontMatter {
@@ -172,6 +203,45 @@ enum RosterError {
     /// would otherwise be ambiguous, and `get` would silently answer with
     /// whichever came first.
     DuplicateId(String),
+    /// #1635 S5 — `--templates-dir` could not be listed (missing, not a
+    /// directory, unreadable).
+    SiteDir { dir: PathBuf, error: std::io::Error },
+    /// #1635 S5 — one file under `--templates-dir` did not become an entry.
+    /// Always names the file: the operator's fix is an edit to it.
+    SiteFile {
+        path: PathBuf,
+        reason: SiteFileError,
+    },
+}
+
+/// #1635 S5 — the ways one `<dir>/<stem>.md` fails to load.
+#[derive(Debug)]
+pub(crate) enum SiteFileError {
+    /// The file name's stem is not UTF-8, so no `site/<stem>` key can be made.
+    StemNotUtf8,
+    /// `read_to_string` failed: permissions, not UTF-8, a directory named
+    /// `*.md`.
+    Read(std::io::Error),
+    /// The text is not a template file ([`front_matter::parse`]).
+    FrontMatter(front_matter::FrontMatterError),
+    /// The front matter's `id` is not the file stem — the one fact that ties
+    /// "the key the picker shows" to "the file the operator edits".
+    IdIsNotStem { id: String, stem: String },
+    /// `site/<stem>` is already on the roster. Unreachable against a builtin
+    /// key (the prefix) and against another file in one directory (stems are
+    /// unique there); reachable through [`TemplateRoster::extend_with_site_files`]
+    /// with two directories, and asserted regardless.
+    Duplicate(String),
+    /// The body does not compile (`routes::tracks::compile_template`): a
+    /// malformed or schema-invalid `neige-block` fence, a `+++` body, a
+    /// document the block layout refuses.
+    Body(String),
+    /// The body fails the contract-header funnel
+    /// (`calm_types::report_contract::check_document`): a header that is not
+    /// on line 1, not canonical, duplicated, or a block 0 that ends inside an
+    /// HTML comment. The create path runs this check at persist time, so
+    /// without it here a file the boot accepted would fail every create.
+    ContractHeader(calm_types::report_contract::HeaderError),
 }
 
 impl std::fmt::Display for RosterError {
@@ -181,6 +251,32 @@ impl std::fmt::Display for RosterError {
                 write!(f, "template source #{index}: {error}")
             }
             Self::DuplicateId(id) => write!(f, "duplicate template id `{id}`"),
+            Self::SiteDir { dir, error } => {
+                write!(f, "templates dir {}: {error}", dir.display())
+            }
+            Self::SiteFile { path, reason } => {
+                write!(f, "template file {}: {reason}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for RosterError {}
+
+impl std::fmt::Display for SiteFileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StemNotUtf8 => write!(f, "file stem is not UTF-8"),
+            Self::Read(error) => write!(f, "{error}"),
+            Self::FrontMatter(error) => write!(f, "{error}"),
+            Self::IdIsNotStem { id, stem } => write!(
+                f,
+                "front matter id `{id}` must equal the file stem `{stem}` (the template is \
+                 exposed as `{SITE_PREFIX}{stem}`)"
+            ),
+            Self::Duplicate(key) => write!(f, "template id `{key}` is already on the roster"),
+            Self::Body(error) => write!(f, "body does not compile: {error}"),
+            Self::ContractHeader(error) => write!(f, "report contract header: {error}"),
         }
     }
 }
@@ -228,6 +324,158 @@ impl TemplateRoster {
             });
         }
         Ok(TemplateRoster { entries })
+    }
+
+    /// #1635 S5 — the roster this boot serves: [`Self::builtin`] when no
+    /// `--templates-dir` was given, otherwise the builtin entries followed by
+    /// one `site/<stem>` entry per `*.md` file in `site_dir`, leaked once.
+    ///
+    /// The one production caller is `AppState::boot`, which runs this before
+    /// it opens storage; `main` exits non-zero on `Err`. The `fixtures`-gated
+    /// `AppState::with_templates_dir` is the test road onto the same function.
+    /// `pub(crate)`, not `pub`: a downstream crate cannot construct or feed
+    /// the roster except through the boot loader, which validates every file
+    /// (`tests/ui/template_roster_constructors_are_private.rs`).
+    ///
+    /// Fail-closed, and every failure names its file: see [`RosterError`] and
+    /// the module doc. There is deliberately no arm that skips a file. A
+    /// successful load logs the site-entry count at `info` — zero is a
+    /// legitimate state (a directory with no `*.md`), and the count is what
+    /// makes it visible.
+    pub(crate) fn for_boot(
+        site_dir: Option<&Path>,
+    ) -> Result<&'static TemplateRoster, RosterError> {
+        let Some(dir) = site_dir else {
+            return Ok(Self::builtin());
+        };
+        let builtin = Self::builtin();
+        let mut roster = builtin.copy_of_entries();
+        roster.extend_with_site_dir(dir)?;
+        tracing::info!(
+            site_templates = roster.entries.len() - builtin.entries.len(),
+            dir = %dir.display(),
+            "operator templates loaded"
+        );
+        Ok(Box::leak(Box::new(roster)))
+    }
+
+    /// A roster holding the same entries as `self` — the same `&'static str`
+    /// buffers, nothing re-leaked. The builtin half of a merged roster is
+    /// therefore pointer-identical to [`Self::builtin`]'s entries.
+    ///
+    /// Private, and not a `Clone` impl: the #1318 privacy story is that a
+    /// `Template` cannot be *named* outside this subtree, and this is inside
+    /// it. Nothing outside can reach a copy either — the only caller is
+    /// [`Self::for_boot`], which leaks the result exactly once.
+    fn copy_of_entries(&self) -> TemplateRoster {
+        TemplateRoster {
+            entries: self
+                .entries
+                .iter()
+                .map(|template| Template {
+                    key: template.key,
+                    title: template.title,
+                    body: template.body,
+                })
+                .collect(),
+        }
+    }
+
+    /// Append every `*.md` file directly under `dir` (non-recursive; sorted by
+    /// file name, so the picker order is deterministic across hosts) as a
+    /// `site/<stem>` entry.
+    fn extend_with_site_dir(&mut self, dir: &Path) -> Result<(), RosterError> {
+        let mut paths: Vec<PathBuf> = Vec::new();
+        let listing = std::fs::read_dir(dir).map_err(|error| RosterError::SiteDir {
+            dir: dir.to_path_buf(),
+            error,
+        })?;
+        for entry in listing {
+            let path = entry
+                .map_err(|error| RosterError::SiteDir {
+                    dir: dir.to_path_buf(),
+                    error,
+                })?
+                .path();
+            // `read_dir` yields directories and non-template files too; only
+            // `*.md` are templates. A directory named `x.md` is not skipped —
+            // it reaches `read_to_string` and fails there, naming itself.
+            if path.extension().and_then(|extension| extension.to_str()) == Some("md") {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+        self.extend_with_site_files(&paths)
+    }
+
+    /// Append one `site/<stem>` entry per path, in the order given. Split from
+    /// [`Self::extend_with_site_dir`] so the duplicate-key arm is reachable
+    /// from a test (two directories, one stem); production always passes one
+    /// directory's sorted listing.
+    ///
+    /// Every failure returns — the `?`s here are the fail-closed contract
+    /// (§5: replacing one with `continue` is the named mutation).
+    fn extend_with_site_files(&mut self, paths: &[PathBuf]) -> Result<(), RosterError> {
+        for path in paths {
+            let template = Self::load_site_file(path)?;
+            if self.entries.iter().any(|entry| entry.key == template.key) {
+                return Err(RosterError::SiteFile {
+                    path: path.clone(),
+                    reason: SiteFileError::Duplicate(template.key.to_string()),
+                });
+            }
+            self.entries.push(template);
+        }
+        Ok(())
+    }
+
+    /// Read, parse, check and compile one operator file into an entry.
+    ///
+    /// The file's text is leaked (the body borrows it); `key` and `title` are
+    /// leaked too. All three leaks happen once per file per boot — and on the
+    /// error paths the process is about to exit, so nothing is retained.
+    ///
+    /// The body gets the two checks the create path runs on a roster body:
+    /// `routes::tracks::compile_template` (the call `POST /api/tracks` and
+    /// `GET /api/track-templates` make on every entry at request time) and
+    /// `check_document` (the contract-header funnel
+    /// `track_report::write::write_report_row_and_project_tx` runs at persist
+    /// time; for the builtin files it is pinned by
+    /// `tests::every_plan_template_carries_the_one_maintenance_contract`).
+    /// So a `site/` entry that reaches the roster does not fail either check
+    /// at request time. What is *not* run here is the task projection the
+    /// create transaction performs after the persist; nothing about a
+    /// template body is known to fail there that these two accept.
+    fn load_site_file(path: &Path) -> Result<Template, RosterError> {
+        let fail = |reason: SiteFileError| RosterError::SiteFile {
+            path: path.to_path_buf(),
+            reason,
+        };
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| fail(SiteFileError::StemNotUtf8))?;
+        let text: &'static str = String::leak(
+            std::fs::read_to_string(path).map_err(|error| fail(SiteFileError::Read(error)))?,
+        );
+        let (front, body) =
+            front_matter::parse(text).map_err(|error| fail(SiteFileError::FrontMatter(error)))?;
+        if front.id != stem {
+            return Err(fail(SiteFileError::IdIsNotStem {
+                id: front.id,
+                stem: stem.to_string(),
+            }));
+        }
+        let template = Template {
+            key: String::leak(format!("{SITE_PREFIX}{stem}")),
+            title: String::leak(front.title),
+            body,
+        };
+        let compiled = crate::routes::tracks::compile_template(&template)
+            .map_err(|error| fail(SiteFileError::Body(error.to_string())))?;
+        calm_types::report_contract::check_document(compiled.body())
+            .map_err(|error| fail(SiteFileError::ContractHeader(error)))?;
+        Ok(template)
     }
 
     /// Every entry, in picker order.
@@ -807,6 +1055,406 @@ mod tests {
         body.push_str("```neige-block table\n{\n  \"rows\": []\n}\n```\n");
         body.push_str("```neige-block task\nnot json\n```\n");
         assert_eq!(template_task_payloads_from_body(&body).len(), before);
+    }
+}
+
+#[cfg(test)]
+mod site_dir_tests {
+    //! #1635 S5 — the `--templates-dir` loader, on hand-built directories.
+    //!
+    //! Every refusal case asserts two things: `Err`, and that the error names
+    //! the offending file (or directory) — an operator reads this message
+    //! once, at boot, and the file path is the whole of the fix instruction.
+    //! The three named mutations (§5): a `?` in `extend_with_site_files`
+    //! replaced by `continue` reddens the refusal cases; the `id == stem`
+    //! check dropped reddens `an_id_that_is_not_the_stem_is_refused`; the
+    //! `site/` prefix dropped reddens `a_site_file_named_like_a_builtin_…`.
+
+    use super::*;
+    use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
+    use calm_types::report_blocks::{KIND_TASK, render_fence};
+    use calm_types::report_contract::canonical_line;
+    use calm_types::track_report::work_brief_header;
+    use clap::Parser;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    /// A body every check accepts: canonical work-brief header on line 1, a
+    /// closed contract comment, prose, one canonical `task` fence.
+    fn valid_body() -> String {
+        let mut body = canonical_line(&work_brief_header());
+        body.push_str("\n<!-- site template: closed contract comment -->\n\n# Plan\n\n");
+        body.push_str("Operator prose.\n\n");
+        body.push_str(&render_fence(
+            KIND_TASK,
+            &json!({
+                "key": "site-task",
+                "kind": "codex",
+                "goal": "Do the operator's thing.",
+                "acceptance": "It is done.",
+                "declared_by": PLANNER_DECLARATION_AUTHOR,
+                "depends_on": [],
+                "no_gate_reason": "site fixture",
+                "ready": false
+            }),
+        ));
+        body
+    }
+
+    fn file(id: &str, title: &str, body: &str) -> String {
+        format!("+++\nid = \"{id}\"\ntitle = \"{title}\"\n+++\n{body}")
+    }
+
+    /// Write `(file name, contents)` pairs into a fresh directory.
+    fn site_dir(files: &[(&str, &str)]) -> TempDir {
+        let dir = TempDir::new().expect("tempdir");
+        for (name, contents) in files {
+            std::fs::write(dir.path().join(name), contents).expect("write template file");
+        }
+        dir
+    }
+
+    /// The production entry point on one directory: `for_boot(Some(dir))`,
+    /// exactly what `AppState::boot` calls. Leaks one roster per call — fine
+    /// for a test, and the reason production calls it once.
+    fn load(dir: &Path) -> Result<&'static TemplateRoster, RosterError> {
+        TemplateRoster::for_boot(Some(dir))
+    }
+
+    /// `Err`, and its message names `path`.
+    #[track_caller]
+    fn assert_refused_naming<T>(result: Result<T, RosterError>, path: &Path) -> String {
+        let error = match result {
+            Ok(_) => panic!("expected a refusal naming {}, got Ok", path.display()),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains(&path.display().to_string()),
+            "the error must name {}; got: {message}",
+            path.display()
+        );
+        message
+    }
+
+    #[test]
+    fn site_files_become_site_entries_after_the_builtins_in_file_name_order() {
+        let body = valid_body();
+        let dir = site_dir(&[
+            ("b.md", &file("b", "Site B", &body)),
+            ("a.md", &file("a", "Site A", &body)),
+            ("notes.txt", "not a template; not `.md`, so not read"),
+        ]);
+        let roster = load(dir.path()).expect("valid site dir");
+        let builtin = TemplateRoster::builtin();
+        let keys: Vec<&str> = roster.entries().iter().map(Template::key).collect();
+        let mut expected: Vec<&str> = builtin.entries().iter().map(Template::key).collect();
+        expected.extend(["site/a", "site/b"]);
+        assert_eq!(
+            keys, expected,
+            "builtin first, then site files sorted by name"
+        );
+
+        for (key, title) in [("site/a", "Site A"), ("site/b", "Site B")] {
+            let template = roster.get(key).expect("site entry admits");
+            assert_eq!(template.title(), title);
+            let recipe = template.recipe();
+            assert_eq!(recipe.summary, title);
+            assert_eq!(
+                recipe.body, body,
+                "{key}: the recipe body is the file after the front matter"
+            );
+            assert!(
+                std::ptr::eq(template.key().as_ptr(), template.key.as_ptr()),
+                "{key}: key() is the entry's own buffer"
+            );
+        }
+        // The unprefixed spelling is not a key: a request for `a` is a 400.
+        assert!(roster.get("a").is_none());
+        assert!(roster.get("b").is_none());
+
+        // The builtin half is the builtin roster's own entries — same buffers,
+        // nothing re-leaked (§6 gap 8).
+        for (merged, original) in roster.entries().iter().zip(builtin.entries()) {
+            assert!(std::ptr::eq(merged.key.as_ptr(), original.key.as_ptr()));
+            assert!(std::ptr::eq(merged.title.as_ptr(), original.title.as_ptr()));
+            assert!(std::ptr::eq(merged.body.as_ptr(), original.body.as_ptr()));
+        }
+    }
+
+    #[test]
+    fn for_boot_without_a_dir_is_the_builtin_roster_itself() {
+        let roster = TemplateRoster::for_boot(None).expect("no dir is fine");
+        assert!(std::ptr::eq(roster, TemplateRoster::builtin()));
+    }
+
+    #[test]
+    fn for_boot_with_a_dir_serves_builtin_and_site_entries() {
+        let body = valid_body();
+        let dir = site_dir(&[("x.md", &file("x", "Site X", &body))]);
+        let roster = TemplateRoster::for_boot(Some(dir.path())).expect("valid site dir");
+        assert!(!std::ptr::eq(roster, TemplateRoster::builtin()));
+        assert_eq!(
+            roster.entries().len(),
+            TemplateRoster::builtin().entries().len() + 1
+        );
+        assert!(roster.get(ISSUE_DEVELOPMENT).is_some());
+        assert_eq!(roster.get("site/x").expect("site/x").title(), "Site X");
+    }
+
+    /// `Config { templates_dir: Some(bad) }` → the boot's roster construction
+    /// is `Err`; `AppState::boot` propagates it and `main` exits non-zero.
+    /// (`main.rs`'s `a_bad_templates_dir_fails_the_boot_before_storage_exists`
+    /// drives `AppState::boot` itself and asserts no database was created.)
+    #[test]
+    fn a_config_with_a_bad_templates_dir_fails_for_boot() {
+        let dir = site_dir(&[("x.md", "# no front matter\n")]);
+        let cfg = crate::config::Config::parse_from([
+            "calm-server",
+            "--templates-dir",
+            dir.path().to_str().expect("utf-8 tempdir"),
+        ]);
+        assert_eq!(cfg.templates_dir.as_deref(), Some(dir.path()));
+        let error = TemplateRoster::for_boot(cfg.templates_dir.as_deref())
+            .err()
+            .expect("a bad templates dir must fail the boot");
+        assert!(
+            error.to_string().contains("x.md"),
+            "the boot error must name the file: {error}"
+        );
+    }
+
+    #[test]
+    fn a_dir_with_no_md_files_is_ok_and_adds_nothing() {
+        let dir = site_dir(&[("README.txt", "nothing here")]);
+        let roster = load(dir.path()).expect("an empty site set is not an error");
+        assert_eq!(
+            roster.entries().len(),
+            TemplateRoster::builtin().entries().len()
+        );
+    }
+
+    #[test]
+    fn a_missing_or_unlistable_dir_is_refused_naming_it() {
+        let parent = TempDir::new().expect("tempdir");
+        let missing = parent.path().join("does-not-exist");
+        let message = assert_refused_naming(load(&missing), &missing);
+        assert!(message.starts_with("templates dir "), "{message}");
+
+        // A file where a directory was expected.
+        let not_a_dir = parent.path().join("file-not-dir");
+        std::fs::write(&not_a_dir, "x").unwrap();
+        assert_refused_naming(load(&not_a_dir), &not_a_dir);
+    }
+
+    #[test]
+    fn a_file_without_front_matter_is_refused_naming_it() {
+        let dir = site_dir(&[("x.md", "# no front matter at all\n")]);
+        let path = dir.path().join("x.md");
+        let message = assert_refused_naming(load(dir.path()), &path);
+        assert!(
+            message.contains("must open with a `+++`"),
+            "the front matter parser's own reason: {message}"
+        );
+    }
+
+    #[test]
+    fn a_file_with_unparsable_front_matter_is_refused_naming_it() {
+        let dir = site_dir(&[
+            ("ok.md", &file("ok", "Fine", &valid_body())),
+            ("x.md", "+++\nid = x\ntitle = \"X\"\n+++\n# body\n"),
+        ]);
+        let path = dir.path().join("x.md");
+        let message = assert_refused_naming(load(dir.path()), &path);
+        assert!(message.contains("front matter"), "{message}");
+    }
+
+    #[test]
+    fn an_id_that_is_not_the_stem_is_refused_naming_it() {
+        let dir = site_dir(&[("x.md", &file("y", "Y", &valid_body()))]);
+        let path = dir.path().join("x.md");
+        let message = assert_refused_naming(load(dir.path()), &path);
+        assert!(
+            message.contains("id `y` must equal the file stem `x`"),
+            "{message}"
+        );
+        assert!(
+            message.contains("site/x"),
+            "names the key it would have had: {message}"
+        );
+    }
+
+    /// Two files whose front matter says the same id: at most one of them has
+    /// that id as its stem, so the other is refused by the stem rule before
+    /// any duplicate could exist.
+    #[test]
+    fn two_files_declaring_one_id_are_refused_by_the_stem_rule() {
+        let body = valid_body();
+        let dir = site_dir(&[
+            ("x.md", &file("x", "X", &body)),
+            ("y.md", &file("x", "X again", &body)),
+        ]);
+        let path = dir.path().join("y.md");
+        let message = assert_refused_naming(load(dir.path()), &path);
+        assert!(
+            message.contains("must equal the file stem `y`"),
+            "{message}"
+        );
+    }
+
+    /// The duplicate arm itself, reached the one way it can be: the same
+    /// stem in two directories, fed through `extend_with_site_files`.
+    #[test]
+    fn one_stem_from_two_directories_is_a_duplicate_naming_the_second() {
+        let body = valid_body();
+        let first = site_dir(&[("x.md", &file("x", "First", &body))]);
+        let second = site_dir(&[("x.md", &file("x", "Second", &body))]);
+        let paths = [first.path().join("x.md"), second.path().join("x.md")];
+        let mut roster = TemplateRoster::builtin().copy_of_entries();
+        let error = roster
+            .extend_with_site_files(&paths)
+            .expect_err("one key twice");
+        let message = error.to_string();
+        assert!(
+            message.contains(&paths[1].display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains("template id `site/x` is already on the roster"),
+            "{message}"
+        );
+        assert!(
+            matches!(
+                error,
+                RosterError::SiteFile {
+                    reason: SiteFileError::Duplicate(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_file_is_refused_naming_it() {
+        // A directory named `x.md`: `read_to_string` fails on it, and the
+        // extension filter deliberately does not skip it.
+        let dir = site_dir(&[]);
+        let as_dir = dir.path().join("x.md");
+        std::fs::create_dir(&as_dir).unwrap();
+        assert_refused_naming(load(dir.path()), &as_dir);
+
+        // A regular file with no read permission. Only meaningful when the
+        // test process is not privileged; a root run reads it regardless and
+        // this half says so instead of asserting on a value it cannot produce.
+        let dir = site_dir(&[("y.md", &file("y", "Y", &valid_body()))]);
+        let unreadable = dir.path().join("y.md");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&unreadable).is_ok() {
+            eprintln!("privileged test process: the mode-000 half of this case is skipped");
+        } else {
+            assert_refused_naming(load(dir.path()), &unreadable);
+        }
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[test]
+    fn a_body_with_a_malformed_task_fence_is_refused_naming_it() {
+        let mut body = valid_body();
+        body.push_str("\n```neige-block task\nnot json\n```\n");
+        let dir = site_dir(&[("x.md", &file("x", "X", &body))]);
+        let path = dir.path().join("x.md");
+        let message = assert_refused_naming(load(dir.path()), &path);
+        assert!(message.contains("body does not compile"), "{message}");
+    }
+
+    #[test]
+    fn a_body_with_a_schema_invalid_task_fence_is_refused_naming_it() {
+        let mut body = valid_body();
+        body.push_str(&render_fence(KIND_TASK, &json!({ "key": "Not A Key" })));
+        let dir = site_dir(&[("x.md", &file("x", "X", &body))]);
+        let path = dir.path().join("x.md");
+        let message = assert_refused_naming(load(dir.path()), &path);
+        assert!(message.contains("body does not compile"), "{message}");
+    }
+
+    /// The persist-time funnel, run at boot: a header that is not canonical
+    /// (here: spaces inside the JSON) or not on line 1 would otherwise pass
+    /// `compile_template` and then fail every create from this template.
+    #[test]
+    fn a_body_failing_the_contract_header_funnel_is_refused_naming_it() {
+        let canonical = canonical_line(&work_brief_header());
+        let spaced = canonical.replacen("\"version\":1", "\"version\": 1", 1);
+        assert_ne!(spaced, canonical, "the fixture must be non-canonical");
+        let body = format!("{spaced}\n\n# Plan\n\nprose\n");
+        let dir = site_dir(&[("x.md", &file("x", "X", &body))]);
+        let path = dir.path().join("x.md");
+        let message = assert_refused_naming(load(dir.path()), &path);
+        assert!(message.contains("report contract header"), "{message}");
+
+        let misplaced = format!("# Plan\n\n{canonical}\n\nprose\n");
+        let dir = site_dir(&[("x.md", &file("x", "X", &misplaced))]);
+        let path = dir.path().join("x.md");
+        let message = assert_refused_naming(load(dir.path()), &path);
+        assert!(message.contains("report contract header"), "{message}");
+    }
+
+    /// The stem alphabet is the id alphabet, enforced by `id == stem` plus
+    /// the front matter's own id rule: an upper-case or underscored file name
+    /// cannot become a key.
+    #[test]
+    fn a_stem_outside_the_id_alphabet_is_refused_naming_it() {
+        for name in ["Site-X.md", "a_b.md", "x y.md"] {
+            let stem = name.strip_suffix(".md").unwrap();
+            let dir = site_dir(&[(name, &file(stem, "X", &valid_body()))]);
+            let path = dir.path().join(name);
+            let message = assert_refused_naming(load(dir.path()), &path);
+            assert!(message.contains("must match"), "{name}: {message}");
+        }
+    }
+
+    /// A site file named like a builtin is a *different* entry, keyed under
+    /// `site/`, and the builtin keeps its key and its buffers. Dropping the
+    /// prefix would make this a duplicate-key refusal.
+    #[test]
+    fn a_site_file_named_like_a_builtin_is_a_distinct_site_entry() {
+        let name = format!("{ISSUE_DEVELOPMENT}.md");
+        let dir = site_dir(&[(
+            name.as_str(),
+            &file(
+                ISSUE_DEVELOPMENT,
+                "Operator's issue development",
+                &valid_body(),
+            ),
+        )]);
+        let roster = load(dir.path()).expect("a builtin-named site file is not a collision");
+        let builtin = TemplateRoster::builtin()
+            .get(ISSUE_DEVELOPMENT)
+            .expect("builtin");
+        let kept = roster
+            .get(ISSUE_DEVELOPMENT)
+            .expect("the builtin key still admits");
+        assert!(
+            std::ptr::eq(kept.key.as_ptr(), builtin.key.as_ptr()),
+            "the builtin entry must be untouched, not overridden"
+        );
+        assert_eq!(kept.title(), builtin.title());
+        let site_key = format!("{SITE_PREFIX}{ISSUE_DEVELOPMENT}");
+        let site = roster
+            .get(&site_key)
+            .expect("the site entry admits under site/");
+        assert_eq!(site.title(), "Operator's issue development");
+        assert_ne!(site.recipe().body, builtin.recipe().body);
+        assert_eq!(
+            roster
+                .entries()
+                .iter()
+                .filter(|t| t.key().ends_with(ISSUE_DEVELOPMENT))
+                .count(),
+            2,
+            "one builtin, one site entry"
+        );
     }
 }
 
