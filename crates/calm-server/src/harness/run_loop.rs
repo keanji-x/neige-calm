@@ -1643,7 +1643,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     last_turn_id: target_turn_id,
                 };
                 *inner.interrupt_deadline.lock().await = None;
-                persist_turn_outcome(inner, &turn).await;
+                persist_turn_outcome(inner, &turn_id, &turn).await;
                 return persist_snapshot_stamping_issued_head(inner).await;
             }
             let state = inner.state.lock().await.clone();
@@ -1661,10 +1661,10 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             }
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
             *inner.state.lock().await = HarnessState::TurnCompleted {
-                last_turn_id: turn_id,
+                last_turn_id: turn_id.clone(),
             };
             *inner.interrupt_deadline.lock().await = None;
-            persist_turn_outcome(inner, &turn).await;
+            persist_turn_outcome(inner, &turn_id, &turn).await;
             return persist_snapshot_stamping_issued_head(inner).await;
         }
         // #1625 P1: the turn-outcome row is written only from `TurnCompleted`
@@ -1890,7 +1890,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
         // thread and routinely exceeds the window; `tokenUsage.last` is the
         // occupancy proxy.
         //
-        // Storage is the runtime snapshot, not `harness_items`. The reading is
+        // Storage is the runtime snapshot, not the transcript table. The reading is
         // latest-wins — one value per runtime, superseded on every response —
         // which is exactly what `worker_sessions.handle_state` already is:
         // rewritten in place by `persist_snapshot_inner`, no event, no track-vcs
@@ -3650,21 +3650,19 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
 /// per turn), and `fe/core/events/invalidation-plan.ts` invalidates
 /// `['harness-items', card_id]` on `harness.phase.changed` instead.
 ///
+/// `turn_id` is the id the arm accepted the completion under — the frame's
+/// own `id`, or `last_turn_id` when the frame carries none — and not a
+/// re-read of the frame: the arm's fallback is what lets an id-less
+/// completion advance the FSM, and a row written under the same resolution
+/// is the only row that names the turn the FSM actually finished. The id is
+/// the row's whole identity (a later per-turn grouping keys on it), so it is
+/// the row's `turn_id` column even when `params` has none.
+///
 /// Best-effort on purpose: a failed insert is logged, never propagated. The
 /// FSM has already moved to `TurnCompleted` and the snapshot commit that
 /// follows is what unblocks the next turn; a missing outcome line must not
 /// stall the harness.
-async fn persist_turn_outcome(inner: &Arc<Inner>, turn: &Value) {
-    // `turn_id` is the row's whole identity here — the id is what a future
-    // per-turn grouping keys on — so a frame without one writes nothing.
-    let Some(turn_id) = turn.get("id").and_then(Value::as_str) else {
-        tracing::warn!(
-            worker_session_id = %inner.worker_session_id,
-            card_id = %inner.card_id,
-            "planner harness skipping turn/completed row: the turn object carries no id"
-        );
-        return;
-    };
+async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) {
     // Same guard as the `turn/plan/updated` arm: the transcript table's
     // `thread_id` column is NOT NULL, and `Notification::TurnCompleted.thread_id` is
     // `unwrap_or_default()` upstream, so the harness's own thread is the only

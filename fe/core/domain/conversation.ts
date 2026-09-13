@@ -1573,14 +1573,24 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
    the fields the outcome line reads are named; everything else passes through
    `z.object`'s default stripping. `codexErrorInfo` is a schema `oneOf` — a
    bare enum string, or a single-key object for the variants that carry an
-   HTTP status — so it is accepted as either and reduced to one token below. */
+   HTTP status — so it is accepted as either and reduced to one token below.
+
+   Lenient by design below `status`: a malformed `error` (no `message`, a
+   non-string `message`, a `codexErrorInfo` of a shape this code does not
+   know, or `error` not being an object at all) costs only the detail it
+   sits in, never the line. The row is the record that the turn ended; the
+   error fields decorate it. `status` is `z.unknown()` rather than
+   `z.string()` for the same reason: a status that is present but not a
+   string is still a turn that ended in a way this code does not know, and
+   the function below renders exactly that. Absence stays the reader's
+   problem to report (see `transcriptRowToTurnOutcome`). */
 const turnOutcomeParamsSchema = z.object({
-  id: z.string().optional(),
-  status: z.string(),
+  id: z.string().optional().catch(undefined),
+  status: z.unknown(),
   error: z.object({
-    message: z.string(),
-    codexErrorInfo: z.union([z.string(), z.record(z.string(), z.unknown())]).nullish(),
-  }).nullish(),
+    message: z.string().optional().catch(undefined),
+    codexErrorInfo: z.union([z.string(), z.record(z.string(), z.unknown())]).nullish().catch(undefined),
+  }).nullish().catch(undefined),
 });
 
 function codexErrorCode(info: string | Readonly<Record<string, unknown>> | null | undefined): string | undefined {
@@ -1593,11 +1603,16 @@ function codexErrorCode(info: string | Readonly<Record<string, unknown>> | null 
 /**
  * #1625 P1 — the outcome line for one `turn/completed` row.
  *
- * `null` only when the row is not one (wrong method) or its params cannot be
- * read as a turn at all — no `status`, unparseable JSON. A status that *is*
- * there but is none of `completed | interrupted | failed` is NOT dropped: it
- * comes back as `failed` with `rawStatus` set, because a turn that ended in a
- * way this code does not know is exactly the case the reader should see.
+ * `null` in exactly four cases, and the first three are "this is not a turn
+ * outcome row at all": the method is not `turn/completed`; `params` is not
+ * parseable JSON or not a JSON object; the object has no `status` key. The
+ * fourth is a row with no turn id anywhere — neither the row's `turn_id`
+ * column nor a string `id` in `params` — which cannot be attributed to a
+ * turn. Nothing else returns `null`: a `status` that is present but is none
+ * of `completed | interrupted | failed` (or is not even a string) comes back
+ * as `failed` with `rawStatus` set, and a malformed `error` block only loses
+ * the detail it sits in, because a turn that ended in a way this code does
+ * not know is exactly the case the reader should see.
  *
  * `atMs` is the kernel's `created_at_ms`, the same clock every other row is
  * stamped from, rather than codex's `completedAt` (whole seconds, a different
@@ -1611,7 +1626,8 @@ export function transcriptRowToTurnOutcome(item: HarnessItem): ConversationTurnO
   try { parsed = JSON.parse(item.params); } catch { return null; }
   const result = turnOutcomeParamsSchema.safeParse(parsed);
   if (!result.success) return null;
-  const { status, error } = result.data;
+  const { status: wireStatus, error } = result.data;
+  if (wireStatus === undefined) return null;
   const turnId = item.turn_id ?? result.data.id;
   if (turnId === undefined) return null;
   const message = error?.message;
@@ -1621,10 +1637,12 @@ export function transcriptRowToTurnOutcome(item: HarnessItem): ConversationTurnO
     ...(message === undefined ? {} : { message }),
     ...(code === undefined ? {} : { code }),
   };
-  if (status === 'completed' || status === 'interrupted' || status === 'failed') {
-    return { ...base, status };
+  if (wireStatus === 'completed' || wireStatus === 'interrupted' || wireStatus === 'failed') {
+    return { ...base, status: wireStatus };
   }
-  return { ...base, status: 'failed', rawStatus: status };
+  // Not a string: show what the wire actually said, as text.
+  const rawStatus = typeof wireStatus === 'string' ? wireStatus : JSON.stringify(wireStatus);
+  return { ...base, status: 'failed', rawStatus };
 }
 
 /**
@@ -1648,7 +1666,7 @@ export function transcriptRowToTurnOutcome(item: HarnessItem): ConversationTurnO
  * Honest about what this does and does not buy: `harnessItemToTurns`,
  * `harnessItemToActivity` and `transcriptRowToTurnOutcome` check the method
  * themselves, and must keep doing so (they are exported and called directly —
- * `harnessItemToTurns` from `web/src/app/router/public.tsx`). So *deleting*
+ * `harnessItemToTurns` from `fe/web/src/app/router/public.tsx`). So *deleting*
  * this gate leaves the suite green: the converters still reject everything it
  * rejects. *Narrowing* it is a different matter — drop `turn/completed` from
  * the list and outcome rows are gone before `transcriptRowToTurnOutcome` sees
@@ -1668,7 +1686,7 @@ function isTranscriptMethod(method: string): boolean {
 /**
  * The transcript: messages and actions in one list, in the order they happened.
  *
- * Three collapses, all of them there because the raw list is unreadable without
+ * Two collapses, both there because the raw list is unreadable without
  * them:
  *
  * 1. **`started` and `completed` are one line, not two.** They are paired on
@@ -1722,27 +1740,41 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
     return entry === undefined ? [] : [entry];
   });
 
+  return retireFollowedThoughts(entries);
+}
+
+/**
+ * Collapse 2 from `buildTranscript`, as the one rule both callers apply: a
+ * finished `Thought` survives only while nothing but turn outcomes follows
+ * it. A run of thoughts collapses into its last one, and the run goes
+ * entirely once anything else — a message, another activity, an optimistic
+ * echo — comes after it.
+ *
+ * A turn outcome does not count as "something followed": it is not a new
+ * thing the agent did, and the turn's last thought stays the last thing that
+ * happened, whether the turn then completed, was stopped, or failed.
+ *
+ * Shared rather than restated because the two callers see the same rows at
+ * different moments. `mergeTranscript` sees `[you, Thought, Stopped]` plus an
+ * optimistic echo; when the echo's server row lands, `buildTranscript` sees
+ * `[you, Thought, Stopped, you]`. If the two did not agree on which thought
+ * is "followed", the thought line would be drawn under the echo and then
+ * vanish the moment the row arrived — a copy of the rule that checked only
+ * the last entry did exactly that.
+ */
+function retireFollowedThoughts(entries: readonly TranscriptEntry[]): readonly TranscriptEntry[] {
   return entries.filter((entry, index) => {
     if (entry.author !== 'activity' || entry.verb !== 'Thought') return true;
-    // A turn outcome does not count as "something followed": it is not a new
-    // thing the agent did, and the turn's last thought stays the last thing
-    // that happened, whether the turn then completed or failed.
-    const next = entries.slice(index + 1).find((later) => later.author !== 'turn');
-    if (next === undefined) return true;
-    // Collapse a run of thoughts into the last one, and drop the run entirely
-    // once anything else follows it.
-    return false;
+    return !entries.slice(index + 1).some((later) => later.author !== 'turn');
   });
 }
 
-/** Append optimistic user echoes without leaving a completed thought at the tail. */
+/** Append optimistic user echoes, retiring the thought they now follow. */
 export function mergeTranscript(
   serverEntries: readonly TranscriptEntry[],
   echoes: readonly ConversationTurn[],
 ): readonly TranscriptEntry[] {
-  const confirmed = echoes.length === 0 ? serverEntries : serverEntries.filter((entry, index) =>
-    index !== serverEntries.length - 1 || entry.author !== 'activity' || entry.verb !== 'Thought');
-  return [...confirmed, ...echoes];
+  return echoes.length === 0 ? serverEntries : retireFollowedThoughts([...serverEntries, ...echoes]);
 }
 
 const ECHO_RECONCILIATION_LOOKBACK = 50;

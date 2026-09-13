@@ -253,8 +253,11 @@ function policies(): PolicyMap {
    * delivery signal for the per-turn outcome row. The kernel writes the
    * `turn/completed` row before the snapshot commit that emits
    * `TurnRunning → TurnCompleted` (`run_loop.rs`, `persist_turn_outcome`), and
-   * emits no `harness.item.added` for it: one refetch per turn end, rather
-   * than an extra event plus a track-vcs commit per turn.
+   * emits no `harness.item.added` for it. The cost is a transcript refetch on
+   * EVERY phase change — three per ordinary turn cycle (issuing, running,
+   * completed) and on the interrupt cycle alike — since this plan cannot tell
+   * the one transition that carries a row from the ones that do not; what it
+   * buys is one fewer event plus one fewer track-vcs commit per turn.
    */
   'harness.phase.changed': plan((event) => result([
     ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],

@@ -1022,7 +1022,39 @@ describe('transcriptRowToTurnOutcome', () => {
   it('is null for any other method and for params that are not a turn', () => {
     expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'failed' }, { method: 'item/completed' }))).toBeNull();
     expect(transcriptRowToTurnOutcome(outcome('not json'))).toBeNull();
+    expect(transcriptRowToTurnOutcome(outcome([]))).toBeNull();
     expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9' }))).toBeNull();
+  });
+
+  /* #1625 P1 review — a malformed detail must not take the line with it: the
+     row is the record that the turn ended, the error fields only decorate it. */
+  describe('keeps the failed line when only the detail is malformed', () => {
+    it('error without a message: the code survives, no message', () => {
+      expect(transcriptRowToTurnOutcome(outcome({
+        id: 'turn-9', status: 'failed', error: { codexErrorInfo: 'x' },
+      }))).toEqual({ id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', code: 'x', atMs: 5000 });
+    });
+
+    it('codexErrorInfo of an unknown shape: only the code is dropped', () => {
+      expect(transcriptRowToTurnOutcome(outcome({
+        id: 'turn-9', status: 'failed', error: { message: 'boom', codexErrorInfo: 5 },
+      }))).toEqual({ id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', message: 'boom', atMs: 5000 });
+    });
+
+    it('error that is not an object at all: the line survives bare', () => {
+      expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'failed', error: 'boom' })))
+        .toEqual({ id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', atMs: 5000 });
+    });
+
+    it('a status that is not a string is an unknown status, shown as failed with what the wire said', () => {
+      expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 7 }))).toEqual({
+        id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', rawStatus: '7', atMs: 5000,
+      });
+    });
+
+    it('a params id that is not a string falls back to the row column', () => {
+      expect(transcriptRowToTurnOutcome(outcome({ id: 9, status: 'completed' }))?.turnId).toBe('turn-9');
+    });
   });
 });
 
@@ -1039,6 +1071,38 @@ describe('mergeTranscript', () => {
 
   it('keeps a completed tail thought until an echo exists', () => {
     expect(mergeTranscript([thought], [])).toEqual([thought]);
+  });
+
+  /* #1625 P1 review — the two functions apply one rule. Before, `mergeTranscript`
+     looked only at the last server entry, so a thought sitting under a turn
+     outcome was drawn with the echo and popped out once the echo's server row
+     landed and `buildTranscript` retired it. */
+  it('agrees with buildTranscript about a thought under a turn outcome once the echo lands as a row', () => {
+    const line = (entry: TranscriptEntry): string =>
+      entry.author === 'activity' ? entry.verb : entry.author === 'turn' ? entry.status : entry.text;
+    const userRow = (id: number, text: string) => ({
+      id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn-1',
+      item_uuid: `u${id}`, item_type: 'userMessage', method: 'item/completed',
+      params: JSON.stringify({ completedAtMs: 1000 + id, item: { content: [{ text }] } }), created_at_ms: 1000 + id,
+    });
+    const thoughtRow = (id: number) => ({
+      id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn-1',
+      item_uuid: `u${id}`, item_type: 'reasoning', method: 'item/completed',
+      params: JSON.stringify({ completedAtMs: 1000 + id, item: { text: 'hmm' } }), created_at_ms: 1000 + id,
+    });
+    const stoppedRow = (id: number) => ({
+      id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn-1',
+      item_uuid: null, item_type: null, method: 'turn/completed',
+      params: JSON.stringify({ id: 'turn-1', status: 'interrupted' }), created_at_ms: 1000 + id,
+    });
+    const beforeTheRow = [userRow(1, 'go'), thoughtRow(2), stoppedRow(3)];
+    const server = buildTranscript(beforeTheRow);
+    expect(server.map(line)).toEqual(['go', 'Thought', 'interrupted']);
+
+    const withEcho = mergeTranscript(server, [{ id: 'echo', author: 'you', text: 'next', atMs: 1004 }]);
+    const afterTheRow = buildTranscript([...beforeTheRow, userRow(4, 'next')]);
+    expect(withEcho.map(line)).toEqual(['go', 'interrupted', 'next']);
+    expect(afterTheRow.map(line)).toEqual(withEcho.map(line));
   });
 });
 
