@@ -879,6 +879,16 @@ mod tests {
         );
         assert_eq!(check_document(&report.body), Ok(Some(research_header())));
         assert!(report.report_startup_read_required());
+        // #1635 v5 / §6.4 — it reads as written because of its birth summary,
+        // not its body: the same body with an empty summary is structurally
+        // unwritten under D3 (block 0 is the contract, then seven bare declared
+        // H1s). If the empty research skeleton should ever read as unwritten,
+        // that needs a birth-summary baseline — another design, not a tweak
+        // to the predicate.
+        assert!(
+            !TrackReportPayload::new("", report.body.clone()).report_startup_read_required(),
+            "the empty research skeleton is unwritten by shape; only the summary makes it written"
+        );
 
         let slices = split_body(&report.body);
         assert!(

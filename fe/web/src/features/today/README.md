@@ -173,9 +173,9 @@ Running is ambience and lives in the panel.
   approximation, and the shape of the approximation matters for PR2: it is a
   statement about the report's **current content**, not about its history. It
   consults no history (`TrackReportPayload::report_startup_read_required` is a
-  pure comparison against the canonical pair), so it flips on a human edit as
-  readily as on an agent's, and **it flips back** — restore `summary`/`body`
-  byte-for-byte to canonical and it reads `false` again, `doc_rev` and `blocks`
+  structural read of the current text, #1635 D3), so it flips on a human edit
+  as readily as on an agent's, and **it flips back** — restore `summary`/`body`
+  to the empty skeleton and it reads `false` again, `doc_rev` and `blocks`
   notwithstanding.
 
   **So it is not a durable "the summary has run" marker, and must not be used
@@ -219,14 +219,14 @@ Running is ambience and lives in the panel.
   Three things about it are decisions rather than details:
 
   * **It sends no document, and must never grow a parameter for one.** The
-    empty-state predicate is a byte-for-byte comparison against
-    `TrackReportPayload::initial()` (or the frozen pre-header body), ~2.8 kB
-    of kernel-owned text: the default body file
+    empty-state predicate is structural (#1635 D3), but the canonical empty
+    document is ~2.8 kB of kernel-owned text: the default body file
     `crates/calm-types/src/report/default.md` (a contract header line, the
     prose contract, four empty H1s). A client posting its own
-    copy to `POST /api/tracks/{id}/report` would be mirror code, and one byte
-    out fails *silently*: a 200, a rewritten report, and an empty state that
-    never appears.
+    copy to `POST /api/tracks/{id}/report` would be mirror code, and a wrong
+    copy fails *silently*: a skeletal body flips the bit and drops the
+    maintenance contract; content beyond the skeleton leaves a 200, a
+    rewritten report, and an empty state that never appears.
   * **It is destructive**, so it goes through `ConfirmDialog` and
     `useDeleteConfirm`, the same shape and the same failure surface as the
     track delete on this route. The copy lives in `ui/confirm-dialog/copy.ts`

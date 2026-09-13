@@ -12,11 +12,12 @@ describe('the Today report reset (#1343)', () => {
    * The endpoint takes no request body, and this pins the absence.
    *
    * It is the one property of this operation worth a test. The canonical empty
-   * document is ~2.6 kB of kernel-owned text and the empty-state predicate
-   * compares it byte for byte, so a `body` appearing here would mean someone
-   * had started sending a client-side copy of it — which fails silently when
-   * it is one byte out: a 200, a rewritten report, and an empty state that
-   * never appears.
+   * document is ~2.8 kB of kernel-owned text and the empty-state predicate is
+   * structural (#1635 D3), so a `body` appearing here would mean someone had
+   * started sending a client-side copy of it — which fails silently: a
+   * skeletal body flips the bit and drops the maintenance contract; content
+   * beyond the skeleton leaves a 200, a rewritten report, and an empty state
+   * that never appears.
    */
   it('sends no document and no body at all', () => {
     const operation = todayReportResetOperation();

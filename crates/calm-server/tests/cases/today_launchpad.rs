@@ -1228,8 +1228,9 @@ async fn a_crdt_materialized_canonical_report_still_reads_as_unwritten() {
     );
 }
 
-/// The other half of INV-TODAYDOC-003: once `summary` or `body` differs from
-/// the canonical initial, the document is what the page shows.
+/// The other half of INV-TODAYDOC-003: once `summary` or `body` holds content
+/// beyond the empty skeleton (the D3 predicate reads it as written), the
+/// document is what the page shows.
 #[tokio::test]
 async fn a_written_report_reads_as_having_content() {
     let b = boot().await;

@@ -1877,7 +1877,7 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
         serde_json::from_value(report_card.payload).expect("forked report payload");
     assert!(
         payload.report_startup_read_required(),
-        "forked report content must differ from TrackReportPayload::initial()"
+        "forked report content must read as written under the D3 predicate"
     );
 
     let (ctx, registry, identity) = planner_tool_channel(&boot, &target_track_id).await;

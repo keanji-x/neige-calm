@@ -35,10 +35,11 @@ export const todayLaunchpadSchema = z.object({
    * Whether the report's CURRENT content differs from a freshly-minted one.
    *
    * The name is the contract, and it is not "has ever been written": the
-   * server compares `summary` + `body` against the canonical freshly-minted
-   * pair and consults no history, so text restored byte-for-byte to that pair
-   * reads `false` again whatever happened in between. `doc_rev` and `blocks`
-   * are ignored, so a CRDT-materialized placeholder also reads `false`.
+   * server reads `summary` + `body` structurally (#1635 D3: empty summary,
+   * block 0 only HTML comments, later blocks bare declared H1s) and consults
+   * no history, so text restored to that empty skeleton reads `false` again
+   * whatever happened in between. `doc_rev` and `blocks` are ignored, so a
+   * CRDT-materialized placeholder also reads `false`.
    *
    * It is therefore an approximation of "has today's summary run" in both
    * directions: any writer flips it, including a human editing by hand, and a
@@ -128,15 +129,15 @@ export function nameTodaySummaryConversation(trackId: string, row: Conversation)
  * Put today's report back to its canonical empty state (#1343).
  *
  * **It sends no document, and there must never be a parameter for one.** The
- * empty-state predicate is a byte-for-byte comparison against the kernel's
- * `TrackReportPayload::initial()` (or the frozen pre-header body), whose body
- * is the kernel's default body file `crates/calm-types/src/report/default.md`
- * (a contract header line, the prose contract, four empty H1s). A client that
- * posted its own copy of those
+ * empty-state predicate is structural (#1635 D3), but the canonical empty
+ * document is the kernel's default body file
+ * `crates/calm-types/src/report/default.md` (a contract header line, the
+ * prose contract, four empty H1s). A client that posted its own copy of those
  * bytes to `POST /api/tracks/{id}/report` would be mirror code for kernel-owned
- * text, and one byte out fails *silently*: a 200, a rewritten report, and an
- * empty state that never appears. So the kernel writes its own canonical
- * document and nothing about it crosses the wire.
+ * text, and a wrong copy fails *silently*: a skeletal body flips the bit and
+ * drops the maintenance contract; content beyond the skeleton leaves a 200, a
+ * rewritten report, and an empty state that never appears. So the kernel
+ * writes its own canonical document and nothing about it crosses the wire.
  *
  * It is destructive — the day's report is discarded — and it touches the report
  * only: no conversation is created, reset or deleted.
