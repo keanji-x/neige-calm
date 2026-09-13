@@ -90,23 +90,42 @@ pub struct PlannerSteerResponse {
     pub turn_id: String,
 }
 
-/// #1625 P3 — 409 body for a steer that delivered nothing because there was
-/// no turn to deliver into.
+/// #1625 P3 — 409 body for a steer that delivered nothing, or nothing known.
 ///
-/// One `code` for both ways of getting here — the harness saw no running turn
-/// and did not ask, or codex was asked and said no (the turn had just ended,
-/// or a different one was running) — because they license the same next move
-/// and nothing else: the message is still queued, with the `rev` the client
-/// read, and it goes with the next turn. `error` says which of the two it
-/// was, for the person reading the notice; `phase` is the harness's own
-/// phase at the moment it answered.
+/// Two codes. `planner_steer_no_running_turn` covers both ways of KNOWING
+/// nothing was delivered — the harness saw no running turn and did not ask,
+/// or codex was asked and said no (the turn had just ended, or a different
+/// one was running) — because they license the same next move and nothing
+/// else: the message is still queued, with the `rev` the client read, and it
+/// goes with the next turn. `planner_steer_unknown_outcome` (review round 1)
+/// is codex NOT answering — the request timed out or the connection dropped
+/// — where the message is queued again just the same but may ALSO have
+/// reached the turn; it is its own code because "nothing happened" would be
+/// a claim this side cannot make. `error` says which, for the person reading
+/// the notice; `phase` is the harness's own phase at the moment it answered.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PlannerSteerRefusedBody {
     pub error: String,
-    /// Always `planner_steer_no_running_turn`.
+    /// `planner_steer_no_running_turn` or `planner_steer_unknown_outcome`.
     pub code: String,
     pub entry_id: String,
     pub phase: HarnessPhaseTag,
+}
+
+/// #1625 P3 review round 1 — the steer route's 409, which has two typed
+/// shapes told apart by `code`: `PlannerInputStaleBody` (`planner_input_stale`,
+/// the compare-and-swap lost; carries the entry's current text and rev) and
+/// `PlannerSteerRefusedBody` (`planner_steer_no_running_turn` /
+/// `planner_steer_unknown_outcome`, the entry is still queued). utoipa binds
+/// one body per status, so the pair is declared as this untagged union; the
+/// stale arm is produced by `refusal_response`, shared with PATCH/DELETE, and
+/// the refused arm by `steer_refused_response`. A third 409, the harness
+/// shutting down, is a plain `ErrorBody` with code `conflict`.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum PlannerSteerConflictBody {
+    Stale(PlannerInputStaleBody),
+    Refused(PlannerSteerRefusedBody),
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -377,10 +396,11 @@ pub(crate) async fn delete_planner_input(
         (status = 401, description = "Unauthenticated", body = ErrorBody),
         (status = 403, description = "Not `X-Calm-Actor: user`, or the card is not a planner codex card", body = ErrorBody),
         (status = 404, description = "Card not found, or the entry is no longer in the pending queue", body = ErrorBody),
-        // Three codes share this status; `PlannerSteerRefusedBody` documents
-        // the steer's own (`planner_steer_no_running_turn`: the entry stays
-        // queued and drains into the next turn).
-        (status = 409, description = "Stale rev (`planner_input_stale`); no running turn or codex refused (`planner_steer_no_running_turn`); shutting down", body = PlannerInputStaleBody),
+        // Four codes share this status; `PlannerSteerConflictBody` names the
+        // two typed shapes, and `PlannerSteerRefusedBody` the steer's own
+        // codes (the entry stays queued and drains into the next turn).
+        (status = 409, description = "By `code`: `planner_input_stale`; `planner_steer_no_running_turn`; \
+                                      `planner_steer_unknown_outcome`; `conflict` (shutting down)", body = PlannerSteerConflictBody),
         (status = 500, description = "Internal error", body = ErrorBody),
         (status = 503, description = "Harness command channel saturated — retry shortly", body = ErrorBody),
     ),
@@ -424,6 +444,7 @@ pub(crate) async fn steer_planner_input(
         Err(SteerRefused::NoRunningTurn { phase }) => Ok(steer_refused_response(
             entry_id,
             phase,
+            "planner_steer_no_running_turn",
             format!(
                 "no turn is running right now (phase `{}`), so there is nothing to steer; the \
                  message is still queued and will go with the next turn",
@@ -433,9 +454,19 @@ pub(crate) async fn steer_planner_input(
         Err(SteerRefused::NotTaken { message, phase }) => Ok(steer_refused_response(
             entry_id,
             phase,
+            "planner_steer_no_running_turn",
             format!(
                 "codex did not take the message into the running turn ({message}); it is still \
                  queued and will go with the next turn"
+            ),
+        )),
+        Err(SteerRefused::Unanswered { message, phase }) => Ok(steer_refused_response(
+            entry_id,
+            phase,
+            "planner_steer_unknown_outcome",
+            format!(
+                "codex did not answer in time ({message}), so it is not known whether the message \
+                 reached the running turn; it is queued again and will go with the next turn"
             ),
         )),
     }
@@ -450,15 +481,20 @@ fn phase_wire_name(phase: HarnessPhaseTag) -> String {
         .unwrap_or_default()
 }
 
-fn steer_refused_response(entry_id: String, phase: HarnessPhaseTag, error: String) -> Response {
+fn steer_refused_response(
+    entry_id: String,
+    phase: HarnessPhaseTag,
+    code: &str,
+    error: String,
+) -> Response {
     (
         StatusCode::CONFLICT,
-        Json(PlannerSteerRefusedBody {
+        Json(PlannerSteerConflictBody::Refused(PlannerSteerRefusedBody {
             error,
-            code: "planner_steer_no_running_turn".into(),
+            code: code.into(),
             entry_id,
             phase,
-        }),
+        })),
     )
         .into_response()
 }

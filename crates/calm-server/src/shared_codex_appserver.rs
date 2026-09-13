@@ -851,6 +851,11 @@ pub struct FakeSharedCodexAppServer {
     /// active turn" and "expected turn mismatch" — as opposed to not
     /// answering at all. `None` accepts.
     reject_turn_steer: std::sync::Mutex<Option<String>>,
+    /// #1625 P3 review round 1 — answer the next `turn/steer` the way the
+    /// client does when codex does NOT answer: a `CodexAppServer` timeout
+    /// error, as opposed to `reject_turn_steer`'s refusal. The request is
+    /// still recorded, because on the wire it did go out.
+    fail_turn_steer: AtomicBool,
     /// Same shape as `turn_start_return_hook`: hold `turn/steer` inside the
     /// daemon, after it has recorded the request, until the test releases it.
     turn_steer_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
@@ -882,6 +887,7 @@ impl FakeSharedCodexAppServer {
             turn_start_return_hook: std::sync::Mutex::new(None),
             steered_turns: std::sync::Mutex::new(Vec::new()),
             reject_turn_steer: std::sync::Mutex::new(None),
+            fail_turn_steer: AtomicBool::new(false),
             turn_steer_return_hook: std::sync::Mutex::new(None),
         }
     }
@@ -1834,6 +1840,11 @@ impl SharedCodexAppServer {
                 .clone();
             if let Some(message) = scripted {
                 return Err(CalmError::CodexRefused(message));
+            }
+            if fake.fail_turn_steer.load(Ordering::SeqCst) {
+                return Err(CalmError::CodexAppServer(
+                    "request turn/steer timed out".into(),
+                ));
             }
             return match self.active_turn_id_for_thread(thread_id) {
                 None => Err(CalmError::CodexRefused(
@@ -4190,6 +4201,17 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake shared codex reject-steer mutex poisoned") =
                 message.map(ToOwned::to_owned);
+        }
+    }
+
+    /// Make every subsequent `turn/steer` go UNANSWERED — the client's own
+    /// timeout error, the sentence `request_until` produces — or answered
+    /// again with `false`. The outcome on codex's side is, by construction,
+    /// unknown to the caller.
+    #[cfg(feature = "fixtures")]
+    pub fn fail_turn_steer_for_test(&self, fail: bool) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.fail_turn_steer.store(fail, Ordering::SeqCst);
         }
     }
 

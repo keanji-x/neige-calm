@@ -1,5 +1,5 @@
 {
-  "description": "harness.queue.changed (#1505 PR2); body text intentionally absent, same reason as harness.user_message.enqueued. `change` is one of edited|deleted|steered|dropped — this file shows `deleted`; `steered` is emitted by the run loop once codex takes a queued entry into the running turn (#1625 P3), `dropped` by the load-time queue truncation (#1505 PR2b), and all four spellings are pinned by calm_types::event::tests::harness_queue_change_wire_spellings. `actor` duplicates the envelope actor because the websocket frame does not carry it.",
+  "description": "harness.queue.changed (#1505 PR2); body text intentionally absent, same reason as harness.user_message.enqueued. `change` is one of edited|deleted|steered|restored|dropped — this file shows `deleted`; `steered` is emitted by the run loop once codex takes a queued entry into the running turn (#1625 P3), `restored` when that entry goes back to the queue (codex refused or never answered the steer, or the turn ended before codex recorded the input), `dropped` by the load-time queue truncation (#1505 PR2b), and all five spellings are pinned by calm_types::event::tests::harness_queue_change_wire_spellings. `actor` duplicates the envelope actor because the websocket frame does not carry it.",
   "wire": {
     "ev": "harness.queue.changed",
     "data": {

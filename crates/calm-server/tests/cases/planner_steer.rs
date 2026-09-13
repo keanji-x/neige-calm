@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use calm_server::codex_appserver::{InputItem, Notification};
-use calm_server::harness::{HarnessState, IssuingKind};
+use calm_server::db::prelude::*;
+use calm_server::harness::{HarnessSnapshot, HarnessState, IssuingKind, Observation};
 use calm_server::shared_codex_appserver::TurnStartReturnHook;
 use serde_json::{Value, json};
 
@@ -136,11 +137,105 @@ fn texts_of(items: &[InputItem]) -> Vec<String> {
 }
 
 fn complete_turn(boot: &Boot, turn_id: &str) {
+    end_turn(boot, turn_id, "completed");
+}
+
+fn end_turn(boot: &Boot, turn_id: &str, status: &str) {
     boot.daemon
         .emit_notification_for_test(Notification::TurnCompleted {
             thread_id: SEED_THREAD_ID.to_string(),
-            turn: json!({ "id": turn_id, "status": "completed" }),
+            turn: json!({ "id": turn_id, "status": status }),
         });
+}
+
+async fn wait_for_turn_completed(boot: &Boot) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if matches!(
+            boot.harness.state_for_test().await,
+            HarnessState::TurnCompleted { .. }
+        ) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the completion never landed; state={:?}",
+            boot.harness.state_for_test().await
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The queue as the snapshot ON DISK lists it — what a restart would read,
+/// not the live harness.
+async fn persisted_pending_ids(boot: &Boot) -> Vec<String> {
+    let stored = boot
+        .repo
+        .session_projection_by_id(&boot.worker_session_id)
+        .await
+        .unwrap()
+        .expect("the worker session row")
+        .handle_state_json
+        .expect("a persisted snapshot");
+    HarnessSnapshot::from_value_strict(stored)
+        .pending_entries()
+        .iter()
+        .filter_map(|entry| entry.id().map(|id| id.as_str().to_string()))
+        .collect()
+}
+
+/// Codex's echo of a steered message: `item/started` then `item/completed`,
+/// both naming the projection by `clientId` and the running turn — what
+/// `record_user_prompt_and_emit_turn_item` emits once the turn's next model
+/// request records the pending input.
+fn echo_steered(boot: &Boot, entry_id: &str, codex_item_id: &str, text: &str) {
+    let item = json!({
+        "id": codex_item_id,
+        "clientId": entry_id,
+        "type": "userMessage",
+        "content": [{ "type": "text", "text": format!("User says:\n{text}") }]
+    });
+    for method in ["item/started", "item/completed"] {
+        boot.daemon.emit_notification_for_test(Notification::Item {
+            method: method.into(),
+            params: json!({
+                "threadId": SEED_THREAD_ID,
+                "turn": { "id": FIRST_TURN },
+                "item": item.clone()
+            }),
+        });
+    }
+}
+
+/// Until the transcript lists a row under codex's item id — the projection
+/// upgraded in place.
+async fn wait_for_upgrade(boot: &Boot, codex_item_id: &str) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let rows = user_rows(&transcript(boot).await);
+        if rows.iter().any(|row| row["item_uuid"] == codex_item_id) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the echo to upgrade the projection: {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// `(entry_id, change)` of every `harness.queue.changed`, oldest first.
+async fn queue_changes(boot: &Boot) -> Vec<(String, String)> {
+    boot.event_payloads("harness.queue.changed")
+        .await
+        .iter()
+        .map(|payload| {
+            (
+                payload["entry_id"].as_str().unwrap_or_default().to_string(),
+                payload["change"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -197,8 +292,22 @@ async fn a_queued_entry_is_steered_into_the_running_turn_and_its_row_is_upgraded
         "a steer starts no turn"
     );
 
-    // The queue no longer lists it.
+    // The queue no longer lists it — live, and on disk right now, not at
+    // the turn's completion (review round 1, 3c): a restart in between must
+    // not re-drain a sentence codex holds.
     assert!(pending(&boot).await.is_empty());
+    assert!(
+        persisted_pending_ids(&boot).await.is_empty(),
+        "the snapshot on disk is persisted without the entry before the 200"
+    );
+    // And it emptied the queue, so the debounce window is gone with it
+    // (§4.5, the departure rule; review round 1, 3a).
+    assert!(!boot.harness.debounce_hard_fire_for_test().await);
+    assert_eq!(
+        boot.harness.debounce_timestamps_set_for_test().await,
+        (false, false),
+        "an empty queue has no pending window to keep"
+    );
 
     // The departure is announced, with the actor who asked.
     let changes = boot.event_payloads("harness.queue.changed").await;
@@ -304,28 +413,24 @@ async fn a_queued_entry_is_steered_into_the_running_turn_and_its_row_is_upgraded
     assert_eq!(params.get("_projection"), None);
 }
 
-/// The double-delivery test. Once codex has the entry, the queue must not:
-/// after the running turn completes, the tick finds nothing to drain, and a
-/// later message starts a turn that carries only itself.
+/// The double-delivery test. Once codex has RECORDED the entry (its echo
+/// arrived), the queue must not: after the running turn completes, the tick
+/// finds nothing to drain, and a later message starts a turn that carries
+/// only itself. The echo is part of the premise since review round 1: a
+/// completion with no echo is codex having dropped the input, and the
+/// completion sweep restores it on purpose (the tests under "a steer codex
+/// accepted, then dropped").
 #[tokio::test]
 async fn a_steered_entry_is_not_drained_again_when_the_turn_completes() {
     let boot = boot_with_a_running_turn().await;
     let entry_id = queue_one(&boot, "steered once").await;
     let (status, body) = steer(&boot, &entry_id, 0).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    echo_steered(&boot, &entry_id, "item-user-codex-3", "steered once");
+    wait_for_upgrade(&boot, "item-user-codex-3").await;
 
     complete_turn(&boot, FIRST_TURN);
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        if matches!(
-            boot.harness.state_for_test().await,
-            HarnessState::TurnCompleted { .. }
-        ) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the completion never landed");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    wait_for_turn_completed(&boot).await;
     // Several ticks' worth: an entry still queued would hard-fire on the
     // first of them.
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -550,10 +655,11 @@ async fn stale_rev_unknown_id_and_agents_are_refused_the_way_the_other_verbs_ref
 }
 
 /// Codex says no: the entry is taken, asked about, refused, and put back at
-/// the head with its id and rev; the row that said it was sent is gone and
-/// was never announced.
+/// the head with its id and rev; no row was ever written for it (review
+/// round 1: the row follows codex's yes), and its return is announced so a
+/// client that read the queue during the RPC learns the entry is back.
 #[tokio::test]
-async fn a_codex_refusal_puts_the_entry_back_at_the_head_and_deletes_its_row() {
+async fn a_codex_refusal_puts_the_entry_back_at_the_head_and_announces_the_return() {
     let boot = boot_with_a_running_turn().await;
     let second = queue_one(&boot, "second").await;
     let third = queue_one(&boot, "third").await;
@@ -588,23 +694,34 @@ async fn a_codex_refusal_puts_the_entry_back_at_the_head_and_deletes_its_row() {
     assert_eq!(listed[0]["rev"], json!(0));
     assert_eq!(listed[0]["text"], json!("third"));
 
-    // No row, no announcement.
+    // No row was written, so none is announced.
     let rows = user_rows(&transcript(&boot).await);
     assert!(
         rows.iter().all(|row| row["item_uuid"] != third),
-        "the projection of a refused steer is deleted: {rows:?}"
+        "a refused steer leaves no transcript row: {rows:?}"
     );
     assert!(
         boot.event_payloads("harness.item.added")
             .await
             .iter()
             .all(|payload| payload["item_uuid"] != third),
-        "and it was never announced"
+        "and none was announced"
     );
-    assert!(
-        boot.event_payloads("harness.queue.changed")
-            .await
-            .is_empty()
+    // The return IS announced: the entry was out of the queue for the length
+    // of the RPC, and any client that read `/planner/run` inside that window
+    // is told to read again. Both keys of the plan ride on this one event
+    // (`fe/core/events/invalidation-plan.ts`: planner-run + harness-items).
+    let changes = boot.event_payloads("harness.queue.changed").await;
+    assert_eq!(
+        changes,
+        vec![json!({
+            "worker_session_id": boot.worker_session_id,
+            "card_id": boot.planner_card.id.as_str(),
+            "track_id": boot.planner_card.track_id.as_str(),
+            "entry_id": third,
+            "change": "restored",
+            "actor": {"kind": "User"},
+        })]
     );
 
     // The paired green: codex accepting again takes the same entry at the
@@ -612,6 +729,338 @@ async fn a_codex_refusal_puts_the_entry_back_at_the_head_and_deletes_its_row() {
     boot.daemon.reject_turn_steer_for_test(None);
     let (status, body) = steer(&boot, &third, 0).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        queue_changes(&boot).await,
+        vec![
+            (third.clone(), "restored".into()),
+            (third, "steered".into())
+        ]
+    );
+}
+
+/// Codex says nothing: the request times out. The entry goes back exactly as
+/// on a refusal, but the 409 carries its own code, because on this side it is
+/// NOT known whether the turn took the message (review round 1, finding 4).
+#[tokio::test]
+async fn a_steer_codex_never_answered_is_a_typed_unknown_outcome_and_the_entry_is_back() {
+    let boot = boot_with_a_running_turn().await;
+    let entry_id = queue_one(&boot, "did it land?").await;
+    boot.daemon.fail_turn_steer_for_test(true);
+
+    let (status, body) = steer(&boot, &entry_id, 0).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(
+        body["code"],
+        json!("planner_steer_unknown_outcome"),
+        "not `planner_steer_no_running_turn`: that code claims nothing happened, and \
+         this side cannot claim it — {body}"
+    );
+    assert_eq!(body["entry_id"], json!(entry_id));
+    assert_eq!(body["phase"], json!("turn_running"));
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("not known")
+            && message.contains("timed out")
+            && message.contains("next turn"),
+        "the sentence says the outcome is unknown and what happens next: {message}"
+    );
+
+    // Codex WAS asked (the frame went out; only the answer is missing).
+    assert_eq!(boot.daemon.steered_turns_for_test().len(), 1);
+    let listed = pending(&boot).await;
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0]["entry_id"], json!(entry_id));
+    assert_eq!(listed[0]["rev"], json!(0));
+    assert!(
+        user_rows(&transcript(&boot).await)
+            .iter()
+            .all(|row| row["item_uuid"] != entry_id),
+        "no row: codex has not said yes"
+    );
+    assert_eq!(
+        queue_changes(&boot).await,
+        vec![(entry_id.clone(), "restored".into())]
+    );
+
+    // The paired green, and the paired code: codex answering no is the other
+    // code, on the same entry at the same rev.
+    boot.daemon.fail_turn_steer_for_test(false);
+    boot.daemon.reject_turn_steer_for_test(Some(NO_ACTIVE_TURN));
+    let (status, body) = steer(&boot, &entry_id, 0).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], json!("planner_steer_no_running_turn"));
+    boot.daemon.reject_turn_steer_for_test(None);
+    let (status, body) = steer(&boot, &entry_id, 0).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+}
+
+/// Review round 1, 3b — the documented order: the queue's refusals are
+/// answered before the phase is looked at. An unknown id while nothing is
+/// running is 404, not the steer's 409; a stale rev in the same phase is
+/// `planner_input_stale`, not `planner_steer_no_running_turn`.
+#[tokio::test]
+async fn queue_refusals_win_over_the_phase_gate_when_no_turn_is_running() {
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    let entry_id = queue_one(&boot, "idle").await;
+    assert!(matches!(
+        boot.harness.state_for_test().await,
+        HarnessState::Idle
+    ));
+
+    let (status, body) = steer(&boot, "no-such-entry", 0).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "the entry the person pointed at is not there, whatever the phase: {body}"
+    );
+
+    let (status, body) = steer(&boot, &entry_id, 7).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(
+        body["code"],
+        json!("planner_input_stale"),
+        "the rev they read is stale, whatever the phase: {body}"
+    );
+    assert_eq!(body["rev"], json!(0));
+
+    // The paired case: the entry is there at the rev they read, and THEN the
+    // phase answers.
+    let (status, body) = steer(&boot, &entry_id, 0).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], json!("planner_steer_no_running_turn"));
+    assert_eq!(body["phase"], json!("idle"));
+}
+
+/// Review round 1, 3a — §4.5's departure rule on the steer: taking the only
+/// hard-fire entry out must disarm a queue that still holds a soft
+/// observation, or the turn's completion would be followed by a turn nobody
+/// asked for, carrying the observation alone.
+#[tokio::test]
+async fn steering_the_only_user_entry_out_disarms_a_queue_of_observations() {
+    let boot = boot_with_a_running_turn().await;
+    boot.harness
+        .observe_for_test(
+            Observation::TrackGoal {
+                text: "a soft observation".into(),
+            },
+            None,
+        )
+        .await;
+    let entry_id = queue_one(&boot, "the hard one").await;
+    assert!(
+        boot.harness.debounce_hard_fire_for_test().await,
+        "premise: the send armed the queue"
+    );
+    assert_eq!(
+        pending(&boot).await.len(),
+        1,
+        "the strip lists user entries only"
+    );
+
+    let (status, body) = steer(&boot, &entry_id, 0).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    assert!(
+        !boot.harness.debounce_hard_fire_for_test().await,
+        "nothing hard-fire is left, so the arming must be gone"
+    );
+    assert_eq!(
+        boot.harness.debounce_timestamps_set_for_test().await,
+        (true, true),
+        "the queue is NOT empty, so the surviving observation keeps the window it was \
+         enqueued with"
+    );
+    assert_eq!(boot.harness.pending_len_for_test().await, 1);
+
+    // The consequence the rule exists for: after codex records the entry
+    // and the turn ends, several ticks pass and no turn is issued for the
+    // observation alone.
+    echo_steered(&boot, &entry_id, "item-user-codex-4", "the hard one");
+    wait_for_upgrade(&boot, "item-user-codex-4").await;
+    complete_turn(&boot, FIRST_TURN);
+    wait_for_turn_completed(&boot).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        boot.daemon.turn_start_count_for_test(),
+        1,
+        "a soft observation does not fire a turn on its own"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 — a steer codex accepted, then dropped at the interrupt
+// ---------------------------------------------------------------------------
+
+/// After `restore_steered_entries_codex_dropped` ran for `entry_id`: the
+/// return is announced, the entry goes out once with the next turn under its
+/// own id, and one row stands for it at the end — the drain's, not the
+/// steer's.
+async fn assert_restored_and_delivered_once_by_the_next_turn(
+    boot: &Boot,
+    entry_id: &str,
+    text: &str,
+    steer_row_id: i64,
+) {
+    wait_until("the restored entry to drain into a second turn", || {
+        boot.daemon.turn_start_count_for_test() >= 2
+    })
+    .await;
+    let started = boot.daemon.started_turns_for_test();
+    assert_eq!(started.len(), 2, "{started:?}");
+    let deliveries = started
+        .iter()
+        .flat_map(|(_, items)| texts_of(items))
+        .map(|turn_text| turn_text.matches(text).count())
+        .sum::<usize>();
+    assert_eq!(
+        deliveries, 1,
+        "delivered exactly once across every turn/start: {started:?}"
+    );
+    assert_eq!(
+        boot.daemon.started_turn_client_ids_for_test()[1].as_deref(),
+        Some(entry_id),
+        "the same entry, same id, keyed the next turn"
+    );
+    assert_eq!(boot.daemon.steered_turns_for_test().len(), 1);
+    assert!(pending(&boot).await.is_empty());
+    assert_eq!(
+        queue_changes(boot).await,
+        vec![
+            (entry_id.to_string(), "steered".into()),
+            (entry_id.to_string(), "restored".into()),
+        ],
+        "the audit log says it left and came back"
+    );
+    let restored = boot
+        .event_payloads("harness.queue.changed")
+        .await
+        .into_iter()
+        .find(|payload| payload["change"] == "restored")
+        .unwrap();
+    assert_eq!(
+        restored["actor"],
+        json!({"kind": "Kernel"}),
+        "the completion sweep is the kernel's own doing"
+    );
+    let rows = user_rows(&transcript(boot).await);
+    let keyed = rows
+        .iter()
+        .filter(|row| row["item_uuid"] == entry_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        keyed.len(),
+        1,
+        "one row for the sentence — the drain's, keyed by the same id: {rows:?}"
+    );
+    assert_ne!(
+        keyed[0]["id"].as_i64().unwrap(),
+        steer_row_id,
+        "the steer's row was deleted, not reused: {rows:?}"
+    );
+}
+
+async fn steer_row_id(boot: &Boot, entry_id: &str) -> i64 {
+    user_rows(&transcript(boot).await)
+        .iter()
+        .find(|row| row["item_uuid"] == entry_id)
+        .expect("the steer's projection row")["id"]
+        .as_i64()
+        .unwrap()
+}
+
+/// The MAJOR of review round 1. Codex accepted the steer, then Stop was
+/// pressed before its next model request: codex clears the turn's pending
+/// input on the interrupt, the turn completes `interrupted` with no echo for
+/// the entry, and — before this round — the queue was empty, the row said
+/// the sentence was sent, and it had reached nobody. Now the `TurnCompleted`
+/// arm's interrupt-target branch finds the row still a projection, deletes
+/// it, and puts the entry back so the next turn carries it.
+#[tokio::test]
+async fn an_accepted_steer_the_stop_dropped_is_restored_and_goes_out_with_the_next_turn() {
+    const TEXT: &str = "lost at the stop, once";
+    let boot = boot_with_a_running_turn().await;
+    let entry_id = queue_one(&boot, TEXT).await;
+    let (status, body) = steer(&boot, &entry_id, 0).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let steer_row = steer_row_id(&boot, &entry_id).await;
+
+    // The production Stop path, then codex's answer to it: `turn/completed`
+    // with `status: interrupted` and NO echo for the steered entry.
+    boot.harness.interrupt("user".into()).await.unwrap();
+    assert_eq!(
+        boot.daemon.interrupted_turns_for_test(),
+        vec![(SEED_THREAD_ID.to_string(), FIRST_TURN.to_string())]
+    );
+    end_turn(&boot, FIRST_TURN, "interrupted");
+    // No wait on `TurnCompleted` here: the restored entry hard-fires, so
+    // the phase moves on to the next turn within a tick of the completion.
+
+    assert_restored_and_delivered_once_by_the_next_turn(&boot, &entry_id, TEXT, steer_row).await;
+}
+
+/// The same drop through the OTHER branch of the arm — a completion with no
+/// interrupt pending (a model error ends the turn before its next request;
+/// codex's own watchdog). Both branches call the sweep; a sweep on one
+/// branch only would pass the test above and fail this one.
+#[tokio::test]
+async fn an_accepted_steer_the_turn_failed_under_is_restored_too() {
+    const TEXT: &str = "lost to a failed turn, once";
+    let boot = boot_with_a_running_turn().await;
+    let entry_id = queue_one(&boot, TEXT).await;
+    let (status, body) = steer(&boot, &entry_id, 0).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let steer_row = steer_row_id(&boot, &entry_id).await;
+
+    end_turn(&boot, FIRST_TURN, "failed");
+
+    assert_restored_and_delivered_once_by_the_next_turn(&boot, &entry_id, TEXT, steer_row).await;
+}
+
+/// The inverse, so the sweep cannot be read as "every steered entry comes
+/// back at the interrupt": codex echoed the entry (its next model request
+/// recorded it) BEFORE Stop was pressed. The echo upgraded the row, so the
+/// row is no longer a projection, the sweep leaves it alone, and the entry
+/// is NOT re-queued — re-delivering it would say the sentence twice.
+#[tokio::test]
+async fn an_accepted_steer_codex_recorded_before_the_stop_is_not_restored() {
+    const TEXT: &str = "recorded, then stopped";
+    let boot = boot_with_a_running_turn().await;
+    let entry_id = queue_one(&boot, TEXT).await;
+    let (status, body) = steer(&boot, &entry_id, 0).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let steer_row = steer_row_id(&boot, &entry_id).await;
+
+    echo_steered(&boot, &entry_id, "item-user-codex-9", TEXT);
+    wait_for_upgrade(&boot, "item-user-codex-9").await;
+
+    boot.harness.interrupt("user".into()).await.unwrap();
+    end_turn(&boot, FIRST_TURN, "interrupted");
+    wait_for_turn_completed(&boot).await;
+    // Several ticks' worth: a re-queued entry would hard-fire on the first.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        boot.daemon.turn_start_count_for_test(),
+        1,
+        "nothing was re-queued, so nothing drained"
+    );
+    assert!(pending(&boot).await.is_empty());
+    assert_eq!(
+        queue_changes(&boot).await,
+        vec![(entry_id.clone(), "steered".into())],
+        "no `restored`: codex has the sentence"
+    );
+    let rows = user_rows(&transcript(&boot).await);
+    let upgraded = rows
+        .iter()
+        .find(|row| row["item_uuid"] == "item-user-codex-9")
+        .expect("the upgraded row still stands");
+    assert_eq!(upgraded["id"].as_i64().unwrap(), steer_row, "the same row");
+    assert_eq!(upgraded["turn_id"], FIRST_TURN);
+    assert!(
+        rows.iter().all(|row| row["item_uuid"] != entry_id),
+        "and no projection under the entry id is left beside it: {rows:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -648,6 +1097,14 @@ async fn a_turn_completing_during_the_steer_leaves_the_entry_queued_exactly_once
     assert!(
         boot.harness.pending_entries_for_test().await.is_empty(),
         "taken out before codex was asked"
+    );
+    // … and the snapshot ON DISK still lists it: the removal is persisted
+    // only once codex has said yes, so a crash inside this window re-drains
+    // the entry rather than losing it (the declared crash window).
+    assert_eq!(
+        persisted_pending_ids(&boot).await,
+        vec![entry_id.clone()],
+        "the pre-answer snapshot still lists the entry"
     );
     complete_turn(&boot, FIRST_TURN);
     boot.daemon.reject_turn_steer_for_test(Some(NO_ACTIVE_TURN));

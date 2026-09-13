@@ -36,7 +36,8 @@ use crate::routes::models::{
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
 use crate::routes::planner_input::{
     DeletePlannerInputBody, EditPlannerInputBody, PlannerInputMutationResponse,
-    PlannerInputStaleBody, PlannerSteerRefusedBody, PlannerSteerResponse, SteerPlannerInputBody,
+    PlannerInputStaleBody, PlannerSteerConflictBody, PlannerSteerRefusedBody, PlannerSteerResponse,
+    SteerPlannerInputBody,
 };
 use crate::routes::plugins::{
     InstallBody, InstallSource, PluginDetail, PluginListItem, ToolCallBody, ViewCatalogEntry,
@@ -278,6 +279,7 @@ use utoipa::OpenApi;
         SteerPlannerInputBody,
         PlannerSteerResponse,
         PlannerSteerRefusedBody,
+        PlannerSteerConflictBody,
         HarnessPhaseTag,
         ResetPlannerCardResponse,
         // Issue #229 PR B — track-report card payload shape (kernel-owned;
