@@ -628,6 +628,12 @@ jobs:
       - name: terminology ratchet discriminates (#1316 S0)
         run: ./scripts/gate-1316-terminology-ratchet.sh --selftest
 
+      - name: prose ratchet (#1635 S6)
+        run: ./scripts/gate-prose-ratchet.sh
+
+      - name: prose ratchet discriminates (#1635 S6)
+        run: ./scripts/gate-prose-ratchet.sh --selftest
+
       - name: cargo clippy --workspace --all-targets -- -D warnings
         if: env.RUN_RUST_CHECKS == 'true'
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings

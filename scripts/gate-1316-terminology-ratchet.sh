@@ -467,6 +467,9 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 
 SELF='scripts/gate-1316-terminology-ratchet.sh'
 BASELINE='scripts/gate-1316-terminology-ratchet.baseline.tsv'
+# `--baseline <path>` compares against another tsv (the selftest's malformed copy).
+BASELINE_FILE="$BASELINE"
+if [ "${1:-}" = '--baseline' ]; then BASELINE_FILE="${2:?--baseline needs a path}"; shift 2; fi
 
 # term<TAB>pattern. Reasons for each are in the header above.
 read -r -d '' TERMS <<'EOF' || true
@@ -572,8 +575,17 @@ if [ "${1:-}" = '--selftest' ]; then
   # injection the gate had never actually seen. `git add -N` puts the probe in
   # the index so the probe is subject to the same scan a real commit would be.
   fail_git_dir=''
-  trap 'git rm -q --cached --force -- "$probe" >/dev/null 2>&1; rm -f "$probe"; if [ -n "$fail_git_dir" ]; then rm -f "$fail_git_dir/git"; rmdir "$fail_git_dir"; fi' EXIT
+  bad_tsv="$(mktemp)" || exit 1
+  trap 'git rm -q --cached --force -- "$probe" >/dev/null 2>&1; rm -f "$probe" "$bad_tsv"; if [ -n "$fail_git_dir" ]; then rm -f "$fail_git_dir/git"; rmdir "$fail_git_dir"; fi' EXIT
   fails=0
+
+  # A tsv copy with a non-integer count must be red BY THE ROW VALIDATOR (judged with `case`, not grep).
+  while IFS= read -r line; do case "$line" in cove*) line="${line}x" ;; esac; printf '%s\n' "$line"; done <"$BASELINE" >"$bad_tsv"
+  bad_tsv_output="$("./$SELF" --baseline "$bad_tsv" 2>&1)" && { echo "SELFTEST FAIL: a tsv copy with a non-integer count was accepted as green"; fails=1; }
+  case "$bad_tsv_output" in
+    *"::error::$bad_tsv:"*'is not a non-negative integer'*) echo "selftest ok: a tsv copy with a non-integer count is red by the row validator, naming the row" ;;
+    *) echo "SELFTEST FAIL: a tsv copy with a non-integer count is not red by the row validator:"$'\n'"$bad_tsv_output"; fails=1 ;;
+  esac
 
   # Baseline generation must fail closed before opening the baseline for write.
   # Otherwise `git grep` silently omits an untracked file and records a count
@@ -677,16 +689,27 @@ EOF
   exit "$fails"
 fi
 
-if [ ! -f "$BASELINE" ]; then
-  echo "::error::$BASELINE is missing. Generate it with: ./$SELF --update-baseline"
+if [ ! -f "$BASELINE_FILE" ]; then
+  echo "::error::$BASELINE_FILE is missing. Generate it with: ./$SELF --update-baseline"
   exit 1
 fi
 
+# Rows are validated first: `[ "$got" -gt "$want" ]` on `824x` is a bash error (status 2) that sets NEITHER branch = green.
 declare -A EXPECTED=()
-while IFS=$'\t' read -r term scope want; do
-  case "$term" in ''|'#'*) continue ;; esac
+n=0
+while IFS= read -r line || [ -n "$line" ]; do
+  n=$((n + 1))
+  case "$line" in *$'\r'*) echo "::error::$BASELINE_FILE:$n contains a carriage return; the baseline must be LF-only."; exit 1 ;; esac
+  case "$line" in ''|'#'*) continue ;; esac
+  tabs="${line//[!$'\t']/}"
+  [ "${#tabs}" -eq 2 ] || { echo "::error::$BASELINE_FILE:$n has ${#tabs} tab(s), expected exactly 2 (term<TAB>scope<TAB>count): '$line'"; exit 1; }
+  term="${line%%$'\t'*}"; rest="${line#*$'\t'}"; scope="${rest%%$'\t'*}"; want="${rest#*$'\t'}"
+  { [ -n "$term" ] && [ -n "$scope" ]; } || { echo "::error::$BASELINE_FILE:$n has an empty term or scope: '$line'"; exit 1; }
+  case "$want" in ''|*[!0-9]*) echo "::error::$BASELINE_FILE:$n count '$want' is not a non-negative integer: '$line'"; exit 1 ;; esac
+  [ "${#want}" -le 12 ] || { echo "::error::$BASELINE_FILE:$n count '$want' has more than 12 digits; bash compares signed 64-bit integers and a longer count would error into a green result: '$line'"; exit 1; }
+  [ -z "${EXPECTED[$term/$scope]+x}" ] || { echo "::error::$BASELINE_FILE:$n duplicates the row for '$term/$scope'."; exit 1; }
   EXPECTED["$term/$scope"]="$want"
-done <"$BASELINE"
+done <"$BASELINE_FILE"
 
 fail=0
 while IFS=$'\t' read -r term pattern; do
@@ -697,9 +720,11 @@ while IFS=$'\t' read -r term pattern; do
       fail=1
       continue
     fi
+    case "$got" in ''|*[!0-9]*) echo "::error::the count for '$key' is not an integer ('$got'); refusing to compare."; fail=1; continue ;; esac
+    [ "${#got}" -le 12 ] || { echo "::error::the count for '$key' has more than 12 digits ('$got'); refusing to compare."; fail=1; continue; }
     want="${EXPECTED[$key]:-}"
     if [ -z "$want" ]; then
-      echo "::error::$BASELINE has no row for '$key'. Run --update-baseline."
+      echo "::error::$BASELINE_FILE has no row for '$key'. Run --update-baseline."
       fail=1
     elif [ "$got" -gt "$want" ]; then
       echo "::error::$key rose from $want to $got occurrences — new '$term' vocabulary entered the tree (#1316 is retiring it)."
