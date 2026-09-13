@@ -173,9 +173,9 @@ Running is ambience and lives in the panel.
   approximation, and the shape of the approximation matters for PR2: it is a
   statement about the report's **current content**, not about its history. It
   consults no history (`TrackReportPayload::report_startup_read_required` is a
-  pure comparison against the canonical pair), so it flips on a human edit as
-  readily as on an agent's, and **it flips back** — restore `summary`/`body`
-  byte-for-byte to canonical and it reads `false` again, `doc_rev` and `blocks`
+  structural read of the current text, #1635 D3), so it flips on a human edit
+  as readily as on an agent's, and **it flips back** — restore `summary`/`body`
+  to the empty skeleton and it reads `false` again, `doc_rev` and `blocks`
   notwithstanding.
 
   **So it is not a durable "the summary has run" marker, and must not be used

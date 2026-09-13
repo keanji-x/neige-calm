@@ -9,8 +9,8 @@
 //! kernel comparing section names: the prose maintenance contract that
 //! follows it (`<!-- 报告维护契约 … -->`) is for the agent, the header is for
 //! the code. This module owns the syntax and nothing else — it is not wired
-//! into any write path here (S2c adds the four entry normalizations and the
-//! funnel call; S3 rebuilds `report_startup_read_required` on top of it).
+//! into any write path here (S2c added the four entry normalizations and the
+//! funnel call; S3 rebuilt `report_startup_read_required` on top of it).
 //!
 //! **v1 carries only `version` and `sections[{h1, omit_if_empty?}]`.** Issue
 //! #1635 D2 also lists `tasks` and `prose_budget?`; neither has a consumer, so

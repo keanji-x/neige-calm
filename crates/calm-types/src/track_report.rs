@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-use crate::report_contract::{ContractHeader, ContractSection, canonical_line};
+use crate::report_blocks::{parse_fence, strip_markers_and_split};
+use crate::report_contract::{
+    ContractHeader, ContractSection, canonical_line, check_document, is_pure_comment_block,
+};
 
 /// A derived, addressable slice of a track report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
@@ -64,8 +67,11 @@ pub struct TrackReportPayload {
     /// [[required-over-option]] rule.
     pub summary: String,
     /// Markdown source. Sections are derived at render time by
-    /// splitting at H1 (`^# `) headings; the kernel does not interpret
-    /// the structure.
+    /// splitting at H1 (`^# `) headings; the kernel reads that structure
+    /// only to check the contract header once at the persist funnel
+    /// (#1635 D2) and to answer `report_startup_read_required` (#1635 D3:
+    /// unwritten iff block 0 is only comments and every later block is a
+    /// declared `# <h1>`).
     pub body: String,
     /// Block mirror of the authoritative CRDT block map (#960 PR2).
     /// Since schema v2 the CRDT `blocks`/`order` layout is the source
@@ -293,19 +299,71 @@ impl TrackReportPayload {
         Self::new("", initial_body())
     }
 
-    /// #1110 S3 — whether planner's first turn must `calm.report.read`.
+    /// #1110 S3 — whether planner's first turn must `calm.report.read`:
+    /// `!self.is_unwritten()`.
     ///
-    /// False only when `summary` is empty and `body` is byte-equal to
-    /// [`Self::initial()`]'s body or to the frozen pre-header body
-    /// [`LEGACY_INITIAL_V4_BODY`] (#1635 S2b: every track minted before the
-    /// contract header still carries those bytes and must keep reading as
-    /// unwritten — the launchpad empty state depends on it). `doc_rev` /
-    /// `blocks` are ignored so a CRDT-materialized placeholder stays false.
-    /// Forked or edited content is true. #1635 S3 replaces the byte
-    /// comparison with the structural predicate (D3) and keeps both cells.
+    /// False only for an **unwritten** document: `summary` is empty and
+    /// `body` is structurally the empty skeleton (#1635 D3) — see
+    /// [`Self::is_unwritten`] for the exact shape. `doc_rev` / `blocks` are
+    /// not consulted, so a CRDT-materialized placeholder stays false. Any
+    /// prose, data fence, sub-heading, or foreign H1 is true; so is a
+    /// non-empty `summary` whatever the body, which is why the built-in
+    /// templates (born with a summary) read as written (#1635 §6.4).
     pub fn report_startup_read_required(&self) -> bool {
-        !(self.summary.is_empty()
-            && (self.body == initial_body() || self.body == LEGACY_INITIAL_V4_BODY))
+        !self.is_unwritten()
+    }
+
+    /// #1635 D3 — the structural "nothing has been written here" predicate,
+    /// polarity as the issue writes it (`true` = unwritten).
+    ///
+    /// `summary` must be empty. Then, on the marker-stripped body:
+    ///
+    /// * **headered** (`check_document` → `Ok(Some(header))`): every slice
+    ///   is prose (no `neige-block` fence), block 0 is nothing but HTML
+    ///   comments ([`is_pure_comment_block`] — the header line plus the prose
+    ///   contract), and every later block, once `str::trim`med, is exactly
+    ///   `# <h1>` for some `h1` the header declares. Consequences of that
+    ///   shape, all pinned in `report_startup_read_required_cell`:
+    ///   - a **subset** of the declared H1s is still unwritten, and so is a
+    ///     different **order** — membership is tested per slice with `any`,
+    ///     so order is not part of the predicate (a consequence of the
+    ///     sketch, not a promise);
+    ///   - an H1 the header does not declare, a `## sub`, a `---`, an
+    ///     `![alt](x)` line, a `<table>`, a task fence, or an HTML comment
+    ///     in any block ≥ 1 (even a closed one — issue §6.9 asymmetry) all
+    ///     read as written;
+    ///   - trailing whitespace on a heading line is the one leniency
+    ///     (`str::trim`, Unicode); a leading space is not a heading to
+    ///     `split_body` and reads as written.
+    /// * **headerless** (`Ok(None)`): unwritten iff `body` is byte-equal to
+    ///   the frozen pre-header body [`LEGACY_INITIAL_V4_BODY`] — every track
+    ///   minted before the contract header still carries those bytes and
+    ///   must keep reading as unwritten (the launchpad empty state depends
+    ///   on it).
+    /// * **rejected** by the funnel check (`Err(_)`: misplaced / duplicate /
+    ///   malformed / non-canonical header, unclosed block-0 comment): not
+    ///   unwritten. Fail-closed — a body S2c's ingresses would never have
+    ///   stored still gets an answer, and the answer is "read it".
+    fn is_unwritten(&self) -> bool {
+        if !self.summary.is_empty() {
+            return false;
+        }
+        let marked = strip_markers_and_split(&self.body);
+        match check_document(&marked.cleaned) {
+            Ok(Some(header)) => marked.slices.iter().enumerate().all(|(index, slice)| {
+                parse_fence(&slice.raw).is_none()
+                    && if index == 0 {
+                        is_pure_comment_block(slice.raw.trim())
+                    } else {
+                        header
+                            .sections
+                            .iter()
+                            .any(|section| slice.raw.trim() == format!("# {}", section.h1))
+                    }
+            }),
+            Ok(None) => self.body == LEGACY_INITIAL_V4_BODY,
+            Err(_) => false,
+        }
     }
 }
 
@@ -316,7 +374,7 @@ mod tests {
     use std::borrow::Cow;
 
     #[test]
-    fn report_startup_read_required_is_false_only_for_canonical_initial_content() {
+    fn report_startup_read_required_is_false_for_the_canonical_initial_payload() {
         let initial = TrackReportPayload::initial();
         assert!(
             !initial.report_startup_read_required(),
@@ -339,6 +397,203 @@ mod tests {
             TrackReportPayload::new("fork source summary", initial.body.clone())
                 .report_startup_read_required(),
             "a non-empty summary is not the canonical placeholder"
+        );
+    }
+
+    /// #1635 D3 — the structural predicate's cell: one row per consequence
+    /// the [`TrackReportPayload::is_unwritten`] doc comment lists. Every row
+    /// is evaluated and every mismatch is reported together, so a mutation
+    /// of the predicate names exactly the rows it flips.
+    #[test]
+    fn report_startup_read_required_cell() {
+        use crate::report_blocks::{KIND_TASK, render_fence};
+        use crate::report_contract::HeaderError;
+
+        let new = |summary: &str, body: String| TrackReportPayload::new(summary, body);
+        let header = canonical_line(&work_brief_header());
+        // The smallest headered block 0: the header line and one closed prose
+        // contract comment. `initial()` is the full-size version of this.
+        let block0 = format!("{header}\n<!-- 报告维护契约 -->\n\n");
+        let headered = |sections: &str| format!("{block0}{sections}");
+        let four = "# 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n";
+
+        let initial = TrackReportPayload::initial();
+        let mut materialized = initial.clone();
+        materialized.doc_rev = 7;
+        materialized.blocks = Some(vec![]);
+
+        // The same header spelt non-canonically (an explicit
+        // `"omit_if_empty":false`): S2c's ingresses rewrite it, so storage
+        // never holds it, but the predicate must still answer — and the
+        // funnel check says `Internal`, which the predicate reads as written.
+        let non_canonical = headered(four).replacen(
+            r#"{"h1":"概要"}"#,
+            r#"{"h1":"概要","omit_if_empty":false}"#,
+            1,
+        );
+        assert_ne!(non_canonical, headered(four), "the replacement must land");
+        assert!(
+            matches!(
+                check_document(&non_canonical),
+                Err(HeaderError::Internal(_))
+            ),
+            "a non-canonical header is the funnel's Internal error"
+        );
+
+        let task_fence = render_fence(
+            KIND_TASK,
+            &serde_json::json!({"title": "预置任务", "ready": false}),
+        );
+        assert!(parse_fence(&task_fence).is_some());
+
+        // (row name, payload, expected `report_startup_read_required`)
+        let rows: Vec<(&str, TrackReportPayload, bool)> = vec![
+            // —— unwritten ——
+            ("initial()", initial.clone(), false),
+            (
+                "initial() materialized by CRDT: doc_rev = 7, blocks = Some([])",
+                materialized,
+                false,
+            ),
+            (
+                "legacy pre-header bytes (headerless → byte-equal fallback)",
+                new("", LEGACY_INITIAL_V4_BODY.to_string()),
+                false,
+            ),
+            (
+                "minimal headered skeleton, the four declared H1s",
+                new("", headered(four)),
+                false,
+            ),
+            (
+                "a SUBSET of the declared H1s (no `# 待你定`)",
+                new("", headered("# 概要\n\n# 已完成\n\n# 决策\n")),
+                false,
+            ),
+            (
+                "the declared H1s in a different ORDER (membership, not sequence)",
+                new("", headered("# 决策\n\n# 概要\n\n# 待你定\n\n# 已完成\n")),
+                false,
+            ),
+            (
+                "trailing spaces on a heading line (`str::trim` is the one leniency)",
+                new(
+                    "",
+                    headered("# 概要   \n\n# 待你定\n\n# 已完成\n\n# 决策\n"),
+                ),
+                false,
+            ),
+            // —— written ——
+            (
+                "a non-empty summary over the initial body",
+                new("fork source summary", initial.body.clone()),
+                true,
+            ),
+            (
+                "prose under a heading",
+                new(
+                    "",
+                    headered("# 概要\n\n写了一句。\n\n# 待你定\n\n# 已完成\n\n# 决策\n"),
+                ),
+                true,
+            ),
+            (
+                "an `![alt](x)` line",
+                new(
+                    "",
+                    headered("# 概要\n\n![alt](x)\n\n# 待你定\n\n# 已完成\n\n# 决策\n"),
+                ),
+                true,
+            ),
+            (
+                "a `<table>`",
+                new(
+                    "",
+                    headered("# 概要\n\n<table></table>\n\n# 待你定\n\n# 已完成\n\n# 决策\n"),
+                ),
+                true,
+            ),
+            (
+                "a `---` rule",
+                new(
+                    "",
+                    headered("# 概要\n\n---\n\n# 待你定\n\n# 已完成\n\n# 决策\n"),
+                ),
+                true,
+            ),
+            (
+                "a `## sub` heading",
+                new(
+                    "",
+                    headered("# 概要\n\n## sub\n\n# 待你定\n\n# 已完成\n\n# 决策\n"),
+                ),
+                true,
+            ),
+            (
+                "a task fence anywhere",
+                new(
+                    "",
+                    headered(&format!(
+                        "# 概要\n\n# 待你定\n\n# 已完成\n\n{task_fence}\n# 决策\n"
+                    )),
+                ),
+                true,
+            ),
+            (
+                "a closed HTML comment in a block ≥ 1 (issue §6.9 asymmetry)",
+                new(
+                    "",
+                    headered("# 概要\n\n<!-- 已闭合 -->\n\n# 待你定\n\n# 已完成\n\n# 决策\n"),
+                ),
+                true,
+            ),
+            (
+                "an H1 the header does not declare (`# Extra`)",
+                new(
+                    "",
+                    headered("# 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n\n# Extra\n"),
+                ),
+                true,
+            ),
+            (
+                "a leading space before `#` (not a heading to split_body; stays in block 0)",
+                new("", headered(" # 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n")),
+                true,
+            ),
+            (
+                "prose in block 0 after the contract comment",
+                new("", format!("{header}\n<!-- c -->\nstray text\n\n# 概要\n")),
+                true,
+            ),
+            (
+                "a non-canonical header (funnel `Err(Internal)` → fail-closed)",
+                new("", non_canonical),
+                true,
+            ),
+            (
+                "an empty body (headerless, not the legacy bytes)",
+                new("", String::new()),
+                true,
+            ),
+        ];
+        assert!(
+            rows.iter().any(|(_, _, expected)| *expected)
+                && rows.iter().any(|(_, _, expected)| !*expected),
+            "the cell must carry both polarities"
+        );
+
+        let mismatches: Vec<String> = rows
+            .iter()
+            .filter(|(_, payload, expected)| payload.report_startup_read_required() != *expected)
+            .map(|(name, _, expected)| {
+                format!("  [{name}] expected report_startup_read_required == {expected}")
+            })
+            .collect();
+        assert!(
+            mismatches.is_empty(),
+            "{} row(s) off the D3 cell:\n{}",
+            mismatches.len(),
+            mismatches.join("\n")
         );
     }
 
@@ -752,9 +1007,10 @@ mod tests {
     /// #1635 S2b — a pre-header track whose body is exactly the frozen bytes
     /// reads as unwritten, exactly as it did before the header existed:
     /// `initial()` grew a header line, the rows in every database did not.
-    /// S3 replaces the byte comparison by the structural predicate (D3,
-    /// `Ok(None) => body == LEGACY_INITIAL_V4_BODY`) and must keep this cell
-    /// green. A non-empty summary or any other byte still reads as written.
+    /// S3 replaced the byte comparison by the structural predicate (D3);
+    /// this cell is its headerless arm, `Ok(None) => body ==
+    /// LEGACY_INITIAL_V4_BODY`. A non-empty summary or any other byte still
+    /// reads as written.
     #[test]
     fn legacy_initial_v4_reads_as_unwritten() {
         let payload = TrackReportPayload::new("", LEGACY_INITIAL_V4_BODY);

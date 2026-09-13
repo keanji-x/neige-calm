@@ -740,8 +740,11 @@ docRev: number,
 summary: string, 
 /**
  * Markdown source. Sections are derived at render time by
- * splitting at H1 (`^# `) headings; the kernel does not interpret
- * the structure.
+ * splitting at H1 (`^# `) headings; the kernel reads that structure
+ * only to check the contract header once at the persist funnel
+ * (#1635 D2) and to answer `report_startup_read_required` (#1635 D3:
+ * unwritten iff block 0 is only comments and every later block is a
+ * declared `# <h1>`).
  */
 body: string, 
 /**
