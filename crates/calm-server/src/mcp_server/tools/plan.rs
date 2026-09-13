@@ -17,11 +17,16 @@
 //!   see gate bodies, and the listing layer enforces that shape even
 //!   for planner callers so a future role widening can't leak them (§6.7).
 //!
-//! ## Template-to-block mapping
+//! ## Template-to-block mapping — gone
 //!
-//! `PlanTaskInput` / `plan_template_task_block_payload` convert old template
-//! vocabulary into report `task` blocks. They no longer parse plugin
-//! manifests (#1110 S5 dropped `plan_template` from `TemplateDescriptor`).
+//! `plan_template_task_block_payload` converted the old manifest template
+//! vocabulary (`PlanTaskInput`) into report `task` blocks. Its last production
+//! caller was the built-in template builder, and #1635 S4 made the built-in
+//! templates files whose `task` fences are data (`templates/builtin/*.md`),
+//! so the converter is deleted. `PlanTaskInput` survives only as the
+//! `#[cfg(test)]` input shape of the retired batch-validation rules below
+//! (`normalize_task_input`), which #985 kept as tests when `calm.plan.upsert`
+//! became a zero-write shim.
 //!
 //! ## Scope construction
 //!
@@ -52,7 +57,7 @@ pub use calm_types::report_blocks::tasks::{
 };
 #[cfg(test)]
 use calm_types::report_blocks::tasks::{TaskDeclaration, dup_keys, find_cycle, unknown_deps};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 #[cfg(test)]
 use std::collections::BTreeMap;
@@ -96,7 +101,8 @@ where
 // Input shapes + per-task validation (design §4.1)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(test)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanTaskInput {
     pub key: String,
@@ -116,29 +122,6 @@ pub struct PlanTaskInput {
     pub gate: Option<GateInput>,
     #[serde(default)]
     pub no_gate_reason: Option<String>,
-}
-
-/// Convert the retained manifest template vocabulary to the report task-block
-/// wire vocabulary the planner agent can actually submit. Optional legacy fields
-/// are omitted instead of serialized as JSON null; readiness and authorship are
-/// explicit because projection only admits ready planner declarations.
-pub fn plan_template_task_block_payload(input: &PlanTaskInput) -> Value {
-    let Value::Object(mut payload) =
-        serde_json::to_value(input).expect("PlanTaskInput must serialize")
-    else {
-        unreachable!("PlanTaskInput must serialize as an object");
-    };
-
-    // The manifest vocabulary and task-block vocabulary intentionally differ
-    // at exactly one field. Keep the conversion mechanical so newly added
-    // PlanTaskInput or nested GateInput fields cannot silently disappear.
-    payload.retain(|_, value| !value.is_null());
-    if let Some(acceptance) = payload.remove("acceptance_criteria") {
-        payload.insert("acceptance".into(), acceptance);
-    }
-    payload.insert("ready".into(), json!(true));
-    payload.insert("declared_by".into(), json!("spec"));
-    Value::Object(payload)
 }
 
 /// A transitional manifest entry after field-level validation and
@@ -1045,93 +1028,6 @@ async fn resolve_track_for_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_types::report_blocks::TASK_FIELDS;
-    use std::collections::BTreeSet;
-
-    fn fully_populated_template_task() -> PlanTaskInput {
-        PlanTaskInput {
-            key: "all-fields".into(),
-            kind: "codex".into(),
-            goal: "exercise every template field".into(),
-            context: Some(json!({"ticket": 985, "slice": "5a"})),
-            acceptance_criteria: Some("all assertions pass".into()),
-            cwd: Some("/workspace/task".into()),
-            depends_on: vec!["design-a".into(), "design-b".into()],
-            priority: Some(17),
-            gate: Some(GateInput {
-                cwd: Some("/workspace/gate".into()),
-                timeout_secs: Some(321),
-                steps: vec![
-                    GateStepInput {
-                        name: "fmt".into(),
-                        cmd: "cargo fmt --all --check".into(),
-                    },
-                    GateStepInput {
-                        name: "test".into(),
-                        cmd: "cargo test --workspace".into(),
-                    },
-                ],
-            }),
-            no_gate_reason: Some("documented exception".into()),
-        }
-    }
-
-    #[test]
-    fn plan_template_mapping_field_sets_cover_serialized_input_and_gate() {
-        let input = fully_populated_template_task();
-        let payload = plan_template_task_block_payload(&input);
-        let payload = payload.as_object().expect("task-block object");
-
-        // This side comes from the task-block contract, independently of
-        // PlanTaskInput's serde output. These five accepted task fields are
-        // lifecycle/projection controls that a manifest template may not set;
-        // `command` is the terminal-only instruction field, while this fixture
-        // is an agent task and therefore serializes `goal` instead.
-        let template_exclusions = BTreeSet::from([
-            "command",
-            "refs",
-            "released_by_user",
-            "spawn",
-            "tombstone",
-            "tombstoned_by",
-        ]);
-        let accepted_fields: BTreeSet<&str> = TASK_FIELDS.iter().copied().collect();
-        let expected_fields: BTreeSet<&str> = accepted_fields
-            .difference(&template_exclusions)
-            .copied()
-            .collect();
-        let actual_fields: BTreeSet<&str> = payload.keys().map(String::as_str).collect();
-        assert_eq!(actual_fields, expected_fields);
-        assert!(template_exclusions.is_subset(&accepted_fields));
-    }
-
-    #[test]
-    fn plan_template_mapping_preserves_complete_populated_json() {
-        assert_eq!(
-            plan_template_task_block_payload(&fully_populated_template_task()),
-            json!({
-                "key": "all-fields",
-                "kind": "codex",
-                "goal": "exercise every template field",
-                "context": {"ticket": 985, "slice": "5a"},
-                "acceptance": "all assertions pass",
-                "cwd": "/workspace/task",
-                "depends_on": ["design-a", "design-b"],
-                "priority": 17,
-                "gate": {
-                    "cwd": "/workspace/gate",
-                    "timeout_secs": 321,
-                    "steps": [
-                        {"name": "fmt", "cmd": "cargo fmt --all --check"},
-                        {"name": "test", "cmd": "cargo test --workspace"}
-                    ]
-                },
-                "no_gate_reason": "documented exception",
-                "ready": true,
-                "declared_by": "spec"
-            })
-        );
-    }
 
     fn raw_task(key: &str) -> PlanTaskInput {
         PlanTaskInput {

@@ -9,8 +9,9 @@
 //! subsystems plus a kernel report write that impersonated the user; storing
 //! recipes as tracks again would buy back every one of those.
 //!
-//! The three built-in templates stay Rust constants and are **not** rows
-//! here. Both feed the same instantiation seam
+//! The built-in templates are files compiled into the binary
+//! (`templates/builtin/*.md`, #1635 S4) and are **not** rows here. Both feed
+//! the same instantiation seam
 //! (`routes::tracks::prepare_initial_report_payload`), so "built-in" and
 //! "mine" differ only in where the payload came from. Built-ins are
 //! therefore read-only by construction rather than by a guard: there is no

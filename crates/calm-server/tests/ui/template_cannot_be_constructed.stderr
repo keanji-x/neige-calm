@@ -1,0 +1,11 @@
+error[E0451]: fields `key`, `title` and `body` of struct `Template` are private
+  --> tests/ui/template_cannot_be_constructed.rs:19:9
+   |
+18 |     let _forged: &'static Template = Box::leak(Box::new(Template {
+   |                                                         -------- in this type
+19 |         key: "forged",
+   |         ^^^ private field
+20 |         title: "Forged",
+   |         ^^^^^ private field
+21 |         body: "# Forged\n",
+   |         ^^^^ private field

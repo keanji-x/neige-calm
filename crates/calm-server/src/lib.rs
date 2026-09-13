@@ -668,34 +668,36 @@ pub mod workspace_repoint;
 // #679 PR1 — `track_fs_dto` moved wholesale to calm-types (pure TS DTOs).
 pub use calm_types::track_fs_dto;
 pub mod report_backlinks;
-/// The template roster and its report recipes.
+/// The template roster: the built-in template files (`templates/builtin/*.md`,
+/// #1635 S4), parsed once.
 ///
 /// `pub` for the same reason `routes::tracks::planner_harness_card_payload` is: an
 /// integration test that transcribes kilobytes of production prose by hand
 /// stops being a test of that prose and becomes a change detector. #1300 S2's
 /// characterization test (`track_template_tracks::
 /// listed_template_keys_create_their_exact_recipes`) therefore **derives** the
-/// report a template must instantiate to from this module.
+/// report a template must instantiate to from this module's roster — that is,
+/// from the file's bytes after its front matter (`Template::recipe`: `body` is
+/// exactly those bytes, `summary` is the front matter `title`).
 ///
 /// What that oracle can and cannot see, stated exactly, because the derivation
 /// is what limits it:
 ///
-///   * **Can see** — any divergence between the *value* this module produces
+///   * **Can see** — any divergence between the *value* the roster serves
 ///     and what a created track actually ends up holding: a dropped field, a
 ///     lost fence, a missing contract prefix, a normalization applied to the
 ///     wrong thing.
 ///   * **Cannot see** — anything that moves *both* sides at once, because both
-///     sides go through this module's own key → recipe association and its
+///     sides go through the same `TemplateRoster::get`, the same file, and the
 ///     shared `split_body` / `parse_fence` / `render_fence`. Concretely:
-///     swapping two [`templates::TEMPLATES`] entries' `build_recipe` (#1321 S3
-///     — that association was a second `match`, `template_report`, when this
-///     paragraph was written), rewriting a recipe's content, retitling a roster
-///     entry, or a fence renderer that drops the same field on both roads.
+///     two files' bodies swapped under their front matter, a file's body
+///     rewritten, a file retitled, or a fence renderer that drops the same
+///     field on both roads.
 ///
 /// It compares values, not provenance — which is why the first bullet says
-/// *value* and not "reads these constants". Repoint the instantiation path at
+/// *value* and not "reads these files". Repoint the instantiation path at
 /// a second source (a database row, a second map) whose bytes happen to equal
-/// these constants today and the comparison still holds; it only goes red once
+/// these files today and the comparison still holds; it only goes red once
 /// that other source drifts. "Production reads exactly this module" is not an
 /// oracle-visible property.
 ///
@@ -703,21 +705,25 @@ pub mod report_backlinks;
 /// listed_template_keys_create_their_exact_recipes` holds a small hand-written table of
 /// `(key, title, ordered task keys)` — the one table in that file not derived
 /// from production — and checks it against both the picker read and a real
-/// create. That catches a swapped match arm, a retitled roster entry, and a
+/// create. That catches two files' bodies swapped, a retitled file, and a
 /// reordered or renamed task.
 ///
-/// It does **not** catch the rest of the bullet. A recipe rewritten wholesale
+/// It does **not** catch the rest of the bullet. A file rewritten wholesale
 /// into a different workflow that keeps its title and its ordered task keys —
 /// new goals, new acceptance criteria, new `context`, new dependency semantics
 /// — moves the derived oracle with production and passes the anchors too. Nor
 /// does it catch a prose rewrite, or a fence renderer dropping the same field
 /// on both roads. Its roster-size check (`anchors.len() ==
-/// TEMPLATES.len()`) only stops a one-sided add or remove; editing the table
-/// and the roster together passes by construction, because the table is
-/// hand-maintained and nothing but human review reads it. Closing any of this
-/// would mean transcribing the recipes by hand, which is the change detector
-/// this whole arrangement exists to avoid — so the table stays at identities
-/// only, and those gaps are a decision rather than an oversight.
+/// roster.entries().len()`) only stops a one-sided add or remove; editing the
+/// table and the roster together passes by construction, because the table is
+/// hand-maintained and nothing but human review reads it. (The other
+/// one-sidedness — a file dropped into `templates/builtin/` without a
+/// `BUILTIN_SOURCES` entry, or listed under a stem that is not its `id` — is
+/// `templates::tests::builtin_directory_and_roster_are_the_same_set`'s.)
+/// Closing any of this would mean transcribing the recipes by hand, which is
+/// the change detector this whole arrangement exists to avoid — so the table
+/// stays at identities only, and those gaps are a decision rather than an
+/// oversight.
 pub mod templates;
 pub(crate) mod track_binding;
 pub mod track_fs_view;

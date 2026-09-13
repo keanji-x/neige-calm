@@ -1,18 +1,27 @@
-//! Template recipes — the report a `template_id` create starts from.
+//! The template roster — the report a `template_id` create starts from.
 //!
-//! Three recipes hold the former git-forge plan as report `task` blocks, and a
-//! fourth (`investment-research`, #1571) is a task-less report skeleton under
-//! its own maintenance contract — all as **Rust constants**: [`TEMPLATES`] is
-//! the roster, and each entry carries its own recipe builder
-//! ([`Template::recipe`]) beside its key and title.
-//! `POST /api/tracks` with a matching `template_id` builds that report inside
-//! its own create transaction (`routes::tracks::prepare_template_report`),
-//! reading nothing from the database.
+//! #1635 S4 — the built-in templates are **files**: `templates/builtin/*.md`
+//! at the crate root, each a `+++` TOML front matter (`id`, `title`; see
+//! [`front_matter`]) followed by the report body — the canonical contract
+//! header line, the prose maintenance contract, and, for the three plan
+//! templates, the intro and one `task` fence per pre-set task. The bytes are
+//! compiled in with `include_str!` and parsed once, at first use, into
+//! [`TemplateRoster::builtin`]. Nothing in this module authors report text any
+//! more; what Rust keeps is protocol — the front matter grammar, the id → entry
+//! roster, and the privacy story on [`Template`].
+//!
+//! The roster reaches the routes as `RouteState.templates`
+//! (`&'static TemplateRoster`), so `POST /api/tracks`, `GET /api/track-templates`
+//! and the area default-template check all read one value. Today that value is
+//! always [`TemplateRoster::builtin`]; #1635 S5 substitutes a roster merged
+//! with an operator directory (`site/<stem>` ids) without touching the readers.
 //!
 //! #1321 S3 — the key→recipe association used to be a second `match` beside
-//! [`TEMPLATES`] (`template_report`), plus a third `#[cfg(test)]` one
-//! (`template_tasks`). Three tables keyed off the same three constants is three
-//! places to keep in sync; the roster entry is now the only one.
+//! the roster (`template_report`), plus a third `#[cfg(test)]` one
+//! (`template_tasks`). Three tables keyed off the same constants is three
+//! places to keep in sync; since S4 the association is the file itself: an
+//! entry cannot be listed without the body it instantiates to, because both
+//! come out of one `include_str!`.
 //!
 //! #1300 S2 — through #1110 S6 this module described the same three plans as
 //! *seeded system-area template tracks*, discovered through an overlay payload
@@ -22,23 +31,44 @@
 //! as `EditAuthor::User`, i.e. the kernel signing an edit as the user, which
 //! was the last production path doing so.
 
-use crate::mcp_server::tools::plan::{PlanTaskInput, plan_template_task_block_payload};
 use crate::track_report::TrackReportPayload;
-use calm_types::report_blocks::render_fence;
 // #1321 S3 — the lenient body reader that needed these went `#[cfg(test)]`
 // with this slice; production reads the compiled blocks instead
 // (`routes::tracks::InitialReportSnapshot::task_block_payloads`).
 #[cfg(test)]
 use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
-use calm_types::track_report::{ReportContract, report_contract_prefix};
-use serde_json::{Value, json};
+use serde_json::Value;
+use std::sync::OnceLock;
 
+/// #1635 S4 — the `+++` TOML front matter a template file opens with.
+pub mod front_matter;
+
+// The four built-in ids. Protocol, not data: other code names them (the
+// plugin manifest's `templates[]` claims, the area default, tests), so they
+// stay Rust constants — and `the_key_constants_are_exactly_the_builtin_file_ids`
+// holds each to the `id` its file declares.
 pub const ISSUE_DEVELOPMENT: &str = "issue-development";
 pub const SMALL_CHANGE: &str = "small-change";
 pub const INVESTIGATION: &str = "investigation";
 /// #1571 — a report-only template: the investment-research contract and its
 /// seven empty sections, no pre-set `task` blocks.
 pub const INVESTMENT_RESEARCH: &str = "investment-research";
+
+/// The builtin template files, in roster order — which is the order the
+/// picker lists them (`GET /api/track-templates`).
+///
+/// `include_str!`, so a file that is missing or not UTF-8 is a compile error,
+/// and an edit to one recompiles this crate. Its front matter and body are
+/// only parsed at first use ([`TemplateRoster::builtin`]); a file that does
+/// not parse is a panic there, deliberately — these are compile-time inputs
+/// shipped inside the binary, and a bad one must be loud, not a shorter
+/// picker.
+static BUILTIN_SOURCES: [&str; 4] = [
+    include_str!("../templates/builtin/issue-development.md"),
+    include_str!("../templates/builtin/small-change.md"),
+    include_str!("../templates/builtin/investigation.md"),
+    include_str!("../templates/builtin/investment-research.md"),
+];
 
 /// One roster entry. **Constructible only inside this module and its
 /// descendants — in safe Rust.**
@@ -47,27 +77,27 @@ pub const INVESTMENT_RESEARCH: &str = "investment-research";
 /// constructor, no `Clone`, no `Copy` and no `Default`, so a struct literal
 /// written outside this module's subtree is `E0451` and `*template` cannot be
 /// moved out of a borrow either. That is what the compiler checks about "a
-/// `&'static Template` came from [`TEMPLATES`]": in **safe** Rust, outside
-/// this module's subtree the only way to name a `Template` value at all is to
-/// borrow one of the four roster entries.
+/// `&'static Template` came from the roster": in **safe** Rust, outside this
+/// module's subtree the only way to name a `Template` value at all is to
+/// borrow one of [`TemplateRoster::entries`]. The cross-crate half of that
+/// statement is pinned by `tests/cases/templates_privacy.rs` (trybuild).
 ///
 /// #1318 S2 (第三轮评审) — the scope of that sentence is exactly *safe Rust
 /// outside this subtree*, and no wider. This crate does not carry
 /// `#![forbid(unsafe_code)]`, and `std::mem::transmute` does not consult field
-/// visibility: a review channel compiled a forged entry from a
-/// `&'static (&'static str, &'static str)` and `cargo clippy -D warnings`
-/// reported nothing. The forgery relies on `repr(Rust)`'s unspecified layout,
-/// so it is not a *sound* program — but the claim being made here was about
-/// what the compiler rejects, and the compiler accepts it. See the
-/// `## KNOWN GAPS` block on
+/// visibility: a review channel compiled a forged entry from a leaked tuple of
+/// `&'static str`s and `cargo clippy -D warnings` reported nothing. The forgery
+/// relies on `repr(Rust)`'s unspecified layout, so it is not a *sound*
+/// program — but the claim being made here was about what the compiler
+/// rejects, and the compiler accepts it. See the `## KNOWN GAPS` block on
 /// [`crate::routes::tracks::admit_template`] for the registered gaps.
 ///
 /// This is load-bearing, not tidiness. While the fields were `pub`, the
-/// sentence "a `&'static Template` can only come from `TEMPLATES`" was false
+/// sentence "a `&'static Template` can only come from the roster" was false
 /// even in safe Rust — `Box::leak(Box::new(Template { key:
-/// String::leak(caller.to_owned()), title: t.title }))` compiled and produced
-/// one from the caller's own spelling. Two independent review channels built
-/// exactly that value and the whole suite stayed green, because
+/// String::leak(caller.to_owned()), title: t.title, .. }))` compiled and
+/// produced one from the caller's own spelling. Two independent review
+/// channels built exactly that value and the whole suite stayed green, because
 /// `routes::tracks` used the false sentence to *excuse* the plugin-binding
 /// consumer from any test. Privacy removes that particular expression from
 /// other modules; it does **not** restore the excuse, because the binding
@@ -76,17 +106,18 @@ pub const INVESTMENT_RESEARCH: &str = "investment-research";
 /// [`crate::routes::tracks::resolve_template_binding`].
 ///
 /// The accessors hand back `&'static str`, not `&'a str` tied to `&self`: the
-/// bytes live in the `static`, and downstream (`TemplateAdmission::key`,
+/// bytes live for the whole process, and downstream (`TemplateAdmission::key`,
 /// `TrackInit::Template`, the `tracks.template_id` column) depends on carrying
-/// the roster's own buffer rather than a copy of it.
+/// the roster's own buffer rather than a copy of it. For the builtin roster
+/// `body` is a slice of the `include_str!` source; `key` and `title` are the
+/// front matter's decoded strings, leaked once per process when the roster is
+/// built (#1635 §6 gap 8 — one roster per process, and tests share it).
 pub struct Template {
     key: &'static str,
     title: &'static str,
-    /// #1321 S3 — this entry's recipe, as the function that builds it. Holding
-    /// the builder here is what makes the roster the only key→recipe table in
-    /// this file: an entry cannot be listed without naming the recipe it
-    /// instantiates to, and there is no second `match` to disagree with.
-    build_recipe: fn() -> TrackReportPayload,
+    /// The report body exactly as the file has it after the closing `+++`
+    /// line: `Template::recipe` hands it out uncompiled and unmodified.
+    body: &'static str,
 }
 
 impl Template {
@@ -95,72 +126,132 @@ impl Template {
         self.key
     }
 
-    /// The picker's display title.
+    /// The picker's display title, and the summary an instantiated report
+    /// starts with.
     pub fn title(&self) -> &'static str {
         self.title
     }
 
-    /// Build this entry's recipe: the summary and body a `template_id` create
-    /// instantiates from.
+    /// This entry's recipe: the summary and body a `template_id` create
+    /// instantiates from — `summary` is the front matter `title`, `body` the
+    /// file's bytes after the front matter.
     ///
-    /// Freshly built on every call — the recipes are `String`-valued constants
-    /// assembled by [`report_from_tasks`] / [`report_skeleton`], not a cached
-    /// value — so nothing a
-    /// caller does to the returned payload is visible to the next caller.
+    /// A fresh `TrackReportPayload` on every call (two `String`s copied out of
+    /// the `'static` bytes), so nothing a caller does to the returned payload
+    /// is visible to the next caller.
     ///
     /// This is the *un*compiled recipe. `POST /api/tracks` and
     /// `GET /api/track-templates` both reach it through
     /// `routes::tracks::compile_template`, which validates the body and
     /// projects it; neither reads this directly.
     pub fn recipe(&self) -> TrackReportPayload {
-        (self.build_recipe)()
+        TrackReportPayload::new(self.title, self.body)
     }
 }
 
-/// The template roster. `static`, not `const`, so [`template_by_key`] can
-/// hand out `&'static` borrows into it instead of into a per-use temporary.
-pub static TEMPLATES: [Template; 4] = [
-    Template {
-        key: ISSUE_DEVELOPMENT,
-        title: "Issue development",
-        build_recipe: issue_development_report,
-    },
-    Template {
-        key: SMALL_CHANGE,
-        title: "Small change",
-        build_recipe: small_change_report,
-    },
-    Template {
-        key: INVESTIGATION,
-        title: "Investigation",
-        build_recipe: investigation_report,
-    },
-    Template {
-        key: INVESTMENT_RESEARCH,
-        title: "Investment research",
-        build_recipe: investment_research_report,
-    },
-];
+/// The roster: every template `POST /api/tracks` admits, in picker order.
+///
+/// Like [`Template`], constructible only inside this module's subtree: the
+/// field is private and there is no public constructor, so a downstream module
+/// cannot hand the routes a roster of its own. The one production value is
+/// [`TemplateRoster::builtin`], carried on `RouteState.templates`.
+pub struct TemplateRoster {
+    entries: Vec<Template>,
+}
 
-/// #1209 — the roster's single fallible lookup: "is this id a template, and
-/// if so which one". `POST /api/tracks` admits an id iff this returns `Some`.
-///
-/// It derives from [`TEMPLATES`] rather than from a second array of
-/// keys, so "the list the picker shows" and "the set create accepts" cannot
-/// drift: there is nothing to keep in sync. The second roster that used to
-/// exist — a key-array constant plus the predicate that walked it — was
-/// exactly that duplication and is gone with this slice.
-///
-/// This is not the *only* place the roster is read — `list_track_templates`
-/// iterates [`TEMPLATES`] directly for the picker, and so does
-/// `track_template_tracks::listed_template_keys_create_their_exact_recipes`.
-/// (#1300 S2: the third reader this named, the seeding loop, is deleted; the
-/// point survives it, because "more than one reader" is what makes a single
-/// admission answer worth having.) It is the only place that answers "is this
-/// arbitrary caller-supplied string one of them", which is the question
-/// `:779`'s deleted special case used to answer twice.
-pub fn template_by_key(key: &str) -> Option<&'static Template> {
-    TEMPLATES.iter().find(|template| template.key == key)
+/// Why a set of template sources did not become a roster.
+#[derive(Debug)]
+enum RosterError {
+    /// Source number `index` (0-based, in [`BUILTIN_SOURCES`] order) did not
+    /// parse as a template file.
+    FrontMatter {
+        index: usize,
+        error: front_matter::FrontMatterError,
+    },
+    /// Two sources declare the same `id`: #1321's "one key → recipe table"
+    /// would otherwise be ambiguous, and `get` would silently answer with
+    /// whichever came first.
+    DuplicateId(String),
+}
+
+impl std::fmt::Display for RosterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FrontMatter { index, error } => {
+                write!(f, "template source #{index}: {error}")
+            }
+            Self::DuplicateId(id) => write!(f, "duplicate template id `{id}`"),
+        }
+    }
+}
+
+impl TemplateRoster {
+    /// The kernel's built-in roster: [`BUILTIN_SOURCES`], parsed once.
+    ///
+    /// `&'static` because the entries are: `TrackInit::Template { key }` and
+    /// `TemplateAdmission` carry borrows into it across a create transaction,
+    /// and `tracks.template_id` stores the borrowed key's bytes.
+    ///
+    /// # Panics
+    ///
+    /// At first use, if any builtin file fails [`front_matter::parse`] or two
+    /// files declare the same `id`. The files are compiled into the binary, so
+    /// this cannot be reached by any request — it is a build defect, and the
+    /// process must not come up advertising a partial roster.
+    pub fn builtin() -> &'static TemplateRoster {
+        static ROSTER: OnceLock<TemplateRoster> = OnceLock::new();
+        ROSTER.get_or_init(|| Self::load(&BUILTIN_SOURCES))
+    }
+
+    /// [`Self::from_sources`], panicking on failure — the builtin path's
+    /// policy, factored out so a test can exercise it on hand-built sources.
+    fn load(sources: &[&'static str]) -> TemplateRoster {
+        Self::from_sources(sources)
+            .unwrap_or_else(|error| panic!("builtin template roster: {error}"))
+    }
+
+    /// Parse each source as a template file and reject duplicate ids.
+    ///
+    /// `key` and `title` are leaked once here; `body` borrows the source.
+    fn from_sources(sources: &[&'static str]) -> Result<TemplateRoster, RosterError> {
+        let mut entries: Vec<Template> = Vec::with_capacity(sources.len());
+        for (index, source) in sources.iter().enumerate() {
+            let (front, body) = front_matter::parse(source)
+                .map_err(|error| RosterError::FrontMatter { index, error })?;
+            if entries.iter().any(|entry| entry.key == front.id) {
+                return Err(RosterError::DuplicateId(front.id));
+            }
+            entries.push(Template {
+                key: String::leak(front.id),
+                title: String::leak(front.title),
+                body,
+            });
+        }
+        Ok(TemplateRoster { entries })
+    }
+
+    /// Every entry, in picker order.
+    pub fn entries(&self) -> &[Template] {
+        &self.entries
+    }
+
+    /// #1209 — the roster's single fallible lookup: "is this id a template,
+    /// and if so which one". `POST /api/tracks` admits an id iff this returns
+    /// `Some`, and the area default-template check asks the same question.
+    ///
+    /// It searches [`Self::entries`] rather than a second array of keys, so
+    /// "the list the picker shows" and "the set create accepts" cannot drift:
+    /// there is nothing to keep in sync. The second roster that used to exist
+    /// — a key-array constant plus the predicate that walked it — was exactly
+    /// that duplication and is gone since #1209.
+    ///
+    /// The answer is a borrow **into** the roster — `&'a Template` for
+    /// `&'a self`, so `&'static Template` off [`Self::builtin`] — never a
+    /// value derived from the argument. Pinned by pointer identity in
+    /// `get_returns_the_rosters_own_borrow` (#1318 S2).
+    pub fn get(&self, key: &str) -> Option<&Template> {
+        self.entries.iter().find(|template| template.key == key)
+    }
 }
 
 /// Read the task blocks back out of a rendered template report body, **as the
@@ -189,7 +280,7 @@ pub fn template_by_key(key: &str) -> Option<&'static Template> {
 ///
 /// ## Why this returns `Value` and not `PlanTaskInput`
 ///
-/// The first cut deserialized each payload into [`PlanTaskInput`]. That was a
+/// The first cut deserialized each payload into `PlanTaskInput`. That was a
 /// silent data-loss bug, not a typing preference: `PlanTaskInput` is
 /// `#[serde(deny_unknown_fields)]`, and `refs`, `released_by_user`,
 /// `tombstone`, `tombstoned_by` and `spawn` are all first-class task-block
@@ -261,546 +352,324 @@ pub fn task_payload_key_and_instruction(payload: &Value) -> Option<(String, Stri
     Some((key, instruction))
 }
 
-/// Placeholder so `require_task_gates` does not treat these as scheduled
-/// work. Planner must replace the block with a real `gate` from the target
-/// repo before setting `ready: true`. Never an executed shell command.
-pub const AUTHOR_REAL_GATE: &str = "author a real gate from the target repo toolchain \
-(formatter, linter, tests) before activating; this reason is not a permanent skip";
-
-fn task(
-    key: &str,
-    goal: &str,
-    acceptance: &str,
-    depends_on: &[&str],
-    context: Option<Value>,
-    no_gate_reason: Option<&str>,
-) -> PlanTaskInput {
-    PlanTaskInput {
-        key: key.into(),
-        kind: "codex".into(),
-        goal: goal.into(),
-        context,
-        acceptance_criteria: Some(acceptance.into()),
-        cwd: None,
-        depends_on: depends_on.iter().map(|dep| (*dep).to_string()).collect(),
-        priority: None,
-        gate: None,
-        no_gate_reason: no_gate_reason.map(str::to_string),
-    }
-}
-
-/// A plan template's recipe: the work-brief contract, the intro prose, then
-/// one `task` fence per listed task.
-fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> TrackReportPayload {
-    // #1185 §1.5 B — these templates bypass `TrackReportPayload::initial()`, so
-    // without this prefix they ship with no maintenance contract at all: no
-    // section list, no word budget, no current-snapshot rule. The prefix is
-    // already closed; never concatenate an unclosed fragment here.
-    let mut body = report_contract_prefix(ReportContract::WorkBrief).to_string();
-    body.push_str(intro.trim_end());
-    body.push_str("\n\n");
-    for task in tasks {
-        let mut payload = plan_template_task_block_payload(task);
-        // #1300 — declared here as `planner`, which is what an instantiated track
-        // ends up with either way. Before #1300 this said `user` and the fork
-        // step rewrote it one instruction later; the `user` was not a claim
-        // about authorship but a consequence of the seeding write going through
-        // `persist_report` as `EditAuthor::User`, and `guard_task_declarations`
-        // requiring a new task block's `declared_by` to match its author.
-        //
-        // Instantiation no longer goes through `persist_report` at all
-        // (`routes::tracks::prepare_template_report`), so nothing constrains
-        // this to the author of a write that does not happen. `planner` is the
-        // honest value: a recipe's tasks are pre-set, not user-declared, and
-        // they stay `ready: false` until the normal Planner/user flow releases
-        // them.
-        payload["ready"] = json!(false);
-        payload["declared_by"] = json!("spec");
-        body.push_str(&render_fence("task", &payload));
-        body.push('\n');
-    }
-    TrackReportPayload::new(summary, body)
-}
-
-/// A report-only template's recipe (#1571): the named contract, already
-/// closed, then the empty section skeleton and **no** `task` blocks. The
-/// skeleton's H1s are left empty on purpose, as in
-/// `TrackReportPayload::initial()`: a placeholder would render, and the agent
-/// would read it as content to delete.
-fn report_skeleton(contract: ReportContract, summary: &str, skeleton: &str) -> TrackReportPayload {
-    let mut body = report_contract_prefix(contract).to_string();
-    body.push_str(skeleton);
-    TrackReportPayload::new(summary, body)
-}
-
-/// The seven research sections, in contract order — the same list the
-/// research contract's 「各章节」 describes, and the skeleton that ran live
-/// against a real planner before this template was added (#1571).
-const INVESTMENT_RESEARCH_SKELETON: &str = "# 结论\n\n# 待你定\n\n# 核心逻辑\n\n# 关键数据\n\n\
-# 风险与证伪\n\n# 催化剂与跟踪\n\n# 来源与边界\n";
-
-fn investment_research_report() -> TrackReportPayload {
-    report_skeleton(
-        ReportContract::Research,
-        "Investment research",
-        INVESTMENT_RESEARCH_SKELETON,
-    )
-}
-
-fn issue_development_report() -> TrackReportPayload {
-    report_from_tasks(
-        "Issue development",
-        ISSUE_DEVELOPMENT_INTRO,
-        &issue_development_tasks(),
-    )
-}
-
-fn issue_development_tasks() -> Vec<PlanTaskInput> {
-    vec![
-        task(
-            "inspect-issue",
-            "Read the bound template input, view the source issue via gh.issue.view, and cross-check input.repo against the git remote of the track cwd.",
-            "The issue requirements and constraints are captured for the track AND the track cwd's origin remote matches input.repo (mismatch is reported, not proceeded past).",
-            &[],
-            Some(json!({ "tools": ["gh.issue.view"] })),
-            Some("inspect does not produce a repo change to verify"),
-        ),
-        task(
-            "review-design-a",
-            "Review the proposed design for correctness before implementation.",
-            "Channel a records a design verdict.",
-            &["inspect-issue"],
-            Some(json!({
-                "channel": "a",
-                "reviewer_role": "design-correctness"
-            })),
-            Some("design review does not produce a repo change to verify"),
-        ),
-        task(
-            "review-design-b",
-            "Review the proposed design for failure paths before implementation.",
-            "Channel b records a design verdict.",
-            &["inspect-issue"],
-            Some(json!({
-                "channel": "b",
-                "reviewer_role": "design-failure-path"
-            })),
-            Some("design review does not produce a repo change to verify"),
-        ),
-        task(
-            "implement-change",
-            "Create a worktree, implement the change, and commit the result.",
-            "The change is committed in the track worktree.",
-            &["review-design-a", "review-design-b"],
-            Some(json!({ "tools": ["git.worktree.add", "git.commit"] })),
-            Some(AUTHOR_REAL_GATE),
-        ),
-        task(
-            "open-pr",
-            "Open a pull request and check its diff/check status.",
-            "A pull request exists with readable diff and check status.",
-            &["implement-change"],
-            Some(json!({
-                "tools": ["gh.pr.create", "gh.pr.list", "gh.pr.diff", "gh.pr.checks"]
-            })),
-            Some("opening a PR is verified by forge status, not a local toolchain gate"),
-        ),
-        task(
-            "review-pr-a",
-            "Review the pull request for correctness.",
-            "Channel a records a PR verdict.",
-            &["open-pr"],
-            Some(json!({
-                "channel": "a",
-                "reviewer_role": "pr-correctness"
-            })),
-            Some("PR review does not produce a repo change to verify"),
-        ),
-        task(
-            "review-pr-b",
-            "Review the pull request for failure paths.",
-            "Channel b records a PR verdict.",
-            &["open-pr"],
-            Some(json!({
-                "channel": "b",
-                "reviewer_role": "pr-failure-path"
-            })),
-            Some("PR review does not produce a repo change to verify"),
-        ),
-        task(
-            "merge",
-            "Merge the pull request and close the issue only after merge fence F4 has converged AND any merge_policy-required ratify grant is held; under hold-for-ratify with no grant yet, park at the merge_hold ratify request instead of merging.",
-            "Either the PR is merged (F4 converged and any policy-required ratify grant held) and the issue is closed, or — hold-for-ratify with no grant yet — the track is parked at the merge_hold ratify request with no merge performed.",
-            &["review-pr-a", "review-pr-b"],
-            Some(json!({ "tools": ["gh.pr.merge", "gh.issue.close"] })),
-            Some("merge is gated by review fence F4 and forge, not a local toolchain gate"),
-        ),
-    ]
-}
-
-fn small_change_report() -> TrackReportPayload {
-    report_from_tasks("Small change", SMALL_CHANGE_INTRO, &small_change_tasks())
-}
-
-const SMALL_CHANGE_INTRO: &str = include_str!("templates/small-change.md");
-
-fn small_change_tasks() -> Vec<PlanTaskInput> {
-    vec![
-        task(
-            "inspect",
-            "Read the requested change and the current code that it touches. Record constraints in this report before writing.",
-            "The change request and the current code path are captured in the track report.",
-            &[],
-            None,
-            Some("inspect does not produce a repo change to verify"),
-        ),
-        task(
-            "implement",
-            "Implement the change and commit it.",
-            "The change is committed in the track worktree.",
-            &["inspect"],
-            None,
-            Some(AUTHOR_REAL_GATE),
-        ),
-        task(
-            "verify",
-            "Run the repository's standard tests and record the result.",
-            "The repository toolchain's standard test/verification command passed.",
-            &["implement"],
-            None,
-            Some(AUTHOR_REAL_GATE),
-        ),
-    ]
-}
-
-fn investigation_report() -> TrackReportPayload {
-    report_from_tasks("Investigation", INVESTIGATION_INTRO, &investigation_tasks())
-}
-
-const INVESTIGATION_INTRO: &str = include_str!("templates/investigation.md");
-
-fn investigation_tasks() -> Vec<PlanTaskInput> {
-    vec![
-        task(
-            "gather-facts",
-            "Read the code, docs, history, and any bound input needed to answer the question. Do not modify the repository.",
-            "The relevant facts, file paths, and open questions are captured for the write-findings task.",
-            &[],
-            None,
-            Some("investigation is read-only; no repo change to verify"),
-        ),
-        task(
-            "write-findings",
-            "Write findings, remaining unknowns, and recommended next steps into this track report. Do not open a PR or merge.",
-            "The report records findings and does not include a forge merge or pull request.",
-            &["gather-facts"],
-            None,
-            Some("findings are report prose; no repo change to verify"),
-        ),
-    ]
-}
-
-/// Pre-S5 git-forge `planner_instructions`, adapted off the deleted prompt
-/// sections (`## Bound Template Input` / `## Bound Template Gates`).
-const ISSUE_DEVELOPMENT_INTRO: &str = include_str!("templates/issue-development.md");
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
+    use calm_types::report_blocks::render_fence;
     use calm_types::report_contract::check_document;
     use calm_types::track_report::{research_header, work_brief_header};
     use std::collections::BTreeSet;
 
-    /// Each recipe builder beside the task list it is built from.
-    ///
-    /// #1321 S3 — deliberately **not** keyed by template key. The key→recipe
-    /// association is [`TEMPLATES`] and nowhere else in this file; a test table
-    /// spelling `ISSUE_DEVELOPMENT => issue_development_tasks()` would be the
-    /// third copy of exactly the mapping this slice deleted. What this pairs is
-    /// a `*_report()` with its own `*_tasks()`, which is the construction the
-    /// tests below check and is not expressible through the roster.
-    type BuildRecipe = fn() -> TrackReportPayload;
-    type BuildTasks = fn() -> Vec<PlanTaskInput>;
+    /// The three plan templates: work-brief contract, intro, `task` fences.
+    /// `investment-research` is the one report-only entry and is pinned
+    /// separately.
+    const PLAN_TEMPLATES: [&str; 3] = [ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION];
 
-    const RECIPE_AND_TASKS: [(BuildRecipe, BuildTasks); 3] = [
-        (issue_development_report, issue_development_tasks),
-        (small_change_report, small_change_tasks),
-        (investigation_report, investigation_tasks),
-    ];
-
-    /// #1571 — recipes built by `report_skeleton`, which pre-set **no** tasks
-    /// and therefore have no `*_tasks()` to pair with. Listed separately rather
-    /// than paired with an empty `Vec` so that "this recipe lists no tasks" is
-    /// a claim the tests check (`task_less_recipes_carry_no_task_blocks`), not a
-    /// vacuous pairing the set-equality below would accept for any recipe.
-    const TASK_LESS_RECIPES: [BuildRecipe; 1] = [investment_research_report];
-
-    fn recipe_identity(build_recipe: BuildRecipe) -> (String, String) {
-        let recipe = build_recipe();
-        (recipe.summary, recipe.body)
+    fn roster() -> &'static TemplateRoster {
+        TemplateRoster::builtin()
     }
 
-    /// [`RECIPE_AND_TASKS`] and [`TASK_LESS_RECIPES`] together cover exactly the
-    /// roster's recipes.
-    ///
-    /// #1321 S3 (评审 MAJOR) — without this the table is a *silent* subset. The
-    /// tests that consume it (`the_body_projection_matches_the_constant_task_list`
-    /// and `listed_tasks_are_exactly_the_report_task_blocks`) used to iterate
-    /// [`TEMPLATES`] and got their coverage from the roster for free; keying the
-    /// table on builders instead bought "no third copy of key→recipe" at the
-    /// price of an arity nobody checks. A fourth roster entry forces
-    /// `[Template; 3]` to `[Template; 4]` — a compile error the author must
-    /// fix — but forces nothing here: `; 3` keeps compiling and both consumers
-    /// quietly test three of four recipes, all green.
-    ///
-    /// Compared as **sets of recipes**, both directions, so this reintroduces no
-    /// key→recipe association: it is recipes against recipes. Set equality
-    /// rather than `len()` on purpose — a table that listed one recipe twice and
-    /// dropped another has the right length, and shows up here as the dropped
-    /// one missing.
-    ///
-    /// Identity is the whole `(summary, body)`, not the summary alone: two
-    /// entries could share a summary, and then a swapped body would be invisible
-    /// to a summary-only comparison. Only the summary is printed, because the
-    /// bodies are kilobytes.
-    ///
-    /// Two things it does not catch, both following from comparing recipes and
-    /// nothing else. A fourth roster entry added *together with* its pair here
-    /// passes, which is the same accepted residue as the roster's other
-    /// hand-maintained oracle (`track_template_tracks::
-    /// listed_template_keys_create_their_exact_recipes`): this stops the
-    /// one-sided add, not a coordinated one. And a fourth entry whose
-    /// `build_recipe` is one of the existing three passes too — the two sets
-    /// stay equal because the new key contributes no new recipe. Recipe
-    /// identity cannot see that; what would is a key-keyed table, i.e. exactly
-    /// the third copy of the mapping this slice deleted.
+    fn body(key: &str) -> String {
+        roster()
+            .get(key)
+            .unwrap_or_else(|| panic!("`{key}` is not on the builtin roster"))
+            .recipe()
+            .body
+    }
+
+    /// The four id constants are the four files' ids, in roster order. The
+    /// constants are protocol (other code names them); the files are the
+    /// roster; this is the only place the two are held together.
     #[test]
-    fn the_recipe_and_tasks_table_covers_every_roster_recipe() {
-        let paired: BTreeSet<(String, String)> = RECIPE_AND_TASKS
+    fn the_key_constants_are_exactly_the_builtin_file_ids() {
+        let ids: Vec<&str> = roster().entries().iter().map(Template::key).collect();
+        assert_eq!(
+            ids,
+            [
+                ISSUE_DEVELOPMENT,
+                SMALL_CHANGE,
+                INVESTIGATION,
+                INVESTMENT_RESEARCH
+            ]
+        );
+    }
+
+    /// Directory ↔ roster: the stems of `templates/builtin/*.md` are exactly
+    /// the roster's ids, every file's front-matter `id` is its stem, and the
+    /// bytes on disk are the bytes the roster serves.
+    ///
+    /// The last clause is the oracle statement of `lib.rs`'s `templates`
+    /// paragraph made executable: a template's recipe *is* its file after the
+    /// front matter (`summary` = `title`). A file added to the directory
+    /// without a `BUILTIN_SOURCES` entry, a source listed under a name whose
+    /// stem is not its id, and a stale `include_str!` (impossible with cargo's
+    /// dependency tracking, but cheap to hold) all land here.
+    #[test]
+    fn builtin_directory_and_roster_are_the_same_set() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/builtin");
+        let mut stems = BTreeSet::new();
+        for entry in std::fs::read_dir(&dir).expect("templates/builtin exists") {
+            let path = entry.expect("read_dir entry").path();
+            assert_eq!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("md"),
+                "only template files live in templates/builtin: {}",
+                path.display()
+            );
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .expect("utf-8 stem")
+                .to_string();
+            let text = std::fs::read_to_string(&path).expect("read template file");
+            let (front, file_body) = front_matter::parse(&text)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert_eq!(
+                front.id,
+                stem,
+                "{}: front-matter id is its stem",
+                path.display()
+            );
+            let template = roster()
+                .get(&stem)
+                .unwrap_or_else(|| panic!("{}: on disk but not on the roster", path.display()));
+            assert_eq!(template.title(), front.title, "{stem}: title");
+            assert_eq!(
+                template.recipe().body,
+                file_body,
+                "{stem}: the recipe body is the file's bytes after the front matter"
+            );
+            assert!(stems.insert(stem));
+        }
+        let roster_ids: BTreeSet<String> = roster()
+            .entries()
             .iter()
-            .map(|(build_recipe, _)| recipe_identity(*build_recipe))
-            .chain(TASK_LESS_RECIPES.iter().map(|b| recipe_identity(*b)))
+            .map(|template| template.key().to_string())
             .collect();
         assert_eq!(
-            paired.len(),
-            RECIPE_AND_TASKS.len() + TASK_LESS_RECIPES.len(),
-            "a recipe listed in both tables, or twice in one, would hide a dropped one"
-        );
-        let roster: BTreeSet<(String, String)> = TEMPLATES
-            .iter()
-            .map(|template| {
-                let recipe = template.recipe();
-                (recipe.summary, recipe.body)
-            })
-            .collect();
-
-        let missing: Vec<&str> = roster
-            .difference(&paired)
-            .map(|(summary, _)| summary.as_str())
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "roster recipes in neither RECIPE_AND_TASKS nor TASK_LESS_RECIPES, so \
-             nothing in this module tests them: {missing:?}"
-        );
-
-        let extra: Vec<&str> = paired
-            .difference(&roster)
-            .map(|(summary, _)| summary.as_str())
-            .collect();
-        assert!(
-            extra.is_empty(),
-            "table entries whose recipe is not on the roster, so they test \
-             something no template can instantiate: {extra:?}"
+            stems, roster_ids,
+            "templates/builtin/*.md stems == roster ids"
         );
     }
 
-    /// #1230 — reading a task block out of a body and rendering it back must be
-    /// an **identity on the payload**, not merely agree on the fields some
-    /// struct happens to model. The first cut deserialized into
-    /// `PlanTaskInput` (`deny_unknown_fields`) and silently dropped any block
-    /// carrying `refs` / `released_by_user` / `tombstone`; asserting identity is
-    /// what makes that class impossible rather than fixed for the fields we
-    /// happened to think of.
-    ///
-    /// The whole-document version of this property — that a *save* preserves
-    /// every block and its id — is an integration test
-    /// (`a_save_preserves_blocks_it_does_not_edit`), because it is about the
-    /// report's blocks and not about this module's constants.
+    /// Two sources with one id do not become a roster: the builtin path
+    /// panics at first use. Exercised on hand-built sources — the real files
+    /// are distinct by `builtin_directory_and_roster_are_the_same_set`.
     #[test]
-    fn parsing_a_task_fence_and_rendering_it_back_is_an_identity() {
-        let task_less: BTreeSet<(String, String)> = TASK_LESS_RECIPES
-            .iter()
-            .map(|b| recipe_identity(*b))
-            .collect();
-        for template in &TEMPLATES {
+    #[should_panic(expected = "duplicate template id `twin`")]
+    fn duplicate_ids_panic_at_first_use() {
+        TemplateRoster::load(&[
+            "+++\nid = \"twin\"\ntitle = \"A\"\n+++\n# A\n",
+            "+++\nid = \"twin\"\ntitle = \"B\"\n+++\n# B\n",
+        ]);
+    }
+
+    /// A source that is not a template file panics the same way, naming its
+    /// position in the source list.
+    #[test]
+    #[should_panic(expected = "template source #1: template file must open with a `+++`")]
+    fn a_source_without_front_matter_panics_at_first_use() {
+        TemplateRoster::load(&[
+            "+++\nid = \"fine\"\ntitle = \"Fine\"\n+++\n# A\n",
+            "# no front matter\n",
+        ]);
+    }
+
+    /// Every roster entry answers `get` with itself and carries a non-empty
+    /// recipe; an unknown id answers `None`.
+    #[test]
+    fn known_keys_round_trip() {
+        for (index, template) in roster().entries().iter().enumerate() {
             let key = template.key();
+            let found = roster().get(key).expect("roster key admits");
+            assert!(std::ptr::eq(found, &roster().entries()[index]));
             let recipe = template.recipe();
-            let body = recipe.body.clone();
-            let payloads = template_task_payloads_from_body(&body);
             assert_eq!(
-                payloads.is_empty(),
-                task_less.contains(&(recipe.summary, recipe.body)),
-                "{key}: task payloads parsed iff the recipe is a plan template"
+                recipe.summary,
+                template.title(),
+                "{key}: summary is the title"
             );
-            for payload in &payloads {
-                let fence = render_fence(KIND_TASK, payload);
-                assert!(
-                    body.contains(&fence),
-                    "{key}: re-rendering a parsed payload did not reproduce its fence:\n{fence}"
-                );
-            }
+            assert!(!recipe.summary.is_empty(), "{key}: empty recipe summary");
+            assert!(!recipe.body.is_empty(), "{key}: empty recipe body");
         }
+        assert!(roster().get("missing-template").is_none());
+        assert!(roster().get("").is_none());
     }
 
-    /// The `key`/`goal` projection still sees exactly the authored task list.
+    /// #1318 S2 — `get` hands back a borrow **into** the roster, never a value
+    /// derived from the caller's argument.
     ///
-    /// This is about `report_from_tasks` → body → projection, not about the
-    /// HTTP picker: `GET /api/track-templates` projects from the compiled
-    /// blocks (`routes::tracks::compile_template`), and that its response
-    /// carries these same keys in order is pinned over HTTP by
-    /// `track_templates_read::every_template_lists_the_tasks_its_report_pre_sets`.
+    /// This is the source side of "`tracks.template_id` stores the roster's
+    /// key": `create_track` writes `admission.key` onto the row, and that key
+    /// is only worth writing if it is the roster's own `&'static str` rather
+    /// than a copy of whatever the client sent. Asserted by data-pointer
+    /// identity, which is the one form the caller's string cannot satisfy —
+    /// `owned` below is a freshly allocated `String` with identical bytes, so
+    /// an equality assertion would pass for both and discriminate nothing.
+    ///
+    /// The mutation this catches is not hypothetical: any case-folding or
+    /// aliasing rule that reflects the caller's spelling back — e.g.
+    /// `entries.iter().find(..).map(|t| &*Box::leak(Box::new(Template { key:
+    /// String::leak(key.to_string()), title: t.title, body: t.body })))` —
+    /// still returns an equal key and turns this test red. (The leak is not
+    /// incidental: the signature returns a borrow, so a mutation that rebuilds
+    /// the entry has to leak it to compile at all.)
+    ///
+    /// Since #1318 S2 (第二轮评审) that mutation is, in safe Rust, only
+    /// *writable inside this module's subtree*: [`Template`]'s fields are
+    /// private, so the same expression outside it is `E0451`.
+    ///
+    /// #1318 S2 (第三轮评审) — what this test guards is therefore **one return
+    /// path**, [`TemplateRoster::get`]'s, and not "the module". A review
+    /// channel added a *second* roster entry point in this same module (a
+    /// case-insensitive find that leaked a rebuilt entry when the spelling
+    /// differed), pointed `admit_template` at it, and
+    /// `nextest -E 'test(admission) or test(template)'` ran **68 passed, 0
+    /// failed**. The test is still worth keeping — it is the cheap
+    /// unconditional guard on the path production uses — but it is not a guard
+    /// on the class. See the `## KNOWN GAPS` block on
+    /// [`crate::routes::tracks::admit_template`].
     #[test]
-    fn the_body_projection_matches_the_constant_task_list() {
-        for (build_recipe, build_tasks) in RECIPE_AND_TASKS {
-            let recipe = build_recipe();
-            let expected: Vec<(String, String)> = build_tasks()
-                .into_iter()
-                .map(|task| (task.key, task.goal))
-                .collect();
-            let projected: Vec<(String, String)> = template_task_payloads_from_body(&recipe.body)
-                .iter()
-                .filter_map(task_payload_key_and_instruction)
-                .collect();
-            assert_eq!(projected, expected, "{}", recipe.summary);
+    fn get_returns_the_rosters_own_borrow() {
+        for (index, template) in roster().entries().iter().enumerate() {
+            let owned = String::from(template.key);
+            assert_ne!(
+                owned.as_ptr(),
+                template.key.as_ptr(),
+                "the fixture must not accidentally be the roster's own buffer"
+            );
+            let found = roster().get(owned.as_str()).expect("roster key admits");
+            assert!(
+                std::ptr::eq(found, &roster().entries()[index]),
+                "get must borrow the roster entry, not rebuild one"
+            );
+            assert!(
+                std::ptr::eq(found.key.as_ptr(), template.key.as_ptr()),
+                "the admitted key must be the roster's &'static str, not the caller's"
+            );
+        }
+    }
+
+    /// #1318 S2 (第三轮评审) — [`Template::key`] / [`Template::title`] hand back
+    /// **the entry's own buffer**, not merely a pointer-stable one, and
+    /// [`Template::recipe`] copies the entry's own `body`.
+    ///
+    /// This closes a regression the 第二轮 refactor introduced. That round
+    /// rewrote `routes::tracks`'s admission assertion so that *both* sides read
+    /// through the accessor (`ptr::eq(admission.key().as_ptr(),
+    /// template.key().as_ptr())`), which downgraded it from "the accessor is
+    /// the roster buffer" to "the accessor is pointer-stable". A review channel
+    /// made `key()` return an interned leak — same pointer on every call for a
+    /// given entry, but *not* the field's bytes — and the whole selection ran
+    /// **68 passed, 0 failed**, i.e. `tracks.template_id` and
+    /// `TrackInit::Template` were no longer carrying the roster's bytes and
+    /// nothing in the repository noticed.
+    ///
+    /// It has to live here, in the defining module, because the discriminating
+    /// comparison is accessor-against-**private-field**: `t.key` is not
+    /// nameable from `routes::tracks`, so no test over there can express it.
+    #[test]
+    fn the_accessors_hand_back_the_roster_fields_own_buffer() {
+        for template in roster().entries() {
+            assert!(
+                std::ptr::eq(template.key().as_ptr(), template.key.as_ptr()),
+                "`{}`: key() must be the `key` field's own buffer",
+                template.key
+            );
+            assert!(
+                std::ptr::eq(template.title().as_ptr(), template.title.as_ptr()),
+                "`{}`: title() must be the `title` field's own buffer",
+                template.key
+            );
+            let recipe = template.recipe();
+            assert_eq!(
+                recipe.summary, template.title,
+                "`{}`: summary",
+                template.key
+            );
+            assert_eq!(recipe.body, template.body, "`{}`: body", template.key);
         }
     }
 
-    /// Prose the user added through the ordinary track report editor is not a
-    /// task and must not be read as one — the lenient-read claim in the
-    /// function's doc, exercised rather than asserted.
+    /// #1185 §1.5 B, restated structurally for files (#1635 S4): the three
+    /// plan templates carry the work-brief maintenance contract — the same
+    /// one `default.md` ships — as their block 0.
+    ///
+    /// Three clauses, each catching one way the wording could drift now that
+    /// the contract is data in five files:
+    ///
+    ///   * `check_document(body) == Ok(Some(work_brief_header()))` — one
+    ///     canonical header on line 1, every block-0 comment closed, the
+    ///     declared sections are the default four (the funnel check the
+    ///     persisted body must pass);
+    ///   * block 0 is **one identical text** across the three — a plan note
+    ///     deleted from one file, or a sentence reworded in one file only,
+    ///     lands here;
+    ///   * `default.md`'s block 0 minus its closing `-->` line is a **prefix**
+    ///     of that block 0 — the shared contract wording (writing rules +
+    ///     section list) cannot drift between the default skeleton and the
+    ///     templates without this going red. What the templates add after
+    ///     that prefix is the plan note; what they add after block 0 is the
+    ///     intro and the fences.
+    ///
+    /// A wording change made consistently in all four files passes, by design:
+    /// the file is the data, and that edit is reviewed as a diff of the file.
     #[test]
-    fn body_prose_and_foreign_fences_are_skipped_not_parsed() {
-        let mut body = small_change_report().body;
-        let before = template_task_payloads_from_body(&body).len();
-        body.push_str("\n## Notes\n\nSomething the user typed.\n\n");
-        body.push_str("```neige-block table\n{\n  \"rows\": []\n}\n```\n");
-        body.push_str("```neige-block task\nnot json\n```\n");
-        assert_eq!(template_task_payloads_from_body(&body).len(), before);
-    }
-
-    #[test]
-    fn issue_development_report_keeps_pre_s5_task_keys() {
-        let report = issue_development_report();
-        assert!(report.report_startup_read_required());
-        for key in [
-            "inspect-issue",
-            "review-design-a",
-            "review-design-b",
-            "implement-change",
-            "open-pr",
-            "review-pr-a",
-            "review-pr-b",
-            "merge",
-        ] {
-            assert!(
-                report.body.contains(&format!("\"key\": \"{key}\"")),
-                "missing task {key}"
-            );
-        }
-        assert!(report.body.contains("gh.issue.view"));
-        assert!(report.body.contains("\"ready\": false"));
-        assert!(!report.body.contains("\"ready\": true"));
-        assert!(
-            !report.body.contains("\"gate\""),
-            "pre-S5 plan_template had no per-task gate; advisory prose stays in the intro"
-        );
-        assert!(
-            !report.body.contains("detect the repository toolchain"),
-            "advisory toolchain sentence must not become gate.cmd"
-        );
-        assert!(report.body.contains(AUTHOR_REAL_GATE));
-    }
-
-    #[test]
-    fn small_change_and_investigation_are_short_plans() {
-        let small = small_change_report();
-        assert!(small.body.contains("\"key\": \"inspect\""));
-        assert!(small.body.contains("\"key\": \"implement\""));
-        assert!(small.body.contains("\"key\": \"verify\""));
-        assert!(
-            !small.body.contains("\"gate\""),
-            "small-change must not execute an advisory gate.cmd"
-        );
-        assert!(!small.body.contains("detect the repository toolchain"));
-        assert!(small.body.contains(AUTHOR_REAL_GATE));
-
-        let investigation = investigation_report();
-        assert!(investigation.body.contains("\"key\": \"gather-facts\""));
-        assert!(investigation.body.contains("\"key\": \"write-findings\""));
-        assert!(investigation.body.contains("Do not open a pull request"));
-        assert!(!investigation.body.contains("\"gate\""));
-    }
-
-    /// #1185 §1.5 B — the built-in templates bypass
-    /// `TrackReportPayload::initial()`, so the maintenance contract has to be
-    /// concatenated onto their bodies explicitly. Without it they ship with no
-    /// section list, no word budget and no current-snapshot rule: #1146's
-    /// guardrails would vanish on exactly the first-party templates.
-    #[test]
-    fn every_builtin_template_carries_the_maintenance_contract() {
-        // The three plan templates; `investment-research` carries the research
-        // contract instead and is pinned in
-        // `investment_research_is_a_task_less_research_skeleton`.
-        let prefix = report_contract_prefix(ReportContract::WorkBrief);
-        for (name, report) in [
-            ("issue-development", issue_development_report()),
-            ("small-change", small_change_report()),
-            ("investigation", investigation_report()),
-        ] {
-            assert!(
-                report.body.starts_with(prefix),
-                "{name} must lead with the closed contract prefix"
-            );
-            let slices = calm_types::report_blocks::split_body(&report.body);
-            assert!(
-                slices[0].raw.ends_with("-->\n\n"),
-                "{name}: the contract must be its own closed block, got {:?}",
-                slices[0].raw
-            );
-            // #1635 D2: one canonical header on line 1 and every block-0
-            // comment closed — the funnel check the persisted body must pass.
+    fn every_plan_template_carries_the_one_maintenance_contract() {
+        let mut block_0s: Vec<String> = Vec::new();
+        for key in PLAN_TEMPLATES {
+            let report = roster().get(key).expect("plan template").recipe();
             assert_eq!(
                 check_document(&report.body),
                 Ok(Some(work_brief_header())),
-                "{name}: the body must pass the contract funnel check"
+                "{key}: the body must pass the contract funnel check"
             );
+            let slices = split_body(&report.body);
             assert!(
-                report.body.contains("# Plan"),
-                "{name} keeps its own plan section"
-            );
-            assert!(
-                report.body.contains("Plan —— 预置计划"),
-                "{name} must say what happens to `# Plan` once its tasks are activated"
+                slices[0].raw.ends_with("-->\n\n"),
+                "{key}: the contract must be its own closed block, got {:?}",
+                slices[0].raw
             );
             assert!(
                 report.report_startup_read_required(),
-                "{name} is not the default skeleton"
+                "{key} is not the default skeleton"
+            );
+            block_0s.push(slices[0].raw.clone());
+        }
+        for (key, block_0) in PLAN_TEMPLATES.iter().zip(&block_0s) {
+            assert_eq!(
+                block_0, &block_0s[0],
+                "{key}: the three plan templates must share one block 0 (contract + plan note)"
             );
         }
+
+        let default_body = TrackReportPayload::initial().body;
+        let default_block_0 = split_body(&default_body)[0].raw.clone();
+        let shared = default_block_0
+            .strip_suffix("-->\n\n")
+            .expect("default.md's block 0 is a closed comment");
+        assert!(
+            block_0s[0].starts_with(shared),
+            "default.md's contract (minus its closing line) must be a prefix of the plan \
+             templates' block 0; the two texts drifted:\n--- default ---\n{shared}\n--- template \
+             ---\n{}",
+            block_0s[0]
+        );
+        assert!(
+            block_0s[0].len() > shared.len() + "-->\n\n".len(),
+            "the plan templates add a plan note after the shared contract"
+        );
     }
 
     /// #1635 S2b review — the "header ↔ document shape" pin for the research
-    /// skeleton: the H1 lines `INVESTMENT_RESEARCH_SKELETON` ships, in order,
-    /// are exactly `research_header()`'s sections. Rename one side and this
-    /// goes red; nothing else ties the constant to the header. (The
-    /// work-brief twin lives in calm-types:
-    /// `default_h1s_are_the_work_brief_header_sections`.)
+    /// skeleton: the H1 lines `investment-research.md` ships, in order, are
+    /// exactly `research_header()`'s sections. Rename one side and this goes
+    /// red; nothing else ties the file to the header. (The work-brief twin
+    /// lives in calm-types: `default_h1s_are_the_work_brief_header_sections`.)
     #[test]
     fn investment_research_h1s_are_the_research_header_sections() {
-        let report = investment_research_report();
-        let slices = split_body(&report.body);
+        let body = body(INVESTMENT_RESEARCH);
+        let slices = split_body(&body);
         let h1s: Vec<String> = slices[1..]
             .iter()
             .map(|slice| {
@@ -820,64 +689,26 @@ mod tests {
             .collect();
         assert_eq!(h1s, declared);
         assert_eq!(
-            check_document(&report.body).unwrap().unwrap().sections,
+            check_document(&body).unwrap().unwrap().sections,
             research_header().sections,
             "and the header the body carries is the one the constructor builds"
         );
-    }
-
-    /// #1185 §1.5 B — the anti-flattening rewrite of the three intros.
-    ///
-    /// Activation targets `task` blocks only. Ordering the agent to "replace
-    /// the prose blocks" is precisely the instruction that destroys a report
-    /// arriving with its own structure — and the templates are the delivery
-    /// path the contract mechanism exists for, so an intro still carrying it
-    /// would put two contradictory orders in one document.
-    #[test]
-    fn no_builtin_intro_orders_the_prose_replaced() {
-        for (name, report) in [
-            ("issue-development", issue_development_report()),
-            ("small-change", small_change_report()),
-            ("investigation", investigation_report()),
-        ] {
-            let intro = &report.body;
-            assert!(
-                !intro.contains("Treat the prose"),
-                "{name} must not treat prose blocks as a plan to activate"
-            );
-            assert!(
-                !intro.contains("the prose and"),
-                "{name} must not scope activation to prose blocks"
-            );
-            assert!(
-                intro.contains("Prose blocks are NOT a plan to activate"),
-                "{name} must say prose is maintained, not replaced"
-            );
-            assert!(
-                intro.contains("task blocks"),
-                "{name} must scope activation to task blocks"
-            );
-        }
     }
 
     /// #1571 — the `investment-research` recipe: research contract first, the
     /// seven H1s in contract order and nothing else, zero `task` blocks.
     #[test]
     fn investment_research_is_a_task_less_research_skeleton() {
-        let report = investment_research_report();
-        let prefix = report_contract_prefix(ReportContract::Research);
+        let report = roster()
+            .get(INVESTMENT_RESEARCH)
+            .expect("research template")
+            .recipe();
         assert_eq!(report.summary, "Investment research");
-        assert!(
-            report.body.starts_with(prefix),
-            "must lead with the closed research contract"
+        assert_eq!(
+            check_document(&report.body),
+            Ok(Some(research_header())),
+            "must lead with the closed research contract, not the work-brief one"
         );
-        assert!(
-            !report
-                .body
-                .starts_with(report_contract_prefix(ReportContract::WorkBrief)),
-            "must not carry the work-brief contract"
-        );
-        assert_eq!(check_document(&report.body), Ok(Some(research_header())));
         assert!(report.report_startup_read_required());
         // #1635 v5 / §6.4 — it reads as written because of its birth summary,
         // not its body: the same body with an empty summary is structurally
@@ -913,7 +744,6 @@ mod tests {
             ],
             "exactly the seven research H1s, in order, after the contract block"
         );
-        assert!(slices[0].raw.ends_with("-->\n\n"));
         for slice in &slices[1..] {
             assert!(
                 slice.raw.lines().skip(1).all(|line| line.trim().is_empty()),
@@ -929,226 +759,70 @@ mod tests {
         assert!(!report.body.contains("# Plan"));
     }
 
-    /// The task-less table is honest: none of its recipes renders a `task`
-    /// fence (a recipe that did would belong in `RECIPE_AND_TASKS`).
+    /// #1230 — reading a task block out of a body and rendering it back must be
+    /// an **identity on the payload**, not merely agree on the fields some
+    /// struct happens to model. The first cut deserialized into
+    /// `PlanTaskInput` (`deny_unknown_fields`) and silently dropped any block
+    /// carrying `refs` / `released_by_user` / `tombstone`; asserting identity is
+    /// what makes that class impossible rather than fixed for the fields we
+    /// happened to think of.
+    ///
+    /// Also the roster's honesty about which entries are plans: the three plan
+    /// templates parse to at least one task fence each, `investment-research`
+    /// to none.
+    ///
+    /// The whole-document version of this property — that a *save* preserves
+    /// every block and its id — is an integration test
+    /// (`a_save_preserves_blocks_it_does_not_edit`), because it is about the
+    /// report's blocks and not about this module's files.
     #[test]
-    fn task_less_recipes_carry_no_task_blocks() {
-        for build_recipe in TASK_LESS_RECIPES {
-            let recipe = build_recipe();
-            let fenced = split_body(&recipe.body)
-                .into_iter()
-                .filter_map(|slice| parse_fence(&slice.raw))
-                .filter(|fence| fence.kind == KIND_TASK)
-                .count();
+    fn parsing_a_task_fence_and_rendering_it_back_is_an_identity() {
+        for template in roster().entries() {
+            let key = template.key();
+            let body = template.recipe().body;
+            let payloads = template_task_payloads_from_body(&body);
             assert_eq!(
-                fenced, 0,
-                "{}: a task-less recipe renders task blocks",
-                recipe.summary
+                payloads.is_empty(),
+                key == INVESTMENT_RESEARCH,
+                "{key}: task payloads parsed iff the recipe is a plan template"
             );
-        }
-    }
-
-    #[test]
-    fn known_keys_round_trip() {
-        for template in &TEMPLATES {
-            let key = template.key;
-            assert!(template_by_key(key).is_some());
-            assert_eq!(template_by_key(key).map(|found| found.key), Some(key));
-            // #1321 S3 — every roster entry answers with a non-empty recipe.
-            // Before this slice a fourth entry could be added with no `match`
-            // arm beside it and `template_report` would have returned `None`;
-            // now the field is required to construct the entry at all, so what
-            // is left to check is that the builder produces something.
-            let recipe = template.recipe();
-            assert!(!recipe.summary.is_empty(), "{key}: empty recipe summary");
-            assert!(!recipe.body.is_empty(), "{key}: empty recipe body");
-        }
-        assert!(template_by_key("missing-template").is_none());
-    }
-
-    /// #1318 S2 — `template_by_key` hands back a borrow **into** [`TEMPLATES`],
-    /// never a value derived from the caller's argument.
-    ///
-    /// This is the source side of "`tracks.template_id` stores the roster's
-    /// key": `create_track` writes `admission.key` onto the row, and that key
-    /// is only worth writing if it is the roster's own `&'static str` rather
-    /// than a copy of whatever the client sent. Asserted by data-pointer
-    /// identity, which is the one form the caller's string cannot satisfy —
-    /// `owned` below is a freshly allocated `String` with identical bytes, so
-    /// an equality assertion would pass for both and discriminate nothing.
-    ///
-    /// The mutation this catches is not hypothetical: any case-folding or
-    /// aliasing rule that reflects the caller's spelling back — e.g.
-    /// `TEMPLATES.iter().find(..).map(|t| &*Box::leak(Box::new(Template {
-    /// key: String::leak(key.to_string()), title: t.title,
-    /// build_recipe: t.build_recipe })))` — still
-    /// returns an equal key and turns this test red. (The leak is not
-    /// incidental: the signature returns `Option<&'static Template>`, so a
-    /// mutation that rebuilds the entry has to leak it to compile at all. The
-    /// shorter `.map(|_| Template { .. })` spelling in an earlier draft of this
-    /// comment did not type-check.)
-    ///
-    /// Since #1318 S2 (第二轮评审) that mutation is, in safe Rust, only
-    /// *writable inside this module's subtree*: [`Template`]'s fields are
-    /// private, so the same expression outside it is `E0451`.
-    ///
-    /// #1318 S2 (第三轮评审) — what this test guards is therefore **one return
-    /// path**, [`template_by_key`]'s, and not "the module". A review channel
-    /// added a *second* roster entry point in this same module
-    /// (`fn template_admit(key: &str) -> Option<&'static Template>` doing a
-    /// case-insensitive find and leaking a rebuilt entry when the spelling
-    /// differed), pointed `admit_template` at it, and
-    /// `nextest -E 'test(admission) or test(template)'` ran **68 passed, 0
-    /// failed**. The test is still worth keeping — it is the cheap
-    /// unconditional guard on the path production uses — but it is not a guard
-    /// on the class. See the `## KNOWN GAPS` block on
-    /// [`crate::routes::tracks::admit_template`].
-    #[test]
-    fn template_by_key_returns_the_rosters_own_borrow() {
-        for template in &TEMPLATES {
-            let owned = String::from(template.key);
-            assert_ne!(
-                owned.as_ptr(),
-                template.key.as_ptr(),
-                "the fixture must not accidentally be the roster's own buffer"
-            );
-            let found = template_by_key(owned.as_str()).expect("roster key admits");
-            assert!(
-                std::ptr::eq(found, template),
-                "template_by_key must borrow the roster entry, not rebuild one"
-            );
-            assert!(
-                std::ptr::eq(found.key.as_ptr(), template.key.as_ptr()),
-                "the admitted key must be the roster's &'static str, not the caller's"
-            );
-        }
-    }
-
-    /// #1318 S2 (第三轮评审) — [`Template::key`] / [`Template::title`] hand back
-    /// **the `static`'s own buffer**, not merely a pointer-stable one.
-    ///
-    /// This closes a regression the 第二轮 refactor introduced. That round
-    /// rewrote `routes::tracks`'s admission assertion so that *both* sides read
-    /// through the accessor (`ptr::eq(admission.key().as_ptr(),
-    /// template.key().as_ptr())`), which downgraded it from "the accessor is
-    /// the roster buffer" to "the accessor is pointer-stable". A review channel
-    /// made `key()` return an interned leak — same pointer on every call for a
-    /// given entry, but *not* the field's bytes — and the whole selection ran
-    /// **68 passed, 0 failed**, i.e. `tracks.template_id` and
-    /// `TrackInit::Template` were no longer carrying `static` bytes and nothing
-    /// in the repository noticed.
-    ///
-    /// It has to live here, in the defining module, because the discriminating
-    /// comparison is accessor-against-**private-field**: `t.key` is not
-    /// nameable from `routes::tracks`, so no test over there can express it.
-    #[test]
-    fn the_accessors_hand_back_the_roster_fields_own_buffer() {
-        for template in &TEMPLATES {
-            assert!(
-                std::ptr::eq(template.key().as_ptr(), template.key.as_ptr()),
-                "`{}`: key() must be the `key` field's own buffer",
-                template.key
-            );
-            assert!(
-                std::ptr::eq(template.title().as_ptr(), template.title.as_ptr()),
-                "`{}`: title() must be the `title` field's own buffer",
-                template.key
-            );
-        }
-    }
-
-    /// #1209 — the picker's tooltip lists a template's pre-set tasks, and it
-    /// reads them out of the recipe body. That is only honest while the body's
-    /// `task` fences are the *same* slice the authored `*_tasks()` list holds:
-    /// a task added to the report but not to the list (or a list entry that
-    /// renders no fence) would make the tooltip promise something the
-    /// instantiated report does not contain.
-    ///
-    /// ## What this can and cannot catch
-    ///
-    /// Today it is **a construction guard, not a drift detector**: every
-    /// paired `*_report()` in this module is built by `report_from_tasks` from
-    /// the matching `*_tasks()` — the same `Vec`, one call apart — so a divergence
-    /// is not expressible and this test is green by construction. What it
-    /// guards is the *next* edit: a `*_report()` that stops taking its blocks
-    /// from its own `*_tasks()` (hand-written fences, an extra block appended,
-    /// a task quietly dropped from the list) fails here immediately.
-    ///
-    /// The drift that actually reaches the picker — the route serving a
-    /// different list than the one the recipe renders — is out of this module's reach and
-    /// is pinned in
-    /// `tests/cases/track_templates_read.rs::every_template_lists_the_tasks_its_report_pre_sets`,
-    /// which asserts the HTTP response's keys in order.
-    ///
-    /// Both directions are real, and neither is a substring count: forward,
-    /// every listed key/goal is in a `task` fence; backward, the fences the
-    /// body actually parses to are read out and their key **set** compared,
-    /// with duplicates rejected. Counting `"key": "` occurrences would have
-    /// been the fragile version — any nested payload carrying that literal
-    /// would have made it fail for the wrong reason. Both halves were measured
-    /// by mutation, not asserted: appending one extra `task` fence to every
-    /// recipe body turns this red on the key set (`ghost` shows up on the right
-    /// of the diff), while giving each task a `context` of `{"key": "..."}`
-    /// leaves it green and would have taken the old count from 3 to 6 on
-    /// `small-change` alone.
-    #[test]
-    fn listed_tasks_are_exactly_the_report_task_blocks() {
-        for (build_recipe, build_tasks) in RECIPE_AND_TASKS {
-            let recipe = build_recipe();
-            let key = recipe.summary.clone();
-            let tasks = build_tasks();
-            let body = recipe.body;
-            assert!(!tasks.is_empty(), "{key} lists no tasks");
-
-            // The report's own reader, not a string scan: `split_body` cuts the
-            // well-formed fences out and `parse_fence` gives their payloads, so
-            // this sees exactly the task blocks an instantiated track would.
-            let mut fenced_keys: Vec<String> = Vec::new();
-            for slice in split_body(&body) {
-                let Some(fence) = parse_fence(&slice.raw) else {
-                    continue;
-                };
-                if fence.kind != KIND_TASK {
-                    continue;
-                }
-                fenced_keys.push(
-                    fence.payload["key"]
-                        .as_str()
-                        .unwrap_or_else(|| panic!("{key}: task block without a string key"))
-                        .to_string(),
-                );
-            }
-
-            let mut unique = fenced_keys.clone();
-            unique.sort();
-            unique.dedup();
-            assert_eq!(
-                unique.len(),
-                fenced_keys.len(),
-                "{key}: the recipe declares the same task key twice: {fenced_keys:?}"
-            );
-
-            let listed: BTreeSet<&str> = tasks.iter().map(|task| task.key.as_str()).collect();
-            let fenced: BTreeSet<&str> = fenced_keys.iter().map(String::as_str).collect();
-            assert_eq!(
-                listed, fenced,
-                "{key}: the advertised task keys and the recipe's task blocks differ"
-            );
-
-            for task in &tasks {
+            for payload in &payloads {
+                let fence = render_fence(KIND_TASK, payload);
                 assert!(
-                    body.contains(&task.goal),
-                    "{key}: listed goal for {} is not the recipe's goal",
-                    task.key
+                    body.contains(&fence),
+                    "{key}: re-rendering a parsed payload did not reproduce its fence:\n{fence}"
                 );
             }
         }
+    }
+
+    /// Prose the user added through the ordinary track report editor is not a
+    /// task and must not be read as one — the lenient-read claim in the
+    /// function's doc, exercised rather than asserted.
+    #[test]
+    fn body_prose_and_foreign_fences_are_skipped_not_parsed() {
+        let mut body = body(SMALL_CHANGE);
+        let before = template_task_payloads_from_body(&body).len();
+        body.push_str("\n## Notes\n\nSomething the user typed.\n\n");
+        body.push_str("```neige-block table\n{\n  \"rows\": []\n}\n```\n");
+        body.push_str("```neige-block task\nnot json\n```\n");
+        assert_eq!(template_task_payloads_from_body(&body).len(), before);
     }
 }
 
 #[cfg(test)]
 mod repro_1239 {
     use super::*;
+    use calm_types::report_blocks::render_fence;
+    use serde_json::json;
+
+    fn builtin_body(key: &str) -> String {
+        TemplateRoster::builtin()
+            .get(key)
+            .expect("builtin key")
+            .recipe()
+            .body
+    }
 
     /// Channel-B finding, reproduced before any fix.
     ///
@@ -1160,7 +834,7 @@ mod repro_1239 {
     /// whole-document rewrite.
     #[test]
     fn a_wellformed_task_fence_with_task_block_vocabulary_is_silently_dropped() {
-        let mut body = small_change_report().body;
+        let mut body = builtin_body(SMALL_CHANGE);
         body.push_str(&render_fence(
             KIND_TASK,
             &json!({
@@ -1188,7 +862,7 @@ mod repro_1239 {
     /// nothing stops the rewrite from erasing it.
     #[test]
     fn a_task_tombstone_is_not_erased_by_the_read() {
-        let mut body = investigation_report().body;
+        let mut body = builtin_body(INVESTIGATION);
         body.push_str(&render_fence(
             KIND_TASK,
             &json!({

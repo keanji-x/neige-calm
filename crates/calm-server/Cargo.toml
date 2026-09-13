@@ -208,6 +208,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # CLI / config
 clap = { version = "4", features = ["derive", "env"] }
 toml_edit = "0.22"
+# #1635 S4 — the builtin template files (`templates/builtin/*.md`) carry a
+# TOML front matter (`+++` … `+++`) that `templates::front_matter` parses at
+# first use. Also what the shared-CODEX_HOME writer tests parse with; it was a
+# dev-dependency before this slice.
+toml = "0.8"
 
 # Plugin manifest parsing — validates `version` + `min_kernel_version`.
 # `jsonschema` was considered (per design doc §1) but skipped for Slice A: the
@@ -309,8 +314,6 @@ trybuild = "1"
 # `futures` is already a normal dependency of this crate (and so already in the
 # lock); integration-test crates must re-declare it to link.
 futures = "0.3"
-# Parser-level assertions for shared CODEX_HOME TOML writer regressions.
-toml = "0.8"
 # Microbench for the sync engine event_append overhead (design doc §6.4).
 # Target: <50µs per call against `sqlite::memory:`.
 criterion = { version = "0.5", features = ["async_tokio"] }

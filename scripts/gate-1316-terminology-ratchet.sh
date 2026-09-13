@@ -219,6 +219,27 @@
 #   list must be regenerated against the FINAL diff — a list produced before a
 #   later commit or a merge is expired evidence, not an audit trail.
 #
+#   A THIRD raise, taken ONCE by #1635 S4, under the FIRST class (the persisted
+#   literal) and written as an enumeration. The built-in templates became data
+#   files, and every `task` fence in the three plan files carries the persisted
+#   `"declared_by": "spec"` literal that one deleted Rust line
+#   (`payload["declared_by"] = json!("spec")`, old `templates.rs:318`) used to
+#   emit at instantiation; the review round then deleted the converter that
+#   line called (`plan_template_task_block_payload`, old `plan.rs:140`, its
+#   own `json!("spec")` and its test's literal) and moved that test's one
+#   instance into `contracts.rs` as a wire literal. Code sites emitting the
+#   literal went 2 -> 0; the literal itself is now visible as data, 8 + 3 + 2
+#   times. Not one added occurrence is prose or an identifier. The list is
+#   closed:
+#
+#     crates/calm-server/templates/builtin/*.md                       0 ->  13
+#       issue-development.md 0 -> 8 · small-change.md 0 -> 3 · investigation.md 0 -> 2
+#     crates/calm-server/src/templates.rs                             1 ->   0
+#     crates/calm-server/src/mcp_server/tools/plan.rs                 6 ->   4
+#     crates/calm-server/src/mcp_server/tools/track_report_blocks/contracts.rs
+#                                                                     3 ->   4
+#                                                          net      499 -> 510
+#
 # REQUIRED-FIELD INITIALISERS ON TYPES THIS SLICE DOES NOT OWN
 #   The `spec` note above splits the world in two: prose can be reworded, a
 #   persisted literal cannot. There is a THIRD case, and the `runtime_id` cell

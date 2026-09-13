@@ -471,9 +471,6 @@ pub(super) fn commit_descriptor() -> ToolDescriptor {
 #[cfg(test)]
 mod task_kind_contract_tests {
     use super::*;
-    use crate::mcp_server::tools::plan::{
-        GateInput, GateStepInput, PlanTaskInput, plan_template_task_block_payload,
-    };
     use calm_types::report_blocks::TASK_FIELDS;
     use std::collections::BTreeSet;
 
@@ -642,26 +639,26 @@ mod task_kind_contract_tests {
         assert_eq!(published, validator);
     }
 
+    /// A gate-bearing `task` payload in the `calm.report.blocks.upsert` wire
+    /// vocabulary matches the published task schema field by field.
+    ///
+    /// #1635 S4 — this used to feed `plan_template_task_block_payload`, the
+    /// converter the built-in templates were rendered through; the templates
+    /// are files now and the converter is gone, so the payload is written as
+    /// the wire literal an agent would submit. None of the builtin files
+    /// carries a `gate` (all pre-set tasks say `no_gate_reason`), which is why
+    /// this hand-written instance still earns its place: it is the one
+    /// gate-bearing task payload checked against the published schema.
     #[test]
-    fn minimal_template_gate_wire_matches_published_task_schema_field_by_field() {
-        let payload = plan_template_task_block_payload(&PlanTaskInput {
-            key: "minimal-gate".into(),
-            kind: "codex".into(),
-            goal: "exercise the published gate wire shape".into(),
-            context: None,
-            acceptance_criteria: None,
-            cwd: None,
-            depends_on: vec![],
-            priority: None,
-            gate: Some(GateInput {
-                cwd: None,
-                timeout_secs: None,
-                steps: vec![GateStepInput {
-                    name: "minimal".into(),
-                    cmd: "true".into(),
-                }],
-            }),
-            no_gate_reason: None,
+    fn minimal_gate_task_payload_matches_published_task_schema_field_by_field() {
+        let payload = json!({
+            "key": "minimal-gate",
+            "kind": "codex",
+            "goal": "exercise the published gate wire shape",
+            "depends_on": [],
+            "gate": { "steps": [{ "name": "minimal", "cmd": "true" }] },
+            "ready": true,
+            "declared_by": "spec",
         });
         let table = kinds_table();
         let schema = task_schema(&table);

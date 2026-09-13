@@ -6,8 +6,8 @@
 //! authorities and this endpoint *joins* them; it never copies or invents a
 //! third:
 //!
-//! * `id` / `title` — [`crate::templates::TEMPLATES`], the Rust constants
-//!   `POST /api/tracks` instantiates from.
+//! * `id` / `title` — the roster (`RouteState.templates`, the built-in
+//!   template files since #1635 S4) `POST /api/tracks` instantiates from.
 //! * `input_schema` — the **owning plugin's** manifest `input_schema`, reached
 //!   through the same [`resolve_template_binding`] the create path uses. Absent
 //!   when no running trusted plugin declares that id, which is exactly the set
@@ -38,13 +38,13 @@
 //!
 //! #1230 briefly moved that authority into a stored report so an editor could
 //! write to it; #1300 removed the editor (S1) and the stored report (S2), and
-//! the read went back to the constants. **This endpoint performs no write of
+//! the read went back to the roster. **This endpoint performs no write of
 //! any kind** — pinned by `track_templates_read.rs`.
 //!
-//! Deliberately **no `description`**: `templates.rs` has no such
-//! field, and #1209 records that template facts are already spread across three
-//! places. Adding a fourth spelling of "what this template is" to serve one
-//! label is how the drift starts. The three titles are self-describing.
+//! Deliberately **no `description`**: a template file's front matter has no
+//! such field, and #1209 records that template facts are already spread across
+//! three places. Adding a fourth spelling of "what this template is" to serve
+//! one label is how the drift starts. The titles are self-describing.
 //!
 //! ## The vocabulary seam, closed (#1209)
 //!
@@ -84,7 +84,7 @@
 use crate::error::{ErrorBody, Result};
 use crate::routes::tracks::{compile_template, resolve_template_binding};
 use crate::state::{AppState, RouteState};
-use crate::templates::{TEMPLATES, Template, task_payload_key_and_instruction};
+use crate::templates::{Template, task_payload_key_and_instruction};
 use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
 use serde_json::Value;
@@ -151,8 +151,9 @@ pub struct TrackTemplateTask {
 pub(crate) async fn list_track_templates(
     State(s): State<RouteState>,
 ) -> Result<Json<Vec<TrackTemplate>>> {
-    let mut templates = Vec::with_capacity(TEMPLATES.len());
-    for template in &TEMPLATES {
+    let roster = s.templates.entries();
+    let mut templates = Vec::with_capacity(roster.len());
+    for template in roster {
         // Same resolver as create-time binding, so a template can never be
         // advertised with a schema the create path would then refuse to
         // validate against (stopped or untrusted plugin ⇒ `None` on both
@@ -179,16 +180,16 @@ pub(crate) async fn list_track_templates(
     Ok(Json(templates))
 }
 
-/// A template's title and tasks: the Rust constants, and nothing else.
+/// A template's title and tasks: the roster entry, and nothing else.
 ///
 /// #1300 — this used to prefer the seeded template track's stored report and
-/// fall back to the constants only when the track did not exist yet. That branch
+/// fall back to the roster only when the track did not exist yet. That branch
 /// existed for #1230's editor: once a template could be saved, the saved report
-/// was what `POST /api/tracks` forked, so reading the constants here would have
+/// was what `POST /api/tracks` forked, so reading the roster here would have
 /// advertised a task list create did not produce.
 ///
 /// Both sides of that are gone. S1 removed the editor; S2 removed the seeded
-/// track. `POST /api/tracks` now instantiates the same constants this reads
+/// track. `POST /api/tracks` now instantiates the same roster entry this reads
 /// (`routes::tracks::prepare_template_report`), so there is one authority and
 /// the drift the branch existed to prevent is not expressible.
 ///
@@ -216,16 +217,19 @@ struct Definition {
 /// template create would refuse.
 ///
 /// KNOWN GAP — no automated test covers the error arm. The handler iterates
-/// the [`TEMPLATES`] static itself, so covering it would mean making one of the
-/// roster constants fail to compile at test time: there is no seam to
-/// inject an entry through, and in **safe** Rust no substitute can be built
-/// either, since every field of `Template` — `build_recipe` included — is
-/// private and a literal outside `templates.rs` is `E0451`. That safe-Rust
-/// scope is the one `templates::Template`'s own doc states and no wider; a
-/// `transmute`-built entry is outside it, with the consequences registered on
-/// `routes::tracks::admit_template`. It was verified by mutation instead:
-/// inserting an indented neige-block `task` fence opener into
-/// `SMALL_CHANGE_INTRO` turned
+/// `RouteState.templates`, and the only roster a `RouteState` can carry is
+/// one `crate::templates` built (`TemplateRoster` has no public constructor),
+/// so covering it would mean making one of the built-in files fail to compile
+/// at test time: there is no seam to inject an entry through, and in **safe**
+/// Rust no substitute can be built either, since every field of `Template` —
+/// `body` included — is private and a literal outside `templates.rs` is
+/// `E0451`. That safe-Rust scope is the one `templates::Template`'s own doc
+/// states and no wider; a `transmute`-built entry is outside it, with the
+/// consequences registered on `routes::tracks::admit_template`. It was
+/// verified by mutation instead (before #1635 S4 moved the intro into
+/// `templates/builtin/small-change.md`; the same edit to that file reaches the
+/// same arm): inserting an indented neige-block `task` fence opener into the
+/// `small-change` intro turned
 /// `track_templates_read::lists_every_template_with_its_kernel_title` red — a
 /// case that issues only `GET /api/track-templates` and no create — with
 /// `left: 500, right: 200` and the response body "internal: track create:

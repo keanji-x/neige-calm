@@ -108,6 +108,14 @@ pub struct RouteState {
     pub write: WriteContext,
     pub operation_runtime: Arc<OperationRuntime>,
     pub harness: HarnessRegistry,
+    /// #1635 S4 — the template roster every route reads: `POST /api/tracks`
+    /// admits `template_id` against it, `GET /api/track-templates` lists it,
+    /// the area default-template check consults it. `&'static` because the
+    /// entries are borrowed across a create transaction and the admitted key's
+    /// bytes are what `tracks.template_id` stores. Today always
+    /// [`crate::templates::TemplateRoster::builtin`]; S5 substitutes a roster
+    /// merged with an operator directory here, and nothing downstream changes.
+    pub templates: &'static crate::templates::TemplateRoster,
     /// #1620 — hook ingest appends Terminal-card signals to the live renderer
     /// entry instead of projecting worker state.
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
@@ -248,6 +256,8 @@ pub struct BootState {
     pub plugin: Arc<PluginHost>,
     pub codex: Arc<CodexClient>,
     pub db_instance_id: Arc<String>,
+    /// #1635 S4 — see [`RouteState::templates`].
+    pub templates: &'static crate::templates::TemplateRoster,
     pub card_role_cache: CardRoleCache,
     pub track_area_cache: TrackAreaCache,
     /// #477 PR5 — kernel card-kind handler registry. Substate placement is
@@ -283,6 +293,7 @@ impl BootState {
             write: write.clone(),
             operation_runtime: self.operation_runtime.clone(),
             harness: self.harness.clone(),
+            templates: self.templates,
             hook_ingest_cache,
             planner_recovery_locks: crate::per_card_lock::new_per_card_locks(),
             conversation_first_message_locks: crate::per_card_lock::new_per_card_locks(),
@@ -1010,6 +1021,7 @@ impl AppState {
             // which is the right behavior: two tests sharing one binary
             // are conceptually two server "boots".
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
+            templates: crate::templates::TemplateRoster::builtin(),
             card_role_cache,
             track_area_cache,
             card_kind_registry,
@@ -1536,6 +1548,9 @@ impl AppState {
             // `main.rs`, so this is the boot-scoped id the rest of the
             // server hands out via `/api/version`.
             db_instance_id: Arc::new(uuid::Uuid::new_v4().to_string()),
+            // #1635 S4 — the built-in files, parsed at this first use so a
+            // broken one fails the boot here rather than the first create.
+            templates: crate::templates::TemplateRoster::builtin(),
             card_role_cache,
             track_area_cache,
             card_kind_registry,
