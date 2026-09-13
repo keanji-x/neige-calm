@@ -84,8 +84,8 @@ pub(crate) fn store(root: &Path) -> Result<ArtifactStore> {
 mod test_hooks;
 #[cfg(any(test, feature = "fixtures"))]
 pub use test_hooks::{
-    CandidateCompletionHook, CandidateRecoveryHintHook, CandidateReleaseHook,
-    candidate_review_notice_observation, candidate_review_notice_relevant,
-    install_candidate_completion_hook, install_candidate_recovery_hint_hook,
-    install_candidate_release_hook,
+    CandidateCompletionHook, CandidateObserverHook, CandidateRecoveryHintHook,
+    CandidateReleaseHook, candidate_review_notice_observation, candidate_review_notice_relevant,
+    install_candidate_completion_hook, install_candidate_observer_hook,
+    install_candidate_recovery_hint_hook, install_candidate_release_hook,
 };

@@ -406,6 +406,12 @@ impl ProviderAdapter for CandidateVerifyAdapter {
         let op = op.clone();
         let ctx = ctx.clone();
         let observer = Box::pin(async move {
+            #[cfg(any(test, feature = "fixtures"))]
+            super::test_hooks::before_observe(
+                &frozen.candidate.publication_operation_id,
+                frozen.workspace.clone(),
+            )
+            .await;
             let observation =
                 gate_process::observe_verdict(child, artifacts.clone(), frozen.log(), 1, timeout)
                     .await;

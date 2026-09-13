@@ -101,8 +101,24 @@ async fn candidate_verification_track_delete_refuses_unsubmitted_reservation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn candidate_verification_recovery_retains_capacity_when_leader_missing_group_live() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     // Start a real owned candidate and retain its actual recorded group identity.
     let (fx, _, _, publication) = source("sleep 600 & echo $! > background.pid; sleep 600").await;
+    // A restarted kernel has no observer for this spawn. In one process the
+    // spawn's observer stays alive, and once it observes the leader die it
+    // SIGKILLs the recorded group (#1633). Park it before it can observe.
+    let observer_parked = Arc::new(AtomicBool::new(false));
+    let parked = observer_parked.clone();
+    let _observer_hook = calm_server::file_delivery::install_candidate_observer_hook(
+        &publication,
+        Arc::new(move |_| {
+            parked.store(true, Ordering::SeqCst);
+            Box::pin(std::future::pending())
+        }),
+    );
     schedule(&fx).await;
     let op = verification(&fx, &publication).await;
     let pool = fx.boot.repo.sqlite_pool().unwrap();
@@ -127,14 +143,34 @@ async fn candidate_verification_recovery_retains_capacity_when_leader_missing_gr
     })
     .await
     .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !observer_parked.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the stale observer must be parked at the fixture hook before the leader is touched");
     // Reap the leader from outside its observer, as a restart's new parent can.
-    // waitpid competes with the old observer, so hold the journal non-parked
-    // until the kernel has actually removed the identity.
-    sqlx::query("UPDATE operations SET phase='spawn_started' WHERE id=?1")
-        .bind(&op.id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    // The row must stay `parked` and leased while its leader is a zombie: the
+    // scheduler's wait() loop drives every 25ms, and a lease-free
+    // `spawn_started` row would be claimed and re-driven, whose first step
+    // SIGKILLs the recorded group (#1633). Take the parked lease the way a live
+    // owner does, retrying past the sweep's own brief claims.
+    let lease = format!("test-restart-{}", calm_server::model::new_id());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let now = calm_server::model::now_ms();
+            let claimed = sqlx::query("UPDATE operations SET lease_owner=?2,lease_until_ms=?3 WHERE id=?1 AND phase='parked' AND (lease_owner IS NULL OR lease_until_ms < ?4)")
+                .bind(&op.id).bind(&lease).bind(now + 60_000).bind(now)
+                .execute(&pool).await.unwrap().rows_affected();
+            if claimed == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("test lease on the parked row");
     unsafe {
         libc::kill(artifacts.pid, libc::SIGKILL);
         libc::waitpid(artifacts.pid, std::ptr::null_mut(), 0);
@@ -159,18 +195,52 @@ async fn candidate_verification_recovery_retains_capacity_when_leader_missing_gr
         survivors.iter().any(|m| !m.is_zombie),
         "must retain a live orphan group"
     );
-    sqlx::query(
-        "UPDATE operations SET phase='parked',lease_owner=NULL,lease_until_ms=NULL WHERE id=?1",
+    async fn lease_owner(pool: &sqlx::SqlitePool, id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT lease_owner FROM operations WHERE id=?1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+    assert_eq!(
+        lease_owner(&pool, &op.id).await.as_deref(),
+        Some(lease.as_str()),
+        "no in-process actor may take the parked row while its leader is a zombie"
+    );
+    let live_before = survivors
+        .iter()
+        .filter(|m| !m.is_zombie)
+        .map(|m| (m.pid, m.start_time))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lease_owner(&pool, &op.id).await.as_deref(),
+        Some(lease.as_str()),
+        "the test lease must still fence the row right before boot recovery"
+    );
+    let released = sqlx::query(
+        "UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1 AND lease_owner=?2",
     )
     .bind(&op.id)
+    .bind(&lease)
     .execute(&pool)
     .await
-    .unwrap();
+    .unwrap()
+    .rows_affected();
+    assert_eq!(released, 1);
     fx.state
         .operation_runtime
         .apply_recovery(fx.state.operation_runtime.recover_on_boot().await.unwrap())
         .await
         .unwrap();
+    let live_after = calm_server::proc_identity::scan_process_group_members(artifacts.pgid);
+    for (pid, start_time) in &live_before {
+        assert!(
+            live_after
+                .iter()
+                .any(|m| m.pid == *pid && m.start_time == *start_time && !m.is_zombie),
+            "no in-process signal may reach recorded member {pid}: before={live_before:?} after={live_after:?}"
+        );
+    }
     let active: i64 = sqlx::query_scalar("SELECT count(*) FROM task_candidate_verification_allocations a LEFT JOIN operations o ON o.operation_key=a.operation_key AND o.kind='candidate-verify' WHERE o.id IS NULL OR o.phase NOT IN ('succeeded','failed')")
         .fetch_one(&pool).await.unwrap();
     assert_eq!(active, 1, "boot must retain unresolved group capacity");
