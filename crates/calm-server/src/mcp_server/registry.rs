@@ -29,7 +29,7 @@ use crate::state::WriteContext;
 use calm_truth::track_vcs_repo::TrackVcsRepo;
 use calm_types::worker::{Principal, WorkerSessionId};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -308,12 +308,18 @@ pub fn role_gated_write_annotations() -> Value {
 /// [`build_default_registry`] (emit + track-state + track-report tools).
 pub struct ToolRegistry {
     by_name: HashMap<String, (ToolDescriptor, ToolHandler)>,
+    /// Names registered through [`register_deprecated_alias`]. Their
+    /// descriptions are protocol (`format!`ed from the target name), not
+    /// agent-facing prose, so they are the one kind of descriptor without a
+    /// `prompts/tools/<name>.md` source (#1635 S1d).
+    deprecated_aliases: BTreeSet<String>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             by_name: HashMap::new(),
+            deprecated_aliases: BTreeSet::new(),
         }
     }
 
@@ -349,6 +355,12 @@ impl ToolRegistry {
             .filter(|d| roles.iter().any(|role| d.0.visible_to_roles.contains(role)))
             .map(|(d, _)| d.clone())
             .collect()
+    }
+
+    /// Names that were registered as deprecated aliases (see
+    /// [`register_deprecated_alias`]), as opposed to real tools.
+    pub fn deprecated_alias_names(&self) -> &BTreeSet<String> {
+        &self.deprecated_aliases
     }
 }
 
@@ -386,6 +398,7 @@ pub fn register_deprecated_alias(
         visible_to_roles: &[],
     };
     registry.register(alias_descriptor, handler);
+    registry.deprecated_aliases.insert(old_name.to_string());
 }
 
 impl Default for ToolRegistry {

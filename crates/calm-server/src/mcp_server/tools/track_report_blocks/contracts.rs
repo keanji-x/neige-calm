@@ -14,15 +14,9 @@ use serde_json::{Value, json};
 pub(super) fn kinds_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BLOCKS_KINDS.into(),
-        description: "Planner-only: list the block kinds a track report can \
-             contain. Returns `{ kinds: [{ kind, schema, usage }] }` \
-             where `schema` is the JSON Schema of that kind's payload. \
-             Kinds: `prose` (markdown), `chart.candles` (inline candle \
-             chart), `table` (comparison table), `app` (embedded \
-             same-origin mini-app), `task` (validated task declaration; \
-             projection lands in a later slice). Creating or moving blocks \
-             requires `if_doc_rev`; read `docRev` from `calm.report.read`."
-            .into(),
+        description: include_str!("../../../../prompts/tools/calm.report.blocks.kinds.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {}
@@ -301,24 +295,9 @@ pub(super) fn kinds_table() -> Value {
 pub(super) fn upsert_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BLOCKS_UPSERT.into(),
-        description: "Planner-only: create or replace ONE report block. \
-             Without `id`: creates a new block (appended at the end, \
-             or inserted at `position`) and REQUIRES `if_doc_rev`; read \
-             `docRev` from `calm.report.read`. With `id`: replaces that \
-             block's content and REQUIRES `if_rev` (the rev you read); \
-             a mismatch returns error -32001 (rev conflict) and writes \
-             nothing — re-read and retry. Kinds (see \
-             calm.report.blocks.kinds for payload schemas): `prose` \
-             takes its content in `markdown`; `chart.candles` / \
-             `table` / `app` / `task` take a schema-validated `payload` object \
-             (and must NOT pass `markdown`). Returns `{ id, rev, \
-             updated_at, docRev }` — keep the returned rev for your next edit \
-             of the same block. Get ids/revs from `calm.report.read`'s \
-             `blocks` index. The report summary is not touched. Optional \
-             `message` is persisted as `agent_message`; optional `lifecycle` \
-             (Planner only) advances the track in the same write. For several \
-             blocks + summary + lifecycle at once use `calm.report.commit`."
-            .into(),
+        description: include_str!("../../../../prompts/tools/calm.report.blocks.upsert.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["kind"],
@@ -344,15 +323,9 @@ pub(super) fn upsert_descriptor() -> ToolDescriptor {
 pub(super) fn move_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BLOCKS_MOVE.into(),
-        description: "Planner-only: move a report block to `to_index` (its \
-             final 0-based index in document order). Content and rev \
-             are untouched — ordering is not content. `if_doc_rev` is \
-             REQUIRED because ordering is document-wide; read `docRev` \
-             from `calm.report.read` (mismatch → error -32001). Returns \
-             `{ id, rev, updated_at, docRev }`. Takes no `message` and no \
-             `lifecycle` — passing either is refused (-32602); carry them \
-             with `calm.report.commit`."
-            .into(),
+        description: include_str!("../../../../prompts/tools/calm.report.blocks.move.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["id", "to_index", "if_doc_rev"],
@@ -372,13 +345,9 @@ pub(super) fn move_descriptor() -> ToolDescriptor {
 pub(super) fn delete_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BLOCKS_DELETE.into(),
-        description: "Planner-only: delete a report block. `if_rev` is \
-             REQUIRED (destructive op): pass the rev you last read; a \
-             mismatch returns error -32001 (rev conflict) and deletes \
-             nothing. Returns `{ updated_at, docRev }`. Takes no `message` \
-             and no `lifecycle` — passing either is refused (-32602); carry \
-             them with `calm.report.commit`."
-            .into(),
+        description: include_str!("../../../../prompts/tools/calm.report.blocks.delete.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["id", "if_rev"],
@@ -397,29 +366,9 @@ pub(super) fn delete_descriptor() -> ToolDescriptor {
 pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_WRITE_MARKDOWN.into(),
-        description: "Planner-only: the id-preserving whole-document write \
-             — wholesale-replace the report from full-document \
-             Markdown. Prefer this over `calm.report.write` for any \
-             full rewrite: that tool re-derives block ids \
-             best-effort, this one keeps them. The body MAY contain \
-             the `<!-- neige:b_xxxx -->` marker lines that \
-             `calm.report.read { with_markers: true }` emits — each \
-             marker pins the block that follows it to that existing \
-             block id (its rev bumps only if the content changed). \
-             Marker lines are ALWAYS stripped server-side and never \
-             stored; blocks without markers are re-matched \
-             best-effort. Non-prose blocks appear in the body as \
-             ```neige-block <kind>``` fences: keep a fence verbatim to \
-             preserve that block, edit its JSON to update it (rev+1), \
-             drop it to delete it — every fence must be well-formed \
-             and schema-valid or the whole write is rejected (-32602). \
-             Use `calm.report.blocks.*` for targeted \
-             edits; use this for large restructurings. Optional `message` \
-             is persisted as `agent_message`; optional `lifecycle` (Planner \
-             only) advances the track in the same write. Omitting \
-             `summary` keeps the existing one. Returns \
-             `{ updated_at, docRev }`."
-            .into(),
+        description: include_str!("../../../../prompts/tools/calm.report.write_markdown.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["body", "if_doc_rev"],
@@ -482,36 +431,9 @@ fn planner_only_lifecycle_schema() -> Value {
 pub(super) fn commit_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_COMMIT.into(),
-        description: "Planner-only: commit ONE user-intent update to the track \
-             report in ONE call — an ordered list of block ops, an optional \
-             new `summary`, and an optional `lifecycle` transition, all under \
-             a single `if_doc_rev` check and a single `message`. Use this \
-             instead of chaining `blocks.upsert` calls, re-reading, and \
-             writing the whole document back just to change the summary or \
-             to carry a lifecycle. Each entry of `ops` is the argument shape \
-             of its single-op tool plus an `op` tag, minus `if_doc_rev`: \
-             `{ op: \"upsert\", id, if_rev, kind, markdown|payload }` replaces \
-             an existing block; `{ op: \"upsert\", kind, markdown|payload, \
-             position? }` creates one; `{ op: \"delete\", id, if_rev }`; \
-             `{ op: \"move\", id, to_index }`. Ops apply in order; any failure \
-             (stale `if_doc_rev` → -32001, stale per-block `if_rev` → -32001, \
-             invalid content → -32602, illegal lifecycle → -32403) aborts the \
-             WHOLE commit — nothing is written and no event is emitted. \
-             Each existing block id may appear in at most ONE op per commit \
-             (a second op on the same id is refused -32602 before anything \
-             is written): ops apply in order and a content change bumps \
-             that block's rev, so a later op could not know the rev to \
-             pass. `ops` may be empty when only `summary` and/or `lifecycle` \
-             change; such a commit still bumps `docRev` and emits the usual \
-             CardUpdated + TrackReportEdited pair, so any `if_doc_rev` other \
-             holders read before it goes stale. A batch `delete` cannot \
-             retire a live task block; use `calm.report.blocks.delete` for \
-             that. Returns `{ updated_at, docRev, blocks: [{ id, kind, rev }], \
-             lifecycle }` — the full post-commit block index (keep the revs \
-             for your next edit) and the lifecycle transition applied, or \
-             null when none applied (no `lifecycle` given, or the track was \
-             already in the requested state)."
-            .into(),
+        description: include_str!("../../../../prompts/tools/calm.report.commit.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["if_doc_rev", "message"],

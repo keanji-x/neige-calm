@@ -43,15 +43,9 @@ where
 fn outline_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_AREA_OUTLINE.into(),
-        description:
-            "Planner-only: list the reports and addressable block index for every track in \
-            the caller's area. Takes no parameters. Create links as \
-            `[label](neige://wave/<track_id>#<block_id>)`; the `#<block_id>` fragment is optional. \
-            Block ids come from this outline or `calm.report.read`. Links resolve only within the \
-            area. If an anchored block no longer exists, the link degrades to a whole-report link \
-            instead of breaking. Returns `{ tracks: [{ id, title, lifecycle, blocks: [{ id, kind, \
-            heading }] }], truncated? }`; it never returns report bodies."
-                .into(),
+        description: include_str!("../../../prompts/tools/calm.area.outline.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         annotations: Some(read_only_annotations()),
         visible_to_roles: &[CardRole::Planner],
@@ -61,14 +55,9 @@ fn outline_descriptor() -> ToolDescriptor {
 fn backlinks_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_BACKLINKS.into(),
-        description:
-            "Planner-only: list report links from tracks in the same area to the caller's \
-            own track. Takes no parameters. Link syntax is \
-            `[label](neige://wave/<track_id>#<block_id>)`; the fragment is optional, and block ids \
-            come from `calm.area.outline` or `calm.report.read`. Links resolve only within the \
-            area. An anchor whose block no longer exists degrades to a whole-report link rather \
-            than breaking."
-                .into(),
+        description: include_str!("../../../prompts/tools/calm.report.links.backlinks.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         annotations: Some(read_only_annotations()),
         visible_to_roles: &[CardRole::Planner],

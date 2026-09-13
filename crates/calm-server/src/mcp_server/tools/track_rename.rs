@@ -102,22 +102,9 @@ where
 fn track_rename_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_RENAME.into(),
-        description: "Planner-only: give this track its name. The title is not the \
-             user's instruction, it is a label for the work. If this track's \
-             title is still empty, name it here once you have worked out from \
-             the conversation what this track is actually about; if it already \
-             has one, leave it alone and do not call this tool. Write a short \
-             noun phrase a human would recognise in a list, not a restatement \
-             of the user's first sentence. \
-             Name-once: this succeeds only while the track is still unnamed. If \
-             it already has a title (the user named it, or a parent planner named \
-             it), the call returns `{\"ok\": false, \"refused\": \
-             \"already_named\", \"title\": <current title>}` and changes \
-             nothing — that is not an error, just leave the name alone. \
-             The per-area chat track refuses the same way (`chat_track`). \
-             Optional `message` is a short \
-             human-readable rationale persisted on the event."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.track.rename.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["title"],

@@ -56,6 +56,7 @@ mod tests {
     use crate::model::CardRole;
     use serde::Serialize;
     use serde_json::Value;
+    use std::collections::BTreeSet;
     use std::path::Path;
 
     /// Whole-surface pin of the default MCP tool registry (#1635 S1d): every
@@ -137,6 +138,89 @@ mod tests {
              (REGEN_MCP_TOOL_REGISTRY_GOLDEN=1 rewrites the golden; hand-verify the diff)",
             MCP_TOOL_REGISTRY_GOLDEN.len(),
             rendered.len()
+        );
+    }
+
+    /// #1635 S1d: every non-alias tool's description is the file
+    /// `prompts/tools/<tool name>.md` (embedded with `include_str!` and
+    /// `trim_end()`), and there is no such file without a tool. The
+    /// directory is read at test time, so a stray, renamed or orphaned file
+    /// fails here rather than silently going unused. The byte rules make
+    /// `trim_end()` strip exactly the repository newline and nothing else:
+    /// with trailing whitespace before that newline, the embedded description
+    /// would differ from the file's visible content.
+    #[test]
+    fn prompt_files_cover_exactly_the_non_alias_tools() {
+        let registry = build_default_registry();
+        let aliases = registry.deprecated_alias_names();
+        assert!(
+            !aliases.is_empty(),
+            "the default registry is expected to carry deprecated aliases"
+        );
+
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("prompts/tools");
+        let mut stems = BTreeSet::new();
+        let mut contents = std::collections::BTreeMap::new();
+        for entry in std::fs::read_dir(&dir).expect("read prompts/tools") {
+            let path = entry.expect("directory entry").path();
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_else(|| panic!("{}: non-UTF-8 file name", path.display()));
+            let stem = file_name.strip_suffix(".md").unwrap_or_else(|| {
+                panic!("{}: only `<tool>.md` files belong here", path.display())
+            });
+            assert!(
+                path.is_file(),
+                "{}: only plain files belong here",
+                path.display()
+            );
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert!(!content.is_empty(), "{file_name}: empty");
+            assert!(!content.contains('\r'), "{file_name}: carriage return");
+            let body = content
+                .strip_suffix('\n')
+                .unwrap_or_else(|| panic!("{file_name}: must end with a newline"));
+            assert!(
+                !body.ends_with('\n'),
+                "{file_name}: must end with exactly one newline"
+            );
+            assert!(
+                !body.ends_with(char::is_whitespace),
+                "{file_name}: trailing whitespace before the final newline"
+            );
+            assert!(!body.is_empty(), "{file_name}: newline only");
+            stems.insert(stem.to_string());
+            contents.insert(stem.to_string(), body.to_string());
+        }
+
+        let mut expected = BTreeSet::new();
+        for descriptor in registry.descriptors() {
+            if aliases.contains(&descriptor.name) {
+                continue;
+            }
+            let file_body = contents.get(&descriptor.name).unwrap_or_else(|| {
+                panic!(
+                    "{}: no prompts/tools/{}.md",
+                    descriptor.name, descriptor.name
+                )
+            });
+            assert_eq!(
+                &descriptor.description, file_body,
+                "{}: description is not the content of prompts/tools/{}.md",
+                descriptor.name, descriptor.name
+            );
+            expected.insert(descriptor.name);
+        }
+        assert_eq!(
+            stems, expected,
+            "prompts/tools/*.md stems must be exactly the non-alias tool names"
+        );
+        assert!(
+            expected.len() >= 30,
+            "anti-vacuity floor: {} non-alias tools",
+            expected.len()
         );
     }
 }

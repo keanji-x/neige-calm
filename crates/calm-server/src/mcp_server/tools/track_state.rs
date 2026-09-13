@@ -112,22 +112,9 @@ where
 fn track_state_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_STATE.into(),
-        description: "Read the current track snapshot bound to the calling card. \
-             Returns the track row plus a card list so a planner daemon can see \
-             worker progress without a second call. Each card carries `id`, \
-             `kind`, `role`, `sort`, `created_at`, `updated_at`, plus \
-             `runtime` (typed `CardRuntimeView` or `null` when no runtime row). \
-             `report_startup_read_required` is true iff the track-report \
-             summary/body holds content beyond one of the kernel's empty \
-             initial bodies (the current one or the pre-header one). \
-             `tasks_declared` counts the track's plan tasks. `next` lists the \
-             lifecycle targets the planner may write from the current state: \
-             each entry carries `lifecycle`, `via` (the tools whose optional \
-             `lifecycle` argument can carry it) and a one-line `note`; a track \
-             with no tasks lists only the report tools. Empty when the track \
-             is terminal. Callable by planner and worker cards alike; no event \
-             is emitted."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.track.state.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {}
@@ -257,17 +244,9 @@ fn report_startup_read_required(cards: &[Card]) -> bool {
 fn task_verdict_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_VERDICT.into(),
-        description: "Planner-only: record the planner's accept/reject verdict on \
-             a worker's prior result. `idempotency_key` echoes the original \
-             `*.worker_requested`. `status = \"accepted\"` emits \
-             `task.completed`; `status = \"rejected\"` emits `task.failed` \
-             with `reason` (free-form). `message` is required and should \
-             explain the verdict; it is persisted as `agent_message`. For a review-required candidate, accept the producer attempt only after its exact machine and designated Reviewer evidence pass. The kernel binds that evidence and decision event ID atomically; early acceptance fails, and acceptance of the Reviewer task alone does not qualify code. Identical accepted evidence reuses its decision ID. Rejection revokes future delivery starts without changing Task terminal state. \
-             Optional `lifecycle` drives the track state machine in the same \
-             atomic write when accepting, rejecting, blocking, or continuing \
-             the track. The verdict is persisted on the events log so audit \
-             replay surfaces the planner's rationale."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.task.verdict.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["idempotency_key", "status", "message"],

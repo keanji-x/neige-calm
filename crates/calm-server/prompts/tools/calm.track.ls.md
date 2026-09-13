@@ -1,0 +1,1 @@
+Planner/Worker: list file-like read views for the current MCP-bound track. Accepts optional `{ path }`; `/` lists `index.md`, `track.json`, `report.md`, `cards/`, and `runs/`; `cards/<card_id>` lists `.meta.json`, `.payload.json`, `runtime.json`, `events.json`, and `conversation.md`. The track is derived from the bound card identity, never from arguments.

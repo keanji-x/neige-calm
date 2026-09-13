@@ -60,14 +60,9 @@ where
 fn review_round_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REVIEW_ROUND.into(),
-        description: "Planner-only: record one dual-channel review round for a \
-             logical subject. Requires at least two channel verdicts, `n <= cap`, \
-             and when `converged=true` every channel verdict must be `approved`. \
-             Round numbers are strict-monotonic per subject starting at 1; an \
-             exact retry of an already-recorded round is a no-op. Per subject, \
-             `cap` must not shrink and may rise by exactly 2 only after the \
-             previous window is exhausted (n == cap) with a fresh ratify grant."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.review.round.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["subject", "n", "cap", "converged", "channels"],
@@ -108,11 +103,9 @@ fn review_round_descriptor() -> ToolDescriptor {
 fn ratify_request_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_RATIFY_REQUEST.into(),
-        description: "Planner-only: request human ratification for the current \
-             track. Emits `ratify.requested` and applies `working -> blocked` \
-             in the same atomic write. The planner must perform any preceding \
-             `reviewing -> working` transition separately."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.ratify.request.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["reason"],

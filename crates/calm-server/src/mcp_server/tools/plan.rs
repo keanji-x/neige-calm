@@ -424,11 +424,9 @@ fn task_row_from_normalized(track_id: &str, t: &NormalizedTask, now: i64) -> Tas
 fn plan_upsert_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_UPSERT.into(),
-        description: "Deprecated compatibility shim: `calm.plan.upsert` was retired in \
-             #985. Create or replace `task` blocks with \
-             `calm.report.blocks.upsert`; the kernel projects ready declarations, \
-             schedules tasks, and runs verification gates."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.plan.upsert.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["tasks", "message"],
@@ -522,13 +520,9 @@ async fn plan_upsert(
 fn plan_cancel_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_CANCEL.into(),
-        description: "Planner-only: cancel one still-pending task in the track's plan. \
-             Canceling an already-canceled task is an idempotent success. In-flight \
-             tasks (dispatched/running/verifying) cannot be interrupted — cancel or \
-             rewire their successors instead. `message` is required and persisted as \
-             `agent_message` on the `plan.updated` event. Optional `lifecycle` drives \
-             the track state machine in the same atomic write."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.plan.cancel.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["key", "message"],
@@ -772,12 +766,9 @@ where
 fn plan_list_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_LIST.into(),
-        description: "Planner-only: for status start with detail=summary and the exact key when known; omit key for a compact current inventory. Use detail=full with that key for semantic evidence. Omitted arguments retain the full plan. Summaries are current observations, not acceptance or authority; compare attempt_id when reading full evidence. \
-             Gate commands are not echoed (only step names); each entry carries the \
-             latest machine gate verdict as `gate_result` (on failure `status_detail` \
-             is gate-red / gate-timeout / gate-infra). Read the worker output for a \
-             finished task via the runs views. No event is emitted."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.plan.list.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {"detail":{"type":"string","enum":["summary","full"]},"key":{"type":"string","minLength":1,"description":"One exact current task key in this Track; no prefix matching or whitespace normalization."}},
@@ -935,16 +926,19 @@ fn task_list_entry(t: &Task) -> Value {
 fn plan_recover_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_RECOVER.into(),
-        description: "Recover a failed auto-declare Planner task under its unchanged contract when the kernel recovery decision briefing or calm.plan.list reports recovery.allowed. Supported cases are preparation failures and failed isolated Codex executions after confirmed stop and failed Operation settlement. Isolated recovery starts in a new workspace. Declared immutable inputs retain their binding; previous Worker outputs are not implicitly inherited. Executed legacy workers without a supported descendant write fence remain refused. Planner may recover only once; User authorization is required for further recovery, user-owned tasks, or declare-and-wait. Use the exact attempt_id from that briefing or calm.plan.list and retain the idempotency_key when retrying the request. Acceptance does not mean the new Worker has started. Recovery re-runs on the executor of the failed attempt with its unchanged environment and capabilities; for isolated Codex that is the identical execution environment and only the workspace is new. It cannot resolve a failure caused by a missing capability (for example no network); change the task's goal or inputs instead. The response states the actual route as executor_environment and what recovery changes as recover_changes.".into(),
+        description: include_str!("../../../prompts/tools/calm.plan.recover.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({"type": "object", "additionalProperties": false,
-            "required": ["key", "expected_attempt_id", "idempotency_key", "reason"],
-            "properties": {
-                "key": {"type": "string", "minLength": 1},
-                "expected_attempt_id": {"type": "string", "minLength": 1},
-                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 200},
-                "reason": {"type": "string", "minLength": 1, "maxLength": 4000}
-            }}),
-        annotations: Some(role_gated_write_annotations()), visible_to_roles: &[CardRole::Planner],
+        "required": ["key", "expected_attempt_id", "idempotency_key", "reason"],
+        "properties": {
+            "key": {"type": "string", "minLength": 1},
+            "expected_attempt_id": {"type": "string", "minLength": 1},
+            "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 200},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 4000}
+        }}),
+        annotations: Some(role_gated_write_annotations()),
+        visible_to_roles: &[CardRole::Planner],
     }
 }
 

@@ -91,11 +91,9 @@ where
 fn dispatch_request_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_DISPATCH_REQUEST.into(),
-        description: "Deprecated compatibility shim: `calm.dispatch_request` was \
-             retired in #644. Create `task` blocks with \
-             `calm.report.blocks.upsert`; the kernel schedules ready tasks and \
-             runs gates."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.dispatch_request.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -138,10 +136,9 @@ async fn dispatch_request(
 fn task_complete_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_COMPLETE.into(),
-        description: "Report that a worker card has completed its task. \
-             `idempotency_key` should echo the kernel-provided task id so \
-             the planner card can correlate."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.task.complete.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["idempotency_key"],
@@ -369,9 +366,9 @@ fn worktree_committed_event_spec() -> ForgeEventSpec {
 fn task_fail_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_FAIL.into(),
-        description: "Report that a worker card has failed its task. \
-             `reason` is free-form and persisted verbatim on the event row."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.task.fail.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["idempotency_key", "reason"],

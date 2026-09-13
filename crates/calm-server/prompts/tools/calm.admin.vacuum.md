@@ -1,0 +1,1 @@
+Hidden admin: run a full SQLite VACUUM to reclaim freed pages to the OS. Takes a write lock on the DB and serializes with all writers; run only in a quiet maintenance window. Arguments: `{}`. Returns `{ ok: true }`.

@@ -44,14 +44,9 @@ where
 fn ls_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_LS.into(),
-        description: "Planner/Worker: list file-like read views for the current MCP-bound track. \
-             Accepts optional `{ path }`; `/` lists `index.md`, `track.json`, \
-             `report.md`, `cards/`, and `runs/`; `cards/<card_id>` lists \
-             `.meta.json`, `.payload.json`, `runtime.json`, `events.json`, and \
-             `conversation.md`. \
-             The track is derived from the bound \
-             card identity, never from arguments."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.track.ls.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -66,16 +61,9 @@ fn ls_descriptor() -> ToolDescriptor {
 fn cat_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_CAT.into(),
-        description: "Planner/Worker: read one file-like view from the current MCP-bound track. \
-             Supports `index.md`, `track.json`, `report.md`, `cards/index.json`, \
-             `cards/<card_id>/.meta.json`, `cards/<card_id>/.payload.json`, \
-             `cards/<card_id>/runtime.json`, \
-             `cards/<card_id>/events.json`, `cards/<card_id>/conversation.md`, \
-             `runs/index.json`, `runs/<idempotency_key>.md`, \
-             `runs/<idempotency_key>.json`, `runs/<idempotency_key>/gates/<attempt>.log`, \
-             and `plan/<key>/gate.log`. Gate logs are planner-only: the exact run/gate \
-             path preserves historical evidence; the plan-key alias selects the current log."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.track.cat.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["path"],
