@@ -656,6 +656,55 @@ mod tests {
         assert!(ordinary.contains(markers) && launchpad.contains(markers));
     }
 
+    /// #1635 S1b — the two worker prompts, byte for byte, rendered for one
+    /// fixed track id. They had no golden before this slice; the move of
+    /// their prose out of Rust is proved by these files not changing.
+    const WORKER_PROMPT_CLI_GOLDEN: &str = include_str!("../tests/goldens/worker_prompt_cli.txt");
+    const WORKER_PROMPT_MCP_GOLDEN: &str = include_str!("../tests/goldens/worker_prompt_mcp.txt");
+
+    /// Whole-document equality for both worker prompts. Regenerate with
+    /// `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff: the goldens are
+    /// the reviewed wording, so a regen is a review, not a fix.
+    #[test]
+    fn the_worker_prompts_match_their_reviewed_goldens() {
+        let regen = std::env::var_os("REGEN_PROMPT_GOLDENS").is_some();
+        for (file, template, golden) in [
+            (
+                "worker_prompt_cli.txt",
+                WORKER_SYSTEM_PROMPT_PLACEHOLDER,
+                WORKER_PROMPT_CLI_GOLDEN,
+            ),
+            (
+                "worker_prompt_mcp.txt",
+                WORKER_CODEX_SYSTEM_PROMPT,
+                WORKER_PROMPT_MCP_GOLDEN,
+            ),
+        ] {
+            let rendered = render_system_prompt(template, "track-golden-1635");
+            if regen {
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/goldens")
+                    .join(file);
+                // Write back `rendered + "\n"`: the assertion side does
+                // `strip_suffix('\n')`, so omitting it panics on the next run.
+                std::fs::write(&path, format!("{rendered}\n")).expect("write regenerated golden");
+                continue;
+            }
+            let expected = golden
+                .strip_suffix('\n')
+                .expect("text fixture has its repository newline");
+            assert_eq!(
+                rendered, expected,
+                "{file} differs from the rendered prompt"
+            );
+        }
+        assert!(
+            !regen,
+            "worker_prompt_cli.txt / worker_prompt_mcp.txt regenerated from the current \
+             prompts; hand-verify the diff, commit, and re-run without REGEN_PROMPT_GOLDENS"
+        );
+    }
+
     #[test]
     fn assistant_prompts_match_their_actual_read_and_tool_discovery_surface() {
         let ordinary = render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189");
