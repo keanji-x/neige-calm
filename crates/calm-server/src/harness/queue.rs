@@ -680,7 +680,12 @@ pub fn apply_mutation(
             // any other client's in-flight write against the old rev is now
             // stale and gets a 409 instead of overwriting this one.
             *rev = rev.saturating_add(1);
-            (HarnessQueueChange::Edited, *rev, Some(new_text.clone()), None)
+            (
+                HarnessQueueChange::Edited,
+                *rev,
+                Some(new_text.clone()),
+                None,
+            )
         }
         QueueMutation::Delete { .. } => {
             let removed = queue.remove(index).expect("index came from this queue");
@@ -1367,7 +1372,10 @@ mod tests {
             "the caller gets the same instance, id and rev included"
         );
         assert!(!applied.queue_now_empty);
-        assert!(applied.remaining_hard_fire, "two user entries are still waiting");
+        assert!(
+            applied.remaining_hard_fire,
+            "two user entries are still waiting"
+        );
         assert_eq!(queue.len(), 2);
         assert!(
             queue.iter().all(|entry| entry.id() != Some(&entry_id)),
@@ -1457,10 +1465,7 @@ mod tests {
         queue.push_back(twin);
         assert_eq!(
             locate_entry(&queue, &entry_id, 0),
-            Err(MutationRefused::AmbiguousId {
-                entry_id,
-                count: 2,
-            })
+            Err(MutationRefused::AmbiguousId { entry_id, count: 2 })
         );
         assert_eq!(queue.len(), 3, "a locate never writes");
     }

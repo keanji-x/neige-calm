@@ -2606,7 +2606,12 @@ mod tests {
         assert_eq!(frame["expectedTurnId"], json!("turn-7"));
         assert_eq!(frame["input"], serde_json::to_value(&input).unwrap());
         assert_eq!(frame["clientUserMessageId"], json!("entry-0002"));
-        let keys = frame.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        let keys = frame
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
         assert_eq!(keys.len(), 4, "no settings ride on a steer: {keys:?}");
 
         let bare = turn_steer_params("t", "turn-7", &input, None);
