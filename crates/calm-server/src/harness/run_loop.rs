@@ -22,11 +22,9 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
 use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
-#[cfg(test)]
-use crate::harness::queue::input_segments_for_entries;
 use crate::harness::queue::{
-    FoldOutcome, MutationResult, QueueEntry, QueueEntryId, QueueMutation, apply_mutation,
-    try_fold_tail,
+    FoldOutcome, MutationApplied, MutationRefused, MutationResult, QueueEntry, QueueEntryId,
+    QueueMutation, apply_mutation, input_segments_for_entries, locate_entry, try_fold_tail,
 };
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
@@ -385,7 +383,70 @@ enum HarnessObservationCommand {
         actor: ActorId,
         applied: oneshot::Sender<Result<MutationResult>>,
     },
+    /// #1625 P3 — a human asking for one queued entry to go into the turn
+    /// that is running right now, instead of waiting for the next one.
+    ///
+    /// Same channel and same `select!` arm as `Mutate`, and here the arm IS
+    /// what the argument rests on: `handle_steer` takes the entry out of the
+    /// queue and then AWAITS codex's answer to `turn/steer`, and for as long
+    /// as that await lasts nothing else on this task runs — no tick, so no
+    /// `maybe_issue_turn`; no notification, so no `TurnCompleted`. The order
+    /// "leave the queue, then ask codex" is therefore not merely the order of
+    /// two statements: the drain that could send the same entry a second time
+    /// cannot start until the steer has either succeeded (the entry is gone)
+    /// or been refused (the entry is back at the head). Asking codex first
+    /// and removing afterwards was the shape the design forbade, and this arm
+    /// is why the forbidden shape is also the only one that could go wrong.
+    ///
+    /// The cost is the mirror image: a slow `turn/steer` holds the loop for
+    /// its duration, exactly as a slow `turn/start` already does in the tick
+    /// arm, and the same client request timeout bounds both.
+    Steer {
+        entry_id: QueueEntryId,
+        if_entry_rev: u32,
+        actor: ActorId,
+        applied: oneshot::Sender<Result<SteerResult>>,
+    },
 }
+
+/// #1625 P3 — a steer that took effect: codex has the entry inside `turn_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SteerApplied {
+    pub entry_id: QueueEntryId,
+    /// The rev the entry carried when it left the queue.
+    pub rev: u32,
+    /// The turn codex put the message into — the one that was running.
+    pub turn_id: String,
+}
+
+/// #1625 P3 — why a steer delivered nothing. In every arm the entry is still
+/// in the queue, with the id and rev the client read, and drains into the
+/// next turn the ordinary way.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SteerRefused {
+    /// The queue's own answer — not there, not the rev you read, or not
+    /// uniquely named — given before the phase is looked at, because it is
+    /// about the message the person pointed at rather than the moment they
+    /// pressed.
+    Queue(MutationRefused),
+    /// No turn is running at this moment: nothing was taken out of the queue
+    /// and codex was not asked.
+    NoRunningTurn { phase: HarnessPhaseTag },
+    /// Codex was asked and did not take it — it refused (the turn had ended,
+    /// or another one was running), or it could not be reached in time. The
+    /// entry is back at the head of the queue and its transcript row is gone.
+    /// `phase` is the harness's own phase at the moment it answered, which
+    /// is still `TurnRunning` until the completion codex has already seen
+    /// reaches this loop.
+    NotTaken {
+        message: String,
+        phase: HarnessPhaseTag,
+    },
+}
+
+/// The domain answer to a steer, in the same two layers as [`MutationResult`]:
+/// the outer `Result` is transport, the inner is the loop's own answer.
+pub type SteerResult = std::result::Result<SteerApplied, SteerRefused>;
 
 enum ObservationIngress {
     Running(mpsc::Sender<HarnessObservationCommand>),
@@ -649,6 +710,48 @@ impl PlannerHarness {
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
                 handle_queue_mutation(&self.inner, &mutation, &actor).await
+            }
+        }
+    }
+
+    /// #1625 P3 — send one queued entry into the turn that is running now,
+    /// from the REST write port.
+    ///
+    /// Two layers, as with [`Self::mutate_pending_entry`]: the outer `Result`
+    /// is transport, the inner [`SteerResult`] is the loop's answer. Every
+    /// inner refusal leaves the entry queued under the id and rev the client
+    /// read.
+    pub async fn steer_pending_entry(
+        &self,
+        entry_id: QueueEntryId,
+        if_entry_rev: u32,
+        actor: ActorId,
+    ) -> Result<SteerResult> {
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(CalmError::Conflict(
+                "planner harness is shutting down; refusing to steer".into(),
+            ));
+        }
+        match &self.inner.observations {
+            ObservationIngress::Running(sender) => {
+                let (applied, answer) = oneshot::channel();
+                sender
+                    .try_send(HarnessObservationCommand::Steer {
+                        entry_id,
+                        if_entry_rev,
+                        actor,
+                        applied,
+                    })
+                    .map_err(map_observation_send_error)?;
+                answer.await.map_err(|_| {
+                    CalmError::Conflict(
+                        "planner harness runtime shut down before the steer was answered".into(),
+                    )
+                })?
+            }
+            #[cfg(feature = "fixtures")]
+            ObservationIngress::Unstarted(_) => {
+                handle_steer(&self.inner, &entry_id, if_entry_rev, &actor).await
             }
         }
     }
@@ -1216,6 +1319,10 @@ async fn run_loop(
                         let outcome = handle_queue_mutation(&inner, &mutation, &actor).await;
                         let _ = applied.send(outcome);
                     }
+                    HarnessObservationCommand::Steer { entry_id, if_entry_rev, actor, applied } => {
+                        let outcome = handle_steer(&inner, &entry_id, if_entry_rev, &actor).await;
+                        let _ = applied.send(outcome);
+                    }
                 }
             }
             notif = notifications.recv() => {
@@ -1251,13 +1358,25 @@ async fn run_loop(
 /// emit.
 ///
 /// It runs on the run-loop task (or, under the fixtures ingress, on the
-/// caller's — there is no loop there to hand it to). Nothing here awaits Codex,
-/// so a mutation cannot extend the window during which other commands wait.
+/// caller's — there is no loop there to hand it to). An edit or a delete is
+/// answered from memory and the database alone; codex is not asked, so
+/// neither can hold the loop for longer than a snapshot write. A steer is the
+/// command on this channel that DOES await codex, and it does so on purpose —
+/// see `HarnessObservationCommand::Steer` and `handle_steer`, which is why a
+/// `QueueMutation::Steer` handed to this function is refused rather than
+/// applied: applying it here would take the entry out and deliver it nowhere.
 async fn handle_queue_mutation(
     inner: &Arc<Inner>,
     mutation: &QueueMutation,
     actor: &ActorId,
 ) -> Result<MutationResult> {
+    if matches!(mutation, QueueMutation::Steer { .. }) {
+        return Err(CalmError::Internal(
+            "a steer is not a queue mutation: it goes through steer_pending_entry, which \
+             delivers what it takes"
+                .into(),
+        ));
+    }
     let (outcome, checkpoint) = {
         let mut queue = inner.pending_queue.lock().await;
         let before = queue.clone();
@@ -1272,19 +1391,8 @@ async fn handle_queue_mutation(
         Err(refused) => return Ok(Err(refused)),
     };
 
-    // §4.5 — one rule for every departure from the queue. `hard_fire` is
-    // recomputed over what is left, so deleting the only user message does not
-    // leave a queue of soft observations falsely armed. The timestamps are NOT
-    // touched unless the queue emptied: the observations still waiting keep the
-    // arming they were enqueued with, and a user deleting a message must not
-    // postpone somebody else's turn.
     if applied.change == HarnessQueueChange::Deleted {
-        let mut debounce = inner.debounce.lock().await;
-        debounce.hard_fire = applied.remaining_hard_fire;
-        if applied.queue_now_empty {
-            debounce.first_pending_at = None;
-            debounce.last_pending_at = None;
-        }
+        rearm_debounce_after_departure(inner, &applied).await;
     }
 
     if let Err(error) = persist_snapshot(inner).await {
@@ -1332,6 +1440,264 @@ async fn handle_queue_mutation(
         );
     }
     Ok(Ok(applied))
+}
+
+/// §4.5 — one rule for every departure from the queue. `hard_fire` is
+/// recomputed over what is left, so deleting (or steering away) the only user
+/// message does not leave a queue of soft observations falsely armed. The
+/// timestamps are NOT touched unless the queue emptied: the observations still
+/// waiting keep the arming they were enqueued with, and a user taking a
+/// message out must not postpone somebody else's turn.
+async fn rearm_debounce_after_departure(inner: &Inner, applied: &MutationApplied) {
+    let mut debounce = inner.debounce.lock().await;
+    debounce.hard_fire = applied.remaining_hard_fire;
+    if applied.queue_now_empty {
+        debounce.first_pending_at = None;
+        debounce.last_pending_at = None;
+    }
+}
+
+/// #1625 P3 — the whole of what `HarnessObservationCommand::Steer` does, in
+/// this order and no other:
+///
+///  1. answer the queue's own refusals (not there, stale, ambiguous) — the
+///     entry is untouched;
+///  2. refuse unless a turn is running — the entry is untouched;
+///  3. take the entry OUT of the queue (`QueueMutation::Steer`), re-arm the
+///     debounce over what is left;
+///  4. write its transcript row, keyed by the entry id, `turn_id` NULL,
+///     exactly the projection the drain writes (`write_projection_row`), but
+///     WITHOUT announcing it yet;
+///  5. `turn/steer` with `expectedTurnId` = the running turn and
+///     `clientUserMessageId` = the entry id;
+///  6. on success: persist the queue without the entry, announce the row and
+///     the departure; on anything else: delete the row, put the entry back at
+///     the head with its id and rev (`rebuffer_head`), persist, refuse.
+///
+/// Step 3 before step 5 is the invariant, and `HarnessObservationCommand::Steer`
+/// explains why the run-loop task is what makes it sufficient. The input is
+/// the entry's own text plus one `localImage` per attachment — the same
+/// segment the drain would build for it — and nothing the drain prepends:
+/// no track diff, no recovery briefing, no result receipts. Those are context
+/// for a turn that is starting; this turn already has its context.
+///
+/// The row is written before codex is asked, as the drain's is, so a reader
+/// on another device sees the sentence as soon as it is delivered rather than
+/// when codex echoes it. It is NOT announced until codex has said yes: the
+/// `harness.item.added` for it is emitted in step 6, so a refused steer never
+/// tells a client to fetch a row that is about to be deleted. Codex's echo
+/// (`item/started`, then `item/completed`, both carrying `clientId` = the
+/// entry id) upgrades the row in place through the same
+/// `transcript_projection_upgrade` path the drain's row takes.
+///
+/// What a refusal means for the person: nothing was lost. The entry is where
+/// it was, with the id and rev they read, and it goes with the next turn.
+async fn handle_steer(
+    inner: &Arc<Inner>,
+    entry_id: &QueueEntryId,
+    if_entry_rev: u32,
+    actor: &ActorId,
+) -> Result<SteerResult> {
+    // Read on this task. The phase leaves `TurnRunning` through the
+    // notification arm of the same `select!`, which cannot run while this
+    // function does; the one writer on another task is `issue_interrupt`
+    // (a person pressing Stop), and a Stop landing between here and the RPC
+    // is answered by codex itself — see `SteerRefused::NotTaken`.
+    let running = inner.state.lock().await.clone();
+    let phase = HarnessPhaseTag::from(&running);
+    let turn_id = match running {
+        HarnessState::TurnRunning { turn_id, .. } => Some(turn_id),
+        _ => None,
+    };
+    let (applied, turn_id) = {
+        let mut queue = inner.pending_queue.lock().await;
+        let Some(turn_id) = turn_id else {
+            return Ok(Err(match locate_entry(&queue, entry_id, if_entry_rev) {
+                Err(refused) => SteerRefused::Queue(refused),
+                Ok(_) => SteerRefused::NoRunningTurn { phase },
+            }));
+        };
+        let mutation = QueueMutation::Steer {
+            entry_id: entry_id.clone(),
+            if_entry_rev,
+        };
+        match apply_mutation(&mut queue, &mutation) {
+            Ok(applied) => (applied, turn_id),
+            Err(refused) => return Ok(Err(SteerRefused::Queue(refused))),
+        }
+    };
+    let entry = applied
+        .removed
+        .clone()
+        .expect("QueueMutation::Steer hands the removed entry back");
+    rearm_debounce_after_departure(inner, &applied).await;
+
+    let Some(thread_id) = inner.thread_id.read().await.clone() else {
+        // `TurnRunning` is only ever entered from a `turn/started` on this
+        // thread, so this is unreachable in practice; refusing rather than
+        // panicking keeps the entry.
+        rebuffer_head(inner, vec![entry]).await;
+        return Ok(Err(SteerRefused::NoRunningTurn { phase }));
+    };
+    let segments = input_segments_for_entries(&inner.card_id, std::slice::from_ref(&entry));
+    let text = segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut items = vec![InputItem::text(text)];
+    items.extend(
+        entry
+            .attachments()
+            .iter()
+            .map(|attachment| InputItem::local_image(attachment.path.clone())),
+    );
+
+    let row_id = match insert_projection_row(inner, &thread_id, entry_id.as_str(), &segments).await
+    {
+        Ok(row_id) => row_id,
+        Err(error) => {
+            // A local failure before codex was asked anything: the entry goes
+            // back and the caller gets the error, the way a failed snapshot
+            // write is answered on the mutation path.
+            rebuffer_head(inner, vec![entry]).await;
+            if let Err(persist_error) = persist_snapshot(inner).await {
+                tracing::warn!(
+                    worker_session_id = %inner.worker_session_id,
+                    card_id = %inner.card_id,
+                    error = %persist_error,
+                    "planner harness could not persist the queue after a failed steer row write"
+                );
+            }
+            return Err(error);
+        }
+    };
+    tracing::debug!(
+        target: "calm_server::planner_harness_issue",
+        worker_session_id = %inner.worker_session_id,
+        card_id = %inner.card_id,
+        thread_id = %thread_id,
+        turn_id = %turn_id,
+        entry_id = %entry_id,
+        "calling daemon.turn_steer"
+    );
+    let steered = inner
+        .daemon
+        .turn_steer(&thread_id, &turn_id, items, Some(entry_id.as_str()))
+        .await;
+    match steered {
+        Ok(taken_by) => {
+            // Codex has the sentence, so the queue without it is the truth to
+            // persist. A failed write here is logged and the steer still
+            // answers 200: reporting failure would invite a retry of a
+            // delivery that already happened, and the next successful
+            // snapshot (the turn's completion at the latest) writes the same
+            // queue. The window it leaves — a restart before that write
+            // re-drains the entry — is the same window the drain's own
+            // `persist_issuance_outcome` has, and is declared in the PR.
+            if let Err(error) = persist_snapshot(inner).await {
+                tracing::error!(
+                    worker_session_id = %inner.worker_session_id,
+                    card_id = %inner.card_id,
+                    entry_id = %entry_id,
+                    error = %error,
+                    "planner harness steered an entry but could not persist the queue without it"
+                );
+            }
+            if let Err(error) = emit_item_added(
+                inner,
+                row_id,
+                Some(entry_id.as_str().to_string()),
+                Some("userMessage".to_string()),
+                None,
+                "item/completed".to_string(),
+            )
+            .await
+            {
+                tracing::error!(
+                    worker_session_id = %inner.worker_session_id,
+                    card_id = %inner.card_id,
+                    entry_id = %entry_id,
+                    error = %error,
+                    "planner harness steered an entry but could not announce its transcript row"
+                );
+            }
+            let scope = harness_event_scope(inner, "harness.queue.changed");
+            if let Err(error) = inner
+                .repo
+                .log_pure_event(
+                    actor.clone(),
+                    scope,
+                    None,
+                    &inner.events,
+                    &inner.card_role_cache,
+                    &inner.track_area_cache,
+                    Event::HarnessQueueChanged {
+                        worker_session_id: inner.worker_session_id.clone(),
+                        card_id: inner.card_id.clone(),
+                        track_id: inner.track_id.clone(),
+                        entry_id: entry_id.as_str().to_string(),
+                        change: HarnessQueueChange::Steered,
+                        actor: actor.clone(),
+                    },
+                )
+                .await
+            {
+                // Same reasoning as the mutation path: the delivery has
+                // happened whatever this says, so it is surfaced operationally
+                // rather than reported as a failure that invites a retry.
+                tracing::error!(
+                    worker_session_id = %inner.worker_session_id,
+                    card_id = %inner.card_id,
+                    entry_id = %entry_id,
+                    error = %error,
+                    "planner harness steered an entry but its audit event failed"
+                );
+            }
+            Ok(Ok(SteerApplied {
+                entry_id: entry_id.clone(),
+                rev: applied.rev,
+                turn_id: taken_by,
+            }))
+        }
+        Err(error) => {
+            // Refused, unreachable, or timed out: the sentence was not
+            // delivered as far as this side can tell, so it goes back where it
+            // was and the row that said it was sent goes with it. A timeout is
+            // the one arm where "not delivered" is a belief rather than a
+            // fact — codex may have taken the input and answered too late —
+            // and the choice made here is to keep the sentence rather than
+            // risk losing it; declared in the PR.
+            if let Err(delete_error) = inner
+                .repo
+                .transcript_projection_delete(inner.card_id.as_str(), entry_id.as_str())
+                .await
+            {
+                tracing::warn!(
+                    worker_session_id = %inner.worker_session_id,
+                    card_id = %inner.card_id,
+                    entry_id = %entry_id,
+                    error = %delete_error,
+                    "planner harness could not delete the projection of a refused steer"
+                );
+            }
+            rebuffer_head(inner, vec![entry]).await;
+            persist_snapshot(inner).await?;
+            tracing::warn!(
+                worker_session_id = %inner.worker_session_id,
+                card_id = %inner.card_id,
+                entry_id = %entry_id,
+                turn_id = %turn_id,
+                error = %error,
+                "planner harness could not steer the entry into the running turn; re-buffered it"
+            );
+            let phase = HarnessPhaseTag::from(&*inner.state.lock().await);
+            Ok(Err(SteerRefused::NotTaken {
+                message: error.to_string(),
+                phase,
+            }))
+        }
+    }
 }
 
 async fn on_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome {
@@ -2202,6 +2568,37 @@ async fn write_projection_row(
     client_id: &str,
     segments: &[HarnessInputSegment],
 ) -> Result<i64> {
+    let item_db_id = insert_projection_row(inner, thread_id, client_id, segments).await?;
+    // The existing per-row event, so every client refetches the transcript
+    // now rather than at the echo (`fe/core/events/invalidation-plan.ts`
+    // maps `harness.item.added` to `['harness-items', card_id]`). No new
+    // event kind, no change to the invalidation plan.
+    emit_item_added(
+        inner,
+        item_db_id,
+        Some(client_id.to_string()),
+        Some("userMessage".to_string()),
+        None,
+        "item/completed".to_string(),
+    )
+    .await?;
+    Ok(item_db_id)
+}
+
+/// The row half of [`write_projection_row`], without the announcement.
+///
+/// #1625 P3 splits it out because a steer writes the same row but must not
+/// announce it until codex has taken the input: announced first, a refused
+/// steer would have told every client to fetch a row it is about to delete.
+/// The drain announces immediately (`write_projection_row`), since its row
+/// stands until `turn/start` fails, and that failure has a phase change to
+/// carry the retraction.
+async fn insert_projection_row(
+    inner: &Arc<Inner>,
+    thread_id: &str,
+    client_id: &str,
+    segments: &[HarnessInputSegment],
+) -> Result<i64> {
     let stale = inner
         .repo
         .transcript_projection_delete(inner.card_id.as_str(), client_id)
@@ -2249,19 +2646,6 @@ async fn write_projection_row(
             Some(&input_segments),
         )
         .await?;
-    // The existing per-row event, so every client refetches the transcript
-    // now rather than at the echo (`fe/core/events/invalidation-plan.ts`
-    // maps `harness.item.added` to `['harness-items', card_id]`). No new
-    // event kind, no change to the invalidation plan.
-    emit_item_added(
-        inner,
-        item_db_id,
-        Some(client_id.to_string()),
-        Some("userMessage".to_string()),
-        None,
-        "item/completed".to_string(),
-    )
-    .await?;
     Ok(item_db_id)
 }
 

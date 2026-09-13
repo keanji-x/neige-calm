@@ -131,8 +131,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "7",
-        "MCP setup needs a new API capability revision"
+        "8",
+        "#1625 P3's steer endpoint needs a new API capability revision"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),

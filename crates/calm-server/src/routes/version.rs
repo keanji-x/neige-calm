@@ -50,6 +50,12 @@ use utoipa::ToSchema;
 /// Old request bodies remain valid, but web-only updates must reject a kernel
 /// that would silently ignore the new fields. The shared constant also pins
 /// the installer's production preflight regression to what this server emits.
+///
+/// #1625 P3 bumps `"7"` -> `"8"`: `POST /api/cards/{id}/planner/input/{entry_id}/steer`
+/// is new. The queue strip's "Say it now" calls it, and against an older
+/// kernel the answer is a 404 the client reads as "the entry is gone" — so a
+/// web-only update onto such a kernel must be refused, not left to fail in
+/// the composer.
 pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 
 /// Monotonically increasing frontend compatibility floor.

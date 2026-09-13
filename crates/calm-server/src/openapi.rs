@@ -36,7 +36,7 @@ use crate::routes::models::{
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
 use crate::routes::planner_input::{
     DeletePlannerInputBody, EditPlannerInputBody, PlannerInputMutationResponse,
-    PlannerInputStaleBody,
+    PlannerInputStaleBody, PlannerSteerRefusedBody, PlannerSteerResponse, SteerPlannerInputBody,
 };
 use crate::routes::plugins::{
     InstallBody, InstallSource, PluginDetail, PluginListItem, ToolCallBody, ViewCatalogEntry,
@@ -141,6 +141,8 @@ use utoipa::OpenApi;
         // reaches either generated client.
         crate::routes::planner_input::edit_planner_input,
         crate::routes::planner_input::delete_planner_input,
+        // #1625 P3. Same list, same failure mode.
+        crate::routes::planner_input::steer_planner_input,
         // #1505 S4-3. Same hand-maintained list, same failure mode: omitting
         // a handler is neither a compile error nor a drift failure.
         crate::routes::planner_model::set_planner_model,
@@ -273,6 +275,9 @@ use utoipa::OpenApi;
         DeletePlannerInputBody,
         PlannerInputMutationResponse,
         PlannerInputStaleBody,
+        SteerPlannerInputBody,
+        PlannerSteerResponse,
+        PlannerSteerRefusedBody,
         HarnessPhaseTag,
         ResetPlannerCardResponse,
         // Issue #229 PR B — track-report card payload shape (kernel-owned;

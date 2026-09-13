@@ -804,6 +804,33 @@ fn turn_start_params(
     params
 }
 
+/// The `turn/steer` frame (#1625 P3). Three required keys and the same
+/// optional `clientUserMessageId` as `turn_start_params`, omitted rather than
+/// `null` when there is none. No model and no effort: codex rejects settings
+/// on a steer, and the turn already has its own.
+fn turn_steer_params(
+    thread_id: &str,
+    expected_turn_id: &str,
+    input: &[InputItem],
+    client_user_message_id: Option<&str>,
+) -> Value {
+    let mut params = json!({
+        "threadId": thread_id,
+        "expectedTurnId": expected_turn_id,
+        "input": input,
+    });
+    if let Some(client_id) = client_user_message_id {
+        params
+            .as_object_mut()
+            .expect("a json! object literal is an object")
+            .insert(
+                "clientUserMessageId".into(),
+                Value::String(client_id.to_string()),
+            );
+    }
+    params
+}
+
 impl CodexAppServer {
     /// Register the sole dynamic-tool consumer for this connection. Default is
     /// explicit refusal. This does not register tools on any provider thread.
@@ -1221,21 +1248,29 @@ impl CodexAppServer {
         self.request_until("config/read", params, deadline).await
     }
 
-    /// `turn/steer` — redirect an in-flight turn. `expected_turn_id` must
-    /// be the id returned by the `turn/start` that is still running.
+    /// `turn/steer` — push more input into the turn that is running now.
+    /// `expected_turn_id` must be the id returned by the `turn/start` that is
+    /// still running; codex refuses with `-32600` when no turn is active
+    /// (`no active turn to steer`) or when a different one is
+    /// (`expected active turn id … but found …`), and both reach the caller
+    /// as [`CalmError::CodexRefused`].
+    ///
+    /// `client_user_message_id` is `TurnSteerParams.clientUserMessageId`
+    /// (`string | null` in codex 0.153.4's generated schema), omitted when
+    /// `None` like the `turn/start` key of the same name; codex copies it onto
+    /// the `userMessage` item it echoes for the steered input as
+    /// `item.clientId` (#1625 P3), which is the key the kernel wrote its
+    /// transcript projection under.
     pub async fn turn_steer(
         &self,
         thread_id: &str,
         expected_turn_id: &str,
         input: Vec<InputItem>,
+        client_user_message_id: Option<&str>,
     ) -> Result<TurnSteerResult> {
         self.request(
             "turn/steer",
-            json!({
-                "threadId": thread_id,
-                "expectedTurnId": expected_turn_id,
-                "input": input,
-            }),
+            turn_steer_params(thread_id, expected_turn_id, &input, client_user_message_id),
         )
         .await
     }
@@ -2556,6 +2591,33 @@ mod tests {
                 .contains_key("clientUserMessageId"),
             "frame was {bare}"
         );
+    }
+
+    /// #1625 P3 — the steer frame carries the three keys codex requires
+    /// (`threadId`, `expectedTurnId`, `input`) plus the client id under the
+    /// same key `turn/start` uses, and omits that key rather than sending
+    /// `null` when there is none. No `model`, no `effort`: codex rejects
+    /// settings on a steer.
+    #[test]
+    fn a_steer_frame_carries_the_client_id_and_omits_it_otherwise() {
+        let input = vec![InputItem::text("now")];
+        let frame = turn_steer_params("t", "turn-7", &input, Some("entry-0002"));
+        assert_eq!(frame["threadId"], json!("t"));
+        assert_eq!(frame["expectedTurnId"], json!("turn-7"));
+        assert_eq!(frame["input"], serde_json::to_value(&input).unwrap());
+        assert_eq!(frame["clientUserMessageId"], json!("entry-0002"));
+        let keys = frame.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(keys.len(), 4, "no settings ride on a steer: {keys:?}");
+
+        let bare = turn_steer_params("t", "turn-7", &input, None);
+        assert!(
+            !bare
+                .as_object()
+                .unwrap()
+                .contains_key("clientUserMessageId"),
+            "frame was {bare}"
+        );
+        assert_eq!(bare.as_object().unwrap().len(), 3);
     }
 
     #[test]

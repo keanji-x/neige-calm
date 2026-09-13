@@ -32,7 +32,10 @@ pub use lock::PushLockGuard;
 pub use observation::{HookKind, Observation};
 pub use queue::{QueueEntry, QueueEntryId};
 pub use registry::{HarnessRegistry, HarnessReservation, ReservationId, Slot};
-pub use run_loop::{MAX_PENDING_QUEUE_LEN, PlannerHarness, PlannerHarnessParams};
+pub use run_loop::{
+    MAX_PENDING_QUEUE_LEN, PlannerHarness, PlannerHarnessParams, SteerApplied, SteerRefused,
+    SteerResult,
+};
 pub use snapshot::{
     HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, QueueEntryMeta, is_harness_snapshot_value,
 };

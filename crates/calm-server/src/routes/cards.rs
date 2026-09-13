@@ -246,6 +246,11 @@ pub fn router() -> Router<AppState> {
             axum::routing::patch(crate::routes::planner_input::edit_planner_input)
                 .delete(crate::routes::planner_input::delete_planner_input),
         )
+        // #1625 P3. Same module, same reason for mounting here.
+        .route(
+            "/api/cards/{id}/planner/input/{entry_id}/steer",
+            post(crate::routes::planner_input::steer_planner_input),
+        )
         .route("/api/cards/{id}/ratify", post(ratify_card))
         .route(
             "/api/cards/{id}/planner/interrupt",
