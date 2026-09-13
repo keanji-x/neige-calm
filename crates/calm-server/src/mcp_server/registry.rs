@@ -308,10 +308,12 @@ pub fn role_gated_write_annotations() -> Value {
 /// [`build_default_registry`] (emit + track-state + track-report tools).
 pub struct ToolRegistry {
     by_name: HashMap<String, (ToolDescriptor, ToolHandler)>,
-    /// Names registered through [`register_deprecated_alias`]. Their
-    /// descriptions are protocol (`format!`ed from the target name), not
-    /// agent-facing prose, so they are the one kind of descriptor without a
-    /// `prompts/tools/<name>.md` source (#1635 S1d).
+    /// Names registered through [`register_deprecated_alias`] and not since
+    /// re-registered as real tools. Their descriptions are protocol
+    /// (`format!`ed from the target name), not agent-facing prose, so in the
+    /// default registry they are the one kind of descriptor without a
+    /// `prompts/tools/<name>.md` source (pinned by
+    /// `prompt_files_cover_exactly_the_non_alias_tools`, #1635 S1d).
     deprecated_aliases: BTreeSet<String>,
 }
 
@@ -323,7 +325,10 @@ impl ToolRegistry {
         }
     }
 
+    /// A real tool registered over a former alias name is a real tool: the
+    /// name leaves [`deprecated_alias_names`](Self::deprecated_alias_names).
     pub fn register(&mut self, descriptor: ToolDescriptor, handler: ToolHandler) {
+        self.deprecated_aliases.remove(&descriptor.name);
         self.by_name
             .insert(descriptor.name.clone(), (descriptor, handler));
     }
@@ -658,6 +663,31 @@ mod tests {
         .expect("real handler still callable");
 
         assert_eq!(out.into_structured(), json!({ "who": "real" }));
+    }
+
+    #[test]
+    fn deprecated_alias_names_track_registration_order() {
+        // real then alias: the alias name is an alias.
+        let mut registry = ToolRegistry::new();
+        registry.register(
+            fake_descriptor("calm.foo.bar", &[CardRole::Planner]),
+            fake_handler("real"),
+        );
+        register_deprecated_alias(&mut registry, "calm.foo_bar", "calm.foo.bar");
+        assert!(registry.deprecated_alias_names().contains("calm.foo_bar"));
+        assert!(!registry.deprecated_alias_names().contains("calm.foo.bar"));
+
+        // alias then real over the same name: it is a real tool now.
+        registry.register(
+            fake_descriptor("calm.foo_bar", &[CardRole::Planner]),
+            fake_handler("real-again"),
+        );
+        assert!(
+            !registry.deprecated_alias_names().contains("calm.foo_bar"),
+            "a real tool registered over a former alias name is a real tool: {:?}",
+            registry.deprecated_alias_names()
+        );
+        assert!(registry.lookup("calm.foo_bar").is_some());
     }
 
     #[test]

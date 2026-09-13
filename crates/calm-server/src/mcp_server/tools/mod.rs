@@ -53,6 +53,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
 #[cfg(test)]
 mod tests {
     use crate::mcp_server::build_default_registry;
+    use crate::mcp_server::registry::ToolDescriptor;
     use crate::model::CardRole;
     use serde::Serialize;
     use serde_json::Value;
@@ -66,13 +67,19 @@ mod tests {
     /// `input_schema`, `annotations`, `visible_to_roles`) verbatim and the
     /// description as `description_sha256`. The wording itself lives in
     /// `prompts/tools/<tool>.md`, where a change is reviewable as a diff of
-    /// that file; the hash here proves the registry serves exactly those
-    /// file bytes (and, for the aliases, exactly the `format!`ed protocol
-    /// string) without copying 90 KB of prose into a second file.
+    /// that file; the hash here proves the registry serves the file bytes
+    /// minus the single final newline (the structural test
+    /// `prompt_files_cover_exactly_the_non_alias_tools` pins that equality)
+    /// and, for the aliases, exactly the `format!`ed protocol string —
+    /// without copying 90 KB of prose into a second file.
     /// Regenerate with `REGEN_MCP_TOOL_REGISTRY_GOLDEN=1`, then hand-verify
     /// the diff.
     const MCP_TOOL_REGISTRY_GOLDEN: &str =
         include_str!("../../../tests/goldens/mcp_tool_registry.json");
+
+    /// Anti-vacuity floor for the golden: an empty registry rendered against
+    /// an empty `[]` golden must not pass.
+    const MIN_GOLDEN_ROWS: usize = 30;
 
     #[derive(Serialize)]
     struct GoldenRow<'a> {
@@ -80,7 +87,12 @@ mod tests {
         /// Lowercase hex SHA-256 of the description's UTF-8 bytes.
         description_sha256: String,
         input_schema: &'a Value,
-        annotations: &'a Option<Value>,
+        /// Presence-encoded like the wire (`transport.rs` omits the
+        /// `annotations` key for `None`): a descriptor with `None` has no
+        /// `annotations` key in its row, `Some(Value::Null)` renders
+        /// `"annotations": null`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        annotations: Option<&'a Value>,
         /// Serde strings of `CardRole` (`"planner"`, `"worker"`, …), not the
         /// Rust variant names.
         visible_to_roles: &'a [CardRole],
@@ -91,23 +103,35 @@ mod tests {
         digest.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
-    fn render_registry_golden() -> String {
-        let mut descriptors = build_default_registry().descriptors();
-        descriptors.sort_by(|a, b| a.name.cmp(&b.name));
-        let rows: Vec<GoldenRow<'_>> = descriptors
-            .iter()
-            .map(|descriptor| GoldenRow {
-                name: &descriptor.name,
-                description_sha256: description_sha256(&descriptor.description),
-                input_schema: &descriptor.input_schema,
-                annotations: &descriptor.annotations,
-                visible_to_roles: descriptor.visible_to_roles,
-            })
-            .collect();
+    fn golden_row(descriptor: &ToolDescriptor) -> GoldenRow<'_> {
+        GoldenRow {
+            name: &descriptor.name,
+            description_sha256: description_sha256(&descriptor.description),
+            input_schema: &descriptor.input_schema,
+            annotations: descriptor.annotations.as_ref(),
+            visible_to_roles: descriptor.visible_to_roles,
+        }
+    }
+
+    /// Pretty JSON array of one row per descriptor, in the given order, plus
+    /// one trailing newline.
+    fn render_golden_rows(descriptors: &[ToolDescriptor]) -> String {
+        let rows: Vec<GoldenRow<'_>> = descriptors.iter().map(golden_row).collect();
         let mut rendered =
             serde_json::to_string_pretty(&rows).expect("serialize registry golden rows");
         rendered.push('\n');
         rendered
+    }
+
+    fn render_registry_golden() -> String {
+        let mut descriptors = build_default_registry().descriptors();
+        descriptors.sort_by(|a, b| a.name.cmp(&b.name));
+        assert!(
+            descriptors.len() >= MIN_GOLDEN_ROWS,
+            "registry golden degenerate state: only {} descriptors registered",
+            descriptors.len()
+        );
+        render_golden_rows(&descriptors)
     }
 
     #[test]
@@ -127,6 +151,13 @@ mod tests {
         assert!(
             !MCP_TOOL_REGISTRY_GOLDEN.is_empty(),
             "registry golden degenerate state: the committed golden must not be empty"
+        );
+        let golden_rows: Vec<Value> =
+            serde_json::from_str(MCP_TOOL_REGISTRY_GOLDEN).expect("parse mcp_tool_registry.json");
+        assert!(
+            golden_rows.len() >= MIN_GOLDEN_ROWS,
+            "registry golden degenerate state: only {} rows in the committed golden",
+            golden_rows.len()
         );
         if MCP_TOOL_REGISTRY_GOLDEN == rendered {
             return;
@@ -151,6 +182,42 @@ mod tests {
             MCP_TOOL_REGISTRY_GOLDEN.len(),
             rendered.len()
         );
+    }
+
+    /// The golden must tell `annotations: None` (wire: key absent) apart from
+    /// `Some(Value::Null)` (wire: `"annotations": null`); a plain
+    /// `Option<Value>` serialisation renders both as `null`.
+    #[test]
+    fn golden_row_encodes_annotations_presence_like_the_wire() {
+        let descriptor = |annotations: Option<Value>| ToolDescriptor {
+            name: "calm.fixture.tool".to_string(),
+            description: "fixture".to_string(),
+            input_schema: serde_json::json!({ "type": "object" }),
+            annotations,
+            visible_to_roles: &[CardRole::Planner],
+        };
+        let absent = render_golden_rows(&[descriptor(None)]);
+        let null = render_golden_rows(&[descriptor(Some(Value::Null))]);
+        assert_ne!(absent, null, "None and Some(Null) must render differently");
+
+        let absent_row: Vec<Value> = serde_json::from_str(&absent).expect("parse absent row");
+        let null_row: Vec<Value> = serde_json::from_str(&null).expect("parse null row");
+        assert!(
+            absent_row[0].get("annotations").is_none(),
+            "None must omit the key: {absent}"
+        );
+        assert_eq!(
+            null_row[0].get("annotations"),
+            Some(&Value::Null),
+            "Some(Null) must render an explicit null: {null}"
+        );
+        // Presence is the only difference between the two rows.
+        let mut null_without_key = null_row[0].clone();
+        null_without_key
+            .as_object_mut()
+            .expect("row is an object")
+            .remove("annotations");
+        assert_eq!(absent_row[0], null_without_key);
     }
 
     /// #1635 S1d: every non-alias tool's description is the file
