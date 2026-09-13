@@ -3388,8 +3388,12 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             // `CalmError::Internal`) lands in the `Err` arm below and is
             // worded as a codex turn/start refusal, not as the briefing
             // preparation failure it is; the `prepared` arm is unreachable
-            // from here without hoisting this step above `items`.
-            prepared.use_exact_interface(problem)?;
+            // from here without hoisting this step above `items`. (With
+            // #1625 P2's typed split it is `IssueFailure::TurnStart`, which
+            // is that same wording — the gap is unchanged, not widened.)
+            prepared
+                .use_exact_interface(problem)
+                .map_err(IssueFailure::TurnStart)?;
             items[0] = InputItem::text(prepend_diff_block(
                 diff.block.clone(),
                 prepared
