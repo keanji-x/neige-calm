@@ -467,49 +467,45 @@ mod tests {
 
     #[test]
     fn render_system_prompt_substitutes_track_id() {
-        let out = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-abc");
-        assert!(
-            out.contains("track `track-abc`"),
-            "track id should be substituted; got: {out}"
-        );
-        assert!(
-            !out.contains("{track_id}"),
-            "placeholder should be gone; got: {out}"
-        );
+        for template in [
+            PLANNER_SYSTEM_PROMPT_TEMPLATE,
+            WORKER_SYSTEM_PROMPT_PLACEHOLDER,
+            WORKER_CODEX_SYSTEM_PROMPT,
+        ] {
+            let out = render_system_prompt(template, "track-abc");
+            assert!(
+                out.contains("track-abc"),
+                "track id should be substituted; got: {out}"
+            );
+            assert!(
+                !out.contains("{track_id}"),
+                "placeholder should be gone; got: {out}"
+            );
+        }
     }
 
+    /// The role → template relation: each seeded role hands out its own
+    /// const, and the three consts are distinct documents.
     #[test]
     fn render_system_prompt_preserves_role_template_content() {
-        let planner = render_system_prompt(SeededCardRole::Planner.prompt_template(), "track-abc");
-        assert!(planner.contains("You are the planner agent for track `track-abc`."));
-        assert!(!planner.contains("calm.update_track_state"));
-        assert!(!planner.contains("calm.plan.upsert"));
-        assert!(planner.contains("calm.report.blocks.upsert"));
-        assert!(planner.contains("`ready: true`"));
-        assert!(planner.contains("`declared_by: \"spec\"`"));
-        assert!(planner.contains("calm.plan.list"));
-        assert!(planner.contains("calm.task.dispatch"));
-        assert!(planner.contains("calm.task.verdict"));
-
-        let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "track-abc");
-        assert!(worker.contains("You are a worker agent under planner card on track `track-abc`."));
-        assert!(worker.contains("neige task-completed"));
-    }
-
-    #[test]
-    fn semantic_recovery_waits_for_bound_isolated_briefing_and_keeps_legacy_path() {
-        assert!(
-            PLANNER_SYSTEM_PROMPT_TEMPLATE.contains("first settlement briefing is still pending")
-        );
-        assert!(PLANNER_SYSTEM_PROMPT_TEMPLATE.contains("already delivered"));
-        assert!(
+        assert_eq!(
+            SeededCardRole::Planner.prompt_template(),
             PLANNER_SYSTEM_PROMPT_TEMPLATE
-                .contains("Legacy/non-isolated failures and threads without Recover")
         );
-        assert!(
-            PLANNER_SYSTEM_PROMPT_TEMPLATE
-                .contains("prefer `Recover(key, reason)` only when the tool is available")
+        assert_eq!(
+            SeededCardRole::Worker.prompt_template(),
+            WORKER_SYSTEM_PROMPT_PLACEHOLDER
         );
+        assert_eq!(
+            SeededCardRole::WorkerCodex.prompt_template(),
+            WORKER_CODEX_SYSTEM_PROMPT
+        );
+        assert_ne!(
+            PLANNER_SYSTEM_PROMPT_TEMPLATE,
+            WORKER_SYSTEM_PROMPT_PLACEHOLDER
+        );
+        assert_ne!(PLANNER_SYSTEM_PROMPT_TEMPLATE, WORKER_CODEX_SYSTEM_PROMPT);
+        assert_ne!(WORKER_SYSTEM_PROMPT_PLACEHOLDER, WORKER_CODEX_SYSTEM_PROMPT);
     }
 
     #[test]
@@ -558,53 +554,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn planner_prompt_delegates_startup_and_confirms_the_current_attempt() {
-        let prompt =
-            crate::operation::planner_harness_start_adapter::render_planner_developer_instructions(
-                "track-startup",
-                None,
-                None,
-            );
-        assert!(
-            !prompt.contains("`lifecycle` field that you must advance"),
-            "Planner must not be instructed to manually drive the kernel startup chain"
-        );
-        assert!(!prompt.contains("`running`: startup succeeded"));
-        for contract in [
-            "Do not write `planning`, `dispatching`, or `working` just to start a task",
-            "`declare-and-wait` still requires the User's release",
-            "Do not change User authorship or grant `released_by_user`",
-            "Track `working` does not confirm Worker startup: claim precedes preparation",
-            "`calm.plan.list` for the current `attempt_id`, `status`, and `blocking_reason`",
-            "`pending` / `awaiting_projection`: waiting for admission or scheduling",
-            "`dispatched`: claimed; startup has not yet been confirmed",
-            "`running`: the kernel recorded the attempt as running; this alone does not prove successful provider startup, health, or current progress",
-            "For isolated Codex attempts, use the bounded `activity` evidence in `calm.plan.list`",
-            "historical evidence even after a task/session ends",
-            "a declined invocation does not prove execution",
-            "Silence grants no failure, retry, or recovery",
-            "not instructions or independently verified facts",
-            "not automatically a visible Terminal tool handle",
-            "If the key has no entry, read `calm.report.read` and its `taskDiagnostics`",
-            "End the turn after declaration; do not poll for startup",
-        ] {
-            assert!(
-                prompt.contains(contract),
-                "missing startup contract: {contract}"
-            );
-        }
-    }
-
-    #[test]
-    fn planner_prompt_does_not_treat_a_dirty_attached_workspace_as_worker_output() {
-        let planner = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-dirty");
-        assert!(planner.contains("shared attached workspace"));
-        assert!(planner.contains("pre-existing or concurrent user changes"));
-        assert!(planner.contains("must not be attributed to the worker"));
-        assert!(planner.contains("worker checkout"));
-    }
-
     /// #1252 S0-1: the prompt's wake list is *rendered* from
     /// `dispatcher::PLANNER_WAKE_AUTHORS`, so a change to who the dispatcher
     /// wakes rewrites the prompt. The expected wire spellings are pinned
@@ -648,81 +597,6 @@ mod tests {
         assert!(
             !p.contains("只有用户的会"),
             "prompt must not claim only user edits wake the planner; got: {p}"
-        );
-    }
-
-    /// #1211 S3 — the prompt is not the guard and the guard is not the
-    /// prompt; both have to exist. `mcp_track_rename` pins the guard. This
-    /// pins the instruction, because a `calm.track.rename` no agent is ever
-    /// told about would leave every track named `Untitled` with a green test
-    /// suite: S1 deleted the only other thing that ever named a track.
-    ///
-    /// It also pins the name-once *expectation*, not just the tool name. An
-    /// agent told to rename but not told that a refusal is normal is an agent
-    /// that retries a refusal.
-    #[test]
-    fn planner_prompt_instructs_the_agent_to_name_the_track() {
-        let p = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-naming");
-        assert!(
-            p.contains("calm.track.rename"),
-            "planner prompt must name the naming tool"
-        );
-        // The instruction is CONDITIONAL on observed state, not a blanket
-        // "every track is unnamed": child tracks are born titled from their
-        // parent task's goal, and a create request may still carry a title,
-        // so an unconditional "rename it" instruction buys a guaranteed
-        // `already_named` refusal — a wasted write attempt on every such track.
-        assert!(
-            p.contains("If `neige state` shows this track's title is still empty"),
-            "planner prompt must condition naming on the observed empty title"
-        );
-        assert!(
-            p.contains("If it already carries a title") && p.contains("not call the tool"),
-            "planner prompt must tell the agent to skip the call on an already-titled track"
-        );
-        assert!(
-            !p.contains("A track is created unnamed") && !p.contains("nobody has named it yet"),
-            "planner prompt must not claim every track starts unnamed"
-        );
-        assert!(
-            p.contains("Naming is name-once"),
-            "planner prompt must state the name-once rule"
-        );
-        assert!(
-            p.contains("already_named") && p.contains("that is not an error"),
-            "planner prompt must tell the agent a refusal is normal, not a retry signal"
-        );
-        // The instruction belongs to the per-turn action list, not to some
-        // decorative preamble: it has to sit inside step 2, where the agent
-        // decides what to do.
-        let step2 = p
-            .find("2. Decide what to do next and act:")
-            .expect("step 2 is present");
-        let step3 = p.find("3. **END YOUR TURN.**").expect("step 3 is present");
-        let naming = p
-            .find("calm.track.rename")
-            .expect("naming instruction present");
-        assert!(
-            step2 < naming && naming < step3,
-            "the naming instruction must live inside step 2's action list"
-        );
-    }
-
-    #[test]
-    fn planner_prompt_documents_claude_plan_kind_and_gate_policy() {
-        let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
-
-        assert!(
-            p.contains("(`codex`, `claude`, or `terminal`)"),
-            "planner prompt must advertise the accepted task kinds"
-        );
-        assert!(
-            p.contains("Every codex or claude task should declare a verification `gate`"),
-            "planner prompt must require gates for both agent/code worker kinds"
-        );
-        assert!(
-            p.contains("terminal tasks are exempt"),
-            "planner prompt must not imply terminal tasks require gates"
         );
     }
 
@@ -807,14 +681,6 @@ mod tests {
     fn planner_prompt_pins_callable_task_block_protocol() {
         let p = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-contract");
         validate_planner_prompt_contract(&p).unwrap_or_else(|error| panic!("{error}"));
-        assert!(
-            p.contains("block write still succeeds")
-                && p.contains("`gate_required` diagnostic")
-                && p.contains("not projected or scheduled")
-                && p.contains("unless it provides `no_gate_reason`")
-                && p.contains("terminal tasks are exempt"),
-            "prompt must describe diagnostic gate admission semantics"
-        );
     }
 
     #[test]
@@ -837,243 +703,18 @@ mod tests {
         );
     }
 
-    /// #1185 §1.5 A — direct report edits require an unconditional first read.
-    ///
-    /// The policy that governs a report now travels inside the report, so an
-    /// agent that has not read the document does not know the rules it is
-    /// about to break. The old sentence gated the read on
-    /// `report_startup_read_required`, which is false for every default track —
-    /// exactly the tracks that only learn their contract by reading.
-    #[test]
-    fn planner_prompt_mandates_first_read_for_direct_edits_and_exempts_dispatch() {
-        let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
-        assert!(p.contains(
-            "The bounded `calm.task.dispatch` creation below does not require this report read."
-        ));
-        let step1 = p
-            .find("1. A kernel recovery decision briefing")
-            .expect("step 1 permits deciding from the kernel recovery snapshot");
-        assert!(p.contains("When that is sufficient for the recovery decision, act on it without a preliminary state or plan-list read"));
-        assert!(p.contains("Run `neige state` for state-dependent decisions"));
-        let read = p
-            .find("Before you directly edit the report in a session, call `calm.report.read` once")
-            .expect("unconditional first-read sentence is present");
-        let step2 = p
-            .find("2. Decide what to do next and act:")
-            .expect("step 2 is present");
-        assert!(
-            step1 < read && read < step2,
-            "the report first-read contract must remain in step 1 despite the recovery briefing exception"
-        );
-        assert!(
-            !p.contains("If `report_startup_read_required` is true, first call"),
-            "the read must not be conditional on the startup bit (#1185 §1.5 A)"
-        );
-        // The bit survives with a narrower meaning: "does it hold content
-        // beyond the default skeleton", not "must you read".
-        assert!(p.contains("`report_startup_read_required` tells you whether it already holds"));
-        // Activation is scoped to `task` blocks; prose is maintained, not
-        // replaced — the fork path used to be ordered to flatten it.
-        assert!(p.contains(
-            "If the read returns `task` blocks, treat them as the authoritative pre-set plan"
-        ));
-        assert!(p.contains("Prose blocks are NOT a plan to activate"));
-
-        assert!(p.contains("authoritative pre-set plan"));
-        assert!(p.contains("replacing those blocks and setting `ready: true`"));
-        assert!(p.contains("block ids and revision as replace anchors"));
-        assert!(p.contains("Do not mint duplicate tasks"));
-    }
-
-    #[test]
-    fn planner_prompt_teaches_named_candidate_dispatch_without_report_edit() {
-        let p = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-candidate");
-        for text in [
-            "workspace: \"verified-candidate\"",
-            "required input:",
-            "input.producer must be the returned repair_key",
-            "Reviewing already schedules",
-            "current.candidate_input",
-            "without mandatory Planner acceptance",
-        ] {
-            assert!(
-                p.contains(text),
-                "missing candidate dispatch guidance: {text}"
-            );
-        }
-        assert!(!p.contains("Tasks needing dependencies, gates, file delivery or other options"));
-    }
-
-    /// #293 cutover — the planner prompt must be push-native, not pull. It must
-    /// carry the turn-reactive guidance (driven by pushed observations, end
-    /// the turn, no looping).
-    #[test]
-    fn planner_prompt_is_push_native_not_pull() {
-        let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
-
-        // No pull loop.
-        assert!(
-            !p.contains("long-poll"),
-            "prompt must not describe a long-poll loop"
-        );
-
-        // Turn-reactive guidance present.
-        assert!(
-            p.contains("turn-reactive") || p.contains("END YOUR TURN"),
-            "prompt must carry turn-reactive guidance"
-        );
-        assert!(
-            p.contains("END YOUR TURN"),
-            "prompt must tell the agent to end its turn"
-        );
-        assert!(
-            p.contains("re-invoked"),
-            "prompt must explain the kernel re-invokes the agent per observation"
-        );
-        assert!(
-            p.contains("Do NOT poll or loop"),
-            "prompt must forbid polling / looping"
-        );
-        // Reads go through the shell CLI; writes still go through MCP.
-        assert!(
-            p.contains("Run `neige state`")
-                && p.contains("calm.report.blocks.upsert")
-                && p.contains("calm.plan.list"),
-            "prompt must read state via neige and maintain task blocks via MCP"
-        );
-        assert!(
-            !p.contains("calm.update_track_state")
-                && p.contains("calm.task.dispatch")
-                && !p.contains("calm.plan.upsert")
-                && p.contains("calm.plan.cancel")
-                && p.contains("calm.plan.list")
-                && p.contains("calm.report.blocks.upsert")
-                && p.contains("calm.task.verdict")
-                && p.contains("calm.area.outline")
-                && p.contains("calm.report.links.backlinks")
-                // Signature-anchored: bare "calm.report.write" is now also a
-                // prefix of "calm.report.write_markdown", so the loose form
-                // would pass even if the compatibility tool disappeared.
-                && p.contains("calm.report.write(body,")
-                && p.contains("calm.report.edit(old_string,")
-                && p.contains("calm.report.write_markdown"),
-            "prompt must document retained track/task write tools and omit retired update_track_state"
-        );
-        assert!(
-            !p.contains("Call `calm.track.state`"),
-            "prompt must not instruct state reads via MCP"
-        );
-    }
-
-    #[test]
-    fn planner_prompt_documents_neige_reads_for_worker_outputs() {
-        let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
-
-        assert!(p.contains(
-            "use a sufficient report preview without a preliminary state or result reread"
-        ));
-        assert!(p.contains("State-dependent actions still require fresh authority"));
-        assert!(p.contains("Report arrival, execution settlement, independent verification, and Planner acceptance are distinct"));
-        assert!(p.contains("require its recorded event identity"));
-        assert!(!p.contains("canonical first read"));
-        assert!(!p.contains("push observation is just a notification"));
-        assert!(p.contains("the exact `neige cat runs/K/gates/N.log` path in that observation"));
-        assert!(!p.contains("plan/<key>/output"));
-        assert!(p.contains("opaque execution/attempt ID, not a logical task key"));
-        assert!(p.contains("also read `neige cat runs/K.json`"));
-        assert!(p.contains("If B needs your semantic decision on A, keep B `ready: false`"));
-        assert!(p.contains("`depends_on` waits for `Task.done`, not a Planner verdict"));
-        assert!(p.contains("Pure ordering dependencies need no manual verdict"));
-
-        assert!(
-            p.contains("neige state") && p.contains("neige cat") && p.contains("neige ls"),
-            "planner prompt must document the shell neige read CLI"
-        );
-        assert!(
-            p.contains("neige cat report.md"),
-            "planner prompt must explain why the body-only neige view cannot supply an anchor"
-        );
-        assert!(
-            p.contains("runs/<attempt_id>"),
-            "planner prompt must document run projections by execution attempt id"
-        );
-        assert!(
-            p.contains("plan/<key>/gate.log"),
-            "planner prompt must document plan gate logs"
-        );
-        assert!(
-            p.contains("READ-ONLY"),
-            "planner prompt must state track file views are read-only"
-        );
-        assert!(
-            p.contains("runs/K.md"),
-            "planner prompt must document the optional run summary view"
-        );
-        assert!(
-            p.contains("calm.report.write(body,") && p.contains("calm.report.edit(old_string,"),
-            "planner prompt must document report write/edit MCP tools"
-        );
-        assert!(
-            p.contains("calm.area.outline")
-                && p.contains("calm.report.links.backlinks")
-                && !p.contains("calm.track.cat")
-                && !p.contains("calm.track.ls")
-                && p.contains("calm.report.read"),
-            "planner prompt must include the anchored report read alongside retained read tools"
-        );
-        assert!(
-            p.contains("[label](neige://wave/<track_id>#<block_id>)"),
-            "planner prompt must pin the cross-reference form"
-        );
-    }
-
-    #[test]
-    fn planner_prompt_pins_whole_document_revision_anchor_contract() {
-        let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
-        assert!(p.contains("`calm.report.read` 返回的 `docRev`") && p.contains("`if_doc_rev`"));
-        assert!(p.contains("写响应会返回新的 `docRev`"));
-        assert!(p.contains("块级 `if_rev`") && p.contains("不可混用"));
-    }
-
     /// #1185 — the kernel prompt must name NO report section.
     ///
     /// Section vocabulary is policy: it belongs to the document, which carries
     /// it in a leading HTML comment that every read returns. A prompt that
     /// names sections re-imposes one template's shape on every document in the
-    /// area, and the "rewrite anything unfamiliar" instruction that used to
-    /// accompany it flattened any report that arrived with its own structure.
-    ///
-    /// The negative loop at the bottom is this slice's main invariant.
+    /// area. The banned-section loop is the invariant: section names that
+    /// once lived in the kernel prompt or skeleton and must not return. The
+    /// golden would show such a return as a diff; this test says it is a
+    /// policy violation, which a diff cannot.
     #[test]
     fn planner_prompt_carries_no_section_vocabulary() {
         let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
-
-        // The mechanism the prompt keeps: structure travels with the document,
-        // and flattening it is damage.
-        assert!(
-            p.contains("报告自带的结构就是规则"),
-            "prompt must state that the document's own structure is the rule"
-        );
-        assert!(
-            p.contains("不要因为格式看起来陌生或「旧」就整体重写本文档"),
-            "prompt must forbid flattening an unfamiliar-looking report"
-        );
-
-        // The section ban must be QUALIFIED by the document's own contract
-        // list. Unqualified it contradicts every shipped template:
-        // their seeded body carries a single `# Plan` H1, and the contract
-        // inside it requires the agent to add 概要 / 已完成 / 决策. An absolute
-        // "never add a section" bullet and the "文档里的维护契约优先" fallback
-        // two lines below cannot both be obeyed — this keeps them aligned with
-        // `track_report_section_rules.md`'s own wording.
-        assert!(
-            p.contains("不要新增文档契约清单以外的章节"),
-            "the section ban must be scoped to the document's contract list (#1185 D2)"
-        );
-        assert!(
-            !p.contains("不要新增、重命名章节"),
-            "an unqualified section ban contradicts the shipped templates' own contracts"
-        );
 
         // `# 进行中` was dropped in #1172: the TASKS panel renders the real
         // task runtime state, so making the planner agent hand-maintain a prose
@@ -1088,49 +729,6 @@ mod tests {
                 .body
                 .contains("# 进行中"),
             "the birth skeleton must NOT reintroduce `# 进行中` either"
-        );
-
-        // Append-to-progress was the wording that drove the runaway journal.
-        assert!(
-            !p.contains("append to `# Progress`"),
-            "prompt must NOT instruct append-to-progress (root cause of runaway journals)"
-        );
-
-        // #1146 S1: the budget must scope to PROSE, not `body`. `body` is the
-        // flat projection that also serializes every non-prose block's fence,
-        // so a `body`-scoped budget was vacuously false on any track with task
-        // blocks — no amount of concise prose could satisfy it.
-        //
-        // #1185 splits it: the 1000-word soft target is genre judgement and
-        // moved into the document's contract. #1571: the contract's own budget
-        // governs (the research contract says 1500—2500 字); the kernel's
-        // 2000 字 is the fallback only when a contract states no budget, not a
-        // ceiling laid over every contract.
-        assert!(
-            p.contains("散文正文")
-                && p.contains("字数预算以文档自己的维护契约为准")
-                && p.contains("契约没有规定篇幅时")
-                && p.contains("2000 字"),
-            "prompt must defer the prose budget to the document's contract, 2000 字 as fallback"
-        );
-        assert!(
-            !p.contains("硬上限") && !p.contains("无论文档自己的契约怎么说"),
-            "prompt must not override the contract's budget with a kernel ceiling"
-        );
-        assert!(
-            p.contains("不计入"),
-            "prompt must state that non-prose fence projection is excluded from the budget"
-        );
-        assert!(
-            !p.contains("body 控制在"),
-            "prompt must NOT reintroduce the vacuous body-scoped budget"
-        );
-
-        // The migration instruction is gone, not relocated: it is what
-        // flattened self-structured reports.
-        assert!(
-            !p.contains("整体 REWRITE"),
-            "prompt must NOT order a wholesale rewrite of an existing report (#1185)"
         );
 
         // —— the main invariant ——
@@ -1152,67 +750,119 @@ mod tests {
         }
     }
 
-    /// #1146 S1 — whole-document rewrites must go through the ONLY
-    /// id-preserving mouth: `calm.report.read { with_markers: true }` →
-    /// `calm.report.write_markdown`. `calm.report.write` re-derives block ids
-    /// best-effort (`reassign_ids`) and its new body must carry every
-    /// non-prose fence back byte-for-byte or `guard_non_prose_stomp` rejects
-    /// the write, so it must NOT be advertised as the preferred mouth.
-    #[test]
-    fn planner_prompt_routes_whole_document_rewrite_through_the_marker_channel() {
-        let p = PLANNER_SYSTEM_PROMPT_TEMPLATE;
+    /// Every `calm.`-prefixed token in `text`, wherever it appears (prose,
+    /// code span, signature): an occurrence of `calm.` whose preceding byte is
+    /// not `[A-Za-z0-9_.]`, extended over `[A-Za-z0-9_.]`, with trailing `.`s
+    /// stripped. A token whose unstripped end is followed by `*` is a wildcard
+    /// family (`calm.*`, `calm.report.blocks.*`) and is dropped. Uppercase is
+    /// part of the continuation on purpose: tool names are lowercase, so
+    /// `calm.plan.listX` must stay one (unregistered) token rather than
+    /// truncate to a registered prefix. Hand-rolled on purpose: no regex
+    /// dependency for one test.
+    fn calm_tool_tokens(text: &str) -> Vec<&str> {
+        let bytes = text.as_bytes();
+        let mut tokens = Vec::new();
+        let mut from = 0;
+        while let Some(i) = text[from..].find("calm.") {
+            let at = from + i;
+            let preceded_by_ident = at > 0 && {
+                let b = bytes[at - 1];
+                b.is_ascii_alphanumeric() || b == b'_' || b == b'.'
+            };
+            let end = at
+                + bytes[at..]
+                    .iter()
+                    .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'.')
+                    .count();
+            from = end;
+            if preceded_by_ident || bytes.get(end) == Some(&b'*') {
+                continue;
+            }
+            tokens.push(text[at..end].trim_end_matches('.'));
+        }
+        tokens
+    }
 
+    #[test]
+    fn calm_tool_tokens_are_whole_tokens() {
+        for (text, expected) in [
+            ("see calm.plan.list.", vec!["calm.plan.list"]),
+            ("xcalm.plan.list", vec![]),
+            ("calm.*", vec![]),
+            ("calm.report.blocks.*", vec![]),
+            ("calm.plan.list2", vec!["calm.plan.list2"]),
+            ("calm.plan.listX", vec!["calm.plan.listX"]),
+            ("", vec![]),
+            ("calm.", vec!["calm"]),
+        ] {
+            assert_eq!(calm_tool_tokens(text), expected, "input: {text:?}");
+        }
+    }
+
+    /// #1635 S1a — every `calm.`-prefixed token anywhere in the rendered
+    /// planner prompt, backticked or bare, is the complete name of a tool the
+    /// Planner role can see in `tools/list`. The deleted per-name asserts
+    /// stated this one tool at a time (no retired `calm.update_track_state`,
+    /// no hidden `calm.plan.upsert`, no CLI-only `calm.track.cat` /
+    /// `calm.track.ls`); stated once against the registry it also covers the
+    /// names nobody thought to ban. Tokens are whole-token matched, so a
+    /// misspelling or a stray suffix (`calm.plan.list2`) is red, not a prefix
+    /// hit; only wildcard families (`calm.*`, `calm.report.blocks.*`) are
+    /// skipped.
+    #[test]
+    fn planner_prompt_names_only_tools_the_planner_role_can_see() {
+        use std::collections::BTreeSet;
+
+        let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-registry");
+        let visible: BTreeSet<String> = crate::mcp_server::build_default_registry()
+            .descriptors_for_role(calm_types::model::CardRole::Planner)
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect();
+        assert!(!visible.is_empty(), "the Planner role sees no tools at all");
+
+        let named: BTreeSet<&str> = calm_tool_tokens(&prompt).into_iter().collect();
         assert!(
-            p.contains("calm.report.write_markdown"),
-            "prompt must name the id-preserving whole-document write tool"
+            named.len() >= 10,
+            "anti-vacuity: the planner prompt names fewer than 10 distinct tools; \
+             the scanner is probably broken. Found: {named:?}"
         );
-        assert!(
-            p.contains("with_markers"),
-            "prompt must name the `with_markers` read that supplies the block-id markers"
-        );
-        assert!(
-            p.contains("<!-- neige:b_xxxx -->"),
-            "prompt must show the marker line shape the read emits"
-        );
-        // Targeted edits stay the first choice.
-        assert!(
-            p.contains("**首选 · 局部修改** — `calm.report.blocks.upsert`"),
-            "prompt must make block-addressed upsert the preferred write"
-        );
-        // The trap must be spelled out, not merely de-emphasized.
-        assert!(
-            p.contains("best-effort 重新推导块 id"),
-            "prompt must warn that wholesale replace re-derives block ids"
-        );
-        assert!(
-            p.contains("neige-block <kind>") && p.contains("逐字节原样"),
-            "prompt must warn that non-prose fences must survive byte-for-byte"
-        );
-        // The old wording promoted `calm.report.write` as 首选 — that is the
-        // exact trap this slice removes.
-        assert!(
-            !p.contains("整体替换 （首选"),
-            "prompt must NOT re-promote calm.report.write as the preferred write"
-        );
-        // Planner feedback #1 — one user-intent update is ONE
-        // `calm.report.commit` (blocks + summary + lifecycle under one
-        // `if_doc_rev`); the prompt must route message/lifecycle there and
-        // must no longer sanction same-text `calm.report.edit` as a
-        // lifecycle carrier.
-        assert!(
-            p.contains("**一次用户意图 = 一次 `calm.report.commit`**")
-                && p.contains("calm.report.commit(if_doc_rev,")
-                && p.contains("任一项失败整次提交回滚"),
-            "prompt must route blocks + summary + lifecycle through calm.report.commit"
-        );
-        assert!(
-            p.contains("不要用 `calm.report.edit` 传相同的 old/new 字符串"),
-            "prompt must forbid same-text report.edit as a lifecycle carrier"
-        );
-        assert!(
-            !p.contains("不接受这两个参数") && !p.contains("或需要带上"),
-            "prompt must not keep the pre-commit message/lifecycle routing"
-        );
+        for name in &named {
+            assert!(
+                visible.contains(*name),
+                "planner prompt names `{name}`, which the Planner role cannot see in \
+                 tools/list (retired, hidden, CLI-only, or not a complete tool name). \
+                 Visible: {visible:?}"
+            );
+        }
+    }
+
+    /// #1635 S1a — the task `kind` vocabulary the prompt teaches is
+    /// `WorkerProviderKind`, spelled as its wire/DB string. The match is
+    /// exhaustive on purpose: a new variant fails to compile at the match,
+    /// which points a maintainer at the list next to it; every listed kind
+    /// then has to be named by the prompt.
+    #[test]
+    fn planner_prompt_names_every_worker_provider_kind() {
+        use calm_types::worker::WorkerProviderKind;
+
+        let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-kinds");
+        for kind in [
+            WorkerProviderKind::Codex,
+            WorkerProviderKind::Claude,
+            WorkerProviderKind::Terminal,
+        ] {
+            match kind {
+                WorkerProviderKind::Codex
+                | WorkerProviderKind::Claude
+                | WorkerProviderKind::Terminal => {}
+            }
+            let spelled = format!("`{}`", kind.as_db_str());
+            assert!(
+                prompt.contains(&spelled),
+                "planner prompt must name task kind {spelled}"
+            );
+        }
     }
 
     #[test]
