@@ -480,6 +480,33 @@
 #   nine constituent lines path:line + content. If a later commit needs any
 #   of these cells higher, that is a NEW raise needing its own argument.
 #
+#   A FOURTH raise, taken ONCE by #1625 P2 review round 1 (the restart-shaped
+#   and two-card tests the review asked for). Same shape: PER-FILE COUNTS, a
+#   closed list, not a criterion. Counts cannot be re-spent; the "before"
+#   column continues from the THIRD raise above on the same `1a1b5059` base:
+#
+#     crates/calm-server/tests/cases/planner_transcript_projection.rs  1 ->   5
+#                                                          net      277 -> 281
+#
+#   Every one of the 4 is a call to a symbol that ALREADY exists; the round
+#   coins nothing in this vocabulary:
+#     * `planner_transcript_projection.rs` +4: two `.harness_item_insert(`
+#       calls that seed a predecessor's row before the harness under test
+#       boots (the fixture's seeding loop, and the two-card key test), and
+#       two `.harness_item_list_by_card(` reads (the held-`turn/start` read of
+#       the row inside the RPC, and the two-card test's read of card B). The
+#       repo trait has no writer or reader of this table spelled any other
+#       way.
+#   The `fe` cell does not move: the round's one fe occurrence —
+#   `queryKeys.harnessItems` in the `harness.phase.changed` expectation row
+#   of `query-invalidation-adapter.test.ts` — is byte-identical to the line
+#   P1 landed, so on this base it is already counted (fe stays 107 -> 107).
+#   Everything the round named was named in the target vocabulary and cost
+#   zero: the snapshot slot is `projection_client_id`, the test fixture is
+#   `BootPlan` / `SeededProjection`, the new tests say "projection",
+#   "transcript" and "row". If a later commit needs the cell higher, that
+#   is a NEW raise needing its own argument; it does not inherit this one.
+#
 #   Left open on purpose: the harness registry is keyed by `runtime_id`, i.e.
 #   `runtime` / `harness` / `worker_session` are three names for layers of one
 #   execution concept. That is a design question, not a rename, and #1316

@@ -60,7 +60,7 @@ struct SeededProjection {
     text: String,
 }
 
-struct BootSpec {
+struct BootPlan {
     pending: Vec<QueueEntry>,
     fail_turn_start: bool,
     /// `HarnessSnapshot::projection_client_id` as the restarted harness reads
@@ -72,7 +72,7 @@ struct BootSpec {
     turn_start_hook: Option<TurnStartReturnHook>,
 }
 
-impl BootSpec {
+impl BootPlan {
     fn new(pending: Vec<QueueEntry>) -> Self {
         Self {
             pending,
@@ -88,21 +88,21 @@ impl BootSpec {
 /// daemon that answers `turn/start` (or refuses it, when `fail_turn_start`),
 /// and the REST router over the same repo.
 async fn boot(pending: Vec<QueueEntry>, fail_turn_start: bool) -> Boot {
-    boot_with(BootSpec {
+    boot_with(BootPlan {
         fail_turn_start,
-        ..BootSpec::new(pending)
+        ..BootPlan::new(pending)
     })
     .await
 }
 
-async fn boot_with(spec: BootSpec) -> Boot {
-    let BootSpec {
+async fn boot_with(plan: BootPlan) -> Boot {
+    let BootPlan {
         pending,
         fail_turn_start,
         projection_client_id,
         seeded,
         turn_start_hook,
-    } = spec;
+    } = plan;
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let area = repo
@@ -571,12 +571,12 @@ async fn a_restarted_harness_replaces_the_stale_projection_of_a_user_entry() {
         text: "said once, drained twice".into(),
     }]);
     let entry_id = entries[0].id().unwrap().to_string();
-    let boot = boot_with(BootSpec {
+    let boot = boot_with(BootPlan {
         seeded: vec![SeededProjection {
             client_id: entry_id.clone(),
             text: "said once, drained twice".into(),
         }],
-        ..BootSpec::new(entries)
+        ..BootPlan::new(entries)
     })
     .await;
     assert_eq!(
@@ -619,13 +619,13 @@ async fn a_restarted_harness_replaces_the_stale_projection_of_a_system_only_batc
         }]);
     assert_eq!(entries[0].id(), None, "a system entry carries no id");
     let persisted_key = QueueEntryId::from_wire("minted-by-the-predecessor".into());
-    let boot = boot_with(BootSpec {
+    let boot = boot_with(BootPlan {
         projection_client_id: Some(persisted_key.clone()),
         seeded: vec![SeededProjection {
             client_id: persisted_key.to_string(),
             text: "task task-done completed".into(),
         }],
-        ..BootSpec::new(entries)
+        ..BootPlan::new(entries)
     })
     .await;
     assert_eq!(get_items(&boot).await.len(), 1);
@@ -669,12 +669,12 @@ async fn a_system_only_batch_persists_its_minted_key_before_the_row() {
         }]);
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
-    let boot = boot_with(BootSpec {
+    let boot = boot_with(BootPlan {
         turn_start_hook: Some(TurnStartReturnHook {
             entered: entered.clone(),
             release: release.clone(),
         }),
-        ..BootSpec::new(entries)
+        ..BootPlan::new(entries)
     })
     .await;
     entered.notified().await;
