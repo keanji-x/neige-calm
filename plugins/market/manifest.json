@@ -71,6 +71,86 @@
         "readOnlyHint": true,
         "openWorldHint": true
       }
+    },
+    {
+      "name": "market.series",
+      "description": "Historical daily, weekly or monthly bars for up to 8 assets — the resolution backend of a report's `chart.series` block, which the kernel calls in the background. Calling it directly gets the same contract with NO defaults: all seven keys are required (`series`, `fields`, `period`, `mode`, `start`, `as_of`, `deadline_ms`), a missing or malformed one is an error before any request goes out, and `mode` is never defaulted to `live` nor the inclusion rule relaxed. `as_of` is the CUTOFF day, not the date of the last bar: the reply holds every bar of `[start, as_of]` the source lists, so the last point may be earlier (weekend, holiday, halt). `mode=frozen`, every weekly or monthly request, and every CRYPTO or US request return a bar or period only when the source already lists a LATER daily bar — the proof that it closed; `mode=live` with `period=day` on HK, SH and SZ relaxes that to `date <= as_of`, because those sessions close hours before the next UTC day. Weekly (ISO, Monday–Sunday) and monthly bars are aggregated here from daily ones. Each reply item is `{asset, currency?, status, complete_through?, points?, reason?}`: `asset` echoes the request string; `status` is `ok`, `unknown_asset` or `unavailable`; `complete_through` is the newest DAILY bar the source listed before the window was fetched, whatever the period; `points` are `[ts_ms, <one value per requested field, in request order>]`, `ts_ms` the UTC midnight of the bar or period start, strictly ascending, at least two of them; `reason` explains a non-`ok` status. One asset's failure never fails another's. Sources: Tencent ifzq (US, HK, SH, SZ; adjusted) and Binance klines (CRYPTO, `<SYMBOL>USDT`); there is no fallback source yet.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "series": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "string"
+            },
+            "description": "Venue-qualified asset names, `<VENUE>:<SYMBOL>` over CRYPTO, US, HK, SH and SZ (a bare name is CRYPTO). `CN:` and unknown venues answer `unknown_asset` for that item."
+          },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {
+              "type": "string",
+              "enum": [
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume"
+              ]
+            },
+            "description": "Which values each point carries, in this order after `ts_ms`."
+          },
+          "period": {
+            "type": "string",
+            "enum": [
+              "day",
+              "week",
+              "month"
+            ],
+            "description": "Bar size. Week and month are aggregated from daily bars: open of the first day, close of the last, max high, min low, summed volume; `ts_ms` is the period's first day."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "live",
+              "frozen"
+            ],
+            "description": "`frozen` for a block with its own `as_of`; `live` when the kernel filled `as_of` with yesterday UTC. Required — never defaulted."
+          },
+          "start": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "First day of the window (inclusive), YYYY-MM-DD, a real calendar date, not later than `as_of`."
+          },
+          "as_of": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Cutoff day (inclusive), YYYY-MM-DD, a real calendar date."
+          },
+          "deadline_ms": {
+            "type": "integer",
+            "description": "Unix milliseconds after which the caller no longer wants the answer; a request dequeued past it is refused without a network request."
+          }
+        },
+        "required": [
+          "series",
+          "fields",
+          "period",
+          "mode",
+          "start",
+          "as_of",
+          "deadline_ms"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Historical series",
+        "readOnlyHint": true,
+        "openWorldHint": true
+      }
     }
   ],
   "permissions": {
@@ -101,6 +181,15 @@
         "type": "string",
         "default": "https://hq.sinajs.cn",
         "description": "Base URL of the Sina quote list, the US, HK, SH and SZ source. Its /list= path is asked for one symbol at a time: gb_<symbol>, hk<5-digit code>, sh<code> or sz<code>."
+      },
+      "tencent_endpoint": {
+        "type": "string",
+        "default": "https://web.ifzq.gtimg.cn",
+        "description": "Tencent ifzq daily K-line source for US/HK/SH/SZ (`market.series`). Its /appstock/app/fqkline/get path is asked for one code per request, with an explicit start and end date."
+      },
+      "debug_clock_ms": {
+        "type": "integer",
+        "description": "Test seam: when set, the plugin's wall clock is frozen at this instant (unix milliseconds) — `market.series` reads it for its deadline check and its cache's UTC-date key. Never set it on a real install; the handshake warns on stderr when it is."
       }
     },
     "additionalProperties": false
