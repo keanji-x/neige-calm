@@ -11,7 +11,7 @@ use utoipa::ToSchema;
 
 use crate::report_blocks::{parse_fence, strip_markers_and_split};
 use crate::report_contract::{
-    ContractHeader, ContractSection, canonical_line, check_document, is_pure_comment_block,
+    ContractHeader, ContractSection, check_document, is_pure_comment_block,
 };
 
 /// A derived, addressable slice of a track report.
@@ -84,60 +84,16 @@ pub struct TrackReportPayload {
     pub blocks: Option<Vec<ReportBlock>>,
 }
 
-// —— #1185: the report's maintenance contract travels with the document ——
-//
-// The kernel does not decide which sections a report has; the document
-// carries its own rules in a leading HTML comment. The three fragments below
-// are `include_str!` rather than escaped Rust literals because this text gets
-// byte-reviewed routinely and 40 lines of `\n` escapes are unreadable. cargo
-// tracks `include_str!` as a build dependency, so editing the .md recompiles.
-//
-// All four fragments are UNCLOSED (no `-->`) and therefore **private**.
-// Handing out an unclosed comment fails silently and globally: a caller that
-// forgets to append `-->` makes the comment swallow the whole document, and
-// both frontends then render a completely blank report with no diagnostic
-// (#1185 §1.5 B). Only the closed forms below leave this module.
-
-/// Genre rules, independent of any section list: work-brief voice, reader
-/// assumption, current-snapshot / REWRITE, outcomes-not-process, no long
-/// quotes, the 1000-word soft target. Contains no `-->`.
-const CONTRACT_WRITING_RULES: &str = include_str!("track_report_contract_rules.md");
-
-/// Structure rules + the four section descriptions. The structure rule is
-/// worded as "the sections are defined by the list below", so it cannot be
-/// reused apart from that list — a template that got the structure rule
-/// without the list would be told it may only ever have `# Plan`
-/// (#1185 §1.5 B). Contains no `-->`.
-const CONTRACT_SECTION_RULES: &str = include_str!("track_report_section_rules.md");
-
-/// Template-only addendum: the pre-set plan sections hand their prose over
-/// to the four report sections once tasks are activated. Contains no `-->`.
-const CONTRACT_PLAN_NOTE: &str = include_str!("track_report_plan_note.md");
-
-/// #1571 — the investment-research contract, **self-contained**: it carries
-/// its own copy of the two preamble paragraphs (render-time drop / no secrets,
-/// "the structure is the rule") because [`CONTRACT_WRITING_RULES`] opens with
-/// the work-brief comment header and its genre rules in one file, and cannot
-/// be split into a shared preamble without rewriting the default contract.
-/// Genre rules (thesis-first, sourced numbers, strongest counter-argument,
-/// the 1500—2500 字 budget) and the seven-section list live together here
-/// for the same reason [`CONTRACT_SECTION_RULES`] is not reusable: the
-/// structure rule is worded as "the sections are defined by the list below".
-/// Contains no `-->`.
-const CONTRACT_RESEARCH_RULES: &str = include_str!("track_report_research_rules.md");
-
-/// Closes the contract comment. Blank line after it so the first H1 starts
-/// its own block (`split_body` splits at line-initial `# ` / `## `).
-const CONTRACT_CLOSE: &str = "-->\n\n";
-
 /// #1635 D2 — the work-brief contract header: the four default sections,
-/// `待你定` omitted when empty. With [`research_header`] this is the source
-/// the header lines are built from; `report/default.md` line 1 is
-/// `canonical_line(&work_brief_header())`, the pin in
+/// `待你定` omitted when empty. With [`research_header`] this is what the
+/// header line every shipped body carries is held to: `report/default.md`
+/// line 1 is `canonical_line(&work_brief_header())`, the pin in
 /// `initial_body_is_header_line_plus_legacy_v4` holds the two together, and
 /// `default_h1s_are_the_work_brief_header_sections` ties the file's H1s to
-/// these sections (calm-server's templates test does the same for the
-/// research skeleton). S4 moves the names into template files.
+/// these sections. The built-in template files (calm-server,
+/// `templates/builtin/*.md`, #1635 S4) carry the same header lines as data;
+/// calm-server's `templates` tests hold them to these constructors through
+/// `check_document`.
 pub fn work_brief_header() -> ContractHeader {
     ContractHeader {
         version: 1,
@@ -195,8 +151,11 @@ fn initial_body() -> &'static str {
 /// for every pre-header track in every database.
 ///
 /// The file was generated, not typed, from the fragments `initial_body()`
-/// concatenates at that commit — and the pin in `legacy_initial_v4_bytes_are_pinned`
-/// is the output of the same command:
+/// concatenated at that commit — and the pin in `legacy_initial_v4_bytes_are_pinned`
+/// is the output of the same command. (The fragment files were deleted in
+/// #1635 S4 once nothing concatenated them any more — the contract now lives
+/// whole in `report/default.md` and in calm-server's `templates/builtin/*.md`
+/// — so the command is reproducible at `7754fd32`, not at HEAD.)
 ///
 /// ```sh
 /// { cat crates/calm-types/src/track_report_contract_rules.md \
@@ -209,63 +168,6 @@ fn initial_body() -> &'static str {
 /// # 2647
 /// ```
 pub const LEGACY_INITIAL_V4_BODY: &str = include_str!("report/legacy_initial_v4.md");
-
-/// Report-body prefix for the kernel's built-in templates: the canonical
-/// work-brief header line (#1635 D2), then writing rules + section rules +
-/// the pre-set section notes, **already closed**.
-///
-/// The templates build their body with [`TrackReportPayload::new`], bypassing
-/// [`TrackReportPayload::initial`], so without this they would carry no
-/// contract at all — losing not just the section list but the word budget,
-/// the current-snapshot rule and the no-process-narration rule that #1146 S1
-/// and #1172 put there (#1185 §1.5 B).
-///
-/// The return value is **closed**; unclosed fragments never leave this
-/// module. See the module comment above for why.
-pub fn report_contract_prefix_for_template() -> &'static str {
-    static PREFIX: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-        format!(
-            "{}\n{CONTRACT_WRITING_RULES}{CONTRACT_SECTION_RULES}{CONTRACT_PLAN_NOTE}{CONTRACT_CLOSE}",
-            canonical_line(&work_brief_header())
-        )
-    });
-    &PREFIX
-}
-
-/// Which maintenance contract a template's report leads with (#1571).
-///
-/// The kernel still does not interpret sections; this only selects which
-/// closed comment [`report_contract_prefix`] hands out. A template names its
-/// contract here rather than concatenating fragments itself, so unclosed
-/// text never leaves this module.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReportContract {
-    /// The default work-brief contract plus the pre-set plan note — what
-    /// [`report_contract_prefix_for_template`] returns.
-    WorkBrief,
-    /// The investment-research contract: seven fixed sections, thesis-first
-    /// prose, sourced numbers, a 1500—2500 字 budget.
-    Research,
-}
-
-/// Report-body prefix for a template that names its contract, **already
-/// closed**. [`ReportContract::WorkBrief`] is exactly
-/// [`report_contract_prefix_for_template`]; [`ReportContract::Research`] is
-/// the canonical research header line, then the research rules, closed.
-pub fn report_contract_prefix(contract: ReportContract) -> &'static str {
-    match contract {
-        ReportContract::WorkBrief => report_contract_prefix_for_template(),
-        ReportContract::Research => {
-            static PREFIX: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-                format!(
-                    "{}\n{CONTRACT_RESEARCH_RULES}{CONTRACT_CLOSE}",
-                    canonical_line(&research_header())
-                )
-            });
-            &PREFIX
-        }
-    }
-}
 
 impl TrackReportPayload {
     /// Current schema version. Bumping this is a Tier A breaking
@@ -379,7 +281,7 @@ impl TrackReportPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report_contract::{HEADER_OPEN, check_document, normalize_header};
+    use crate::report_contract::{HEADER_OPEN, canonical_line, check_document, normalize_header};
     use std::borrow::Cow;
 
     #[test]
@@ -740,200 +642,12 @@ mod tests {
         assert_eq!(check_document(&body), Ok(Some(work_brief_header())));
     }
 
-    /// #1185 §1.5 B — the built-in templates must get the same
-    /// writing policy, or #1146's guardrails silently vanish on them.
-    #[test]
-    fn the_template_prefix_is_closed_and_shares_the_default_contract() {
-        let prefix = report_contract_prefix_for_template();
-        let body = TrackReportPayload::initial().body;
-
-        // #1635 D2: header line first, then the prose contract comment.
-        assert!(prefix.starts_with(HEADER_OPEN));
-        assert_eq!(
-            prefix.lines().next(),
-            Some(canonical_line(&work_brief_header()).as_str())
-        );
-        assert!(
-            prefix
-                .lines()
-                .nth(1)
-                .is_some_and(|line| line.starts_with("<!-- 报告维护契约"))
-        );
-        assert!(
-            prefix.ends_with("-->\n\n"),
-            "never hand out an unclosed comment"
-        );
-        // Exactly one header line, on line 1, and the block-0 scan closes.
-        assert_eq!(
-            prefix
-                .lines()
-                .filter(|l| l.starts_with(HEADER_OPEN))
-                .count(),
-            1
-        );
-        assert_eq!(check_document(prefix), Ok(Some(work_brief_header())));
-        assert!(!prefix.contains('\r'));
-
-        // What is shared is the genre rules + the section list; the template
-        // gets one extra `Plan` note. Comparing the fragment constants would
-        // just restate the concatenation; asserting on sentences both sides
-        // must carry is what catches one side being quietly edited.
-        for shared in [
-            "写产出，不写过程",
-            "散文正文",
-            "1000 字",
-            "章节由下面这份清单定义",
-            "没有就省略这个 section",
-        ] {
-            assert!(
-                prefix.contains(shared) && body.contains(shared),
-                "the writing rules and the section list must be one text: `{shared}`"
-            );
-        }
-        // The template must be licensed to grow the four sections — otherwise
-        // issue-development is stuck with `# Plan` forever (#1185 §1.5 B).
-        for section in ["概要", "待你定", "已完成", "决策"] {
-            assert!(
-                prefix.contains(section),
-                "template contract must license `{section}`"
-            );
-        }
-        assert!(
-            prefix.contains("Plan —— 预置计划"),
-            "and must say what happens to # Plan"
-        );
-        assert!(
-            !body.contains("Plan —— 预置计划"),
-            "the default skeleton has no plan section"
-        );
-
-        // The contract must stay one block — fragment concatenation must not
-        // introduce a line-initial H1/H2.
-        assert_eq!(crate::report_blocks::split_body(prefix).len(), 1);
-    }
-
-    /// #1571 — the research contract is closed exactly once, names its seven
-    /// sections, and shares the preamble the work-brief contract carries.
-    #[test]
-    fn the_research_prefix_is_closed_and_names_its_seven_sections() {
-        let prefix = report_contract_prefix(ReportContract::Research);
-        assert_eq!(
-            report_contract_prefix(ReportContract::WorkBrief),
-            report_contract_prefix_for_template(),
-            "WorkBrief must be the existing template prefix, not a third text"
-        );
-
-        // #1635 D2: the research header line first, then the research
-        // prose contract comment.
-        assert!(prefix.starts_with(HEADER_OPEN));
-        assert_eq!(
-            prefix.lines().next(),
-            Some(canonical_line(&research_header()).as_str())
-        );
-        assert!(
-            prefix
-                .lines()
-                .nth(1)
-                .is_some_and(|line| line.starts_with("<!-- 报告维护契约（投研报告版）"))
-        );
-        assert!(
-            prefix.ends_with("-->\n\n"),
-            "never hand out an unclosed comment"
-        );
-        // Exactly one header line, on line 1, and the block-0 scan closes.
-        assert_eq!(
-            prefix
-                .lines()
-                .filter(|l| l.starts_with(HEADER_OPEN))
-                .count(),
-            1
-        );
-        assert_eq!(check_document(prefix), Ok(Some(research_header())));
-        assert!(
-            !CONTRACT_RESEARCH_RULES.contains("-->"),
-            "the fragment itself must stay unclosed"
-        );
-        assert!(!prefix.contains('\r'));
-        assert_eq!(crate::report_blocks::split_body(prefix).len(), 1);
-        assert!(
-            !prefix
-                .lines()
-                .skip(1)
-                .any(|l| l.starts_with("# ") || l.starts_with("## ")),
-            "a heading inside the contract would split it into two blocks"
-        );
-
-        // The seven research H1 names, in the order the skeleton lists them.
-        let mut last = 0;
-        for section in [
-            "结论 ——",
-            "待你定 ——",
-            "核心逻辑 ——",
-            "关键数据 ——",
-            "风险与证伪 ——",
-            "催化剂与跟踪 ——",
-            "来源与边界 ——",
-        ] {
-            let at = prefix
-                .find(section)
-                .unwrap_or_else(|| panic!("research contract must describe `{section}`"));
-            assert!(
-                at > last,
-                "section descriptions out of order at `{section}`"
-            );
-            last = at;
-        }
-        // Not the work-brief sections — a template that got both lists would
-        // carry two contradictory structure rules.
-        for foreign in ["概要 ——", "已完成 ——", "决策 ——", "Plan —— 预置计划"]
-        {
-            assert!(
-                !prefix.contains(foreign),
-                "research contract must not carry the work-brief section `{foreign}`"
-            );
-        }
-
-        // Shared preamble + the research genre rules this template exists for.
-        let body = TrackReportPayload::initial().body;
-        for shared in [
-            "不要把秘密写进来",
-            "这份报告自带的结构就是规则",
-            "写产出，不写过程",
-            "章节由下面这份清单定义",
-            "没有就省略这个 section",
-            "散文正文",
-            "不计入",
-        ] {
-            assert!(
-                prefix.contains(shared) && body.contains(shared),
-                "both contracts must carry `{shared}`"
-            );
-        }
-        for rule in [
-            "投研报告",
-            "论点先行",
-            "口径、数据日期和来源",
-            "1500—2500 字",
-            "```neige-block table``` 块",
-            "仅作研究，不构成交易建议",
-        ] {
-            assert!(
-                prefix.contains(rule),
-                "research contract must carry `{rule}`"
-            );
-        }
-        assert!(
-            !prefix.contains("优先用表格"),
-            "the 关键数据 table is a requirement, not a preference"
-        );
-    }
-
     /// #1635 S2b — the structural pin: today's default body is exactly the
     /// canonical work-brief header line, a newline, and the frozen v4 bytes.
     /// `default.md` is the single source; this holds it to
     /// `work_brief_header()` on one side and `legacy_initial_v4.md` (itself
-    /// sha-pinned below) on the other, so neither can drift alone and no
-    /// fragment can smuggle a second `-->`. Do not weaken.
+    /// sha-pinned below) on the other, so neither can drift alone. Do not
+    /// weaken.
     #[test]
     fn initial_body_is_header_line_plus_legacy_v4() {
         assert_eq!(
@@ -999,25 +713,9 @@ mod tests {
         );
     }
 
-    /// The module comment's claim, pinned: none of the fragments closes the
-    /// comment itself. The fragments still feed `report_contract_prefix`
-    /// (`default.md` is a frozen file, not fragment output); a `-->` inside
-    /// one would close a template's prose contract early and render its tail,
-    /// and nothing else checks the plan-note fragment.
-    #[test]
-    fn contract_fragments_stay_unclosed() {
-        for (name, fragment) in [
-            ("contract_rules", CONTRACT_WRITING_RULES),
-            ("section_rules", CONTRACT_SECTION_RULES),
-            ("plan_note", CONTRACT_PLAN_NOTE),
-            ("research_rules", CONTRACT_RESEARCH_RULES),
-        ] {
-            assert!(!fragment.contains("-->"), "{name} must stay unclosed");
-        }
-    }
-
     /// #1635 S2a — the bytes are pinned independently of `initial_body()`, so
-    /// a fragment edit that drifts BOTH sides in step still goes red here.
+    /// an edit that moves `default.md` and `legacy_initial_v4.md` in step
+    /// still goes red here.
     /// Length, no CR, and the sha256 printed by the generating command in the
     /// constant's doc comment.
     #[test]
