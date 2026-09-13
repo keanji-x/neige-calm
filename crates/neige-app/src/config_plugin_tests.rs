@@ -1,9 +1,10 @@
 use super::*;
+use crate::test_support::test_temp_dir;
 
 #[test]
 fn config_plugin_dirs_reach_child_argv() {
-    let path =
-        std::env::temp_dir().join(format!("neige-app-plugin-dirs-{}.toml", std::process::id()));
+    let tmp = test_temp_dir("plugin-dirs");
+    let path = tmp.join("config.toml");
     fs::write(
         &path,
         r#"
@@ -14,9 +15,7 @@ extra_args = ["--plugins-disabled", "example"]
 "#,
     )
     .expect("write config");
-    let result = AppConfig::load(Some(&path));
-    fs::remove_file(&path).expect("remove config");
-    let cfg = result.expect("load plugin directory config");
+    let cfg = AppConfig::load(Some(&path)).expect("load plugin directory config");
     assert_eq!(
         cfg.child.plugins_dir,
         Some(expand_tilde("~/neige second/plugins"))
@@ -44,14 +43,11 @@ extra_args = ["--plugins-disabled", "example"]
 
 #[test]
 fn config_omitted_plugin_dirs_leave_child_argv_unchanged() {
-    let path = std::env::temp_dir().join(format!(
-        "neige-app-no-plugin-dirs-{}.toml",
-        std::process::id()
-    ));
+    let tmp = test_temp_dir("no-plugin-dirs");
+    let path = tmp.join("config.toml");
     fs::write(&path, "[child]\ndata_dir = \"/tmp/neige-second/data\"\n").expect("write config");
-    let result = AppConfig::load(Some(&path));
-    fs::remove_file(&path).expect("remove config");
-    for cfg in [result.expect("load config"), AppConfig::starter(path)] {
+    let loaded = AppConfig::load(Some(&path)).expect("load config");
+    for cfg in [loaded, AppConfig::starter(path)] {
         assert!(cfg.child.plugins_dir.is_none());
         assert!(cfg.child.plugins_data_dir.is_none());
         let args = crate::calm_server_supervisor_config(&cfg).child_args;

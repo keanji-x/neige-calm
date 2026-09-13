@@ -661,9 +661,14 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: |
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          # Persistent hosts can have /tmp fixtures owned by another user.
-          # RUNNER_TEMP is job-scoped, writable, and cleaned by the runner.
-          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          # Persistent hosts can have /tmp fixtures owned by another user, so
+          # tests must not use the shared /tmp. RUNNER_TEMP is writable, but
+          # on this host the runner does NOT empty it between jobs (#1637:
+          # 19 393 leftover entries from ten days of runs were found in it on
+          # 2026-09-13). This job therefore owns a private subdirectory and
+          # removes it itself in the "remove job-private TMPDIR" step below.
+          TMPDIR="$(mktemp -d "$RUNNER_TEMP/rust-XXXXXXXX")"
+          echo "TMPDIR=$TMPDIR" >> "$GITHUB_ENV"
 
       # #903 — dropped the #634-era `free disk space` (jlumbroso) step: ubuntu-latest
       # then shipped ~14G free (link-stage SIGBUS/ENOSPC); as of 2026-07 runners boot
@@ -779,6 +784,20 @@ jobs:
           path: ${{ env.CARGO_TARGET_DIR }}/nextest/ci/junit.xml
           retention-days: 7
           if-no-files-found: ignore
+
+      # #1637 — the self-hosted runner does not empty RUNNER_TEMP between
+      # jobs, so remove the directory the prepare step allocated. Fail-closed
+      # on the path shape: only a `$RUNNER_TEMP/rust-*` directory is ever
+      # removed, so a missing or foreign TMPDIR cannot turn this into
+      # `rm -rf` of something else.
+      - name: remove job-private TMPDIR
+        if: always() && runner.environment == 'self-hosted'
+        run: |
+          case "${TMPDIR:-}" in
+            */..|*/../*) echo "refusing to remove TMPDIR='$TMPDIR' (contains ..)"; exit 1 ;;
+            "$RUNNER_TEMP"/rust-*) rm -rf -- "$TMPDIR" ;;
+            *) echo "refusing to remove TMPDIR='${TMPDIR:-}' (not under $RUNNER_TEMP/rust-)"; exit 1 ;;
+          esac
 
   worker-boundary:
     name: worker process isolation

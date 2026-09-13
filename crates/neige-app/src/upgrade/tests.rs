@@ -6,6 +6,7 @@ use crate::manifest::{
     DbMigrationPolicy, FileManifest, FileUnit, ReleaseManifest, ReleaseManifestV2, ReleaseUnit,
     ReleaseUnits, RestartPolicy, UnitName, WebUnit,
 };
+use crate::test_support::test_temp_dir;
 
 #[test]
 fn upgrade_stage_verifies_hash_and_copies_package() {
@@ -1323,13 +1324,4 @@ fn preflight(mode: &str) -> PreflightResult {
         required_action: "none".into(),
         verdict: None,
     }
-}
-
-fn test_temp_dir(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("neige-app-{name}-{}", std::process::id()));
-    if path.exists() {
-        fs::remove_dir_all(&path).expect("remove stale temp dir");
-    }
-    fs::create_dir_all(&path).expect("create temp dir");
-    path
 }

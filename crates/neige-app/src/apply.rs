@@ -1621,8 +1621,8 @@ mod tests {
     use super::*;
     use crate::manifest::{Compatibility, DbMigrationPolicy, FileManifest, FileUnit, ReleaseUnit};
     use crate::package::hash_and_measure_file;
+    use crate::test_support::test_temp_dir;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -1776,7 +1776,6 @@ mod tests {
             tmp.exists(),
             "discard removed more than the staged snapshot"
         );
-        let _ = fs::remove_dir_all(tmp);
     }
 
     #[tokio::test]
@@ -1796,7 +1795,6 @@ mod tests {
 
         assert_eq!(response.result, UpgradeResult::DryRun);
         assert_dry_run_left_no_state(&cfg);
-        let _ = fs::remove_dir_all(tmp);
     }
 
     #[tokio::test]
@@ -1823,7 +1821,6 @@ mod tests {
             error.message
         );
         assert_dry_run_left_no_state(&cfg);
-        let _ = fs::remove_dir_all(tmp);
     }
 
     /// #956 failing-first — the healthcheck deadline must cover the child's
@@ -2014,7 +2011,6 @@ mod tests {
             Duration::from_secs(900).saturating_sub(DEFAULT_BOOT_PLUGIN_BUDGET),
             "raising the key must raise the deadline by exactly that much"
         );
-        let _ = fs::remove_dir_all(tmp);
     }
 
     /// #954 T13 — stop-grace precedence chain, mirroring the start-timeout
@@ -2262,19 +2258,5 @@ mod tests {
             fs::read_to_string(sqlite_sidecar_path(&db, "shm")).expect("read shm"),
             "shm-v1"
         );
-    }
-
-    fn test_temp_dir(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock before Unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "neige-app-apply-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).expect("create temp dir");
-        path
     }
 }

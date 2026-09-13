@@ -24,9 +24,22 @@ fn replay_survives_stdout_pipe_close() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
 
+    // #1637 — the replay child owns an `AppState` whose `TempDir`s
+    // (`neige-codex-homes-stub-*`, `neige-calm-test-workspaces-*`) can never
+    // unwind: the only way this test ends the child is `ChildGuard`'s
+    // SIGKILL. Point the child's `TMPDIR` at a directory this test owns so
+    // those leftovers vanish with it. Declared BEFORE `child` on purpose:
+    // locals drop in reverse order, so the guard kills and reaps the child
+    // first and only then is `scratch` removed.
+    let scratch = tempfile::Builder::new()
+        .prefix("neige-replay-stdout-close-")
+        .tempdir()
+        .expect("scratch TMPDIR for the replay child");
+
     let mut child = ChildGuard(
         Command::new(env!("CARGO_BIN_EXE_replay"))
             .current_dir(workspace_root)
+            .env("TMPDIR", scratch.path())
             .args([
                 "--serve",
                 "--file",

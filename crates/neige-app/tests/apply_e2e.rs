@@ -13,7 +13,8 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn system_install_bakes_child_process_path_into_unit() -> anyhow::Result<()> {
-    let root = test_root("install-unit-path")?;
+    let tmp = test_root("install-unit-path")?;
+    let root = tmp.path();
     let fake_bin = root.join("fake-bin");
     let config_path = root.join("config.toml");
     let unit_path = root.join("neige-app.service");
@@ -89,13 +90,13 @@ bin = "/usr/local/bin/neige-app"
         );
     }
 
-    fs::remove_dir_all(root)?;
     Ok(())
 }
 
 #[test]
 fn system_unit_prints_clean_unit_to_stdout() -> anyhow::Result<()> {
-    let root = test_root("system-unit-clean-stdout")?;
+    let tmp = test_root("system-unit-clean-stdout")?;
+    let root = tmp.path();
     let config_path = root.join("config.toml");
     let data_dir = root.join("data");
     fs::create_dir_all(&data_dir)?;
@@ -137,12 +138,12 @@ data_dir = "{data_dir}"
         "expected config info log on stderr; stderr:\n{stderr}"
     );
 
-    fs::remove_dir_all(root)?;
     Ok(())
 }
 
 struct Harness {
-    root: PathBuf,
+    /// Dropped after the explicit `Drop` below has killed the children.
+    root: tempfile::TempDir,
     data_dir: PathBuf,
     release_root: PathBuf,
     admin: SocketAddr,
@@ -164,7 +165,6 @@ impl Drop for Harness {
             let _ = orphan.kill();
             let _ = orphan.wait();
         }
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -589,7 +589,7 @@ fn apply_rollback_then_rollback_fails() -> anyhow::Result<()> {
 #[ignore = "builds + binds sockets and spawns neige-app; blocked by the Codex sandbox"]
 fn apply_v2_from_git_source_triggers_v2_verdict() -> anyhow::Result<()> {
     let mut h = Harness::start("git-v2", "0.1.0")?;
-    let source = h.root.join("source-repo");
+    let source = h.root.path().join("source-repo");
     write_v2_source_tree(&source, "0.2.0")?;
     init_git_repo(&source)?;
 
@@ -643,12 +643,9 @@ impl Harness {
         initial_healthy: bool,
         orphan_mcp_holder: bool,
     ) -> anyhow::Result<(Self, u32)> {
-        let root =
-            std::env::temp_dir().join(format!("neige-app-apply-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root)?;
-        let data_dir = root.join("data");
-        let release_root = root.join("releases");
+        let root = test_root(&format!("apply-{name}"))?;
+        let data_dir = root.path().join("data");
+        let release_root = root.path().join("releases");
         fs::create_dir_all(&data_dir)?;
         fs::create_dir_all(&release_root)?;
         let admin = free_addr()?;
@@ -657,7 +654,7 @@ impl Harness {
         let db = data_dir.join("calm.db");
         fs::write(&db, "initial-db")?;
 
-        let old = root.join("old-release");
+        let old = root.path().join("old-release");
         fs::create_dir_all(old.join("bin"))?;
         write_calm_server(
             &old.join("bin").join("calm-server"),
@@ -686,7 +683,7 @@ impl Harness {
             [("calmServer", initial_version)],
         )?;
 
-        let config = root.join("config.toml");
+        let config = root.path().join("config.toml");
         fs::write(
             &config,
             format!(
@@ -753,14 +750,14 @@ build_args = ["true"]
                 calm = calm,
                 data_dir = data_dir.display(),
                 db = db.display(),
-                unit = root.join("unit.service").display(),
+                unit = root.path().join("unit.service").display(),
                 neige_bin = locate_neige_app().display(),
-                checkout = root.join("checkout").display(),
+                checkout = root.path().join("checkout").display(),
             ),
         )?;
 
         let mut orphan = if orphan_mcp_holder {
-            let script = root.join("orphan-mcp.py");
+            let script = root.path().join("orphan-mcp.py");
             write_executable(&script, ORPHAN_MCP_SCRIPT)?;
             Some(
                 Command::new(&script)
@@ -879,7 +876,7 @@ build_args = ["true"]
         healthy: bool,
         calm_db_policy: &str,
     ) -> anyhow::Result<PathBuf> {
-        let dir = self.root.join(release_id);
+        let dir = self.root.path().join(release_id);
         fs::create_dir_all(dir.join("bin"))?;
         let calm_version = changed
             .iter()
@@ -1397,17 +1394,13 @@ fn make_symlink(target: &Path, link: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn test_root(name: &str) -> anyhow::Result<PathBuf> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_nanos();
-    let path =
-        std::env::temp_dir().join(format!("neige-app-{name}-{}-{nanos}", std::process::id()));
-    if path.exists() {
-        fs::remove_dir_all(&path)?;
-    }
-    fs::create_dir_all(&path)?;
-    Ok(path)
+/// `$TMPDIR/neige-app-<name>-<random>/`, removed when the guard drops
+/// (#1637). This is a bin-only crate, so the integration test cannot share
+/// `src/test_support.rs`; the guard type is the same `tempfile::TempDir`.
+fn test_root(name: &str) -> anyhow::Result<tempfile::TempDir> {
+    Ok(tempfile::Builder::new()
+        .prefix(&format!("neige-app-{name}-"))
+        .tempdir()?)
 }
 
 fn locate_neige_app() -> PathBuf {

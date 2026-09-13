@@ -154,6 +154,7 @@ fn looks_like_semver(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::test_temp_dir;
 
     #[test]
     fn parse_version_output_handles_current_clap_format() {
@@ -267,14 +268,5 @@ mod tests {
             permissions.set_mode(0o755);
             fs::set_permissions(path, permissions).expect("chmod");
         }
-    }
-
-    fn test_temp_dir(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("neige-app-{name}-{}", std::process::id()));
-        if path.exists() {
-            fs::remove_dir_all(&path).expect("remove stale temp dir");
-        }
-        fs::create_dir_all(&path).expect("create temp dir");
-        path
     }
 }

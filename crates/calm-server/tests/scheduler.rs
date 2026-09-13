@@ -691,11 +691,22 @@ async fn seed_codex_worker_card_with_terminal(
     (card_id, runtime_id, result)
 }
 
-async fn seed_held_workspace_lease(boot: &Boot, card_id: &str, label: &str) -> String {
+/// Seed a `held` workspace lease whose `path` exists on disk. The caller
+/// keeps the returned guard alive for the test (#1637: the directory used to
+/// be created with `create_dir_all` and never removed, one leak per test per
+/// CI run); the `neige-timeout-lease-<label>-` prefix is kept.
+async fn seed_held_workspace_lease(
+    boot: &Boot,
+    card_id: &str,
+    label: &str,
+) -> (String, tempfile::TempDir) {
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     let lease_id = format!("lease-timeout-{label}-{}", new_id());
-    let path = std::env::temp_dir().join(format!("neige-timeout-lease-{label}-{}", new_id()));
-    std::fs::create_dir_all(&path).expect("create lease dir");
+    let lease_dir = tempfile::Builder::new()
+        .prefix(&format!("neige-timeout-lease-{label}-"))
+        .tempdir()
+        .expect("create lease dir");
+    let path = lease_dir.path();
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
@@ -713,7 +724,7 @@ async fn seed_held_workspace_lease(boot: &Boot, card_id: &str, label: &str) -> S
     .execute(&pool)
     .await
     .expect("insert held workspace lease");
-    lease_id
+    (lease_id, lease_dir)
 }
 
 async fn seed_active_codex_turn(boot: &Boot, runtime_id: &str, thread_id: &str, turn_id: &str) {
@@ -2314,7 +2325,7 @@ async fn sweep_running_codex_past_liveness_deadline_fails_and_releases_lease_row
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired").await;
-    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired").await;
+    let (lease_id, _lease_dir) = seed_held_workspace_lease(&boot, &card_id, "expired").await;
     let lease_path = workspace_lease_path(&boot, &lease_id).await;
 
     let mut task = plan_task(&boot.track_id, "expired", TaskKind::Codex, &[]);
@@ -2359,7 +2370,7 @@ async fn sweep_running_codex_past_liveness_deadline_interrupts_shared_turn() {
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired-turn").await;
-    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-turn").await;
+    let (lease_id, _lease_dir) = seed_held_workspace_lease(&boot, &card_id, "expired-turn").await;
     let thread_id = "thread-expired-turn";
     let turn_id = "turn-expired-turn";
     seed_active_codex_turn(&boot, &runtime_id, thread_id, turn_id).await;
@@ -2395,7 +2406,7 @@ async fn sweep_running_codex_timeout_cleanup_releases_row_without_touching_lease
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired-retry").await;
-    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-retry").await;
+    let (lease_id, _lease_dir) = seed_held_workspace_lease(&boot, &card_id, "expired-retry").await;
     let thread_id = "thread-expired-retry";
     let turn_id = "turn-expired-retry";
     seed_active_codex_turn(&boot, &runtime_id, thread_id, turn_id).await;
@@ -2466,7 +2477,8 @@ async fn sweep_running_codex_timeout_cleanup_retry_treats_missing_terminal_as_re
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "expired-missing-terminal").await;
-    let lease_id = seed_held_workspace_lease(&boot, &card_id, "expired-missing-terminal").await;
+    let (lease_id, _lease_dir) =
+        seed_held_workspace_lease(&boot, &card_id, "expired-missing-terminal").await;
 
     let mut task = plan_task(
         &boot.track_id,
@@ -2543,7 +2555,7 @@ async fn sweep_running_codex_within_liveness_deadline_is_untouched() {
     set_lifecycle(&boot, TrackLifecycle::Working).await;
     let (card_id, runtime_id, _terminal_id) =
         seed_codex_worker_card_with_terminal(&boot, "fresh").await;
-    let lease_id = seed_held_workspace_lease(&boot, &card_id, "fresh").await;
+    let (lease_id, _lease_dir) = seed_held_workspace_lease(&boot, &card_id, "fresh").await;
 
     let mut task = plan_task(&boot.track_id, "fresh", TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;

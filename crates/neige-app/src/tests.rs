@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::test_temp_dir;
 
 #[test]
 fn systemd_unit_points_at_system_serve() {
@@ -597,15 +598,6 @@ fn server_activation_next_steps_use_system_restart_for_system_scope() {
             .any(|step| step == "systemctl restart neige-app")
     );
     assert!(!steps.iter().any(|step| step.contains("--user")));
-}
-
-fn test_temp_dir(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("neige-app-{name}-{}", std::process::id()));
-    if path.exists() {
-        std::fs::remove_dir_all(&path).expect("remove stale temp dir");
-    }
-    std::fs::create_dir_all(&path).expect("create temp dir");
-    path
 }
 
 #[test]
