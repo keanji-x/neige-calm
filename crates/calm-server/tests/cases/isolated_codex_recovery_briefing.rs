@@ -33,8 +33,8 @@ async fn queued_settlement(fx: &Fixture, handle: &PlannerHarness) {
 }
 
 /// #1625 P2 — the segments the drain wrote to its projection row, read back
-/// from `harness_items` (where `issued_input_segments` used to be read from
-/// the snapshot).
+/// from the transcript table (where `issued_input_segments` used to be read
+/// from the snapshot).
 async fn projected_segments(fx: &Fixture) -> Vec<calm_server::model::HarnessInputSegment> {
     calm_server::db::RepoRead::harness_item_list_by_card(
         fx.boot.repo.as_ref(),

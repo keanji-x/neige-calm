@@ -741,12 +741,12 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
     ) -> Result<i64>;
     /// #1625 P2 — see `calm_truth::db::RepoOutOfDomain` for the projection
     /// key these three share.
-    async fn harness_item_projection_id(
+    async fn transcript_projection_id(
         &self,
         card_id: &str,
         client_id: &str,
     ) -> Result<Option<i64>>;
-    async fn harness_item_projection_upgrade(
+    async fn transcript_projection_upgrade(
         &self,
         card_id: &str,
         client_id: &str,
@@ -754,7 +754,7 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
         item_uuid: &str,
         params: &str,
     ) -> Result<Option<i64>>;
-    async fn harness_item_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64>;
+    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64>;
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin>;
     async fn plugin_update_enabled(&self, id: &str, enabled: bool) -> Result<Plugin>;
     async fn plugin_update_user_config(
@@ -887,16 +887,16 @@ where
         .await
         .map_err(Into::into)
     }
-    async fn harness_item_projection_id(
+    async fn transcript_projection_id(
         &self,
         card_id: &str,
         client_id: &str,
     ) -> Result<Option<i64>> {
-        calm_truth::db::RepoOutOfDomain::harness_item_projection_id(self, card_id, client_id)
+        calm_truth::db::RepoOutOfDomain::transcript_projection_id(self, card_id, client_id)
             .await
             .map_err(Into::into)
     }
-    async fn harness_item_projection_upgrade(
+    async fn transcript_projection_upgrade(
         &self,
         card_id: &str,
         client_id: &str,
@@ -904,14 +904,14 @@ where
         item_uuid: &str,
         params: &str,
     ) -> Result<Option<i64>> {
-        calm_truth::db::RepoOutOfDomain::harness_item_projection_upgrade(
+        calm_truth::db::RepoOutOfDomain::transcript_projection_upgrade(
             self, card_id, client_id, turn_id, item_uuid, params,
         )
         .await
         .map_err(Into::into)
     }
-    async fn harness_item_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64> {
-        calm_truth::db::RepoOutOfDomain::harness_item_projection_delete(self, card_id, client_id)
+    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64> {
+        calm_truth::db::RepoOutOfDomain::transcript_projection_delete(self, card_id, client_id)
             .await
             .map_err(Into::into)
     }

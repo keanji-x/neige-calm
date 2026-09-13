@@ -276,7 +276,7 @@ pub struct HarnessSnapshot {
     pub issued_turn_head: Option<String>,
     // `issued_input_segments` lived here from #1505 S6 to #1625 P2. The
     // segments of the batch in flight are now the `input_segments` column of
-    // the projection row the drain writes to `harness_items`, which is
+    // the projection row the drain writes to the transcript table, which is
     // durable on its own; a snapshot on disk that still carries the old key
     // is read without it (no `deny_unknown_fields`, see `token_usage`).
     #[serde(default)]
@@ -883,7 +883,7 @@ mod tests {
 
     /// #1625 P2 — a snapshot written between #1505 S6 and this slice carries
     /// an `issued_input_segments` key. The field is gone (the batch in flight
-    /// is now the projection row in `harness_items`), and such a snapshot
+    /// is now the projection row in the transcript table), and such a snapshot
     /// must still load: the key is ignored, nothing else is disturbed.
     #[test]
     fn a_snapshot_with_the_retired_issued_input_segments_key_still_loads() {

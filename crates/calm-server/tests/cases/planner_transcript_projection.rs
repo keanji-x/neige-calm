@@ -38,7 +38,8 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// See `planner_harness_items_persist.rs` for why every frame must carry it.
+/// See the `SEED_THREAD_ID` note in the sibling persist suite for why every
+/// frame must carry it.
 const SEED_THREAD_ID: &str = "thread-items-projection";
 
 struct Boot {
@@ -92,7 +93,7 @@ async fn boot(pending: Vec<QueueEntry>, fail_turn_start: bool) -> Boot {
     let track_area_cache = TrackAreaCache::new();
     track_area_cache.insert(track.id.clone(), area.id);
 
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, pending);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(SEED_THREAD_ID.to_string());
@@ -100,7 +101,7 @@ async fn boot(pending: Vec<QueueEntry>, fail_turn_start: bool) -> Boot {
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -124,7 +125,7 @@ async fn boot(pending: Vec<QueueEntry>, fail_turn_start: bool) -> Boot {
     }
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id,
+        worker_session_id,
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(SEED_THREAD_ID.to_string()),

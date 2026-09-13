@@ -20,8 +20,8 @@ mod planner_harness_dual_run_filter;
 mod planner_harness_fsm;
 #[path = "cases/planner_harness_items_persist.rs"]
 mod planner_harness_items_persist;
-#[path = "cases/planner_harness_items_projection.rs"]
-mod planner_harness_items_projection;
+#[path = "cases/planner_transcript_projection.rs"]
+mod planner_transcript_projection;
 #[path = "cases/planner_harness_items_rest.rs"]
 mod planner_harness_items_rest;
 #[path = "cases/planner_harness_mcp_tool_render_persist.rs"]

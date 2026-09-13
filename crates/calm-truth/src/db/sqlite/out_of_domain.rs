@@ -454,7 +454,7 @@ impl RepoOutOfDomain for SqlxRepo {
 
     // ---- #1625 P2 — projection rows (see the trait for the key) ----------
 
-    async fn harness_item_projection_id(
+    async fn transcript_projection_id(
         &self,
         card_id: &str,
         client_id: &str,
@@ -472,7 +472,7 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(row.map(|row| row.get::<i64, _>("id")))
     }
 
-    async fn harness_item_projection_upgrade(
+    async fn transcript_projection_upgrade(
         &self,
         card_id: &str,
         client_id: &str,
@@ -509,7 +509,7 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(row.map(|row| row.get::<i64, _>("id")))
     }
 
-    async fn harness_item_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64> {
+    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         let done = sqlx::query(
             r#"DELETE FROM harness_items

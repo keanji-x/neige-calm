@@ -1752,7 +1752,8 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             //
             // Codex announces the same item twice, `item/started` then
             // `item/completed`, and only a completed `userMessage` renders
-            // (`fe/core/domain/conversation.ts`, `harnessItemToTurns`). The
+            // (`fe/core/domain/conversation.ts` reads user messages from
+            // completed rows alone). The
             // projection is already a completed row, so a started echo that
             // names it is not stored at all: stored, it would stand beside
             // the projection as a row the frontend pairs with nothing — the
@@ -1778,7 +1779,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                         Some(codex_item_id) => {
                             inner
                                 .repo
-                                .harness_item_projection_upgrade(
+                                .transcript_projection_upgrade(
                                     inner.card_id.as_str(),
                                     client_id,
                                     turn_id.as_deref(),
@@ -1808,12 +1809,12 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 (Some(client_id), "item/started")
                     if inner
                         .repo
-                        .harness_item_projection_id(inner.card_id.as_str(), client_id)
+                        .transcript_projection_id(inner.card_id.as_str(), client_id)
                         .await?
                         .is_some() =>
                 {
                     tracing::debug!(
-                        runtime_id = %inner.worker_session_id,
+                        worker_session_id = %inner.worker_session_id,
                         card_id = %inner.card_id,
                         client_id,
                         "planner harness skipping item/started echo of a projected user message"
@@ -2052,8 +2053,8 @@ fn is_user_message_type(item_type: Option<&str>) -> bool {
     matches!(item_type, Some("userMessage" | "user_message"))
 }
 
-/// One `harness_items` row for a codex `item/*` notification, exactly as
-/// this file inserted it before #1625 P2. `input_segments` is always NULL
+/// One transcript row for a codex `item/*` notification, exactly as this
+/// file inserted it before #1625 P2. `input_segments` is always NULL
 /// here: the segments of a batch live on the projection row the drain
 /// wrote, and an echo that reaches this insert is one no projection claims.
 async fn insert_item_row(
@@ -2120,7 +2121,7 @@ async fn emit_item_added(
 ///
 /// Until this row exists the person's own sentence is readable from nowhere
 /// but the tab that sent it: the queue read (`GET /planner/run`) stops
-/// listing an entry the moment it drains, and `harness_items` used to gain a
+/// listing an entry the moment it drains, and the transcript used to gain a
 /// row only when codex echoed the turn back. Reload, or a second device, saw
 /// an empty thread beside a `Working` dot for as long as codex took — or for
 /// ever, when the turn never came back.
@@ -2157,11 +2158,11 @@ async fn write_projection_row(
 ) -> Result<i64> {
     let stale = inner
         .repo
-        .harness_item_projection_delete(inner.card_id.as_str(), client_id)
+        .transcript_projection_delete(inner.card_id.as_str(), client_id)
         .await?;
     if stale > 0 {
         tracing::debug!(
-            runtime_id = %inner.worker_session_id,
+            worker_session_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             client_id,
             stale,
@@ -3395,11 +3396,11 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             // this batch replaces the row (`write_projection_row`).
             if let Err(delete_error) = inner
                 .repo
-                .harness_item_projection_delete(inner.card_id.as_str(), client_id.as_str())
+                .transcript_projection_delete(inner.card_id.as_str(), client_id.as_str())
                 .await
             {
                 tracing::warn!(
-                    runtime_id = %inner.worker_session_id,
+                    worker_session_id = %inner.worker_session_id,
                     card_id = %inner.card_id,
                     client_id = %client_id,
                     error = %delete_error,

@@ -53,10 +53,9 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   }, []);
   const saveForm = useCallback((form: NewTrackFormState) => { store.update(areaId, { form }); }, [areaId, store]);
 
-  const openCreated = (trackId: string, request: TrackCreationRequest) => {
+  const openCreated = (trackId: string) => {
     store.forget(areaId);
-    go({ name: 'track', trackId, openPlanner: true,
-      ...(request.body.first_message === undefined ? {} : { openPlannerMessage: request.body.first_message }) });
+    go({ name: 'track', trackId, openPlanner: true });
   };
 
   const submit = (draft: NewTrackDraft, authorization?: Readonly<{ folder_id: number; area_id: string }>, replacementKey?: string) => {
@@ -91,7 +90,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
       // A late acknowledgement belongs to its draft; it never steals the
       // navigation the reader made while waiting. Returning offers Open track.
       store.update(areaId, { createdTrackId: track.id });
-      if (liveRef.current) openCreated(track.id, request);
+      if (liveRef.current) openCreated(track.id);
     }).catch((failure: unknown) => {
       const conflict = folderConflictOf(failure);
       if (conflict !== null) {
@@ -157,7 +156,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     templatesError={templates.error}
     recipes={recipes.recipes}
     errorAction={createdTrackId !== null && session.request !== null
-      ? { label: 'Open track', onClick: () => { if (session.request !== null) openCreated(createdTrackId, session.request); } }
+      ? { label: 'Open track', onClick: () => { openCreated(createdTrackId); } }
       : folderConflict !== null
         ? { label: `Reuse directory in ${session.area.name}`, isApplicable: (draft) => draft.cwd === folderConflict.cwd, onClick: recoverFolderConflict }
         : session.canRetryAsNewTrack ? { label: 'Start as a new track', onClick: retryAsNewTrack } : undefined}

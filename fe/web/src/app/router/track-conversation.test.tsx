@@ -1404,28 +1404,11 @@ describe('track conversations', () => {
   });
 
   /*
-   * ── #1449 缺陷 B — the sentence that started the thread ────────────────────
-   *
-   * The create POST both mints the card and delivers the message, and for a
-   * long time this route said in a comment that this was enough: "by the time
-   * it answers the message is already persisted and the first item fetch on the
-   * new card carries it". It is not. A transcript is read from one persisted
-   * table (`crates/calm-truth/src/db/sqlite/read.rs`), and rows land in it
-   * only when codex echoes the turn back
-   * (`crates/calm-server/src/harness/run_loop.rs`). Between Enter and that echo
-   * — seconds, or forever if the agent is down — the drawer mounted on a card
-   * with zero turns, so the reader's own sentence was nowhere and the empty
-   * state painted beside the live `Working` dot.
-   *
-   * The fixture is that window, stated exactly: the item read answers `[]`, as
-   * the real kernel does.
-   */
-  /*
    * ── #1625 P2 (#1475) — the first sentence is a server row, not a slot ─────
    *
    * #1449 kept the create's sentence in a tab-local slot until codex echoed
    * it; a reload or a second device saw nothing. The kernel now writes the
-   * sentence to `harness_items` when the queue drains, so the transcript read
+   * sentence to the transcript when the queue drains, so the transcript read
    * serves it back like any other row, and there is no slot. What this pins:
    * the row renders as the reader's own line, once; codex's echo upgrades the
    * same row (same `id`, now with a turn and codex's item id) and it is still
@@ -1944,14 +1927,6 @@ describe('registry write-through', () => {
   });
 });
 
-/*
- * ── The create placeholder's own lifetime (#1449 review round 4) ─────────────
- *
- * Driven through the real store, the real provider and the real QueryClient,
- * with the route absent — the same rig the registry block above uses, for the
- * same reason: what is under test is the slot's lifetime, and a router around
- * it would only make the sequencing harder to state.
- */
 it.each(['429', 'transport'])('[F5] does not retire a %s failure when a stale read reveals an old equal message', async (mode) => {
   const text = 'repeat this instruction';
   const first = harnessMessage(1, 'userMessage', { content: [{ text: 'Earlier different instruction' }] });

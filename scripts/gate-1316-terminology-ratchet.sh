@@ -440,6 +440,46 @@
 #   later commit needs any of these cells higher, that is a NEW raise needing
 #   its own argument; it does not inherit this one.
 #
+#   A THIRD raise, taken ONCE by #1625 P2 (the drain-time projection of a
+#   user message). Same shape: PER-FILE COUNTS, a closed list, not a
+#   criterion. Counts cannot be re-spent. The "before" column is measured
+#   against `1a1b5059` (`origin/main` once P1 had merged — P2 is rebased on
+#   it, so P1's raise above is part of this base; P1's own commit reworded
+#   one prose line in `run_loop.rs`, which is why that file measures 13 on
+#   the base rather than the 14 its paragraph names):
+#
+#     crates/calm-server/src/harness/run_loop.rs                       13 ->  14
+#     crates/calm-server/src/harness/run_loop/completed_commit_tests.rs 0 ->   1
+#     crates/calm-server/tests/cases/isolated_codex_recovery_briefing.rs
+#                                                                     0 ->   1
+#     crates/calm-server/tests/cases/planner_harness_items_persist.rs 17 ->  18
+#     crates/calm-server/tests/cases/planner_transcript_projection.rs  0 ->   1
+#     crates/calm-truth/src/db/sqlite/out_of_domain.rs                 9 ->  13
+#                                                          net      268 -> 277
+#
+#   Every one of the 9 is a call to a Rust symbol that ALREADY exists or the
+#   real SQLite object name, and not one is prose or a name this slice coined:
+#     * `run_loop.rs` +1: a second `.harness_item_insert(` call, the one that
+#       writes the projection row at drain (`write_projection_row`); the echo
+#       path's own call moved into `insert_item_row` and nets zero.
+#     * the four `harness_item_list_by_card(` calls (+1 each in
+#       `completed_commit_tests.rs`, `isolated_codex_recovery_briefing.rs`,
+#       `planner_harness_items_persist.rs`, `planner_transcript_projection.rs`)
+#       read the projection row back where `issued_input_segments` used to be
+#       read from the snapshot; the repo trait has no reader of this table
+#       spelled any other way.
+#     * `out_of_domain.rs` +4: the table name `harness_items` inside the three
+#       new SQL statements (`SELECT`, `UPDATE` with its key subquery, `DELETE`)
+#       behind `transcript_projection_{id,upgrade,delete}` — the SQL names the
+#       table the row lives in, and there is no other spelling SQLite accepts.
+#   Everything this slice could name was named in the target vocabulary and
+#   cost zero: the three new repo methods are `transcript_projection_*`, the
+#   new test module is `planner_transcript_projection`, the three new tracing
+#   sites key on `worker_session_id`, and every new sentence of prose says
+#   "transcript row" / "the transcript table". The commit message lists the
+#   nine constituent lines path:line + content. If a later commit needs any
+#   of these cells higher, that is a NEW raise needing its own argument.
+#
 #   Left open on purpose: the harness registry is keyed by `runtime_id`, i.e.
 #   `runtime` / `harness` / `worker_session` are three names for layers of one
 #   execution concept. That is a design question, not a rename, and #1316

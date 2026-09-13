@@ -1026,8 +1026,8 @@ pub trait RepoOutOfDomain: RepoRead {
 
     // ---- #1625 P2 — the drain-time projection of a user message ---------
     //
-    // A projection row is a `harness_items` row the KERNEL wrote at queue
-    // drain, before codex echoed anything: `method = 'item/completed'`,
+    // A projection row is a transcript row the KERNEL wrote at queue drain,
+    // before codex echoed anything: `method = 'item/completed'`,
     // `item_type = 'userMessage'`, `turn_id IS NULL`, and `item_uuid` holding
     // the CLIENT id the drain sent codex as `clientUserMessageId`. That
     // three-column shape — completed, no turn, uuid equal to a client id — is
@@ -1041,7 +1041,7 @@ pub trait RepoOutOfDomain: RepoRead {
     /// The `id` of the projection row for `client_id` on `card_id`, if one
     /// stands. Read by the echo path to decide whether an `item/started`
     /// echo is one this card has already rendered.
-    async fn harness_item_projection_id(
+    async fn transcript_projection_id(
         &self,
         card_id: &str,
         client_id: &str,
@@ -1053,7 +1053,7 @@ pub trait RepoOutOfDomain: RepoRead {
     /// and codex's echo cannot improve on it. Returns the row's `id`, or
     /// `None` when no projection stands (the echo is then an ordinary insert
     /// for the caller to make).
-    async fn harness_item_projection_upgrade(
+    async fn transcript_projection_upgrade(
         &self,
         card_id: &str,
         client_id: &str,
@@ -1065,7 +1065,7 @@ pub trait RepoOutOfDomain: RepoRead {
     /// Remove the projection row for `client_id` — the `turn/start` it stood
     /// for did not go out and the batch went back on the queue. Returns how
     /// many rows went (0 or 1).
-    async fn harness_item_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64>;
+    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64>;
 
     // ---- worker message-flow capture (#695 PR2) ------------------------
     /// Append one captured worker-flow item, returning the new row id.

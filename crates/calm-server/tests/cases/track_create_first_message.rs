@@ -725,12 +725,6 @@ impl Boot {
     /// How many **persisted** runtime snapshots still hold `needle` on their
     /// `pending_queue`, i.e. still owe it to an agent.
     ///
-    /// The queue specifically, not the whole snapshot: a runtime that has
-    /// already issued the turn keeps the same text in `issued_input_segments`
-    /// until its NEXT issuance clears it, and that copy is evidence of a
-    /// delivery, not a pending debt. A substring match over the whole snapshot
-    /// would count it.
-    ///
     /// Since S2 the transfer is a move, so this counts owners rather than
     /// copies: a retired row stops holding what was taken off it, and a live
     /// successor holds it until it drains and re-persists.

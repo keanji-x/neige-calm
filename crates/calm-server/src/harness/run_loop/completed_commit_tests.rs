@@ -161,7 +161,7 @@ impl Fixture {
     }
 
     /// #1625 P2 — the segments the last drain wrote to its projection row
-    /// (`write_projection_row`), read back from `harness_items`. This is
+    /// (`write_projection_row`), read back from the transcript table. This is
     /// where `issued_input_segments` used to be read from the snapshot.
     pub(super) async fn projected_segments(&self) -> Vec<HarnessInputSegment> {
         let rows = self
