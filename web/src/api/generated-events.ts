@@ -743,8 +743,11 @@ summary: string,
  * splitting at H1 (`^# `) headings; the kernel reads that structure
  * only to check the contract header once at the persist funnel
  * (#1635 D2) and to answer `report_startup_read_required` (#1635 D3:
- * unwritten iff block 0 is only comments and every later block is a
- * declared `# <h1>`).
+ * unwritten iff `summary` is empty and either the body carries a
+ * header, block 0 is only HTML comments and every later block is a
+ * bare declared `# <h1>`, or it carries no header and is byte-equal to
+ * the frozen pre-header body; a body the funnel check rejects reads as
+ * written).
  */
 body: string, 
 /**

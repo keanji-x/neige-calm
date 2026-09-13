@@ -68,8 +68,8 @@ pub struct TodayLaunchpadResolved {
     pub track_id: String,
     /// Whether this report holds content **right now** beyond the empty
     /// skeleton (#1635 D3): a non-empty `summary`, or a `body` whose block 0
-    /// is more than the contract comments or whose later blocks are more
-    /// than bare `# <h1>`s the contract header declares — or, for a
+    /// is more than HTML comments or whose later blocks are more than bare
+    /// `# <h1>`s the contract header declares — or, for a
     /// pre-header body, any byte off the frozen `LEGACY_INITIAL_V4_BODY`.
     ///
     /// It is NOT "has anyone ever written it": no history is consulted, so
@@ -86,7 +86,7 @@ pub struct TodayLaunchpadResolved {
     ///   history.** The name says exactly that, and the name is the contract:
     ///   it is `has_noninitial_content`, not `has_ever_been_written`. Restoring
     ///   `summary` and `body` to the empty skeleton (an empty summary, only
-    ///   the contract comments, bare declared H1s) flips it back to `false`,
+    ///   HTML comments in block 0, bare declared H1s) flips it back to `false`,
     ///   whatever happened in between — no history is consulted, so none can
     ///   be reported.
     /// * It therefore also answers "has *anyone* written it", not "has today's
@@ -373,12 +373,14 @@ pub struct TodayLaunchpadReportReset {
 /// prose contract, four empty H1s) — around 2.8 kB that no client can
 /// reproduce without copying kernel-owned text. A client that sends less
 /// gets a 200, an empty state, and a report that has lost the maintenance
-/// contract the agent reads; one that sends a near copy with a stray byte in
-/// a heading gets a 200, an edited report, and an empty state that never
+/// contract the agent reads; one that sends content beyond the empty
+/// skeleton gets a 200, an edited report, and an empty state that never
 /// appears — either way the reset fails *silently*. Worse, the two contract
 /// fragments are private and **unclosed** on purpose (`track_report.rs`), so a
-/// client reassembling them wrongly ships an unterminated HTML comment that
-/// swallows the whole document with no diagnostic.
+/// client reassembling them wrongly ships an unterminated HTML comment —
+/// rejected with 400 by the persist funnel when line 1 is the header line
+/// (#1635 S2c), and rendered as a blank document with no diagnostic when it
+/// is not (a headerless body is not scanned).
 ///
 /// So the kernel calls `TrackReportPayload::initial()` itself. Nothing about
 /// the canonical content crosses the wire in either direction.

@@ -219,14 +219,14 @@ Running is ambience and lives in the panel.
   Three things about it are decisions rather than details:
 
   * **It sends no document, and must never grow a parameter for one.** The
-    empty-state predicate is a byte-for-byte comparison against
-    `TrackReportPayload::initial()` (or the frozen pre-header body), ~2.8 kB
-    of kernel-owned text: the default body file
+    empty-state predicate is structural (#1635 D3), but the canonical empty
+    document is ~2.8 kB of kernel-owned text: the default body file
     `crates/calm-types/src/report/default.md` (a contract header line, the
     prose contract, four empty H1s). A client posting its own
-    copy to `POST /api/tracks/{id}/report` would be mirror code, and one byte
-    out fails *silently*: a 200, a rewritten report, and an empty state that
-    never appears.
+    copy to `POST /api/tracks/{id}/report` would be mirror code, and a wrong
+    copy fails *silently*: a skeletal body flips the bit and drops the
+    maintenance contract; content beyond the skeleton leaves a 200, a
+    rewritten report, and an empty state that never appears.
   * **It is destructive**, so it goes through `ConfirmDialog` and
     `useDeleteConfirm`, the same shape and the same failure surface as the
     track delete on this route. The copy lives in `ui/confirm-dialog/copy.ts`

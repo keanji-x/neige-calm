@@ -225,7 +225,7 @@ fn planner_next_note(current: TrackLifecycle, target: TrackLifecycle) -> &'stati
 }
 
 /// #1110 S3 — false only for an unwritten report (#1635 D3: empty summary,
-/// block 0 nothing but the contract comments, every later block a bare
+/// block 0 nothing but HTML comments, every later block a bare
 /// `# <h1>` the header declares — or the frozen pre-header body byte for
 /// byte) or when the track has no report card. Unparseable payloads are not
 /// that placeholder, so they require a startup read.

@@ -358,23 +358,42 @@ fn block0_ends_inside_a_comment(block0: &str) -> bool {
 /// Whether block 0 is nothing but HTML comments: after removing every
 /// `<!-- … -->` span (fence-unaware, leftmost-first, non-nesting), only
 /// whitespace remains. An unclosed `<!--` is not a span and therefore makes
-/// the block impure. S3's `is_unwritten` uses this to decide that block 0 of
-/// a headered body is "just the contract".
+/// the block impure. So does a `<!--` that opens on a line indented four or
+/// more columns ([`indented_as_code`]): CommonMark renders that line as an
+/// indented code block, so the "comment" is visible text. S3's `is_unwritten`
+/// uses this to decide that block 0 of a headered body is "just the
+/// contract".
 pub fn is_pure_comment_block(block0_raw: &str) -> bool {
-    let mut rest = block0_raw;
+    let mut at = 0;
     loop {
-        let Some(open_at) = rest.find("<!--") else {
-            return rest.trim().is_empty();
+        let Some(open_rel) = block0_raw[at..].find("<!--") else {
+            return block0_raw[at..].trim().is_empty();
         };
-        if !rest[..open_at].trim().is_empty() {
+        let open_at = at + open_rel;
+        if !block0_raw[at..open_at].trim().is_empty() || indented_as_code(block0_raw, open_at) {
             return false;
         }
-        let after_open = &rest[open_at + "<!--".len()..];
-        let Some(close_at) = after_open.find("-->") else {
+        let after_open = open_at + "<!--".len();
+        let Some(close_rel) = block0_raw[after_open..].find("-->") else {
             return false;
         };
-        rest = &after_open[close_at + "-->".len()..];
+        at = after_open + close_rel + "-->".len();
     }
+}
+
+/// Whether the `<!--` at byte `open_at` sits on a line CommonMark renders as
+/// an indented code block: nothing but spaces and tabs before it on its line,
+/// and at least four columns of them (a tab advances to the next multiple of
+/// four, so any tab is enough). Three spaces or fewer still start an HTML
+/// block. A `<!--` that follows other text on its line (a second comment
+/// after a closed one) is inside that line's HTML block, so the rule does not
+/// apply — the same reject-direction reading as the funnel's block-0 scan
+/// (D2 (e)), which treats `    <!--` as opening a comment.
+fn indented_as_code(raw: &str, open_at: usize) -> bool {
+    let line_start = raw[..open_at].rfind('\n').map_or(0, |newline| newline + 1);
+    let leading = &raw[line_start..open_at];
+    leading.bytes().all(|byte| byte == b' ' || byte == b'\t')
+        && (leading.contains('\t') || leading.len() >= 4)
 }
 
 #[cfg(test)]

@@ -491,6 +491,11 @@ fn pure_comment_blocks_are_comments_and_whitespace_only() {
         &format!("{WORK_BRIEF_LINE}\n<!-- 报告维护契约\n\n规则。\n-->\n\n"),
         "<!-- a --><!-- b -->\n",
         "<!-- a -->\n\n<!-- b\nc\n-->\n",
+        // Up to three columns of indentation still starts an HTML block.
+        "<!-- a -->\n   <!-- three spaces -->\n",
+        // A second comment after a closed one is inside that line's HTML
+        // block whatever the gap.
+        "<!-- a -->    <!-- b -->\n",
     ] {
         assert!(is_pure_comment_block(pure), "{pure:?}");
     }
@@ -503,6 +508,11 @@ fn pure_comment_blocks_are_comments_and_whitespace_only() {
         "<!-- a -->\n![chart](x)\n",
         "-->",
         "<!-- a -->\n<!-- b --> tail\n",
+        // Four columns of indentation is an indented code block in
+        // CommonMark: the comment renders as visible text.
+        "<!-- a -->\n    <!-- four spaces -->\n",
+        "<!-- a -->\n\t<!-- tab -->\n",
+        "<!-- a -->\n  \t<!-- spaces then tab -->\n",
     ] {
         assert!(!is_pure_comment_block(impure), "{impure:?}");
     }

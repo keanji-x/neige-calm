@@ -70,8 +70,11 @@ pub struct TrackReportPayload {
     /// splitting at H1 (`^# `) headings; the kernel reads that structure
     /// only to check the contract header once at the persist funnel
     /// (#1635 D2) and to answer `report_startup_read_required` (#1635 D3:
-    /// unwritten iff block 0 is only comments and every later block is a
-    /// declared `# <h1>`).
+    /// unwritten iff `summary` is empty and either the body carries a
+    /// header, block 0 is only HTML comments and every later block is a
+    /// bare declared `# <h1>`, or it carries no header and is byte-equal to
+    /// the frozen pre-header body; a body the funnel check rejects reads as
+    /// written).
     pub body: String,
     /// Block mirror of the authoritative CRDT block map (#960 PR2).
     /// Since schema v2 the CRDT `blocks`/`order` layout is the source
@@ -322,8 +325,13 @@ impl TrackReportPayload {
     ///   is prose (no `neige-block` fence), block 0 is nothing but HTML
     ///   comments ([`is_pure_comment_block`] — the header line plus the prose
     ///   contract), and every later block, once `str::trim`med, is exactly
-    ///   `# <h1>` for some `h1` the header declares. Consequences of that
-    ///   shape, all pinned in `report_startup_read_required_cell`:
+    ///   `# <h1>` for some `h1` the header declares. A closed user comment
+    ///   in block 0 after the contract (`<!-- User note -->`) therefore
+    ///   reads as unwritten — comments are invisible, and that is D3's rule
+    ///   (issue §6.9 registers the asymmetry with blocks ≥ 1); a `<!--` on a
+    ///   line indented four or more columns is visible code, not a comment,
+    ///   and reads as written. Consequences of that shape, all pinned in
+    ///   `report_startup_read_required_cell`:
     ///   - a **subset** of the declared H1s is still unwritten, and so is a
     ///     different **order** — membership is tested per slice with `any`,
     ///     so order is not part of the predicate (a consequence of the
@@ -332,8 +340,9 @@ impl TrackReportPayload {
     ///     `![alt](x)` line, a `<table>`, a task fence, or an HTML comment
     ///     in any block ≥ 1 (even a closed one — issue §6.9 asymmetry) all
     ///     read as written;
-    ///   - trailing whitespace on a heading line is the one leniency
-    ///     (`str::trim`, Unicode); a leading space is not a heading to
+    ///   - the leniency is `str::trim` (Unicode) on each slice: trailing
+    ///     whitespace on a heading line and whitespace-only lines under a
+    ///     heading are tolerated; a leading space is not a heading to
     ///     `split_body` and reads as written.
     /// * **headerless** (`Ok(None)`): unwritten iff `body` is byte-equal to
     ///   the frozen pre-header body [`LEGACY_INITIAL_V4_BODY`] — every track
@@ -402,8 +411,7 @@ mod tests {
 
     /// #1635 D3 — the structural predicate's cell: one row per consequence
     /// the [`TrackReportPayload::is_unwritten`] doc comment lists. Every row
-    /// is evaluated and every mismatch is reported together, so a mutation
-    /// of the predicate names exactly the rows it flips.
+    /// is evaluated and every mismatch is reported together.
     #[test]
     fn report_startup_read_required_cell() {
         use crate::report_blocks::{KIND_TASK, render_fence};
@@ -476,10 +484,26 @@ mod tests {
                 false,
             ),
             (
-                "trailing spaces on a heading line (`str::trim` is the one leniency)",
+                "trailing spaces on a heading line (`str::trim` leniency)",
                 new(
                     "",
                     headered("# 概要   \n\n# 待你定\n\n# 已完成\n\n# 决策\n"),
+                ),
+                false,
+            ),
+            (
+                "whitespace-only lines under a heading (`str::trim` leniency)",
+                new(
+                    "",
+                    headered("# 概要\n\n\n   \n# 待你定\n\n# 已完成\n\n# 决策\n"),
+                ),
+                false,
+            ),
+            (
+                "a closed user comment in block 0 after the contract (issue §6.9)",
+                new(
+                    "",
+                    format!("{header}\n<!-- 报告维护契约 -->\n<!-- User note -->\n\n{four}"),
                 ),
                 false,
             ),
@@ -563,6 +587,14 @@ mod tests {
             (
                 "prose in block 0 after the contract comment",
                 new("", format!("{header}\n<!-- c -->\nstray text\n\n# 概要\n")),
+                true,
+            ),
+            (
+                "a `<!--` indented four columns in block 0 (CommonMark indented code: visible)",
+                new(
+                    "",
+                    format!("{header}\n<!-- 报告维护契约 -->\n    <!-- visible note -->\n\n{four}"),
+                ),
                 true,
             ),
             (
