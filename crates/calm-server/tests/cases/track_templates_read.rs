@@ -231,7 +231,7 @@ async fn lists_every_template_with_its_kernel_title() {
         ],
         "the read must expose exactly the kernel's template keys, in order"
     );
-    // Titles come from `TEMPLATES`, not from this test's wishes.
+    // Titles come from the roster's files, not from this test's wishes.
     assert_eq!(row(&body, ISSUE_DEVELOPMENT)["title"], "Issue development");
     assert_eq!(row(&body, SMALL_CHANGE)["title"], "Small change");
     assert_eq!(row(&body, INVESTIGATION)["title"], "Investigation");
@@ -400,7 +400,10 @@ async fn put_is_not_routed_and_writes_nothing() {
     // single-key check would call that gone. The roster itself is iterated,
     // not a hand-kept list of its keys, so a new entry is covered the moment
     // it lands and cannot be left out of this check.
-    for template in calm_server::templates::TEMPLATES.iter() {
+    for template in calm_server::templates::TemplateRoster::builtin()
+        .entries()
+        .iter()
+    {
         let id = template.key();
         let before = db_digest(&boot.repo).await;
 

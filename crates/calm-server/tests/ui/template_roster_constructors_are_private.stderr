@@ -1,0 +1,21 @@
+error[E0624]: associated function `from_sources` is private
+ --> tests/ui/template_roster_constructors_are_private.rs:13:34
+  |
+ 13 |     let _built = TemplateRoster::from_sources(&[source]);
+    |                                  ^^^^^^^^^^^^ private associated function
+    |
+   ::: src/templates.rs
+    |
+    |     fn from_sources(sources: &[&'static str]) -> Result<TemplateRoster, RosterError> {
+    |     -------------------------------------------------------------------------------- private associated function defined here
+
+error[E0624]: associated function `load` is private
+ --> tests/ui/template_roster_constructors_are_private.rs:14:35
+  |
+ 14 |     let _loaded = TemplateRoster::load(&[source]);
+    |                                   ^^^^ private associated function
+    |
+   ::: src/templates.rs
+    |
+    |     fn load(sources: &[&'static str]) -> TemplateRoster {
+    |     --------------------------------------------------- private associated function defined here

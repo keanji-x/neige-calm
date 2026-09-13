@@ -47,9 +47,9 @@ const INVESTIGATION: &str = "investigation";
 const INVESTMENT_RESEARCH: &str = "investment-research";
 // #1300 — a hand-copied `TEMPLATE_KEYS` array lived here, as the expected
 // roster for the seeding assertions. It is gone with them, and deliberately not
-// replaced: `calm_server::templates::TEMPLATES` is the roster, and a second
-// copy in a test file is the drift #1209 spent a slice removing from
-// production. Cases that need the whole roster iterate the real one.
+// replaced: `calm_server::templates::TemplateRoster::builtin()` is the roster,
+// and a second copy in a test file is the drift #1209 spent a slice removing
+// from production. Cases that need the whole roster iterate the real one.
 
 struct Boot {
     app: axum::Router,
@@ -1258,7 +1258,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
 /// no matter what the caller sent.
 ///
 /// It is **not** a discriminating test of the overwrite itself, and saying so
-/// is the point. `admit_template` admits an id iff `template_by_key` matches
+/// is the point. `admit_template` admits an id iff `TemplateRoster::get` matches
 /// it *exactly*, so the caller's string and `admission.key` are equal byte for
 /// byte on every input that reaches the insert; deleting the overwrite line
 /// leaves this case green. That was verified by running the mutation, not
@@ -1267,7 +1267,7 @@ async fn a_forged_template_key_cannot_influence_what_a_template_creates() {
 ///
 /// The half that *is* discriminating lives at the source, where the two
 /// values are still distinguishable: `templates::tests::
-/// template_by_key_returns_the_rosters_own_borrow` asserts by pointer
+/// get_returns_the_rosters_own_borrow` asserts by pointer
 /// identity that the admitted key is the roster's `&'static str` and not a
 /// value derived from the caller's argument. Together they say: the route
 /// stores `admission.key`, and `admission.key` is the roster's. Neither on its
@@ -1279,7 +1279,11 @@ async fn create_stores_the_roster_key_as_template_id() {
     // The roster is iterated rather than listed by hand so every entry —
     // including the task-less `investment-research` — is covered, and a new
     // one cannot land outside this loop.
-    for key in calm_server::templates::TEMPLATES.iter().map(|t| t.key()) {
+    for key in calm_server::templates::TemplateRoster::builtin()
+        .entries()
+        .iter()
+        .map(|t| t.key())
+    {
         let (status, body) = post(
             boot.app.clone(),
             "/api/tracks",
@@ -1774,7 +1778,8 @@ async fn listing_templates_returns_constants_and_writes_nothing() {
             .iter()
             .map(|entry| entry["id"].as_str().expect("template id"))
             .collect();
-        let roster_ids: Vec<&str> = calm_server::templates::TEMPLATES
+        let roster_ids: Vec<&str> = calm_server::templates::TemplateRoster::builtin()
+            .entries()
             .iter()
             .map(|template| template.key())
             .collect();
@@ -2040,13 +2045,14 @@ async fn both_spellings_together_are_an_unknown_field() {
 ///
 /// Concatenating only the normalized task fences would silently drop the
 /// maintenance-contract prefix (#1185 §1.5 B), the `# Plan` intro, and the
-/// newline-only prose slices that `report_from_tasks` leaves between fences —
+/// newline-only prose slices the template file leaves between fences —
 /// and an implementation that lost all of them would still pass. Non-task
 /// slices are therefore carried through byte for byte.
 fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
     use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
 
-    let recipe = calm_server::templates::template_by_key(key)
+    let recipe = calm_server::templates::TemplateRoster::builtin()
+        .get(key)
         .unwrap_or_else(|| panic!("`{key}` is not a known template"))
         .recipe();
     let mut body = String::new();
@@ -2085,15 +2091,18 @@ fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
 /// derives its expectation
 /// from `Template::recipe` on the roster entry, which is the production
 /// `key → recipe` association itself (#1321 S3 made the roster entry that
-/// association; it was a second `match`, `template_report`, before). That is the right call for *content* — it is what stops the
+/// association; it was a second `match`, `template_report`, before; since
+/// #1635 S4 the entry is a file, `templates/builtin/<key>.md`, and the
+/// association is the file's own front matter beside its body). That is the
+/// right call for *content* — it is what stops the
 /// case being a change detector over kilobytes of prose — but it means the two
 /// sides of that comparison share the mapping, so a class of drift moves both
 /// and stays green:
 ///
-///   * swapping two roster entries' `build_recipe` (`SMALL_CHANGE` builds
-///     `investigation_report()`);
+///   * two files' bodies swapped under their front matter (`small-change.md`
+///     carrying the investigation plan);
 ///   * a recipe rewritten wholesale into a different workflow;
-///   * a `TEMPLATES` entry whose `title` no longer describes its `key`.
+///   * a file whose `title` no longer describes its `id`.
 ///
 /// This case anchors part of that class. It pins, per key, only the two facts
 /// that identify *which* recipe answered:
@@ -2110,7 +2119,7 @@ fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
 /// `templates` module doc records, for the same reason: the only way to close
 /// it is to transcribe the recipes by hand.
 ///
-/// The `anchors.len() == TEMPLATES.len()` check below is likewise one-sided
+/// The `anchors.len() == roster.entries().len()` check below is likewise one-sided
 /// only. It stops a roster entry added or removed *without* touching this
 /// table; a change that edits both passes, as it must, since the table is
 /// hand-maintained. Nothing machine-checks that a row here still describes the
@@ -2170,7 +2179,9 @@ async fn listed_template_keys_create_their_exact_recipes() {
     ];
     assert_eq!(
         anchors.len(),
-        calm_server::templates::TEMPLATES.len(),
+        calm_server::templates::TemplateRoster::builtin()
+            .entries()
+            .len(),
         "the roster grew or shrank; this table is the one place that must be \
          edited by hand when it does"
     );

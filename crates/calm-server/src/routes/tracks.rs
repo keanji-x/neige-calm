@@ -62,7 +62,7 @@ use crate::routes::codex_cards::default_cwd;
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
-use crate::templates::{Template, template_by_key};
+use crate::templates::{Template, TemplateRoster};
 use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
 use crate::track_lifecycle::{
@@ -931,9 +931,9 @@ fn user_visible_track(track: &Track) -> bool {
 /// So this is not a report *edit* with a better-chosen author; it is the same
 /// structural initialization the fork path performs, on the same in-transaction
 /// writer, with no author to name because no one is editing anything. That is
-/// also why the constants can now declare `planner` directly
-/// (`templates::report_from_tasks`) instead of writing `user` and having the
-/// fork rewrite it one step later.
+/// also why a template file's task fences carry their `declared_by` as written
+/// (`templates/builtin/*.md`) instead of writing `user` and having the fork
+/// rewrite it one step later.
 ///
 /// ## The single validation, and why there is not a second one
 ///
@@ -950,12 +950,21 @@ fn user_visible_track(track: &Track) -> bool {
 /// whole-body call has not already rejected. Two reviewers independently failed
 /// to construct an input that reaches it.
 ///
-/// `Internal`, not `BadRequest`: every byte here comes from a Rust constant and
-/// no caller can influence it, so a failure is a kernel defect rather than a
-/// bad request. (`prepare_fork_report` answers `BadRequest` for the same checks
-/// because its input is another track's user content.)
-fn prepare_template_report(key: &str) -> Result<InitialReportSnapshot> {
-    let template = template_by_key(key)
+/// `Internal`, not `BadRequest`: every byte here comes from a template file
+/// compiled into the binary and no caller can influence it, so a failure is a
+/// kernel defect rather than a bad request. (`prepare_fork_report` answers
+/// `BadRequest` for the same checks because its input is another track's user
+/// content.)
+///
+/// #1635 S4 — the roster is a parameter, not a global: it is
+/// `RouteState.templates`, captured before the create transaction's closure,
+/// so the recipe lookup reads the same roster the admission did.
+fn prepare_template_report(
+    templates: &'static TemplateRoster,
+    key: &str,
+) -> Result<InitialReportSnapshot> {
+    let template = templates
+        .get(key)
         .ok_or_else(|| CalmError::Internal(format!("track create: unknown template `{key}`")))?;
     compile_template(template)
 }
@@ -1336,7 +1345,7 @@ pub(crate) async fn create_track(
     // value: the recipe lookup (`TrackInit::Template { key }`), the plugin
     // binding (`admit_template` resolves it from the roster entry), and the
     // track row (`CreationSource::stamp`, below). Under today's exact-match
-    // `template_by_key` the two strings are equal, so that is not a behaviour
+    // `TemplateRoster::get` the two strings are equal, so that is not a behaviour
     // change yet — it is what keeps them from diverging the moment admission
     // stops being exact (case folding, aliases), which is precisely when a row
     // carrying `"SMALL-CHANGE"` for roster key `"small-change"` would start
@@ -1524,9 +1533,8 @@ pub(crate) async fn create_track(
 ///
 /// The word *admission* is the point: this answers **admission**, not "what
 /// does the template look like". The authority for the latter is the roster
-/// entry's own `build_recipe` (`templates::Template::recipe`), a Rust constant
-/// — which is why there is no
-/// `title` and no report here. (#1300: before S2 the authority was a seeded
+/// entry's own file body (`templates::Template::recipe`, #1635 S4) — which is
+/// why there is no `title` and no report here. (#1300: before S2 the authority was a seeded
 /// system-area template track found by a database lookup, and this sentence
 /// named it. Both the track and the lookup are gone.)
 pub(crate) struct TemplateAdmission {
@@ -1559,7 +1567,7 @@ impl TemplateAdmission {
     ///
     /// It reaches **all three** consumers of an admitted id:
     ///
-    ///   * the **recipe lookup** (`templates::template_by_key`, then
+    ///   * the **recipe lookup** (`TemplateRoster::get`, then
     ///     `Template::recipe`) inside the create transaction, via
     ///     `TrackInit::Template { key }`;
     ///   * the **track row**, since #1318 S2: `NewTrack::template_id` is
@@ -1604,7 +1612,7 @@ impl TemplateAdmission {
     /// `NewTrack` and that is what landed in the column. (#1321 S2 removed the
     /// field from `into_parts` entirely, so there is no longer a second writer
     /// to overwrite.) The two spellings are
-    /// identical only because `template_by_key` is an exact match today, so the
+    /// identical only because `TemplateRoster::get` is an exact match today, so the
     /// overwrite changes no stored value yet — but the very rule this field
     /// guards against would have separated them, storing `"SMALL-CHANGE"` on a
     /// row whose report was instantiated from roster key `"small-change"`.
@@ -1625,7 +1633,7 @@ impl TemplateAdmission {
 /// The binding is resolved from the admitted roster entry, **not** from `id`:
 /// [`resolve_template_binding`] takes a `&'static Template`, so the *argument*
 /// it receives cannot be the caller's spelling. Under today's exact-match
-/// `template_by_key` the two strings are byte-identical on every input that
+/// `TemplateRoster::get` the two strings are byte-identical on every input that
 /// reaches this line, so this is not a behaviour change.
 ///
 /// #1318 S2 (第二轮评审 MAJOR-2) — the admission carries the roster borrow, so
@@ -1664,10 +1672,11 @@ impl TemplateAdmission {
 /// test passes only canonical spellings, so all of them stay green.
 ///
 /// **Gap 2 — a second entry point inside `crate::templates`, safe Rust; measured
-/// 68 passed, 0 failed.** `templates::tests::template_by_key_returns_the_rosters_own_borrow`
-/// guards `template_by_key`'s return path, not the module. A channel added
-/// `templates::template_admit`, a case-insensitive find that leaks a rebuilt
-/// `Template` when the spelling differs, repointed this function at it, and ran
+/// 68 passed, 0 failed.** `templates::tests::get_returns_the_rosters_own_borrow`
+/// guards `TemplateRoster::get`'s return path, not the module. A channel added
+/// a second entry point in `crate::templates`, a case-insensitive find that
+/// leaks a rebuilt `Template` when the spelling differs, repointed this
+/// function at it, and ran
 /// `nextest -E 'test(admission) or test(template)'`: **68/68 green**, with the
 /// caller's spelling reaching all three consumers.
 ///
@@ -1681,19 +1690,19 @@ impl TemplateAdmission {
 ///
 /// ## Why there is no bad path today
 ///
-/// Observed, not inferred: `template_by_key` is an exact `==` match, so an
+/// Observed, not inferred: `TemplateRoster::get` is an exact `==` match, so an
 /// admitted id is byte-equal to a roster key; both surviving consumers of
 /// [`TemplateAdmission::key`] read the roster borrow; and an un-normalized key
 /// that somehow reached the create transaction would not silently mis-seed —
-/// `templates::template_by_key`'s exact match returns `None`, so
+/// `TemplateRoster::get`'s exact match returns `None`, so
 /// [`prepare_template_report`] raises `CalmError::Internal` and the create
 /// fails loudly instead.
 ///
 /// That is a statement about **today's code**, not an impossibility proof. The
-/// day `template_by_key` stops being an exact match, all three gaps above become
+/// day `TemplateRoster::get` stops being an exact match, all three gaps above become
 /// live, and nothing in the type system or the test suite will say so.
 pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateAdmission> {
-    let template = template_by_key(id)?;
+    let template = s.templates.get(id)?;
     Some(TemplateAdmission {
         template,
         binding: resolve_template_binding(s, template).await,
@@ -1739,8 +1748,8 @@ pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateA
 ///     does not `forbid(unsafe_code)`;
 ///   * inside `crate::templates` (and its descendants) the forgery is still
 ///     expressible, which is why
-///     `templates::tests::template_by_key_returns_the_rosters_own_borrow` is
-///     not redundant with it — though that test guards `template_by_key`'s
+///     `templates::tests::get_returns_the_rosters_own_borrow` is
+///     not redundant with it — though that test guards `TemplateRoster::get`'s
 ///     return path, not the module, and a second entry point beside it went
 ///     68/68 green;
 ///   * and most importantly, it says nothing about a divergence built without
@@ -2026,7 +2035,7 @@ enum TrackInit {
     /// Distinct from [`TrackInit::Template`] rather than folded into it,
     /// because the two resolve from different places and only one of them
     /// can fail at runtime: a built-in key is a `&'static` borrow out of the
-    /// roster and its payload is a Rust constant, while this one is a row
+    /// roster and its payload is a file compiled into the binary, while this one is a row
     /// that may have been deleted between the picker's read and this create.
     /// Collapsing them would make the infallible case carry the fallible
     /// one's error paths.
@@ -2112,6 +2121,8 @@ async fn create_track_structure(
     // #1147 — captured before `s` is moved into the write closure. Only the
     // managed branch uses it; `materialize_workspace` ignores it for attached.
     let workspace_root_for_materialize = s.workspace_root.clone();
+    // #1635 S4 — `&'static`, so captured by copy; the closure below moves it.
+    let templates = s.templates;
     let planner_card_id = new_id();
     let report_card_id = new_id();
     let actor_id = actor.to_actor_id();
@@ -2254,7 +2265,9 @@ async fn create_track_structure(
                 // on an `expect` that reads as unconditional.
                 let init_snapshot = match (&init, recipe_source) {
                     (TrackInit::Blank, _) => None,
-                    (TrackInit::Template { key, .. }, _) => Some(prepare_template_report(key)?),
+                    (TrackInit::Template { key, .. }, _) => {
+                        Some(prepare_template_report(templates, key)?)
+                    }
                     (TrackInit::Recipe { recipe_id }, None) => {
                         // The read above is driven by the same `init`, so this
                         // arm needs the read to have been skipped on the very
@@ -4466,7 +4479,7 @@ pub(crate) async fn delete_track(
     //
     // #1300 — this paragraph used to justify itself by the *other* residents
     // of the system area, the three hidden template tracks `ensure_templates`
-    // seeded. Those are gone: a template is a Rust constant
+    // seeded. Those are gone: a template is a file compiled into the binary
     // (`crate::templates`) and creating from one mints no hidden track. The
     // ruling did not depend on them — it is about where the boundary is drawn,
     // not about how many rows sit behind it — so it stands unchanged with the
@@ -4834,7 +4847,7 @@ mod tests {
     use crate::db::sqlite::SqlxRepo;
     use crate::model::{NewArea, NewCard, NewTrack};
     use crate::routes::theme::RequestTheme;
-    use crate::templates::TEMPLATES;
+    use crate::templates::TemplateRoster;
     use crate::track_report::write::{InitialReportTarget, structural_init_report_tx};
     use crate::track_report::{ReportBlock, TrackReportPayload};
     use crate::track_report_doc::ReportDoc;
@@ -4857,9 +4870,10 @@ mod tests {
     /// goes red.
     #[test]
     fn every_recipe_instantiates_and_declares_its_tasks() {
-        for template in &TEMPLATES {
+        let roster = TemplateRoster::builtin();
+        for template in roster.entries() {
             let key = template.key();
-            let compiled = prepare_template_report(key).unwrap_or_else(|error| {
+            let compiled = prepare_template_report(roster, key).unwrap_or_else(|error| {
                 panic!("`{key}` must instantiate: {error}");
             });
             let payload = compiled.payload;
@@ -4909,7 +4923,8 @@ mod tests {
     /// for a body no constant produces.
     #[test]
     fn a_recipe_that_does_not_parse_is_refused() {
-        let good = crate::templates::template_by_key("small-change")
+        let good = TemplateRoster::builtin()
+            .get("small-change")
             .expect("known key")
             .recipe();
 
@@ -5342,7 +5357,7 @@ mod tests {
     /// the chain it sits between.
     ///
     /// The first review round found the evidence chain broken exactly here.
-    /// `templates::tests::template_by_key_returns_the_rosters_own_borrow`
+    /// `templates::tests::get_returns_the_rosters_own_borrow`
     /// constrains the *lookup*, and `track_template_tracks::
     /// create_stores_the_roster_key_as_template_id` observes the *column*;
     /// neither can see the line in between (`key: template.key`). The reviewer
@@ -5414,7 +5429,6 @@ mod tests {
         use crate::plugin_host::{PluginHost, PluginRegistry};
         use crate::routes::tracks::admit_template;
         use crate::state::{AppState, CodexClient, DaemonClient, RouteState, WriteContext};
-        use crate::templates::TEMPLATES;
         use crate::track_area_cache::TrackAreaCache;
         use calm_truth::db::Repo;
 
@@ -5454,7 +5468,7 @@ mod tests {
         #[tokio::test]
         async fn admission_key_is_the_rosters_own_borrow() {
             let s = route_state().await;
-            for template in &TEMPLATES {
+            for template in s.templates.entries() {
                 let caller_spelling = String::from(template.key());
                 assert_ne!(
                     caller_spelling.as_ptr(),

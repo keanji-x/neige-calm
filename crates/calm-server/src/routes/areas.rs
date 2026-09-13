@@ -51,7 +51,6 @@ use utoipa::{IntoParams, ToSchema};
 
 use super::area_folders::normalize_path;
 use super::terminal_cards::{parse_idempotency_key_header, stable_payload_hash};
-use crate::templates::template_by_key;
 #[cfg(feature = "fixtures")]
 use std::collections::HashMap;
 #[cfg(feature = "fixtures")]
@@ -106,11 +105,14 @@ pub struct CreateAreaRequest {
     pub default_cwd: Option<String>,
 }
 
-fn validate_default_template(default_template_id: Option<&str>) -> Result<()> {
+fn validate_default_template(
+    templates: &crate::templates::TemplateRoster,
+    default_template_id: Option<&str>,
+) -> Result<()> {
     let Some(template_id) = default_template_id else {
         return Ok(());
     };
-    if template_by_key(template_id).is_none() {
+    if templates.get(template_id).is_none() {
         return Err(CalmError::BadRequest(format!(
             "area default: `default_template_id` must reference a known track template; got `{template_id}`"
         )));
@@ -180,6 +182,8 @@ pub(crate) async fn create_area(
     // transaction and returns the proven row through this local channel. Only
     // that branch populates it; unrelated errors cannot become successes.
     let (replay_tx, mut replay_rx) = tokio::sync::oneshot::channel();
+    // #1635 S4 — `&'static`, captured by copy into the closure below.
+    let templates = s.templates;
     let result =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
@@ -191,7 +195,7 @@ pub(crate) async fn create_area(
                         "Area creation already committed".into(),
                     ));
                 }
-                validate_default_template(request.default_template_id.as_deref())?;
+                validate_default_template(templates, request.default_template_id.as_deref())?;
                 validate_and_normalize_default_cwd(&mut request.default_cwd)?;
                 let mut area = area_create_tx(
                     tx,
@@ -360,6 +364,7 @@ pub(crate) async fn update_area(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("area {id}")))?;
     validate_default_template(
+        s.templates,
         p.default_template_id
             .as_ref()
             .and_then(|value| value.as_deref()),

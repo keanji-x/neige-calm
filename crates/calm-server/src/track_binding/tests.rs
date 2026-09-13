@@ -66,7 +66,8 @@ fn stub_echo_bin() -> PathBuf {
 }
 
 /// Both owners declare **this** roster id — `POST /api/tracks` only admits ids
-/// in `templates::TEMPLATES`, so the shared id has to be a real one.
+/// on the roster (`templates::TemplateRoster`), so the shared id has to be a
+/// real one.
 const SHARED_TEMPLATE_ID: &str = crate::templates::SMALL_CHANGE;
 
 const OWNER_A: &str = "dev.trusted-owner-a";
