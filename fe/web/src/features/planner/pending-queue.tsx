@@ -44,8 +44,21 @@
 // .../planner/input/{id}` is still served and the browser no longer calls it,
 // the same way `POST /planner/reset` was left standing when #1139 removed its
 // last caller.
+//
+// ── "Say it now" (#1625 P3) ───────────────────────────────────────────────
+//
+// The one control added since: while a turn is running, a queued message can
+// be handed to THAT turn instead of waiting for the next one
+// (`POST .../planner/input/{id}/steer`). It is offered only when the router
+// passes `onSteer`, and the router passes it only in `turn_running` — not
+// `issuing_turn`, where the kernel would answer 409 for a turn that does not
+// exist yet, and not `issuing_interrupt`, where the turn is being stopped.
+// The refusal it can get (`not_running`) is the one honest answer for a
+// press that lands after the turn ended: nothing happened, the message is
+// still queued, it goes with the next turn.
 
 import { Banner } from '@astryxdesign/core/Banner';
+import { Button } from '@astryxdesign/core/Button';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { List } from '@astryxdesign/core/List';
 import { Text } from '@astryxdesign/core/Text';
@@ -77,6 +90,12 @@ export type PendingQueueProps = Readonly<{
   /** Blocks the controls while any write on this card is unanswered. */
   busy: boolean;
   onDelete: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
+  /**
+   * #1625 P3 — hand the entry to the turn that is running now. `undefined`
+   * means there is no such turn, and the control is not drawn at all: a
+   * button that could only be refused is not a control.
+   */
+  onSteer?: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
 }>;
 
 /**
@@ -117,6 +136,13 @@ function noticeText(outcome: PlannerQueueWriteOutcome): string | null {
     return 'This message is no longer in the queue — it has either been sent or '
       + 'been removed somewhere else, and the server does not say which.';
   }
+  /* #1625 P3 — the steer found no turn to hand the message to: the turn had
+     ended by the time the press landed, or codex declined it. Nothing was
+     lost and nothing needs doing; the sentence says exactly that. */
+  if (outcome.kind === 'not_running') {
+    return 'The turn ended before this message could be handed to it, so nothing '
+      + 'happened. It stays queued and will go with the next turn.';
+  }
   /* The server's own sentence and nothing added to it: a delete that failed
      leaves the message exactly where it was, which the strip already shows. */
   if (outcome.kind === 'failed') return outcome.message;
@@ -126,23 +152,25 @@ function noticeText(outcome: PlannerQueueWriteOutcome): string | null {
 function noticeHeading(outcome: PlannerQueueWriteOutcome): string {
   if (outcome.kind === 'stale') return 'Nothing happened';
   if (outcome.kind === 'gone') return 'No longer in the queue';
+  if (outcome.kind === 'not_running') return 'Still queued';
   return 'Could not be changed';
 }
 
 /**
  * `stale` is a race the reader can still win by trying again; `gone` is the
- * queue having moved on without them, with nothing to retry; `failed` is the
- * server refusing.
+ * queue having moved on without them, with nothing to retry; `not_running` is
+ * the queue NOT having moved, with nothing to do; `failed` is the server
+ * refusing.
  */
 function noticeStatus(outcome: PlannerQueueWriteOutcome): 'warning' | 'info' | 'error' {
   if (outcome.kind === 'stale') return 'warning';
-  if (outcome.kind === 'gone') return 'info';
+  if (outcome.kind === 'gone' || outcome.kind === 'not_running') return 'info';
   return 'error';
 }
 
 
 export function PendingQueue({
-  entries, overflow, busy, onDelete,
+  entries, overflow, busy, onDelete, onSteer,
 }: PendingQueueProps) {
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   /*
@@ -209,6 +237,25 @@ export function PendingQueue({
                   >
                     {text}
                   </Text>
+                  {onSteer !== undefined && (
+                    /* Same lock as the cross, raised and released the same
+                       way, for the same reason: one refusal slot per strip. */
+                    <Button
+                      label="Say it now"
+                      variant="ghost"
+                      size="sm"
+                      isDisabled={blocked}
+                      data-nc-pending-entry-steer=""
+                      onClick={() => { setWriting(true); }}
+                      clickAction={async () => {
+                        try {
+                          settle(entry.entry_id, await onSteer({ ...entry, text, rev }));
+                        } finally {
+                          setWriting(false);
+                        }
+                      }}
+                    />
+                  )}
                   <IconButton
                     label="Delete this message"
                     icon={<Icon name="close" size="sm" />}

@@ -137,6 +137,12 @@ type ConversationStore = Readonly<{
   /** Queued messages that exist but carry no id to address them by. */
   pendingQueueOverflow: number;
   deleteQueuedEntry: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
+  /**
+   * #1625 P3 — hand a queued entry to the turn running now. `undefined`
+   * whenever the phase is not `turn_running`, and that is the whole gate:
+   * the strip draws the control only when this is a function.
+   */
+  steerQueuedEntry: ((entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>) | undefined;
   historyReady: boolean;
   historyLoading: boolean;
   hasEarlier: boolean;
@@ -906,6 +912,22 @@ export function useConversationStore(
       }
       return outcome;
     });
+  /*
+   * #1625 P3 — the steer. On `done` the entry is forgotten (its bubble goes
+   * at once, as a deleted one does) but its echo is NOT retired: unlike a
+   * delete, a steer delivers the sentence, and the kernel has already written
+   * its transcript row (announced on the same 200). The echo therefore
+   * un-hides the moment the bubble goes and is reconciled by that row on the
+   * refetch `harness.item.added` triggers — the same path a drained entry
+   * takes. Offered only in `turn_running`; see `ConversationStore.steerQueuedEntry`.
+   */
+  const steerQueuedEntry = phase === 'turn_running'
+    ? (entry: PendingQueueEntry) =>
+      mutations.steerQueued(entry.entry_id, entry.rev).then((outcome) => {
+        if (outcome.kind === 'done') forgetQueuedEntry(entry.entry_id);
+        return outcome;
+      })
+    : undefined;
 
   /*
    * ── An echo the server *can* still hand back, as against one it cannot ───
@@ -954,6 +976,7 @@ export function useConversationStore(
     pendingQueue,
     pendingQueueOverflow,
     deleteQueuedEntry,
+    steerQueuedEntry,
     historyReady: history.data !== undefined,
     historyLoading: history.isFetching,
     hasEarlier: history.hasNextPage,
@@ -1914,6 +1937,7 @@ function useConversationPanel(
                     overflow={store.pendingQueueOverflow}
                     busy={store.sending}
                     onDelete={store.deleteQueuedEntry}
+                    onSteer={store.steerQueuedEntry}
                   />
                   <PlannerAttachmentDrawer attachments={attachments} />
                 </>

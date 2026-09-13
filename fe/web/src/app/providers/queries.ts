@@ -54,7 +54,7 @@ import {
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptPlannerOperation, sendPlannerInputOperation,
   plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
-  createSerialWriter, deletePlannerInputOperation,
+  createSerialWriter, deletePlannerInputOperation, steerPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
   uploadPlannerAttachmentOperation,
   type Conversation, type ModelSelection, type ModelSelectionResult,
@@ -353,6 +353,22 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
         .catch((error: unknown) => plannerQueueWriteFailure(
           error instanceof ApiError ? error.failure : null,
           queueWriteMessage(error, 'Could not remove the queued message.'),
+        ))
+        .then(refreshAfter),
+    /*
+     * #1625 P3 — the second queue write: hand a queued message to the turn
+     * that is running now. Same classification as the delete, plus the
+     * steer's own 409 (`not_running`: nothing took it, it is still queued).
+     * The refresh runs on every path for the same reason as above, and on a
+     * 200 it is what makes the transcript pick up the row the kernel wrote
+     * before it fetches the queue page that no longer lists the entry.
+     */
+    steerQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
+      runOperation(transport, steerPlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
+        .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
+        .catch((error: unknown) => plannerQueueWriteFailure(
+          error instanceof ApiError ? error.failure : null,
+          queueWriteMessage(error, 'Could not send the queued message now.'),
         ))
         .then(refreshAfter),
     /*

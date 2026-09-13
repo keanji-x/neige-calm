@@ -1186,6 +1186,36 @@ describe('plannerQueueWriteFailure', () => {
     )).toEqual({ kind: 'gone' });
   });
 
+  /* #1625 P3 — the steer's own 409. Not `stale` (there is no winning text to
+     retry against) and not `gone` (the message has not left): the entry is
+     exactly where it was, and only the body's code says so. */
+  it('reads the steer refusal as the entry still waiting, and nothing else as it', () => {
+    expect(plannerQueueWriteFailure({
+      kind: 'http', status: 409, code: 'planner_steer_no_running_turn', message: 'no turn',
+      body: { error: 'no turn', code: 'planner_steer_no_running_turn', entry_id: 'e1', phase: 'idle' },
+    }, 'fallback')).toEqual({ kind: 'not_running' });
+    /* A 409 whose body carries another code is not it, whatever the status. */
+    expect(plannerQueueWriteFailure({
+      kind: 'http', status: 409, code: 'conflict', message: 'shutting down',
+      body: { error: 'shutting down', code: 'conflict' },
+    }, 'fallback')).toEqual({ kind: 'failed', message: 'fallback' });
+  });
+
+  /* #1625 P3 — the steer's own 409. Not `stale` (there is no winning text to
+     retry against) and not `gone` (the message has not left): the entry is
+     exactly where it was, and only the body's code says so. */
+  it('reads the steer refusal as the entry still waiting, and nothing else as it', () => {
+    expect(plannerQueueWriteFailure({
+      kind: 'http', status: 409, code: 'planner_steer_no_running_turn', message: 'no turn',
+      body: { error: 'no turn', code: 'planner_steer_no_running_turn', entry_id: 'e1', phase: 'idle' },
+    }, 'fallback')).toEqual({ kind: 'not_running' });
+    /* A 409 whose body carries another code is not it, whatever the status. */
+    expect(plannerQueueWriteFailure({
+      kind: 'http', status: 409, code: 'conflict', message: 'shutting down',
+      body: { error: 'shutting down', code: 'conflict' },
+    }, 'fallback')).toEqual({ kind: 'failed', message: 'fallback' });
+  });
+
   it('reports anything else as an unexplained failure', () => {
     expect(plannerQueueWriteFailure(
       { kind: 'http', status: 500, code: 'internal', message: 'boom', body: null }, 'fallback',

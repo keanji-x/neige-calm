@@ -176,6 +176,71 @@ describe('PendingQueue', () => {
       .toBeTruthy();
   });
 
+  // #1625 P3 — "Say it now".
+
+  /* The control exists only when the router says a turn is running, which it
+     says by passing `onSteer`. A button that could only be refused is not a
+     control, so with nothing passed there is no button — named by role AND by
+     label, so a renamed button cannot make the negative pass. */
+  it('offers "Say it now" only when a steer handler is given', () => {
+    renderQueue();
+    expect(screen.queryByRole('button', { name: 'Say it now' })).toBeNull();
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    cleanup();
+
+    const onSteer = vi.fn<NonNullable<PendingQueueProps['onSteer']>>(() => done);
+    renderQueue({ onSteer });
+    expect(screen.getByRole('button', { name: 'Say it now' })).toBeTruthy();
+    expect(screen.getAllByRole('button')).toHaveLength(2);
+  });
+
+  it('hands the entry, at the revision shown, to the steer handler', async () => {
+    const onSteer = vi.fn<NonNullable<PendingQueueProps['onSteer']>>(() => done);
+    renderQueue({ entries: [entry({ rev: 4 })], onSteer });
+    await userEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+    await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(1));
+    expect(onSteer.mock.calls[0]?.[0]).toMatchObject({ entry_id: 'e1', rev: 4 });
+  });
+
+  /* The steer's own refusal: nothing happened, and the sentence says the two
+     things the reader needs — the message is still queued, and it goes with
+     the next turn. An info notice, not an error: there is nothing to fix. */
+  it('says the message stays queued when no turn took it', async () => {
+    const onSteer = vi.fn<NonNullable<PendingQueueProps['onSteer']>>(
+      () => Promise.resolve({ kind: 'not_running' }),
+    );
+    renderQueue({ onSteer });
+    await userEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+    expect(await screen.findByText(/Still queued/)).toBeTruthy();
+    expect(screen.getByText(/stays queued and will go with the next turn/)).toBeTruthy();
+    /* And the row is still there with both controls: nothing was taken. */
+    expect(rows()).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Delete this message' })).toBeTruthy();
+  });
+
+  /* One lock for the strip covers the new control too: while a steer is in
+     flight, the cross on the same row and every control on the other row are
+     held, because `refusal` still holds one entry's answer. */
+  it('locks every other control while a steer is in flight', async () => {
+    let settle!: (outcome: PlannerQueueWriteOutcome) => void;
+    const onSteer = vi.fn<NonNullable<PendingQueueProps['onSteer']>>(
+      () => new Promise((resolve) => { settle = resolve; }),
+    );
+    renderQueue({
+      entries: [entry(), entry({ entry_id: 'e2', text: 'and the diff' })],
+      onSteer,
+    });
+    await userEvent.click(screen.getAllByRole('button', { name: 'Say it now' })[0]);
+    await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      for (const button of screen.getAllByRole<HTMLButtonElement>('button')) {
+        expect(button.disabled || button.getAttribute('aria-disabled') === 'true').toBe(true);
+      }
+    });
+    settle({ kind: 'done' });
+    await Promise.resolve();
+  });
+
   /*
    * The caption over the bubbles is gone at the owner's call — a sentence
    * explaining a picture that explains itself. This pins its absence so it

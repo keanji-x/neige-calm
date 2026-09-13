@@ -488,10 +488,10 @@ export const actorIdSchema = z.union([
  * card's pending queue was rewritten, removed, delivered by a steer, or
  * discarded by the kernel.
  *
- * `steered` has no emitter yet (#1505 PR3); `dropped` is emitted by the
- * kernel's load-time queue truncation (#1505 PR2b). They are
- * in the union because the value set is part of the wire contract, not because
- * this build can produce them.
+ * `steered` is emitted by the run loop once codex takes a queued entry into
+ * the running turn (#1625 P3); `dropped` by the kernel's load-time queue
+ * truncation (#1505 PR2b). This legacy bundle has no queue UI and reads
+ * neither; they are in the union because the value set is the wire contract.
  *
  * `actor` is here rather than read off the envelope because the websocket
  * frame is `{ev, data}` and carries no envelope actor at all.

@@ -825,6 +825,40 @@ export function deletePlannerInputOperation(
   };
 }
 
+/** What `POST …/planner/input/{entry_id}/steer` answers on success (#1625 P3). */
+export type PlannerSteer = Readonly<{
+  card_id: string;
+  entry_id: string;
+  /** Always `true` on a 200; every refusal is a typed 409, never `false` here. */
+  steered: boolean;
+  /** The turn that took the message — the one that was running. */
+  turn_id: string;
+}>;
+
+const plannerSteerSchema: z.ZodType<PlannerSteer> = z.object({
+  card_id: z.string(),
+  entry_id: z.string(),
+  steered: z.boolean(),
+  turn_id: z.string(),
+});
+
+/**
+ * Send one queued message into the turn that is running right now (#1625 P3),
+ * refusing if somebody moved it first — the same compare-and-swap token as the
+ * delete. A 409 with code `planner_steer_no_running_turn` means no turn took
+ * it (none was running, or codex declined); the message is still queued and
+ * goes with the next turn.
+ */
+export function steerPlannerInputOperation(
+  cardId: string, entryId: string, ifEntryRev: number,
+): ApiOperation<PlannerSteer> {
+  return {
+    method: 'POST', path: `${plannerInputPath(cardId, entryId)}/steer`,
+    body: { if_entry_rev: ifEntryRev },
+    responseSchema: plannerSteerSchema,
+  };
+}
+
 /**
  * The server's side of a lost compare-and-swap, or `null` if this failure was
  * not one.
@@ -862,14 +896,29 @@ export function isPlannerInputGoneFailure(failure: ApiFailure | null): boolean {
   return failure !== null && failure.kind === 'http' && failure.status === 404;
 }
 
+const plannerSteerRefusedSchema = z.object({ code: z.literal('planner_steer_no_running_turn') });
+
+/**
+ * Whether a failure is the steer's own 409 (#1625 P3): no turn took the
+ * message. It is still queued, unchanged, and goes with the next turn — so
+ * unlike `stale` there is nothing to retry against, and unlike `gone` the
+ * message has not left.
+ */
+export function isPlannerSteerNotRunningFailure(failure: ApiFailure | null): boolean {
+  return failure !== null && failure.kind === 'http' && failure.status === 409
+    && plannerSteerRefusedSchema.safeParse(failure.body).success;
+}
+
 /**
  * What one write to the pending queue turned into.
  *
- * Four cases, and they are not degrees of failure — they differ in what the
+ * Five cases, and they are not degrees of failure — they differ in what the
  * reader is now holding. `done`: the server has their text. `stale`: it does
  * not, and the entry says something else, quoted here so they can decide.
  * `gone`: the entry left the queue (drained into a turn, or somebody else
- * deleted it), so there is nothing left to write to. `failed`: unknown.
+ * deleted it), so there is nothing left to write to. `not_running` (#1625 P3,
+ * the steer only): the entry is exactly where it was, because no turn was
+ * there to take it. `failed`: unknown.
  *
  * Collapsing `stale` and `gone` into one "did not work" is the shape this
  * slice exists to avoid: they call for opposite next moves — retry against the
@@ -879,6 +928,7 @@ export type PlannerQueueWriteOutcome =
   | Readonly<{ kind: 'done' }>
   | Readonly<{ kind: 'stale'; text: string; rev: number }>
   | Readonly<{ kind: 'gone' }>
+  | Readonly<{ kind: 'not_running' }>
   | Readonly<{ kind: 'failed'; message: string }>;
 
 /** Classifies a rejected queue write. Never called for a success. */
@@ -888,6 +938,7 @@ export function plannerQueueWriteFailure(
   const stale = plannerInputStaleFrom(failure);
   if (stale !== null) return { kind: 'stale', text: stale.text, rev: stale.rev };
   if (isPlannerInputGoneFailure(failure)) return { kind: 'gone' };
+  if (isPlannerSteerNotRunningFailure(failure)) return { kind: 'not_running' };
   return { kind: 'failed', message };
 }
 

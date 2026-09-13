@@ -41,7 +41,15 @@
    */
   .bubble {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    /* One explicit track for the text; the controls after it — the cross,
+       and since #1625 P3 "Say it now" while a turn is running — take
+       implicit `auto` columns, so a bubble with one control has one track
+       after the text and a bubble with two has two, and no empty track adds
+       a gap. Each control keeps its own width for the reason the text does
+       not: the text gives way, a control is what it is. */
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-flow: column;
+    grid-auto-columns: auto;
     align-items: center;
     gap: var(--space-1);
     min-inline-size: 0;
