@@ -13,6 +13,9 @@
 //!      starting the planner card's Codex thread. Its prose is data in
 //!      `prompts/planner.md` (#1635); this module only embeds it and
 //!      substitutes the per-spawn placeholders.
+//!   2. The worker and assistant prompts, likewise data under
+//!      `prompts/worker/` and `prompts/assistant/` (#1635 S1b), assembled
+//!      with `concat!` + `include_str!` so shared parts exist once.
 //!
 //! Atomicity story for the planner card itself lives in
 //! `routes::tracks::create_track` — the planner card row and both
@@ -41,198 +44,60 @@
 /// live in `mod tests` below.
 pub(crate) const PLANNER_SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/planner.md");
 
-/// Head of the **claude** (CLI-completion) worker prompt — everything
-/// before the shared `## Reading track state` tail. Step 3 reports through
-/// the `neige` shell CLI. A literal-yielding macro so it can be
-/// `concat!`'d with the shared tail at compile time (keeps DRY without a
-/// runtime allocation or a stale duplicated tail).
-macro_rules! worker_prompt_head_cli {
-    () => {
-        "\
-You are a worker agent under planner card on track `{track_id}`.
-
-You were spawned to execute one job. Your contract:
-
-1. Read the goal, context, and acceptance criteria handed to you. \
-   Run `neige state` if you need to inspect the track's shape before \
-   starting — but don't poll it; the track snapshot you receive once is \
-   enough.
-2. Execute the task. Make tool calls, write files, run commands \
-   — whatever the goal requires.
-3. When the task is done, report exactly once via the `neige` shell CLI:
-   * On success: `neige task-completed --idempotency-key K --result <json-or-text>` \
-     where `K` echoes the idempotency key the kernel handed you. \
-     Append `--artifact <path>` (may repeat) for any file/blob references \
-     you produced.
-   * On failure: `neige task-failed --idempotency-key K --reason '<text>'` \
-     with a free-form failure description.
-4. Exit. You are short-lived by design — run your single job and stop. \
-   Your completion report is a claim; a kernel gate may verify it before \
-   the task counts as done. The kernel delivers ungated reports, failures, \
-   or gate results to the planner card as pushed turn inputs, and the planner \
-   continues the track from there. You do not wait for or observe anything.
-
-You may NOT call `calm.task.verdict` — that is a planner-only tool and the \
-kernel's role gate will refuse you. You also may NOT mint new workers; \
-`calm.task.dispatch` is Planner-only, and the kernel's role gate (#583) still \
-refuses worker-actor dispatch emits from old paths. If the job needs \
-further decomposition, report `task.failed` with a reason \
-explaining what's missing and the planner will handle re-decomposition.
-
-"
-    };
-}
-
-/// Head of the **codex** (MCP-completion) worker prompt — everything
-/// before the shared `## Reading track state` tail. Step 3 reports through
-/// the native `calm.task.complete` / `calm.task.fail` MCP tools.
-macro_rules! worker_prompt_head_mcp {
-    () => {
-        "\
-You are a worker agent under planner card on track `{track_id}`.
-
-You were spawned to execute one job. Your contract:
-
-1. Read the goal, context, and acceptance criteria handed to you. \
-   Run `neige state` if you need to inspect the track's shape before \
-   starting — but don't poll it; the track snapshot you receive once is \
-   enough.
-2. Execute the task. Make tool calls, write files, run commands \
-   — whatever the goal requires.
-3. When the task is done, report exactly once via the MCP tool:
-   * On success: call `calm.task.complete` with `idempotency_key` = K \
-     (the kernel task id you were handed). Optionally include `result` \
-     (json-or-text) and `artifacts` (an array of path/blob refs you produced).
-   * On failure: call `calm.task.fail` with `idempotency_key` = K and a \
-     free-form `reason` (required).
-4. Exit. You are short-lived by design — run your single job and stop. \
-   Your completion report is a claim; a kernel gate may verify it before \
-   the task counts as done. The kernel delivers ungated reports, failures, \
-   or gate results to the planner card as pushed turn inputs, and the planner \
-   continues the track from there. You do not wait for or observe anything.
-
-You may NOT call `calm.task.verdict` — that is a planner-only tool and the \
-kernel's role gate will refuse you. You also may NOT mint new workers; \
-`calm.task.dispatch` is Planner-only, and the kernel's role gate (#583) still \
-refuses worker-actor dispatch emits from old paths. If the job needs \
-further decomposition, report `task.failed` with a reason \
-explaining what's missing and the planner will handle re-decomposition.
-
-"
-    };
-}
-
-/// Shared `## Reading track state` tail — concatenated into BOTH worker
-/// prompts. Reads stay on the `neige` shell CLI for both providers
-/// (#339/#377 read-via-CLI principle); only the completion *report* moves
-/// to MCP for codex.
-macro_rules! worker_prompt_tail {
-    () => {
-        "\
-## Reading track state
-
-You may read your track's state READ-ONLY from the shell with the `neige` \
-CLI: `neige state` reads the track shape, `neige ls [path]` lists views, \
-and `neige cat <path>` reads one view. Useful paths include `/`, \
-`runs/index.json`, \
-`runs/<idempotency_key>.md`, `runs/<idempotency_key>.json`, \
-`cards/<card_id>/.payload.json`, and `cards/<card_id>/runtime.json`. \
-`.payload.json` is the card's own payload; runtime identity/status lives \
-in `runtime.json`. These views are own-track-only; cross-track reads are forbidden.
-"
-    };
-}
-
-/// Worker-agent system prompt. PR8 (#136) replaces the PR6 stub with
-/// the production prompt: workers are short-lived, fire-and-forget,
-/// driven by the kernel scheduler from the planner-maintained plan. They
-/// run one job and exit.
+/// Worker-agent system prompt for the **claude** (CLI-completion) provider.
+/// PR8 (#136) replaced the PR6 stub with the production prompt: workers are
+/// short-lived, fire-and-forget, driven by the kernel scheduler from the
+/// planner-maintained plan. They run one job and exit.
+///
+/// The prose is data (#1635 S1b): `prompts/worker/head-cli.md` is everything
+/// before the shared reads tail and `prompts/worker/tail.md` is that tail,
+/// shared byte-for-byte with [`WORKER_CODEX_SYSTEM_PROMPT`]. Both are embedded
+/// at compile time; `concat!` keeps the const `&'static str` with no runtime
+/// allocation and no second copy of the tail that could go stale.
 ///
 /// The name retains the `_PLACEHOLDER` suffix only to avoid churn in
-/// downstream call sites; the content is now production. A followup
-/// can rename this to `WORKER_SYSTEM_PROMPT_TEMPLATE` for symmetry
-/// with [`PLANNER_SYSTEM_PROMPT_TEMPLATE`] when there's no other PR
-/// touching this file.
+/// downstream call sites; the content is production. A followup can rename
+/// this to `WORKER_SYSTEM_PROMPT_TEMPLATE` for symmetry with
+/// [`PLANNER_SYSTEM_PROMPT_TEMPLATE`] when there's no other PR touching this
+/// file.
 ///
-/// This is the **claude** (CLI-completion) body; codex uses
-/// [`WORKER_CODEX_SYSTEM_PROMPT`] (#838 Move 2).
-pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str =
-    concat!(worker_prompt_head_cli!(), worker_prompt_tail!());
+/// Wording is pinned by the whole-document golden
+/// `tests/goldens/worker_prompt_cli.txt` (regenerate with
+/// `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff).
+pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str = concat!(
+    include_str!("../prompts/worker/head-cli.md"),
+    include_str!("../prompts/worker/tail.md")
+);
 
-/// codex worker variant (#838 Move 2). Identical to
-/// [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] except step 3: completion is
-/// reported through the native `calm.task.complete` / `calm.task.fail`
-/// MCP tools (channel 2 — DaemonTrust + codex-injected `_meta.threadId`)
-/// instead of the `neige` shell CLI. This decouples the kernel-critical
-/// completion path from the per-thread `shell_environment_policy` env
-/// (channel 3) that keeps getting silently dropped (#738/#747/#836).
+/// codex worker variant (#838 Move 2): `prompts/worker/head-mcp.md` plus the
+/// same `prompts/worker/tail.md`. It differs from
+/// [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in how completion is reported:
+/// through the native `calm.task.complete` / `calm.task.fail` MCP tools
+/// (channel 2 — DaemonTrust + codex-injected `_meta.threadId`) instead of the
+/// `neige` shell CLI. This decouples the kernel-critical completion path from
+/// the per-thread `shell_environment_policy` env (channel 3) that keeps
+/// getting silently dropped (#738/#747/#836).
 ///
-/// claude keeps [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] (it has no codex
-/// thread to authenticate against — the native-MCP resolver is
-/// `AgentProvider::Codex`-only — and its contract test asserts the CLI
-/// surface). The shared `## Reading track state` block (`worker_prompt_tail!`)
-/// is concatenated into both, keeping reads on the CLI for both providers.
-pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str =
-    concat!(worker_prompt_head_mcp!(), worker_prompt_tail!());
-
-/// The tool surface and the marker protocol shared by **both** assistant
-/// identities.
+/// claude keeps [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] (it has no codex thread
+/// to authenticate against — the native-MCP resolver is
+/// `AgentProvider::Codex`-only — and `claude_adapter`'s contract test asserts
+/// the CLI surface). Reads stay on the `neige` shell CLI for both providers
+/// (#339/#377 read-via-CLI principle), which is why the tail is one file
+/// concatenated into both consts.
 ///
-/// A macro rather than a `const` so the two prompts can be built with
-/// `concat!` and stay `&'static str`, the same shape `worker_prompt_head_mcp!`
-/// uses. #1343 forks the assistant's *identity* — first duty, and who owns the
-/// document — and nothing else; keeping the mechanics in one place is what
-/// stops the halves that are not in dispute from drifting.
-macro_rules! assistant_prompt_mechanics {
-    () => {
-        "
-## What you can do
+/// Wording is pinned by `tests/goldens/worker_prompt_mcp.txt`.
+pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
+    include_str!("../prompts/worker/head-mcp.md"),
+    include_str!("../prompts/worker/tail.md")
+);
 
-* **Read the report.** Use `calm.report.read` for the track report. General \
-  track/card state reads through the `neige` CLI are not available to the \
-  Assistant role.
-* **Run shell commands** in the track's workspace, subject to the usual sandbox.
-* **Write prose into the track report** through the block tools: \
-  `calm.report.blocks.upsert`, `.move`, `.delete` \
-  (`calm.report.blocks.kinds` lists the block vocabulary), or \
-  `calm.report.write_markdown` for a whole-document rewrite.
-
-## What you cannot do
-
-Lifecycle transitions, plan writes, task verdicts, review, admin, and the \
-whole-document `calm.report.write` are not yours. Neither are `task` blocks: \
-the track's plan belongs to the planner agent, and a `task` block written from here \
-is rejected — the whole write, not just that block. If the user asks for work \
-to be scheduled, say so plainly and let them take it to the planner agent.
-
-## Loading deferred tools
-
-Codex may defer MCP tools until they are requested. Before report work, use \
-tool search to load the exact `calm.report.read` tool and the exact report write \
-tool you need. If a named tool is not immediately visible, use tool search to \
-load that exact `calm.*` tool; do not substitute a planner-only tool or declare \
-the report tools unavailable merely because they are deferred.
-
-## Writing to the report, concretely
-
-1. Call `calm.report.read` with `with_markers: true` FIRST. It gives you the \
-   document's `docRev` and every block's `{id, kind, rev}`.
-2. To add a block, pass that `docRev` as `if_doc_rev`. To replace one, pass \
-   the block's own `rev` as `if_rev` together with its `id`.
-3. A prose block's `markdown` is the WHOLE block, not only the new paragraph. \
-   When replacing a headed section, keep its `#` / `##` heading and trailing \
-   newline; omitting them destroys the block boundary and can join the next section.
-4. `calm.report.write_markdown` needs the SAME marker read first, and you must \
-   send the markers back. Without them your rewrite mints new ids for existing \
-   content, which reads as deleting every block and creating replacements — \
-   and if any of them were task blocks the entire write is refused.
-5. Another session may be writing at the same time. A revision conflict means \
-   somebody else moved first: re-read and reapply, do not retry blindly.
-"
-    };
-}
-
-/// #1189 — the track assistant's system prompt.
+/// #1189 — the track assistant's system prompt: `prompts/assistant/
+/// ordinary-head.md` (identity), `prompts/assistant/mechanics.md` (the tool
+/// surface and marker protocol shared by **both** assistant identities), and
+/// `prompts/assistant/ordinary-tail.md` (the closing paragraph that is true
+/// only on an ordinary track — see [`LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE`]
+/// for why it is its own file). Embedded at compile time so the const stays
+/// `&'static str`.
 ///
 /// Deliberately not a trimmed copy of [`PLANNER_SYSTEM_PROMPT_TEMPLATE`]: most of
 /// that prompt instructs the agent to drive the lifecycle state machine and the
@@ -240,36 +105,31 @@ the report tools unavailable merely because they are deferred.
 /// handler. Describing them here would teach the agent to spend turns on calls
 /// that can only come back `-32602`.
 ///
-/// Two things in here are load-bearing rather than stylistic:
+/// Two things in the mechanics are load-bearing rather than stylistic:
 ///
-/// * **"read with markers before you rewrite"** — a `calm.report.write` style
+/// * **read with markers before you rewrite** — a `calm.report.write` style
 ///   full-document rewrite is unavailable to this role, and a block write that
 ///   re-mints ids reads as "delete every task block and create new ones", which
 ///   the task-block guard rejects as a whole transaction (design §3.2a-bis.4).
 ///   The marker read is what keeps existing block ids stable.
-/// * **"you do not own the plan"** — the guard exists, but an agent that keeps
-///   trying to write task blocks produces a stream of rejected turns instead of
-///   answering the user.
+/// * **the assistant does not own the plan** — the guard exists, but an agent
+///   that keeps trying to write task blocks produces a stream of rejected turns
+///   instead of answering the user.
+///
+/// #1343 forks the assistant's *identity* — first duty, and who owns the
+/// document — and nothing else; keeping the mechanics in one file is what stops
+/// the halves that are not in dispute from drifting.
+///
+/// Wording is pinned by `tests/goldens/assistant_prompt.txt`.
 pub(crate) const ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
-    "\
-You are an assistant conversation on track `{track_id}`.
-
-You are talking with the user. Answer them. You are NOT the track's planner agent: \
-you do not own the track's lifecycle, its plan, or its workers, and the kernel \
-will reject you if you try to drive any of them.
-",
-    assistant_prompt_mechanics!(),
-    // "A guest" is correct HERE: an ordinary track's report is maintained by
-    // that track's planner agent. It is false on the launchpad, which is why
-    // #1343 gave that track its own closing paragraph instead of editing this
-    // one.
-    "
-Keep the report's own structure and conventions; you are a guest in a document \
-the planner agent maintains.
-",
+    include_str!("../prompts/assistant/ordinary-head.md"),
+    include_str!("../prompts/assistant/mechanics.md"),
+    include_str!("../prompts/assistant/ordinary-tail.md")
 );
 
-/// #1343 — the assistant on **Today's launchpad track**.
+/// #1343 — the assistant on **Today's launchpad track**:
+/// `prompts/assistant/launchpad-head.md`, the shared
+/// `prompts/assistant/mechanics.md`, and `prompts/assistant/launchpad-tail.md`.
 ///
 /// Same tools, same marker protocol, different job. Measured on the 4140
 /// preview: told explicitly to write a block, the agent wrote one (`docRev`
@@ -277,14 +137,14 @@ the planner agent maintains.
 /// all already working. Told casually what had happened, it made zero tool
 /// calls and answered in chat. The prompt was the cause, in two places:
 ///
-/// * the first duty was **"You are talking with the user. Answer them."**, with
-///   writing the report listed under *What you can do* — a capability, not a
-///   duty, so chatting was the default path;
-/// * the closing sentence said the agent is **a guest in a document the planner
-///   agent maintains**. On an ordinary track that is true. On the launchpad
-///   there is no planner agent writing today's report — by design this
-///   conversation is the writer — so the prompt was telling it the document was
-///   not its to touch.
+/// * the ordinary identity's first duty is answering the user, with writing
+///   the report listed as a capability, not a duty, so chatting was the
+///   default path;
+/// * the ordinary closing paragraph describes the agent as a guest in a
+///   document the planner agent maintains. On an ordinary track that is true.
+///   On the launchpad there is no planner agent writing today's report — by
+///   design this conversation is the writer — so the prompt was telling it
+///   the document was not its to touch.
 ///
 /// This template inverts both and leaves the mechanics identical. It changes
 /// nothing for any other track: the fork is selected by
@@ -295,32 +155,13 @@ the planner agent maintains.
 /// conversation that already exists keeps the identity it was started with. A
 /// new conversation is what picks this up.
 ///
+/// Wording is pinned by `tests/goldens/assistant_prompt_launchpad.txt`.
+///
 /// [`routes::today::is_launchpad_track`]: crate::routes::today::is_launchpad_track
 pub(crate) const LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
-    "\
-You are the writer of today's progress report, on Today's launchpad track \
-`{track_id}`.
-
-Your first duty is to keep that report current. The report is yours: no planner \
-agent maintains it, and if you do not record the day, nothing else will. \
-Talking with the user is how you find out what to record — it is not the job \
-itself.
-
-You are NOT a planner agent: you do not own any track's lifecycle, its plan, or \
-its workers, and the kernel will reject you if you try to drive any of them.
-",
-    assistant_prompt_mechanics!(),
-    "
-When the user tells you what happened, what to note down, or what to change, \
-write it into the report and then confirm briefly in the chat. Answering in \
-chat while leaving the report untouched is the one failure mode to avoid: the \
-conversation is not where the day is kept.
-
-The report body opens with a maintenance contract in an HTML comment. Follow \
-it — its section list, its rewrite-don't-append rule and its length budget are \
-the report's structure — and read whatever it says about another agent filling \
-a section as addressed to you.
-",
+    include_str!("../prompts/assistant/launchpad-head.md"),
+    include_str!("../prompts/assistant/mechanics.md"),
+    include_str!("../prompts/assistant/launchpad-tail.md")
 );
 
 /// Render the report-edit authors that wake the planner, straight from the
@@ -611,8 +452,9 @@ mod tests {
         include_str!("../tests/goldens/assistant_prompt_launchpad.txt");
 
     /// Equality against a whole document, not a keyword list: both assistant
-    /// identities share the mechanics macro, and a stray newline at either
-    /// seam is exactly the kind of change a `contains` check cannot see.
+    /// identities share `prompts/assistant/mechanics.md`, and a stray newline
+    /// at either seam is exactly the kind of change a `contains` check cannot
+    /// see.
     #[test]
     fn the_ordinary_assistant_prompt_matches_its_reviewed_golden() {
         assert_eq!(
@@ -647,34 +489,72 @@ mod tests {
             "the launchpad identity has to differ from the ordinary one; if it \
              does not, nothing about #1343 shipped"
         );
-        // The sentence that measurably stopped the agent writing: true on an
-        // ordinary track, false here.
-        assert!(ordinary.contains("you are a guest in a document"));
-        assert!(!launchpad.contains("you are a guest in a document"));
-        // …and the mechanics really are one paragraph, not two that can drift.
-        let markers = "1. Call `calm.report.read` with `with_markers: true` FIRST.";
-        assert!(ordinary.contains(markers) && launchpad.contains(markers));
+        // …and the mechanics really are one file, not two that can drift.
+        let mechanics = include_str!("../prompts/assistant/mechanics.md");
+        assert!(!mechanics.is_empty(), "the shared mechanics file is empty");
+        assert!(
+            ordinary.contains(mechanics) && launchpad.contains(mechanics),
+            "both assistant identities must embed prompts/assistant/mechanics.md"
+        );
     }
 
+    /// #1635 S1b — the two worker prompts, byte for byte, rendered for one
+    /// fixed track id. They had no golden before this slice; the move of
+    /// their prose out of Rust is proved by these files not changing.
+    const WORKER_PROMPT_CLI_GOLDEN: &str = include_str!("../tests/goldens/worker_prompt_cli.txt");
+    const WORKER_PROMPT_MCP_GOLDEN: &str = include_str!("../tests/goldens/worker_prompt_mcp.txt");
+
+    /// Whole-document equality for both worker prompts. Regenerate with
+    /// `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff: the goldens are
+    /// the reviewed wording, so a regen is a review, not a fix.
     #[test]
-    fn assistant_prompts_match_their_actual_read_and_tool_discovery_surface() {
-        let ordinary = render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189");
-        let launchpad = render_system_prompt(
-            LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
-            "track-golden-1189",
-        );
-        for prompt in [ordinary, launchpad] {
-            assert!(
-                !prompt.contains("`neige state`")
-                    && !prompt.contains("`neige ls`")
-                    && !prompt.contains("`neige cat`"),
-                "Assistant is rejected from planner/worker-only neige reads"
-            );
-            assert!(
-                prompt.contains("use tool search to load that exact `calm.*` tool"),
-                "deferred MCP tools must be discovered before declaring them unavailable"
-            );
+    fn the_worker_prompts_match_their_reviewed_goldens() {
+        let regen = std::env::var_os("REGEN_PROMPT_GOLDENS").is_some();
+        let mut mismatched = Vec::new();
+        for (file, template, golden) in [
+            (
+                "worker_prompt_cli.txt",
+                WORKER_SYSTEM_PROMPT_PLACEHOLDER,
+                WORKER_PROMPT_CLI_GOLDEN,
+            ),
+            (
+                "worker_prompt_mcp.txt",
+                WORKER_CODEX_SYSTEM_PROMPT,
+                WORKER_PROMPT_MCP_GOLDEN,
+            ),
+        ] {
+            let rendered = render_system_prompt(template, "track-golden-1635");
+            if regen {
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/goldens")
+                    .join(file);
+                // Write back `rendered + "\n"`: the assertion side does
+                // `strip_suffix('\n')`, so omitting it panics on the next run.
+                std::fs::write(&path, format!("{rendered}\n")).expect("write regenerated golden");
+                continue;
+            }
+            let expected = golden
+                .strip_suffix('\n')
+                .expect("text fixture has its repository newline");
+            if rendered != expected {
+                let at = rendered
+                    .bytes()
+                    .zip(expected.bytes())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or_else(|| rendered.len().min(expected.len()));
+                mismatched.push(format!("{file} (first difference at byte {at})"));
+            }
         }
+        assert!(
+            !regen,
+            "worker_prompt_cli.txt / worker_prompt_mcp.txt regenerated from the current \
+             prompts; hand-verify the diff, commit, and re-run without REGEN_PROMPT_GOLDENS"
+        );
+        assert!(
+            mismatched.is_empty(),
+            "worker prompt goldens differ from the rendered prompts: {mismatched:?}; \
+             regenerate with REGEN_PROMPT_GOLDENS=1 and hand-verify the diff"
+        );
     }
 
     #[test]
@@ -837,6 +717,211 @@ mod tests {
         }
     }
 
+    /// Every `calm.*` token in `prompt` (see [`calm_tool_tokens`]) checked
+    /// against the tool registry, with every exception explicit and
+    /// self-checking:
+    ///
+    /// * each token is a **registered, non-alias** tool name, whatever role
+    ///   it belongs to — a typo, a retired name, or a deprecated alias is red
+    ///   no matter what the lists say;
+    /// * each token in neither list is **visible to `role`** in `tools/list`
+    ///   (`descriptors_for_role`);
+    /// * each `callable_but_hidden` entry is registered and NOT visible to
+    ///   `role`. The classification itself — that the role can call the tool
+    ///   despite the descriptor — is supplied by the caller and proven by the
+    ///   tests the caller cites, not by this helper; what this helper checks
+    ///   is that the entry is still registered and still hidden, so an entry
+    ///   that became visible is stale and goes red;
+    /// * each `named_to_forbid` entry is registered and NOT visible to
+    ///   `role`: the prompt names it only to say the role may not call it.
+    ///   Same staleness check;
+    /// * every entry of either list must actually be named by the prompt —
+    ///   an exception nobody uses is dead weight and goes red — and no name
+    ///   may sit in both lists;
+    /// * with `must_name_all_visible`, every tool visible to `role` is named
+    ///   by the prompt (the role's whole tool surface is advertised);
+    /// * anti-vacuity: the prompt names at least `min_named` distinct tools.
+    ///   This guards against an empty scanner, not visible-tool coverage —
+    ///   that is `must_name_all_visible`'s job.
+    fn assert_prompt_tool_names(
+        label: &str,
+        prompt: &str,
+        role: calm_types::model::CardRole,
+        callable_but_hidden: &[&str],
+        named_to_forbid: &[&str],
+        must_name_all_visible: bool,
+        min_named: usize,
+    ) {
+        use std::collections::BTreeSet;
+
+        let registry = crate::mcp_server::build_default_registry();
+        let aliases = registry.deprecated_alias_names();
+        let registered: BTreeSet<String> = registry
+            .descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .filter(|name| !aliases.contains(name))
+            .collect();
+        let visible: BTreeSet<String> = registry
+            .descriptors_for_role(role)
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect();
+        assert!(
+            !visible.is_empty(),
+            "the {role:?} role sees no tools at all"
+        );
+        assert!(
+            visible.iter().all(|name| registered.contains(name)),
+            "a visible tool is a deprecated alias; aliases must stay hidden"
+        );
+
+        let named: BTreeSet<&str> = calm_tool_tokens(prompt).into_iter().collect();
+        assert!(
+            named.len() >= min_named,
+            "anti-vacuity: {label} names fewer than {min_named} distinct tools; the \
+             scanner is probably broken. Found: {named:?}"
+        );
+
+        for (list, entries) in [
+            ("callable_but_hidden", callable_but_hidden),
+            ("named_to_forbid", named_to_forbid),
+        ] {
+            for name in entries {
+                assert!(
+                    registered.contains(*name),
+                    "{label}: `{name}` is listed as {list} but is not a registered tool \
+                     (typo, retired, or alias); drop it from the list"
+                );
+                assert!(
+                    !visible.contains(*name),
+                    "{label}: `{name}` is listed as {list} but IS visible to {role:?} in \
+                     tools/list; the exception is stale, drop it from the list"
+                );
+                assert!(
+                    named.contains(name),
+                    "{label}: `{name}` is listed as {list} but the prompt never names it; \
+                     drop it from the list"
+                );
+            }
+        }
+        for name in callable_but_hidden {
+            assert!(
+                !named_to_forbid.contains(name),
+                "{label}: `{name}` is in both callable_but_hidden and named_to_forbid"
+            );
+        }
+        if must_name_all_visible {
+            let unnamed: Vec<&String> = visible
+                .iter()
+                .filter(|name| !named.contains(name.as_str()))
+                .collect();
+            assert!(
+                unnamed.is_empty(),
+                "{label} must name every tool visible to {role:?} and does not name \
+                 {unnamed:?}; the role's tool surface is not fully advertised"
+            );
+        }
+
+        for name in &named {
+            assert!(
+                registered.contains(*name),
+                "{label} names `{name}`, which is not a registered tool (typo, retired, \
+                 alias, or not a complete tool name). Registered: {registered:?}"
+            );
+            if callable_but_hidden.contains(name) || named_to_forbid.contains(name) {
+                continue;
+            }
+            assert!(
+                visible.contains(*name),
+                "{label} names `{name}`, which the {role:?} role cannot see in tools/list \
+                 (other-role or hidden). If the prompt names it to forbid it, list it \
+                 under named_to_forbid; if the role can call it despite the descriptor, \
+                 list it under callable_but_hidden. Visible: {visible:?}"
+            );
+        }
+    }
+
+    /// #1635 S1b — the worker prompts, both providers, name only tools the
+    /// Worker role can see, except the two Planner-only tools each prompt
+    /// names in order to forbid them (`calm.task.dispatch`,
+    /// `calm.task.verdict`). The same statement S1a makes for the planner;
+    /// the Worker's visible set is pinned exactly by
+    /// `tools_list_for_worker_role_returns_completion_tools`.
+    ///
+    /// The codex prompt additionally has to name **every** tool the Worker
+    /// can see (`must_name_all_visible`): its completion protocol is the
+    /// native `calm.task.complete` / `calm.task.fail` pair (#838 Move 2), and
+    /// a prompt that advertised only one of them would leave a codex worker
+    /// with no way to report the other outcome. This is the code relation
+    /// the deleted wording test carried, now stated against the registry.
+    /// The CLI prompt completes through `neige task-completed` and is exempt.
+    #[test]
+    fn worker_prompts_name_only_tools_the_worker_role_can_see() {
+        // `min_named` guards against an empty scanner only. The CLI prompt
+        // names exactly the two forbidden tools (it completes through the
+        // `neige` CLI, not a `calm.*` tool); the codex prompt adds the two
+        // visible completion tools, which `must_name_all_visible` covers.
+        for (label, template, must_name_all_visible, min_named) in [
+            (
+                "CLI worker prompt",
+                WORKER_SYSTEM_PROMPT_PLACEHOLDER,
+                false,
+                2,
+            ),
+            ("codex worker prompt", WORKER_CODEX_SYSTEM_PROMPT, true, 3),
+        ] {
+            assert_prompt_tool_names(
+                label,
+                &render_system_prompt(template, "track-registry"),
+                calm_types::model::CardRole::Worker,
+                &[],
+                &["calm.task.dispatch", "calm.task.verdict"],
+                must_name_all_visible,
+                min_named,
+            );
+        }
+    }
+
+    /// #1635 S1b — both assistant identities name only tools the Assistant
+    /// role can see, with two explicit exceptions:
+    ///
+    /// * `calm.report.read` is callable but hidden (#1189 F6): its handler
+    ///   admits the Assistant — `mcp_assistant_tool_gate::
+    ///   assistant_token_can_read_the_report_with_concurrency_tokens` proves
+    ///   the call succeeds — while its descriptor is visible to Planner only,
+    ///   so `tools_list_for_assistant_role_returns_block_channel_only` pins
+    ///   it absent from the Assistant's `tools/list`. The prompt is therefore
+    ///   the Assistant's only contract for the read, which is exactly why it
+    ///   must keep naming it.
+    /// * `calm.report.write` is named to forbid it.
+    ///
+    /// `neige` CLI mentions are not `calm.*` tokens, so the scanner never
+    /// sees them; they are pinned only by the goldens.
+    #[test]
+    fn assistant_prompts_name_only_tools_the_assistant_role_can_see() {
+        for (label, template) in [
+            (
+                "ordinary assistant prompt",
+                ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
+            ),
+            (
+                "launchpad assistant prompt",
+                LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
+            ),
+        ] {
+            assert_prompt_tool_names(
+                label,
+                &render_system_prompt(template, "track-registry"),
+                calm_types::model::CardRole::Assistant,
+                &["calm.report.read"],
+                &["calm.report.write"],
+                false,
+                3,
+            );
+        }
+    }
+
     /// #1635 S1a — the task `kind` vocabulary the prompt teaches is
     /// `WorkerProviderKind`, spelled as its wire/DB string. The match is
     /// exhaustive on purpose: a new variant fails to compile at the match,
@@ -865,82 +950,27 @@ mod tests {
         }
     }
 
-    #[test]
-    fn worker_prompt_documents_neige_read_cli() {
-        let p = WORKER_SYSTEM_PROMPT_PLACEHOLDER;
-
-        assert!(
-            p.contains("neige state") && p.contains("neige cat") && p.contains("neige ls"),
-            "worker prompt must document the shell neige read CLI"
-        );
-        assert!(
-            p.contains("neige task-completed") && p.contains("neige task-failed"),
-            "worker prompt must document task completion through the neige CLI"
-        );
-        assert!(
-            p.contains("completion report is a claim")
-                && p.contains("kernel gate may verify it")
-                && p.contains("idempotency key the kernel handed you"),
-            "worker prompt must describe gate verification and kernel-provided idempotency key"
-        );
-        assert!(
-            p.contains("READ-ONLY") && p.contains("own-track-only"),
-            "worker prompt must constrain neige reads to read-only own-track views"
-        );
-    }
-
-    /// #838 Move 2 — the codex worker prompt reports completion through the
-    /// native MCP tools, NOT the `neige task-completed`/`task-failed` CLI.
-    /// claude keeps the CLI (covered by the const tests above + the
-    /// claude_adapter contract test), so this is the codex-only divergence.
-    #[test]
-    fn worker_codex_prompt_reports_completion_via_mcp_tools_not_cli() {
-        let p = WORKER_CODEX_SYSTEM_PROMPT;
-
-        // Completion is mandated through the native MCP tools.
-        assert!(
-            p.contains("calm.task.complete") && p.contains("calm.task.fail"),
-            "codex worker prompt must mandate the calm.task.complete / calm.task.fail MCP tools"
-        );
-        // It must NOT mandate the neige completion CLI (that is claude-only).
-        assert!(
-            !p.contains("neige task-completed") && !p.contains("neige task-failed"),
-            "codex worker prompt must NOT mandate the neige completion CLI"
-        );
-        // Reads still ride the neige CLI for BOTH providers (shared tail).
-        assert!(
-            p.contains("neige state") && p.contains("neige cat") && p.contains("neige ls"),
-            "codex worker prompt must keep the neige read CLI in the shared tail"
-        );
-        assert!(
-            p.contains("READ-ONLY") && p.contains("own-track-only"),
-            "codex worker prompt must keep the read-only own-track constraint"
-        );
-        // The required-arg wording matches the tool schemas: complete needs
-        // `idempotency_key`; fail needs `idempotency_key` + a required `reason`.
-        assert!(
-            p.contains("idempotency_key") && p.contains("required"),
-            "codex worker prompt must name idempotency_key and the required reason"
-        );
-    }
-
-    /// The provider split must not change the claude (CLI) body: the codex
-    /// and claude worker prompts share everything except step 3, so the
-    /// shared `## Reading track state` tail must be byte-identical in both.
+    /// The provider split is one shared tail plus two distinct heads: both
+    /// worker consts end with `prompts/worker/tail.md` byte-for-byte (reads
+    /// stay on the `neige` CLI for both providers), and what precedes it
+    /// differs (completion is reported differently). Stated against the
+    /// file, not a marker string, so a second copy of the tail that drifted
+    /// would fail here rather than pass a `contains` check.
     #[test]
     fn worker_prompts_share_identical_reads_tail() {
-        let marker = "## Reading track state";
-        let cli_tail = WORKER_SYSTEM_PROMPT_PLACEHOLDER
-            .split_once(marker)
-            .map(|(_, tail)| tail)
-            .expect("CLI worker prompt has a reads tail");
-        let mcp_tail = WORKER_CODEX_SYSTEM_PROMPT
-            .split_once(marker)
-            .map(|(_, tail)| tail)
-            .expect("codex worker prompt has a reads tail");
-        assert_eq!(
-            cli_tail, mcp_tail,
-            "both worker prompts must share a byte-identical reads tail"
+        let tail = include_str!("../prompts/worker/tail.md");
+        assert!(!tail.is_empty(), "the shared reads tail is empty");
+        let cli_head = WORKER_SYSTEM_PROMPT_PLACEHOLDER
+            .strip_suffix(tail)
+            .expect("CLI worker prompt ends with the shared reads tail");
+        let mcp_head = WORKER_CODEX_SYSTEM_PROMPT
+            .strip_suffix(tail)
+            .expect("codex worker prompt ends with the shared reads tail");
+        assert!(!cli_head.is_empty() && !mcp_head.is_empty());
+        assert_ne!(
+            cli_head, mcp_head,
+            "the two worker heads must differ (completion channel); if they do \
+             not, one provider's prompt was silently wired to the other's head"
         );
     }
 }
