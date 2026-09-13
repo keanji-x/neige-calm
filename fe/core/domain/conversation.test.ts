@@ -15,8 +15,9 @@ import {
   mergeTranscript, plannerQueueWriteFailure, readableCommand,
   reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
   toTrackConversation, trackConversationCardId,
-  trackConversationsOperation,
+  trackConversationsOperation, transcriptRowToTurnOutcome,
   type Conversation, type ConversationKind, type ConversationTurn, type OptimisticConversationTurn,
+  type TranscriptEntry,
 } from './conversation.js';
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
@@ -796,6 +797,9 @@ describe('harnessItemToActivity', () => {
 });
 
 describe('buildTranscript', () => {
+  /** One word per entry: what an activity did, how a turn ended, or what was said. */
+  const line = (entry: TranscriptEntry): string =>
+    entry.author === 'activity' ? entry.verb : entry.author === 'turn' ? entry.status : entry.text;
   const row = (id: number, itemType: string, method: string, item: unknown, uuid = `u${id}`): HarnessItem => ({
     id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn',
     item_uuid: uuid, item_type: itemType, method,
@@ -808,7 +812,7 @@ describe('buildTranscript', () => {
       row(2, 'agentMessage', 'item/completed', { text: 'done', type: 'agentMessage' }, 'u-msg'),
       row(3, 'commandExecution', 'item/completed', { command: 'ls', exitCode: 0 }, 'u1'),
     ]);
-    expect(entries.map((entry) => (entry.author === 'activity' ? entry.verb : entry.text)))
+    expect(entries.map(line))
       .toEqual(['Ran', 'done']);
   });
 
@@ -820,7 +824,7 @@ describe('buildTranscript', () => {
     expect(buildTranscript(thinking).map((entry) => entry.author === 'activity' && entry.verb))
       .toEqual(['Thought']);
     const answered = [...thinking, row(3, 'agentMessage', 'item/completed', { text: 'hi' }, 'u3')];
-    expect(buildTranscript(answered).map((entry) => (entry.author === 'activity' ? entry.verb : entry.text)))
+    expect(buildTranscript(answered).map(line))
       .toEqual(['hi']);
   });
 
@@ -829,7 +833,7 @@ describe('buildTranscript', () => {
       row(9, 'agentMessage', 'item/completed', { text: 'second' }, 'u9'),
       row(4, 'userMessage', 'item/completed', { content: [{ text: 'first' }] }, 'u4'),
     ]);
-    expect(entries.map((entry) => (entry.author === 'activity' ? entry.verb : entry.text)))
+    expect(entries.map(line))
       .toEqual(['first', 'second']);
   });
 
@@ -916,8 +920,52 @@ describe('buildTranscript', () => {
       row(1, 'userMessage', 'item/completed', { content: [{ text: 'go' }] }),
       unknownRow('turn/plan/updated'),
       row(3, 'agentMessage', 'item/completed', { text: 'done' }, 'u3'),
-    ]).map((entry) => (entry.author === 'activity' ? entry.verb : entry.text)))
+    ]).map(line))
       .toEqual(['go', 'done']);
+  });
+
+  /* #1625 P1 — the third allowed method. A `turn/completed` row is one
+     outcome entry, in row order, keyed by its own row; it neither pairs with
+     nor overwrites anything, and a `completed` one is kept (as the anchor a
+     later slice groups by) rather than filtered here. */
+  it('renders a turn/completed row as a turn outcome, in row order', () => {
+    const outcomeRow = (id: number, turn: unknown) => ({
+      id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: `turn-${id}`,
+      item_uuid: null, item_type: null, method: 'turn/completed',
+      params: JSON.stringify(turn), created_at_ms: 1000 + id,
+    });
+    const entries = buildTranscript([
+      row(1, 'userMessage', 'item/completed', { content: [{ text: 'go' }] }),
+      row(2, 'agentMessage', 'item/completed', { text: 'done' }, 'u2'),
+      outcomeRow(3, { id: 'turn-3', status: 'completed', durationMs: 12 }),
+      row(4, 'userMessage', 'item/completed', { content: [{ text: 'again' }] }),
+      outcomeRow(5, {
+        id: 'turn-5', status: 'failed',
+        error: { message: 'Context window exceeded', codexErrorInfo: 'contextWindowExceeded' },
+      }),
+    ]);
+    expect(entries.map((entry) => entry.author)).toEqual(['you', 'agent', 'turn', 'you', 'turn']);
+    expect(entries[2]).toEqual({
+      id: 'outcome-3', author: 'turn', turnId: 'turn-3', status: 'completed', atMs: 1003,
+    });
+    expect(entries[4]).toEqual({
+      id: 'outcome-5', author: 'turn', turnId: 'turn-5', status: 'failed',
+      message: 'Context window exceeded', code: 'contextWindowExceeded', atMs: 1005,
+    });
+  });
+
+  it('keeps a trailing thought when only a turn outcome follows it', () => {
+    const entries = buildTranscript([
+      row(1, 'reasoning', 'item/completed', { text: 'hmm' }),
+      {
+        id: 2, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn-2',
+        item_uuid: null, item_type: null, method: 'turn/completed',
+        params: JSON.stringify({ id: 'turn-2', status: 'failed', error: { message: 'boom' } }),
+        created_at_ms: 1002,
+      },
+    ]);
+    expect(entries.map((entry) => (entry.author === 'activity' ? entry.verb : entry.author)))
+      .toEqual(['Thought', 'turn']);
   });
 
   it('does not render empty completed messages as activities', () => {
@@ -927,6 +975,86 @@ describe('buildTranscript', () => {
         content: [{ text: '## Track state changes since your last turn\nchanged\n\n---\n\nUser says:\n' }],
       }),
     ])).toEqual([]);
+  });
+});
+
+describe('transcriptRowToTurnOutcome', () => {
+  const outcome = (params: unknown, overrides: { turn_id?: string | null; method?: string } = {}) => ({
+    id: 9, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn-9',
+    item_uuid: null, item_type: null, method: 'turn/completed',
+    params: typeof params === 'string' ? params : JSON.stringify(params), created_at_ms: 5000,
+    ...overrides,
+  });
+
+  it.each(['completed', 'interrupted', 'failed'] as const)('parses a %s turn', (status) => {
+    expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status }))).toEqual({
+      id: 'outcome-9', author: 'turn', turnId: 'turn-9', status, atMs: 5000,
+    });
+  });
+
+  it('carries the error message and the bare codexErrorInfo token', () => {
+    expect(transcriptRowToTurnOutcome(outcome({
+      id: 'turn-9', status: 'failed',
+      error: { message: 'Usage limit hit', codexErrorInfo: 'usageLimitExceeded', additionalDetails: null },
+    }))).toMatchObject({ status: 'failed', message: 'Usage limit hit', code: 'usageLimitExceeded' });
+  });
+
+  it('reduces the object form of codexErrorInfo to its single key', () => {
+    expect(transcriptRowToTurnOutcome(outcome({
+      id: 'turn-9', status: 'failed',
+      error: { message: 'gateway', codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 502 } } },
+    }))).toMatchObject({ status: 'failed', message: 'gateway', code: 'httpConnectionFailed' });
+  });
+
+  it('surfaces an unknown status as failed with the raw status, never dropping it', () => {
+    expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'inProgress' }))).toEqual({
+      id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', rawStatus: 'inProgress', atMs: 5000,
+    });
+  });
+
+  it('takes the turn id from the row column before the params', () => {
+    expect(transcriptRowToTurnOutcome(outcome({ status: 'completed' }))?.turnId).toBe('turn-9');
+    expect(transcriptRowToTurnOutcome(outcome({ id: 'from-params', status: 'completed' }, { turn_id: null }))?.turnId)
+      .toBe('from-params');
+    expect(transcriptRowToTurnOutcome(outcome({ status: 'completed' }, { turn_id: null }))).toBeNull();
+  });
+
+  it('is null for any other method and for params that are not a turn', () => {
+    expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'failed' }, { method: 'item/completed' }))).toBeNull();
+    expect(transcriptRowToTurnOutcome(outcome('not json'))).toBeNull();
+    expect(transcriptRowToTurnOutcome(outcome([]))).toBeNull();
+    expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9' }))).toBeNull();
+  });
+
+  /* #1625 P1 review — a malformed detail must not take the line with it: the
+     row is the record that the turn ended, the error fields only decorate it. */
+  describe('keeps the failed line when only the detail is malformed', () => {
+    it('error without a message: the code survives, no message', () => {
+      expect(transcriptRowToTurnOutcome(outcome({
+        id: 'turn-9', status: 'failed', error: { codexErrorInfo: 'x' },
+      }))).toEqual({ id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', code: 'x', atMs: 5000 });
+    });
+
+    it('codexErrorInfo of an unknown shape: only the code is dropped', () => {
+      expect(transcriptRowToTurnOutcome(outcome({
+        id: 'turn-9', status: 'failed', error: { message: 'boom', codexErrorInfo: 5 },
+      }))).toEqual({ id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', message: 'boom', atMs: 5000 });
+    });
+
+    it('error that is not an object at all: the line survives bare', () => {
+      expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'failed', error: 'boom' })))
+        .toEqual({ id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', atMs: 5000 });
+    });
+
+    it('a status that is not a string is an unknown status, shown as failed with what the wire said', () => {
+      expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 7 }))).toEqual({
+        id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', rawStatus: '7', atMs: 5000,
+      });
+    });
+
+    it('a params id that is not a string falls back to the row column', () => {
+      expect(transcriptRowToTurnOutcome(outcome({ id: 9, status: 'completed' }))?.turnId).toBe('turn-9');
+    });
   });
 });
 
@@ -943,6 +1071,38 @@ describe('mergeTranscript', () => {
 
   it('keeps a completed tail thought until an echo exists', () => {
     expect(mergeTranscript([thought], [])).toEqual([thought]);
+  });
+
+  /* #1625 P1 review — the two functions apply one rule. Before, `mergeTranscript`
+     looked only at the last server entry, so a thought sitting under a turn
+     outcome was drawn with the echo and popped out once the echo's server row
+     landed and `buildTranscript` retired it. */
+  it('agrees with buildTranscript about a thought under a turn outcome once the echo lands as a row', () => {
+    const line = (entry: TranscriptEntry): string =>
+      entry.author === 'activity' ? entry.verb : entry.author === 'turn' ? entry.status : entry.text;
+    const userRow = (id: number, text: string) => ({
+      id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn-1',
+      item_uuid: `u${id}`, item_type: 'userMessage', method: 'item/completed',
+      params: JSON.stringify({ completedAtMs: 1000 + id, item: { content: [{ text }] } }), created_at_ms: 1000 + id,
+    });
+    const thoughtRow = (id: number) => ({
+      id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn-1',
+      item_uuid: `u${id}`, item_type: 'reasoning', method: 'item/completed',
+      params: JSON.stringify({ completedAtMs: 1000 + id, item: { text: 'hmm' } }), created_at_ms: 1000 + id,
+    });
+    const stoppedRow = (id: number) => ({
+      id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn-1',
+      item_uuid: null, item_type: null, method: 'turn/completed',
+      params: JSON.stringify({ id: 'turn-1', status: 'interrupted' }), created_at_ms: 1000 + id,
+    });
+    const beforeTheRow = [userRow(1, 'go'), thoughtRow(2), stoppedRow(3)];
+    const server = buildTranscript(beforeTheRow);
+    expect(server.map(line)).toEqual(['go', 'Thought', 'interrupted']);
+
+    const withEcho = mergeTranscript(server, [{ id: 'echo', author: 'you', text: 'next', atMs: 1004 }]);
+    const afterTheRow = buildTranscript([...beforeTheRow, userRow(4, 'next')]);
+    expect(withEcho.map(line)).toEqual(['go', 'interrupted', 'next']);
+    expect(afterTheRow.map(line)).toEqual(withEcho.map(line));
   });
 });
 

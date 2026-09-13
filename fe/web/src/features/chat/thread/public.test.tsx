@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CONVERSATION_GAP_MS,
   type Conversation, type ConversationActivity, type ConversationSystemEntry,
-  type ConversationTurn, type SendOutcome,
+  type ConversationTurn, type ConversationTurnOutcome, type SendOutcome,
 } from '../../../../../core/domain/conversation.ts';
 import { ChatComposer, ChatThread, EXCHANGE_RAIL_MIN } from './public.tsx';
 
@@ -42,6 +42,12 @@ function systemEntry(
     text: 'The report changed in the kernel.', atMs: NOW,
     ...overrides,
   };
+}
+
+function turnOutcome(
+  overrides: Partial<ConversationTurnOutcome> = {},
+): ConversationTurnOutcome {
+  return { id: 'o1', author: 'turn', turnId: 'turn-1', status: 'failed', atMs: NOW, ...overrides };
 }
 
 const PANE_SCROLL_HEIGHT = 1_000;
@@ -108,6 +114,72 @@ describe('ChatThread', () => {
     expect((system as HTMLDetailsElement).open).toBe(true);
     expect(container.querySelector('[data-nc-turn="you"]')).toBeNull();
     expect(container.querySelector('[data-nc-turn="agent"]')).toBeNull();
+  });
+
+  /* #1625 P1 — a turn that did not end well says so, in the transcript. */
+  it('states a failed turn with its message and a plain-language reason', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[
+          turn({ id: 'you-1', text: 'Summarise everything.' }),
+          turnOutcome({
+            status: 'failed', message: 'The conversation exceeded the model\'s context window.',
+            code: 'contextWindowExceeded',
+          }),
+        ]}
+      />,
+    );
+    const outcome = container.querySelector('[data-nc-turn-outcome="failed"]') as HTMLElement;
+    expect(outcome.getAttribute('data-nc-turn')).toBe('outcome');
+    expect(screen.getByRole('status').textContent).toBe('Failed');
+    expect(outcome.querySelector('[data-nc-turn-outcome-message]')?.textContent)
+      .toBe('The conversation exceeded the model\'s context window.');
+    expect(outcome.querySelector('[data-nc-turn-outcome-hint]')?.textContent)
+      .toBe('The conversation no longer fits in the model’s context window.');
+    // Not a speaker, and not an exchange of its own.
+    expect(container.querySelector('[data-nc-turn="agent"]')).toBeNull();
+    expect(container.querySelectorAll('[data-nc-exchange]')).toHaveLength(1);
+  });
+
+  it('shows a code it has no sentence for as the raw token, and an unknown status as such', () => {
+    const { container, rerender } = render(
+      <ChatThread conversation={conversation()} turns={[turnOutcome({ message: 'nope', code: 'internalServerError' })]} />,
+    );
+    expect(container.querySelector('[data-nc-turn-outcome-hint]')?.textContent).toBe('internalServerError');
+    rerender(
+      <ChatThread conversation={conversation()} turns={[turnOutcome({ rawStatus: 'inProgress' })]} />,
+    );
+    expect(container.querySelector('[data-nc-turn-outcome-message]')).toBeNull();
+    expect(container.querySelector('[data-nc-turn-outcome-hint]')?.textContent).toBe('Ended with status “inProgress”');
+  });
+
+  it('says Stopped for an interrupted turn and nothing at all for a completed one', () => {
+    const { container, rerender } = render(
+      <ChatThread conversation={conversation()} turns={[turnOutcome({ status: 'interrupted' })]} />,
+    );
+    expect(container.querySelector('[data-nc-turn-outcome="interrupted"]')).not.toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('Stopped');
+    rerender(
+      <ChatThread
+        conversation={conversation()}
+        turns={[turn(), turnOutcome({ status: 'completed' })]}
+      />,
+    );
+    expect(container.querySelector('[data-nc-turn="outcome"]')).toBeNull();
+    expect(container.querySelector('[data-nc-turn-outcome]')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('keeps the live mark logic untouched by a trailing outcome', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation({ state: 'running' })}
+        turns={[turn(), turnOutcome({ status: 'failed', message: 'boom' })]}
+      />,
+    );
+    // The outcome is not an agent reply, so the placeholder carries the one mark.
+    expect(container.querySelectorAll('[aria-label="Working"]')).toHaveLength(1);
   });
 
   it('does not let a system entry open or merge user exchanges', () => {

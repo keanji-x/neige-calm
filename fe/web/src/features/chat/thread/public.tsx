@@ -36,6 +36,7 @@ import {
   ChatComposer as AstryxChatComposer,
   ChatComposerInput,
   ChatSendButton,
+  ChatSystemMessage,
   type ChatComposerTrigger,
 } from '@astryxdesign/core/Chat';
 import { Markdown } from '@astryxdesign/core/Markdown';
@@ -506,6 +507,39 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
                   </summary>
                   <p className={styles.systemDetail}>{turn.text}</p>
                 </details>
+              </div>
+            );
+          }
+          if (turn.author === 'turn') {
+            /*
+             * #1625 P1 — how the turn ended, and only when it did not end
+             * well. A `completed` outcome is in `turns` as an anchor and
+             * paints nothing at all: the reply above it already says the turn
+             * finished. `interrupted` and `failed` are the two facts the
+             * transcript cannot otherwise show — it just goes quiet either way.
+             *
+             * Astryx's `ChatSystemMessage` is a leaf (no scroll, no measure)
+             * and does not forward `data-*`, so the state hooks sit on this
+             * wrapper. Its content span is `nowrap`, which is right for the
+             * one-word label and wrong for an error sentence, so the message
+             * is its own block below. No label, no time: the "why it stopped"
+             * is the whole content, as the file header argues for every turn.
+             */
+            if (turn.status === 'completed') return null;
+            return (
+              <div
+                key={turn.id}
+                className={styles.outcome}
+                data-nc-turn="outcome"
+                data-nc-turn-outcome={turn.status}
+              >
+                <ChatSystemMessage>{turn.status === 'interrupted' ? 'Stopped' : 'Failed'}</ChatSystemMessage>
+                {turn.status === 'failed' && turn.message !== undefined && turn.message !== '' && (
+                  <p className={styles.outcomeDetail} data-nc-turn-outcome-message="">{turn.message}</p>
+                )}
+                {turn.status === 'failed' && (
+                  <OutcomeHint code={turn.code} rawStatus={turn.rawStatus} />
+                )}
               </div>
             );
           }
@@ -1459,6 +1493,30 @@ function observeResize(element: Element, onResize: () => void): () => void {
   const observer = new ResizeObserver(onResize);
   observer.observe(element);
   return () => { observer.disconnect(); };
+}
+
+/**
+ * One plain sentence for the four `codexErrorInfo` values a reader can act on
+ * (#1625 P1). Every other code is shown as the token codex sent — `other`,
+ * `internalServerError`, `httpConnectionFailed` — because a made-up sentence
+ * for a code this app does not understand would be a guess dressed as a fact.
+ * A status this app does not know at all (`rawStatus`) is said as such.
+ */
+const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
+  contextWindowExceeded: 'The conversation no longer fits in the model’s context window.',
+  usageLimitExceeded: 'The usage limit for this account has been reached.',
+  rateLimitExceeded: 'Requests are being rate-limited; try again in a moment.',
+  serverOverloaded: 'The model provider is overloaded; try again in a moment.',
+});
+
+function OutcomeHint({ code, rawStatus }: { code: string | undefined; rawStatus: string | undefined }) {
+  const hint = code === undefined ? null : (FAILURE_HINTS[code] ?? code);
+  if (hint === null && rawStatus === undefined) return null;
+  return (
+    <p className={styles.outcomeDetail} data-nc-turn-outcome-hint="">
+      {hint ?? `Ended with status “${rawStatus}”`}
+    </p>
+  );
 }
 
 function exchangesOf(turns: readonly TranscriptEntry[]): readonly Exchange[] {

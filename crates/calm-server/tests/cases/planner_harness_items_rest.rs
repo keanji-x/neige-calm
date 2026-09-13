@@ -556,3 +556,99 @@ async fn transcript_route_page_budget_skips_plan_rows() {
         plan_ids,
     );
 }
+
+/// #1625 P1 — a stored `turn/completed` row reaches the transcript feed over
+/// REST, in page order with the `item/*` rows, while a plan row still does
+/// not. The predicate is an allowlist of three methods, not "everything but
+/// plans": the third row here is a method nobody renders and it must stay out.
+#[tokio::test]
+async fn transcript_route_returns_turn_outcome_rows() {
+    let boot = boot().await;
+    let insert = async |turn_id: &str,
+                        uuid: Option<&str>,
+                        item_type: Option<&str>,
+                        method: &str,
+                        params: String| {
+        boot.repo
+            .harness_item_insert(
+                "runtime-outcome",
+                boot.planner_card.id.as_str(),
+                boot.planner_card.track_id.as_str(),
+                "thread-outcome",
+                Some(turn_id),
+                uuid,
+                item_type,
+                method,
+                &params,
+                None,
+            )
+            .await
+            .unwrap()
+    };
+    let item_id = insert(
+        "turn-outcome-1",
+        Some("item-outcome-1"),
+        Some("agentMessage"),
+        "item/completed",
+        json!({ "item": { "id": "item-outcome-1", "type": "agentMessage", "text": "x" } })
+            .to_string(),
+    )
+    .await;
+    let plan_id = insert(
+        "turn-outcome-1",
+        None,
+        None,
+        "turn/plan/updated",
+        json!({ "turnId": "turn-outcome-1", "explanation": null, "plan": [] }).to_string(),
+    )
+    .await;
+    let outcome_id = insert(
+        "turn-outcome-1",
+        None,
+        None,
+        "turn/completed",
+        json!({
+            "id": "turn-outcome-1",
+            "status": "failed",
+            "error": { "message": "boom", "codexErrorInfo": "usageLimitExceeded" }
+        })
+        .to_string(),
+    )
+    .await;
+    let other_id = insert(
+        "turn-outcome-1",
+        None,
+        None,
+        "turn/diff/updated",
+        json!({ "turnId": "turn-outcome-1", "diff": "" }).to_string(),
+    )
+    .await;
+    assert!(item_id < plan_id && plan_id < outcome_id && outcome_id < other_id);
+
+    let (status, body) = get(
+        boot.app.clone(),
+        format!(
+            "/api/cards/{}/harness/items?limit=10",
+            boot.planner_card.id.as_str()
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let rows: Vec<HarnessItem> = serde_json::from_value(body).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        vec![item_id, outcome_id],
+        "the transcript feed must carry item rows and the turn outcome row, nothing else: {:?}",
+        rows.iter()
+            .map(|row| row.method.as_str())
+            .collect::<Vec<_>>()
+    );
+    let outcome = &rows[1];
+    assert_eq!(outcome.method, "turn/completed");
+    assert_eq!(outcome.turn_id.as_deref(), Some("turn-outcome-1"));
+    assert_eq!(outcome.item_uuid, None);
+    assert_eq!(outcome.item_type, None);
+    let params: Value = serde_json::from_str(&outcome.params).unwrap();
+    assert_eq!(params["status"], "failed");
+    assert_eq!(params["error"]["codexErrorInfo"], "usageLimitExceeded");
+}

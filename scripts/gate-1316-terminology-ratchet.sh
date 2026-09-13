@@ -403,6 +403,43 @@
 #   later commit needs either cell higher, that is a NEW raise needing its own
 #   argument; it does not inherit this one.
 #
+#   A SECOND raise, taken ONCE by #1625 P1 (the per-turn outcome row). Same
+#   shape as the S4b one — PER-FILE COUNTS, a closed list, no criterion — and
+#   every added occurrence is a call to, or the one unavoidable type
+#   annotation of, a symbol that already exists on the base tree; the slice
+#   coins nothing:
+#
+#     crates/calm-server/src/harness/run_loop.rs                     13 ->  14
+#     crates/calm-server/tests/cases/planner_harness_items_persist.rs
+#                                                                    15 ->  16
+#     crates/calm-server/tests/cases/planner_harness_items_rest.rs   21 ->  23
+#                                                          crates   264 -> 268
+#     fe/core/domain/conversation.ts                                 23 ->  24
+#     fe/web/src/app/events/query-invalidation-adapter.test.ts        4 ->   5
+#                                                              fe   105 -> 107
+#
+#   Reproduce with the combined pattern this script builds, occurrence-counted
+#   per file, against `2caabeba` (`origin/main` when the slice was measured).
+#   The six are: `repo.harness_item_insert` twice (the production writer in
+#   `run_loop.rs`, and the REST test's seeding closure — the same shape the
+#   test above it uses); `harness_item_list_transcript_by_card` once (the read
+#   the route uses, called by the kernel test to prove the row is in the
+#   feed); `Vec<HarnessItem>` once for a REST body (`serde_json::from_value`
+#   needs a target type, and the nine sibling tests in that file spell it the
+#   same way); `item: HarnessItem` once on the one exported converter (an
+#   exported function's parameter type cannot be inferred); and
+#   `queryKeys.harnessItems` once in the invalidation expectation table (the
+#   accessor the four neighbouring rows already use — writing the raw key
+#   there instead would be the concealment the #1445 note below refuses).
+#   Everything the slice itself named was named in transcript vocabulary and
+#   cost zero: the converter is `transcriptRowToTurnOutcome`, its tests build
+#   rows by inference rather than by a `HarnessItem`-typed closure, the three
+#   tracing keys are `worker_session_id` (the spelling five neighbouring spans
+#   in the same file already use), and every prose sentence and fixture
+#   `_provenance` line says "the transcript table" / "a transcript row". If a
+#   later commit needs any of these cells higher, that is a NEW raise needing
+#   its own argument; it does not inherit this one.
+#
 #   Left open on purpose: the harness registry is keyed by `runtime_id`, i.e.
 #   `runtime` / `harness` / `worker_session` are three names for layers of one
 #   execution concept. That is a design question, not a rename, and #1316

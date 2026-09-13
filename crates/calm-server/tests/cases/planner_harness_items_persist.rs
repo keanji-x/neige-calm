@@ -671,3 +671,363 @@ async fn phase_transition_persists_row_and_emits_durable_event_id() {
 
     harness.shutdown().await.unwrap();
 }
+
+/// A failed `turn/completed`, hand-authored from the codex 0.153.4 schema —
+/// see the `_provenance` block inside the file.
+const TURN_COMPLETED_FAILED_FIXTURE: &str = include_str!("../fixtures/turn_completed_failed.json");
+
+/// #1625 P1 — a turn's terminal status is a transcript row, and the
+/// transcript read the `GET /api/cards/{id}/harness/items` route calls (the
+/// exact repo method, below) returns it.
+///
+/// Driven through the real harness: `TurnStarted` moves the FSM to
+/// `TurnRunning`, then the fixture's `TurnCompleted { status: failed }` lands
+/// in the arm that writes the row. Mutation this pins: drop `'turn/completed'`
+/// from `TRANSCRIPT_METHOD_PREDICATE` and the transcript read below comes back
+/// empty.
+#[tokio::test]
+async fn turn_completed_failed_persists_outcome_row_readable_by_transcript() {
+    let fixture: Value = serde_json::from_str(TURN_COMPLETED_FAILED_FIXTURE).unwrap();
+    let turn = fixture["params"]["turn"].clone();
+    let turn_id = turn["id"].as_str().unwrap().to_string();
+
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let (harness, daemon, card_id, track_id) = seed_harness(repo.clone(), events).await;
+    wait_for_notification_receiver(&daemon).await;
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "id": turn_id }),
+    });
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: turn.clone(),
+    });
+
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    let row = &rows[0];
+    assert_eq!(row.card_id.as_str(), card_id);
+    assert_eq!(row.track_id.as_str(), track_id);
+    assert_eq!(row.thread_id, SEED_THREAD_ID);
+    assert_eq!(row.method, "turn/completed");
+    assert_eq!(row.turn_id.as_deref(), Some(turn_id.as_str()));
+    assert_eq!(
+        row.item_uuid, None,
+        "a turn is not an item and has no item id"
+    );
+    assert_eq!(
+        row.item_type, None,
+        "a turn is not an item and has no item type"
+    );
+    assert_eq!(row.input_segments, None);
+
+    // `params` is the codex `turn` object minus `items` / `itemsView`, and
+    // nothing else is touched: status, error and the timings survive verbatim.
+    let stored: Value = serde_json::from_str(&row.params).unwrap();
+    let mut expected = turn.clone();
+    let object = expected.as_object_mut().unwrap();
+    object.remove("items");
+    object.remove("itemsView");
+    assert_eq!(stored, expected);
+    assert_eq!(stored["status"], "failed");
+    assert_eq!(
+        stored["error"]["message"],
+        "The conversation exceeded the model's context window."
+    );
+    assert_eq!(stored["error"]["codexErrorInfo"], "contextWindowExceeded");
+    assert_eq!(stored["durationMs"], 42000);
+    assert!(stored.get("items").is_none(), "items are rows of their own");
+    assert!(stored.get("itemsView").is_none());
+
+    // The transcript read the REST route uses must return it — this is the
+    // read that `TRANSCRIPT_METHOD_PREDICATE` narrows in SQL.
+    let transcript = repo
+        .harness_item_list_transcript_by_card(&card_id, 0, 100, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        transcript.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![row.id],
+        "the transcript predicate must allow 'turn/completed'"
+    );
+
+    // The FSM moved as before: the row is a side effect, not a new phase.
+    let snapshot = harness.snapshot().await;
+    assert_eq!(snapshot.phase, HarnessPhaseTag::TurnCompleted);
+
+    harness.shutdown().await.unwrap();
+}
+
+/// A completion the FSM ignores writes no row: the insert sits after the
+/// stale-completion gate, not before it.
+///
+/// Fenced against a race rather than a sleep: the stale frame goes first, then
+/// a real `TurnStarted` + `TurnCompleted` pair, and the *only* row that
+/// arrives is the real turn's. Had the stale frame written one, it would have
+/// been persisted first and `wait_for_rows(.., 1)` would return it instead.
+#[tokio::test]
+async fn stale_turn_completed_writes_no_outcome_row() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let (harness, daemon, card_id, _track_id) = seed_harness(repo.clone(), events).await;
+    wait_for_notification_receiver(&daemon).await;
+
+    // Harness is `Idle`: no turn is running, so this completion is stale.
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "id": "turn-stale", "status": "interrupted", "items": [] }),
+    });
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "id": "turn-real" }),
+    });
+    // Also a completion for a turn other than the running one, while running.
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "id": "turn-someone-else", "status": "completed", "items": [] }),
+    });
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "id": "turn-real", "status": "interrupted", "items": [] }),
+    });
+
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    assert_eq!(rows[0].method, "turn/completed");
+    assert_eq!(rows[0].turn_id.as_deref(), Some("turn-real"));
+    let stored: Value = serde_json::from_str(&rows[0].params).unwrap();
+    assert_eq!(stored["status"], "interrupted");
+    assert!(stored.get("error").is_none());
+
+    harness.shutdown().await.unwrap();
+}
+
+/// #1625 P1 review — record, for every event row, how many `turn/completed`
+/// transcript rows were durable at the instant that event was written.
+///
+/// The ordering contract `persist_turn_outcome` documents — the outcome row
+/// is written BEFORE the snapshot commit whose phase change is logged — is
+/// what lets `harness.phase.changed` double as the row's delivery signal
+/// (`fe/core/events/invalidation-plan.ts` refetches the transcript on it and
+/// nothing else announces the row). A test that reads the transcript when
+/// the broadcast arrives cannot pin that: the harness task keeps running
+/// after the broadcast and would usually win the race, so a swapped order
+/// stays green. A trigger on `events` reads inside the database instead, at
+/// the exact statement that makes the event durable, and the answer does
+/// not depend on scheduling.
+async fn record_outcome_rows_at_each_event(repo: &SqlxRepo) {
+    sqlx::query(
+        "CREATE TABLE outcome_rows_at_event (event_id INTEGER PRIMARY KEY, outcome_rows INTEGER NOT NULL)",
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER record_outcome_rows_at_event AFTER INSERT ON events BEGIN \
+           INSERT INTO outcome_rows_at_event (event_id, outcome_rows) VALUES (\
+             NEW.id, (SELECT COUNT(*) FROM harness_items WHERE method = 'turn/completed')\
+           ); \
+         END",
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
+}
+
+/// The count `record_outcome_rows_at_each_event` captured for one event.
+async fn outcome_rows_at_event(repo: &SqlxRepo, event_id: i64) -> i64 {
+    sqlx::query_scalar("SELECT outcome_rows FROM outcome_rows_at_event WHERE event_id = ?1")
+        .bind(event_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+}
+
+/// Receive phase events until the one that lands on `new_phase`.
+async fn recv_phase_event_into(
+    rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+    expected_new_phase: HarnessPhaseTag,
+) -> BroadcastEnvelope {
+    loop {
+        let envelope = recv_phase_event(rx).await;
+        if matches!(
+            envelope.event,
+            Event::HarnessPhaseChanged { new_phase, .. } if new_phase == expected_new_phase
+        ) {
+            return envelope;
+        }
+    }
+}
+
+/// #1625 P1 review — the ordinary turn end: the outcome row is durable
+/// before the `TurnRunning → TurnCompleted` event that announces it.
+///
+/// Mutation this pins: in the `TurnCompleted` arm, move `persist_turn_outcome`
+/// after `persist_snapshot_stamping_issued_head` — the count recorded at the
+/// `TurnCompleted` event drops to 0.
+#[tokio::test]
+async fn outcome_row_is_durable_before_the_phase_event_that_announces_it() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let mut rx = events.subscribe();
+    let (harness, daemon, card_id, _track_id) = seed_harness(repo.clone(), events).await;
+    wait_for_notification_receiver(&daemon).await;
+    record_outcome_rows_at_each_event(&repo).await;
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "id": "turn-order" }),
+    });
+    let running = recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnRunning).await;
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "id": "turn-order", "status": "completed", "items": [] }),
+    });
+    let completed = recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnCompleted).await;
+    assert!(matches!(
+        completed.event,
+        Event::HarnessPhaseChanged {
+            old_phase: HarnessPhaseTag::TurnRunning,
+            ..
+        }
+    ));
+
+    // The probe is live and discriminating: nothing at the turn's start …
+    assert_eq!(outcome_rows_at_event(&repo, running.id).await, 0);
+    // … and the row already there when the turn's end is made durable.
+    assert_eq!(
+        outcome_rows_at_event(&repo, completed.id).await,
+        1,
+        "the turn/completed row must be durable before the TurnRunning -> TurnCompleted event \
+         is written: that event is the only thing telling a client to fetch the row"
+    );
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    assert_eq!(rows[0].turn_id.as_deref(), Some("turn-order"));
+
+    harness.shutdown().await.unwrap();
+}
+
+/// #1625 P1 review — the production Stop path. `PlannerHarness::interrupt`
+/// moves the FSM to `Issuing { Interrupt { target } }` and asks codex to
+/// interrupt the running turn; codex answers with `turn/completed` carrying
+/// `status: "interrupted"`, which lands in the interrupt-target branch of
+/// the `TurnCompleted` arm — a different branch from the one the failed and
+/// stale tests above drive. That branch writes the row too, and the row is
+/// durable before the `IssuingInterrupt → TurnCompleted` event.
+///
+/// A completion for some other turn arriving while the interrupt is pending
+/// is ignored by the FSM and writes nothing: the branch's non-target gate sits
+/// before the insert. Notifications are handled in order by one loop, so
+/// once the target's row exists the non-target frame has been fully
+/// processed, and "exactly one row, the target's" is a complete answer.
+///
+/// Mutation this pins: delete the `persist_turn_outcome` call in the
+/// interrupt-target branch — `wait_for_rows(.., 1)` times out.
+#[tokio::test]
+async fn interrupt_target_completion_writes_outcome_row() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let mut rx = events.subscribe();
+    let (harness, daemon, card_id, _track_id) = seed_harness(repo.clone(), events).await;
+    wait_for_notification_receiver(&daemon).await;
+    record_outcome_rows_at_each_event(&repo).await;
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "id": "turn-int" }),
+    });
+    recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnRunning).await;
+    harness.interrupt("user".into()).await.unwrap();
+    recv_phase_event_into(&mut rx, HarnessPhaseTag::IssuingInterrupt).await;
+    assert_eq!(
+        daemon.interrupted_turns_for_test(),
+        vec![(SEED_THREAD_ID.to_string(), "turn-int".to_string())],
+        "the Stop path must have asked codex to interrupt the running turn"
+    );
+
+    // A non-target completion while the interrupt is pending must leave no row.
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "id": "turn-other", "status": "completed", "items": [] }),
+    });
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "id": "turn-int", "status": "interrupted", "items": [] }),
+    });
+    let completed = recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnCompleted).await;
+    assert!(matches!(
+        completed.event,
+        Event::HarnessPhaseChanged {
+            old_phase: HarnessPhaseTag::IssuingInterrupt,
+            ..
+        }
+    ));
+
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    assert_eq!(rows[0].method, "turn/completed");
+    assert_eq!(rows[0].turn_id.as_deref(), Some("turn-int"));
+    assert!(
+        rows.iter()
+            .all(|row| row.turn_id.as_deref() != Some("turn-other")),
+        "the non-target completion must not have written a row"
+    );
+    let stored: Value = serde_json::from_str(&rows[0].params).unwrap();
+    assert_eq!(stored["status"], "interrupted");
+    assert!(stored.get("error").is_none());
+    assert_eq!(
+        outcome_rows_at_event(&repo, completed.id).await,
+        1,
+        "the interrupted turn's row must be durable before the IssuingInterrupt -> TurnCompleted \
+         event is written"
+    );
+    assert_eq!(
+        harness.snapshot().await.phase,
+        HarnessPhaseTag::TurnCompleted
+    );
+
+    harness.shutdown().await.unwrap();
+}
+
+/// #1625 P1 review — a completion frame without an `id` is accepted under
+/// `last_turn_id` (the arm's fallback), and the row it writes carries that
+/// id. Before the fix the writer re-read `turn.id` and skipped: the FSM
+/// finished the turn and the transcript said nothing about it.
+///
+/// Mutation this pins: make `persist_turn_outcome` read the id from the
+/// frame again — `wait_for_rows(.., 1)` times out.
+#[tokio::test]
+async fn turn_completed_without_id_writes_the_row_under_the_accepted_turn_id() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let (harness, daemon, card_id, _track_id) = seed_harness(repo.clone(), events).await;
+    wait_for_notification_receiver(&daemon).await;
+
+    daemon.emit_notification_for_test(Notification::TurnStarted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "id": "turn-no-id" }),
+    });
+    daemon.emit_notification_for_test(Notification::TurnCompleted {
+        thread_id: SEED_THREAD_ID.into(),
+        turn: json!({ "status": "completed", "items": [] }),
+    });
+
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    assert_eq!(rows[0].method, "turn/completed");
+    assert_eq!(
+        rows[0].turn_id.as_deref(),
+        Some("turn-no-id"),
+        "the row names the turn the FSM accepted the completion for"
+    );
+    let stored: Value = serde_json::from_str(&rows[0].params).unwrap();
+    assert_eq!(stored["status"], "completed");
+    assert!(
+        stored.get("id").is_none(),
+        "params stay the frame as codex sent it; the id lives in the row's column"
+    );
+    assert_eq!(
+        harness.snapshot().await.phase,
+        HarnessPhaseTag::TurnCompleted
+    );
+
+    harness.shutdown().await.unwrap();
+}

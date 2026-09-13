@@ -1189,6 +1189,25 @@
     white-space: pre-wrap;
   }
 
+  /* #1625 P1 — a turn that stopped or failed. The label is Astryx's centred
+   * system line; the reason is a block of its own under it, because the
+   * label's span does not wrap and an error sentence must. Same ink as a
+   * kernel observation: it is context for the exchange, not a speaker. */
+  .outcome {
+    margin: 0;
+    color: var(--text-4);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+  }
+
+  .outcomeDetail {
+    margin: var(--space-2) 0 0;
+    overflow-wrap: anywhere;
+    color: var(--text-3);
+    text-align: center;
+    white-space: pre-wrap;
+  }
+
 
 
 
