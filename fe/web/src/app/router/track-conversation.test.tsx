@@ -269,6 +269,20 @@ afterEach(() => {
 });
 
 describe('track conversations', () => {
+  it('restores each track conversation drawer after switching tracks', async () => {
+    const { router } = setup();
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
+    await screen.findByRole('complementary', { name: 'Planner chat' });
+    await act(() => router.navigate({ to: '/track/w2' }));
+    expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
+    await act(() => router.navigate({ to: '/track/w1' }));
+    await screen.findByRole('complementary', { name: 'Planner chat' });
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    await act(() => router.navigate({ to: '/track/w2' }));
+    await act(() => router.navigate({ to: '/track/w1' }));
+    expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
+  });
+
   it('lists the track\'s assistant conversations beside the planner one', async () => {
     setup();
     await screen.findByRole('button', { name: 'Conversation Planner chat' });

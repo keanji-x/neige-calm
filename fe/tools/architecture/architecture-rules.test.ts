@@ -310,6 +310,10 @@ describe('architecture allowlists', () => {
     const [sibling] = await eslint.lintText(source, { filePath: resolve(root, `web/src/app/${ownerPath}-other.tsx`) });
     expect(owner.messages).toEqual([]);
     expect(sibling.messages.map((message) => message.ruleId)).toEqual(['architecture/no-create-context-outside-allowlist']);
+    const [viewOwner] = await eslint.lintText(source, { filePath: resolve(root, 'web/src/app/router/track-view-state.tsx') });
+    const [viewSibling] = await eslint.lintText(source, { filePath: resolve(root, 'web/src/app/router/track-view-state-other.tsx') });
+    expect(viewOwner.messages).toEqual([]);
+    expect(viewSibling.messages.map((message) => message.ruleId)).toEqual(['architecture/no-create-context-outside-allowlist']);
   });
 
   it('requires a substantive reason beside every exception', () => {

@@ -326,7 +326,7 @@ describe('creating a track lands in its planner conversation', () => {
    * Red when the mark is not consumed — left on the entry, or read from
    * somewhere that outlives the navigation that wrote it.
    */
-  it('does not re-open the conversation on a later visit to the same track', async () => {
+  it('does not re-open an explicitly closed conversation on a later visit to the same track', async () => {
     const { router } = setup();
     await createATrack();
     await screen.findByRole('complementary', { name: 'Planner chat' });
