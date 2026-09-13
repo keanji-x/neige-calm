@@ -3,6 +3,9 @@
 import { useNavigate, useRouter, useRouterState, type RouterHistory } from '@tanstack/react-router';
 import { useCallback, useMemo } from 'react';
 
+import { useTrackViews } from './track-view-state.tsx';
+import type { MobilePanel, TrackSource, TrackSearch } from './track-search.ts';
+
 import { parseWorkspaceRelativeFilePath } from '../../../../core/domain/report-file.ts';
 
 /**
@@ -14,8 +17,7 @@ import { parseWorkspaceRelativeFilePath } from '../../../../core/domain/report-f
  * other example here and is gone: #1234 S1b-4a removed it, because opening a
  * card is not offered on this viewport at all.)
  */
-export type MobilePanel = 'outline' | 'cards' | 'tasks' | 'conversations';
-export type TrackSource = 'pages' | 'area';
+export type { MobilePanel, TrackSource, TrackSearch } from './track-search.ts';
 
 /**
  * History state written by {@link useTrackPanelNavigation} when opening a panel
@@ -28,6 +30,8 @@ export type TrackSource = 'pages' | 'area';
 declare module '@tanstack/history' {
   interface HistoryState {
     ncPanelPushed?: boolean;
+    /** A plain Track selection resumes its saved viewport; explicit targets reveal themselves. */
+    ncResumeTrackView?: boolean;
     /** See {@link useTrackFileNavigation}. */
     ncFilePushed?: boolean;
     /** See {@link usePlannerOpenIntent}. */
@@ -153,13 +157,6 @@ export type NavTarget =
 
 export type GoOptions = Readonly<{ replace?: boolean }>;
 
-/** The whitelisted track query string, as the router validates and rebuilds it. */
-export type TrackSearch = Readonly<{
-  card?: string;
-  file?: string;
-  panel?: MobilePanel;
-  from?: TrackSource;
-}>;
 
 export function pathFor(target: NavTarget): string {
   switch (target.name) {
@@ -186,6 +183,8 @@ export function pathFor(target: NavTarget): string {
  */
 export function useGo(): (target: NavTarget, options?: GoOptions) => void {
   const navigate = useNavigate();
+  const router = useRouter();
+  const views = useTrackViews();
   return useCallback((target: NavTarget, options?: GoOptions) => {
     // The block anchor rides in the hash rather than in component state,
     // because it has to survive the navigation that carries it: the track route
@@ -202,6 +201,15 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
     const search: TrackSearch = target.name === 'track'
       ? buildTrackSearch({ card: target.cardId, file: target.filePath, panel: target.panel, from: target.from })
       : {};
+    // A plain cross-track selection resumes that track. Explicit links and
+    // same-track commands retain their existing clear/replace semantics.
+    const resumeTrack = target.name === 'track' && target.blockId === undefined
+      && target.cardId === undefined && target.filePath === undefined
+      && target.panel === undefined && target.openPlanner !== true
+      && !router.state.location.pathname.endsWith(`/track/${encodeURIComponent(target.trackId)}`);
+    if (resumeTrack) {
+      Object.assign(search, views?.get(target.trackId)?.search);
+    }
     // The planner-open intent rides on the history entry this navigation creates,
     // and nowhere else (#1211 S2) — see `usePlannerOpenIntent`. Written only when
     // asked for, so an ordinary move leaves `state` alone.
@@ -221,9 +229,9 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
       hash,
       search,
       replace: options?.replace,
-      ...(state === undefined ? {} : { state }),
+      ...(target.name === 'track' ? { state: { ...state, ncResumeTrackView: resumeTrack } } : {}),
     });
-  }, [navigate]);
+  }, [navigate, router, views]);
 }
 
 /**

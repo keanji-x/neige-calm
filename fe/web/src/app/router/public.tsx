@@ -11,6 +11,7 @@ import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
 } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
 import { HStack } from '@astryxdesign/core/HStack';
 import { onlineManager, useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
@@ -1225,7 +1226,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
   const preferences = deps.uiPreferences ?? createUiPreferences();
   const rootRoute = createRootRoute({ component: () => (
     <UiPreferencesProvider preferences={preferences}>
-      <ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} />
+      <TrackViewProvider><ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /></TrackViewProvider>
     </UiPreferencesProvider>
   ) });
 
@@ -2759,6 +2760,7 @@ function TrackRouteBody({
   cardRuntime: CardRuntime;
   recentFiles: RecentFileHistory;
 }) {
+  useTrackViewState(track.id);
   const trackMutations = useTrackMutations(transport, unauthorized);
   const conversationMutations = useTrackConversationMutations(transport, track.id, unauthorized);
   const openMobileSection = useOpenMobileSection();
