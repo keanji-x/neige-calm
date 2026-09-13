@@ -3050,6 +3050,11 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 &prepared.actions,
             )
         {
+            // Known cosmetic gap: a fragment/value mismatch here (our bug,
+            // `CalmError::Internal`) lands in the `Err` arm below and is
+            // worded as a codex turn/start refusal, not as the briefing
+            // preparation failure it is; the `prepared` arm is unreachable
+            // from here without hoisting this step above `items`.
             prepared.use_exact_interface(problem)?;
             items[0] = InputItem::text(prepend_diff_block(
                 diff.block.clone(),

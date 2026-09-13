@@ -1,15 +1,16 @@
 //! Ordinary receipts must reach the actual transport, not just a formatter.
 //!
 //! Which detail branch a receipt took, and with which values, is asserted
-//! through the branch's own fragment (`result_receipt::render_detail`), never
-//! through a copy of its sentence: the `.md` under `prompts/result-receipt/`
-//! is the pinned wording (#1635 S1c).
+//! through the branch's own fragment, never through a copy of its sentence:
+//! the `.md` under `prompts/result-receipt/` is the pinned wording (#1635
+//! S1c). The oracle is built here by plain `str::replace` on the fragment
+//! with values the TEST supplies — it does not go through `render_detail`,
+//! the code under test, so a hole bound to the wrong value in production is
+//! a visible difference and not a shared mistake.
 use super::completed_commit_tests::Fixture;
 use super::*;
 use crate::db::RepoRead;
-use crate::harness::result_receipt::{
-    Detail, RECORDED_LEGACY, RECORDED_WITH_EVENT, UNAVAILABLE, render_detail,
-};
+use crate::harness::result_receipt::{RECORDED_LEGACY, RECORDED_WITH_EVENT, UNAVAILABLE};
 use serde_json::json;
 
 /// The bytes every recorded-detail rendering opens with, up to the advertised
@@ -24,7 +25,9 @@ fn recorded_locator() -> &'static str {
 }
 
 /// The run address the actual turn text advertises, parsed out of the text
-/// through the fragment's own shape.
+/// through the fragment's own shape. Used by `read_details` to prove the
+/// advertised address resolves through the real reader; never fed into the
+/// oracle below, whose path comes from the fixture.
 fn advertised_path(text: &str) -> String {
     let locator = recorded_locator();
     let start = text.find(locator).expect("verified detail locator") + locator.len();
@@ -36,11 +39,38 @@ fn advertised_path(text: &str) -> String {
     args["path"].as_str().unwrap().to_string()
 }
 
-/// Every recorded-detail rendering the turn text carries is exactly this one.
-fn assert_only_detail(text: &str, detail: &Detail<'_>) {
-    let expected = render_detail(detail).unwrap();
+/// The address the receipt must advertise for `identity` — the
+/// `runs/<identity>.json` shape the reader serves.
+fn expected_path(identity: &str) -> String {
+    format!("runs/{identity}.json")
+}
+
+/// The detail text `fragment` must have produced for these values, built
+/// independently of the production renderer.
+fn expected_detail(fragment: &str, identity: &str, kind: &str, event_id: i64) -> String {
+    fragment
+        .replace(
+            "{path_json}",
+            &json!({"path": expected_path(identity)}).to_string(),
+        )
+        .replace("{kind}", kind)
+        .replace("{event_id}", &event_id.to_string())
+}
+
+/// The turn text carries exactly one recorded-detail rendering, and it is
+/// `fragment` with these fixture-supplied values in its holes.
+///
+/// `events.<kind>` is additionally asserted as a token: it is the path the
+/// planner prompt names for the run record (`prompts/planner.md` line 138,
+/// `events.completed.payload.result` / `events.failed`) and the key
+/// `read_details` reads back, so the fragment must keep `{kind}` there —
+/// a hole swap inside the `.md` would otherwise render an oracle that
+/// follows the swap.
+fn assert_only_detail(text: &str, fragment: &str, identity: &str, kind: &str, event_id: i64) {
+    let expected = expected_detail(fragment, identity, kind, event_id);
     assert!(text.contains(&expected), "actual Planner input: {text}");
     assert_eq!(text.matches(recorded_locator()).count(), 1, "{text}");
+    assert!(text.contains(&format!("events.{kind}")), "{text}");
 }
 
 #[tokio::test]
@@ -269,11 +299,10 @@ async fn completed_receipt_details_resolve_exact_event_and_artifacts_as_data() {
     assert_eq!(detail["events"]["completed"]["event_id"], id);
     assert_only_detail(
         &text,
-        &Detail::RecordedWithEvent {
-            path: &advertised_path(&text),
-            kind: "completed",
-            event_id: id,
-        },
+        RECORDED_WITH_EVENT,
+        "track:build:attempt-1",
+        "completed",
+        id,
     );
     assert_eq!(
         detail["events"]["completed"]["payload"]["artifacts"][0],
@@ -340,14 +369,7 @@ async fn receipt_empty_completion_and_failure_without_report_are_honest() {
         }
         let detail = read_details(&fx, &text).await;
         assert_eq!(detail["events"]["failed"]["event_id"], id);
-        assert_only_detail(
-            &text,
-            &Detail::RecordedWithEvent {
-                path: &advertised_path(&text),
-                kind: "failed",
-                event_id: id,
-            },
-        );
+        assert_only_detail(&text, RECORDED_WITH_EVENT, "startup-attempt", "failed", id);
         assert!(detail["events"]["completed"].is_null());
         assert!(detail["worker_card_id"].is_null());
     }
@@ -729,14 +751,7 @@ async fn legacy_receipt_without_envelope_discloses_unconfirmed_original_event_an
         assert_eq!(preview["truncated"], false);
         assert!(!text.contains("later-artifact"));
         assert!(text.contains("untrusted"));
-        assert_only_detail(
-            &text,
-            &Detail::RecordedLegacy {
-                path: &advertised_path(&text),
-                kind,
-                event_id: later_id,
-            },
-        );
+        assert_only_detail(&text, RECORDED_LEGACY, "legacy-attempt", kind, later_id);
     }
 }
 

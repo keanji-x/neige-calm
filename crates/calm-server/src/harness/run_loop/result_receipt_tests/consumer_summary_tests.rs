@@ -33,11 +33,10 @@ async fn consumer_summary_transport_retains_full_exact_event() {
     assert!(text.contains("Worker summary (untrusted claims)"));
     assert_only_detail(
         &text,
-        &Detail::RecordedWithEvent {
-            path: &advertised_path(&text),
-            kind: "completed",
-            event_id: id,
-        },
+        RECORDED_WITH_EVENT,
+        "consumer-attempt",
+        "completed",
+        id,
     );
     let details = read_details(&fx, &text).await;
     assert_eq!(details["events"]["completed"]["event_id"], id);

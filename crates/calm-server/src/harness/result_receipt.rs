@@ -12,8 +12,8 @@ use serde_json::Value;
 
 /// The three receipt-detail fragments (#1635 S1c). Which one is appended is
 /// decided here; what it says is the file's business. `pub(super)` so the
-/// run-loop tests can name a branch through its fragment instead of through a
-/// copy of its sentence.
+/// run-loop tests can build their oracle from the fragment (with values of
+/// their own) instead of from a copy of its sentence.
 pub(super) const RECORDED_WITH_EVENT: &str =
     include_str!("../../prompts/result-receipt/recorded-with-event.md");
 pub(super) const RECORDED_LEGACY: &str =
@@ -22,7 +22,7 @@ pub(super) const UNAVAILABLE: &str = include_str!("../../prompts/result-receipt/
 
 /// What `enrich` found for one receipt, i.e. which fragment it appends and
 /// with which values bound.
-pub(super) enum Detail<'a> {
+enum Detail<'a> {
     /// The run record still holds the queued event (the queue carried its ID).
     RecordedWithEvent {
         path: &'a str,
@@ -43,7 +43,7 @@ pub(super) enum Detail<'a> {
 /// Render one receipt's detail text. The fragment/value seam is checked in
 /// both directions by `render_named`; a mismatch is our bug and surfaces as
 /// `CalmError::Internal`.
-pub(super) fn render_detail(detail: &Detail<'_>) -> Result<String> {
+fn render_detail(detail: &Detail<'_>) -> Result<String> {
     Ok(match detail {
         Detail::RecordedWithEvent {
             path,

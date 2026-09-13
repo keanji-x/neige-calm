@@ -255,9 +255,20 @@ async fn recovery_briefing_rechecks_queued_policy_after_snapshot_restore() {
             .unwrap()
             .contains("explicit User recovery")
     );
+    // Count in the decoded item texts, not in their JSON serialisation: a
+    // frame containing a quote or a newline would be escaped there and count
+    // zero without saying so.
     let turns = daemon.started_turns_for_test();
-    let text = serde_json::to_string(&turns[0].1).unwrap();
-    assert_eq!(text.matches(briefing_frame().0.trim_end()).count(), 1);
+    let text = turns[0]
+        .1
+        .iter()
+        .filter_map(|item| match item {
+            InputItem::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(text.matches(briefing_frame().0).count(), 1, "{text}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

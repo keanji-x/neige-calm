@@ -42,7 +42,7 @@ impl std::error::Error for RenderError {}
 impl From<RenderError> for CalmError {
     fn from(error: RenderError) -> Self {
         // `{error:?}` on purpose: the variant name is the fact an operator
-        // needs (`Missing("event_id")`), and this string reaches nobody else.
+        // needs (`Missing("event_id")`).
         CalmError::Internal(format!("prompt fragment mismatch: {error:?}"))
     }
 }
@@ -53,12 +53,16 @@ impl From<RenderError> for CalmError {
 /// `{}`, `{"path": …}`, `{ x }`, `{Name}` — is not a placeholder and passes
 /// through untouched, which is what lets JSON sit in a template or in a value.
 /// Values are inserted verbatim and never re-scanned, so a value that happens
-/// to contain `{kind}` stays literal.
+/// to contain `{kind}` stays literal. There is no escape: `{{x}}` is a literal
+/// `{` followed by the placeholder `{x}` and a `}`, so a fragment cannot emit
+/// a literal `{lowercase}` of its own.
 ///
 /// Errors when the template names a placeholder that `values` does not supply
 /// ([`RenderError::Missing`]) or when `values` supplies a name the template
 /// never uses ([`RenderError::Unused`]). Both directions are checked so that
-/// neither side of the seam can change without the other noticing.
+/// neither side of the seam can change without the other noticing. A name
+/// listed twice in `values` binds its first entry and the second is reported
+/// as [`RenderError::Unused`].
 pub(crate) fn render_named(template: &str, values: &[(&str, &str)]) -> Result<String, RenderError> {
     let mut out = String::with_capacity(template.len());
     let mut used = vec![false; values.len()];
@@ -162,6 +166,23 @@ mod tests {
         assert_eq!(render_named("", &[]), Ok(String::new()));
         assert_eq!(
             render_named("", &[("x", "1")]),
+            Err(RenderError::Unused("x".into()))
+        );
+    }
+
+    #[test]
+    fn double_braces_are_not_an_escape() {
+        assert_eq!(render_named("{{x}}", &[("x", "1")]), Ok("{1}".into()));
+        assert_eq!(
+            render_named("{{x}}", &[]),
+            Err(RenderError::Missing("x".into()))
+        );
+    }
+
+    #[test]
+    fn a_duplicate_key_binds_first_and_reports_the_second_unused() {
+        assert_eq!(
+            render_named("{x}", &[("x", "first"), ("x", "second")]),
             Err(RenderError::Unused("x".into()))
         );
     }
