@@ -70,6 +70,12 @@ struct BootPlan {
     /// Installed before the harness runs, so the first `turn/start` is held
     /// inside the daemon until the test releases it.
     turn_start_hook: Option<TurnStartReturnHook>,
+    /// The stored snapshot as a PRE-#1625-P2 binary wrote it, in place of the
+    /// one `boot_with` builds: a hand-written literal, because this binary
+    /// cannot write the key it carries. Read back through the production
+    /// loader (`HarnessSnapshot::from_value_strict`), like every other
+    /// snapshot here.
+    pre_p2_snapshot_json: Option<Value>,
 }
 
 impl BootPlan {
@@ -80,6 +86,7 @@ impl BootPlan {
             projection_client_id: None,
             seeded: Vec::new(),
             turn_start_hook: None,
+            pre_p2_snapshot_json: None,
         }
     }
 }
@@ -102,6 +109,7 @@ async fn boot_with(plan: BootPlan) -> Boot {
         projection_client_id,
         seeded,
         turn_start_hook,
+        pre_p2_snapshot_json,
     } = plan;
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
@@ -172,10 +180,19 @@ async fn boot_with(plan: BootPlan) -> Boot {
         .await
         .unwrap();
     }
-    let mut snapshot = HarnessSnapshot::initial(0, pending);
-    snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some(SEED_THREAD_ID.to_string());
-    snapshot.projection_client_id = projection_client_id;
+    let stored = match pre_p2_snapshot_json {
+        Some(stored) => stored,
+        None => {
+            let mut snapshot = HarnessSnapshot::initial(0, pending);
+            snapshot.phase = HarnessPhaseTag::Idle;
+            snapshot.last_thread_id = Some(SEED_THREAD_ID.to_string());
+            snapshot.projection_client_id = projection_client_id;
+            serde_json::to_value(&snapshot).unwrap()
+        }
+    };
+    // What the harness runs from is what the production loader makes of the
+    // stored JSON — the same read boot recovery performs (`harness/mod.rs`).
+    let snapshot = HarnessSnapshot::from_value_strict(stored.clone());
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
@@ -189,7 +206,7 @@ async fn boot_with(plan: BootPlan) -> Boot {
             thread_id: Some(SEED_THREAD_ID.to_string()),
             session_id: None,
             active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            handle_state_json: Some(stored),
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -220,6 +237,9 @@ async fn boot_with(plan: BootPlan) -> Boot {
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
+            // A `turn_running` snapshot restores as `Resumed`; the watchdog
+            // must not flip it to `Idle` under a test that is still reading.
+            resumed_reconcile_budget: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
         snapshot,
@@ -655,6 +675,78 @@ async fn a_restarted_harness_replaces_the_stale_projection_of_a_system_only_batc
     boot.harness.shutdown().await.unwrap();
 }
 
+/// Review round 2 (F1) — the recovered key outranks the queue. The
+/// predecessor minted K for a system-only batch, persisted it, wrote the row
+/// under K and died before the issuance outcome. A person's sentence U
+/// reached the successor before its first drain, so the queue it drains is
+/// `[system, U]`. Keying that drain by U would leave the predecessor's row
+/// standing beside the new one — `write_projection_row` replaces under ONE
+/// key. The successor keys by K instead: one row afterwards, under K, none
+/// under U, and U's words inside that row's segments.
+///
+/// The queue is seeded as `[system, U]` rather than U being enqueued live:
+/// every enqueue runs on the harness task, so nothing outside it can order a
+/// live enqueue before the first drain; and the successor persists an
+/// enqueue into the same snapshot anyway, so `[system, U]` beside key K is
+/// exactly what a restart reads from disk after such an enqueue.
+#[tokio::test]
+async fn a_recovered_key_outranks_a_sentence_enqueued_before_the_re_drain() {
+    let entries = QueueEntry::entries_from_observations_for_test(vec![
+        Observation::TaskCompleted {
+            idempotency_key: "task-done".into(),
+            result: json!({"status": "ok"}),
+        },
+        Observation::UserMessage {
+            text: "typed after the restart".into(),
+        },
+    ]);
+    assert_eq!(entries[0].id(), None);
+    let sentence_id = entries[1].id().expect("a user entry has an id").to_string();
+    let persisted_key = QueueEntryId::from_wire("minted-by-the-predecessor".into());
+    let boot = boot_with(BootPlan {
+        projection_client_id: Some(persisted_key.clone()),
+        seeded: vec![SeededProjection {
+            client_id: persisted_key.to_string(),
+            text: "task task-done completed".into(),
+        }],
+        ..BootPlan::new(entries)
+    })
+    .await;
+    assert_eq!(get_items(&boot).await.len(), 1);
+    wait_for_turn_start(&boot).await;
+
+    assert_eq!(
+        boot.daemon.started_turn_client_ids_for_test(),
+        vec![Some(persisted_key.to_string())],
+        "the re-drain is keyed by the recovered key, not by the sentence that arrived after it"
+    );
+    let rows = wait_for_row_count(&boot, 1).await;
+    assert_eq!(rows[0]["item_uuid"], persisted_key.to_string());
+    assert_ne!(
+        rows[0]["worker_session_id"], "predecessor-session",
+        "the predecessor's row was replaced, not joined"
+    );
+    let segments = rows[0]["input_segments"]
+        .as_array()
+        .expect("the projection carries its segments");
+    assert!(
+        segments
+            .iter()
+            .any(|segment| segment["text"].as_str().unwrap().contains("typed after the restart")),
+        "the sentence rides in the recovered batch's row: {segments:?}"
+    );
+    // Give a second row every chance to appear.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let rows = get_items(&boot).await;
+    assert_eq!(rows.len(), 1, "one row, not one per key: {rows:?}");
+    assert!(
+        rows.iter().all(|row| row["item_uuid"] != sentence_id),
+        "nothing stands under the sentence's own id"
+    );
+
+    boot.harness.shutdown().await.unwrap();
+}
+
 /// Review round 1 (B2) — the key a first issuance mints for a system-only
 /// batch is on disk BEFORE the row is written, which is the only order under
 /// which a restart can find it. Read at the one moment that tells the two
@@ -843,4 +935,131 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
             .unwrap(),
         1
     );
+}
+
+/// Review round 2 (F2) — a turn the PREVIOUS binary issued, echoed after the
+/// upgrade. That binary kept the batch's segments in the snapshot under
+/// `issued_input_segments`, keyed by turn, and wrote no projection row (the
+/// drain of its day wrote nothing to the transcript). The upgraded harness
+/// reads that key back and gives the echo those segments — presentation and
+/// attachments — instead of storing the echo bare, which would render the
+/// batch's system observation as the person's words. The completed echo
+/// consumes the entry, and the snapshot this binary writes does not carry
+/// the key: read once, never written.
+///
+/// The stored snapshot is a hand-written literal in the pre-P2 shape —
+/// `git show 5f39ac79^:crates/calm-server/src/harness/snapshot.rs`,
+/// `HarnessSnapshot` with `issued_input_segments: Option<IssuedInputSegments
+/// { turn_id, segments }>` — because this binary cannot serialize the key.
+#[tokio::test]
+async fn an_echo_of_a_turn_issued_before_the_upgrade_takes_the_snapshots_segments() {
+    let turn = "turn-issued-by-the-pre-p2-binary";
+    let attachment_id = "0f9c2a4e-5b6d-4c7e-8a9b-0c1d2e3f4a5b.png";
+    let segments = json!([
+        {
+            "presentation": "system_task_completed",
+            "text": "task task-done completed",
+            "attachments": []
+        },
+        {
+            "presentation": "user",
+            "text": "look at this",
+            "attachments": [{
+                "id": attachment_id,
+                "contentType": "image/png",
+                "size": 1234,
+                "url": format!("/api/cards/pre-p2-card/planner/attachments/{attachment_id}")
+            }]
+        }
+    ]);
+    let stored = json!({
+        "schema_version": 1,
+        "mode": "harness",
+        "phase": "turn_running",
+        "push_watermark": 0,
+        "pending_queue": [],
+        "pending_envelope_ids": [],
+        "pending_entry_meta": [],
+        "pending_message_ids": [],
+        "last_thread_id": SEED_THREAD_ID,
+        "last_turn_id": turn,
+        "last_report_body_sha256": null,
+        "last_seen_head": null,
+        "issued_turn_head": null,
+        "issued_input_segments": { "turn_id": turn, "segments": segments },
+        "wedged_reason": null,
+        "token_usage": null
+    });
+    let boot = boot_with(BootPlan {
+        pre_p2_snapshot_json: Some(stored),
+        ..BootPlan::new(Vec::new())
+    })
+    .await;
+    assert!(get_items(&boot).await.is_empty(), "no projection row: the old drain wrote none");
+
+    // The echo, as codex sends it for a turn whose `turn/start` named no
+    // client id: started, then completed, no `clientId`.
+    let echo_item = json!({
+        "id": "item-user-codex-pre-p2",
+        "type": "userMessage",
+        "content": [{ "type": "text", "text": "task task-done completed\nUser says:\nlook at this" }]
+    });
+    for method in ["item/started", "item/completed"] {
+        boot.daemon.emit_notification_for_test(Notification::Item {
+            method: method.into(),
+            params: json!({
+                "threadId": SEED_THREAD_ID,
+                "turn": { "id": turn },
+                "item": echo_item.clone()
+            }),
+        });
+    }
+    let rows = wait_for_row_count(&boot, 2).await;
+    let completed = rows
+        .iter()
+        .find(|row| row["method"] == "item/completed")
+        .expect("the completed echo is stored");
+    assert_eq!(completed["turn_id"], turn);
+    assert_eq!(completed["item_uuid"], "item-user-codex-pre-p2");
+    assert_eq!(
+        completed["input_segments"], segments,
+        "the row carries the segments the previous binary persisted, attachment included"
+    );
+
+    // Consumed by that completed echo: a later completed `userMessage` on
+    // the same turn (codex does not send one; this is the cheapest probe of
+    // "read once") gets nothing from the slot.
+    boot.daemon.emit_notification_for_test(Notification::Item {
+        method: "item/completed".into(),
+        params: json!({
+            "threadId": SEED_THREAD_ID,
+            "turn": { "id": turn },
+            "item": {
+                "id": "item-user-codex-pre-p2-again",
+                "type": "userMessage",
+                "content": [{ "type": "text", "text": "again" }]
+            }
+        }),
+    });
+    let rows = wait_for_row_count(&boot, 3).await;
+    let again = rows
+        .iter()
+        .find(|row| row["item_uuid"] == "item-user-codex-pre-p2-again")
+        .unwrap();
+    assert_eq!(again.get("input_segments"), None, "the slot was consumed by the first completed echo");
+
+    // Never written: the snapshot this binary persisted after the echo has
+    // no such key, whatever the old one carried.
+    let persisted = boot
+        .repo
+        .session_projection_by_id(&boot.worker_session_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .handle_state_json
+        .unwrap();
+    assert_eq!(persisted.get("issued_input_segments"), None);
+    assert_eq!(persisted["last_turn_id"], turn, "the rest of the snapshot round-tripped");
+
+    boot.harness.shutdown().await.unwrap();
 }

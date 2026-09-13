@@ -13,6 +13,7 @@ use crate::harness::Observation;
 use crate::harness::queue::{QueueEntry, QueueEntryId};
 use crate::harness::state::{HarnessState, IssuingKind};
 use crate::harness::token_usage::TokenUsage;
+use crate::model::HarnessInputSegment;
 use crate::planner_attachments::bind::BoundAttachment;
 
 // #679 PR1 — `HarnessPhaseTag` moved to `calm_types::harness` (TS-exported,
@@ -23,6 +24,37 @@ pub use calm_types::harness::HarnessPhaseTag;
 
 pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 pub const HARNESS_MODE: &str = "harness";
+
+/// The segments of the turn a PRE-#1625-P2 binary had in flight when it
+/// stopped, as that binary persisted them (#1505 S6 to #1625 P2; the struct
+/// as it stood is at `git show 5f39ac79^:crates/calm-server/src/harness/snapshot.rs`).
+///
+/// Read-only and read once. Before P2 the drain kept the batch's segments
+/// here, keyed by the turn they went out under, and the `userMessage` echo
+/// of that turn consumed them into the transcript row it inserted. P2 moved
+/// the segments onto the projection row the drain writes BEFORE `turn/start`,
+/// so no snapshot written by this binary carries the key any more — but a
+/// snapshot written by the previous one can, for a turn that was issued
+/// before the upgrade and echoed after it. That turn has no projection row
+/// (the old drain wrote none), so without this the echo would be stored
+/// with no segments and the transcript would render the batch's system
+/// observations as the person's words, attachments lost. Review round 2 —
+/// CONTRIBUTING.md, "Before you start": a persisted contract is not
+/// rewritten without a compatibility plan, and this is the plan's read
+/// side: the key is honoured on load and never written (the type cannot be
+/// serialized; `HarnessSnapshot` skips the field).
+///
+/// What this covers, exactly: one restart across the upgrade boundary. The
+/// entry lives on the live harness until the completed echo consumes it or
+/// the next drain supersedes it, and the first snapshot this binary writes
+/// drops the key — so a SECOND restart inside that window loses the
+/// segments for that one turn, which is the pre-P2 loss for a turn whose
+/// snapshot was never written. Declared, not closed.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct IssuedInputSegments {
+    pub turn_id: String,
+    pub segments: Vec<HarnessInputSegment>,
+}
 
 /// #1505 PR1 — the persisted half of a [`QueueEntry::User`].
 ///
@@ -274,27 +306,36 @@ pub struct HarnessSnapshot {
     pub last_seen_head: Option<String>,
     #[serde(default)]
     pub issued_turn_head: Option<String>,
-    // `issued_input_segments` lived here from #1505 S6 to #1625 P2. The
-    // segments of the batch in flight are now the `input_segments` column of
-    // the projection row the drain writes to the transcript table, which is
-    // durable on its own; a snapshot on disk that still carries the old key
-    // is read without it (no `deny_unknown_fields`, see `token_usage`).
+    /// `issued_input_segments` was written here from #1505 S6 to #1625 P2.
+    /// The segments of a batch in flight are now the `input_segments` column
+    /// of the projection row the drain writes to the transcript table, which
+    /// is durable on its own. The key is still READ, for the one turn a
+    /// pre-P2 binary can have left in flight across the upgrade — see
+    /// [`IssuedInputSegments`] — and never written: `skip_serializing` here,
+    /// and the type derives no `Serialize`, so a snapshot from this binary
+    /// cannot carry it.
+    #[serde(default, skip_serializing)]
+    pub issued_input_segments: Option<IssuedInputSegments>,
     /// #1625 P2 — the key under which the batch at the head of the queue is,
     /// or is about to be, projected onto the transcript table: the row's
     /// `item_uuid` and `turn/start`'s `clientUserMessageId`.
     ///
     /// Written by `maybe_issue_turn` in the snapshot that precedes the drain
     /// and cleared once the turn is out (`persist_issuance_outcome` on the
-    /// success arm). A batch holding a user entry is keyed by that entry's
-    /// own id, which the queue already persists; this slot exists for a
-    /// batch of system observations alone, whose key is minted. Without it a
-    /// harness restarted between the projection write and the issuance
-    /// outcome re-drained the same batch under a fresh key, so the stale-row
-    /// replacement in `write_projection_row` matched nothing and the batch
-    /// stood on the transcript twice. Additive and defaulted, same
-    /// compatibility argument as `token_usage` below: an old row reads as
-    /// `None`, an old binary drops it — and what it loses is exactly one
-    /// duplicate-row repair for one in-flight batch.
+    /// success arm). Decided once per batch: a batch holding a user entry
+    /// takes that entry's own id, a batch of system observations alone takes
+    /// a mint; and once decided the slot is the key, ahead of whatever the
+    /// queue holds when the batch is drained again (review round 2 — the
+    /// queue can have gained a sentence between a restart and the re-drain,
+    /// and keying by it would leave the predecessor's row standing beside
+    /// the new one). Without the slot a harness restarted between the
+    /// projection write and the issuance outcome re-drained the same batch
+    /// under a fresh key, so the stale-row replacement in
+    /// `write_projection_row` matched nothing and the batch stood on the
+    /// transcript twice. Additive and defaulted, same compatibility argument
+    /// as `token_usage` below: an old row reads as `None`, an old binary
+    /// drops it — and what it loses is exactly one duplicate-row repair for
+    /// one in-flight batch.
     #[serde(default)]
     pub projection_client_id: Option<QueueEntryId>,
     #[serde(default)]
@@ -359,6 +400,7 @@ impl HarnessSnapshot {
             last_report_body_sha256: None,
             last_seen_head: None,
             issued_turn_head: None,
+            issued_input_segments: None,
             projection_client_id: None,
             wedged_reason: None,
             token_usage: None,
@@ -394,6 +436,7 @@ impl HarnessSnapshot {
             last_report_body_sha256,
             last_seen_head: None,
             issued_turn_head: None,
+            issued_input_segments: None,
             projection_client_id: None,
             // Set by `snapshot_for` from `Inner`, exactly like
             // `last_seen_head` / `issued_turn_head` above: `from_state` sees
@@ -901,14 +944,20 @@ mod tests {
         );
     }
 
-    /// #1625 P2 — a snapshot written between #1505 S6 and this slice carries
-    /// an `issued_input_segments` key. The field is gone (the batch in flight
-    /// is now the projection row in the transcript table), and such a snapshot
-    /// must still load: the key is ignored, nothing else is disturbed.
+    /// #1625 P2, review round 2 — a snapshot written between #1505 S6 and
+    /// this slice carries an `issued_input_segments` key for the turn it had
+    /// in flight. This binary READS it (the echo of that turn needs those
+    /// segments; see [`IssuedInputSegments`]) and never WRITES it: the same
+    /// snapshot serialized again has no such key. Nothing else is disturbed.
     #[test]
-    fn a_snapshot_with_the_retired_issued_input_segments_key_still_loads() {
+    fn a_pre_p2_issued_input_segments_key_is_read_on_load_and_never_written() {
         let mut value =
             serde_json::to_value(HarnessSnapshot::initial(7, vec![])).expect("serialize snapshot");
+        assert_eq!(
+            value.get("issued_input_segments"),
+            None,
+            "this binary writes no such key"
+        );
         value["issued_input_segments"] = serde_json::json!({
             "turn_id": "turn-structured",
             "segments": [{
@@ -920,6 +969,25 @@ mod tests {
         let recovered = HarnessSnapshot::from_value_strict(value);
         assert_eq!(recovered.push_watermark, 7);
         assert!(recovered.pending_entries().is_empty());
+        let legacy = recovered
+            .issued_input_segments
+            .as_ref()
+            .expect("the pre-P2 key is read, not dropped");
+        assert_eq!(legacy.turn_id, "turn-structured");
+        assert_eq!(
+            legacy.segments,
+            vec![HarnessInputSegment {
+                presentation: crate::model::HarnessInputPresentation::SystemReportEdited,
+                text: "report changed".into(),
+                attachments: Vec::new(),
+            }]
+        );
+        let rewritten = serde_json::to_value(&recovered).expect("serialize snapshot");
+        assert_eq!(
+            rewritten.get("issued_input_segments"),
+            None,
+            "read once at load; the next write drops the key"
+        );
     }
 
     /// #1514 review — the compatibility argument covers the OTHER direction

@@ -28,7 +28,7 @@ use crate::harness::queue::{
     FoldOutcome, MutationResult, QueueEntry, QueueEntryId, QueueMutation, apply_mutation,
     try_fold_tail,
 };
-use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot};
+use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
 use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, TrackId};
@@ -206,6 +206,13 @@ pub(super) struct Inner {
     /// See `HarnessSnapshot::projection_client_id`. Live copy of the slot;
     /// `maybe_issue_turn` is its only writer.
     projection_client_id: Mutex<Option<QueueEntryId>>,
+    /// See `HarnessSnapshot::issued_input_segments`: the segments of the
+    /// turn a pre-#1625-P2 binary left in flight, read from its snapshot at
+    /// boot and never written back. Consumed by that turn's completed
+    /// `userMessage` echo (`on_notification`), or superseded by the next
+    /// drain (`maybe_issue_turn`), whichever comes first — exactly the
+    /// lifetime the pre-P2 slot had.
+    legacy_issued_input_segments: Mutex<Option<IssuedInputSegments>>,
     last_report_body_sha256: Mutex<Option<String>>,
     last_seen_head: Mutex<Option<track_vcs::CommitHash>>,
     /// #1255 S3 — latest context-window reading from `thread/tokenUsage/updated`.
@@ -910,6 +917,7 @@ impl PlannerHarness {
         // emit an unexpected phase event. `issued_turn_id` likewise belongs
         // to the superseded state.
         *self.inner.issued_turn_id.lock().await = None;
+        *self.inner.legacy_issued_input_segments.lock().await = None;
         *self.inner.interrupt_deadline.lock().await = None;
         persist_snapshot(&self.inner).await?;
         Ok((old_phase, tag))
@@ -1030,6 +1038,7 @@ fn inner_from_params(
         issued_turn_id: Mutex::new(None),
         issued_turn_head: Mutex::new(snapshot.issued_turn_head),
         projection_client_id: Mutex::new(snapshot.projection_client_id),
+        legacy_issued_input_segments: Mutex::new(snapshot.issued_input_segments),
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
         last_seen_head: Mutex::new(snapshot.last_seen_head),
         // Round-trips through the snapshot so the reading survives a reboot
@@ -1744,6 +1753,24 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 .map(ToOwned::to_owned);
             let turn_id = item_turn_id(&params).map(ToOwned::to_owned);
             let params_json = serde_json::to_string(&params)?;
+            // Review round 2 — the one turn a PRE-P2 binary can have left in
+            // flight across the upgrade (`HarnessSnapshot::issued_input_segments`).
+            // Its drain wrote no projection row, so its echo takes the
+            // segments from the legacy slot, exactly as the pre-P2 echo arm
+            // did: matched by turn, attached to the row this arm inserts,
+            // and consumed by the completed echo. A turn issued by THIS
+            // binary never matches — its segments are on its projection row
+            // and the slot holds nothing of its own.
+            let legacy_segments_json = if is_user_message_type(item_type.as_deref()) {
+                let legacy = inner.legacy_issued_input_segments.lock().await;
+                legacy
+                    .as_ref()
+                    .filter(|legacy| turn_id.as_deref() == Some(legacy.turn_id.as_str()))
+                    .map(|legacy| serde_json::to_string(&legacy.segments))
+                    .transpose()?
+            } else {
+                None
+            };
             // #1625 P2 — a `userMessage` echo carrying `item.clientId` is
             // codex handing back the id the drain sent as
             // `clientUserMessageId`, and that id names the projection row the
@@ -1805,6 +1832,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                                 item_type.as_deref(),
                                 &method,
                                 &params_json,
+                                legacy_segments_json.as_deref(),
                             )
                             .await?
                         }
@@ -1834,10 +1862,14 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                         item_type.as_deref(),
                         &method,
                         &params_json,
+                        legacy_segments_json.as_deref(),
                     )
                     .await?
                 }
             };
+            if method == "item/completed" && legacy_segments_json.is_some() {
+                *inner.legacy_issued_input_segments.lock().await = None;
+            }
             emit_item_added(inner, item_db_id, item_uuid, item_type, turn_id, method).await?;
         }
         // `turn/plan/updated` — codex's own TODO checklist for the running
@@ -2058,9 +2090,14 @@ fn is_user_message_type(item_type: Option<&str>) -> bool {
 }
 
 /// One transcript row for a codex `item/*` notification, exactly as this
-/// file inserted it before #1625 P2. `input_segments` is always NULL
-/// here: the segments of a batch live on the projection row the drain
-/// wrote, and an echo that reaches this insert is one no projection claims.
+/// file inserted it before #1625 P2. `input_segments` is NULL here for
+/// every turn this binary issued: the segments of a batch live on the
+/// projection row the drain wrote, and an echo that reaches this insert is
+/// one no projection claims. The one exception is `legacy_segments_json`,
+/// the pre-P2 slot's segments for the turn the previous binary left in
+/// flight (`HarnessSnapshot::issued_input_segments`), which ride on the
+/// echo row the way they did before this slice.
+#[allow(clippy::too_many_arguments)]
 async fn insert_item_row(
     inner: &Arc<Inner>,
     thread_id: &str,
@@ -2069,6 +2106,7 @@ async fn insert_item_row(
     item_type: Option<&str>,
     method: &str,
     params_json: &str,
+    legacy_segments_json: Option<&str>,
 ) -> Result<i64> {
     Ok(inner
         .repo
@@ -2082,7 +2120,7 @@ async fn insert_item_row(
             item_type,
             method,
             params_json,
-            None,
+            legacy_segments_json,
         )
         .await?)
 }
@@ -2142,19 +2180,21 @@ async fn emit_item_added(
 ///
 /// One row per drained turn, not per entry: the drain joins every entry into
 /// ONE `InputItem::Text` (#1505 GAP-A3), so codex echoes ONE `userMessage`
-/// per turn with ONE `clientId`. `client_id` is the first entry's id; the
-/// other entries are readable through `input_segments`.
+/// per turn with ONE `clientId`. `client_id` is the key `maybe_issue_turn`
+/// decided for the batch (the first user entry's id on a first issuance);
+/// the other entries are readable through `input_segments`.
 ///
 /// A projection with this key may already stand. The snapshot persisted at
 /// the top of `maybe_issue_turn` still lists the batch AND carries this key
 /// (`HarnessSnapshot::projection_client_id`), so a harness restarted between
 /// that write and `persist_issuance_outcome` drains the same entries again
-/// under the same key — a user entry's own id, or the persisted mint for a
-/// batch of system entries alone (`state_from_snapshot`: an `IssuingTurn`
-/// phase comes back as `TurnCompleted`/`Resumed`, and the queue is intact);
-/// a failed `turn/start` whose delete failed leaves one too. Either way it
-/// is stale — this drain is the batch's current issuance — so it is
-/// replaced, not joined. That is also why the delete in the failure arm of
+/// under the same key — the slot outranks the queue, so a sentence that
+/// arrived after the restart and before the re-drain does not re-key the
+/// batch (`state_from_snapshot`: an `IssuingTurn` phase comes back as
+/// `TurnCompleted`/`Resumed`, and the queue is intact); a failed
+/// `turn/start` whose delete failed leaves one too. Either way it is stale
+/// — this drain is the batch's current issuance — so it is replaced, not
+/// joined. That is also why the delete in the failure arm of
 /// `maybe_issue_turn` only warns when it fails.
 async fn write_projection_row(
     inner: &Arc<Inner>,
@@ -3089,6 +3129,10 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     *inner.issued_turn_id.lock().await = None;
     *inner.issued_turn_head.lock().await = None;
+    // A new batch supersedes the pre-P2 slot, as it did before this slice: a
+    // turn can only be issued once the previous one completed, and by then
+    // that turn's echo has either consumed the slot or is not coming.
+    *inner.legacy_issued_input_segments.lock().await = None;
     // #1625 P2 — the key shared by the projection row and `turn/start`'s
     // `clientUserMessageId`, decided HERE so that the snapshot written next
     // carries it: a harness restarted between that write and
@@ -3097,15 +3141,31 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // the stale-row replacement in `write_projection_row` matches nothing and
     // the batch stands on the transcript twice.
     //
-    // In order: the first entry that has an id — a person's sentence keeps
-    // its own id as the row's `item_uuid`, which the queue already persists;
-    // else the key an earlier issuance of this batch already used — the slot
-    // survives a re-buffer and a restart precisely so a system-only batch is
-    // not re-keyed; else a fresh mint, for a batch of system entries alone
-    // (a commit notification, a task result) on its first issuance. Read
-    // from the queue rather than from `drained` because the queue does not
-    // change between here and the drain below: every enqueue and every
-    // re-buffer runs on this task.
+    // In order: the key an earlier issuance of this batch already used — the
+    // slot survives a re-buffer and a restart precisely so the batch is not
+    // re-keyed; else the first entry that has an id — a person's sentence
+    // keeps its own id as the row's `item_uuid`, which the queue already
+    // persists; else a fresh mint, for a batch of system entries alone (a
+    // commit notification, a task result) on its first issuance. Read from
+    // the queue rather than from `drained` because the queue does not change
+    // between here and the drain below: every enqueue and every re-buffer
+    // runs on this task.
+    //
+    // The slot outranks the queue (review round 2). The slot is `Some` only
+    // from a drain's key decision until that batch's issuance outcome clears
+    // it, and the batch stays at the head of the queue for that whole span
+    // (each failure exit past this point re-buffers what it drained), so a
+    // set slot always names the batch about to be drained, and the row its
+    // predecessor may have written under it.
+    // The queue can have GROWN by then: a sentence enqueued after a restart
+    // and before this re-drain sits behind the recovered batch, and keying
+    // by that sentence's id would leave the predecessor's row standing
+    // beside the new one, because `write_projection_row` replaces under one
+    // key only. What the recovered key names is the batch, not any entry
+    // still in it: a person who deletes the sentence a re-buffered key came
+    // from leaves the next drain keyed by an id no entry carries, which is
+    // an identity and nothing more (no row stands under it — the failure
+    // arm below deleted it).
     let client_id = {
         let from_queue = inner
             .pending_queue
@@ -3115,8 +3175,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             .find_map(QueueEntry::id)
             .cloned();
         let mut slot = inner.projection_client_id.lock().await;
-        let key = from_queue
-            .or_else(|| slot.clone())
+        let key = slot
+            .clone()
+            .or(from_queue)
             .unwrap_or_else(QueueEntryId::mint);
         *slot = Some(key.clone());
         key
