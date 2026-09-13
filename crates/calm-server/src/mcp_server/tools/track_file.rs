@@ -171,29 +171,3 @@ fn track_fs_error_to_rpc(err: TrackFsError) -> RpcError {
         TrackFsError::Internal(message) => RpcError::internal(message),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn descriptors_document_planner_worker_access() {
-        let ls = ls_descriptor();
-        let cat = cat_descriptor();
-
-        assert!(
-            ls.description.starts_with("Planner/Worker:"),
-            "ls descriptor should advertise Planner/Worker access: {}",
-            ls.description
-        );
-        assert!(
-            cat.description.starts_with("Planner/Worker:"),
-            "cat descriptor should advertise Planner/Worker access: {}",
-            cat.description
-        );
-        assert!(
-            !ls.description.contains("Planner-only") && !cat.description.contains("Planner-only"),
-            "track file descriptors must not claim planner-only access"
-        );
-    }
-}

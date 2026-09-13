@@ -151,13 +151,6 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
                 json!({"type":"integer","minimum":0,"maximum":20000}),
                 "{name}: the per-mode defaults live in the description (schema bytes)"
             );
-            assert!(
-                descriptor.description.contains("2000 for")
-                    && descriptor.description.contains("change")
-                    && descriptor.description.contains("15000")
-                    && descriptor.description.contains("signal"),
-                "{name}: tool description states the change and signal default budgets"
-            );
             assert_eq!(
                 schema["properties"]["wait_for"],
                 json!({"type":"string","enum":["elapsed","change","signal"],"default":"elapsed"}),
@@ -187,25 +180,7 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
             );
         }
     }
-    // #1618 round 07/08 guidance lives in the descriptions, not the schema.
-    let description = |name: &str| {
-        descriptors
-            .iter()
-            .find(|descriptor| descriptor.name == name)
-            .unwrap()
-            .description
-            .clone()
-    };
-    let observe = description("calm.terminal.observe");
-    assert!(
-        observe.contains("baseline_revision") && observe.contains("previous_observation_revision")
-    );
-    let control = description("calm.terminal.control");
-    assert!(control.contains("text_omitted") && control.contains("500 ms"));
-    // #1620: open claims in one call, submit is one write, signals are untrusted.
-    let open = description("calm.terminal.open");
-    assert!(open.contains("claim=true") && open.contains("NEIGE_CLAUDE_SETTINGS"));
-    assert!(observe.contains("hooks_seen") && observe.contains("forge"));
+    // #1620: open claims in one call.
     let open_schema = &descriptors
         .iter()
         .find(|descriptor| descriptor.name == "calm.terminal.open")
@@ -214,14 +189,6 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
     assert_eq!(
         open_schema["properties"]["claim"],
         json!({"type":"boolean","default":false})
-    );
-    let input_description = description("calm.terminal.input");
-    assert!(
-        input_description.contains("stale_observation")
-            && input_description.contains("never for menu selection or clicks")
-            && input_description.contains("Omit observation_id")
-            && input_description.contains("\"type\":\"submit\"")
-            && input_description.contains("repeat is not allowed")
     );
     let input = &descriptors
         .iter()

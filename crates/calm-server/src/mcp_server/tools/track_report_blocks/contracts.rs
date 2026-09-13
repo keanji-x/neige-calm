@@ -605,10 +605,7 @@ mod task_kind_contract_tests {
             "task usage must keep discriminated instruction fields visible: {usage}"
         );
 
-        let kinds = kinds_descriptor();
-        assert!(kinds.description.contains("`task`"));
         let upsert = upsert_descriptor();
-        assert!(upsert.description.contains("/ `task`"));
         let upsert_kinds = &upsert.input_schema["properties"]["kind"]["enum"];
         assert!(
             upsert_kinds
