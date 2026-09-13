@@ -28,11 +28,12 @@
 //! `templates::SITE_PREFIX`, composed by the loader from the file stem) and
 //! the still-reserved `plugin/` prefix live *outside* the front matter — a
 //! file's own `id` never names its origin. Rejecting `/` here is what keeps a
-//! builtin file from claiming an operator id, and an operator file from
-//! claiming a builtin one. The plugin-side alphabet
-//! (`TemplateDescriptor::validate`, `^[a-z0-9][a-z0-9._-]{0,63}$`) is wider
-//! than this one — it admits `.` and `_` — but neither admits `/`, so neither
-//! side can spell the other's prefix.
+//! builtin file from spelling `site/…`; what keeps an operator file from
+//! shadowing a builtin id is the other half — the loader composes its key as
+//! `site/<stem>`, so the file's own `id` is never a key. The plugin-side
+//! alphabet (`TemplateDescriptor::validate`, `^[a-z0-9][a-z0-9._-]{0,63}$`)
+//! is wider than this one — it admits `.` and `_` — but neither admits `/`,
+//! so neither side can spell the `site/` prefix.
 
 use serde::Deserialize;
 

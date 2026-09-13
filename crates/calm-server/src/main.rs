@@ -6,8 +6,6 @@ use std::sync::Arc;
 use axum::{response::Redirect, routing::get};
 use calm_server::auth::{AuthConfig, AuthState};
 use calm_server::config::Config;
-use calm_server::db::Repo;
-use calm_server::db::sqlite::SqlxRepo;
 use calm_server::routes;
 use calm_server::state::AppState;
 use clap::Parser;
@@ -31,19 +29,12 @@ async fn main() -> anyhow::Result<()> {
     }
     warn_if_worker_hook_callback_is_not_loopback(&cfg);
 
-    // Storage. `mock` keeps the in-memory backend for dev — it now resolves to
-    // an in-memory `SqlxRepo` (`sqlite::memory:`) so dev parity with the
-    // production sqlite backend is exact (cascades, FK enforcement, etc.).
-    let repo: Arc<dyn Repo> = if cfg.db_url == "mock" {
-        tracing::warn!(
-            "calm-server starting with in-memory SqlxRepo (sqlite::memory:, non-durable)"
-        );
-        Arc::new(SqlxRepo::open("sqlite::memory:").await?)
-    } else {
-        Arc::new(SqlxRepo::open(&cfg.db_url).await?)
-    };
-
-    let state = AppState::new(&cfg, repo).await?;
+    // Template roster, then storage, then the state — `AppState::boot` owns
+    // that order (#1635 S5): a refused `--templates-dir` exits here with no
+    // database file, no WAL and no directory created. The storage policy
+    // (`mock` ⇒ in-memory `SqlxRepo`, otherwise `cfg.db_url`) lives in `boot`
+    // too, so the tests on it open exactly what this process opens.
+    let state = AppState::boot(&cfg).await?;
 
     calm_server::assert_worker_sessions_card_id_complete_on_boot(&state).await?;
 
@@ -320,8 +311,8 @@ fn warn_if_worker_hook_callback_is_not_loopback(cfg: &Config) {
 mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::{Method, Request, StatusCode};
+    use calm_server::config::Config;
     use clap::Parser;
-    use std::sync::Arc;
     use std::time::Duration;
     use tower::ServiceExt;
 
@@ -366,12 +357,8 @@ mod tests {
         cfg.data_dir = Some(runtime.path().join("data"));
         cfg.plugins_dir = Some(runtime.path().join("plugins"));
         cfg.plugins_data_dir = Some(runtime.path().join("plugins-data"));
-        let repo: Arc<dyn calm_server::db::Repo> = Arc::new(
-            calm_server::db::sqlite::SqlxRepo::open("sqlite::memory:")
-                .await
-                .unwrap(),
-        );
-        let state = calm_server::state::AppState::new(&cfg, repo).await.unwrap();
+        // `db_url` is the `mock` default: the boot opens `sqlite::memory:`.
+        let state = calm_server::state::AppState::boot(&cfg).await.unwrap();
         let routes = calm_server::routes::router().with_state(state);
         let baseline = routes.clone();
         let app = super::mount_frontends(routes, Some(web.path()), Some(fe.path()));
@@ -409,33 +396,58 @@ mod tests {
         );
     }
 
+    /// #1635 S5 — a boot `Config` for these tests: every runtime path under
+    /// `runtime`, storage at `runtime/calm.db` (an on-disk sqlite URL of the
+    /// exact form neige-app configures), templates from `templates_dir`.
+    fn boot_config(runtime: &std::path::Path, templates_dir: &std::path::Path) -> Config {
+        let mut cfg = Config::parse_from([
+            "calm-server",
+            "--templates-dir",
+            templates_dir.to_str().unwrap(),
+        ]);
+        cfg.db_url = format!("sqlite://{}?mode=rwc", runtime.join("calm.db").display());
+        cfg.data_dir = Some(runtime.join("data"));
+        cfg.plugins_dir = Some(runtime.join("plugins"));
+        cfg.plugins_data_dir = Some(runtime.join("plugins-data"));
+        cfg.workspace_root = Some(runtime.join("workspaces"));
+        cfg
+    }
+
+    /// The persistent things a boot creates, none of which may exist after a
+    /// refused one: the sqlite file and its WAL/shm sidecars, the plugin
+    /// install/data dirs, the runtime data dir, the managed workspace root.
+    fn persistent_paths(runtime: &std::path::Path) -> [std::path::PathBuf; 7] {
+        [
+            runtime.join("calm.db"),
+            runtime.join("calm.db-wal"),
+            runtime.join("calm.db-shm"),
+            runtime.join("plugins"),
+            runtime.join("plugins-data"),
+            runtime.join("data"),
+            runtime.join("workspaces"),
+        ]
+    }
+
     /// #1635 S5 — `--templates-dir` pointing at a directory with a file that
-    /// does not load fails the boot: `AppState::new` (the one production
-    /// caller of `TemplateRoster::for_boot`) returns `Err`, which `main`'s
-    /// `?` turns into a non-zero exit. The error names the file. Tested on
-    /// the function, not the binary; the fail-closed variants live in
-    /// `templates::site_dir_tests`.
+    /// does not load fails the boot **before storage exists**: `AppState::boot`
+    /// (the one thing `main` calls) returns `Err` naming the file, and the
+    /// database file that `cfg.db_url` names was never created — nor its WAL,
+    /// nor any runtime directory. `main`'s `?` turns the `Err` into a non-zero
+    /// exit. Tested on the function, not the binary; the fail-closed variants
+    /// per file shape live in `templates::site_dir_tests`.
+    ///
+    /// `a_templates_dir_reaches_the_picker_through_the_boot` below is the
+    /// positive control for the absence assertions: the same `Config` shape
+    /// with a loadable directory does create `calm.db` at that path.
     #[tokio::test]
-    async fn a_bad_templates_dir_fails_the_boot_naming_the_file() {
+    async fn a_bad_templates_dir_fails_the_boot_before_storage_exists() {
         let runtime = tempfile::tempdir().unwrap();
         let templates = tempfile::tempdir().unwrap();
         let bad = templates.path().join("broken.md");
         std::fs::write(&bad, b"# a template file without front matter\n").unwrap();
+        let cfg = boot_config(runtime.path(), templates.path());
 
-        let mut cfg = calm_server::config::Config::parse_from([
-            "calm-server",
-            "--templates-dir",
-            templates.path().to_str().unwrap(),
-        ]);
-        cfg.data_dir = Some(runtime.path().join("data"));
-        cfg.plugins_dir = Some(runtime.path().join("plugins"));
-        cfg.plugins_data_dir = Some(runtime.path().join("plugins-data"));
-        let repo: Arc<dyn calm_server::db::Repo> = Arc::new(
-            calm_server::db::sqlite::SqlxRepo::open("sqlite::memory:")
-                .await
-                .unwrap(),
-        );
-        let error = match calm_server::state::AppState::new(&cfg, repo).await {
+        let error = match calm_server::state::AppState::boot(&cfg).await {
             Ok(_) => panic!("a broken operator template must fail the boot"),
             Err(error) => error.to_string(),
         };
@@ -447,12 +459,74 @@ mod tests {
             error.contains("must open with a `+++`"),
             "and carry the loader's reason: {error}"
         );
-        // Fail-closed means fail *before* side effects: the roster is built
-        // first, so no runtime directory was created on the way to the error.
-        assert!(
-            !runtime.path().join("plugins").exists(),
-            "the plugins dir must not be created when the boot refuses the templates dir"
+        // Fail-closed means nothing persistent precedes the refusal: the
+        // roster is validated before storage is opened and before
+        // `AppState::new` creates any directory.
+        for path in persistent_paths(runtime.path()) {
+            assert!(
+                !path.exists(),
+                "{} must not exist after a refused boot",
+                path.display()
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(runtime.path()).unwrap().count(),
+            0,
+            "the runtime directory must be untouched after a refused boot"
         );
+    }
+
+    /// #1635 S5 — the happy path through the real boot: `AppState::boot`
+    /// with a loadable `--templates-dir` → `routes::router()` → the picker
+    /// lists `site/x` with the file's title after the builtin entries.
+    ///
+    /// This is the test that holds `AppState::new`'s hand-over of the roster
+    /// into `RouteState.templates`: writing `TemplateRoster::builtin()` there
+    /// instead of the parameter leaves every loader test green and turns
+    /// this one red (the listing then lacks `site/x`).
+    #[tokio::test]
+    async fn a_templates_dir_reaches_the_picker_through_the_boot() {
+        let runtime = tempfile::tempdir().unwrap();
+        let templates = tempfile::tempdir().unwrap();
+        std::fs::write(
+            templates.path().join("x.md"),
+            "+++\nid = \"x\"\ntitle = \"Operator template X\"\n+++\n# Plan\n\nOperator prose.\n",
+        )
+        .unwrap();
+        let cfg = boot_config(runtime.path(), templates.path());
+
+        let state = calm_server::state::AppState::boot(&cfg)
+            .await
+            .expect("a loadable templates dir boots");
+        // Positive control for the refusal test's absence assertions: this
+        // is the path a successful boot creates the database at.
+        assert!(
+            runtime.path().join("calm.db").exists(),
+            "a successful boot creates the configured sqlite file"
+        );
+
+        let app = calm_server::routes::router().with_state(state);
+        let (status, body) = response_body(app, "/api/track-templates").await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let listing: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ids: Vec<&str> = listing
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|template| template["id"].as_str().expect("id"))
+            .collect();
+        let mut expected: Vec<&str> = calm_server::templates::TemplateRoster::builtin()
+            .entries()
+            .iter()
+            .map(|template| template.key())
+            .collect();
+        expected.push("site/x");
+        assert_eq!(
+            ids, expected,
+            "builtin ids in roster order, then the site id"
+        );
+        let site = &listing.as_array().unwrap()[expected.len() - 1];
+        assert_eq!(site["title"], "Operator template X");
     }
 
     #[tokio::test]

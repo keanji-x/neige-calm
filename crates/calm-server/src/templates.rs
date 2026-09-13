@@ -190,7 +190,7 @@ pub struct TemplateRoster {
 /// Why a set of template sources did not become a roster.
 ///
 /// `pub(crate)` since #1635 S5: [`TemplateRoster::for_boot`] hands it to
-/// `AppState::new`, which turns it into the boot error `main` exits on.
+/// `AppState::boot`, which turns it into the boot error `main` exits on.
 #[derive(Debug)]
 pub(crate) enum RosterError {
     /// Source number `index` (0-based, in [`BUILTIN_SOURCES`] order) did not
@@ -330,22 +330,32 @@ impl TemplateRoster {
     /// `--templates-dir` was given, otherwise the builtin entries followed by
     /// one `site/<stem>` entry per `*.md` file in `site_dir`, leaked once.
     ///
-    /// The one production caller is `AppState::new`; `main` exits non-zero on
-    /// `Err`. The `fixtures`-gated `AppState::with_templates_dir` is the test
-    /// road onto the same function. `pub(crate)`, not `pub`: a downstream
-    /// crate still cannot feed the roster its own bytes
+    /// The one production caller is `AppState::boot`, which runs this before
+    /// it opens storage; `main` exits non-zero on `Err`. The `fixtures`-gated
+    /// `AppState::with_templates_dir` is the test road onto the same function.
+    /// `pub(crate)`, not `pub`: a downstream crate cannot construct or feed
+    /// the roster except through the boot loader, which validates every file
     /// (`tests/ui/template_roster_constructors_are_private.rs`).
     ///
     /// Fail-closed, and every failure names its file: see [`RosterError`] and
-    /// the module doc. There is deliberately no arm that skips a file.
+    /// the module doc. There is deliberately no arm that skips a file. A
+    /// successful load logs the site-entry count at `info` — zero is a
+    /// legitimate state (a directory with no `*.md`), and the count is what
+    /// makes it visible.
     pub(crate) fn for_boot(
         site_dir: Option<&Path>,
     ) -> Result<&'static TemplateRoster, RosterError> {
         let Some(dir) = site_dir else {
             return Ok(Self::builtin());
         };
-        let mut roster = Self::builtin().copy_of_entries();
+        let builtin = Self::builtin();
+        let mut roster = builtin.copy_of_entries();
         roster.extend_with_site_dir(dir)?;
+        tracing::info!(
+            site_templates = roster.entries.len() - builtin.entries.len(),
+            dir = %dir.display(),
+            "operator templates loaded"
+        );
         Ok(Box::leak(Box::new(roster)))
     }
 
@@ -1105,7 +1115,7 @@ mod site_dir_tests {
     }
 
     /// The production entry point on one directory: `for_boot(Some(dir))`,
-    /// exactly what `AppState::new` calls. Leaks one roster per call — fine
+    /// exactly what `AppState::boot` calls. Leaks one roster per call — fine
     /// for a test, and the reason production calls it once.
     fn load(dir: &Path) -> Result<&'static TemplateRoster, RosterError> {
         TemplateRoster::for_boot(Some(dir))
@@ -1193,9 +1203,9 @@ mod site_dir_tests {
     }
 
     /// `Config { templates_dir: Some(bad) }` → the boot's roster construction
-    /// is `Err`; `AppState::new` propagates it and `main` exits non-zero.
-    /// (`main_tests::a_bad_templates_dir_fails_the_boot` drives `AppState::new`
-    /// itself.)
+    /// is `Err`; `AppState::boot` propagates it and `main` exits non-zero.
+    /// (`main.rs`'s `a_bad_templates_dir_fails_the_boot_before_storage_exists`
+    /// drives `AppState::boot` itself and asserts no database was created.)
     #[test]
     fn a_config_with_a_bad_templates_dir_fails_for_boot() {
         let dir = site_dir(&[("x.md", "# no front matter\n")]);

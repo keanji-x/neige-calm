@@ -158,8 +158,10 @@ Each file opens with `+++` TOML front matter (`id`, `title`), the `id` must equa
 the file's stem, and the template is listed and created as `site/<stem>` (a
 `site/` id can never collide with a built-in or a plugin template). The directory
 is read once at boot and is fail-closed: a file that does not load (bad front
-matter, `id` ≠ stem, a body the create path would refuse) stops the boot with an
-error naming that file, so check the journal after adding or editing one.
+matter, `id` ≠ stem, a body that fails the create path's compile or contract-header
+check — the task projection a create runs after persisting is not run at boot)
+stops the boot with an error naming that file, before the database is opened, so
+check the journal after adding or editing one.
 
 ### 2.5 Install + start the systemd user unit
 

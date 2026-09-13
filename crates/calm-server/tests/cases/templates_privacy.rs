@@ -18,9 +18,11 @@
 //!     (`builtin`, `entries`, `get`, `key`, `title`, `recipe`) stays reachable.
 //!
 //! Together: the only `&'static Template` a downstream crate can name is a
-//! borrow of a roster entry — `TemplateRoster::builtin()`'s, or (through the
-//! `fixtures`-gated `AppState::with_templates_dir`, which runs the production
-//! `for_boot` over a directory) `RouteState.templates`'. The in-crate half (accessor ↔
+//! borrow of a roster entry — `TemplateRoster::builtin()`'s, or
+//! `RouteState.templates`', which every road fills through the same boot
+//! loader (`AppState::boot` with `Config.templates_dir` in production, the
+//! `fixtures`-gated `AppState::with_templates_dir` in tests) — a loader that
+//! validates every file it admits. The in-crate half (accessor ↔
 //! private field pointer identity, `get` returning the roster's own borrow)
 //! lives in `templates::tests`, because those comparisons name the private
 //! fields and cannot be written from outside the defining module.

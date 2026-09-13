@@ -5,12 +5,14 @@
 //!
 //! The roster reaches `RouteState.templates` through
 //! `AppState::with_templates_dir`, which runs the same
-//! `TemplateRoster::for_boot` `AppState::new` runs — so this file exercises the
-//! production loader over a real directory, not a fixture roster. The
+//! `TemplateRoster::for_boot` `AppState::boot` runs — so this file exercises
+//! the production loader over a real directory, not a fixture roster. The
 //! fail-closed cases (bad front matter, `id ≠ stem`, a body that does not
 //! compile, …) are the loader's own unit tests in
-//! `calm_server::templates::site_dir_tests`; the boot-level refusal is
-//! `main`'s `a_bad_templates_dir_fails_the_boot_naming_the_file`.
+//! `calm_server::templates::site_dir_tests`; the boot itself — roster before
+//! storage, and the hand-over into `AppState::new` — is `main.rs`'s
+//! `a_bad_templates_dir_fails_the_boot_before_storage_exists` and
+//! `a_templates_dir_reaches_the_picker_through_the_boot`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
