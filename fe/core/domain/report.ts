@@ -104,6 +104,71 @@ export const liveTableBlockPayloadSchema = z.strictObject({
   caption: max2048CodePoints(z.string()).nullish(),
 });
 
+/* ── chart.series (#1628) ───────────────────────────────────────────────
+   A chart that names its data instead of carrying it: `source` is the plugin
+   tool the kernel asks for the points, `series` the venue-qualified assets.
+   The rules below are the frontend's copy of
+   `crates/calm-types/src/report_blocks/chart_series.rs`, and the same three
+   passes: strict shape, the `as_of` calendar, the one `(range, period)` pair
+   that cannot hold two points. Like the kernel it never compares `as_of`
+   with today — a cutoff in the future is a frozen block whose source has
+   not published past it yet, which the renderer may flag but must draw. */
+
+/** `^[A-Z]{2,8}:[A-Za-z0-9._-]{1,32}$` — venue prefix and symbol. */
+export const CHART_SERIES_ASSET_PATTERN = /^[A-Z]{2,8}:[A-Za-z0-9._-]{1,32}$/;
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+function daysInMonth(year: number, month: number): number | null {
+  switch (month) {
+    case 1: case 3: case 5: case 7: case 8: case 10: case 12: return 31;
+    case 4: case 6: case 9: case 11: return 30;
+    case 2: return isLeapYear(year) ? 29 : 28;
+    default: return null;
+  }
+}
+
+/**
+ * `YYYY-MM-DD` that names a real Gregorian day. Pure: no `Date`, no clock —
+ * `new Date('2026-02-30')` would roll over to March 2nd and accept exactly
+ * the payload the kernel refuses.
+ */
+export function isCalendarDate(text: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (match === null) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const last = daysInMonth(year, month);
+  return last !== null && day >= 1 && day <= last;
+}
+
+export const chartSeriesPayloadSchema = z.strictObject({
+  source: max2048CodePoints(z.string().regex(LIVE_TABLE_SOURCE_PATTERN,
+    'must be neige://plugin/<plugin_id>/<tool>')),
+  series: z.array(max2048CodePoints(z.string().regex(CHART_SERIES_ASSET_PATTERN,
+    'must be a venue-qualified asset id such as US:NVDA'))).min(1).max(8),
+  field: z.enum(['close', 'open', 'high', 'low', 'volume']).nullish(),
+  range: z.enum(['1M', '3M', '6M', '1Y', '2Y', '5Y']).nullish(),
+  period: z.enum(['day', 'week', 'month']).nullish(),
+  view: z.enum(['line', 'normalized', 'bar', 'candles']).nullish(),
+  as_of: max2048CodePoints(z.string()).nullish(),
+  overlays: z.array(z.enum(['ma20', 'ma60'])).nullish(),
+  caption: max2048CodePoints(z.string()).nullish(),
+})
+  .refine((chart) => new Set(chart.series).size === chart.series.length,
+    { message: 'series must not repeat an asset' })
+  .refine((chart) => chart.view !== 'candles' || (chart.series.length === 1 && chart.field == null),
+    { message: 'view candles takes exactly one series and no field' })
+  .refine((chart) => chart.overlays == null || chart.view == null || chart.view === 'line' || chart.view === 'candles',
+    { message: 'overlays apply only to view line|candles' })
+  .refine((chart) => chart.as_of == null || isCalendarDate(chart.as_of),
+    { message: 'as_of must be a calendar date in YYYY-MM-DD form' })
+  .refine((chart) => !(chart.range === '1M' && chart.period === 'month'),
+    { message: 'range 1M cannot hold two complete month periods' });
+
 /*
  * Live first. Both members are strict objects, so the order cannot change
  * which one accepts a given payload — a payload with `source` is refused by
@@ -209,6 +274,7 @@ export const taskBlockPayloadSchema = z.union([
 
 export type ProseBlockPayload = z.infer<typeof proseBlockPayloadSchema>;
 export type ChartCandlesPayload = z.infer<typeof chartCandlesPayloadSchema>;
+export type ChartSeriesPayload = z.infer<typeof chartSeriesPayloadSchema>;
 export type TableBlockPayload = z.infer<typeof tableBlockPayloadSchema>;
 export type InlineTableBlockPayload = z.infer<typeof inlineTableBlockPayloadSchema>;
 export type LiveTableBlockPayload = z.infer<typeof liveTableBlockPayloadSchema>;
@@ -230,6 +296,7 @@ export type TaskBlockPayload = z.infer<typeof taskBlockPayloadSchema>;
 export type ReportBlock =
   | Readonly<{ id: string; kind: 'prose'; payload: ProseBlockPayload }>
   | Readonly<{ id: string; kind: 'chart.candles'; payload: ChartCandlesPayload }>
+  | Readonly<{ id: string; kind: 'chart.series'; payload: ChartSeriesPayload }>
   | Readonly<{ id: string; kind: 'table'; payload: TableBlockPayload }>
   | Readonly<{ id: string; kind: 'app'; payload: AppBlockPayload }>
   | Readonly<{ id: string; kind: 'task'; payload: TaskBlockPayload }>
@@ -248,6 +315,7 @@ function payloadSchemaFor(kind: string): z.ZodType | null {
   switch (kind) {
     case 'prose': return proseBlockPayloadSchema;
     case 'chart.candles': return chartCandlesPayloadSchema;
+    case 'chart.series': return chartSeriesPayloadSchema;
     case 'table': return tableBlockPayloadSchema;
     case 'app': return appBlockPayloadSchema;
     case 'task': return taskBlockPayloadSchema;

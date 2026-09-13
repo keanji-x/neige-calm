@@ -1,0 +1,23 @@
+@layer features {
+  /* The chart.series placeholder (#1628 S1). No figure yet: the block draws
+     one line of prose in the table's caption register, so a report that
+     already carries a series block reads as "a chart goes here" rather than
+     as a broken document. The rendering lands in a later slice. */
+  .wrap {
+    overflow-x: auto;
+  }
+
+  .caption {
+    margin-block-end: var(--space-4);
+    font-size: var(--text-xs);
+    color: var(--text-3);
+    text-align: start;
+  }
+
+  .note {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+}

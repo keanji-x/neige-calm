@@ -256,7 +256,7 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn kinds_returns_all_five_schemas() {
+async fn kinds_returns_all_six_schemas() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
@@ -274,7 +274,17 @@ async fn kinds_returns_all_five_schemas() {
         .iter()
         .map(|k| k.get("kind").and_then(Value::as_str).unwrap())
         .collect();
-    assert_eq!(names, ["prose", "chart.candles", "table", "app", "task"]);
+    assert_eq!(
+        names,
+        [
+            "prose",
+            "chart.candles",
+            "chart.series",
+            "table",
+            "app",
+            "task"
+        ]
+    );
     for kind in kinds {
         assert_eq!(
             kind.pointer("/schema/type").and_then(Value::as_str),
@@ -298,7 +308,7 @@ async fn kinds_returns_all_five_schemas() {
         chart.pointer("/schema/required").unwrap(),
         &json!(["symbol", "candles"]),
     );
-    let task = &kinds[4];
+    let task = &kinds[5];
     assert_eq!(
         task.pointer("/schema/properties/context/$ref"),
         Some(&json!("#/$defs/contextValue"))
@@ -326,7 +336,55 @@ async fn kinds_returns_all_five_schemas() {
             .contains("blocks.upsert"),
         "usage carries a minimal example"
     );
-    let table = &kinds[2];
+    let series = &kinds[2];
+    assert_eq!(
+        series.pointer("/schema/required").unwrap(),
+        &json!(["source", "series"]),
+    );
+    assert_eq!(
+        series.pointer("/schema/additionalProperties"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(
+        series
+            .pointer("/schema/properties/series/maxItems")
+            .and_then(Value::as_u64),
+        Some(calm_types::report_blocks::MAX_CHART_SERIES as u64),
+    );
+    assert_eq!(
+        series
+            .pointer("/schema/properties/series/items/pattern")
+            .and_then(Value::as_str),
+        Some("^[A-Z]{2,8}:[A-Za-z0-9._-]{1,32}$"),
+    );
+    assert_eq!(
+        series
+            .pointer("/schema/properties/as_of/pattern")
+            .and_then(Value::as_str),
+        Some("^\\d{4}-\\d{2}-\\d{2}$"),
+    );
+    assert_eq!(
+        series.pointer("/schema/properties/view/enum").unwrap(),
+        &json!(["line", "normalized", "bar", "candles"]),
+    );
+    assert!(
+        series["usage"]
+            .as_str()
+            .is_some_and(|usage| usage.contains("NOT inlined") && usage.contains("as_of")),
+        "chart.series usage says the data is named, not carried: {series}"
+    );
+    assert!(
+        !chart["usage"]
+            .as_str()
+            .unwrap()
+            .contains("no market-data source"),
+        "chart.candles no longer claims the kernel cannot resolve market data"
+    );
+    assert!(
+        chart["usage"].as_str().unwrap().contains("chart.series"),
+        "chart.candles usage points at chart.series"
+    );
+    let table = &kinds[3];
     // Two mutually exclusive forms, and the exclusion is the point: a payload
     // that both named a source and carried rows would have two answers to
     // what the table shows. Assert each branch's `required` AND its `not`,
@@ -362,14 +420,14 @@ async fn kinds_returns_all_five_schemas() {
             .and_then(Value::as_str),
         Some("^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"),
     );
-    let app = &kinds[3];
+    let app = &kinds[4];
     assert_eq!(app.pointer("/schema/required").unwrap(), &json!(["src"]));
     assert_eq!(
         app.pointer("/schema/properties/height/maximum")
             .and_then(Value::as_u64),
         Some(2000),
     );
-    let task = &kinds[4];
+    let task = &kinds[5];
     assert_eq!(
         task.pointer("/schema/additionalProperties"),
         Some(&Value::Bool(false))

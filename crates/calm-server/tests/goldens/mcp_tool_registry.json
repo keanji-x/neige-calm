@@ -481,7 +481,7 @@
   },
   {
     "name": "calm.report.blocks.kinds",
-    "description_sha256": "fc8f335935f70e6032c1500f92faddc7658777abfaa79378dec59c38b738ffc5",
+    "description_sha256": "055ff2484b6a7873286923becafdb848b6e9aaffd01a467499a3f78873ae19c7",
     "input_schema": {
       "properties": {},
       "type": "object"
@@ -531,7 +531,7 @@
   },
   {
     "name": "calm.report.blocks.upsert",
-    "description_sha256": "03ef7555d1365369b83ffac57c2b0ec57782cc31593d4759a62af74c7251a94c",
+    "description_sha256": "9e68f60bc27a615832c9bde1dc863603799fdebe64f1016fd0e789cfb2b41575",
     "input_schema": {
       "properties": {
         "id": {
@@ -553,6 +553,7 @@
           "enum": [
             "prose",
             "chart.candles",
+            "chart.series",
             "table",
             "app",
             "task"
@@ -656,6 +657,7 @@
                 "enum": [
                   "prose",
                   "chart.candles",
+                  "chart.series",
                   "table",
                   "app",
                   "task"

@@ -386,6 +386,20 @@ describe('ReportDocument', () => {
       expect(screen.getByText('t-1')).toBeTruthy();
     });
 
+    // #1628 S1: a `chart.series` block has no figure yet. It must still read
+    // as "a chart is pending here", naming what it asks for, and not as an
+    // unsupported kind — the kernel accepted it, so the document is whole.
+    it('renders a chart.series block as one note naming its series', () => {
+      const { container } = render(<ReportDocument report={blocked(
+        { id: 'b-1', kind: 'chart.series', payload: { source: 'neige://plugin/dev-neige-market/market.series', series: ['US:NVDA', 'HK:9988'], range: '6M', caption: 'Big tech' } },
+      )} empty={EMPTY} />);
+      const note = screen.getByRole('note');
+      expect(note.textContent).toContain('chart.series · US:NVDA, HK:9988 · 6M day line');
+      expect(note.textContent).toContain('chart rendering lands in a later slice');
+      expect(screen.getByText('Big tech')).toBeTruthy();
+      expect(container.textContent).not.toContain('unsupported block kind');
+    });
+
     // The entrance fee of the block model, stated as a test: the reader keeps
     // the document even when the viewer cannot draw part of it.
     it('degrades one unreadable block and keeps the rest of the document', () => {
