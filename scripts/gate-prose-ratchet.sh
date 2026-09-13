@@ -55,18 +55,24 @@
 #   baseline tree. That drift is silent, which is why the pin is not optional.
 # BASELINE FORMAT  `term<TAB>scope<TAB>count`, LF-only, `#` comments. Every
 #   row is validated before any comparison: exactly two tabs, non-empty term
-#   and scope, a non-negative integer count, no duplicate (term, scope), no
-#   `\r` anywhere in the file. `[ "$got" -gt "$want" ]` on a non-integer is a
-#   bash error (status 2) that sets NEITHER branch, so an unvalidated `824x`
-#   read as green; validation is what makes a malformed tsv red.
+#   and scope, a non-negative integer count of at most 12 digits, no duplicate
+#   (term, scope), no `\r` anywhere in the file. `[ "$got" -gt "$want" ]` on a
+#   non-integer — or on `9223372036854775808`, which passes `^[0-9]+$` but
+#   overflows bash's signed 64-bit compare — is a bash error (status 2) that
+#   sets NEITHER branch, so an unvalidated `824x` read as green; validation is
+#   what makes a malformed tsv red. `$got` is held to the same two rules.
 # RAISES  None taken. A raise, if ever justified, is written here 1316-style:
 #   per-file before/after counts, a closed list, one commit naming every
 #   constituent line — never a criterion a later commit can re-spend.
 # PROVE IT DISCRIMINATES  `--selftest` (assumes the tree is at baseline;
-#   refuses to run if any probe path already exists, and removes only what it
-#   created): a C locale makes `count` fail rather than report 0; an exact copy
-#   of the tsv is green while copies with `824x`, a CRLF line, a duplicate row
-#   and an extra column are each red (via `--baseline <path>`); one
+#   refuses to run if any probe path already exists — file, index entry, or a
+#   dangling symlink — writes probes with O_EXCL so nothing is ever written
+#   through, and removes only what it created): a dangling symlink at a probe
+#   path makes a nested run refuse by name and is left untouched; a C locale
+#   makes `count` fail rather than report 0; an exact copy of the tsv is green
+#   while copies with `824x`, a 19-digit count, a CRLF line, a duplicate row
+#   and an extra column are each red BY THEIR OWN validator (via
+#   `--baseline <path>`, so deleting one guard turns exactly one case red); one
 #   7-ideograph comment plus one 130-char literal in a probe `.rs` move each
 #   cell by EXACTLY +1 — once under `calm-types/src/`, once directly under
 #   `crates/` — and the gate goes red naming both cells; the same text in a
@@ -75,6 +81,13 @@
 #   bash arithmetic or a `case` on captured text; no subprocess sits in an
 #   assertion path (a `printf | grep` there produced a 1-in-38 false red in an
 #   earlier gate).
+# KNOWN GAPS  Stated, not patched; nothing here is a TODO. The threat model is
+#   an unintended collision, not an adversary: a probe path created by another
+#   actor between the refusal check and the O_EXCL write is out of contract
+#   (one actor per worktree). A genuine cell of 13+ digits would be refused as
+#   malformed; no scope here can reach 10^12. `--selftest` assumes the tree is
+#   at baseline and reports the first probe's gate run as red-for-wrong-reason
+#   otherwise.
 
 set -uo pipefail
 
@@ -135,6 +148,7 @@ load_baseline() { # $1=tsv path
     term="${line%%$'\t'*}"; rest="${line#*$'\t'}"; scope="${rest%%$'\t'*}"; want="${rest#*$'\t'}"
     { [ -n "$term" ] && [ -n "$scope" ]; } || { echo "::error::$1:$n has an empty term or scope: '$line'"; return 1; }
     case "$want" in ''|*[!0-9]*) echo "::error::$1:$n count '$want' is not a non-negative integer: '$line'"; return 1 ;; esac
+    [ "${#want}" -le 12 ] || { echo "::error::$1:$n count '$want' has more than 12 digits; bash compares signed 64-bit integers and a longer count would error into a green result: '$line'"; return 1; }
     [ -z "${EXPECTED[$term/$scope]+x}" ] || { echo "::error::$1:$n duplicates the row for '$term/$scope'."; return 1; }
     EXPECTED["$term/$scope"]="$want"
   done <"$1"
@@ -180,8 +194,8 @@ if [ "${1:-}" = '--selftest' ]; then
           crates/calm-server/prompts/_gate_prose_ratchet_selftest_probe.md)
   # Never overwrite or delete anything this invocation did not create.
   for p in "${PROBES[@]}"; do
-    if [ -e "$p" ] || [ -n "$(git ls-files -- "$p")" ]; then
-      echo "::error::selftest probe path '$p' already exists (tracked or untracked); refusing to run rather than touch it."
+    if [ -e "$p" ] || [ -L "$p" ] || [ -n "$(git ls-files -- "$p")" ]; then
+      echo "::error::selftest probe path '$p' already exists (tracked, untracked, or a symlink); refusing to run rather than touch it."
       exit 1
     fi
   done
@@ -189,7 +203,10 @@ if [ "${1:-}" = '--selftest' ]; then
   # scanned as a committed file would be. Cleanup is per file, over the probes
   # actually created, and ends by asserting the probe paths are clean.
   created=()
-  make_probe() { printf '%s' "$2" >"$1" && created+=("$1") && git add -N -- "$1"; }
+  make_probe() { # $1=path $2=content — O_EXCL via noclobber: an existing file or (dangling) symlink is refused, never written through
+    if [ -L "$1" ] || ! ( set -o noclobber; printf '%s' "$2" >"$1" ); then echo "::error::refusing to write selftest probe '$1': something is already at that path"; return 1; fi
+    created+=("$1") && git add -N -- "$1"
+  }
   printf -v rs_probe_text '// 提示词散文探针\nconst _GATE_PROSE_RATCHET_PROBE: &str = "%0130d";\n' 0
   printf -v md_probe_text '提示词散文探针\n"%0130d\n' 0
   cleanup_probes() {
@@ -205,6 +222,19 @@ if [ "${1:-}" = '--selftest' ]; then
   ok() { echo "selftest ok: $1"; }
   bad() { echo "SELFTEST FAIL: $1"; fails=1; }
 
+  # A dangling symlink at a probe path is invisible to `-e` and to `git
+  # ls-files`; before this check the selftest wrote THROUGH it and then deleted
+  # it. The symlink below is this invocation's own, so removing it is allowed.
+  ln -s "$tsvdir/dangling-target" "${PROBES[1]}" || exit 1
+  symlink_output="$("./$SELF" --selftest 2>&1)" && { bad "a nested --selftest ran with a dangling symlink at ${PROBES[1]}"; }
+  case "$symlink_output" in
+    *"::error::selftest probe path '${PROBES[1]}' already exists"*) ok "a dangling symlink at ${PROBES[1]} makes --selftest refuse, naming it" ;;
+    *) bad "a dangling symlink at ${PROBES[1]} was not refused by name:"$'\n'"$symlink_output" ;;
+  esac
+  if [ -L "${PROBES[1]}" ] && [ ! -e "$tsvdir/dangling-target" ]; then ok "the symlink is still there and nothing was written through it"
+  else bad "the refused --selftest touched the symlink or its target"; fi
+  rm -f -- "${PROBES[1]}"
+
   if LC_ALL=C count "$CJK" "$PATHSPEC" >/dev/null 2>&1; then bad "under LC_ALL=C the CJK scan reported a count instead of failing — a broken locale would read as clean"
   else ok "a C locale makes the CJK scan fail closed (git grep exit 128), not report 0"; fi
 
@@ -216,6 +246,7 @@ if [ "${1:-}" = '--selftest' ]; then
     while IFS= read -r line; do
       case "$1" in
         nonint) case "$line" in cjk*) line="${line}x" ;; esac ;;
+        huge)   case "$line" in cjk*) line="${line%$'\t'*}"$'\t'9223372036854775808 ;; esac ;;
         crlf)   line="${line}"$'\r' ;;
         extra)  case "$line" in cjk*) line="${line}"$'\t'9 ;; esac ;;
       esac
@@ -225,12 +256,13 @@ if [ "${1:-}" = '--selftest' ]; then
   }
   # Each negative must be red BY ITS OWN VALIDATOR, so deleting one guard turns
   # exactly one case red instead of being covered by a sibling guard.
-  for variant in copy nonint crlf dup extra; do
+  for variant in copy nonint huge crlf dup extra; do
     bad_tsv "$variant" >"$tsvdir/$variant.tsv"
     tsv_output="$("./$SELF" --baseline "$tsvdir/$variant.tsv" 2>&1)"
     tsv_status=$?
     case "$variant" in
       nonint) want_msg='is not a non-negative integer' ;;
+      huge)   want_msg='has more than 12 digits' ;;
       crlf)   want_msg='contains a carriage return' ;;
       dup)    want_msg='duplicates the row for' ;;
       extra)  want_msg='tab(s), expected exactly 2' ;;
@@ -286,6 +318,7 @@ while IFS=$'\t' read -r term pattern; do
   key="$term/$SCOPE"
   got="$(count "$pattern" "$PATHSPEC")" || { fail=1; continue; }
   case "$got" in ''|*[!0-9]*) echo "::error::the count for '$key' is not an integer ('$got'); refusing to compare."; fail=1; continue ;; esac
+  [ "${#got}" -le 12 ] || { echo "::error::the count for '$key' has more than 12 digits ('$got'); refusing to compare."; fail=1; continue; }
   want="${EXPECTED[$key]:-}"
   if [ -z "$want" ]; then
     echo "::error::$BASELINE_FILE has no row for '$key'. Run --update-baseline."; fail=1

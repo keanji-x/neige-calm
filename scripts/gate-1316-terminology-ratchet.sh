@@ -706,6 +706,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   term="${line%%$'\t'*}"; rest="${line#*$'\t'}"; scope="${rest%%$'\t'*}"; want="${rest#*$'\t'}"
   { [ -n "$term" ] && [ -n "$scope" ]; } || { echo "::error::$BASELINE_FILE:$n has an empty term or scope: '$line'"; exit 1; }
   case "$want" in ''|*[!0-9]*) echo "::error::$BASELINE_FILE:$n count '$want' is not a non-negative integer: '$line'"; exit 1 ;; esac
+  [ "${#want}" -le 12 ] || { echo "::error::$BASELINE_FILE:$n count '$want' has more than 12 digits; bash compares signed 64-bit integers and a longer count would error into a green result: '$line'"; exit 1; }
   [ -z "${EXPECTED[$term/$scope]+x}" ] || { echo "::error::$BASELINE_FILE:$n duplicates the row for '$term/$scope'."; exit 1; }
   EXPECTED["$term/$scope"]="$want"
 done <"$BASELINE_FILE"
@@ -720,6 +721,7 @@ while IFS=$'\t' read -r term pattern; do
       continue
     fi
     case "$got" in ''|*[!0-9]*) echo "::error::the count for '$key' is not an integer ('$got'); refusing to compare."; fail=1; continue ;; esac
+    [ "${#got}" -le 12 ] || { echo "::error::the count for '$key' has more than 12 digits ('$got'); refusing to compare."; fail=1; continue; }
     want="${EXPECTED[$key]:-}"
     if [ -z "$want" ]; then
       echo "::error::$BASELINE_FILE has no row for '$key'. Run --update-baseline."
