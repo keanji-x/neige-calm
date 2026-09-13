@@ -16,3 +16,7 @@ crates/calm-types/src/track_report*.md -text
 # `report_startup_read_required`. A CRLF checkout would silently change the
 # frozen bytes and every pre-header track would read as "written".
 crates/calm-types/src/report/*.md -text
+
+# Agent-facing prompt sources are byte-exact input to `include_str!` (#1635):
+# a CRLF checkout would change the rendered prompt and break its golden.
+crates/calm-server/prompts/** -text
