@@ -741,11 +741,8 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
     ) -> Result<i64>;
     /// #1625 P2 — see `calm_truth::db::RepoOutOfDomain` for the projection
     /// key these three share.
-    async fn transcript_projection_id(
-        &self,
-        card_id: &str,
-        client_id: &str,
-    ) -> Result<Option<i64>>;
+    async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
+    -> Result<Option<i64>>;
     async fn transcript_projection_upgrade(
         &self,
         card_id: &str,

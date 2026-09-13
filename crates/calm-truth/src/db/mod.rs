@@ -1041,11 +1041,8 @@ pub trait RepoOutOfDomain: RepoRead {
     /// The `id` of the projection row for `client_id` on `card_id`, if one
     /// stands. Read by the echo path to decide whether an `item/started`
     /// echo is one this card has already rendered.
-    async fn transcript_projection_id(
-        &self,
-        card_id: &str,
-        client_id: &str,
-    ) -> Result<Option<i64>>;
+    async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
+    -> Result<Option<i64>>;
 
     /// Upgrade the projection row for `client_id` in place with codex's echo:
     /// its turn, its item id, its verbatim `params`. `input_segments` is
