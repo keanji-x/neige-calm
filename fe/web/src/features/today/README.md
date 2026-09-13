@@ -220,8 +220,10 @@ Running is ambience and lives in the panel.
 
   * **It sends no document, and must never grow a parameter for one.** The
     empty-state predicate is a byte-for-byte comparison against
-    `TrackReportPayload::initial()`, ~2.6 kB of kernel-owned text assembled
-    from two `include_str!`-ed contract fragments. A client posting its own
+    `TrackReportPayload::initial()` (or the frozen pre-header body), ~2.8 kB
+    of kernel-owned text: the default body file
+    `crates/calm-types/src/report/default.md` (a contract header line, the
+    prose contract, four empty H1s). A client posting its own
     copy to `POST /api/tracks/{id}/report` would be mirror code, and one byte
     out fails *silently*: a 200, a rewritten report, and an empty state that
     never appears.

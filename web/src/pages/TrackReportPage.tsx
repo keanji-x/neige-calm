@@ -38,6 +38,7 @@ import {
   ReportLink,
   reportUrlTransform,
 } from './report-blocks';
+import { remarkDropHtmlComments } from './report-blocks/drop-html-comments';
 import { useTrackFsViewer } from '../track-fs-viewers';
 import { PlannerConversation } from './PlannerConversation';
 import { usePlannerChatHistory } from './usePlannerChatHistory';
@@ -430,10 +431,15 @@ const MemoizedMarkdownBody = memo(function MemoizedMarkdownBody({
       {/* `skipHtml`: the v1 flat-body path renders the whole report source in
           one pass, so it is the other surface where a document's own
           maintenance contract (a leading HTML comment) would be printed as
-          escaped text (#1185 §0.6). Same trade as the block path. */}
+          escaped text (#1185 §0.6). Same trade as the block path.
+          `remarkDropHtmlComments` (#1635 S2b): `skipHtml` works at the hast
+          level, after "\n" separators sit between root children, so the two
+          leading comments (contract header line + prose contract) would leave
+          stray text nodes ahead of the first section. Dropping them at the
+          mdast level leaves nothing behind — same as the block path. */}
       <ReactMarkdown
         skipHtml
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkDropHtmlComments]}
         urlTransform={reportUrlTransform}
         components={{ a: ReportLink }}
       >

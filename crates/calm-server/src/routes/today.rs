@@ -67,7 +67,8 @@ pub struct TodayLaunchpad {
 pub struct TodayLaunchpadResolved {
     pub track_id: String,
     /// Whether this report's `summary`/`body` differ **right now** from the
-    /// canonical freshly-minted pair.
+    /// canonical freshly-minted pair or from the frozen pre-header body
+    /// (`LEGACY_INITIAL_V4_BODY`).
     ///
     /// It is NOT "has anyone ever written it": no history is consulted, so
     /// none can be reported, and restoring the text to the canonical pair
@@ -363,9 +364,11 @@ pub struct TodayLaunchpadReportReset {
 /// existing route `POST /api/tracks/{id}/report` can express a reset: send the
 /// canonical `summary` and `body` and `report_startup_read_required` flips back
 /// to false. But that predicate is a **byte-for-byte** comparison against
-/// [`TrackReportPayload::initial`], whose body is two `include_str!`-ed
-/// markdown files plus a closing `-->` and four empty H1s — around 2.6 kB that
-/// no client can reproduce without copying kernel-owned text. One byte out and
+/// [`TrackReportPayload::initial`] (or the frozen pre-header body), whose
+/// body is the kernel's default body file
+/// `crates/calm-types/src/report/default.md` (a contract header line, the
+/// prose contract, four empty H1s) — around 2.8 kB that no client can
+/// reproduce without copying kernel-owned text. One byte out and
 /// the predicate stays `true`, so the reset fails *silently*: a 200, an edited
 /// report, and an empty state that never appears. Worse, the two contract
 /// fragments are private and **unclosed** on purpose (`track_report.rs`), so a

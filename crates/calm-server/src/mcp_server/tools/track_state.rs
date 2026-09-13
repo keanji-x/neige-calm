@@ -118,7 +118,8 @@ fn track_state_descriptor() -> ToolDescriptor {
              `kind`, `role`, `sort`, `created_at`, `updated_at`, plus \
              `runtime` (typed `CardRuntimeView` or `null` when no runtime row). \
              `report_startup_read_required` is true iff the track-report \
-             summary/body is not the canonical empty initial report. \
+             summary/body holds content beyond one of the kernel's empty \
+             initial bodies (the current one or the pre-header one). \
              `tasks_declared` counts the track's plan tasks. `next` lists the \
              lifecycle targets the planner may write from the current state: \
              each entry carries `lifecycle`, `via` (the tools whose optional \
@@ -236,9 +237,10 @@ fn planner_next_note(current: TrackLifecycle, target: TrackLifecycle) -> &'stati
     }
 }
 
-/// #1110 S3 — false only for the canonical empty initial report (or when
-/// the track has no report card). Unparseable payloads are not that
-/// placeholder, so they require a startup read.
+/// #1110 S3 — false only for the canonical empty initial report (today's
+/// `initial()` or the frozen pre-header body, #1635 S2b) or when the track
+/// has no report card. Unparseable payloads are not that placeholder, so
+/// they require a startup read.
 fn report_startup_read_required(cards: &[Card]) -> bool {
     match cards.iter().find(|card| card.kind == "track-report") {
         Some(card) => serde_json::from_value::<TrackReportPayload>(card.payload.clone())

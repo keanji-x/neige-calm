@@ -424,7 +424,7 @@ describe('ReportDocument', () => {
    * this is where the contract leak shows up first, cheaply, in jsdom.
    */
   describe('a document that carries its own maintenance contract (#1185)', () => {
-    /* The kernel's own bytes, read off `crates/calm-types/src/track_report_*.md`
+    /* The kernel's own bytes, read off `crates/calm-types/src/report/default.md`
        — not a transcription. A hand-written fixture would prove this front end
        hides *a* comment; only the shipped text proves it hides *the* one every
        track is born with.
@@ -442,7 +442,10 @@ describe('ReportDocument', () => {
     it('the fixture really is the kernel skeleton', () => {
       // Guards the read itself: a wrong path or a renamed fragment would
       // otherwise leave every assertion below vacuously green.
-      expect(CONTRACT.startsWith('<!-- 报告维护契约')).toBe(true);
+      // #1635 D2: line 1 is the machine-readable header, the prose contract
+      // comment follows it in the same block.
+      expect(CONTRACT.startsWith('<!-- neige:contract ')).toBe(true);
+      expect(CONTRACT).toContain('<!-- 报告维护契约');
       expect(CONTRACT.endsWith('-->\n\n')).toBe(true);
       expect(CONTRACT).toContain('散文正文');
       expect(SECTIONS.map((s) => s.split('\n')[0]))
@@ -456,6 +459,7 @@ describe('ReportDocument', () => {
       />);
       expect(container.textContent).not.toContain('报告维护契约');
       expect(container.innerHTML).not.toContain('报告维护契约');
+      expect(container.innerHTML).not.toContain('neige:contract');
       expect(container.textContent).not.toContain('散文正文');
       expect(container.innerHTML).not.toContain('散文正文');
       // The slot stays in the DOM (it keeps the anchor and any backlink
@@ -471,6 +475,7 @@ describe('ReportDocument', () => {
       const { container } = render(<ReportDocument report={flat(initialBody())} empty={EMPTY} />);
       expect(container.textContent).not.toContain('报告维护契约');
       expect(container.innerHTML).not.toContain('报告维护契约');
+      expect(container.innerHTML).not.toContain('neige:contract');
       expect(container.textContent).not.toContain('散文正文');
       expect(container.innerHTML).not.toContain('散文正文');
       expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent))

@@ -508,6 +508,8 @@ const ISSUE_DEVELOPMENT_INTRO: &str = include_str!("templates/issue-development.
 mod tests {
     use super::*;
     use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
+    use calm_types::report_contract::check_document;
+    use calm_types::track_report::{research_header, work_brief_header};
     use std::collections::BTreeSet;
 
     /// Each recipe builder beside the task list it is built from.
@@ -767,10 +769,12 @@ mod tests {
                 "{name}: the contract must be its own closed block, got {:?}",
                 slices[0].raw
             );
+            // #1635 D2: one canonical header on line 1 and every block-0
+            // comment closed — the funnel check the persisted body must pass.
             assert_eq!(
-                report.body.matches("-->").count(),
-                1,
-                "{name}: a second `-->` would close the comment early and leak the tail"
+                check_document(&report.body),
+                Ok(Some(work_brief_header())),
+                "{name}: the body must pass the contract funnel check"
             );
             assert!(
                 report.body.contains("# Plan"),
@@ -785,6 +789,41 @@ mod tests {
                 "{name} is not the default skeleton"
             );
         }
+    }
+
+    /// #1635 S2b review — the "header ↔ document shape" pin for the research
+    /// skeleton: the H1 lines `INVESTMENT_RESEARCH_SKELETON` ships, in order,
+    /// are exactly `research_header()`'s sections. Rename one side and this
+    /// goes red; nothing else ties the constant to the header. (The
+    /// work-brief twin lives in calm-types:
+    /// `default_h1s_are_the_work_brief_header_sections`.)
+    #[test]
+    fn investment_research_h1s_are_the_research_header_sections() {
+        let report = investment_research_report();
+        let slices = split_body(&report.body);
+        let h1s: Vec<String> = slices[1..]
+            .iter()
+            .map(|slice| {
+                slice
+                    .raw
+                    .lines()
+                    .next()
+                    .and_then(|line| line.strip_prefix("# "))
+                    .unwrap_or_else(|| panic!("block does not start with an H1: {:?}", slice.raw))
+                    .to_string()
+            })
+            .collect();
+        let declared: Vec<String> = research_header()
+            .sections
+            .into_iter()
+            .map(|section| section.h1)
+            .collect();
+        assert_eq!(h1s, declared);
+        assert_eq!(
+            check_document(&report.body).unwrap().unwrap().sections,
+            research_header().sections,
+            "and the header the body carries is the one the constructor builds"
+        );
     }
 
     /// #1185 §1.5 B — the anti-flattening rewrite of the three intros.
@@ -838,10 +877,15 @@ mod tests {
                 .starts_with(report_contract_prefix(ReportContract::WorkBrief)),
             "must not carry the work-brief contract"
         );
-        assert_eq!(report.body.matches("-->").count(), 1);
+        assert_eq!(check_document(&report.body), Ok(Some(research_header())));
         assert!(report.report_startup_read_required());
 
         let slices = split_body(&report.body);
+        assert!(
+            slices[0].raw.ends_with("-->\n\n"),
+            "the research contract must be its own closed block, got {:?}",
+            slices[0].raw
+        );
         let heads: Vec<&str> = slices[1..]
             .iter()
             .map(|slice| slice.raw.lines().next().unwrap_or(""))

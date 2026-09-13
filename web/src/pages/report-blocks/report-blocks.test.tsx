@@ -1040,7 +1040,7 @@ describe('degraded blocks', () => {
  * printed the whole contract, escaped, at the top of every user's report.
  */
 describe('a prose block that carries a maintenance contract (#1185)', () => {
-  /* The kernel's own bytes, read off `crates/calm-types/src/track_report_*.md`
+  /* The kernel's own bytes, read off `crates/calm-types/src/report/default.md`
      — not a transcription. Only the shipped text proves this front end hides
      *the* contract every track is born with.
 
@@ -1065,7 +1065,10 @@ describe('a prose block that carries a maintenance contract (#1185)', () => {
   it('the fixture really is the kernel skeleton', () => {
     // Guards the read itself: a wrong path or a renamed fragment would leave
     // every assertion below vacuously green.
-    expect(CONTRACT_FIXTURE.startsWith('<!-- 报告维护契约')).toBe(true);
+    // #1635 D2: line 1 is the machine-readable header, the prose contract
+    // comment follows it in the same block.
+    expect(CONTRACT_FIXTURE.startsWith('<!-- neige:contract ')).toBe(true);
+    expect(CONTRACT_FIXTURE).toContain('<!-- 报告维护契约');
     expect(CONTRACT_FIXTURE.endsWith('-->\n\n')).toBe(true);
     expect(CONTRACT_FIXTURE).toContain('散文正文');
     expect(SKELETON_SECTIONS.map((s) => s.split('\n')[0]))
@@ -1081,8 +1084,14 @@ describe('a prose block that carries a maintenance contract (#1185)', () => {
     // not terminated by a blank line, so the whole contract is one raw node.
     expect(container.textContent).not.toContain('报告维护契约');
     expect(container.innerHTML).not.toContain('报告维护契约');
+    expect(container.innerHTML).not.toContain('neige:contract');
     expect(container.textContent).not.toContain('散文正文');
     expect(container.innerHTML).not.toContain('散文正文');
+    // Zero child nodes, not merely no text: block 0 is TWO comment blocks
+    // (the `<!-- neige:contract … -->` header line, then the prose contract),
+    // and `skipHtml` alone would leave the "\n" separator mdast-to-hast puts
+    // between them — a whitespace text node `.report-block:empty` does not
+    // match (#1635 S2b, `remarkDropHtmlComments`).
     expect(container.querySelector('#b_contract')?.childNodes.length).toBe(0);
   });
 
@@ -1102,6 +1111,9 @@ describe('a prose block that carries a maintenance contract (#1185)', () => {
     // person who reaches for `rehype-raw` to make `<details>` work again goes
     // red here first. Installing it re-opens the leak above: the maintenance
     // contract would render as visible page content for every user.
+    // It is also the negative case for `remarkDropHtmlComments` (#1635 S2b):
+    // a root-level raw HTML block that is not a comment is left alone by the
+    // plugin and still dropped by `skipHtml`.
     const { container } = render(
       <ReportBlockView
         block={contractBlock('<details><summary>x</summary>y</details>\n')}

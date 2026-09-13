@@ -2752,10 +2752,13 @@ describe('TrackReportPage', () => {
     // prints raw HTML as text unless `skipHtml` is set, and the comment spans
     // blank lines (CommonMark HTML block type 2), so the whole contract is one
     // raw node.
-    // The kernel's own bytes, read off `crates/calm-types/src/track_report_*.md`
+    // The kernel's own bytes, read off `crates/calm-types/src/report/default.md`
     // — a transcription would only prove this path hides *a* comment.
+    // #1635 D2: line 1 is the machine-readable header, the prose contract
+    // comment follows it in the same block.
     const [contract, ...sections] = splitInitialBody();
-    expect(contract.startsWith('<!-- 报告维护契约')).toBe(true);
+    expect(contract.startsWith('<!-- neige:contract ')).toBe(true);
+    expect(contract).toContain('<!-- 报告维护契约');
     expect(contract.endsWith('-->\n\n')).toBe(true);
     expect(contract).toContain('散文正文');
 
@@ -2768,6 +2771,7 @@ describe('TrackReportPage', () => {
 
     expect(container.textContent).not.toContain('报告维护契约');
     expect(container.innerHTML).not.toContain('报告维护契约');
+    expect(container.innerHTML).not.toContain('neige:contract');
     expect(container.textContent).not.toContain('散文正文');
     expect(container.innerHTML).not.toContain('散文正文');
     expect(
@@ -2784,8 +2788,20 @@ describe('TrackReportPage', () => {
 
     expect(container.textContent).not.toContain('报告维护契约');
     expect(container.innerHTML).not.toContain('报告维护契约');
+    expect(container.innerHTML).not.toContain('neige:contract');
     expect(container.textContent).not.toContain('散文正文');
     expect(container.innerHTML).not.toContain('散文正文');
+    // The flat path renders the whole body as ONE `.report-block`, so it can
+    // never be `:empty`; the mirror of the block path's zero-child-node
+    // assertion is that nothing is left behind ahead of the first section:
+    // the two dropped comments (header line + prose contract) must not leave
+    // a "\n" text node before `# 概要` (#1635 S2b, `remarkDropHtmlComments`).
+    const flatBlock = container.querySelector('.report-block.report-prose');
+    expect(flatBlock).not.toBeNull();
+    const first = flatBlock!.firstChild;
+    expect(first?.nodeType).toBe(Node.ELEMENT_NODE);
+    expect((first as Element).tagName).toBe('H1');
+    expect(first?.textContent).toBe('概要');
     // The first h1 is the page's own track title, not report content.
     expect(
       screen

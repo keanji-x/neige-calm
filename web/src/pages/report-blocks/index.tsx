@@ -12,6 +12,7 @@ import { Link } from '@tanstack/react-router';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { remarkDropHtmlComments } from './drop-html-comments';
 import {
   appBlockPayloadSchema,
   chartCandlesPayloadSchema,
@@ -132,10 +133,16 @@ export const ReportBlockView = memo(function ReportBlockView({
               every user's report page. This matches `fe/`'s
               `sanitizeAstPolicy(_, { rawHtml: 'drop' })`; the price is that a
               hand-written `<details>` block disappears silently — see the
-              test that pins it. */}
+              test that pins it.
+              `remarkDropHtmlComments` (#1635 S2b): `skipHtml` removes raw
+              nodes at the hast level, after a "\n" separator has been put
+              between root children — so a block that is two comments (the
+              contract header line + the prose contract) would render one
+              "\n" text node, and `.report-block:empty` would stop matching.
+              Dropping comment blocks at the mdast level leaves nothing. */}
           <ReactMarkdown
             skipHtml
-            remarkPlugins={[remarkGfm]}
+            remarkPlugins={[remarkGfm, remarkDropHtmlComments]}
             urlTransform={reportUrlTransform}
             components={{
               a: ReportLink,

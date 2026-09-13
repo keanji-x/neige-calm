@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
+use crate::report_contract::{ContractHeader, ContractSection, canonical_line};
+
 /// A derived, addressable slice of a track report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -119,20 +121,60 @@ const CONTRACT_RESEARCH_RULES: &str = include_str!("track_report_research_rules.
 /// its own block (`split_body` splits at line-initial `# ` / `## `).
 const CONTRACT_CLOSE: &str = "-->\n\n";
 
-/// The default section skeleton. Sections are left empty on purpose: a
-/// `_待填_` placeholder would render, and the agent would read it as content
-/// to delete.
-const DEFAULT_H1S: &str = "# 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n";
+/// #1635 D2 — the work-brief contract header: the four default sections,
+/// `待你定` omitted when empty. With [`research_header`] this is the source
+/// the header lines are built from; `report/default.md` line 1 is
+/// `canonical_line(&work_brief_header())`, the pin in
+/// `initial_body_is_header_line_plus_legacy_v4` holds the two together, and
+/// `default_h1s_are_the_work_brief_header_sections` ties the file's H1s to
+/// these sections (calm-server's templates test does the same for the
+/// research skeleton). S4 moves the names into template files.
+pub fn work_brief_header() -> ContractHeader {
+    ContractHeader {
+        version: 1,
+        sections: vec![
+            section("概要", false),
+            section("待你定", true),
+            section("已完成", false),
+            section("决策", false),
+        ],
+    }
+}
 
-/// The default report body: writing rules + section rules, closed, then the
-/// four empty H1s. `LazyLock` rather than a `format!` per call because
-/// [`TrackReportPayload::initial`] is hot — it backs the birth hard-check in
-/// calm-truth and every `report_startup_read_required` comparison.
+/// #1635 D2 — the investment-research contract header (#1571): seven fixed
+/// sections, `待你定` omitted when empty.
+pub fn research_header() -> ContractHeader {
+    ContractHeader {
+        version: 1,
+        sections: vec![
+            section("结论", false),
+            section("待你定", true),
+            section("核心逻辑", false),
+            section("关键数据", false),
+            section("风险与证伪", false),
+            section("催化剂与跟踪", false),
+            section("来源与边界", false),
+        ],
+    }
+}
+
+fn section(h1: &str, omit_if_empty: bool) -> ContractSection {
+    ContractSection {
+        h1: h1.to_string(),
+        omit_if_empty,
+    }
+}
+
+/// The default report body (#1635 S2b): `report/default.md`, byte for byte —
+/// the canonical work-brief header line, then exactly the frozen
+/// [`LEGACY_INITIAL_V4_BODY`] (writing rules + section rules, closed, then
+/// the four empty H1s; sections are left empty on purpose — a `_待填_`
+/// placeholder would render and the agent would read it as content to
+/// delete). The file is the single source; `initial_body_is_header_line_plus_legacy_v4`
+/// pins it as `canonical_line(&work_brief_header()) + "\n" + LEGACY_INITIAL_V4_BODY`
+/// so neither side can drift alone.
 fn initial_body() -> &'static str {
-    static BODY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-        format!("{CONTRACT_WRITING_RULES}{CONTRACT_SECTION_RULES}{CONTRACT_CLOSE}{DEFAULT_H1S}")
-    });
-    &BODY
+    include_str!("report/default.md")
 }
 
 /// #1635 S2a — the default report body exactly as shipped up to and including
@@ -159,8 +201,9 @@ fn initial_body() -> &'static str {
 /// ```
 pub const LEGACY_INITIAL_V4_BODY: &str = include_str!("report/legacy_initial_v4.md");
 
-/// Report-body prefix for the kernel's built-in templates: writing
-/// rules + section rules + the pre-set section notes, **already closed**.
+/// Report-body prefix for the kernel's built-in templates: the canonical
+/// work-brief header line (#1635 D2), then writing rules + section rules +
+/// the pre-set section notes, **already closed**.
 ///
 /// The templates build their body with [`TrackReportPayload::new`], bypassing
 /// [`TrackReportPayload::initial`], so without this they would carry no
@@ -173,7 +216,8 @@ pub const LEGACY_INITIAL_V4_BODY: &str = include_str!("report/legacy_initial_v4.
 pub fn report_contract_prefix_for_template() -> &'static str {
     static PREFIX: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         format!(
-            "{CONTRACT_WRITING_RULES}{CONTRACT_SECTION_RULES}{CONTRACT_PLAN_NOTE}{CONTRACT_CLOSE}"
+            "{}\n{CONTRACT_WRITING_RULES}{CONTRACT_SECTION_RULES}{CONTRACT_PLAN_NOTE}{CONTRACT_CLOSE}",
+            canonical_line(&work_brief_header())
         )
     });
     &PREFIX
@@ -198,13 +242,17 @@ pub enum ReportContract {
 /// Report-body prefix for a template that names its contract, **already
 /// closed**. [`ReportContract::WorkBrief`] is exactly
 /// [`report_contract_prefix_for_template`]; [`ReportContract::Research`] is
-/// the research rules, closed.
+/// the canonical research header line, then the research rules, closed.
 pub fn report_contract_prefix(contract: ReportContract) -> &'static str {
     match contract {
         ReportContract::WorkBrief => report_contract_prefix_for_template(),
         ReportContract::Research => {
-            static PREFIX: std::sync::LazyLock<String> =
-                std::sync::LazyLock::new(|| format!("{CONTRACT_RESEARCH_RULES}{CONTRACT_CLOSE}"));
+            static PREFIX: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+                format!(
+                    "{}\n{CONTRACT_RESEARCH_RULES}{CONTRACT_CLOSE}",
+                    canonical_line(&research_header())
+                )
+            });
             &PREFIX
         }
     }
@@ -232,31 +280,40 @@ impl TrackReportPayload {
     /// Used by `routes::tracks::create_track` (PR B). Historical
     /// migration seeds stay frozen; freshly-minted tracks use this copy.
     ///
-    /// The body is a *structural skeleton*: a maintenance contract carried in
-    /// a leading HTML comment, then the four default H1 sections (#1185).
-    /// The comment is dropped when the document is rendered, so users never
-    /// see it on the page — but it stays in the body source, which every
-    /// source-reading subject reads (the planner agent, a worker's
-    /// `neige cat report.md`, the REST read surface, the track's VCS diff).
-    /// It is layout control, not access control: never put secrets in it.
+    /// The body is a *structural skeleton*: the machine-readable contract
+    /// header line (#1635 D2, `<!-- neige:contract … -->`), a maintenance
+    /// contract carried in a second, prose HTML comment, then the four
+    /// default H1 sections (#1185). Both comments are dropped when the
+    /// document is rendered, so users never see them on the page — but they
+    /// stay in the body source, which every source-reading subject reads
+    /// (the planner agent, a worker's `neige cat report.md`, the REST read
+    /// surface, the track's VCS diff). It is layout control, not access
+    /// control: never put secrets in it.
     pub fn initial() -> Self {
         Self::new("", initial_body())
     }
 
     /// #1110 S3 — whether planner's first turn must `calm.report.read`.
     ///
-    /// False only when `summary` and `body` equal [`Self::initial()`].
-    /// `doc_rev` / `blocks` are ignored so a CRDT-materialized placeholder
-    /// stays false. Forked or edited content is true.
+    /// False only when `summary` is empty and `body` is byte-equal to
+    /// [`Self::initial()`]'s body or to the frozen pre-header body
+    /// [`LEGACY_INITIAL_V4_BODY`] (#1635 S2b: every track minted before the
+    /// contract header still carries those bytes and must keep reading as
+    /// unwritten — the launchpad empty state depends on it). `doc_rev` /
+    /// `blocks` are ignored so a CRDT-materialized placeholder stays false.
+    /// Forked or edited content is true. #1635 S3 replaces the byte
+    /// comparison with the structural predicate (D3) and keeps both cells.
     pub fn report_startup_read_required(&self) -> bool {
-        let initial = Self::initial();
-        self.summary != initial.summary || self.body != initial.body
+        !(self.summary.is_empty()
+            && (self.body == initial_body() || self.body == LEGACY_INITIAL_V4_BODY))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::report_contract::{HEADER_OPEN, check_document, normalize_header};
+    use std::borrow::Cow;
 
     #[test]
     fn report_startup_read_required_is_false_only_for_canonical_initial_content() {
@@ -301,7 +358,22 @@ mod tests {
             5,
             "1 contract block + 4 sections; got {slices:#?}"
         );
-        assert!(slices[0].raw.starts_with("<!-- 报告维护契约"));
+        // #1635 D2: the machine-readable header is line 1, the prose
+        // contract comment starts on line 2.
+        assert!(slices[0].raw.starts_with(HEADER_OPEN));
+        assert_eq!(
+            slices[0].raw.lines().next(),
+            Some(canonical_line(&work_brief_header()).as_str()),
+            "line 1 is the canonical work-brief header"
+        );
+        assert!(
+            slices[0]
+                .raw
+                .lines()
+                .nth(1)
+                .is_some_and(|line| line.starts_with("<!-- 报告维护契约")),
+            "the prose contract comment follows the header line"
+        );
         assert!(
             slices[0].raw.ends_with("-->\n\n"),
             "the contract must close before the first H1"
@@ -369,9 +441,16 @@ mod tests {
             "a CRLF checkout would silently change split_body's input"
         );
         assert!(body.ends_with('\n') && !body.ends_with("\n\n"));
-        // A second `-->` smuggled into a fragment closes the comment early and
-        // the tail renders visibly.
-        assert_eq!(body.matches("-->").count(), 1, "exactly one comment close");
+        // Exactly one header line, it is line 1, and block 0 does not end
+        // inside a comment (#1635 D2 (a)–(e)). `default.md` is pinned byte for
+        // byte in `initial_body_is_header_line_plus_legacy_v4`, so a stray
+        // `-->` in the file is caught there, not here.
+        assert_eq!(
+            body.lines().filter(|l| l.starts_with(HEADER_OPEN)).count(),
+            1,
+            "exactly one contract header line"
+        );
+        assert_eq!(check_document(&body), Ok(Some(work_brief_header())));
     }
 
     /// #1185 §1.5 B — the built-in templates must get the same
@@ -381,12 +460,31 @@ mod tests {
         let prefix = report_contract_prefix_for_template();
         let body = TrackReportPayload::initial().body;
 
-        assert!(prefix.starts_with("<!-- 报告维护契约"));
+        // #1635 D2: header line first, then the prose contract comment.
+        assert!(prefix.starts_with(HEADER_OPEN));
+        assert_eq!(
+            prefix.lines().next(),
+            Some(canonical_line(&work_brief_header()).as_str())
+        );
+        assert!(
+            prefix
+                .lines()
+                .nth(1)
+                .is_some_and(|line| line.starts_with("<!-- 报告维护契约"))
+        );
         assert!(
             prefix.ends_with("-->\n\n"),
             "never hand out an unclosed comment"
         );
-        assert_eq!(prefix.matches("-->").count(), 1);
+        // Exactly one header line, on line 1, and the block-0 scan closes.
+        assert_eq!(
+            prefix
+                .lines()
+                .filter(|l| l.starts_with(HEADER_OPEN))
+                .count(),
+            1
+        );
+        assert_eq!(check_document(prefix), Ok(Some(work_brief_header())));
         assert!(!prefix.contains('\r'));
 
         // What is shared is the genre rules + the section list; the template
@@ -438,16 +536,32 @@ mod tests {
             "WorkBrief must be the existing template prefix, not a third text"
         );
 
-        assert!(prefix.starts_with("<!-- 报告维护契约（投研报告版）"));
+        // #1635 D2: the research header line first, then the research
+        // prose contract comment.
+        assert!(prefix.starts_with(HEADER_OPEN));
+        assert_eq!(
+            prefix.lines().next(),
+            Some(canonical_line(&research_header()).as_str())
+        );
+        assert!(
+            prefix
+                .lines()
+                .nth(1)
+                .is_some_and(|line| line.starts_with("<!-- 报告维护契约（投研报告版）"))
+        );
         assert!(
             prefix.ends_with("-->\n\n"),
             "never hand out an unclosed comment"
         );
+        // Exactly one header line, on line 1, and the block-0 scan closes.
         assert_eq!(
-            prefix.matches("-->").count(),
-            1,
-            "exactly one comment close"
+            prefix
+                .lines()
+                .filter(|l| l.starts_with(HEADER_OPEN))
+                .count(),
+            1
         );
+        assert_eq!(check_document(prefix), Ok(Some(research_header())));
         assert!(
             !CONTRACT_RESEARCH_RULES.contains("-->"),
             "the fragment itself must stay unclosed"
@@ -527,13 +641,92 @@ mod tests {
         );
     }
 
-    /// #1635 S2a — the frozen file IS today's default body, byte for byte.
-    /// S2b will replace this with
-    /// `initial().body == HEADER_LINE + "\n" + LEGACY_INITIAL_V4_BODY`;
-    /// do not weaken it any other way.
+    /// #1635 S2b — the structural pin: today's default body is exactly the
+    /// canonical work-brief header line, a newline, and the frozen v4 bytes.
+    /// `default.md` is the single source; this holds it to
+    /// `work_brief_header()` on one side and `legacy_initial_v4.md` (itself
+    /// sha-pinned below) on the other, so neither can drift alone and no
+    /// fragment can smuggle a second `-->`. Do not weaken.
     #[test]
-    fn legacy_initial_v4_is_today_s_initial_body() {
-        assert_eq!(LEGACY_INITIAL_V4_BODY, TrackReportPayload::initial().body);
+    fn initial_body_is_header_line_plus_legacy_v4() {
+        assert_eq!(
+            TrackReportPayload::initial().body,
+            format!(
+                "{}\n{LEGACY_INITIAL_V4_BODY}",
+                canonical_line(&work_brief_header())
+            )
+        );
+    }
+
+    /// #1635 S2b — the default body passes the funnel check as-is: one
+    /// header, on line 1, canonical, block 0 does not end inside a comment
+    /// (line-based scan). Birth
+    /// bypasses the funnel (`card.rs` compares the whole payload to
+    /// `initial()`), so this is where `initial()` is held to the funnel.
+    #[test]
+    fn initial_body_passes_the_funnel_check_unchanged() {
+        let body = TrackReportPayload::initial().body;
+        assert_eq!(check_document(&body), Ok(Some(work_brief_header())));
+        assert!(
+            matches!(normalize_header(&body), Ok(Cow::Borrowed(_))),
+            "the shipped header is already canonical"
+        );
+        // Block 0 is the contract and nothing else — the S3 predicate.
+        let slices = crate::report_blocks::split_body(&body);
+        assert!(crate::report_contract::is_pure_comment_block(
+            &slices[0].raw
+        ));
+    }
+
+    /// #1635 S2b review — the first "header ↔ document shape" pin: the H1s
+    /// `default.md` ships, in order, are exactly `work_brief_header()`'s
+    /// sections. Rename one side and this goes red (the byte pin alone would
+    /// not notice a header edit that is mirrored into the file). S3's
+    /// structural predicate relies on this correspondence.
+    #[test]
+    fn default_h1s_are_the_work_brief_header_sections() {
+        let body = TrackReportPayload::initial().body;
+        let slices = crate::report_blocks::split_body(&body);
+        let h1s: Vec<String> = slices[1..]
+            .iter()
+            .map(|slice| {
+                slice
+                    .raw
+                    .lines()
+                    .next()
+                    .and_then(|line| line.strip_prefix("# "))
+                    .unwrap_or_else(|| panic!("block does not start with an H1: {:?}", slice.raw))
+                    .to_string()
+            })
+            .collect();
+        let declared: Vec<String> = work_brief_header()
+            .sections
+            .into_iter()
+            .map(|section| section.h1)
+            .collect();
+        assert_eq!(h1s, declared);
+        assert_eq!(
+            check_document(&body).unwrap().unwrap().sections,
+            work_brief_header().sections,
+            "and the header the file carries is the one the constructor builds"
+        );
+    }
+
+    /// The module comment's claim, pinned: none of the fragments closes the
+    /// comment itself. The fragments still feed `report_contract_prefix`
+    /// (`default.md` is a frozen file, not fragment output); a `-->` inside
+    /// one would close a template's prose contract early and render its tail,
+    /// and nothing else checks the plan-note fragment.
+    #[test]
+    fn contract_fragments_stay_unclosed() {
+        for (name, fragment) in [
+            ("contract_rules", CONTRACT_WRITING_RULES),
+            ("section_rules", CONTRACT_SECTION_RULES),
+            ("plan_note", CONTRACT_PLAN_NOTE),
+            ("research_rules", CONTRACT_RESEARCH_RULES),
+        ] {
+            assert!(!fragment.contains("-->"), "{name} must stay unclosed");
+        }
     }
 
     /// #1635 S2a — the bytes are pinned independently of `initial_body()`, so
@@ -556,14 +749,28 @@ mod tests {
         );
     }
 
-    /// #1635 S2a — a pre-header track whose body is exactly the frozen bytes
-    /// reads as "unwritten" today; S3's legacy fallback must keep it so.
+    /// #1635 S2b — a pre-header track whose body is exactly the frozen bytes
+    /// reads as unwritten, exactly as it did before the header existed:
+    /// `initial()` grew a header line, the rows in every database did not.
+    /// S3 replaces the byte comparison by the structural predicate (D3,
+    /// `Ok(None) => body == LEGACY_INITIAL_V4_BODY`) and must keep this cell
+    /// green. A non-empty summary or any other byte still reads as written.
     #[test]
-    fn legacy_initial_v4_reads_as_unwritten_today() {
+    fn legacy_initial_v4_reads_as_unwritten() {
         let payload = TrackReportPayload::new("", LEGACY_INITIAL_V4_BODY);
         assert!(
             !payload.report_startup_read_required(),
             "the frozen pre-header body must not require a startup read"
+        );
+        assert!(
+            TrackReportPayload::new("fork source summary", LEGACY_INITIAL_V4_BODY)
+                .report_startup_read_required(),
+            "a non-empty summary is not the canonical placeholder"
+        );
+        assert!(
+            TrackReportPayload::new("", format!("{LEGACY_INITIAL_V4_BODY}\n"))
+                .report_startup_read_required(),
+            "one byte off the frozen body is a written body"
         );
     }
 }

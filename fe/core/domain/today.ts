@@ -129,8 +129,10 @@ export function nameTodaySummaryConversation(trackId: string, row: Conversation)
  *
  * **It sends no document, and there must never be a parameter for one.** The
  * empty-state predicate is a byte-for-byte comparison against the kernel's
- * `TrackReportPayload::initial()`, whose body is two `include_str!`-ed contract
- * fragments plus four empty H1s. A client that posted its own copy of those
+ * `TrackReportPayload::initial()` (or the frozen pre-header body), whose body
+ * is the kernel's default body file `crates/calm-types/src/report/default.md`
+ * (a contract header line, the prose contract, four empty H1s). A client that
+ * posted its own copy of those
  * bytes to `POST /api/tracks/{id}/report` would be mirror code for kernel-owned
  * text, and one byte out fails *silently*: a 200, a rewritten report, and an
  * empty state that never appears. So the kernel writes its own canonical

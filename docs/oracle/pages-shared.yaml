@@ -40,7 +40,7 @@
     calm.css 注释与 TrackReportPage 的 `report-page--conversation-open` class 组合表明布局靠列宽过渡
     (transition: grid-template-columns);测试 "opens the drawer without unmounting the report document"
     与 "keeps the draft alive when the drawer closes and reopens" 锁定"持久挂载"语义 —— 卸载会丢草稿。
-  source: web/src/calm.css:1704-1726 + web/src/pages/TrackReportPage.tsx:903-910,1060-1075
+  source: web/src/calm.css:1704-1726 + web/src/pages/TrackReportPage.tsx:909-916,1066-1081
   authoritative_test: web/src/pages/TrackReportPage.test.tsx:2123
   owner_slice: features/report/shell
   intentional_omission: false
@@ -110,7 +110,7 @@
   why: >
     折叠会 hidden 掉当前按钮,焦点会掉到 body;railFocusTransferPending ref 保证只有用户操作路径转移焦点,
     首屏 / localStorage 恢复不抢焦点。
-  source: web/src/pages/TrackReportPage.tsx:859-872,988-1013
+  source: web/src/pages/TrackReportPage.tsx:865-878,994-1019
   authoritative_test: web/src/pages/TrackReportPage.test.tsx:1069-1098
   owner_slice: features/report/shell
   intentional_omission: false
@@ -231,7 +231,7 @@
     切换 planner 卡(plannerCardId 变化)时必须清空 conversationTargetEntryId。
   why: >
     entry id 是 per-card 的自增 id,跨卡复用会滚到一条不相干的消息。
-  source: web/src/pages/TrackReportPage.tsx:899-901
+  source: web/src/pages/TrackReportPage.tsx:905-907
   authoritative_test: NONE
   owner_slice: features/report/shell
   intentional_omission: false
@@ -284,7 +284,7 @@
     "版本不支持,请刷新",且大纲面板同步显示 "Outline unavailable for this report version."
   why: >
     前端渲染未来 schema 的块会静默出错;显式版本墙 + 大纲同步降级,避免用户以为报告是空的。
-  source: web/src/pages/TrackReportPage.tsx:308-313,546-551,1040-1043
+  source: web/src/pages/TrackReportPage.tsx:309-314,552-557,1046-1049
   authoritative_test: web/src/pages/TrackReportPage.test.tsx:855-888
   owner_slice: features/report/shell
   intentional_omission: false
@@ -932,7 +932,7 @@
     hash 指向不存在的块时必须静默不动(revealReportBlock 早退),页面照常渲染。
   why: >
     "renders normally when the hash names a missing block" —— 报告块会随 agent 改写消失,旧链接不能炸页面。
-  source: web/src/pages/TrackReportPage.tsx:166-173
+  source: web/src/pages/TrackReportPage.tsx:167-174
   authoritative_test: web/src/pages/TrackReportPage.test.tsx:2470
   owner_slice: features/report/shell
   intentional_omission: false
@@ -949,7 +949,7 @@
   why: >
     源码注释:"Deliberately bypass TanStack Router: this local scroll marker does not need to trigger route
     state or the deep-link arrival effect." 走路由会二次触发到达 effect 并污染历史栈。
-  source: web/src/pages/TrackReportPage.tsx:560-573
+  source: web/src/pages/TrackReportPage.tsx:566-579
   authoritative_test: web/src/pages/TrackReportPage.test.tsx:679
   owner_slice: features/report/shell
   intentional_omission: true
@@ -983,7 +983,7 @@
     没有 quote 时退回 backlink.label。
   why: >
     引文是服务端(#975)扫描出的片段,前端只负责三段式 wire;省略号标记截断位置,漏掉会让用户以为引文是完整句子。
-  source: web/src/pages/TrackReportPage.tsx:613-625
+  source: web/src/pages/TrackReportPage.tsx:619-631
   authoritative_test: web/src/pages/TrackReportPage.test.tsx:2229
   owner_slice: features/report/shell
   intentional_omission: false
@@ -1002,7 +1002,7 @@
     #1148 第三轮:原来第三段引的 846 是 `pending: taskActionMutation.isPending`,与本条无关;
     「只在当前报告确有结构化 blocks 时」的真载体是 949-952 那个
     `hasRenderedBlocks={reportCard?.blocks != null}` 的传参点,已重指。
-  source: web/src/pages/TrackReportPage.tsx:637-642,704-708,949-952
+  source: web/src/pages/TrackReportPage.tsx:643-648,710-714,955-958
   authoritative_test: web/src/pages/TrackReportPage.test.tsx:2559,2596,2618
   owner_slice: features/report/shell
   intentional_omission: false
@@ -1020,7 +1020,7 @@
   why: >
     "keeps the backlinks section visible with an empty state" + "surfaces backlink loading errors inline" ——
     出错时显示"没有反链"会让用户以为数据真的空。
-  source: web/src/pages/TrackReportPage.tsx:660-678
+  source: web/src/pages/TrackReportPage.tsx:666-684
   authoritative_test: web/src/pages/TrackReportPage.test.tsx:2370,2462
   owner_slice: features/report/shell
   intentional_omission: false
@@ -1041,7 +1041,7 @@
   why: >
     "keeps the draft when the persistently mounted drawer closes and reopens" —— 用户打字到一半去看报告
     再回来,草稿没了是最刺痛的丢失。
-  source: web/src/pages/PlannerConversation.tsx:336 + web/src/pages/TrackReportPage.tsx:1058-1073
+  source: web/src/pages/PlannerConversation.tsx:336 + web/src/pages/TrackReportPage.tsx:1064-1079
   authoritative_test: web/src/pages/PlannerConversation.test.tsx:579 + web/src/pages/TrackReportPage.test.tsx:2182
   owner_slice: features/planner/conversation
   intentional_omission: false

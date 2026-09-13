@@ -461,8 +461,11 @@ async fn read_returns_blocks_index_and_clean_text_by_default() {
         Some(seed_body()),
         "legacy `body` alias carries the same value as `text`",
     );
+    // `<!-- neige:b_` is the marker shape (`marker_line_id`); the birth body's
+    // first line is the `<!-- neige:contract … -->` header (#1635 D2), which
+    // shares the `neige:` namespace but is document content, not a marker.
     assert!(
-        !out["text"].as_str().unwrap().contains("<!-- neige:"),
+        !out["text"].as_str().unwrap().contains("<!-- neige:b_"),
         "default read output must be marker-free",
     );
     let index = index_of(&out);
@@ -491,8 +494,12 @@ async fn read_returns_blocks_index_and_clean_text_by_default() {
     // block 0 the contract rather than a section.
     let text = out["text"].as_str().unwrap();
     assert!(
-        text.starts_with("<!-- 报告维护契约"),
-        "the birth body must lead with the maintenance contract: {text:?}"
+        text.starts_with(calm_types::report_contract::HEADER_OPEN),
+        "the birth body must lead with the contract header line (#1635 D2): {text:?}"
+    );
+    assert!(
+        text.contains("<!-- 报告维护契约"),
+        "the birth body must carry the maintenance contract: {text:?}"
     );
     let first_h1 = text.find("\n# ").expect("skeleton has H1 sections") + 1;
     assert!(
