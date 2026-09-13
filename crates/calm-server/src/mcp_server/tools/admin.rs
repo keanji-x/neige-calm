@@ -42,12 +42,9 @@ where
 fn track_gc_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_ADMIN_TRACK_GC.into(),
-        description: "Hidden admin: prune the MCP-bound track's VCS history (keep the last \
-             `keep` commits + all active-session endpoints) then sweep unreferenced objects. \
-             Arguments: `{ track_id, keep, dry_run? }`. `track_id` MUST equal the caller's bound \
-             track (guardrail against wrong-track GC). `dry_run` reports counts without deleting. \
-             Returns `{ track_id, keep, dry_run, pruned_commits, swept_objects }`."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.admin.track_gc.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["track_id", "keep"],
@@ -65,10 +62,9 @@ fn track_gc_descriptor() -> ToolDescriptor {
 fn vacuum_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_ADMIN_VACUUM.into(),
-        description: "Hidden admin: run a full SQLite VACUUM to reclaim freed pages to the OS. \
-             Takes a write lock on the DB and serializes with all writers; run only in a quiet \
-             maintenance window. Arguments: `{}`. Returns `{ ok: true }`."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.admin.vacuum.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({ "type": "object", "properties": {} }),
         annotations: None,
         visible_to_roles: &[],

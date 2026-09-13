@@ -1,0 +1,1 @@
+Resolve exactly one task_id (the exact attempt_id from calm.plan.list) or terminal_id in your Track. Returns the current Worker/card/session/Terminal binding and available/controllable flags. Never starts a viewer or substitutes a new session when an isolated task has no Terminal view.

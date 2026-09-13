@@ -1,0 +1,2317 @@
+[
+  {
+    "name": "calm.admin.track_gc",
+    "description_sha256": "4a2ad238060ed23e06ab148bcbc0979ee9557244284ad93c3816ece03f12bdc5",
+    "input_schema": {
+      "properties": {
+        "dry_run": {
+          "type": "boolean"
+        },
+        "keep": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "track_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "track_id",
+        "keep"
+      ],
+      "type": "object"
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.admin.vacuum",
+    "description_sha256": "26d0d3c385621c2af572c88fd8cc44f0531d1acd4c134d2a82deaf753b00e0b4",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.area.outline",
+    "description_sha256": "25b710d61ead27f9a66a5171e6c788e1134272ac6abe444364396cbe04225cbc",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.dispatch_request",
+    "description_sha256": "6fa63ed8b77160fe35edf4b5bbdf1e099c4cd467b630745e831865865e142f59",
+    "input_schema": {
+      "properties": {
+        "acceptance_criteria": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cmd": {
+          "type": "string"
+        },
+        "context": {},
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goal": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "codex",
+            "terminal"
+          ],
+          "type": "string"
+        },
+        "lifecycle": {
+          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
+          "enum": [
+            "draft",
+            "planning",
+            "dispatching",
+            "working",
+            "blocked",
+            "reviewing",
+            "done",
+            "canceled",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.get_track_state",
+    "description_sha256": "90d469718a6c8f16413fa469832a3ef19f2051d66805ddc6ba5e0104d925de7a",
+    "input_schema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.plan.cancel",
+    "description_sha256": "e4c7323b20e7aa18c35af87a6718788fda27d92cbe9f7bf07f06b072e45793f9",
+    "input_schema": {
+      "properties": {
+        "key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "lifecycle": {
+          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
+          "enum": [
+            "draft",
+            "planning",
+            "dispatching",
+            "working",
+            "blocked",
+            "reviewing",
+            "done",
+            "canceled",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "message"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.plan.list",
+    "description_sha256": "9b8cd5d0ab79f1a9cc9545ef6e4df5bacd6388ab0bbc33d9dce34c20f951a139",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "enum": [
+            "summary",
+            "full"
+          ],
+          "type": "string"
+        },
+        "key": {
+          "description": "One exact current task key in this Track; no prefix matching or whitespace normalization.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.plan.recover",
+    "description_sha256": "2af09527b5ad55b131677f81d240cf84c50af2b749609e23926e83798bb56c1f",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_attempt_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotency_key": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "expected_attempt_id",
+        "idempotency_key",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.plan.upsert",
+    "description_sha256": "02dadd421a85de6a7fd914239d605723e8ca02ee363538d1139c541325293c55",
+    "input_schema": {
+      "properties": {
+        "lifecycle": {
+          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
+          "enum": [
+            "draft",
+            "planning",
+            "dispatching",
+            "working",
+            "blocked",
+            "reviewing",
+            "done",
+            "canceled",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "tasks": {
+          "items": {
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "not": {
+                  "required": [
+                    "command"
+                  ]
+                },
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "codex",
+                      "claude"
+                    ]
+                  }
+                },
+                "required": [
+                  "key",
+                  "kind",
+                  "goal"
+                ]
+              },
+              {
+                "not": {
+                  "required": [
+                    "goal"
+                  ]
+                },
+                "properties": {
+                  "kind": {
+                    "const": "terminal"
+                  }
+                },
+                "required": [
+                  "key",
+                  "kind",
+                  "command"
+                ]
+              }
+            ],
+            "properties": {
+              "acceptance_criteria": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "command": {
+                "description": "Exact Shell command passed verbatim as `/bin/sh -c <command>`; required only for terminal tasks and forbidden for codex/claude tasks.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "context": {
+                "description": "Optional, any JSON; forwarded to the worker verbatim."
+              },
+              "cwd": {
+                "description": "Absolute path; terminal worker cwd + gate default cwd.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "depends_on": {
+                "description": "Sibling task keys that must be done first.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "gate": {
+                "description": "Verification the kernel runs after the worker reports done; declare one for every agent task. Steps run in order, first non-zero exit fails the gate, and steps must be re-runnable (kernel restarts re-run the gate).",
+                "properties": {
+                  "cwd": {
+                    "description": "Absolute path; defaults to task.cwd, else the track cwd.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "steps": {
+                    "items": {
+                      "properties": {
+                        "cmd": {
+                          "description": "Shell command; must be re-runnable. Non-zero exit fails the gate.",
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "name": {
+                          "description": "Step label; the failing step is attributed in the gate result.",
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "cmd"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "timeout_secs": {
+                    "description": "Whole-gate timeout in seconds; default 1800, max 7200. Timeout fails the gate.",
+                    "maximum": 7200,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "steps"
+                ],
+                "type": "object"
+              },
+              "goal": {
+                "description": "Natural-language objective; required only for codex/claude tasks and forbidden for terminal tasks.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "key": {
+                "description": "Stable per-track task key; also the completion correlation id.",
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "codex",
+                  "claude",
+                  "terminal"
+                ],
+                "type": "string"
+              },
+              "no_gate_reason": {
+                "description": "Escape hatch: justifies an ungated agent task on a track with `require_task_gates`; recorded into context for audit. Must be a non-empty reason (whitespace-only is rejected).",
+                "minLength": 1,
+                "type": "string"
+              },
+              "priority": {
+                "description": "Higher schedules first; default 0.",
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "tasks",
+        "message"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.ratify.request",
+    "description_sha256": "e110e83486eecb7e96242df1ca819540d01f61791a24dd2f701c7d1475e66a52",
+    "input_schema": {
+      "properties": {
+        "reason": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.report.blocks.delete",
+    "description_sha256": "f556a5410ab5de9f3fd8d3ef9a631fafe5c57ae3fe6ddbf71b00946908d1661b",
+    "input_schema": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "if_rev": {
+          "description": "The revision of this specific report block; not the document-wide docRev.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "if_rev"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "calm.report.blocks.kinds",
+    "description_sha256": "fc8f335935f70e6032c1500f92faddc7658777abfaa79378dec59c38b738ffc5",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "calm.report.blocks.move",
+    "description_sha256": "20ca6260ce8a4ef1e8787f15e0c336df0fc2b92a3ad6d5850332c7dae9c94c93",
+    "input_schema": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "if_doc_rev": {
+          "description": "Required document revision; read docRev from calm.report.read.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to_index": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "to_index",
+        "if_doc_rev"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "calm.report.blocks.upsert",
+    "description_sha256": "03ef7555d1365369b83ffac57c2b0ec57782cc31593d4759a62af74c7251a94c",
+    "input_schema": {
+      "properties": {
+        "id": {
+          "description": "Existing block id to replace. Omit to create a new block.",
+          "type": "string"
+        },
+        "if_doc_rev": {
+          "description": "Required when creating: read docRev from calm.report.read.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "if_rev": {
+          "description": "Required when `id` is given: the block rev you last read.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "description": "Block kind.",
+          "enum": [
+            "prose",
+            "chart.candles",
+            "table",
+            "app",
+            "task"
+          ],
+          "type": "string"
+        },
+        "lifecycle": {
+          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged. Accepted from the Planner role only; an assistant passing it is refused (-32403) and nothing is written.",
+          "enum": [
+            "draft",
+            "planning",
+            "dispatching",
+            "working",
+            "blocked",
+            "reviewing",
+            "done",
+            "canceled",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "markdown": {
+          "description": "Prose content (kind=prose only).",
+          "type": "string"
+        },
+        "message": {
+          "description": "Optional human-readable rationale for this write, persisted as agent_message on the emitted event (and on TrackUpdated.agent_message when a lifecycle transition is requested).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "payload": {
+          "description": "Kind-specific payload: required for data kinds; for prose, `{ markdown }` is accepted as an alternative to the top-level `markdown`.",
+          "type": "object"
+        },
+        "position": {
+          "description": "Insertion index for a NEW block (default: append).",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "calm.report.commit",
+    "description_sha256": "4202b5e3d05a75b51f925283a1054c3fe3bba0333a9cc91b1e0d8ddee1823c12",
+    "input_schema": {
+      "properties": {
+        "if_doc_rev": {
+          "description": "The document-wide docRev returned by calm.report.read; checked once for the whole commit.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lifecycle": {
+          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
+          "enum": [
+            "draft",
+            "planning",
+            "dispatching",
+            "working",
+            "blocked",
+            "reviewing",
+            "done",
+            "canceled",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "ops": {
+          "description": "Ordered block ops; may be omitted or empty.",
+          "items": {
+            "properties": {
+              "id": {
+                "description": "upsert (replace) / move / delete: the existing block id. Omit on upsert to create.",
+                "type": "string"
+              },
+              "if_rev": {
+                "description": "Required on upsert-with-id and delete: that block's rev you last read.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "description": "upsert: block kind.",
+                "enum": [
+                  "prose",
+                  "chart.candles",
+                  "table",
+                  "app",
+                  "task"
+                ],
+                "type": "string"
+              },
+              "markdown": {
+                "description": "upsert, kind=prose: the content.",
+                "type": "string"
+              },
+              "op": {
+                "enum": [
+                  "upsert",
+                  "move",
+                  "delete"
+                ],
+                "type": "string"
+              },
+              "payload": {
+                "description": "upsert, data kinds: the schema-validated payload (see calm.report.blocks.kinds).",
+                "type": "object"
+              },
+              "position": {
+                "description": "upsert-create only: insertion index (default append).",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "to_index": {
+                "description": "move: final 0-based index.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "type": "object"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "summary": {
+          "description": "New sidebar summary (~80 chars). Omit to keep the existing one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "if_doc_rev",
+        "message"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.report.edit",
+    "description_sha256": "0b101835dd6950efe283185373bb93c96ace76064d1bcd7128ae81e5e271e9b9",
+    "input_schema": {
+      "properties": {
+        "if_doc_rev": {
+          "description": "The document-wide docRev returned by calm.report.read; not a block rev.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lifecycle": {
+          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
+          "enum": [
+            "draft",
+            "planning",
+            "dispatching",
+            "working",
+            "blocked",
+            "reviewing",
+            "done",
+            "canceled",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "new_string": {
+          "type": "string"
+        },
+        "old_string": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "replace_all": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "old_string",
+        "new_string",
+        "message",
+        "if_doc_rev"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.report.links.backlinks",
+    "description_sha256": "5aaedb2840e6243b99cf07946f7bafc46fa01306a58323d55aed93c97ec75147",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.report.read",
+    "description_sha256": "40760fcee8baf0aa95d70c53a2f37f9e2b94af128513ad8c91c6ad6dddf7bc37",
+    "input_schema": {
+      "properties": {
+        "with_markers": {
+          "description": "Inject a `<!-- neige:b_xxxx -->` marker line before each block in `text` (default false).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.report.write",
+    "description_sha256": "99bf9404076ad53b8fc25c52bc6295a758241c2ae1c07121444f4873eb0113ae",
+    "input_schema": {
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "if_doc_rev": {
+          "description": "The document-wide docRev returned by calm.report.read; not a block rev.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lifecycle": {
+          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
+          "enum": [
+            "draft",
+            "planning",
+            "dispatching",
+            "working",
+            "blocked",
+            "reviewing",
+            "done",
+            "canceled",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "body",
+        "message",
+        "if_doc_rev"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.report.write_markdown",
+    "description_sha256": "424848785d7ac4667c93effcb7e5279ef6300a1f8815d797a002826d9a99b178",
+    "input_schema": {
+      "properties": {
+        "body": {
+          "description": "Full report Markdown, optionally with `<!-- neige:b_xxxx -->` marker lines.",
+          "type": "string"
+        },
+        "if_doc_rev": {
+          "description": "The document-wide docRev returned by calm.report.read; not a block rev.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lifecycle": {
+          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged. Accepted from the Planner role only; an assistant passing it is refused (-32403) and nothing is written.",
+          "enum": [
+            "draft",
+            "planning",
+            "dispatching",
+            "working",
+            "blocked",
+            "reviewing",
+            "done",
+            "canceled",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "description": "Optional human-readable rationale for this write, persisted as agent_message on the emitted event (and on TrackUpdated.agent_message when a lifecycle transition is requested).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "body",
+        "if_doc_rev"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner",
+      "assistant"
+    ]
+  },
+  {
+    "name": "calm.review.round",
+    "description_sha256": "6176ef1d9b86465dd208156578e22139bc7d0bc7dbc8d318470b830c85903b1d",
+    "input_schema": {
+      "properties": {
+        "cap": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "channels": {
+          "items": {
+            "properties": {
+              "role": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "verdict": {
+                "enum": [
+                  "approved",
+                  "changes_requested"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "role",
+              "verdict"
+            ],
+            "type": "object"
+          },
+          "minItems": 2,
+          "type": "array"
+        },
+        "converged": {
+          "type": "boolean"
+        },
+        "head_sha": {
+          "type": "string"
+        },
+        "n": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "root_cause": {
+          "type": "string"
+        },
+        "subject": {
+          "properties": {
+            "phase": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "pr_number": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "slice_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "phase",
+            "slice_id"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "subject",
+        "n",
+        "cap",
+        "converged",
+        "channels"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.task.complete",
+    "description_sha256": "6112aed62f9d8669a578ac69fc43e31f583f979934906e106da516bd33673835",
+    "input_schema": {
+      "properties": {
+        "artifacts": {
+          "type": "array"
+        },
+        "idempotency_key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "result": {}
+      },
+      "required": [
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "worker"
+    ]
+  },
+  {
+    "name": "calm.task.dispatch",
+    "description_sha256": "9056a831e764cd1e922cc385da3770138c021bd35bd46a70e4beee620797eece",
+    "input_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "input"
+            ]
+          },
+          "properties": {
+            "workspace": {
+              "const": "empty"
+            }
+          }
+        },
+        {
+          "properties": {
+            "workspace": {
+              "const": "verified-candidate"
+            }
+          },
+          "required": [
+            "input"
+          ]
+        }
+      ],
+      "properties": {
+        "acceptance": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "executor": {
+          "enum": [
+            "codex"
+          ],
+          "type": "string"
+        },
+        "goal": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "input": {
+          "additionalProperties": false,
+          "properties": {
+            "producer": {
+              "description": "Exact same-Track candidate producer key; use repair_key for C2.",
+              "not": {
+                "pattern": "[^a-z0-9._-]"
+              },
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": "string"
+            },
+            "slot": {
+              "not": {
+                "pattern": "[^A-Za-z0-9_-]"
+              },
+              "pattern": "^[A-Za-z0-9_-]{1,128}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "producer",
+            "slot"
+          ],
+          "type": "object"
+        },
+        "name": {
+          "description": "Nonempty after trim, at most 200 UTF-8 bytes, no control characters; immutable Track-local Dispatch identity.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "plugin_tools": {
+          "description": "Exact plugin.<id>_<tool> names delegated to the Worker through platform MCP. Omitted means no plugin grants. Frozen for replay and recovery; current Track scope and plugin availability still apply. Ordinary tools only, no ForgeAction tools or wildcards.",
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 32,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "workspace": {
+          "enum": [
+            "empty",
+            "verified-candidate"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "goal",
+        "acceptance",
+        "executor",
+        "workspace"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.task.fail",
+    "description_sha256": "9f0257d8e9f90a706058f548ab515f33d2e7ee48d1031f95eda610b4398025a0",
+    "input_schema": {
+      "properties": {
+        "idempotency_key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "worker"
+    ]
+  },
+  {
+    "name": "calm.task.repair",
+    "description_sha256": "336f78258ee28b3d38a869bc29f0a264b5f10ea66cb70747949a8aefd5721b17",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "producer": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "producer",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.task.verdict",
+    "description_sha256": "dc353550fb12c0f94c1689f8cbf370749d94fbc33574474e55b38d42943de95c",
+    "input_schema": {
+      "properties": {
+        "idempotency_key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "lifecycle": {
+          "description": "Optional track lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged.",
+          "enum": [
+            "draft",
+            "planning",
+            "dispatching",
+            "working",
+            "blocked",
+            "reviewing",
+            "done",
+            "canceled",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on TrackUpdated.agent_message when a lifecycle transition is requested.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "rejected"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "status",
+        "message"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.task_completed",
+    "description_sha256": "6396a1535250c96a23f36e5a2f070e2dce5091e46b06546c4c9ebcec59e1209f",
+    "input_schema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.task_failed",
+    "description_sha256": "88af120952ffe51905b71d6c1e471b5d5628b8d63364e3cf84ac11c531de8b87",
+    "input_schema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.terminal.control",
+    "description_sha256": "840999db8dc5a5385dd4793c7981950299baacf4b0e61d29a98dbd18d4a0474a",
+    "input_schema": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "claim",
+                "release",
+                "detach"
+              ],
+              "type": "string"
+            },
+            "observe": {
+              "default": false,
+              "type": "boolean"
+            },
+            "repaint_ms": {
+              "maximum": 5000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "settle_ms": {
+              "default": 150,
+              "maximum": 2000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "signal_events": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "terminal_id": {
+              "type": "string"
+            },
+            "wait_for": {
+              "default": "elapsed",
+              "enum": [
+                "elapsed",
+                "change",
+                "signal"
+              ],
+              "type": "string"
+            },
+            "wait_ms": {
+              "maximum": 20000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "action",
+            "terminal_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "claim",
+                "release",
+                "detach"
+              ],
+              "type": "string"
+            },
+            "observe": {
+              "default": false,
+              "type": "boolean"
+            },
+            "repaint_ms": {
+              "maximum": 5000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "settle_ms": {
+              "default": 150,
+              "maximum": 2000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "signal_events": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "wait_for": {
+              "default": "elapsed",
+              "enum": [
+                "elapsed",
+                "change",
+                "signal"
+              ],
+              "type": "string"
+            },
+            "wait_ms": {
+              "maximum": 20000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "action",
+            "task_id"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "action": {
+          "enum": [
+            "claim",
+            "release",
+            "detach"
+          ],
+          "type": "string"
+        },
+        "observe": {
+          "default": false,
+          "type": "boolean"
+        },
+        "repaint_ms": {
+          "maximum": 5000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "settle_ms": {
+          "default": 150,
+          "maximum": 2000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "signal_events": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "terminal_id": {
+          "type": "string"
+        },
+        "wait_for": {
+          "default": "elapsed",
+          "enum": [
+            "elapsed",
+            "change",
+            "signal"
+          ],
+          "type": "string"
+        },
+        "wait_ms": {
+          "maximum": 20000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.terminal.input",
+    "description_sha256": "6f22e9e423a1dcd3e694a67b6d773f8942edca326fe476c1a0087744f79a2a27",
+    "input_schema": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "text": {
+                      "maxLength": 16384,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "text",
+                        "submit"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "repeat": {
+                      "default": 1,
+                      "maximum": 32,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "type": {
+                      "const": "key"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "key"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "column": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "row": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": {
+                      "const": "click"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "column",
+                    "row"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "allow_output_since_observation": {
+              "default": false,
+              "type": "boolean"
+            },
+            "observation_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "observe": {
+              "default": false,
+              "type": "boolean"
+            },
+            "repaint_ms": {
+              "maximum": 5000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "request_id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "settle_ms": {
+              "default": 150,
+              "maximum": 2000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "signal_events": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "terminal_id": {
+              "type": "string"
+            },
+            "wait_for": {
+              "default": "elapsed",
+              "enum": [
+                "elapsed",
+                "change",
+                "signal"
+              ],
+              "type": "string"
+            },
+            "wait_ms": {
+              "maximum": 20000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "request_id",
+            "action",
+            "terminal_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "text": {
+                      "maxLength": 16384,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "text",
+                        "submit"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "repeat": {
+                      "default": 1,
+                      "maximum": 32,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "type": {
+                      "const": "key"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "key"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "column": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "row": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": {
+                      "const": "click"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "column",
+                    "row"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "allow_output_since_observation": {
+              "default": false,
+              "type": "boolean"
+            },
+            "observation_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "observe": {
+              "default": false,
+              "type": "boolean"
+            },
+            "repaint_ms": {
+              "maximum": 5000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "request_id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "settle_ms": {
+              "default": 150,
+              "maximum": 2000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "signal_events": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "wait_for": {
+              "default": "elapsed",
+              "enum": [
+                "elapsed",
+                "change",
+                "signal"
+              ],
+              "type": "string"
+            },
+            "wait_ms": {
+              "maximum": 20000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "request_id",
+            "action",
+            "task_id"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "maxLength": 16384,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": {
+                  "enum": [
+                    "text",
+                    "submit"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "repeat": {
+                  "default": 1,
+                  "maximum": 32,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "key"
+                }
+              },
+              "required": [
+                "type",
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "column": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "row": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "click"
+                }
+              },
+              "required": [
+                "type",
+                "column",
+                "row"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "allow_output_since_observation": {
+          "default": false,
+          "type": "boolean"
+        },
+        "observation_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "observe": {
+          "default": false,
+          "type": "boolean"
+        },
+        "repaint_ms": {
+          "maximum": 5000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "settle_ms": {
+          "default": 150,
+          "maximum": 2000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "signal_events": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "terminal_id": {
+          "type": "string"
+        },
+        "wait_for": {
+          "default": "elapsed",
+          "enum": [
+            "elapsed",
+            "change",
+            "signal"
+          ],
+          "type": "string"
+        },
+        "wait_ms": {
+          "maximum": 20000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "action"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.terminal.observe",
+    "description_sha256": "d041e2aa61245286b0bb0d6a9f37aae34de1081fab065b59245bf99e162f9071",
+    "input_schema": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "format": {
+              "default": "text",
+              "enum": [
+                "text",
+                "image"
+              ],
+              "type": "string"
+            },
+            "repaint_ms": {
+              "maximum": 5000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "scroll_offset": {
+              "maximum": 2000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "settle_ms": {
+              "default": 150,
+              "maximum": 2000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "signal_events": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "terminal_id": {
+              "type": "string"
+            },
+            "wait_for": {
+              "default": "elapsed",
+              "enum": [
+                "elapsed",
+                "change",
+                "signal"
+              ],
+              "type": "string"
+            },
+            "wait_ms": {
+              "maximum": 20000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "terminal_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "format": {
+              "default": "text",
+              "enum": [
+                "text",
+                "image"
+              ],
+              "type": "string"
+            },
+            "repaint_ms": {
+              "maximum": 5000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "scroll_offset": {
+              "maximum": 2000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "settle_ms": {
+              "default": 150,
+              "maximum": 2000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "signal_events": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "wait_for": {
+              "default": "elapsed",
+              "enum": [
+                "elapsed",
+                "change",
+                "signal"
+              ],
+              "type": "string"
+            },
+            "wait_ms": {
+              "maximum": 20000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "format": {
+          "default": "text",
+          "enum": [
+            "text",
+            "image"
+          ],
+          "type": "string"
+        },
+        "repaint_ms": {
+          "maximum": 5000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scroll_offset": {
+          "maximum": 2000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "settle_ms": {
+          "default": 150,
+          "maximum": 2000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "signal_events": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "terminal_id": {
+          "type": "string"
+        },
+        "wait_for": {
+          "default": "elapsed",
+          "enum": [
+            "elapsed",
+            "change",
+            "signal"
+          ],
+          "type": "string"
+        },
+        "wait_ms": {
+          "maximum": 20000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.terminal.open",
+    "description_sha256": "9fbc985f8a1ad94372535740da35c283706d9cafae0caee5e37528a4f0737d64",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "claim": {
+          "default": false,
+          "type": "boolean"
+        },
+        "format": {
+          "default": "text",
+          "enum": [
+            "text",
+            "image"
+          ],
+          "type": "string"
+        },
+        "program": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.terminal.resolve",
+    "description_sha256": "fbc0cf4f231b24f8a00f19ac85a2157c3ecf70dd2e0357f86d2a3bcd99bbcd87",
+    "input_schema": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "terminal_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "terminal_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.track.cat",
+    "description_sha256": "8fbbe5f47287feb1ecd7f17318839ff6424202fe16735b4c88dbf0e049c2aeef",
+    "input_schema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.track.cat_at",
+    "description_sha256": "e09a7ace969e7040e2355637360efd9f836fc334213798a2358bfa70ed974ed9",
+    "input_schema": {
+      "properties": {
+        "commit": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "commit",
+        "path"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.track.diff",
+    "description_sha256": "d48847a7cd155b6e8597b8752c3ffe7bd0a9e9869ef3d9fb1750cc22d0ac478a",
+    "input_schema": {
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.track.log",
+    "description_sha256": "cb4868d442016f91ce5682cab8a9575b6da7a85ed2c74f7e897807bf24038f3f",
+    "input_schema": {
+      "properties": {
+        "include_empty": {
+          "default": false,
+          "type": "boolean"
+        },
+        "limit": {
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.track.ls",
+    "description_sha256": "0889945b6f2407d44b6544ee7efdfdc3d90586a9388d24f84d1aa7c39e8c8bde",
+    "input_schema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.track.rename",
+    "description_sha256": "2dd7391dead22d39548e85c2eb657116426d54e89524223079d1805209b98c43",
+    "input_schema": {
+      "properties": {
+        "message": {
+          "description": "Optional short rationale, persisted as the event's agent_message.",
+          "type": "string"
+        },
+        "title": {
+          "description": "The track's name. Trimmed before it is stored; whitespace-only is rejected.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.track.state",
+    "description_sha256": "016fb08ff45272067748c7fb9ab1ab4778108542f23600c9d9aae65c37bb23f5",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": []
+  },
+  {
+    "name": "calm.update_task_meta",
+    "description_sha256": "cf81f21ed84096f6b49c98f1e927a8f6e55c7c1d1443b3cf8141bbd07a855b14",
+    "input_schema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "visible_to_roles": []
+  }
+]

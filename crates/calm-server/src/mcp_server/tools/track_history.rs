@@ -46,10 +46,9 @@ where
 fn diff_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_DIFF.into(),
-        description: "Hidden drill-in: diff two commits for the current MCP-bound track. \
-             Arguments: `{ from, to?, path? }`; `to` defaults to current HEAD. \
-             Text blobs include unified patch hunks."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.track.diff.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["from"],
@@ -67,9 +66,9 @@ fn diff_descriptor() -> ToolDescriptor {
 fn cat_at_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_CAT_AT.into(),
-        description: "Hidden drill-in: read `{ path }` from a historical `{ commit }` \
-             in the current MCP-bound track."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.track.cat_at.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["commit", "path"],
@@ -86,10 +85,9 @@ fn cat_at_descriptor() -> ToolDescriptor {
 fn log_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_LOG.into(),
-        description: "Hidden drill-in: list recent track-vcs commits for the current \
-             MCP-bound track. Commits without file changes are hidden by default. \
-             Arguments: `{ path?, limit?, include_empty? }`."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.track.log.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {

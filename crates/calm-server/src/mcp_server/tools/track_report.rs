@@ -107,24 +107,9 @@ where
 fn read_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_READ.into(),
-        description: "Planner + Assistant: read the track's report. Returns \
-             `{ text, body, summary, schemaVersion, docRev, updated_at, \
-             blocks, taskDiagnostics }` — `text` is the flat Markdown (`body` is a \
-             legacy alias with the same value) and `blocks` is the \
-             addressable index `[{ id, kind, rev }]` in document \
-             order; `taskDiagnostics` is the read-time DB-aware task-block \
-             schedulability result and is returned to Planner callers only \
-             (it carries dispatched-task runtime state). \
-             The report is made of blocks: address them with \
-             `calm.report.blocks.upsert` / `.move` / `.delete` (all \
-             take `if_rev` for optimistic concurrency; see \
-             `calm.report.blocks.kinds` for the block vocabulary). \
-             Pass `{ with_markers: true }` to get `text` with one \
-             `<!-- neige:b_xxxx -->` line before each block so you \
-             can see block boundaries; markers exist only in this \
-             read output (and are accepted+stripped by \
-             `calm.report.write_markdown`), they are never stored."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.report.read.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -224,19 +209,9 @@ pub(crate) async fn report_read(
 fn write_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_WRITE.into(),
-        description: "Planner-only compatibility interface: wholesale-\
-             replace the track's report body (and optionally `summary`). \
-             Prefer the block-addressed tools — `calm.report.blocks.\
-             upsert`/`.move`/`.delete` for targeted changes, or \
-             `calm.report.write_markdown` for full rewrites that \
-             preserve block identity via markers. Behaves like the \
-             codex `Write` file tool — clobbers prior content; block \
-             ids are re-derived best-effort. Returns `{ updated_at, docRev }`. \
-             Omitting `summary` leaves the existing summary unchanged. \
-             `message` is required and is persisted as `agent_message`; \
-             optional `lifecycle` advances the track state machine in \
-             the same atomic write."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.report.write.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["body", "message", "if_doc_rev"],
@@ -310,23 +285,9 @@ async fn report_write(
 fn edit_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_EDIT.into(),
-        description: "Planner-only compatibility interface: string-replace \
-             inside the track's report body. Prefer \
-             `calm.report.blocks.upsert` with `id` + `if_rev` for \
-             targeted block replacement. Behaves like the codex `Edit` \
-             file tool. \
-             `old_string` must appear in the body; if it appears more \
-             than once you must pass `replace_all = true`. If \
-             `old_string == new_string`, the call is a content-equal \
-             write that still bumps `updated_at` and emits the same \
-             `CardUpdated` + `TrackReportEdited` event pair as every \
-             other persist (with `body_before == body_after`). \
-             Returns `{ updated_at, docRev }`. The summary is preserved — \
-             call `calm.report.write` to update both at once. `message` \
-             is required and is persisted as `agent_message`; optional \
-             `lifecycle` advances the track state machine in the same \
-             atomic write."
-            .into(),
+        description: include_str!("../../../prompts/tools/calm.report.edit.md")
+            .trim_end()
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "required": ["old_string", "new_string", "message", "if_doc_rev"],
