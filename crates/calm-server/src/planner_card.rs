@@ -13,6 +13,9 @@
 //!      starting the planner card's Codex thread. Its prose is data in
 //!      `prompts/planner.md` (#1635); this module only embeds it and
 //!      substitutes the per-spawn placeholders.
+//!   2. The worker and assistant prompts, likewise data under
+//!      `prompts/worker/` and `prompts/assistant/` (#1635 S1b), assembled
+//!      with `concat!` + `include_str!` so shared parts exist once.
 //!
 //! Atomicity story for the planner card itself lives in
 //! `routes::tracks::create_track` — the planner card row and both
@@ -41,198 +44,60 @@
 /// live in `mod tests` below.
 pub(crate) const PLANNER_SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/planner.md");
 
-/// Head of the **claude** (CLI-completion) worker prompt — everything
-/// before the shared `## Reading track state` tail. Step 3 reports through
-/// the `neige` shell CLI. A literal-yielding macro so it can be
-/// `concat!`'d with the shared tail at compile time (keeps DRY without a
-/// runtime allocation or a stale duplicated tail).
-macro_rules! worker_prompt_head_cli {
-    () => {
-        "\
-You are a worker agent under planner card on track `{track_id}`.
-
-You were spawned to execute one job. Your contract:
-
-1. Read the goal, context, and acceptance criteria handed to you. \
-   Run `neige state` if you need to inspect the track's shape before \
-   starting — but don't poll it; the track snapshot you receive once is \
-   enough.
-2. Execute the task. Make tool calls, write files, run commands \
-   — whatever the goal requires.
-3. When the task is done, report exactly once via the `neige` shell CLI:
-   * On success: `neige task-completed --idempotency-key K --result <json-or-text>` \
-     where `K` echoes the idempotency key the kernel handed you. \
-     Append `--artifact <path>` (may repeat) for any file/blob references \
-     you produced.
-   * On failure: `neige task-failed --idempotency-key K --reason '<text>'` \
-     with a free-form failure description.
-4. Exit. You are short-lived by design — run your single job and stop. \
-   Your completion report is a claim; a kernel gate may verify it before \
-   the task counts as done. The kernel delivers ungated reports, failures, \
-   or gate results to the planner card as pushed turn inputs, and the planner \
-   continues the track from there. You do not wait for or observe anything.
-
-You may NOT call `calm.task.verdict` — that is a planner-only tool and the \
-kernel's role gate will refuse you. You also may NOT mint new workers; \
-`calm.task.dispatch` is Planner-only, and the kernel's role gate (#583) still \
-refuses worker-actor dispatch emits from old paths. If the job needs \
-further decomposition, report `task.failed` with a reason \
-explaining what's missing and the planner will handle re-decomposition.
-
-"
-    };
-}
-
-/// Head of the **codex** (MCP-completion) worker prompt — everything
-/// before the shared `## Reading track state` tail. Step 3 reports through
-/// the native `calm.task.complete` / `calm.task.fail` MCP tools.
-macro_rules! worker_prompt_head_mcp {
-    () => {
-        "\
-You are a worker agent under planner card on track `{track_id}`.
-
-You were spawned to execute one job. Your contract:
-
-1. Read the goal, context, and acceptance criteria handed to you. \
-   Run `neige state` if you need to inspect the track's shape before \
-   starting — but don't poll it; the track snapshot you receive once is \
-   enough.
-2. Execute the task. Make tool calls, write files, run commands \
-   — whatever the goal requires.
-3. When the task is done, report exactly once via the MCP tool:
-   * On success: call `calm.task.complete` with `idempotency_key` = K \
-     (the kernel task id you were handed). Optionally include `result` \
-     (json-or-text) and `artifacts` (an array of path/blob refs you produced).
-   * On failure: call `calm.task.fail` with `idempotency_key` = K and a \
-     free-form `reason` (required).
-4. Exit. You are short-lived by design — run your single job and stop. \
-   Your completion report is a claim; a kernel gate may verify it before \
-   the task counts as done. The kernel delivers ungated reports, failures, \
-   or gate results to the planner card as pushed turn inputs, and the planner \
-   continues the track from there. You do not wait for or observe anything.
-
-You may NOT call `calm.task.verdict` — that is a planner-only tool and the \
-kernel's role gate will refuse you. You also may NOT mint new workers; \
-`calm.task.dispatch` is Planner-only, and the kernel's role gate (#583) still \
-refuses worker-actor dispatch emits from old paths. If the job needs \
-further decomposition, report `task.failed` with a reason \
-explaining what's missing and the planner will handle re-decomposition.
-
-"
-    };
-}
-
-/// Shared `## Reading track state` tail — concatenated into BOTH worker
-/// prompts. Reads stay on the `neige` shell CLI for both providers
-/// (#339/#377 read-via-CLI principle); only the completion *report* moves
-/// to MCP for codex.
-macro_rules! worker_prompt_tail {
-    () => {
-        "\
-## Reading track state
-
-You may read your track's state READ-ONLY from the shell with the `neige` \
-CLI: `neige state` reads the track shape, `neige ls [path]` lists views, \
-and `neige cat <path>` reads one view. Useful paths include `/`, \
-`runs/index.json`, \
-`runs/<idempotency_key>.md`, `runs/<idempotency_key>.json`, \
-`cards/<card_id>/.payload.json`, and `cards/<card_id>/runtime.json`. \
-`.payload.json` is the card's own payload; runtime identity/status lives \
-in `runtime.json`. These views are own-track-only; cross-track reads are forbidden.
-"
-    };
-}
-
-/// Worker-agent system prompt. PR8 (#136) replaces the PR6 stub with
-/// the production prompt: workers are short-lived, fire-and-forget,
-/// driven by the kernel scheduler from the planner-maintained plan. They
-/// run one job and exit.
+/// Worker-agent system prompt for the **claude** (CLI-completion) provider.
+/// PR8 (#136) replaced the PR6 stub with the production prompt: workers are
+/// short-lived, fire-and-forget, driven by the kernel scheduler from the
+/// planner-maintained plan. They run one job and exit.
+///
+/// The prose is data (#1635 S1b): `prompts/worker/head-cli.md` is everything
+/// before the shared reads tail and `prompts/worker/tail.md` is that tail,
+/// shared byte-for-byte with [`WORKER_CODEX_SYSTEM_PROMPT`]. Both are embedded
+/// at compile time; `concat!` keeps the const `&'static str` with no runtime
+/// allocation and no second copy of the tail that could go stale.
 ///
 /// The name retains the `_PLACEHOLDER` suffix only to avoid churn in
-/// downstream call sites; the content is now production. A followup
-/// can rename this to `WORKER_SYSTEM_PROMPT_TEMPLATE` for symmetry
-/// with [`PLANNER_SYSTEM_PROMPT_TEMPLATE`] when there's no other PR
-/// touching this file.
+/// downstream call sites; the content is production. A followup can rename
+/// this to `WORKER_SYSTEM_PROMPT_TEMPLATE` for symmetry with
+/// [`PLANNER_SYSTEM_PROMPT_TEMPLATE`] when there's no other PR touching this
+/// file.
 ///
-/// This is the **claude** (CLI-completion) body; codex uses
-/// [`WORKER_CODEX_SYSTEM_PROMPT`] (#838 Move 2).
-pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str =
-    concat!(worker_prompt_head_cli!(), worker_prompt_tail!());
+/// Wording is pinned by the whole-document golden
+/// `tests/goldens/worker_prompt_cli.txt` (regenerate with
+/// `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff).
+pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str = concat!(
+    include_str!("../prompts/worker/head-cli.md"),
+    include_str!("../prompts/worker/tail.md")
+);
 
-/// codex worker variant (#838 Move 2). Identical to
-/// [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] except step 3: completion is
-/// reported through the native `calm.task.complete` / `calm.task.fail`
-/// MCP tools (channel 2 — DaemonTrust + codex-injected `_meta.threadId`)
-/// instead of the `neige` shell CLI. This decouples the kernel-critical
-/// completion path from the per-thread `shell_environment_policy` env
-/// (channel 3) that keeps getting silently dropped (#738/#747/#836).
+/// codex worker variant (#838 Move 2): `prompts/worker/head-mcp.md` plus the
+/// same `prompts/worker/tail.md`. It differs from
+/// [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in how completion is reported:
+/// through the native `calm.task.complete` / `calm.task.fail` MCP tools
+/// (channel 2 — DaemonTrust + codex-injected `_meta.threadId`) instead of the
+/// `neige` shell CLI. This decouples the kernel-critical completion path from
+/// the per-thread `shell_environment_policy` env (channel 3) that keeps
+/// getting silently dropped (#738/#747/#836).
 ///
-/// claude keeps [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] (it has no codex
-/// thread to authenticate against — the native-MCP resolver is
-/// `AgentProvider::Codex`-only — and its contract test asserts the CLI
-/// surface). The shared `## Reading track state` block (`worker_prompt_tail!`)
-/// is concatenated into both, keeping reads on the CLI for both providers.
-pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str =
-    concat!(worker_prompt_head_mcp!(), worker_prompt_tail!());
-
-/// The tool surface and the marker protocol shared by **both** assistant
-/// identities.
+/// claude keeps [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] (it has no codex thread
+/// to authenticate against — the native-MCP resolver is
+/// `AgentProvider::Codex`-only — and `claude_adapter`'s contract test asserts
+/// the CLI surface). Reads stay on the `neige` shell CLI for both providers
+/// (#339/#377 read-via-CLI principle), which is why the tail is one file
+/// concatenated into both consts.
 ///
-/// A macro rather than a `const` so the two prompts can be built with
-/// `concat!` and stay `&'static str`, the same shape `worker_prompt_head_mcp!`
-/// uses. #1343 forks the assistant's *identity* — first duty, and who owns the
-/// document — and nothing else; keeping the mechanics in one place is what
-/// stops the halves that are not in dispute from drifting.
-macro_rules! assistant_prompt_mechanics {
-    () => {
-        "
-## What you can do
+/// Wording is pinned by `tests/goldens/worker_prompt_mcp.txt`.
+pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
+    include_str!("../prompts/worker/head-mcp.md"),
+    include_str!("../prompts/worker/tail.md")
+);
 
-* **Read the report.** Use `calm.report.read` for the track report. General \
-  track/card state reads through the `neige` CLI are not available to the \
-  Assistant role.
-* **Run shell commands** in the track's workspace, subject to the usual sandbox.
-* **Write prose into the track report** through the block tools: \
-  `calm.report.blocks.upsert`, `.move`, `.delete` \
-  (`calm.report.blocks.kinds` lists the block vocabulary), or \
-  `calm.report.write_markdown` for a whole-document rewrite.
-
-## What you cannot do
-
-Lifecycle transitions, plan writes, task verdicts, review, admin, and the \
-whole-document `calm.report.write` are not yours. Neither are `task` blocks: \
-the track's plan belongs to the planner agent, and a `task` block written from here \
-is rejected — the whole write, not just that block. If the user asks for work \
-to be scheduled, say so plainly and let them take it to the planner agent.
-
-## Loading deferred tools
-
-Codex may defer MCP tools until they are requested. Before report work, use \
-tool search to load the exact `calm.report.read` tool and the exact report write \
-tool you need. If a named tool is not immediately visible, use tool search to \
-load that exact `calm.*` tool; do not substitute a planner-only tool or declare \
-the report tools unavailable merely because they are deferred.
-
-## Writing to the report, concretely
-
-1. Call `calm.report.read` with `with_markers: true` FIRST. It gives you the \
-   document's `docRev` and every block's `{id, kind, rev}`.
-2. To add a block, pass that `docRev` as `if_doc_rev`. To replace one, pass \
-   the block's own `rev` as `if_rev` together with its `id`.
-3. A prose block's `markdown` is the WHOLE block, not only the new paragraph. \
-   When replacing a headed section, keep its `#` / `##` heading and trailing \
-   newline; omitting them destroys the block boundary and can join the next section.
-4. `calm.report.write_markdown` needs the SAME marker read first, and you must \
-   send the markers back. Without them your rewrite mints new ids for existing \
-   content, which reads as deleting every block and creating replacements — \
-   and if any of them were task blocks the entire write is refused.
-5. Another session may be writing at the same time. A revision conflict means \
-   somebody else moved first: re-read and reapply, do not retry blindly.
-"
-    };
-}
-
-/// #1189 — the track assistant's system prompt.
+/// #1189 — the track assistant's system prompt: `prompts/assistant/
+/// ordinary-head.md` (identity), `prompts/assistant/mechanics.md` (the tool
+/// surface and marker protocol shared by **both** assistant identities), and
+/// `prompts/assistant/ordinary-tail.md` (the closing paragraph that is true
+/// only on an ordinary track — see [`LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE`]
+/// for why it is its own file). Embedded at compile time so the const stays
+/// `&'static str`.
 ///
 /// Deliberately not a trimmed copy of [`PLANNER_SYSTEM_PROMPT_TEMPLATE`]: most of
 /// that prompt instructs the agent to drive the lifecycle state machine and the
@@ -240,36 +105,31 @@ the report tools unavailable merely because they are deferred.
 /// handler. Describing them here would teach the agent to spend turns on calls
 /// that can only come back `-32602`.
 ///
-/// Two things in here are load-bearing rather than stylistic:
+/// Two things in the mechanics are load-bearing rather than stylistic:
 ///
-/// * **"read with markers before you rewrite"** — a `calm.report.write` style
+/// * **read with markers before you rewrite** — a `calm.report.write` style
 ///   full-document rewrite is unavailable to this role, and a block write that
 ///   re-mints ids reads as "delete every task block and create new ones", which
 ///   the task-block guard rejects as a whole transaction (design §3.2a-bis.4).
 ///   The marker read is what keeps existing block ids stable.
-/// * **"you do not own the plan"** — the guard exists, but an agent that keeps
-///   trying to write task blocks produces a stream of rejected turns instead of
-///   answering the user.
+/// * **the assistant does not own the plan** — the guard exists, but an agent
+///   that keeps trying to write task blocks produces a stream of rejected turns
+///   instead of answering the user.
+///
+/// #1343 forks the assistant's *identity* — first duty, and who owns the
+/// document — and nothing else; keeping the mechanics in one file is what stops
+/// the halves that are not in dispute from drifting.
+///
+/// Wording is pinned by `tests/goldens/assistant_prompt.txt`.
 pub(crate) const ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
-    "\
-You are an assistant conversation on track `{track_id}`.
-
-You are talking with the user. Answer them. You are NOT the track's planner agent: \
-you do not own the track's lifecycle, its plan, or its workers, and the kernel \
-will reject you if you try to drive any of them.
-",
-    assistant_prompt_mechanics!(),
-    // "A guest" is correct HERE: an ordinary track's report is maintained by
-    // that track's planner agent. It is false on the launchpad, which is why
-    // #1343 gave that track its own closing paragraph instead of editing this
-    // one.
-    "
-Keep the report's own structure and conventions; you are a guest in a document \
-the planner agent maintains.
-",
+    include_str!("../prompts/assistant/ordinary-head.md"),
+    include_str!("../prompts/assistant/mechanics.md"),
+    include_str!("../prompts/assistant/ordinary-tail.md")
 );
 
-/// #1343 — the assistant on **Today's launchpad track**.
+/// #1343 — the assistant on **Today's launchpad track**:
+/// `prompts/assistant/launchpad-head.md`, the shared
+/// `prompts/assistant/mechanics.md`, and `prompts/assistant/launchpad-tail.md`.
 ///
 /// Same tools, same marker protocol, different job. Measured on the 4140
 /// preview: told explicitly to write a block, the agent wrote one (`docRev`
@@ -277,14 +137,14 @@ the planner agent maintains.
 /// all already working. Told casually what had happened, it made zero tool
 /// calls and answered in chat. The prompt was the cause, in two places:
 ///
-/// * the first duty was **"You are talking with the user. Answer them."**, with
-///   writing the report listed under *What you can do* — a capability, not a
-///   duty, so chatting was the default path;
-/// * the closing sentence said the agent is **a guest in a document the planner
-///   agent maintains**. On an ordinary track that is true. On the launchpad
-///   there is no planner agent writing today's report — by design this
-///   conversation is the writer — so the prompt was telling it the document was
-///   not its to touch.
+/// * the ordinary identity's first duty is answering the user, with writing
+///   the report listed as a capability, not a duty, so chatting was the
+///   default path;
+/// * the ordinary closing paragraph describes the agent as a guest in a
+///   document the planner agent maintains. On an ordinary track that is true.
+///   On the launchpad there is no planner agent writing today's report — by
+///   design this conversation is the writer — so the prompt was telling it
+///   the document was not its to touch.
 ///
 /// This template inverts both and leaves the mechanics identical. It changes
 /// nothing for any other track: the fork is selected by
@@ -295,32 +155,13 @@ the planner agent maintains.
 /// conversation that already exists keeps the identity it was started with. A
 /// new conversation is what picks this up.
 ///
+/// Wording is pinned by `tests/goldens/assistant_prompt_launchpad.txt`.
+///
 /// [`routes::today::is_launchpad_track`]: crate::routes::today::is_launchpad_track
 pub(crate) const LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
-    "\
-You are the writer of today's progress report, on Today's launchpad track \
-`{track_id}`.
-
-Your first duty is to keep that report current. The report is yours: no planner \
-agent maintains it, and if you do not record the day, nothing else will. \
-Talking with the user is how you find out what to record — it is not the job \
-itself.
-
-You are NOT a planner agent: you do not own any track's lifecycle, its plan, or \
-its workers, and the kernel will reject you if you try to drive any of them.
-",
-    assistant_prompt_mechanics!(),
-    "
-When the user tells you what happened, what to note down, or what to change, \
-write it into the report and then confirm briefly in the chat. Answering in \
-chat while leaving the report untouched is the one failure mode to avoid: the \
-conversation is not where the day is kept.
-
-The report body opens with a maintenance contract in an HTML comment. Follow \
-it — its section list, its rewrite-don't-append rule and its length budget are \
-the report's structure — and read whatever it says about another agent filling \
-a section as addressed to you.
-",
+    include_str!("../prompts/assistant/launchpad-head.md"),
+    include_str!("../prompts/assistant/mechanics.md"),
+    include_str!("../prompts/assistant/launchpad-tail.md")
 );
 
 /// Render the report-edit authors that wake the planner, straight from the
