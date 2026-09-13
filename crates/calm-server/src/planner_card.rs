@@ -488,13 +488,13 @@ mod tests {
             "the launchpad identity has to differ from the ordinary one; if it \
              does not, nothing about #1343 shipped"
         );
-        // The sentence that measurably stopped the agent writing: true on an
-        // ordinary track, false here.
-        assert!(ordinary.contains("you are a guest in a document"));
-        assert!(!launchpad.contains("you are a guest in a document"));
-        // …and the mechanics really are one paragraph, not two that can drift.
-        let markers = "1. Call `calm.report.read` with `with_markers: true` FIRST.";
-        assert!(ordinary.contains(markers) && launchpad.contains(markers));
+        // …and the mechanics really are one file, not two that can drift.
+        let mechanics = include_str!("../prompts/assistant/mechanics.md");
+        assert!(!mechanics.is_empty(), "the shared mechanics file is empty");
+        assert!(
+            ordinary.contains(mechanics) && launchpad.contains(mechanics),
+            "both assistant identities must embed prompts/assistant/mechanics.md"
+        );
     }
 
     /// #1635 S1b — the two worker prompts, byte for byte, rendered for one
@@ -509,6 +509,7 @@ mod tests {
     #[test]
     fn the_worker_prompts_match_their_reviewed_goldens() {
         let regen = std::env::var_os("REGEN_PROMPT_GOLDENS").is_some();
+        let mut mismatched = Vec::new();
         for (file, template, golden) in [
             (
                 "worker_prompt_cli.txt",
@@ -534,37 +535,25 @@ mod tests {
             let expected = golden
                 .strip_suffix('\n')
                 .expect("text fixture has its repository newline");
-            assert_eq!(
-                rendered, expected,
-                "{file} differs from the rendered prompt"
-            );
+            if rendered != expected {
+                let at = rendered
+                    .bytes()
+                    .zip(expected.bytes())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or_else(|| rendered.len().min(expected.len()));
+                mismatched.push(format!("{file} (first difference at byte {at})"));
+            }
         }
         assert!(
             !regen,
             "worker_prompt_cli.txt / worker_prompt_mcp.txt regenerated from the current \
              prompts; hand-verify the diff, commit, and re-run without REGEN_PROMPT_GOLDENS"
         );
-    }
-
-    #[test]
-    fn assistant_prompts_match_their_actual_read_and_tool_discovery_surface() {
-        let ordinary = render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, "track-golden-1189");
-        let launchpad = render_system_prompt(
-            LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
-            "track-golden-1189",
+        assert!(
+            mismatched.is_empty(),
+            "worker prompt goldens differ from the rendered prompts: {mismatched:?}; \
+             regenerate with REGEN_PROMPT_GOLDENS=1 and hand-verify the diff"
         );
-        for prompt in [ordinary, launchpad] {
-            assert!(
-                !prompt.contains("`neige state`")
-                    && !prompt.contains("`neige ls`")
-                    && !prompt.contains("`neige cat`"),
-                "Assistant is rejected from planner/worker-only neige reads"
-            );
-            assert!(
-                prompt.contains("use tool search to load that exact `calm.*` tool"),
-                "deferred MCP tools must be discovered before declaring them unavailable"
-            );
-        }
     }
 
     #[test]
@@ -727,6 +716,181 @@ mod tests {
         }
     }
 
+    /// Every `calm.*` token in `prompt` (see [`calm_tool_tokens`]) checked
+    /// against the tool registry, with every exception explicit and
+    /// self-checking:
+    ///
+    /// * each token is a **registered, non-alias** tool name, whatever role
+    ///   it belongs to — a typo, a retired name, or a deprecated alias is red
+    ///   no matter what the lists say;
+    /// * each token in neither list is **visible to `role`** in `tools/list`
+    ///   (`descriptors_for_role`);
+    /// * each `callable_but_hidden` entry is registered and NOT visible to
+    ///   `role`: the tool's handler admits the role while its descriptor
+    ///   does not, so the prompt is the role's only contract for it. An
+    ///   entry that became visible is stale and goes red;
+    /// * each `named_to_forbid` entry is registered and NOT visible to
+    ///   `role`: the prompt names it only to say the role may not call it.
+    ///   Same staleness check;
+    /// * every entry of either list must actually be named by the prompt —
+    ///   an exception nobody uses is dead weight and goes red — and no name
+    ///   may sit in both lists;
+    /// * anti-vacuity: the prompt names at least `min_named` distinct tools
+    ///   (three unless the prompt demonstrably names fewer), on top of every
+    ///   listed exception having to be found.
+    fn assert_prompt_tool_names(
+        label: &str,
+        prompt: &str,
+        role: calm_types::model::CardRole,
+        callable_but_hidden: &[&str],
+        named_to_forbid: &[&str],
+        min_named: usize,
+    ) {
+        use std::collections::BTreeSet;
+
+        let registry = crate::mcp_server::build_default_registry();
+        let aliases = registry.deprecated_alias_names();
+        let registered: BTreeSet<String> = registry
+            .descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .filter(|name| !aliases.contains(name))
+            .collect();
+        let visible: BTreeSet<String> = registry
+            .descriptors_for_role(role)
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect();
+        assert!(
+            !visible.is_empty(),
+            "the {role:?} role sees no tools at all"
+        );
+        assert!(
+            visible.iter().all(|name| registered.contains(name)),
+            "a visible tool is a deprecated alias; aliases must stay hidden"
+        );
+
+        let named: BTreeSet<&str> = calm_tool_tokens(prompt).into_iter().collect();
+        assert!(
+            named.len() >= min_named,
+            "anti-vacuity: {label} names fewer than {min_named} distinct tools; the \
+             scanner is probably broken. Found: {named:?}"
+        );
+
+        for (list, entries) in [
+            ("callable_but_hidden", callable_but_hidden),
+            ("named_to_forbid", named_to_forbid),
+        ] {
+            for name in entries {
+                assert!(
+                    registered.contains(*name),
+                    "{label}: `{name}` is listed as {list} but is not a registered tool \
+                     (typo, retired, or alias); drop it from the list"
+                );
+                assert!(
+                    !visible.contains(*name),
+                    "{label}: `{name}` is listed as {list} but IS visible to {role:?} in \
+                     tools/list; the exception is stale, drop it from the list"
+                );
+                assert!(
+                    named.contains(name),
+                    "{label}: `{name}` is listed as {list} but the prompt never names it; \
+                     drop it from the list"
+                );
+            }
+        }
+        for name in callable_but_hidden {
+            assert!(
+                !named_to_forbid.contains(name),
+                "{label}: `{name}` is in both callable_but_hidden and named_to_forbid"
+            );
+        }
+
+        for name in &named {
+            assert!(
+                registered.contains(*name),
+                "{label} names `{name}`, which is not a registered tool (typo, retired, \
+                 alias, or not a complete tool name). Registered: {registered:?}"
+            );
+            if callable_but_hidden.contains(name) || named_to_forbid.contains(name) {
+                continue;
+            }
+            assert!(
+                visible.contains(*name),
+                "{label} names `{name}`, which the {role:?} role cannot see in tools/list \
+                 (other-role or hidden). If the prompt names it to forbid it, list it \
+                 under named_to_forbid; if the role can call it despite the descriptor, \
+                 list it under callable_but_hidden. Visible: {visible:?}"
+            );
+        }
+    }
+
+    /// #1635 S1b — the worker prompts, both providers, name only tools the
+    /// Worker role can see, except the two Planner-only tools each prompt
+    /// names in order to forbid them (`calm.task.dispatch`,
+    /// `calm.task.verdict`). The same statement S1a makes for the planner;
+    /// the Worker's visible set is pinned exactly by
+    /// `tools_list_for_worker_role_returns_completion_tools`.
+    #[test]
+    fn worker_prompts_name_only_tools_the_worker_role_can_see() {
+        // The CLI prompt reports completion through `neige task-completed`,
+        // not a `calm.*` tool, so the two forbidden names are the only
+        // tokens it has; the codex prompt adds `calm.task.complete` /
+        // `calm.task.fail`.
+        for (label, template, min_named) in [
+            ("CLI worker prompt", WORKER_SYSTEM_PROMPT_PLACEHOLDER, 2),
+            ("codex worker prompt", WORKER_CODEX_SYSTEM_PROMPT, 3),
+        ] {
+            assert_prompt_tool_names(
+                label,
+                &render_system_prompt(template, "track-registry"),
+                calm_types::model::CardRole::Worker,
+                &[],
+                &["calm.task.dispatch", "calm.task.verdict"],
+                min_named,
+            );
+        }
+    }
+
+    /// #1635 S1b — both assistant identities name only tools the Assistant
+    /// role can see, with two explicit exceptions:
+    ///
+    /// * `calm.report.read` is callable but hidden (#1189 F6): its handler
+    ///   admits the Assistant — `mcp_assistant_tool_gate::
+    ///   assistant_token_can_read_the_report_with_concurrency_tokens` proves
+    ///   the call succeeds — while its descriptor is visible to Planner only,
+    ///   so `tools_list_for_assistant_role_returns_block_channel_only` pins
+    ///   it absent from the Assistant's `tools/list`. The prompt is therefore
+    ///   the Assistant's only contract for the read, which is exactly why it
+    ///   must keep naming it.
+    /// * `calm.report.write` is named to forbid it.
+    ///
+    /// This replaces the deleted wording test that said the assistant prompt
+    /// must not mention planner/worker-only reads: stated against the
+    /// registry it covers every name, not the three it listed.
+    #[test]
+    fn assistant_prompts_name_only_tools_the_assistant_role_can_see() {
+        for (label, template) in [
+            (
+                "ordinary assistant prompt",
+                ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
+            ),
+            (
+                "launchpad assistant prompt",
+                LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
+            ),
+        ] {
+            assert_prompt_tool_names(
+                label,
+                &render_system_prompt(template, "track-registry"),
+                calm_types::model::CardRole::Assistant,
+                &["calm.report.read"],
+                &["calm.report.write"],
+                3,
+            );
+        }
+    }
+
     /// #1635 S1a — the task `kind` vocabulary the prompt teaches is
     /// `WorkerProviderKind`, spelled as its wire/DB string. The match is
     /// exhaustive on purpose: a new variant fails to compile at the match,
@@ -755,82 +919,27 @@ mod tests {
         }
     }
 
-    #[test]
-    fn worker_prompt_documents_neige_read_cli() {
-        let p = WORKER_SYSTEM_PROMPT_PLACEHOLDER;
-
-        assert!(
-            p.contains("neige state") && p.contains("neige cat") && p.contains("neige ls"),
-            "worker prompt must document the shell neige read CLI"
-        );
-        assert!(
-            p.contains("neige task-completed") && p.contains("neige task-failed"),
-            "worker prompt must document task completion through the neige CLI"
-        );
-        assert!(
-            p.contains("completion report is a claim")
-                && p.contains("kernel gate may verify it")
-                && p.contains("idempotency key the kernel handed you"),
-            "worker prompt must describe gate verification and kernel-provided idempotency key"
-        );
-        assert!(
-            p.contains("READ-ONLY") && p.contains("own-track-only"),
-            "worker prompt must constrain neige reads to read-only own-track views"
-        );
-    }
-
-    /// #838 Move 2 — the codex worker prompt reports completion through the
-    /// native MCP tools, NOT the `neige task-completed`/`task-failed` CLI.
-    /// claude keeps the CLI (covered by the const tests above + the
-    /// claude_adapter contract test), so this is the codex-only divergence.
-    #[test]
-    fn worker_codex_prompt_reports_completion_via_mcp_tools_not_cli() {
-        let p = WORKER_CODEX_SYSTEM_PROMPT;
-
-        // Completion is mandated through the native MCP tools.
-        assert!(
-            p.contains("calm.task.complete") && p.contains("calm.task.fail"),
-            "codex worker prompt must mandate the calm.task.complete / calm.task.fail MCP tools"
-        );
-        // It must NOT mandate the neige completion CLI (that is claude-only).
-        assert!(
-            !p.contains("neige task-completed") && !p.contains("neige task-failed"),
-            "codex worker prompt must NOT mandate the neige completion CLI"
-        );
-        // Reads still ride the neige CLI for BOTH providers (shared tail).
-        assert!(
-            p.contains("neige state") && p.contains("neige cat") && p.contains("neige ls"),
-            "codex worker prompt must keep the neige read CLI in the shared tail"
-        );
-        assert!(
-            p.contains("READ-ONLY") && p.contains("own-track-only"),
-            "codex worker prompt must keep the read-only own-track constraint"
-        );
-        // The required-arg wording matches the tool schemas: complete needs
-        // `idempotency_key`; fail needs `idempotency_key` + a required `reason`.
-        assert!(
-            p.contains("idempotency_key") && p.contains("required"),
-            "codex worker prompt must name idempotency_key and the required reason"
-        );
-    }
-
-    /// The provider split must not change the claude (CLI) body: the codex
-    /// and claude worker prompts share everything except step 3, so the
-    /// shared `## Reading track state` tail must be byte-identical in both.
+    /// The provider split is one shared tail plus two distinct heads: both
+    /// worker consts end with `prompts/worker/tail.md` byte-for-byte (reads
+    /// stay on the `neige` CLI for both providers), and what precedes it
+    /// differs (completion is reported differently). Stated against the
+    /// file, not a marker string, so a second copy of the tail that drifted
+    /// would fail here rather than pass a `contains` check.
     #[test]
     fn worker_prompts_share_identical_reads_tail() {
-        let marker = "## Reading track state";
-        let cli_tail = WORKER_SYSTEM_PROMPT_PLACEHOLDER
-            .split_once(marker)
-            .map(|(_, tail)| tail)
-            .expect("CLI worker prompt has a reads tail");
-        let mcp_tail = WORKER_CODEX_SYSTEM_PROMPT
-            .split_once(marker)
-            .map(|(_, tail)| tail)
-            .expect("codex worker prompt has a reads tail");
-        assert_eq!(
-            cli_tail, mcp_tail,
-            "both worker prompts must share a byte-identical reads tail"
+        let tail = include_str!("../prompts/worker/tail.md");
+        assert!(!tail.is_empty(), "the shared reads tail is empty");
+        let cli_head = WORKER_SYSTEM_PROMPT_PLACEHOLDER
+            .strip_suffix(tail)
+            .expect("CLI worker prompt ends with the shared reads tail");
+        let mcp_head = WORKER_CODEX_SYSTEM_PROMPT
+            .strip_suffix(tail)
+            .expect("codex worker prompt ends with the shared reads tail");
+        assert!(!cli_head.is_empty() && !mcp_head.is_empty());
+        assert_ne!(
+            cli_head, mcp_head,
+            "the two worker heads must differ (completion channel); if they do \
+             not, one provider's prompt was silently wired to the other's head"
         );
     }
 }
