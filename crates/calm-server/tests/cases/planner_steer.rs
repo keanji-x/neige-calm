@@ -681,7 +681,11 @@ async fn a_codex_refusal_puts_the_entry_back_at_the_head_and_announces_the_retur
     assert_eq!(steered.len(), 1);
     assert_eq!(steered[0].3.as_deref(), Some(third.as_str()));
 
-    // Back at the head, same id, same rev.
+    // Back at the head, same id, same rev — the rev does NOT move here
+    // (review round 2): this client was told no in the same round trip and
+    // hides nothing, and a bump would turn its retry at 0 into a false
+    // `stale`. The completion sweep's restore is the one that bumps; see
+    // `a_restored_entry_lists_one_rev_up_so_the_client_that_saw_it_leave_can_tell`.
     let listed = pending(&boot).await;
     assert_eq!(
         listed
@@ -1014,6 +1018,79 @@ async fn an_accepted_steer_the_turn_failed_under_is_restored_too() {
     end_turn(&boot, FIRST_TURN, "failed");
 
     assert_restored_and_delivered_once_by_the_next_turn(&boot, &entry_id, TEXT, steer_row).await;
+}
+
+/// Review round 2 (F1) — the restored entry comes back ONE REV UP, and that
+/// is a client-visible fact, not bookkeeping. The client whose steer
+/// answered 200 hides the entry until the server's page stops listing it;
+/// after this restore the page lists the same id again, and the only thing
+/// on that page that can say "the kernel put it back" rather than "your
+/// page is stale" is the rev. So: `GET /planner/run` lists it at rev 1, a
+/// steer at the rev the client read (0) is `planner_input_stale` naming 1,
+/// and the delete at 1 is the paired green.
+///
+/// Codex is made to refuse `turn/start` before the turn ends, so the
+/// restored entry — which hard-fires — is re-buffered by the drain (which
+/// keeps the rev) and paced, instead of leaving the queue within a tick of
+/// coming back.
+#[tokio::test]
+async fn a_restored_entry_lists_one_rev_up_so_the_client_that_saw_it_leave_can_tell() {
+    const TEXT: &str = "back, and visibly so";
+    let boot = boot_with_a_running_turn().await;
+    let entry_id = queue_one(&boot, TEXT).await;
+    assert_eq!(pending(&boot).await[0]["rev"], json!(0), "premise");
+    let (status, body) = steer(&boot, &entry_id, 0).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert!(pending(&boot).await.is_empty(), "out of the queue");
+
+    boot.daemon.reject_turn_start_for_test();
+    boot.harness.interrupt("user".into()).await.unwrap();
+    end_turn(&boot, FIRST_TURN, "interrupted");
+    wait_until(
+        "the restored entry to be re-buffered by a refused drain",
+        || boot.harness.refused_issuances_for_test() >= 1,
+    )
+    .await;
+
+    let listed = pending(&boot).await;
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0]["entry_id"], json!(entry_id));
+    assert_eq!(listed[0]["text"], json!(TEXT), "the same sentence");
+    assert_eq!(
+        listed[0]["rev"],
+        json!(1),
+        "one rev up: the page that lists it again is not the page from before the steer"
+    );
+    assert_eq!(
+        queue_changes(&boot).await,
+        vec![
+            (entry_id.clone(), "steered".into()),
+            (entry_id.clone(), "restored".into()),
+        ]
+    );
+
+    // The CAS token really moved: the rev the client read is stale now, and
+    // the refusal names the rev to re-read at.
+    let (status, body) = steer(&boot, &entry_id, 0).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(body["code"], json!("planner_input_stale"));
+    assert_eq!(body["rev"], json!(1));
+    assert_eq!(body["text"], json!(TEXT));
+
+    // The paired green, at the rev the page lists.
+    let (status, body) = send_json(
+        boot.app.clone(),
+        "DELETE",
+        format!(
+            "/api/cards/{}/planner/input/{entry_id}",
+            boot.planner_card.id.as_str()
+        ),
+        "user",
+        json!({"if_entry_rev": 1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert!(pending(&boot).await.is_empty());
 }
 
 /// The inverse, so the sweep cannot be read as "every steered entry comes

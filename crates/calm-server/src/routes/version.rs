@@ -119,7 +119,16 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // MCP JSON setup requires explicit all-tools/header support and the Check
 // endpoint. A separately updated bundled frontend must refuse v26 servers,
 // which otherwise silently ignore the new install fields.
-pub const WEB_COMPAT_VERSION: u32 = 27;
+//
+// #1625 P3 bumps 27 -> 28: `harness.queue.changed` gained the value
+// `restored` (a steered entry back in the queue). The v27 zod union in both
+// bundles rejects a frame carrying it, and `reduceEventFrame` advances the
+// cursor past a rejected frame without invalidating anything — the #1316
+// S4b shape above, one enum value wide — so a v27 bundle left running
+// against this kernel keeps showing a restored entry as sent. The curtain
+// is what stops it. (The same slice also bumped API v7 -> v8 for the steer
+// route itself; that is the REST side of the same pairing rule.)
+pub const WEB_COMPAT_VERSION: u32 = 28;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

@@ -1780,7 +1780,8 @@ async fn handle_steer(
 /// whose transcript row is still a projection (see [`SteeredEntry`]) was
 /// dropped by codex before it was recorded — the interrupt cleared its
 /// pending input — so the row is deleted and the entry goes back to the head
-/// of the queue, in steer order, with its id and rev, and its return is
+/// of the queue, in steer order, with its id and one rev up
+/// (`QueueEntry::bump_rev_for_restore`, review round 2), and its return is
 /// announced (`Restored`, actor `Kernel`). Entries whose row was upgraded by
 /// the echo are delivered and are simply forgotten.
 ///
@@ -1877,6 +1878,16 @@ async fn restore_steered_entries_codex_dropped(inner: &Arc<Inner>, turn_id: &str
         .iter()
         .filter_map(|entry| entry.id().cloned())
         .collect::<Vec<_>>();
+    // #1625 P3 review round 2 — one rev up before it goes back. The client
+    // whose steer answered 200 is hiding the entry; the page it reads after
+    // this restore lists the same id again, and without the bump that page
+    // is indistinguishable from the one it read before the steer — a client
+    // whose refetch lands only after the restore would hide the entry for
+    // good. The refused-steer restore in `handle_steer` does NOT bump, and
+    // `bump_rev_for_restore` says why.
+    for entry in &mut restored {
+        entry.bump_rev_for_restore();
+    }
     rebuffer_head(inner, restored).await;
     for entry_id in ids {
         if let Err(error) = emit_queue_changed(

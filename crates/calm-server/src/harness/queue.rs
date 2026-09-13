@@ -142,7 +142,11 @@ pub enum QueueEntry {
         id: QueueEntryId,
         text: String,
         /// CAS token. Incremented every time the text is rewritten, folding
-        /// included, so a stale editor is told to re-read.
+        /// included, so a stale editor is told to re-read — and once more
+        /// when the entry comes back to the queue after a client was told
+        /// it had left ([`QueueEntry::bump_rev_for_restore`], #1625 P3
+        /// review round 2), so the page that lists it again is
+        /// distinguishable from the page that listed it before.
         rev: u32,
         /// Wall-clock ms at which this entry entered the queue.
         queued_at_ms: i64,
@@ -190,6 +194,29 @@ pub struct UserEntryView<'a> {
 }
 
 impl QueueEntry {
+    /// #1625 P3 review round 2 — the entry is re-entering the queue after a
+    /// client was told it had left: a steer answered 200, and the turn then
+    /// ended before codex recorded the input. That client hides the entry
+    /// until the server's page says otherwise, and the page it fetches
+    /// after the restore lists it AGAIN — under the same id, so nothing in
+    /// that page says "this is the entry that came back" unless the rev
+    /// moved. Bumping it here is what lets a client tell "the page from
+    /// before my steer" from "the page after the kernel put it back"
+    /// without relying on having observed the absence in between
+    /// (`tombstoneHides`, `fe/web/src/app/router/public.tsx`).
+    ///
+    /// Only the completion sweep calls this. A steer codex refused restores
+    /// the entry WITHOUT a bump: the client that asked was told no in the
+    /// same round trip and holds no such hide, and a bump there would turn
+    /// its immediate retry at the rev it holds into a false `stale`.
+    ///
+    /// `LegacyUser` and `System` entries carry no rev and are left alone.
+    pub fn bump_rev_for_restore(&mut self) {
+        if let Self::User { rev, .. } = self {
+            *rev = rev.saturating_add(1);
+        }
+    }
+
     /// The one place a [`QueueEntryId`] is minted.
     ///
     /// `attachments` is a required parameter rather than a builder step. Every
@@ -1381,6 +1408,28 @@ mod tests {
             queue.iter().all(|entry| entry.id() != Some(&entry_id)),
             "and it is no longer in the queue"
         );
+    }
+
+    /// #1625 P3 review round 2 — the restore's CAS bump, on the one variant
+    /// that carries a rev. The entry the sweep hands back is the instance
+    /// the steer took (same id, same text, same message ids), one rev up.
+    #[test]
+    fn a_restore_bumps_the_rev_of_a_user_entry_and_nothing_else() {
+        let mut entry = user("came back");
+        let before = entry.clone();
+        entry.bump_rev_for_restore();
+        let (Some(was), Some(now)) = (before.user_view(), entry.user_view()) else {
+            panic!("a user entry has a user view");
+        };
+        assert_eq!(now.rev, was.rev + 1, "the CAS token moved");
+        assert_eq!(now.id, was.id, "the same instance");
+        assert_eq!(now.text, was.text, "the same text");
+        assert_eq!(entry.message_ids(), before.message_ids());
+
+        let mut legacy = QueueEntry::legacy_user("older".into(), None, Vec::new());
+        let legacy_before = legacy.clone();
+        legacy.bump_rev_for_restore();
+        assert_eq!(legacy, legacy_before, "no rev to move");
     }
 
     #[test]

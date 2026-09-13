@@ -200,6 +200,24 @@ export function pendingConversationIds(
   return (working || sending) && conversation !== null ? new Set([conversation.id]) : new Set();
 }
 
+/** Tombstone key: entry ids are unique per card, not globally — see the
+    note on `forgotten` in `useConversationStore`. */
+function forgottenKey(card: string, entryId: string): string {
+  return `${card}\u0000${entryId}`;
+}
+
+/**
+ * Whether a tombstone written at `wroteAt` still hides an entry the page
+ * lists at `rev`. At the rev the client wrote against, or an older one, the
+ * page is from before the write and the entry stays hidden; a higher rev is
+ * the kernel's own word that it changed the entry after the client last saw
+ * it (a steered entry put back, one rev up), and the entry is shown again.
+ * `undefined` is no tombstone at all.
+ */
+function tombstoneHides(wroteAt: number | undefined, rev: number): boolean {
+  return wroteAt !== undefined && rev <= wroteAt;
+}
+
 /* A stable identity for "no queue page", so the memo below is not recomputed on
    every render by a fresh array literal. */
 const EMPTY_PENDING_QUEUE: readonly PendingQueueEntry[] = Object.freeze([]);
@@ -328,17 +346,11 @@ export function useConversationStore(
      transcript. It is recomputed on every read, never latched — an entry that
      drains leaves this set and its echo becomes visible again. */
   /*
-   * Entries this client has had a `done` DELETE for, and which the cached page
-   * has not caught up with yet — so a confirmed delete does not leave its
-   * bubble on screen, still offering a control, until the refetch lands.
-   *
-   * Keyed by entry id and cleared when the page stops listing them, so it is a
-   * catch-up window and not a second source of truth: the moment the server's
-   * own page agrees, the id leaves this set.
-   */
-  /*
-   * Entries this client has had a `done` DELETE for, and which the cached page
-   * has not caught up with yet.
+   * Entries this client has had a `done` DELETE or steer for, and which the
+   * cached page has not caught up with yet — so a confirmed write does not
+   * leave its bubble on screen, still offering a control, until the refetch
+   * lands. A catch-up window and not a second source of truth: the moment
+   * the server's own page agrees, the key leaves this map.
    *
    * **Keyed by card AND entry, not by entry.** Entry ids are unique per card
    * and this hook serves whichever card `scope` currently names, so a bare id
@@ -350,33 +362,57 @@ export function useConversationStore(
    * refreshes, and the deleted bubble is there again). A composite key needs
    * neither the reset nor the window: an entry from another card simply never
    * matches.
+   *
+   * **The value is the rev the client wrote against, and it is what makes
+   * the tombstone reversible** (#1625 P3 review round 2). A steer's 200
+   * forgets the entry, and the kernel can put that same entry back — its
+   * turn ended before codex recorded it (`HarnessQueueChange::Restored`) —
+   * under the same id. The page fetched after that restore lists the id
+   * again, and a client that never observed the intervening absence (its
+   * steer 200 landed after the restore, or its refetch did) cannot tell that
+   * page from the stale one it read before the steer — except by the rev:
+   * the sweep hands the entry back one rev up
+   * (`QueueEntry::bump_rev_for_restore`), and an entry the page lists at a
+   * HIGHER rev than the one this client wrote against is the server's own
+   * word that it changed the entry after the client last saw it. That is
+   * `tombstoneHides`; the `restored` event is only what makes the refetch
+   * that carries the higher rev prompt (`invalidation-plan.ts` maps it to
+   * `planner-run`), not the signal itself, so a missed frame delays the
+   * un-hide until the page's next refetch rather than making it permanent.
+   *
+   * A delete cannot come back, so for a delete tombstone the rev rule is
+   * inert and the omission rule is the one that retires it, as before.
    */
-  const [forgotten, setForgotten] = useState<ReadonlySet<string>>(() => new Set());
-  const forgottenKey = (card: string, entryId: string): string => `${card}\u0000${entryId}`;
+  const [forgotten, setForgotten] = useState<ReadonlyMap<string, number>>(() => new Map());
   const servedQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
   const pendingQueue = useMemo(
     () => (forgotten.size === 0
       ? servedQueue
-      : servedQueue.filter((entry) => !forgotten.has(forgottenKey(cardId, entry.entry_id)))),
+      : servedQueue.filter((entry) => !tombstoneHides(forgotten.get(forgottenKey(cardId, entry.entry_id)), entry.rev))),
     [servedQueue, forgotten, cardId],
   );
   useEffect(() => {
     if (forgotten.size === 0) return;
-    /* A tombstone is retired only when the page that owns it says the entry is
-       gone. Keys for OTHER cards are left alone: this card's page says nothing
-       about them, and dropping them here is how a tombstone was lost while its
-       own card was not on screen. */
-    const served = new Set(servedQueue.map((entry) => forgottenKey(cardId, entry.entry_id)));
+    /* A tombstone is retired when the page that owns it says the entry is
+       gone, or lists it at a rev above the one the client wrote against (the
+       kernel put it back). Keys for OTHER cards are left alone: this card's
+       page says nothing about them, and dropping them here is how a tombstone
+       was lost while its own card was not on screen. */
+    const servedRev = new Map(servedQueue.map((entry) => [forgottenKey(cardId, entry.entry_id), entry.rev]));
     const mine = (key: string) => key.startsWith(`${cardId}\u0000`);
+    const retired = (key: string, wroteAt: number): boolean => {
+      const rev = servedRev.get(key);
+      return rev === undefined || !tombstoneHides(wroteAt, rev);
+    };
     /* Only when there is something to drop — an unconditional `setForgotten`
        here re-renders forever. */
-    if (![...forgotten].some((key) => mine(key) && !served.has(key))) return;
-    setForgotten((current) => new Set(
-      [...current].filter((key) => !mine(key) || served.has(key)),
+    if (![...forgotten].some(([key, wroteAt]) => mine(key) && retired(key, wroteAt))) return;
+    setForgotten((current) => new Map(
+      [...current].filter(([key, wroteAt]) => !mine(key) || !retired(key, wroteAt)),
     ));
   }, [servedQueue, forgotten, cardId]);
-  const forgetQueuedEntry = (entryId: string): void => {
-    setForgotten((current) => new Set([...current, forgottenKey(cardId, entryId)]));
+  const forgetQueuedEntry = (entry: PendingQueueEntry): void => {
+    setForgotten((current) => new Map([...current, [forgottenKey(cardId, entry.entry_id), entry.rev]]));
   };
   const pendingQueueOverflow = run.data?.pending_overflow ?? 0;
   const pendingQueueIds = useMemo(
@@ -908,7 +944,7 @@ export function useConversationStore(
          that actually happened means nothing more is coming. */
       if (outcome.kind === 'done') {
         retireQueuedEcho(entry.entry_id);
-        forgetQueuedEntry(entry.entry_id);
+        forgetQueuedEntry(entry);
       }
       return outcome;
     });
@@ -924,7 +960,7 @@ export function useConversationStore(
   const steerQueuedEntry = phase === 'turn_running'
     ? (entry: PendingQueueEntry) =>
       mutations.steerQueued(entry.entry_id, entry.rev).then((outcome) => {
-        if (outcome.kind === 'done') forgetQueuedEntry(entry.entry_id);
+        if (outcome.kind === 'done') forgetQueuedEntry(entry);
         return outcome;
       })
     : undefined;

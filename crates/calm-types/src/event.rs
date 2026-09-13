@@ -283,16 +283,20 @@ pub enum HarnessQueueChange {
     /// which is why the invalidation plan refetches the transcript on this
     /// value. A steer codex refused is announced as `Restored`, not as this.
     Steered,
-    /// The entry is back in the queue, at the head, with the id and rev it
-    /// left with. Two emitters, both in `harness::run_loop` (#1625 P3 review
+    /// The entry is back in the queue, at the head, with the id it left
+    /// with. Two emitters, both in `harness::run_loop` (#1625 P3 review
     /// round 1): `handle_steer` when codex refused or never answered the
     /// `turn/steer` — the entry had left the queue before codex was asked,
-    /// so a client that read the queue meanwhile saw it gone — and the
-    /// `TurnCompleted` arm's sweep when a steered entry's turn ended before
-    /// codex recorded the input (an interrupt clears codex's pending input),
-    /// which also deletes the transcript row the delivery had written. The
-    /// drain's own re-buffer after a failed `turn/start` does NOT emit this:
-    /// that path has a phase change to carry the retraction.
+    /// so a client that read the queue meanwhile saw it gone; it keeps its
+    /// rev — and the `TurnCompleted` arm's sweep when a steered entry's turn
+    /// ended before codex recorded the input (an interrupt clears codex's
+    /// pending input), which also deletes the transcript row the delivery
+    /// had written and hands the entry back one rev up (review round 2): the
+    /// client whose steer answered 200 is hiding the entry, and a higher rev
+    /// on the page that lists it again is what tells that client the kernel
+    /// put it back rather than that its page is stale. The drain's own
+    /// re-buffer after a failed `turn/start` does NOT emit this: that path
+    /// has a phase change to carry the retraction.
     Restored,
     /// The kernel discarded the entry without delivering it: a snapshot loaded
     /// with more than `MAX_PENDING_QUEUE_LEN` entries drops from the head.
