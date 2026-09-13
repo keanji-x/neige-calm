@@ -56,27 +56,39 @@ mod tests {
     use crate::model::CardRole;
     use serde::Serialize;
     use serde_json::Value;
+    use sha2::{Digest, Sha256};
     use std::collections::BTreeSet;
     use std::path::Path;
 
     /// Whole-surface pin of the default MCP tool registry (#1635 S1d): every
     /// registered descriptor — hidden drill-ins and deprecated aliases
-    /// included — serialised field by field, sorted by name. Any change to a
-    /// name, description, schema, annotation block or visibility list shows
-    /// up as a reviewable diff here; regenerate with
-    /// `REGEN_MCP_TOOL_REGISTRY_GOLDEN=1`, then hand-verify the diff.
+    /// included — sorted by name, with the protocol fields (`name`,
+    /// `input_schema`, `annotations`, `visible_to_roles`) verbatim and the
+    /// description as `description_sha256`. The wording itself lives in
+    /// `prompts/tools/<tool>.md`, where a change is reviewable as a diff of
+    /// that file; the hash here proves the registry serves exactly those
+    /// file bytes (and, for the aliases, exactly the `format!`ed protocol
+    /// string) without copying 90 KB of prose into a second file.
+    /// Regenerate with `REGEN_MCP_TOOL_REGISTRY_GOLDEN=1`, then hand-verify
+    /// the diff.
     const MCP_TOOL_REGISTRY_GOLDEN: &str =
         include_str!("../../../tests/goldens/mcp_tool_registry.json");
 
     #[derive(Serialize)]
     struct GoldenRow<'a> {
         name: &'a str,
-        description: &'a str,
+        /// Lowercase hex SHA-256 of the description's UTF-8 bytes.
+        description_sha256: String,
         input_schema: &'a Value,
         annotations: &'a Option<Value>,
         /// Serde strings of `CardRole` (`"planner"`, `"worker"`, …), not the
         /// Rust variant names.
         visible_to_roles: &'a [CardRole],
+    }
+
+    fn description_sha256(description: &str) -> String {
+        let digest = Sha256::digest(description.as_bytes());
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     fn render_registry_golden() -> String {
@@ -86,7 +98,7 @@ mod tests {
             .iter()
             .map(|descriptor| GoldenRow {
                 name: &descriptor.name,
-                description: &descriptor.description,
+                description_sha256: description_sha256(&descriptor.description),
                 input_schema: &descriptor.input_schema,
                 annotations: &descriptor.annotations,
                 visible_to_roles: descriptor.visible_to_roles,
