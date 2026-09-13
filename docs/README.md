@@ -32,6 +32,7 @@ diagnoses, proposed changes, or explicitly deferred work.
 | Continuing task identity, recovery, and reliable delivery proposal | [Task continuity design](architecture/1501-task-continuity.md) |
 | Track-create retry identity | [Idempotency design](design-1384-track-idempotency.md) |
 | Permanent retry records and deleted-Track recovery | [Idempotency retention decision](design-1428-idempotency-retention.md) |
+| Keeping agent-facing prose out of Rust (CI ratchet, baseline, examples) | [Prose ratchet](prose-ratchet.md) |
 
 Numbered files in this directory and `architecture/` are design and investigation
 records, not a release checklist. Check their delivery scope and the associated
