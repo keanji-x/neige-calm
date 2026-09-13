@@ -20,10 +20,14 @@
 //! with channel 3 stripped** — the decoupling itself, against the real codex
 //! binary. It does NOT guard the prompt swap. The PROMPT mandate (the codex
 //! worker uses `calm.task.complete`, not the `neige task-completed` CLI) is
-//! locked deterministically elsewhere: the const test
-//! `planner_card.rs::worker_codex_prompt_reports_completion_via_mcp_tools_not_cli`
-//! pins the rendered prompt text, and the `codex_worker_shared_daemon.rs`
-//! `thread/start` contract test pins what the worker spawn actually wires.
+//! locked deterministically elsewhere: the whole-document golden
+//! `tests/goldens/worker_prompt_mcp.txt` pins the rendered prompt text, the
+//! `must_name_all_visible` assertion in
+//! `planner_card.rs::worker_prompts_name_only_tools_the_worker_role_can_see`
+//! requires the codex prompt to name every tool the Worker role can see
+//! (`calm.task.complete` + `calm.task.fail`), and the
+//! `codex_worker_shared_daemon.rs` `thread/start` contract test pins what the
+//! worker spawn actually wires.
 //!
 //! ## How channel 3 is stripped
 //!

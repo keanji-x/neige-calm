@@ -452,8 +452,9 @@ mod tests {
         include_str!("../tests/goldens/assistant_prompt_launchpad.txt");
 
     /// Equality against a whole document, not a keyword list: both assistant
-    /// identities share the mechanics macro, and a stray newline at either
-    /// seam is exactly the kind of change a `contains` check cannot see.
+    /// identities share `prompts/assistant/mechanics.md`, and a stray newline
+    /// at either seam is exactly the kind of change a `contains` check cannot
+    /// see.
     #[test]
     fn the_ordinary_assistant_prompt_matches_its_reviewed_golden() {
         assert_eq!(
@@ -726,24 +727,29 @@ mod tests {
     /// * each token in neither list is **visible to `role`** in `tools/list`
     ///   (`descriptors_for_role`);
     /// * each `callable_but_hidden` entry is registered and NOT visible to
-    ///   `role`: the tool's handler admits the role while its descriptor
-    ///   does not, so the prompt is the role's only contract for it. An
-    ///   entry that became visible is stale and goes red;
+    ///   `role`. The classification itself — that the role can call the tool
+    ///   despite the descriptor — is supplied by the caller and proven by the
+    ///   tests the caller cites, not by this helper; what this helper checks
+    ///   is that the entry is still registered and still hidden, so an entry
+    ///   that became visible is stale and goes red;
     /// * each `named_to_forbid` entry is registered and NOT visible to
     ///   `role`: the prompt names it only to say the role may not call it.
     ///   Same staleness check;
     /// * every entry of either list must actually be named by the prompt —
     ///   an exception nobody uses is dead weight and goes red — and no name
     ///   may sit in both lists;
-    /// * anti-vacuity: the prompt names at least `min_named` distinct tools
-    ///   (three unless the prompt demonstrably names fewer), on top of every
-    ///   listed exception having to be found.
+    /// * with `must_name_all_visible`, every tool visible to `role` is named
+    ///   by the prompt (the role's whole tool surface is advertised);
+    /// * anti-vacuity: the prompt names at least `min_named` distinct tools.
+    ///   This guards against an empty scanner, not visible-tool coverage —
+    ///   that is `must_name_all_visible`'s job.
     fn assert_prompt_tool_names(
         label: &str,
         prompt: &str,
         role: calm_types::model::CardRole,
         callable_but_hidden: &[&str],
         named_to_forbid: &[&str],
+        must_name_all_visible: bool,
         min_named: usize,
     ) {
         use std::collections::BTreeSet;
@@ -805,6 +811,17 @@ mod tests {
                 "{label}: `{name}` is in both callable_but_hidden and named_to_forbid"
             );
         }
+        if must_name_all_visible {
+            let unnamed: Vec<&String> = visible
+                .iter()
+                .filter(|name| !named.contains(name.as_str()))
+                .collect();
+            assert!(
+                unnamed.is_empty(),
+                "{label} must name every tool visible to {role:?} and does not name \
+                 {unnamed:?}; the role's tool surface is not fully advertised"
+            );
+        }
 
         for name in &named {
             assert!(
@@ -831,15 +848,28 @@ mod tests {
     /// `calm.task.verdict`). The same statement S1a makes for the planner;
     /// the Worker's visible set is pinned exactly by
     /// `tools_list_for_worker_role_returns_completion_tools`.
+    ///
+    /// The codex prompt additionally has to name **every** tool the Worker
+    /// can see (`must_name_all_visible`): its completion protocol is the
+    /// native `calm.task.complete` / `calm.task.fail` pair (#838 Move 2), and
+    /// a prompt that advertised only one of them would leave a codex worker
+    /// with no way to report the other outcome. This is the code relation
+    /// the deleted wording test carried, now stated against the registry.
+    /// The CLI prompt completes through `neige task-completed` and is exempt.
     #[test]
     fn worker_prompts_name_only_tools_the_worker_role_can_see() {
-        // The CLI prompt reports completion through `neige task-completed`,
-        // not a `calm.*` tool, so the two forbidden names are the only
-        // tokens it has; the codex prompt adds `calm.task.complete` /
-        // `calm.task.fail`.
-        for (label, template, min_named) in [
-            ("CLI worker prompt", WORKER_SYSTEM_PROMPT_PLACEHOLDER, 2),
-            ("codex worker prompt", WORKER_CODEX_SYSTEM_PROMPT, 3),
+        // `min_named` guards against an empty scanner only. The CLI prompt
+        // names exactly the two forbidden tools (it completes through the
+        // `neige` CLI, not a `calm.*` tool); the codex prompt adds the two
+        // visible completion tools, which `must_name_all_visible` covers.
+        for (label, template, must_name_all_visible, min_named) in [
+            (
+                "CLI worker prompt",
+                WORKER_SYSTEM_PROMPT_PLACEHOLDER,
+                false,
+                2,
+            ),
+            ("codex worker prompt", WORKER_CODEX_SYSTEM_PROMPT, true, 3),
         ] {
             assert_prompt_tool_names(
                 label,
@@ -847,6 +877,7 @@ mod tests {
                 calm_types::model::CardRole::Worker,
                 &[],
                 &["calm.task.dispatch", "calm.task.verdict"],
+                must_name_all_visible,
                 min_named,
             );
         }
@@ -865,9 +896,8 @@ mod tests {
     ///   must keep naming it.
     /// * `calm.report.write` is named to forbid it.
     ///
-    /// This replaces the deleted wording test that said the assistant prompt
-    /// must not mention planner/worker-only reads: stated against the
-    /// registry it covers every name, not the three it listed.
+    /// `neige` CLI mentions are not `calm.*` tokens, so the scanner never
+    /// sees them; they are pinned only by the goldens.
     #[test]
     fn assistant_prompts_name_only_tools_the_assistant_role_can_see() {
         for (label, template) in [
@@ -886,6 +916,7 @@ mod tests {
                 calm_types::model::CardRole::Assistant,
                 &["calm.report.read"],
                 &["calm.report.write"],
+                false,
                 3,
             );
         }
