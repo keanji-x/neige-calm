@@ -922,7 +922,7 @@ async fn assert_restored_and_delivered_once_by_the_next_turn(
         "the same entry, same id, keyed the next turn"
     );
     assert_eq!(boot.daemon.steered_turns_for_test().len(), 1);
-    assert!(pending(&boot).await.is_empty());
+    assert!(pending(boot).await.is_empty());
     assert_eq!(
         queue_changes(boot).await,
         vec![
