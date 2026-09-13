@@ -123,7 +123,7 @@ pub struct TrackTemplate {
     pub tasks: Vec<TrackTemplateTask>,
 }
 
-/// One pre-set task, projected from the template's own `PlanTaskInput`.
+/// One pre-set task, projected from a `task` fence in the template file's body.
 ///
 /// `key` and `goal` only: those are the two facts a person choosing a starting
 /// point needs, and both are verbatim from the recipe's own `task` block.

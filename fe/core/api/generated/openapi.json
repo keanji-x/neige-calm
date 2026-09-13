@@ -10426,7 +10426,7 @@
       },
       "TrackRecipe": {
         "type": "object",
-        "description": "A user-defined starting point for a new track.\n\nA recipe is a saved report: `title` doubles as the report summary, and\n`body`'s `neige-block` fences **are** its tasks. It is deliberately not a\ntrack — #1300 removed \"template = a hidden track\" because storing recipes\nthat way cost seven \"this track is special\" exceptions across unrelated\nsubsystems plus a kernel report write that impersonated the user. A\nrecipe row has neither problem: nothing schedules it, nothing lists it\namong tracks, and every byte in one was written by a human.\n\nThe built-in templates (`calm_server::templates::TEMPLATES`) stay Rust\nconstants and are **not** rows here. Both feed the same instantiation\nseam, so \"built-in\" and \"mine\" differ only in where the payload came\nfrom — see `routes::track_recipes`.",
+        "description": "A user-defined starting point for a new track.\n\nA recipe is a saved report: `title` doubles as the report summary, and\n`body`'s `neige-block` fences **are** its tasks. It is deliberately not a\ntrack — #1300 removed \"template = a hidden track\" because storing recipes\nthat way cost seven \"this track is special\" exceptions across unrelated\nsubsystems plus a kernel report write that impersonated the user. A\nrecipe row has neither problem: nothing schedules it, nothing lists it\namong tracks, and every byte in one was written by a human.\n\nThe built-in templates (`crates/calm-server/templates/builtin/*.md`,\nloaded into the roster at boot) and operator templates (`--templates-dir`,\n`site/<stem>`) are **not** rows here. Both feed the same instantiation\nseam, so \"built-in\" and \"mine\" differ only in where the payload came\nfrom — see `routes::track_recipes`.",
         "required": [
           "id",
           "title",
@@ -10576,7 +10576,7 @@
       },
       "TrackTemplateTask": {
         "type": "object",
-        "description": "One pre-set task, projected from the template's own `PlanTaskInput`.\n\n`key` and `goal` only: those are the two facts a person choosing a starting\npoint needs, and both are verbatim from the recipe's own `task` block.\nAcceptance criteria, dependencies and gate advice belong to the track's\nreport once it exists, not to the chooser.",
+        "description": "One pre-set task, projected from a `task` fence in the template file's body.\n\n`key` and `goal` only: those are the two facts a person choosing a starting\npoint needs, and both are verbatim from the recipe's own `task` block.\nAcceptance criteria, dependencies and gate advice belong to the track's\nreport once it exists, not to the chooser.",
         "required": [
           "key",
           "goal"

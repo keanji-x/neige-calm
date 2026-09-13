@@ -3819,8 +3819,9 @@ export interface components {
          *     recipe row has neither problem: nothing schedules it, nothing lists it
          *     among tracks, and every byte in one was written by a human.
          *
-         *     The built-in templates (`calm_server::templates::TEMPLATES`) stay Rust
-         *     constants and are **not** rows here. Both feed the same instantiation
+         *     The built-in templates (`crates/calm-server/templates/builtin/*.md`,
+         *     loaded into the roster at boot) and operator templates (`--templates-dir`,
+         *     `site/<stem>`) are **not** rows here. Both feed the same instantiation
          *     seam, so "built-in" and "mine" differ only in where the payload came
          *     from — see `routes::track_recipes`.
          */
@@ -3962,7 +3963,7 @@ export interface components {
             title: string;
         };
         /**
-         * @description One pre-set task, projected from the template's own `PlanTaskInput`.
+         * @description One pre-set task, projected from a `task` fence in the template file's body.
          *
          *     `key` and `goal` only: those are the two facts a person choosing a starting
          *     point needs, and both are verbatim from the recipe's own `task` block.
