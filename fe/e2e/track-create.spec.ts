@@ -176,23 +176,14 @@ test('creates a track from an Area group with no title, and persists it', async 
   /*
    * #1299 — the agent the sentence was delivered to exists on the track.
    *
-   * This is as far as *this* tier can go, and the limit is worth writing down
-   * rather than papering over. The sentence lands in the harness as a queued
-   * `Observation::UserMessage`; nothing over HTTP exposes that queue, and
-   * `harness/items` only fills once the app-server echoes the turn's
-   * `userMessage` back as an `item/completed`. CI runs this stack against the
-   * `osc-probe-child` fixture, which answers `initialize` / `thread/start` /
-   * `turn/start` and emits no items at all (see `e2e/README.md`) — so an
-   * assertion that the text appears in `harness/items` would fail in CI for a
-   * working delivery, and the `not.toContain` this replaces passed against an
-   * empty list no matter what the kernel did. Both directions are vacuous.
-   *
    * What proves the delivery reaches the agent exactly once is in-process,
    * against a harness this tier cannot reach:
    * `crates/calm-server/tests/cases/track_create_first_message.rs`
    * (`the_first_message_reaches_the_agent_exactly_once`). What this case owns is
    * the browser half — the sentence is on the create, the kernel took it, and
-   * the create happened once.
+   * the create happened once — plus, since #1625 P2, the one thing this tier
+   * CAN see over HTTP: the row the kernel writes for the sentence when the
+   * queue drains it into a turn (below).
    */
   const detail = await request.get(`/api/tracks/${trackId ?? ''}`);
   expect(detail.ok()).toBe(true);
@@ -203,23 +194,29 @@ test('creates a track from an Area group with no title, and persists it', async 
   expect(plannerCard, 'the created track must carry a planner card').toBeTruthy();
 
   /*
-   * ── #1449 — the sentence that made the track is on screen ─────────────────
+   * ── #1449, then #1625 P2 — the sentence that made the track is on screen,
+   *    and it is the server's own row ──────────────────────────────────────
    *
-   * The landing opens the planner conversation (#1211 S2), and until this
-   * change it opened onto an empty thread: the create delivered the message,
-   * but a transcript is read from one persisted table
-   * (`crates/calm-truth/src/db/sqlite/read.rs`) and rows land there only when
-   * the app-server echoes the turn back. The paragraph above says why this tier
-   * cannot see that echo at all — the `osc-probe-child` fixture emits no items
-   * — which makes this the exact window the echo covers, with the real read
-   * answering the real nothing.
+   * The landing opens the planner conversation (#1211 S2). #1449 put the
+   * sentence on screen from a tab-local placeholder, because the transcript
+   * gained a row only when the app-server echoed the turn back. #1625 P2
+   * moved the sentence into the kernel: when the queue drains it into a turn,
+   * the kernel writes a transcript row for it BEFORE `turn/start` goes out —
+   * a completed `userMessage` with no turn yet (`turn_id: null`), keyed by the
+   * queue entry id and marked `_projection` — and the browser reads that row
+   * like any other. There is no placeholder any more.
    *
-   * The drawer is located by the control only it has rather than by its name.
-   * On a real kernel the planner card is minted with no title, so the name is
-   * whatever the conversation derives from its **turns** — and the placeholder
-   * under test is not a turn, so it contributes nothing to it. The locator
-   * therefore has to reach the drawer by something that is true whether or not
-   * this feature works.
+   * This tier is the one place that can show it against a real kernel and a
+   * real read: the `osc-probe-child` fixture answers `turn/start` and emits
+   * no items at all (`e2e/README.md`), so the row below is the kernel's and
+   * nobody else's — no echo has upgraded it, which is exactly the window
+   * #1475 was about. Both halves are asserted: the words are on screen, and
+   * the item read carries the row they came from.
+   *
+   * The drawer is located by the control only it has rather than by its name:
+   * on a real kernel the planner card is minted with no title, so the name is
+   * whatever the conversation derives from its turns, which is the thing under
+   * test.
    */
   const drawer = page.locator('[role="complementary"]')
     .filter({ has: page.getByRole('button', { name: 'Close conversation' }) });
@@ -228,10 +225,20 @@ test('creates a track from an Area group with no title, and persists it', async 
   await expect(drawer.locator('[data-nc-thread-empty]')).toHaveCount(0);
   const plannerItems = await request.get(`/api/cards/${plannerCard?.id ?? ''}/harness/items`);
   expect(plannerItems.ok()).toBe(true);
+  const plannerRows = await plannerItems.json() as {
+    item_type: string | null; method: string; turn_id: string | null; item_uuid: string | null;
+    params: string; input_segments?: { presentation: string; text: string }[];
+  }[];
   expect(
-    await plannerItems.json() as unknown[],
-    'the sentence must be visible before any server item exists',
-  ).toEqual([]);
+    plannerRows.map((row) => [row.item_type, row.method, row.turn_id]),
+    'the kernel writes exactly one row for the drained sentence, before any echo (#1625 P2)',
+  ).toEqual([['userMessage', 'item/completed', null]]);
+  const projection = plannerRows[0];
+  expect(projection?.input_segments?.map((segment) => segment.presentation)).toEqual(['user']);
+  expect(projection?.input_segments?.[0]?.text).toContain(message);
+  const projectionParams = JSON.parse(projection?.params ?? '{}') as { _projection?: unknown; item?: { clientId?: unknown } };
+  expect(projectionParams._projection, 'the row is the kernel\'s own, not an echo').toBe(true);
+  expect(projectionParams.item?.clientId, 'keyed by the id the drain sent codex').toBe(projection?.item_uuid);
 
   /*
    * Once, and still once after the interaction settles.

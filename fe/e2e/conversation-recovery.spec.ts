@@ -113,61 +113,46 @@ test('keeps a lost acknowledgement uncertain and asks before resending', async (
     await expect(composer).toHaveAttribute('contenteditable', 'true');
     await composer.fill('Keep this uncertain message');
     await composer.press('Enter');
-    await expect(page.getByRole('alert')).toContainText('Delivery is unconfirmed');
+    /*
+     * The kernel accepted the input; the browser lost the answer.
+     *
+     * Since #1625 P2 the kernel writes the sentence to the transcript the
+     * moment the queue drains it into a turn — before the app-server has said
+     * anything, and CI's `osc-probe-child` fixture never says anything — so
+     * the page's next read shows the words as a server row. A matching row is
+     * a review hint, never a delivery receipt (#1505 F5: a stale read can
+     * reveal an old equal message), so the attempt stays uncertain and the
+     * reader is asked to look; only they may dismiss it. Before P2 the read
+     * answered nothing here and the page showed the plain "Delivery is
+     * unconfirmed" error with a `Check delivery` remedy; that state is now
+     * reachable only while the kernel has not drained the queue, which this
+     * stack does within the same second.
+     */
+    await expect(page.getByRole('status').filter({ hasText: 'Delivery is still unconfirmed' })).toBeVisible();
+    await expect(page.getByText('A matching message is visible.', { exact: false })).toBeVisible();
     expect(accepted).toBe(true);
+    expect(attempts).toBe(1);
     /*
      * #1552 — scoped to the transcript, which is the carrier this line is about:
-     * the words the reader typed are still on screen after the transport lost
-     * the acknowledgement. The kernel DID accept this input, so the same words
-     * also appear for a while in the "Queued messages" list below — a second,
-     * transient carrier whose lifetime is the kernel's drain, not this test's.
-     * An unscoped `getByText` matched both and randomly tripped strict mode.
-     * It is deliberately not asserted here: its presence at this instant is not
-     * something the test controls. `.first()` is not the fix — it would hide
-     * which carrier matched.
+     * the words the reader typed are on screen after the transport lost the
+     * acknowledgement — once, as the server's row, not beside a failed echo.
      */
     const transcript = page.locator('[data-nc-thread]');
     await expect(transcript.getByText('Keep this uncertain message', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Check delivery' }).click();
-    // The fixture app-server emits no userMessage rows, so even a successful
-    // read cannot prove delivery. Checking must not replay the accepted input.
-    await expect(page.getByRole('button', { name: 'Check delivery' })).toBeEnabled();
-    await expect(page.getByRole('alert')).toContainText('Delivery is unconfirmed');
-    expect(attempts).toBe(1);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByText('Transport request failed', { exact: false })).toHaveCount(0);
+    await expect(composer).toHaveAttribute('contenteditable', 'false');
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: testInfo.outputPath('uncertain-mobile.png'), fullPage: true, animations: 'disabled' });
+    // Resending is offered, and it asks first: the kernel may already hold it.
     await page.getByRole('button', { name: 'Send again…' }).click();
     const confirmation = page.getByRole('dialog', { name: 'Send this message again?' });
     await expect(confirmation).toContainText('may already have arrived');
     await confirmation.getByRole('button', { name: 'Cancel' }).click();
     expect(attempts).toBe(1);
-
-    // Controlled stale-history reveal: these rows may predate the failed
-    // request, so matching words cannot be promoted to a delivery receipt.
-    await page.route('**/api/cards/*/harness/items?*', async (route) => {
-      const cardId = new URL(route.request().url()).pathname.split('/')[3];
-      await route.fulfill({ json: [
-        {
-          id: 1, worker_session_id: 'earlier-session', card_id: cardId, track_id: track.id,
-          thread_id: 'earlier-thread', turn_id: null, item_uuid: null, item_type: 'userMessage',
-          method: 'item/completed', created_at_ms: 1,
-          params: JSON.stringify({ item: { content: [{ text: 'Keep this uncertain message' }] } }),
-        },
-        {
-          id: 2, worker_session_id: 'earlier-session', card_id: cardId, track_id: track.id,
-          thread_id: 'earlier-thread', turn_id: null, item_uuid: null, item_type: 'agentMessage',
-          method: 'item/completed', created_at_ms: 2,
-          params: JSON.stringify({ item: { text: 'Earlier response to matching words.' } }),
-        },
-      ] });
-    });
-    await page.getByRole('button', { name: 'Check delivery' }).click();
-    await expect(page.getByRole('status').filter({ hasText: 'Delivery is still unconfirmed' })).toBeVisible();
-    await expect(page.getByRole('alert')).toHaveCount(0);
-    await expect(page.getByText('Transport request failed', { exact: false })).toHaveCount(0);
-    await expect(composer).toHaveAttribute('contenteditable', 'false');
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.screenshot({ path: testInfo.outputPath('matching-review-desktop.png'), fullPage: true, animations: 'disabled' });
+    // The reader looked. That, and nothing the server said, clears the review.
     await page.getByRole('button', { name: 'I’ve checked' }).click();
     await expect(page.getByText('A matching message is visible.', { exact: false })).toHaveCount(0);
     await expect(composer).toHaveAttribute('contenteditable', 'true');
