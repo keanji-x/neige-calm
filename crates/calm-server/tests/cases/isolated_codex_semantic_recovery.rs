@@ -199,7 +199,7 @@ async fn semantic_recovery_refuses_user_owned_and_superseded_attempt_without_ret
         .await
         .unwrap();
         queued_settlement(&fx, &handle).await;
-        let brief = issued_briefing(&handle, &daemon).await;
+        let brief = issued_briefing(&fx, &handle, &daemon).await;
         assert_eq!(brief["planner_recovery"]["allowed"], !user_owned);
         let expected = if user_owned {
             first.id.clone()

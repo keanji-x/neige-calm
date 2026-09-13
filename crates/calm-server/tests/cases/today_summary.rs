@@ -1418,7 +1418,16 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
 
     // A turn's worth of transcript, so "did the recovery keep it?" has an
     // answer. Written through the repo the harness itself writes with.
-    b.repo
+    //
+    // Kept by IDENTITY, not by count. Since #1625 P2 the live harness writes
+    // a transcript row for every batch it drains — the bootstrap and the
+    // summary, before the restart and again after it — on its own schedule,
+    // so the card's row count is a fact about the drain's timing and not
+    // about erasure. `harness_items.id` is `AUTOINCREMENT`, so a deleted
+    // row's id is never handed out again: this row still standing under its
+    // own id after the recovery is what "not erased" means.
+    let sentinel = b
+        .repo
         .harness_item_insert(
             "runtime-x",
             &card_id,
@@ -1433,12 +1442,6 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
         )
         .await
         .unwrap();
-    let items_before = b
-        .scalar(&format!(
-            "SELECT COUNT(*) FROM harness_items WHERE card_id = '{card_id}'"
-        ))
-        .await;
-    assert_eq!(items_before, 1);
 
     // Everything after this point is the recovery's doing, which is what makes
     // the attribution assertions below about the restart rather than about the
@@ -1463,10 +1466,10 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
     assert_eq!(second["card_id"], json!(card_id), "and on the same card");
     assert_eq!(
         b.scalar(&format!(
-            "SELECT COUNT(*) FROM harness_items WHERE card_id = '{card_id}'"
+            "SELECT COUNT(*) FROM harness_items WHERE id = {sentinel} AND card_id = '{card_id}'"
         ))
         .await,
-        items_before,
+        1,
         "the recovery must not erase the transcript — that is the difference \
          between re-submitting a start and going through `/planner/reset`"
     );

@@ -489,6 +489,7 @@ impl ProviderAdapter for CodexAdapter {
                         &thread_id,
                         vec![InputItem::text(prompt_text)],
                         &TurnModelSelection::inherit(),
+                        None,
                     )
                     .await?;
                 output.set_output_data("turn_started_at_ms", json!(now_ms()), "codex")?;
@@ -1269,7 +1270,12 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                     // #1505 S4-3: see the sibling call above — no picker
                     // addresses this thread.
                     shared
-                        .turn_start(&launch_thread, items, &TurnModelSelection::inherit())
+                        .turn_start(
+                            &launch_thread,
+                            items,
+                            &TurnModelSelection::inherit(),
+                            None,
+                        )
                         .await
                 })
                 .await;

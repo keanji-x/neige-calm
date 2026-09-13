@@ -389,6 +389,53 @@ describe('transcriptRowToMessages', () => {
     ]);
   });
 
+  /*
+   * #1625 P2 (#1475) — the row the kernel writes at queue drain, BEFORE codex
+   * echoes the turn: `item/completed` + `userMessage`, `turn_id` null,
+   * `item_uuid` = the queue entry id (which is also `params.item.clientId`),
+   * `params` marked `_projection: true`, and the batch's `input_segments`.
+   *
+   * `_provenance: hand-written from schema` — from `write_projection_row`
+   * (`crates/calm-server/src/harness/run_loop.rs`) and codex's
+   * `UserMessageThreadItem` in `ServerNotification.json`
+   * (`codex app-server generate-json-schema`, codex 0.153.4), not a capture.
+   */
+  it('renders the kernel-written projection of a drained user message as the reader\'s own line', () => {
+    const projection = item({
+      item_type: 'userMessage', turn_id: null, item_uuid: 'entry-0001',
+      params: JSON.stringify({
+        item: {
+          id: 'entry-0001', clientId: 'entry-0001', type: 'userMessage',
+          content: [{ type: 'text', text: 'User says:\nhello from the queue' }],
+        },
+        _projection: true,
+      }),
+      input_segments: [{ presentation: 'user', text: 'User says:\nhello from the queue', attachments: [] }],
+    });
+    expect(transcriptRowToMessages(projection)).toEqual([
+      { id: '7', author: 'you', text: 'hello from the queue', atMs: 50, attachments: [] },
+    ]);
+    /* The same row after the completed echo upgraded it in place: the turn
+       and codex's item id arrive, the segments stay, the line is the same. */
+    const upgraded = item({
+      ...projection, turn_id: 'turn-1', item_uuid: 'item-codex-1',
+      params: JSON.stringify({
+        completedAtMs: 99,
+        item: {
+          id: 'item-codex-1', clientId: 'entry-0001', type: 'userMessage',
+          content: [{ type: 'text', text: 'User says:\nhello from the queue' }],
+        },
+      }),
+    });
+    expect(transcriptRowToMessages(upgraded)).toEqual([
+      { id: '7', author: 'you', text: 'hello from the queue', atMs: 99, attachments: [] },
+    ]);
+    /* And through `buildTranscript`, where the key is `turn-<row id>`: one
+       entry before the upgrade, one after, with the same id. */
+    expect(buildTranscript([projection]).map((entry) => entry.id)).toEqual(['7']);
+    expect(buildTranscript([upgraded]).map((entry) => entry.id)).toEqual(['7']);
+  });
+
   it('strips the injected track diff and user marker', () => {
     const text = '## Track state changes since your last turn\nchanged\n\n---\n\nUser says:\nhello';
     expect(transcriptRowToMessages(item({

@@ -6,7 +6,8 @@ use crate::db::sqlite::{
     SqlxRepo, append_decision_event_in_tx, card_create_with_id_tx, session_start_runtime_tx,
 };
 use crate::model::{
-    CardRole, NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch, new_id, now_ms,
+    CardRole, HarnessInputSegment, NewArea, NewCard, NewTrack, TrackLifecycle, TrackPatch, new_id,
+    now_ms,
 };
 use crate::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -159,6 +160,22 @@ impl Fixture {
         self.harness.observe_durable_entries(entries).await.unwrap();
     }
 
+    /// #1625 P2 — the segments the last drain wrote to its projection row
+    /// (`write_projection_row`), read back from the transcript table. This is
+    /// where `issued_input_segments` used to be read from the snapshot.
+    pub(super) async fn projected_segments(&self) -> Vec<HarnessInputSegment> {
+        let rows = self
+            .repo
+            .harness_item_list_by_card(self.harness.inner.card_id.as_str(), 0, 500, false)
+            .await
+            .unwrap();
+        rows.into_iter()
+            .rev()
+            .find(|row| row.item_type.as_deref() == Some("userMessage"))
+            .and_then(|row| row.input_segments)
+            .expect("the drain must have written a projection row with segments")
+    }
+
     pub(super) async fn stored(&self) -> HarnessSnapshot {
         let row = self
             .repo
@@ -282,7 +299,7 @@ async fn completed_commit_filter_keeps_failure_and_user_entries_in_order() {
     fx.enqueue(vec![commit, failure, user]).await;
     fx.issue().await;
     let stored = fx.stored().await;
-    let actual = &stored.issued_input_segments.as_ref().unwrap().segments;
+    let actual = &fx.projected_segments().await;
     assert_eq!(actual.len(), 2);
     assert_eq!(actual[0].presentation, expected[0].presentation);
     assert_eq!(actual[0].attachments, expected[0].attachments);
@@ -319,11 +336,7 @@ async fn commit_notifications_still_issue_for_every_non_done_lifecycle() {
             1,
             "{lifecycle:?}"
         );
-        assert_eq!(
-            fx.stored().await.issued_input_segments.unwrap().segments,
-            expected,
-            "{lifecycle:?}"
-        );
+        assert_eq!(fx.projected_segments().await, expected, "{lifecycle:?}");
     }
 }
 
@@ -417,7 +430,7 @@ async fn consuming_a_commit_does_not_bypass_remaining_soft_observation_debounce(
     fx.issue().await;
     assert_eq!(fx.harness.inner.daemon.turn_start_count_for_test(), 1);
     assert_eq!(
-        fx.stored().await.issued_input_segments.unwrap().segments,
+        fx.projected_segments().await,
         input_segments_for_entries(&fx.harness.inner.card_id, &[leased])
     );
     let sent = fx.harness.inner.daemon.started_turns_for_test();

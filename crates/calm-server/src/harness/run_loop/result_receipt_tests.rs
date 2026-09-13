@@ -242,8 +242,7 @@ async fn turn(fx: &Fixture) -> String {
     let InputItem::Text { text } = &sent[0].1[0] else {
         panic!("expected text input")
     };
-    let stored = fx.stored().await;
-    let segments = stored.issued_input_segments.unwrap().segments;
+    let segments = fx.projected_segments().await;
     assert!(
         text.contains(
             &segments

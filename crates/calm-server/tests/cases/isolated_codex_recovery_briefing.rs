@@ -32,7 +32,31 @@ async fn queued_settlement(fx: &Fixture, handle: &PlannerHarness) {
     .unwrap();
 }
 
-async fn issued_briefing(handle: &PlannerHarness, daemon: &SharedCodexAppServer) -> Value {
+/// #1625 P2 — the segments the drain wrote to its projection row, read back
+/// from the transcript table (where `issued_input_segments` used to be read
+/// from the snapshot).
+async fn projected_segments(fx: &Fixture) -> Vec<calm_server::model::HarnessInputSegment> {
+    calm_server::db::RepoRead::harness_item_list_by_card(
+        fx.boot.repo.as_ref(),
+        fx.boot.planner_card_id.as_str(),
+        0,
+        500,
+        false,
+    )
+    .await
+    .unwrap()
+    .into_iter()
+    .rev()
+    .find(|row| row.item_type.as_deref() == Some("userMessage"))
+    .and_then(|row| row.input_segments)
+    .expect("the drain must have written a projection row with segments")
+}
+
+async fn issued_briefing(
+    fx: &Fixture,
+    handle: &PlannerHarness,
+    daemon: &SharedCodexAppServer,
+) -> Value {
     handle
         .force_phase_for_dev(calm_server::harness::HarnessPhaseTag::Idle)
         .await
@@ -55,11 +79,7 @@ async fn issued_briefing(handle: &PlannerHarness, daemon: &SharedCodexAppServer)
         .join("\n");
     // Shut down before any assertion so even a RED run leaves no live harness.
     handle.shutdown().await.unwrap();
-    let snapshot = handle.snapshot().await;
-    let issued = snapshot
-        .issued_input_segments
-        .expect("issued segments must be persisted");
-    for segment in &issued.segments {
+    for segment in &projected_segments(fx).await {
         assert!(
             text.contains(&segment.text),
             "persisted and actual model input must agree"
@@ -88,11 +108,15 @@ async fn recovery_briefing_uses_receiving_planner_permission_in_actual_turn() {
         .observe_user_message_durable(user_text.into(), vec![])
         .await
         .unwrap();
-    let brief = issued_briefing(&handle, &daemon).await;
-    let issued = handle.snapshot().await.issued_input_segments.unwrap();
-    assert!(issued.segments.iter().any(|segment| segment.presentation
-        == calm_server::model::HarnessInputPresentation::User
-        && segment.text.contains(user_text)));
+    let brief = issued_briefing(&fx, &handle, &daemon).await;
+    assert!(
+        projected_segments(&fx)
+            .await
+            .iter()
+            .any(|segment| segment.presentation
+                == calm_server::model::HarnessInputPresentation::User
+                && segment.text.contains(user_text))
+    );
     assert_eq!(brief["key"], "retry");
     assert_eq!(brief["attempt_id"], first.id);
     assert_eq!(brief["planner_recovery"]["allowed"], false);
@@ -152,7 +176,7 @@ async fn recovery_briefing_allows_exact_recovery_without_preflight_reads() {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(fx.boot.repo.clone(), None);
     let handle = planner_with_daemon(&fx, daemon.clone()).await;
     queued_settlement(&fx, &handle).await;
-    let brief = issued_briefing(&handle, &daemon).await;
+    let brief = issued_briefing(&fx, &handle, &daemon).await;
     assert_eq!(brief["planner_recovery"]["allowed"], true);
     assert_eq!(brief["attempt_id"], first.id);
     assert_eq!(brief["is_current"], true);
@@ -219,7 +243,7 @@ async fn recovery_briefing_allows_exact_recovery_without_preflight_reads() {
     finish(&fx, &second, &workspace, false).await;
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(fx.boot.repo.clone(), None);
     let restored = restore_planner_with_daemon(&fx, daemon.clone()).await;
-    let second_brief = issued_briefing(&restored, &daemon).await;
+    let second_brief = issued_briefing(&fx, &restored, &daemon).await;
     assert_eq!(second_brief["attempt_id"], second.id);
     assert_eq!(second_brief["planner_recovery"]["allowed"], false);
     assert!(
@@ -246,7 +270,7 @@ async fn recovery_briefing_rechecks_queued_policy_after_snapshot_restore() {
         .unwrap();
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(fx.boot.repo.clone(), None);
     let restored = restore_planner_with_daemon(&fx, daemon.clone()).await;
-    let brief = issued_briefing(&restored, &daemon).await;
+    let brief = issued_briefing(&fx, &restored, &daemon).await;
     assert_eq!(brief["attempt_id"], first.id);
     assert_eq!(brief["planner_recovery"]["allowed"], false);
     assert!(
@@ -280,7 +304,7 @@ async fn recovery_briefing_never_retargets_a_queued_superseded_attempt() {
     fx.state.dispatcher.semaphore().close();
     let (status, receipt) = rest(&fx, "POST", &route(&fx, "recover"), recovery(&first)).await;
     assert_eq!(status, StatusCode::OK, "{receipt}");
-    let brief = issued_briefing(&handle, &daemon).await;
+    let brief = issued_briefing(&fx, &handle, &daemon).await;
     assert_eq!(brief["attempt_id"], first.id);
     assert_eq!(brief["is_current"], false);
     assert_eq!(brief["planner_recovery"]["allowed"], false);

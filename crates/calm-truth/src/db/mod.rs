@@ -1024,6 +1024,46 @@ pub trait RepoOutOfDomain: RepoRead {
         input_segments: Option<&str>,
     ) -> Result<i64>;
 
+    // ---- #1625 P2 — the drain-time projection of a user message ---------
+    //
+    // A projection row is a transcript row the KERNEL wrote at queue drain,
+    // before codex echoed anything: `method = 'item/completed'`,
+    // `item_type = 'userMessage'`, `turn_id IS NULL`, and `item_uuid` holding
+    // the CLIENT id the drain sent codex as `clientUserMessageId`. That
+    // three-column shape — completed, no turn, uuid equal to a client id — is
+    // the key every method below matches on. Nothing codex sends can produce
+    // it: a codex echo always carries a turn.
+    //
+    // The methods are keyed by `card_id` and never by `worker_session_id`,
+    // because a projection written by one runtime may be upgraded by its
+    // successor after a repoint.
+
+    /// The `id` of the projection row for `client_id` on `card_id`, if one
+    /// stands. Read by the echo path to decide whether an `item/started`
+    /// echo is one this card has already rendered.
+    async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
+    -> Result<Option<i64>>;
+
+    /// Upgrade the projection row for `client_id` in place with codex's echo:
+    /// its turn, its item id, its verbatim `params`. `input_segments` is
+    /// untouched — that column is the kernel's own record of what was sent,
+    /// and codex's echo cannot improve on it. Returns the row's `id`, or
+    /// `None` when no projection stands (the echo is then an ordinary insert
+    /// for the caller to make).
+    async fn transcript_projection_upgrade(
+        &self,
+        card_id: &str,
+        client_id: &str,
+        turn_id: Option<&str>,
+        item_uuid: &str,
+        params: &str,
+    ) -> Result<Option<i64>>;
+
+    /// Remove the projection row for `client_id` — the `turn/start` it stood
+    /// for did not go out and the batch went back on the queue. Returns how
+    /// many rows went (0 or 1).
+    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64>;
+
     // ---- worker message-flow capture (#695 PR2) ------------------------
     /// Append one captured worker-flow item, returning the new row id.
     ///

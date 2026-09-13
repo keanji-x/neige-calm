@@ -123,6 +123,10 @@ function harness(options: {
    * rail is currently showing.
    */
   path?: string;
+  /** Rows the planner card's item read answers with (`/harness/items`).
+   *  Defaults to `[]`, the empty window the kernel really answers before the
+   *  queue drains. */
+  plannerItems?: readonly unknown[];
 } = {}) {
   const sent: ApiRequest[] = [];
   let trackCreateIndex = 0;
@@ -195,6 +199,9 @@ function harness(options: {
         return options.heldDetail
           ? options.heldDetail.then(() => detail)
           : Promise.resolve(detail);
+      }
+      if (request.method === 'GET' && request.path.includes('/harness/items')) {
+        return Promise.resolve({ status: 200, statusText: 'OK', body: [...(options.plannerItems ?? [])] });
       }
       if (request.path === '/api/areas' && options.areasFail) {
         return Promise.resolve({ status: 500, statusText: 'Server Error', body: { error: 'areas are unreadable' } });
@@ -1203,22 +1210,34 @@ describe('the sentence is delivered by the create, and the track opens on it', (
   });
 
   /*
-   * ── #1449 ──────────────────────────────────────────────────────────────────
+   * ── #1449, then #1625 P2 ───────────────────────────────────────────────────
    *
    * And the sentence is *on* that conversation when the reader arrives.
    *
-   * The create delivered it, but delivered is not readable: a transcript is
-   * read from one persisted table (`crates/calm-truth/src/db/sqlite/read.rs`)
-   * and rows land there only when codex echoes the turn back
-   * (`crates/calm-server/src/harness/run_loop.rs`). This harness serves `[]`
-   * for the item read, which is what the kernel really answers in that window,
-   * so the only thing that can put the words on screen is the optimistic echo
-   * the landing mints — and the only way that echo can name the right card is
-   * by riding the history entry, since `POST /api/tracks` answers with a
-   * `Track` and the planner card id arrives a route later.
+   * The create delivers it, and since #1625 P2 delivered IS readable: the
+   * kernel writes the sentence to the transcript when the queue drains it
+   * into a turn, before codex has said anything
+   * (`write_projection_row`, `crates/calm-server/src/harness/run_loop.rs`),
+   * so the planner card's item read answers with it. Nothing is minted on
+   * the client any more — the tab-local placeholder #1449 added is gone, and
+   * a reload or a second device sees the same row this tab does. This case
+   * serves the row the kernel writes and pins that the words on screen come
+   * from that read and from nowhere else.
    */
-  it('shows the sentence that made the track before the server echoes it', async () => {
-    const { sent } = harness({ templates: TEMPLATES });
+  it('shows the sentence that made the track from the row the kernel writes at drain', async () => {
+    const { sent } = harness({
+      templates: TEMPLATES,
+      plannerItems: [{
+        id: 1, worker_session_id: 'r', card_id: 'card-planner', track_id: 'w-new', thread_id: 't',
+        turn_id: null, item_uuid: 'entry-0001', item_type: 'userMessage', method: 'item/completed',
+        params: JSON.stringify({
+          item: { id: 'entry-0001', clientId: 'entry-0001', type: 'userMessage', content: [{ type: 'text', text: 'User says:\nRead it' }] },
+          _projection: true,
+        }),
+        input_segments: [{ presentation: 'user', text: 'User says:\nRead it', attachments: [] }],
+        created_at_ms: 1,
+      }],
+    });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
     await findComposer();
     await userEvent.click(screen.getByLabelText(TASK_LABEL));
@@ -1231,11 +1250,28 @@ describe('the sentence is delivered by the create, and the track opens on it', (
       [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
     ).toEqual(['Read it']));
     expect(drawer.querySelector('[data-nc-thread-empty]')).toBeNull();
-    /* With zero server items — the read happened and answered nothing, so the
-       words on screen came from the echo and from nowhere else. */
+    /* The item read happened, and no `/planner/input` POST did: the words on
+       screen came from the row, not from a send. */
     const items = sent.filter((request) => request.path.includes('/harness/items'));
     expect(items.length).toBeGreaterThan(0);
     expect(plannerInputTexts(sent)).toEqual([]);
+  });
+
+  /* The other side of the same fact: with an empty item read — the window
+     before the kernel has drained the queue — the thread is honestly empty.
+     No client-side placeholder stands in for the row. */
+  it('shows nothing for the first sentence until the kernel has written its row', async () => {
+    harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Reading' }));
+    await findComposer();
+    await userEvent.click(screen.getByLabelText(TASK_LABEL));
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+
+    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
+    const drawer = await screen.findByRole('complementary', { name: 'Planner' });
+    await waitFor(() => expect(drawer.querySelector('[data-nc-thread-empty]')).not.toBeNull());
+    expect(drawer.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(0);
   });
 
   /*

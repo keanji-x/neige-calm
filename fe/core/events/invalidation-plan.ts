@@ -263,6 +263,16 @@ function policies(): PolicyMap {
     ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
     ...conversationLists(event.data.track_id),
   ])),
+  /*
+   * #1625 P2 — `harness-items` rides on the phase event above because a
+   * refused `turn/start` DELETES the drain's projection row and emits no
+   * event for the delete (`run_loop.rs`, the failure arm of
+   * `maybe_issue_turn`): the phase change the re-buffer persists right after
+   * it — `issuing_turn → turn_completed` — is the only signal a client that
+   * fetched the row during the pending `turn/start` gets, and without this key
+   * it kept showing the row until an unrelated event. (P1 puts the same key
+   * here for its turn-outcome row; the line is shared, the reasons are two.)
+   */
   'harness.transcript.cleared': plan((event) => result([
     ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
   ])),

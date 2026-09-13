@@ -5,8 +5,30 @@ use calm_server::{
     harness::{Observation, PlannerHarness},
     operation::{OperationRepo, SqlxOperationRepo},
 };
+/// The review's OWN settlement notice — `isolated_codex::review_settled::render`
+/// of a briefing whose `review_attempt_id` is `id` — and nothing else.
+///
+/// It used to count any system line holding `id`, "settled" and
+/// "calm.plan.list". A settlement catch-up replays the track's earlier
+/// observations first (`dispatcher::observe_harness_under_lock` enqueues the
+/// prefix, then the settlement), and the producer's publication and
+/// verification notices in that prefix are re-rendered at replay time with
+/// the CURRENT delivery view, which by then names the review attempt: they
+/// matched, so `observed` could return while the review's notice was still
+/// behind two `persist_snapshot` writes, and the first drain then went out
+/// without it. Under CI's contended sqlite that is the whole failure of
+/// `candidate_review_settlement_actual_briefing_never_binds_recover`.
 pub(super) fn notices(snapshot: &calm_server::harness::HarnessSnapshot, id: &str) -> usize {
-    snapshot.pending_observations().iter().filter(|o| matches!(o, Observation::SystemContext { text } if text.contains(id) && text.contains("settled") && text.contains("calm.plan.list"))).count()
+    let attempt = format!("\"review_attempt_id\": \"{id}\"");
+    snapshot
+        .pending_observations()
+        .iter()
+        .filter(|o| {
+            matches!(o, Observation::SystemContext { text }
+                if text.starts_with("Candidate review execution settled (kernel snapshot):\n")
+                    && text.contains(&attempt))
+        })
+        .count()
 }
 pub(super) async fn observed(handle: &PlannerHarness, id: &str, settled: bool) -> bool {
     tokio::time::timeout(Duration::from_secs(5), async {

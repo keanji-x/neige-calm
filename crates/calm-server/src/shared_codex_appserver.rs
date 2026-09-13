@@ -837,6 +837,10 @@ pub struct FakeSharedCodexAppServer {
     /// `started_turns_for_test` keep compiling and keep meaning what they
     /// meant.
     started_turn_selections: std::sync::Mutex<Vec<(String, TurnModelSelection)>>,
+    /// #1625 P2 — the `clientUserMessageId` each `turn/start` carried, in
+    /// the same order as `started_turns`. Its own vector for the same reason
+    /// as `started_turn_selections`.
+    started_turn_client_ids: std::sync::Mutex<Vec<Option<String>>>,
     interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
     turn_start_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
 }
@@ -857,6 +861,7 @@ impl FakeSharedCodexAppServer {
             started_thread_params: std::sync::Mutex::new(Vec::new()),
             started_turns: std::sync::Mutex::new(Vec::new()),
             started_turn_selections: std::sync::Mutex::new(Vec::new()),
+            started_turn_client_ids: std::sync::Mutex::new(Vec::new()),
             interrupted_turns: std::sync::Mutex::new(Vec::new()),
             turn_start_return_hook: std::sync::Mutex::new(None),
         }
@@ -1369,11 +1374,17 @@ impl SharedCodexAppServer {
     /// ARCH INVARIANT (#550 F3): planner-harness reconciliation turn issuance
     /// goes through `harness::run_loop::IssueTurnHandle`; direct callers here
     /// are non-harness boot/operation paths or lower-level tests.
+    ///
+    /// `client_user_message_id` rides to codex as `clientUserMessageId` and
+    /// comes back as `item.clientId` on the echoed `userMessage` (#1625 P2).
+    /// The planner drain passes its projection row's key; every other caller
+    /// passes `None` and gets the frame it always sent.
     pub async fn turn_start(
         &self,
         thread_id: &str,
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
+        client_user_message_id: Option<&str>,
     ) -> Result<TurnId> {
         if self.sealed_turn_threads.contains_key(thread_id) {
             return Err(CalmError::Conflict(format!(
@@ -1410,6 +1421,10 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake shared codex turn selections mutex poisoned")
                 .push((thread_id.to_string(), selection.clone()));
+            fake.started_turn_client_ids
+                .lock()
+                .expect("fake shared codex turn client ids mutex poisoned")
+                .push(client_user_message_id.map(ToOwned::to_owned));
             let hook = fake
                 .turn_start_return_hook
                 .lock()
@@ -1436,7 +1451,9 @@ impl SharedCodexAppServer {
             return Ok(turn_id);
         }
         let client = self.connected_client().await?;
-        let turn = client.turn_start(thread_id, items, selection).await?;
+        let turn = client
+            .turn_start_with_client_id(thread_id, items, selection, client_user_message_id)
+            .await?;
         let turn_id = turn
             .turn_id()
             .map(ToOwned::to_owned)
@@ -4001,6 +4018,21 @@ impl SharedCodexAppServer {
                 fake.started_turn_selections
                     .lock()
                     .expect("fake shared codex turn selections mutex poisoned")
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
+    /// #1625 P2 — the `clientUserMessageId` each `turn/start` carried, in
+    /// issue order. Pairs index-for-index with [`Self::started_turns_for_test`].
+    #[cfg(feature = "fixtures")]
+    pub fn started_turn_client_ids_for_test(&self) -> Vec<Option<String>> {
+        self.fake
+            .as_ref()
+            .map(|fake| {
+                fake.started_turn_client_ids
+                    .lock()
+                    .expect("fake shared codex turn client ids mutex poisoned")
                     .clone()
             })
             .unwrap_or_default()

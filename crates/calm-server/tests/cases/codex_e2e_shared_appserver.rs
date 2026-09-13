@@ -145,6 +145,7 @@ async fn shared_appserver_two_threads_true_binary() {
             &t1,
             vec![InputItem::text("Say OK in one word.")],
             &TurnModelSelection::inherit(),
+            None,
         )
         .await
         .unwrap();
@@ -153,6 +154,7 @@ async fn shared_appserver_two_threads_true_binary() {
             &t2,
             vec![InputItem::text("Say OK in one word.")],
             &TurnModelSelection::inherit(),
+            None,
         )
         .await
         .unwrap();
@@ -193,6 +195,7 @@ async fn shared_appserver_restart_resumes_thread() {
             &thread_id,
             vec![InputItem::text("Say OK in one word.")],
             &TurnModelSelection::inherit(),
+            None,
         )
         .await
         .unwrap();

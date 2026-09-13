@@ -36,3 +36,5 @@ mod planner_model_selection;
 mod planner_pending_queue;
 #[path = "cases/planner_queue_mutations.rs"]
 mod planner_queue_mutations;
+#[path = "cases/planner_transcript_projection.rs"]
+mod planner_transcript_projection;
