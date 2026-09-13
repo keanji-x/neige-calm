@@ -1221,3 +1221,60 @@ async fn a_fork_of_a_recipe_born_track_has_no_provenance() {
     );
     assert_eq!(fork.recipe_revision, None);
 }
+
+// ---------------------------------------------------------------------------
+// #1635 S2c — instantiation is fail-closed on a template-file prefix
+// ---------------------------------------------------------------------------
+
+/// The write boundary refuses a `+++` body (see `track_recipes.rs`), so the
+/// only way such a row exists is one written before that boundary did — this
+/// test writes it through the repo directly, the way such a row would have
+/// got there. `prepare_initial_report_payload` refuses to instantiate it
+/// (D1: `+++` is front matter, never report content), and the create rolls
+/// back rather than minting a track whose report opens with TOML.
+#[tokio::test]
+async fn a_stored_recipe_that_starts_with_front_matter_does_not_instantiate() {
+    let boot = boot().await;
+    let stored = boot
+        .repo
+        .track_recipe_create(calm_types::model::NewTrackRecipe {
+            title: "pre-boundary".into(),
+            body: "+++\nid = \"pasted\"\n+++\n# Plan\n".into(),
+        })
+        .await
+        .expect("the repo itself does not validate bodies");
+    let tracks_before = boot
+        .repo
+        .tracks_by_area(&boot.area_id)
+        .await
+        .expect("list tracks")
+        .len();
+
+    let (status, error) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/tracks",
+        Some(create_track_body(
+            &boot.area_id,
+            "from-pasted",
+            json!({ "recipe_id": stored.id }),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(error["code"], json!("bad_request"));
+    let message = error["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("+++") && message.contains(&stored.id),
+        "names the prefix and the recipe: {error}"
+    );
+    assert_eq!(
+        boot.repo
+            .tracks_by_area(&boot.area_id)
+            .await
+            .expect("list tracks")
+            .len(),
+        tracks_before,
+        "no track was minted"
+    );
+}

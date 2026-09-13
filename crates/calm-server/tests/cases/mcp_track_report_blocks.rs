@@ -2739,3 +2739,222 @@ async fn move_and_delete_refuse_message_and_lifecycle_with_32602() {
     assert_eq!(track_lifecycle(&boot).await, TrackLifecycle::Planning);
     assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
 }
+
+// ---------------------------------------------------------------------------
+// #1635 S2c — the contract-header funnel. Every persist lands through
+// `write_report_row_and_project_tx`, which runs `check_document` on the flat
+// projection once, inside the transaction, before the row write. These
+// tests drive real tool handlers so the rejection is observed where it
+// matters: nothing lands, nothing is emitted, no audit row.
+// ---------------------------------------------------------------------------
+
+/// A one-section header as a caller might spell it — keys out of declaration
+/// order and an explicit `"omit_if_empty":false` — so a stored canonical line
+/// proves the ingress rewrote it rather than passed it through.
+const NON_CANONICAL_HEADER: &str = "<!-- neige:contract {\"sections\":[{\"omit_if_empty\":false,\"h1\":\"概要\"}],\"version\":1} -->";
+
+fn one_section_header() -> calm_types::report_contract::ContractHeader {
+    calm_types::report_contract::ContractHeader {
+        version: 1,
+        sections: vec![calm_types::report_contract::ContractSection {
+            h1: "概要".into(),
+            omit_if_empty: false,
+        }],
+    }
+}
+
+fn first_line(body: &str) -> &str {
+    body.split('\n').next().unwrap_or_default()
+}
+
+/// Persisted `track.report_edited` rows — the audit-log view of "did a write
+/// land". The broadcast check beside it would stay silent if the bus were
+/// skipped; the row would not.
+async fn report_edited_rows(boot: &Boot) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'track.report_edited'")
+        .fetch_one(&boot.repo.sqlite_pool().expect("fixture repo is sqlite"))
+        .await
+        .expect("count persisted report edits")
+}
+
+/// D2 (a): the birth body's block 0 leads with the header, and a move that
+/// puts another block above it leaves the header on a later line. The op
+/// itself is well-formed — it is the *document* the funnel refuses.
+#[tokio::test]
+async fn move_that_displaces_the_contract_block_is_rejected_by_the_funnel() {
+    let boot = boot().await;
+    let appended = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        planner_identity(&boot),
+        json!({ "kind": "prose", "markdown": "# Appended\n\nlast\n", "if_doc_rev": 0 }),
+    )
+    .await
+    .expect("an append keeps the header on line 1");
+    let id = appended["id"].as_str().unwrap().to_string();
+    let before = current_payload(&boot).await;
+    assert_eq!(before.doc_rev, 1);
+    assert!(
+        first_line(&before.body).starts_with(calm_types::report_contract::HEADER_OPEN),
+        "fixture: the birth body leads with the header"
+    );
+    let edits_before = report_edited_rows(&boot).await;
+    let mut rx = boot.ctx.events.subscribe();
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_MOVE,
+        planner_identity(&boot),
+        json!({ "id": id, "to_index": 0, "if_doc_rev": 1 }),
+    )
+    .await
+    .expect_err("moving a block above the contract block displaces the header");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS, "{err:?}");
+    assert!(
+        err.message.contains("first line"),
+        "the header's own Misplaced message: {err:?}"
+    );
+
+    assert_eq!(
+        current_payload(&boot).await,
+        before,
+        "the tx aborted: docRev, body and blocks are what they were"
+    );
+    assert_eq!(
+        report_edited_rows(&boot).await,
+        edits_before,
+        "no track.report_edited row"
+    );
+    assert!(drain_events(&mut rx).await.is_empty(), "nothing broadcast");
+
+    // The positive twin: the same block to any index that leaves block 0
+    // where it is.
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_MOVE,
+        planner_identity(&boot),
+        json!({ "id": id, "to_index": 1, "if_doc_rev": 1 }),
+    )
+    .await
+    .expect("moving below the contract block is an ordinary reorder");
+    assert_eq!(current_payload(&boot).await.doc_rev, 2);
+}
+
+/// D2 (b)+(c): a prose block carrying a header, inserted at position 0, is
+/// the one way a headerless document gains a header — accepted, and stored
+/// canonical because the block ingress normalized it. On a document that
+/// already has one it is a second header: `Duplicate`, nothing lands.
+#[tokio::test]
+async fn upsert_prose_at_position_0_with_a_header_is_accepted_only_when_the_doc_has_none() {
+    use calm_types::report_contract::{canonical_line, check_document};
+
+    let headless = boot().await;
+    let _ = seed_two_blocks(&headless).await; // docRev 1, no header
+    call_tool(
+        &headless,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        planner_identity(&headless),
+        json!({
+            "kind": "prose",
+            "markdown": format!("{NON_CANONICAL_HEADER}\n"),
+            "position": 0,
+            "if_doc_rev": 1
+        }),
+    )
+    .await
+    .expect("the first header, on line 1");
+    let payload = current_payload(&headless).await;
+    assert_eq!(
+        first_line(&payload.body),
+        canonical_line(&one_section_header()),
+        "stored canonical, not as sent: {:?}",
+        payload.body
+    );
+    assert_eq!(
+        check_document(&payload.body),
+        Ok(Some(one_section_header()))
+    );
+
+    let birth = boot().await; // birth body: header already on line 1
+    let before = current_payload(&birth).await;
+    let edits_before = report_edited_rows(&birth).await;
+    let err = call_tool(
+        &birth,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        planner_identity(&birth),
+        json!({
+            "kind": "prose",
+            "markdown": format!("{NON_CANONICAL_HEADER}\n"),
+            "position": 0,
+            "if_doc_rev": 0
+        }),
+    )
+    .await
+    .expect_err("a second header");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS, "{err:?}");
+    assert!(
+        err.message.contains("at most one contract header"),
+        "the header's own Duplicate message: {err:?}"
+    );
+    assert_eq!(current_payload(&birth).await, before, "nothing landed");
+    assert_eq!(report_edited_rows(&birth).await, edits_before);
+}
+
+/// The funnel judges the document a batch leaves behind, not its steps: an
+/// upsert that puts a header on line 1 followed by a move that pushes it
+/// down is two individually valid steps and one refused commit.
+#[tokio::test]
+async fn commit_whose_steps_leave_the_header_off_line_1_is_rejected_as_a_whole() {
+    use calm_types::report_contract::canonical_line;
+
+    let boot = boot().await;
+    let index = seed_two_blocks(&boot).await; // docRev 1, A@0, B@1, no header
+    let (a_id, _) = index[0].clone();
+    let before = current_payload(&boot).await;
+    let edits_before = report_edited_rows(&boot).await;
+    let mut rx = boot.ctx.events.subscribe();
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_COMMIT,
+        planner_identity(&boot),
+        commit_args(
+            1,
+            json!([
+                { "op": "upsert", "kind": "prose", "markdown": format!("{NON_CANONICAL_HEADER}\n"), "position": 0 },
+                { "op": "move", "id": a_id, "to_index": 0 }
+            ]),
+        ),
+    )
+    .await
+    .expect_err("the move puts A above the header block");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS, "{err:?}");
+    assert!(err.message.contains("first line"), "{err:?}");
+    assert!(
+        !err.message.contains("ops["),
+        "refused by the funnel on the whole document, not by a step: {err:?}"
+    );
+    assert_eq!(current_payload(&boot).await, before, "nothing landed");
+    assert_eq!(report_edited_rows(&boot).await, edits_before);
+    assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
+
+    // The first step on its own is the accepted shape.
+    let out = call_tool(
+        &boot,
+        TOOL_REPORT_COMMIT,
+        planner_identity(&boot),
+        commit_args(
+            1,
+            json!([
+                { "op": "upsert", "kind": "prose", "markdown": format!("{NON_CANONICAL_HEADER}\n"), "position": 0 }
+            ]),
+        ),
+    )
+    .await
+    .expect("the upsert alone lands the header on line 1");
+    assert_eq!(out["docRev"], 2);
+    assert_eq!(
+        first_line(&current_payload(&boot).await.body),
+        canonical_line(&one_section_header())
+    );
+}

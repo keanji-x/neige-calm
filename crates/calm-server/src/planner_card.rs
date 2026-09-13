@@ -612,19 +612,28 @@ mod tests {
         );
 
         // —— the main invariant ——
-        for banned in [
-            "# 概要",
-            "# 待你定",
-            "# 已完成",
-            "# 决策",
+        // #1635 S2c — the live section names are read off the two contract
+        // headers, so a section renamed there is banned under its new name
+        // without anyone editing this list. The retired literals are history
+        // (names that once lived in the prompt or skeleton), not derivable
+        // from anything, and stay hand-written.
+        let live = calm_types::track_report::work_brief_header()
+            .sections
+            .into_iter()
+            .chain(calm_types::track_report::research_header().sections)
+            .map(|section| format!("# {}", section.h1));
+        let retired = [
             "# Goal",
             "# Progress",
             "# Needs attention",
             "# Results",
             "# Timeline",
-        ] {
+            "# 进行中",
+        ]
+        .map(String::from);
+        for banned in live.chain(retired) {
             assert!(
-                !p.contains(banned),
+                !p.contains(&banned),
                 "planner prompt must not name a report section — structure travels with the document (#1185): {banned}"
             );
         }

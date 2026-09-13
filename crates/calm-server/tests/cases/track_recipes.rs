@@ -804,3 +804,156 @@ async fn delete_removes_it_from_the_list() {
     assert_eq!(status, StatusCode::OK);
     assert!(list.as_array().unwrap().is_empty(), "list={list}");
 }
+
+// ---------------------------------------------------------------------------
+// #1635 S2c — the contract header at the recipe's own write boundary. A
+// stored recipe reaches the report funnel only when it is instantiated, so
+// the same rule (`check_document`) runs here, on the normalized body, and the
+// template-file front-matter prefix is refused outright.
+// ---------------------------------------------------------------------------
+
+/// A one-section header as a caller might spell it — keys out of declaration
+/// order and an explicit `"omit_if_empty":false` — so a stored canonical line
+/// proves the boundary rewrote it rather than passed it through.
+const NON_CANONICAL_HEADER: &str = "<!-- neige:contract {\"sections\":[{\"omit_if_empty\":false,\"h1\":\"概要\"}],\"version\":1} -->";
+
+fn one_section_header() -> calm_types::report_contract::ContractHeader {
+    calm_types::report_contract::ContractHeader {
+        version: 1,
+        sections: vec![calm_types::report_contract::ContractSection {
+            h1: "概要".into(),
+            omit_if_empty: false,
+        }],
+    }
+}
+
+fn first_line(body: &str) -> &str {
+    body.split('\n').next().unwrap_or_default()
+}
+
+/// `+++` opens a template file's TOML front matter (#1635 D1). A recipe body
+/// is the part *after* it; one that starts with it was pasted whole.
+#[tokio::test]
+async fn a_body_that_starts_with_front_matter_is_a_400_on_both_verbs() {
+    let boot = boot().await;
+    let front_matter = "+++\nid = \"pasted\"\n+++\n# Plan\n";
+    let (status, error) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("user"),
+        Some(json!({ "title": "pasted", "body": front_matter })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={error}");
+    assert!(
+        error["error"].as_str().unwrap_or_default().contains("+++"),
+        "the message names the prefix: {error}"
+    );
+
+    let (_, created) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("user"),
+        Some(json!({ "title": "fine", "body": "# Plan\n" })),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap();
+    let (status, error) = send(
+        boot.app.clone(),
+        "PUT",
+        &format!("/api/track-recipes/{id}"),
+        Some("user"),
+        Some(json!({ "title": "fine", "body": front_matter, "if_revision": created["revision"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={error}");
+    assert!(
+        error["error"].as_str().unwrap_or_default().contains("+++"),
+        "the message names the prefix: {error}"
+    );
+    let (_, unchanged) = send(
+        boot.app.clone(),
+        "GET",
+        &format!("/api/track-recipes/{id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        unchanged["body"],
+        json!("# Plan\n"),
+        "the refused PUT wrote nothing"
+    );
+}
+
+/// The header is normalized at the boundary, so the row — and therefore the
+/// picker and every track instantiated from it — holds the canonical line.
+#[tokio::test]
+async fn a_non_canonical_header_is_stored_and_read_back_canonical() {
+    use calm_types::report_contract::canonical_line;
+
+    let boot = boot().await;
+    let (status, created) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("user"),
+        Some(json!({
+            "title": "headed",
+            "body": format!("{NON_CANONICAL_HEADER}\n\n# 概要\n\nprose\n")
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let canonical = canonical_line(&one_section_header());
+    assert_ne!(
+        NON_CANONICAL_HEADER, canonical,
+        "fixture must be non-canonical"
+    );
+    assert_eq!(first_line(created["body"].as_str().unwrap()), canonical);
+
+    let id = created["id"].as_str().unwrap();
+    let (status, fetched) = send(
+        boot.app.clone(),
+        "GET",
+        &format!("/api/track-recipes/{id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first_line(fetched["body"].as_str().unwrap()), canonical);
+    assert_eq!(
+        &fetched["body"].as_str().unwrap()[canonical.len()..],
+        "\n\n# 概要\n\nprose\n",
+        "only line 1 was rewritten"
+    );
+}
+
+/// D2 (a) at this boundary: a header anywhere but line 1 is `Misplaced`.
+#[tokio::test]
+async fn a_header_off_line_1_is_a_400() {
+    let boot = boot().await;
+    let (status, error) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("user"),
+        Some(json!({
+            "title": "late header",
+            "body": format!("# Plan\n\n{NON_CANONICAL_HEADER}\n")
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={error}");
+    assert_eq!(error["code"], json!("bad_request"));
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("first line"),
+        "the header's own Misplaced message: {error}"
+    );
+}

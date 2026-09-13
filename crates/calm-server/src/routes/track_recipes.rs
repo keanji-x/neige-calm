@@ -49,8 +49,10 @@ use axum::{
 };
 use calm_types::model::{NewTrackRecipe, TrackRecipe};
 use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
+use calm_types::report_contract::{check_document, normalize_header};
 use serde::Deserialize;
 use serde_json::Value;
+use std::borrow::Cow;
 use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
@@ -271,9 +273,39 @@ fn restore_paragraph_break(out: &mut String) {
 ///
 /// `BadRequest`, not `Internal`: unlike `prepare_template_report`, whose
 /// every byte comes from a Rust constant, this body came from the caller.
+///
+/// #1635 S2c — also the contract-header check the funnel runs on a track
+/// report (`check_document`: at most one header, on line 1, canonical, block
+/// 0's comment closed), run here at the recipe's own write boundary because
+/// a stored recipe never reaches the funnel until it is instantiated. The
+/// caller has already run [`normalize_header`], so `Internal` cannot come
+/// back; it is mapped to `BadRequest` with its message all the same. A body
+/// that starts with `+++` is refused first: that prefix is a template file's
+/// front matter (#1635 D1), not recipe content.
 fn validate_recipe_body(body: &str) -> Result<()> {
+    if body.starts_with("+++") {
+        return Err(CalmError::BadRequest(
+            "recipe bodies must not start with `+++`; that prefix is reserved for template \
+             files' front matter (#1635 D1)"
+                .into(),
+        ));
+    }
     crate::track_report_guard::validate_body_fences(body)
-        .map_err(|error| CalmError::BadRequest(format!("track recipe body: {error}")))
+        .map_err(|error| CalmError::BadRequest(format!("track recipe body: {error}")))?;
+    check_document(body)
+        .map(|_| ())
+        .map_err(|error| CalmError::BadRequest(format!("report contract header: {error}")))
+}
+
+/// #1635 S2c — the recipe ingress: line 1 rewritten to the canonical header
+/// (or the body handed back untouched when there is none), the same rule
+/// `apply_report_op` applies to a `Replace` body. Runs after
+/// [`normalize_recipe_body`], which touches fences only, and before
+/// [`validate_recipe_body`], so the stored row is what the funnel will accept.
+fn normalize_recipe_header(body: &str) -> Result<String> {
+    normalize_header(body)
+        .map(Cow::into_owned)
+        .map_err(|error| CalmError::BadRequest(format!("report contract header: {error}")))
 }
 
 /// The same actor decision the block endpoints make, said in this endpoint's
@@ -365,7 +397,7 @@ pub(crate) async fn create_recipe(
 ) -> Result<(StatusCode, Json<TrackRecipe>)> {
     require_recipe_user_actor(&actor)?;
     validate_title(&body.title)?;
-    let normalized = normalize_recipe_body(&body.body);
+    let normalized = normalize_recipe_header(&normalize_recipe_body(&body.body))?;
     validate_recipe_body(&normalized)?;
     let created = s
         .repo
@@ -396,7 +428,7 @@ pub(crate) async fn update_recipe(
 ) -> Result<Json<TrackRecipe>> {
     require_recipe_user_actor(&actor)?;
     validate_title(&body.title)?;
-    let normalized = normalize_recipe_body(&body.body);
+    let normalized = normalize_recipe_header(&normalize_recipe_body(&body.body))?;
     validate_recipe_body(&normalized)?;
     Ok(Json(
         s.repo

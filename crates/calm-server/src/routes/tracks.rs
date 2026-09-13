@@ -1003,6 +1003,16 @@ fn prepare_initial_report_payload(
     let (summary, body) = doc.project().map_err(|error| {
         CalmError::Internal(format!("track create: project template `{label}`: {error}"))
     })?;
+    // #1635 S2c — `+++` opens a template file's front matter (D1), never a
+    // report body. The recipe write boundary refuses it too; this is the
+    // fail-closed check for a row stored before that boundary existed. The
+    // contract header itself is checked once, at the funnel.
+    if body.starts_with("+++") {
+        return Err(CalmError::BadRequest(format!(
+            "track create: recipe `{label}` body must not start with `+++`; that prefix is \
+             reserved for template files' front matter (#1635 D1)"
+        )));
+    }
     crate::track_report_guard::validate_body_fences(&body).map_err(|error| {
         CalmError::Internal(format!("track create: template `{label}` body: {error}"))
     })?;
