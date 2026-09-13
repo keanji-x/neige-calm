@@ -9,12 +9,15 @@
 //! | kind | payload |
 //! |---|---|
 //! | `chart.candles` | `{ symbol, period?, candles: [[ts_ms,o,h,l,c,v?];2..], overlays?, caption? }` |
+//! | `chart.series` | `{ source: neige://plugin/<id>/<tool>, series: [venue:symbol;1..8], field?, range?, period?, view?, as_of?, overlays?, caption? }` (#1628; [`chart_series`](super::chart_series)) |
 //! | `table` | inline: `{ columns: [{key,label,align?};1..], rows: [{<key>: string\|number\|null}], caption?, highlight? }`; live: `{ source: "neige://plugin/<id>/<overlay-kind>", caption? }` |
 //! | `app` | `{ src: same-origin path, title?, height? (120..2000 px) }` |
 //!
-//! Candle data is inlined by design: the kernel has no market-data
-//! source — the agent fetches its own data and writes it in; range
-//! switching is client-side filtering.
+//! `chart.candles` inlines its data: the agent fetches candles itself and
+//! writes them in; range switching is client-side filtering. It remains
+//! the escape hatch for data no plugin resolves. `chart.series` (#1628)
+//! names its data instead — a plugin tool plus asset ids — and the kernel
+//! resolves the points on the read path.
 //!
 //! A `table` is the one kind that may instead *name* its data: the live
 //! form carries a `source` pointing at a plugin-written overlay, and the
@@ -32,6 +35,7 @@ use crate::report_links::parse_destination;
 
 pub const KIND_PROSE: &str = "prose";
 pub const KIND_CHART_CANDLES: &str = "chart.candles";
+pub const KIND_CHART_SERIES: &str = "chart.series";
 pub const KIND_TABLE: &str = "table";
 pub const KIND_APP: &str = "app";
 pub const KIND_TASK: &str = "task";
@@ -44,6 +48,8 @@ pub const KIND_TASK: &str = "task";
 
 /// Maximum candle rows in a `chart.candles` payload.
 pub const MAX_CHART_CANDLES: usize = 5000;
+/// Maximum asset ids in a `chart.series` payload (#1628).
+pub const MAX_CHART_SERIES: usize = 8;
 /// Maximum column definitions in a `table` payload.
 pub const MAX_TABLE_COLUMNS: usize = 32;
 /// Maximum rows in a `table` payload.
@@ -55,7 +61,13 @@ pub const MAX_STRING_CHARS: usize = 2048;
 pub const MAX_CANONICAL_BYTES: usize = 256 * 1024;
 
 /// The non-prose kinds a report may contain, in `blocks.kinds` order.
-pub const DATA_KINDS: [&str; 4] = [KIND_CHART_CANDLES, KIND_TABLE, KIND_APP, KIND_TASK];
+pub const DATA_KINDS: [&str; 5] = [
+    KIND_CHART_CANDLES,
+    KIND_CHART_SERIES,
+    KIND_TABLE,
+    KIND_APP,
+    KIND_TASK,
+];
 
 pub fn is_data_kind(kind: &str) -> bool {
     DATA_KINDS.contains(&kind)
@@ -96,6 +108,7 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
     let mut errors = Vec::new();
     match kind {
         KIND_CHART_CANDLES => validate_chart(map, &mut errors),
+        KIND_CHART_SERIES => super::chart_series::validate_chart_series(map, &mut errors),
         KIND_TABLE => validate_table(map, &mut errors),
         KIND_APP => validate_app(map, &mut errors),
         KIND_TASK => validate_task(map, &mut errors),
@@ -136,7 +149,9 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
 /// `neige://` destination carries.
 pub const LIVE_SOURCE_PREFIX: &str = "neige://plugin/";
 
-/// Shape check for a live `table`'s `source`.
+/// Shape check for a live `table`'s `source` (and, since #1628, a
+/// `chart.series` `source`, whose second segment names a plugin *tool*
+/// rather than an overlay kind — same two-segment shape, same characters).
 ///
 /// `neige://plugin/<plugin_id>/<overlay_kind>` — exactly two non-empty
 /// segments after the prefix, each drawn from the same characters plugin ids
@@ -687,13 +702,13 @@ fn is_url_hostile_char(c: char) -> bool {
     c.is_ascii_control() || matches!(c, '\u{80}'..='\u{9f}')
 }
 
-fn reject_unknown(map: &Map<String, Value>, allowed: &[&str], errors: &mut Vec<String>) {
+pub(super) fn reject_unknown(map: &Map<String, Value>, allowed: &[&str], errors: &mut Vec<String>) {
     for key in map.keys().filter(|k| !allowed.contains(&k.as_str())) {
         errors.push(format!("{key}: unknown field"));
     }
 }
 
-fn optional_string(map: &Map<String, Value>, key: &str, errors: &mut Vec<String>) {
+pub(super) fn optional_string(map: &Map<String, Value>, key: &str, errors: &mut Vec<String>) {
     match map.get(key) {
         None => {}
         Some(Value::String(s)) => check_string_cap(key, s, errors),
@@ -703,7 +718,7 @@ fn optional_string(map: &Map<String, Value>, key: &str, errors: &mut Vec<String>
 
 /// Every string field in a data payload is capped at
 /// [`MAX_STRING_CHARS`] characters.
-fn check_string_cap(path: &str, value: &str, errors: &mut Vec<String>) {
+pub(super) fn check_string_cap(path: &str, value: &str, errors: &mut Vec<String>) {
     let chars = value.chars().count();
     if chars > MAX_STRING_CHARS {
         errors.push(format!(

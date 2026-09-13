@@ -19,6 +19,8 @@ mod mcp_track_rename;
 mod mcp_track_report;
 #[path = "cases/mcp_track_report_blocks.rs"]
 mod mcp_track_report_blocks;
+#[path = "cases/mcp_track_report_chart_series.rs"]
+mod mcp_track_report_chart_series;
 #[path = "cases/mcp_track_state.rs"]
 mod mcp_track_state;
 #[path = "cases/report_write_characterization.rs"]

@@ -83,15 +83,95 @@ pub(super) fn kinds_table() -> Value {
                         "caption": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS }
                     }
                 },
-                "usage": "Candlestick chart with inline data. Minimal example \
+                "usage": "Candlestick chart with inline data — the escape hatch \
+                     for data no plugin resolves. For any asset a plugin can \
+                     resolve market data for, use `chart.series` instead and \
+                     let the kernel fetch the points. Minimal example \
                      — calm.report.blocks.upsert { \"kind\": \"chart.candles\", \
                      \"payload\": { \"symbol\": \"0700.HK\", \"candles\": \
                      [[1719800000000, 371.2, 380.0, 370.0, 378.4, 12000000], \
                      [1719886400000, 378.4, 382.0, 375.0, 379.8, 9800000]] } }. \
-                     The kernel has no market-data source: include every \
-                     candle you want rendered. Limits: at most 5000 candles \
-                     and 256KB of JSON per block — downsample older history \
-                     if you exceed either."
+                     Include every candle you want rendered. Limits: at most \
+                     5000 candles and 256KB of JSON per block — downsample \
+                     older history if you exceed either."
+            },
+            // Keep this schema in sync with
+            // `report_blocks::chart_series::validate_chart_series` (#1628 S1).
+            {
+                "kind": "chart.series",
+                "schema": {
+                    "type": "object",
+                    "required": ["source", "series"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "source": {
+                            "type": "string",
+                            "maxLength": report_blocks::MAX_STRING_CHARS,
+                            "pattern": "^neige://plugin/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+                            "description": "`neige://plugin/<plugin_id>/<tool>` — the plugin tool that \
+                                resolves the series, e.g. `neige://plugin/dev-neige-market/market.series`. \
+                                The plugin need not be installed when the block is written."
+                        },
+                        "series": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": report_blocks::MAX_CHART_SERIES,
+                            "uniqueItems": true,
+                            "items": {
+                                "type": "string",
+                                "maxLength": report_blocks::MAX_STRING_CHARS,
+                                "pattern": "^[A-Z]{2,8}:[A-Za-z0-9._-]{1,32}$",
+                                "description": "Venue-qualified asset id, e.g. \"US:NVDA\", \"HK:9988\", \
+                                    \"CRYPTO:BTC\". The plugin decides what a venue means."
+                            },
+                            "description": "Assets to draw, 1..8, no literal duplicates."
+                        },
+                        "field": {
+                            "type": "string",
+                            "enum": ["close", "open", "high", "low", "volume"],
+                            "description": "Value per point (default close). Must be absent when view is candles."
+                        },
+                        "range": {
+                            "type": "string",
+                            "enum": ["1M", "3M", "6M", "1Y", "2Y", "5Y"],
+                            "description": "Window ending at the cutoff (default 1Y)."
+                        },
+                        "period": {
+                            "type": "string",
+                            "enum": ["day", "week", "month"],
+                            "description": "Bar period (default day). `range: 1M` cannot combine with `month`."
+                        },
+                        "view": {
+                            "type": "string",
+                            "enum": ["line", "normalized", "bar", "candles"],
+                            "description": "How to draw (default line). `candles` needs exactly one series."
+                        },
+                        "as_of": {
+                            "type": "string",
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                            "description": "Cutoff date YYYY-MM-DD; must exist on the calendar. Present = frozen \
+                                at that date; absent = live (the window ends at the latest complete day)."
+                        },
+                        "overlays": {
+                            "type": "array",
+                            "items": { "type": "string", "enum": ["ma20", "ma60"] },
+                            "description": "Moving-average overlays; accepted only with view line or candles."
+                        },
+                        "caption": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS }
+                    }
+                },
+                "usage": "Price chart whose data is NOT inlined: the block names a \
+                     plugin tool (`source`) and the assets (`series`), and the \
+                     kernel resolves the points itself when the report is read. \
+                     Minimal example — calm.report.blocks.upsert { \"kind\": \
+                     \"chart.series\", \"payload\": { \"source\": \
+                     \"neige://plugin/dev-neige-market/market.series\", \
+                     \"series\": [\"US:NVDA\", \"HK:9988\"], \"range\": \"1Y\" } }. \
+                     `as_of` is the cutoff date, not the last bar's date: with it \
+                     the chart is frozen at that date; without it the chart is \
+                     live and follows the latest complete day. `view: candles` \
+                     takes exactly one series and no `field`. Prefer this over \
+                     `chart.candles` whenever a plugin can resolve the asset."
             },
             {
                 "kind": "table",

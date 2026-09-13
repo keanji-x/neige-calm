@@ -211,7 +211,17 @@ fn unknown_kind_is_an_error() {
     assert!(err.contains("unknown block kind `metrics`"), "{err}");
     assert!(!is_data_kind("prose"));
     assert!(is_data_kind("chart.candles"));
+    assert!(is_data_kind("chart.series"));
     assert!(is_data_kind("task"));
+    assert_eq!(
+        DATA_KINDS,
+        ["chart.candles", "chart.series", "table", "app", "task"],
+        "the closed data-kind set, in blocks.kinds order"
+    );
+    assert!(
+        err.contains("chart.series"),
+        "unknown-kind error lists every data kind: {err}"
+    );
 }
 
 fn valid_task() -> Value {

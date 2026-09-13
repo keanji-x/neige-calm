@@ -2,7 +2,7 @@
 //
 // **A report is a sequence of typed blocks, not one Markdown string** (§8.3).
 // `prose` blocks render through `core/markdown`'s sanitized AST; `table`,
-// `chart.candles`, `task` and `app` render themselves.
+// `chart.candles`, `chart.series`, `task` and `app` render themselves.
 //
 // **Every block is the same width.** The blocks used to break out from the
 // prose measure to the full document width, on the theory that a table wants
@@ -40,6 +40,7 @@ import { Icon } from '../../../ui/icon/public.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
 import { ReportCandlesBlock } from '../candles/public.tsx';
+import { ReportSeriesBlock } from '../series/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
 import { ReportTaskBlock } from '../task/public.tsx';
 import styles from './document.module.css';
@@ -330,6 +331,7 @@ function BlockBody({ block, task, renderTaskExecution, resolveLiveTable }: {
   switch (block.kind) {
     case 'table': return <ReportTableBlock payload={block.payload} resolveLive={resolveLiveTable} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
+    case 'chart.series': return <ReportSeriesBlock payload={block.payload} />;
     case 'task': return <ReportTaskBlock payload={block.payload} blockId={block.id} task={task} renderExecution={renderTaskExecution} />;
     case 'app': return <ReportAppBlock payload={block.payload} />;
     case 'unsupported':
