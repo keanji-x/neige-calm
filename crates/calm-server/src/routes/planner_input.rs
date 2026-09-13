@@ -1,9 +1,11 @@
-//! #1505 PR2 — `PATCH` / `DELETE /api/cards/{id}/planner/input/{entry_id}`.
+//! #1505 PR2 — `PATCH` / `DELETE /api/cards/{id}/planner/input/{entry_id}`,
+//! and since #1625 P3 `POST …/{entry_id}/steer`.
 //!
 //! The queue a planner card accumulates while a turn runs used to be
 //! write-once: a message could be sent into it and then only waited out. These
-//! two routes make an entry a thing the person who wrote it can still change
-//! their mind about.
+//! routes make an entry a thing the person who wrote it can still change their
+//! mind about — rewrite it, take it back, or (P3) send it into the turn that
+//! is running right now instead of waiting for the next one.
 //!
 //! Three decisions are worth reading before the code.
 //!
@@ -38,6 +40,7 @@ use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::harness::queue::{MutationRefused, QueueEntryId, QueueMutation};
+use crate::harness::{HarnessPhaseTag, SteerRefused};
 use crate::ids::{ActorId, CardId};
 use crate::routes::cards::{card_runs_headless_harness, validate_planner_input_text};
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
@@ -60,6 +63,69 @@ pub struct DeletePlannerInputBody {
     /// The `rev` the client last read for this entry. Required — see the
     /// module header.
     pub if_entry_rev: u32,
+}
+
+/// #1625 P3 — body of `POST …/{entry_id}/steer`. The same compare-and-swap
+/// token as the delete, for the same reason: "send the message I read" is a
+/// precondition on the text, and a steer that ignored it could deliver a
+/// sentence somebody else had just rewritten.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SteerPlannerInputBody {
+    pub if_entry_rev: u32,
+}
+
+/// #1625 P3 — what a steer answers on success: codex has the message inside
+/// `turn_id`, and the entry is no longer in the queue.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PlannerSteerResponse {
+    #[schema(value_type = String)]
+    pub card_id: CardId,
+    pub worker_session_id: String,
+    pub entry_id: String,
+    /// Always `true` on a 200, in the shape of `POST /planner/interrupt`'s
+    /// `stopped`: the refusals are typed 409s, never a `false` here.
+    pub steered: bool,
+    /// The turn that took the message — the one that was running.
+    pub turn_id: String,
+}
+
+/// #1625 P3 — 409 body for a steer that delivered nothing, or nothing known.
+///
+/// Two codes. `planner_steer_no_running_turn` covers both ways of KNOWING
+/// nothing was delivered — the harness saw no running turn and did not ask,
+/// or codex was asked and said no (the turn had just ended, or a different
+/// one was running) — because they license the same next move and nothing
+/// else: the message is still queued, with the `rev` the client read, and it
+/// goes with the next turn. `planner_steer_unknown_outcome` (review round 1)
+/// is codex NOT answering — the request timed out or the connection dropped
+/// — where the message is queued again just the same but may ALSO have
+/// reached the turn; it is its own code because "nothing happened" would be
+/// a claim this side cannot make. `error` says which, for the person reading
+/// the notice; `phase` is the harness's own phase at the moment it answered.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PlannerSteerRefusedBody {
+    pub error: String,
+    /// `planner_steer_no_running_turn` or `planner_steer_unknown_outcome`.
+    pub code: String,
+    pub entry_id: String,
+    pub phase: HarnessPhaseTag,
+}
+
+/// #1625 P3 review round 1 — the steer route's 409, which has two typed
+/// shapes told apart by `code`: `PlannerInputStaleBody` (`planner_input_stale`,
+/// the compare-and-swap lost; carries the entry's current text and rev) and
+/// `PlannerSteerRefusedBody` (`planner_steer_no_running_turn` /
+/// `planner_steer_unknown_outcome`, the entry is still queued). utoipa binds
+/// one body per status, so the pair is declared as this untagged union; the
+/// stale arm is produced by `refusal_response`, shared with PATCH/DELETE, and
+/// the refused arm by `steer_refused_response`. A third 409, the harness
+/// shutting down, is a plain `ErrorBody` with code `conflict`.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum PlannerSteerConflictBody {
+    Stale(PlannerInputStaleBody),
+    Refused(PlannerSteerRefusedBody),
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -309,4 +375,126 @@ pub(crate) async fn delete_planner_input(
         }
     })
     .await
+}
+
+/// #1625 P3 — the third verb on the entry, kept beside PATCH/DELETE rather than
+/// behind the operation adapter for the reason the module header gives for
+/// those two: `run_planner_card_operation` flattens every failure to a class
+/// and a message, and the two typed 409s this route answers with would not
+/// survive it.
+#[utoipa::path(
+    post,
+    path = "/api/cards/{id}/planner/input/{entry_id}/steer",
+    tag = "cards",
+    params(
+        ("id" = String, Path, description = "Planner card id"),
+        ("entry_id" = String, Path, description = "Pending queue entry id from `GET /planner/run`"),
+    ),
+    request_body = SteerPlannerInputBody,
+    responses(
+        (status = 200, description = "The entry left the queue and codex took it into the running turn", body = PlannerSteerResponse),
+        (status = 401, description = "Unauthenticated", body = ErrorBody),
+        (status = 403, description = "Not `X-Calm-Actor: user`, or the card is not a planner codex card", body = ErrorBody),
+        (status = 404, description = "Card not found, or the entry is no longer in the pending queue", body = ErrorBody),
+        // Four codes share this status; `PlannerSteerConflictBody` names the
+        // two typed shapes, and `PlannerSteerRefusedBody` the steer's own
+        // codes (the entry stays queued and drains into the next turn).
+        (status = 409, description = "By `code`: `planner_input_stale`; `planner_steer_no_running_turn`; \
+                                      `planner_steer_unknown_outcome`; `conflict` (shutting down)", body = PlannerSteerConflictBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+        (status = 503, description = "Harness command channel saturated — retry shortly", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn steer_planner_input(
+    State(state): State<RouteState>,
+    State(workers): State<WorkerState>,
+    _principal: Principal,
+    actor: Actor,
+    Path((id, entry_id)): Path<(String, String)>,
+    Json(body): Json<SteerPlannerInputBody>,
+) -> Result<Response> {
+    let (card_id, worker_session_id, harness) = resolve(&state, &workers, &id, &actor).await?;
+    match harness
+        .steer_pending_entry(
+            QueueEntryId::from_wire(entry_id.clone()),
+            body.if_entry_rev,
+            ActorId::User,
+        )
+        .await?
+    {
+        Ok(applied) => {
+            tracing::info!(
+                actor = %actor.as_str(),
+                card_id = %card_id,
+                worker_session_id = %worker_session_id,
+                entry_id = %applied.entry_id,
+                turn_id = %applied.turn_id,
+                "planner harness pending queue entry steered into the running turn"
+            );
+            Ok(Json(PlannerSteerResponse {
+                card_id,
+                worker_session_id,
+                entry_id: applied.entry_id.as_str().to_string(),
+                steered: true,
+                turn_id: applied.turn_id,
+            })
+            .into_response())
+        }
+        Err(SteerRefused::Queue(refused)) => Ok(refusal_response(&card_id, refused)),
+        Err(SteerRefused::NoRunningTurn { phase }) => Ok(steer_refused_response(
+            entry_id,
+            phase,
+            "planner_steer_no_running_turn",
+            format!(
+                "no turn is running right now (phase `{}`), so there is nothing to steer; the \
+                 message is still queued and will go with the next turn",
+                phase_wire_name(phase)
+            ),
+        )),
+        Err(SteerRefused::NotTaken { message, phase }) => Ok(steer_refused_response(
+            entry_id,
+            phase,
+            "planner_steer_no_running_turn",
+            format!(
+                "codex did not take the message into the running turn ({message}); it is still \
+                 queued and will go with the next turn"
+            ),
+        )),
+        Err(SteerRefused::Unanswered { message, phase }) => Ok(steer_refused_response(
+            entry_id,
+            phase,
+            "planner_steer_unknown_outcome",
+            format!(
+                "codex did not answer in time ({message}), so it is not known whether the message \
+                 reached the running turn; it is queued again and will go with the next turn"
+            ),
+        )),
+    }
+}
+
+/// The wire spelling of a phase (`turn_running`, not `TurnRunning`), so the
+/// sentence a person reads matches what `GET /planner/run` shows them.
+fn phase_wire_name(phase: HarnessPhaseTag) -> String {
+    serde_json::to_value(phase)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_default()
+}
+
+fn steer_refused_response(
+    entry_id: String,
+    phase: HarnessPhaseTag,
+    code: &str,
+    error: String,
+) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(PlannerSteerConflictBody::Refused(PlannerSteerRefusedBody {
+            error,
+            code: code.into(),
+            entry_id,
+            phase,
+        })),
+    )
+        .into_response()
 }

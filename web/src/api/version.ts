@@ -114,6 +114,10 @@
  *   `undefined`; event frames are rejected by the v23 zod union, and because
  *   `events.ts` advances the cursor before parsing, a rejected row is skipped
  *   permanently rather than retried. Only the curtain stops such a bundle.
+ * * `28` — issue #1625 P3 adds `restored` to `harness.queue.changed`: a
+ *   steered entry back in the queue. The v27 union rejects the frame, the
+ *   cursor moves past it (same mechanism as `24`), and the bundle keeps
+ *   showing the restored entry as sent.
  *
  * This constant must equal `WEB_COMPAT_VERSION` in
  * `crates/calm-server/src/routes/version.rs` and in
@@ -123,7 +127,8 @@
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
 // 26 -> 27: stay in lockstep with the MCP setup capability requirement.
-export const WEB_COMPAT_VERSION = 27;
+// 27 -> 28: `harness.queue.changed` gained `restored` (#1625 P3).
+export const WEB_COMPAT_VERSION = 28;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

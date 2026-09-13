@@ -131,8 +131,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "7",
-        "MCP setup needs a new API capability revision"
+        "8",
+        "#1625 P3's steer endpoint needs a new API capability revision"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -160,12 +160,15 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     // curtain instead of rendering an undefined-shaped conversation.
     // #1501 F4: 26 excludes bundles that cannot classify candidate verification.
     // MCP setup requires header/all-tools support and an unsaved Check endpoint.
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 27);
+    // #1625 P3: 27 -> 28 so a cached bundle whose event union does not know
+    // `harness.queue.changed` / `restored` gets the refresh curtain instead of
+    // skipping the frame and showing a restored entry as sent.
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 28);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 27);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 28);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
@@ -294,5 +297,42 @@ async fn web_compat_floor_excludes_track_detail_without_resume_capability() {
     assert!(
         floor > LAST_TRACK_DETAIL_WITHOUT_CAN_RESUME,
         "minWebCompatVersion must exclude bundles without can_resume, got {floor}"
+    );
+}
+
+/// #1625 P3 review round 2 — the last floor whose bundles did not know
+/// `harness.queue.changed` / `restored`. Such a bundle's zod union rejects
+/// the frame and `reduceEventFrame` advances the cursor without invalidating
+/// the queue, so it keeps showing a restored entry as sent. Historical
+/// literal, same discipline as the two above: do not move it with
+/// `WEB_COMPAT_VERSION`.
+#[tokio::test]
+async fn web_compat_floor_excludes_bundles_that_cannot_decode_a_restored_queue_entry() {
+    const LAST_FLOOR_WITHOUT_RESTORED: u64 = 27;
+
+    let state = fresh_state().await;
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/version")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    let floor = v["minWebCompatVersion"]
+        .as_u64()
+        .expect("minWebCompatVersion is a number");
+    assert!(
+        floor > LAST_FLOOR_WITHOUT_RESTORED,
+        "minWebCompatVersion must exclude bundles that reject `restored`, got {floor}"
     );
 }

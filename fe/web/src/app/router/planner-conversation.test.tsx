@@ -786,6 +786,195 @@ describe('planner conversation regressions', () => {
   });
 
   /*
+   * #1625 P3 — "Say it now" is offered in `turn_running` and nowhere else.
+   *
+   * `issuing_turn` is the phase that decides the criterion: it is `working`
+   * (the composer shows Stop, the send is queued) and yet a steer there
+   * answers 409, because the turn it would go into does not exist yet. A
+   * gate written on `working` would draw a button whose only possible answer
+   * is a refusal, which is the regression the first draft of #1505 PR4's
+   * queued-send criterion had (see `kernelQueuesInput` above).
+   */
+  it('offers "Say it now" while a turn is running, and posts the listed revision to the steer route', async () => {
+    const entry = { entry_id: 'entry-9', text: 'now please', rev: 3, queued_at_ms: 5 };
+    const { requests } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 });
+      }
+      if (request.method === 'POST' && request.path.endsWith('/steer')) {
+        return ok({ card_id: CARD.id, entry_id: entry.entry_id, steered: true, turn_id: 'turn-1' });
+      }
+      return undefined;
+    });
+    await openConversation();
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+
+    await waitFor(() => {
+      expect(requests.some((request) => request.path.endsWith('/steer'))).toBe(true);
+    });
+    const steer = requests.find((request) => request.path.endsWith('/steer'));
+    expect(steer?.method).toBe('POST');
+    expect(steer?.path).toBe(`/api/cards/${CARD.id}/planner/input/entry-9/steer`);
+    expect(steer?.body).toEqual({ if_entry_rev: 3 });
+    /* A 200 forgets the bubble at once, as a delete does. */
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
+    });
+  });
+
+  /*
+   * #1625 P3 review round 2 — the steer's tombstone is reversible.
+   *
+   * Codex took the message (200), and then the turn ended before codex
+   * recorded it; the kernel puts the entry back under the SAME id, one rev
+   * up (`QueueEntry::bump_rev_for_restore`), and announces `restored`. This
+   * client never saw the queue without the entry: the page it holds is the
+   * one from before the steer (rev 3), and the next one it fetches lists the
+   * same id again. Before this round the tombstone was retired only by a
+   * page that OMITTED the id, so the restored message — and its controls —
+   * stayed hidden for good.
+   *
+   * Two pages, in order, and the first is the negative that keeps the rule
+   * honest: a refetch that still lists rev 3 is a stale page and keeps the
+   * bubble hidden; a page that lists rev 4 is the kernel's own word that the
+   * entry came back, and the strip draws it with both controls.
+   */
+  it('shows a steered message again, with its controls, once the server lists it at a higher rev', async () => {
+    let served = { entry_id: 'entry-9', text: 'came back', rev: 3, queued_at_ms: 5 };
+    let runReads = 0;
+    const { client, requests } = setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        runReads += 1;
+        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [served], pending_overflow: 0 });
+      }
+      if (request.method === 'POST' && request.path.endsWith('/steer')) {
+        return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: served.entry_id, steered: true, turn_id: 'turn-1' });
+      }
+      return undefined;
+    });
+    await openConversation();
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+    });
+    const readsBeforeSteer = runReads;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+    await waitFor(() => {
+      expect(requests.some((request) => request.path.endsWith('/steer'))).toBe(true);
+    });
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
+    });
+    /* The refetch the 200 triggers lands, and it still lists the entry at the
+       rev this client steered against — a page from before the write. The
+       bubble stays hidden. */
+    await waitFor(() => { expect(runReads).toBeGreaterThan(readsBeforeSteer); });
+    await waitFor(() => { expect(client.isFetching({ queryKey: queryKeys.plannerRun(CARD.id) })).toBe(0); });
+    expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
+
+    /* The kernel put it back, one rev up, and `restored` refetched the page. */
+    served = { ...served, rev: 4 };
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: queryKeys.plannerRun(CARD.id) });
+    });
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')?.textContent).toContain('came back');
+    });
+    expect(screen.getByRole('button', { name: 'Say it now' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Delete this message' })).toBeTruthy();
+    /* And a steer from here writes against the rev the page lists now. */
+    fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+    await waitFor(() => {
+      expect(requests.filter((request) => request.path.endsWith('/steer'))).toHaveLength(2);
+    });
+    expect(requests.filter((request) => request.path.endsWith('/steer'))[1]?.body).toEqual({ if_entry_rev: 4 });
+  });
+
+  it('does not offer "Say it now" while the turn is still being issued', async () => {
+    const entry = { entry_id: 'entry-9', text: 'not yet', rev: 0, queued_at_ms: 5 };
+    setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ ...PLANNER_RUN_IDLE, phase: 'issuing_turn', pending: [entry], pending_overflow: 0 });
+      }
+      return undefined;
+    });
+    await openConversation();
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+    });
+    /* The strip is drawn — the cross is there — and the steer is not. */
+    expect(screen.getByRole('button', { name: 'Delete this message' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Say it now' })).toBeNull();
+  });
+
+  /* The steer's 409: the message is still queued and the notice says so. The
+     bubble stays, because nothing was taken. */
+  it('says the message stays queued when the steer finds no running turn', async () => {
+    const entry = { entry_id: 'entry-9', text: 'too late', rev: 0, queued_at_ms: 5 };
+    setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 });
+      }
+      if (request.method === 'POST' && request.path.endsWith('/steer')) {
+        return {
+          status: 409, statusText: 'Conflict',
+          body: {
+            error: 'no turn is running right now', code: 'planner_steer_no_running_turn',
+            entry_id: entry.entry_id, phase: 'turn_completed',
+          },
+        };
+      }
+      return undefined;
+    });
+    await openConversation();
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+
+    expect(await screen.findByText(/stays queued and will go with the next turn/)).toBeTruthy();
+    expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+  });
+
+  /* The steer's other 409 (review round 1): codex never answered. The notice
+     must not say nothing happened — the message may have reached the turn
+     AND is queued again — and the bubble stays, because it is queued. */
+  it('says the outcome is not known when the steer times out on the kernel side', async () => {
+    const entry = { entry_id: 'entry-9', text: 'did it land', rev: 0, queued_at_ms: 5 };
+    setup((request) => {
+      if (request.path.endsWith('/planner/run')) {
+        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 });
+      }
+      if (request.method === 'POST' && request.path.endsWith('/steer')) {
+        return {
+          status: 409, statusText: 'Conflict',
+          body: {
+            error: 'codex did not answer in time', code: 'planner_steer_unknown_outcome',
+            entry_id: entry.entry_id, phase: 'turn_running',
+          },
+        };
+      }
+      return undefined;
+    });
+    await openConversation();
+    await waitFor(() => {
+      expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+
+    const notice = await screen.findByText(/not known whether this message reached/);
+    expect(notice.textContent).toMatch(/stays queued and will go with the next turn/);
+    expect(notice.textContent).not.toMatch(/nothing happened/);
+    expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
+  });
+
+  /*
    * #1505 PR4 rule 4 — a deleted queued message is gone, not hidden.
    *
    * Deleting removes the entry from `pending`, which un-hides the transcript

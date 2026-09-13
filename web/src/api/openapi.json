@@ -1405,6 +1405,117 @@
         }
       }
     },
+    "/api/cards/{id}/planner/input/{entry_id}/steer": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "summary": "#1625 P3 — the third verb on the entry, kept beside PATCH/DELETE rather than\nbehind the operation adapter for the reason the module header gives for\nthose two: `run_planner_card_operation` flattens every failure to a class\nand a message, and the two typed 409s this route answers with would not\nsurvive it.",
+        "operationId": "steer_planner_input",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entry_id",
+            "in": "path",
+            "description": "Pending queue entry id from `GET /planner/run`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SteerPlannerInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The entry left the queue and codex took it into the running turn",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannerSteerResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not `X-Calm-Actor: user`, or the card is not a planner codex card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found, or the entry is no longer in the pending queue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "By `code`: `planner_input_stale`; `planner_steer_no_running_turn`; `planner_steer_unknown_outcome`; `conflict` (shutting down)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannerSteerConflictBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Harness command channel saturated — retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/planner/interrupt": {
       "post": {
         "tags": [
@@ -8645,6 +8756,72 @@
           }
         }
       },
+      "PlannerSteerConflictBody": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/PlannerInputStaleBody"
+          },
+          {
+            "$ref": "#/components/schemas/PlannerSteerRefusedBody"
+          }
+        ],
+        "description": "#1625 P3 review round 1 — the steer route's 409, which has two typed\nshapes told apart by `code`: `PlannerInputStaleBody` (`planner_input_stale`,\nthe compare-and-swap lost; carries the entry's current text and rev) and\n`PlannerSteerRefusedBody` (`planner_steer_no_running_turn` /\n`planner_steer_unknown_outcome`, the entry is still queued). utoipa binds\none body per status, so the pair is declared as this untagged union; the\nstale arm is produced by `refusal_response`, shared with PATCH/DELETE, and\nthe refused arm by `steer_refused_response`. A third 409, the harness\nshutting down, is a plain `ErrorBody` with code `conflict`."
+      },
+      "PlannerSteerRefusedBody": {
+        "type": "object",
+        "description": "#1625 P3 — 409 body for a steer that delivered nothing, or nothing known.\n\nTwo codes. `planner_steer_no_running_turn` covers both ways of KNOWING\nnothing was delivered — the harness saw no running turn and did not ask,\nor codex was asked and said no (the turn had just ended, or a different\none was running) — because they license the same next move and nothing\nelse: the message is still queued, with the `rev` the client read, and it\ngoes with the next turn. `planner_steer_unknown_outcome` (review round 1)\nis codex NOT answering — the request timed out or the connection dropped\n— where the message is queued again just the same but may ALSO have\nreached the turn; it is its own code because \"nothing happened\" would be\na claim this side cannot make. `error` says which, for the person reading\nthe notice; `phase` is the harness's own phase at the moment it answered.",
+        "required": [
+          "error",
+          "code",
+          "entry_id",
+          "phase"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "`planner_steer_no_running_turn` or `planner_steer_unknown_outcome`."
+          },
+          "entry_id": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/HarnessPhaseTag"
+          }
+        }
+      },
+      "PlannerSteerResponse": {
+        "type": "object",
+        "description": "#1625 P3 — what a steer answers on success: codex has the message inside\n`turn_id`, and the entry is no longer in the queue.",
+        "required": [
+          "card_id",
+          "worker_session_id",
+          "entry_id",
+          "steered",
+          "turn_id"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "entry_id": {
+            "type": "string"
+          },
+          "steered": {
+            "type": "boolean",
+            "description": "Always `true` on a 200, in the shape of `POST /planner/interrupt`'s\n`stopped`: the refusals are typed 409s, never a `false` here."
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "The turn that took the message — the one that was running."
+          },
+          "worker_session_id": {
+            "type": "string"
+          }
+        }
+      },
       "Plugin": {
         "type": "object",
         "required": [
@@ -9204,6 +9381,21 @@
             "type": "string"
           }
         }
+      },
+      "SteerPlannerInputBody": {
+        "type": "object",
+        "description": "#1625 P3 — body of `POST …/{entry_id}/steer`. The same compare-and-swap\ntoken as the delete, for the same reason: \"send the message I read\" is a\nprecondition on the text, and a steer that ignored it could deliver a\nsentence somebody else had just rewritten.",
+        "required": [
+          "if_entry_rev"
+        ],
+        "properties": {
+          "if_entry_rev": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "TaskArtifactFileResponse": {
         "type": "object",

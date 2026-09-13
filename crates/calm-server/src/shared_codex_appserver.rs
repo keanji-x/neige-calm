@@ -843,7 +843,28 @@ pub struct FakeSharedCodexAppServer {
     started_turn_client_ids: std::sync::Mutex<Vec<Option<String>>>,
     interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
     turn_start_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
+    /// #1625 P3 — every `turn/steer` this fake was handed, in order:
+    /// `(thread_id, expected_turn_id, input, client_user_message_id)`.
+    steered_turns: std::sync::Mutex<Vec<SteeredTurnParam>>,
+    /// Answer the next `turn/steer` the way codex does when it sees the
+    /// request and says no — the exact `-32600` sentences it uses for "no
+    /// active turn" and "expected turn mismatch" — as opposed to not
+    /// answering at all. `None` accepts.
+    reject_turn_steer: std::sync::Mutex<Option<String>>,
+    /// #1625 P3 review round 1 — answer the next `turn/steer` the way the
+    /// client does when codex does NOT answer: a `CodexAppServer` timeout
+    /// error, as opposed to `reject_turn_steer`'s refusal. The request is
+    /// still recorded, because on the wire it did go out.
+    fail_turn_steer: AtomicBool,
+    /// Same shape as `turn_start_return_hook`: hold `turn/steer` inside the
+    /// daemon, after it has recorded the request, until the test releases it.
+    turn_steer_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
 }
+
+/// #1625 P3 — one recorded `turn/steer`: thread, the `expectedTurnId` it
+/// carried, its input, and its `clientUserMessageId`.
+#[cfg(feature = "fixtures")]
+pub type SteeredTurnParam = (String, String, Vec<InputItem>, Option<String>);
 
 #[cfg(feature = "fixtures")]
 impl FakeSharedCodexAppServer {
@@ -864,6 +885,10 @@ impl FakeSharedCodexAppServer {
             started_turn_client_ids: std::sync::Mutex::new(Vec::new()),
             interrupted_turns: std::sync::Mutex::new(Vec::new()),
             turn_start_return_hook: std::sync::Mutex::new(None),
+            steered_turns: std::sync::Mutex::new(Vec::new()),
+            reject_turn_steer: std::sync::Mutex::new(None),
+            fail_turn_steer: AtomicBool::new(false),
+            turn_steer_return_hook: std::sync::Mutex::new(None),
         }
     }
 }
@@ -1761,6 +1786,84 @@ impl SharedCodexAppServer {
 
     pub(crate) fn turn_thread_is_sealed(&self, thread_id: &str) -> bool {
         self.sealed_turn_threads.contains_key(thread_id)
+    }
+
+    /// `turn/steer` — hand `items` to the turn that is running on `thread_id`
+    /// right now (#1625 P3). `expected_turn_id` is the id the caller believes
+    /// is running; codex refuses the request when that is not the active
+    /// turn, and the refusal comes back as [`CalmError::CodexRefused`] with
+    /// codex's own sentence. Returns the id of the turn that took the input,
+    /// which is `expected_turn_id` whenever the call succeeds.
+    ///
+    /// No seal check and no `active_turns` write, unlike `turn_start`: a
+    /// steer creates no turn, so there is nothing new for deletion to
+    /// interrupt and nothing to record; the running turn is already tracked.
+    ///
+    /// The fake answers the way codex does rather than always saying yes: it
+    /// compares `expected_turn_id` against the turn its own `turn_start`
+    /// recorded for the thread, so a harness that believes a turn is running
+    /// when the daemon holds none, or a different one, is refused with the
+    /// same `-32600` sentence the real daemon sends. A test that has to
+    /// produce the refusal at a chosen moment scripts it with
+    /// `reject_turn_steer_for_test`.
+    pub async fn turn_steer(
+        &self,
+        thread_id: &str,
+        expected_turn_id: &str,
+        items: Vec<InputItem>,
+        client_user_message_id: Option<&str>,
+    ) -> Result<TurnId> {
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            fake.steered_turns
+                .lock()
+                .expect("fake shared codex steered turns mutex poisoned")
+                .push((
+                    thread_id.to_string(),
+                    expected_turn_id.to_string(),
+                    items.clone(),
+                    client_user_message_id.map(ToOwned::to_owned),
+                ));
+            let hook = fake
+                .turn_steer_return_hook
+                .lock()
+                .expect("fake shared codex turn-steer hook mutex poisoned")
+                .take();
+            if let Some(hook) = hook {
+                hook.entered.notify_one();
+                hook.release.notified().await;
+            }
+            let scripted = fake
+                .reject_turn_steer
+                .lock()
+                .expect("fake shared codex reject-steer mutex poisoned")
+                .clone();
+            if let Some(message) = scripted {
+                return Err(CalmError::CodexRefused(message));
+            }
+            if fake.fail_turn_steer.load(Ordering::SeqCst) {
+                return Err(CalmError::CodexAppServer(
+                    "request turn/steer timed out".into(),
+                ));
+            }
+            return match self.active_turn_id_for_thread(thread_id) {
+                None => Err(CalmError::CodexRefused(
+                    "turn/steer failed: no active turn to steer (code -32600)".into(),
+                )),
+                Some(active) if active != expected_turn_id => {
+                    Err(CalmError::CodexRefused(format!(
+                        "turn/steer failed: expected active turn id `{expected_turn_id}` but \
+                         found `{active}` (code -32600)"
+                    )))
+                }
+                Some(active) => Ok(active),
+            };
+        }
+        let client = self.connected_client().await?;
+        let steered = client
+            .turn_steer(thread_id, expected_turn_id, items, client_user_message_id)
+            .await?;
+        Ok(steered.turn_id)
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
@@ -4071,6 +4174,56 @@ impl SharedCodexAppServer {
                 .turn_start_return_hook
                 .lock()
                 .expect("fake shared codex turn-start hook mutex poisoned") = Some(hook);
+        }
+    }
+
+    /// #1625 P3 — every `turn/steer` the fake was handed, in order.
+    #[cfg(feature = "fixtures")]
+    pub fn steered_turns_for_test(&self) -> Vec<SteeredTurnParam> {
+        self.fake
+            .as_ref()
+            .map(|fake| {
+                fake.steered_turns
+                    .lock()
+                    .expect("fake shared codex steered turns mutex poisoned")
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Make every subsequent `turn/steer` be REFUSED by codex with `message`
+    /// — an answer, not an outage — or accepted again with `None`.
+    #[cfg(feature = "fixtures")]
+    pub fn reject_turn_steer_for_test(&self, message: Option<&str>) {
+        if let Some(fake) = self.fake.as_ref() {
+            *fake
+                .reject_turn_steer
+                .lock()
+                .expect("fake shared codex reject-steer mutex poisoned") =
+                message.map(ToOwned::to_owned);
+        }
+    }
+
+    /// Make every subsequent `turn/steer` go UNANSWERED — the client's own
+    /// timeout error, the sentence `request_until` produces — or answered
+    /// again with `false`. The outcome on codex's side is, by construction,
+    /// unknown to the caller.
+    #[cfg(feature = "fixtures")]
+    pub fn fail_turn_steer_for_test(&self, fail: bool) {
+        if let Some(fake) = self.fake.as_ref() {
+            fake.fail_turn_steer.store(fail, Ordering::SeqCst);
+        }
+    }
+
+    /// Hold the next `turn/steer` inside the daemon, after it is recorded
+    /// and before it is answered, until the test releases it.
+    #[cfg(feature = "fixtures")]
+    pub fn install_turn_steer_return_hook_for_test(&self, hook: TurnStartReturnHook) {
+        if let Some(fake) = self.fake.as_ref() {
+            *fake
+                .turn_steer_return_hook
+                .lock()
+                .expect("fake shared codex turn-steer hook mutex poisoned") = Some(hook);
         }
     }
 

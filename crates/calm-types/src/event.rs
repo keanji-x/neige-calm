@@ -259,11 +259,12 @@ pub const SYNC_EVENT_VERSION: u32 = 20;
 
 /// #1505 PR2 — what happened to one entry in the harness pending queue.
 ///
-/// Four values, and only two of them have an emitter in this slice. The other
-/// two are declared here rather than later because the wire vocabulary is a
-/// versioned artifact: adding a value to a client-visible enum is the same
-/// class of change as adding the event, and doing it once is cheaper than
-/// doing it three times. Each variant says below whether anything emits it.
+/// Five values. Two got their emitter in that slice, `dropped` in PR2b,
+/// `steered` in #1625 P3 and `restored` in its first review round; the first
+/// four were declared at once because the wire vocabulary is a versioned
+/// artifact: adding a value to a client-visible enum is the same class of
+/// change as adding the event, and doing it once is cheaper than doing it
+/// three times. Each variant says below what emits it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -275,9 +276,28 @@ pub enum HarnessQueueChange {
     /// `DELETE /api/cards/{id}/planner/input/{entry_id}`. Emitted by this
     /// slice.
     Deleted,
-    /// The entry left the queue because a running turn was steered with it.
-    /// **Nothing emits this yet** — the steer delivery path is #1505 PR3.
+    /// The entry left the queue because codex took it into the turn that was
+    /// running, through `POST /api/cards/{id}/planner/input/{entry_id}/steer`
+    /// (`turn/steer`). Emitted by `harness::run_loop::handle_steer` once codex
+    /// has answered yes (#1625 P3). The delivery also adds a transcript row,
+    /// which is why the invalidation plan refetches the transcript on this
+    /// value. A steer codex refused is announced as `Restored`, not as this.
     Steered,
+    /// The entry is back in the queue, at the head, with the id it left
+    /// with. Two emitters, both in `harness::run_loop` (#1625 P3 review
+    /// round 1): `handle_steer` when codex refused or never answered the
+    /// `turn/steer` — the entry had left the queue before codex was asked,
+    /// so a client that read the queue meanwhile saw it gone; it keeps its
+    /// rev — and the `TurnCompleted` arm's sweep when a steered entry's turn
+    /// ended before codex recorded the input (an interrupt clears codex's
+    /// pending input), which also deletes the transcript row the delivery
+    /// had written and hands the entry back one rev up (review round 2): the
+    /// client whose steer answered 200 is hiding the entry, and a higher rev
+    /// on the page that lists it again is what tells that client the kernel
+    /// put it back rather than that its page is stale. The drain's own
+    /// re-buffer after a failed `turn/start` does NOT emit this: that path
+    /// has a phase change to carry the retraction.
+    Restored,
     /// The kernel discarded the entry without delivering it: a snapshot loaded
     /// with more than `MAX_PENDING_QUEUE_LEN` entries drops from the head.
     /// Emitted by `harness::run_loop`'s load-time truncation (#1505 PR2b).
@@ -2131,21 +2151,22 @@ mod scope_tests {
         assert_eq!(queue_changed.kind_tag(), "harness.queue.changed");
     }
 
-    /// #1505 PR2 — the four `change` spellings, pinned one by one.
+    /// #1505 PR2 — the five `change` spellings, pinned one by one.
     ///
     /// The golden file for `harness.queue.changed` fixes the payload's field
-    /// names but exercises a single `change` value, and two of the four have
-    /// no emitter when this test was written, so nothing else in the tree
-    /// would have noticed a renamed variant. `Dropped` has one now (PR2b);
-    /// `Steered` is still the one this test exists for, and its first
-    /// production use is PR3, by which time a client is already parsing this
-    /// enum.
+    /// names but exercises a single `change` value, and two of the first four
+    /// had no emitter when this test was written, so nothing else in the tree
+    /// would have noticed a renamed variant. Every value has one now
+    /// (`Dropped` since PR2b, `Steered` and `Restored` since #1625 P3), and
+    /// the spellings stay pinned here because a client was parsing this enum
+    /// before those emitters existed.
     #[test]
     fn harness_queue_change_wire_spellings() {
         for (change, wire) in [
             (HarnessQueueChange::Edited, "\"edited\""),
             (HarnessQueueChange::Deleted, "\"deleted\""),
             (HarnessQueueChange::Steered, "\"steered\""),
+            (HarnessQueueChange::Restored, "\"restored\""),
             (HarnessQueueChange::Dropped, "\"dropped\""),
         ] {
             let encoded = serde_json::to_string(&change).expect("change serializes");

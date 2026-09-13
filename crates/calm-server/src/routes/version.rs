@@ -50,6 +50,12 @@ use utoipa::ToSchema;
 /// Old request bodies remain valid, but web-only updates must reject a kernel
 /// that would silently ignore the new fields. The shared constant also pins
 /// the installer's production preflight regression to what this server emits.
+///
+/// #1625 P3 bumps `"7"` -> `"8"`: `POST /api/cards/{id}/planner/input/{entry_id}/steer`
+/// is new. The queue strip's "Say it now" calls it, and against an older
+/// kernel the answer is a 404 the client reads as "the entry is gone" — so a
+/// web-only update onto such a kernel must be refused, not left to fail in
+/// the composer.
 pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 
 /// Monotonically increasing frontend compatibility floor.
@@ -113,7 +119,16 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // MCP JSON setup requires explicit all-tools/header support and the Check
 // endpoint. A separately updated bundled frontend must refuse v26 servers,
 // which otherwise silently ignore the new install fields.
-pub const WEB_COMPAT_VERSION: u32 = 27;
+//
+// #1625 P3 bumps 27 -> 28: `harness.queue.changed` gained the value
+// `restored` (a steered entry back in the queue). The v27 zod union in both
+// bundles rejects a frame carrying it, and `reduceEventFrame` advances the
+// cursor past a rejected frame without invalidating anything — the #1316
+// S4b shape above, one enum value wide — so a v27 bundle left running
+// against this kernel keeps showing a restored entry as sent. The curtain
+// is what stops it. (The same slice also bumped API v7 -> v8 for the steer
+// route itself; that is the REST side of the same pairing rule.)
+pub const WEB_COMPAT_VERSION: u32 = 28;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

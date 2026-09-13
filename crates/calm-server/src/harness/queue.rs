@@ -142,7 +142,11 @@ pub enum QueueEntry {
         id: QueueEntryId,
         text: String,
         /// CAS token. Incremented every time the text is rewritten, folding
-        /// included, so a stale editor is told to re-read.
+        /// included, so a stale editor is told to re-read — and once more
+        /// when the entry comes back to the queue after a client was told
+        /// it had left ([`QueueEntry::bump_rev_for_restore`], #1625 P3
+        /// review round 2), so the page that lists it again is
+        /// distinguishable from the page that listed it before.
         rev: u32,
         /// Wall-clock ms at which this entry entered the queue.
         queued_at_ms: i64,
@@ -190,6 +194,29 @@ pub struct UserEntryView<'a> {
 }
 
 impl QueueEntry {
+    /// #1625 P3 review round 2 — the entry is re-entering the queue after a
+    /// client was told it had left: a steer answered 200, and the turn then
+    /// ended before codex recorded the input. That client hides the entry
+    /// until the server's page says otherwise, and the page it fetches
+    /// after the restore lists it AGAIN — under the same id, so nothing in
+    /// that page says "this is the entry that came back" unless the rev
+    /// moved. Bumping it here is what lets a client tell "the page from
+    /// before my steer" from "the page after the kernel put it back"
+    /// without relying on having observed the absence in between
+    /// (`tombstoneHides`, `fe/web/src/app/router/public.tsx`).
+    ///
+    /// Only the completion sweep calls this. A steer codex refused restores
+    /// the entry WITHOUT a bump: the client that asked was told no in the
+    /// same round trip and holds no such hide, and a bump there would turn
+    /// its immediate retry at the rev it holds into a false `stale`.
+    ///
+    /// `LegacyUser` and `System` entries carry no rev and are left alone.
+    pub fn bump_rev_for_restore(&mut self) {
+        if let Self::User { rev, .. } = self {
+            *rev = rev.saturating_add(1);
+        }
+    }
+
     /// The one place a [`QueueEntryId`] is minted.
     ///
     /// `attachments` is a required parameter rather than a builder step. Every
@@ -488,9 +515,10 @@ impl QueueEntry {
 
 /// #1505 PR2 — one addressable change a human asked for.
 ///
-/// Both arms carry `if_entry_rev`, and it is required rather than optional on
-/// the delete too. "I am deleting the entry I read" and "I am editing the
-/// entry I read" are the same precondition, and an optional token is an
+/// Every arm carries `if_entry_rev`, and it is required rather than optional
+/// on the delete and the steer too. "I am deleting the entry I read", "I am
+/// editing the entry I read" and "I am sending the entry I read into the
+/// running turn" are the same precondition, and an optional token is an
 /// unconditional write for any client that omits it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueueMutation {
@@ -503,18 +531,31 @@ pub enum QueueMutation {
         entry_id: QueueEntryId,
         if_entry_rev: u32,
     },
+    /// #1625 P3 — take the entry out so the run loop can hand it to the turn
+    /// that is running right now (`turn/steer`). The queue's part is exactly
+    /// a delete that gives the entry back to the caller; whether codex takes
+    /// it is decided after this function returns, and a refusal puts the
+    /// entry back through `rebuffer_head`.
+    Steer {
+        entry_id: QueueEntryId,
+        if_entry_rev: u32,
+    },
 }
 
 impl QueueMutation {
     pub fn entry_id(&self) -> &QueueEntryId {
         match self {
-            Self::Edit { entry_id, .. } | Self::Delete { entry_id, .. } => entry_id,
+            Self::Edit { entry_id, .. }
+            | Self::Delete { entry_id, .. }
+            | Self::Steer { entry_id, .. } => entry_id,
         }
     }
 
     fn if_entry_rev(&self) -> u32 {
         match self {
-            Self::Edit { if_entry_rev, .. } | Self::Delete { if_entry_rev, .. } => *if_entry_rev,
+            Self::Edit { if_entry_rev, .. }
+            | Self::Delete { if_entry_rev, .. }
+            | Self::Steer { if_entry_rev, .. } => *if_entry_rev,
         }
     }
 }
@@ -524,12 +565,17 @@ impl QueueMutation {
 pub struct MutationApplied {
     pub entry_id: QueueEntryId,
     pub change: HarnessQueueChange,
-    /// The entry's `rev` after the change. `Deleted` reports the rev the entry
-    /// carried when it was removed, so a log line can be joined against the
-    /// read the client acted on.
+    /// The entry's `rev` after the change. `Deleted` and `Steered` report the
+    /// rev the entry carried when it was removed, so a log line can be joined
+    /// against the read the client acted on.
     pub rev: u32,
     /// The text after the change, for `Edit` only.
     pub text: Option<String>,
+    /// The entry that left the queue, for `Steer` only: the caller still has
+    /// to deliver it, and to put it back if codex will not take it. A
+    /// `Delete` drops its entry here — nothing downstream may deliver a
+    /// message the person took back.
+    pub removed: Option<QueueEntry>,
     /// True when this mutation left the queue empty.
     pub queue_now_empty: bool,
     /// Whether any entry still in the queue is hard-fire, recomputed from the
@@ -578,19 +624,19 @@ pub enum MutationRefused {
 /// and answered.
 pub type MutationResult = std::result::Result<MutationApplied, MutationRefused>;
 
-/// Apply one human mutation to the pending queue, in place.
+/// The locate-and-compare half of [`apply_mutation`], with no write.
 ///
-/// The queue lock is the caller's to hold; this function does no IO and takes
-/// no locks, so the whole compare-and-swap — locate, check `rev`, write —
-/// happens inside one critical section. That is what makes the delete-versus-
-/// drain race have two outcomes instead of three: whichever of the two reaches
-/// the run loop's single `select!` first sees the queue the other has not
-/// touched yet.
-pub fn apply_mutation(
-    queue: &mut VecDeque<QueueEntry>,
-    mutation: &QueueMutation,
-) -> MutationResult {
-    let entry_id = mutation.entry_id();
+/// Answers the index of the one entry that carries `entry_id` at `if_entry_rev`,
+/// or the same refusal `apply_mutation` would give. #1625 P3 calls it on its
+/// own before a steer so that "is the entry there, and is it the one you
+/// read" is answered ahead of "is a turn running" — the first two are about
+/// the message the person pointed at, the third about the moment they
+/// pressed, and the more specific answer wins.
+pub fn locate_entry(
+    queue: &VecDeque<QueueEntry>,
+    entry_id: &QueueEntryId,
+    if_entry_rev: u32,
+) -> std::result::Result<usize, MutationRefused> {
     let matches = queue
         .iter()
         .enumerate()
@@ -608,20 +654,35 @@ pub fn apply_mutation(
         }
     };
 
-    let current_rev = queue[index]
+    let view = queue[index]
         .user_view()
-        .expect("an entry matched by id is a User entry, the only variant that has one")
-        .rev;
-    if current_rev != mutation.if_entry_rev() {
-        let view = queue[index].user_view().expect("checked just above");
+        .expect("an entry matched by id is a User entry, the only variant that has one");
+    if view.rev != if_entry_rev {
         return Err(MutationRefused::Stale {
             entry_id: entry_id.clone(),
             text: view.text.to_string(),
             rev: view.rev,
         });
     }
+    Ok(index)
+}
 
-    let (change, rev, text) = match mutation {
+/// Apply one human mutation to the pending queue, in place.
+///
+/// The queue lock is the caller's to hold; this function does no IO and takes
+/// no locks, so the whole compare-and-swap — locate, check `rev`, write —
+/// happens inside one critical section. That is what makes the delete-versus-
+/// drain race have two outcomes instead of three: whichever of the two reaches
+/// the run loop's single `select!` first sees the queue the other has not
+/// touched yet.
+pub fn apply_mutation(
+    queue: &mut VecDeque<QueueEntry>,
+    mutation: &QueueMutation,
+) -> MutationResult {
+    let entry_id = mutation.entry_id();
+    let index = locate_entry(queue, entry_id, mutation.if_entry_rev())?;
+
+    let (change, rev, text, removed) = match mutation {
         QueueMutation::Edit { text: new_text, .. } => {
             let QueueEntry::User { text, rev, .. } = &mut queue[index] else {
                 unreachable!("an entry matched by id is a User entry")
@@ -646,7 +707,12 @@ pub fn apply_mutation(
             // any other client's in-flight write against the old rev is now
             // stale and gets a 409 instead of overwriting this one.
             *rev = rev.saturating_add(1);
-            (HarnessQueueChange::Edited, *rev, Some(new_text.clone()))
+            (
+                HarnessQueueChange::Edited,
+                *rev,
+                Some(new_text.clone()),
+                None,
+            )
         }
         QueueMutation::Delete { .. } => {
             let removed = queue.remove(index).expect("index came from this queue");
@@ -654,7 +720,15 @@ pub fn apply_mutation(
                 .user_view()
                 .expect("an entry matched by id is a User entry")
                 .rev;
-            (HarnessQueueChange::Deleted, rev, None)
+            (HarnessQueueChange::Deleted, rev, None, None)
+        }
+        QueueMutation::Steer { .. } => {
+            let removed = queue.remove(index).expect("index came from this queue");
+            let rev = removed
+                .user_view()
+                .expect("an entry matched by id is a User entry")
+                .rev;
+            (HarnessQueueChange::Steered, rev, None, Some(removed))
         }
     };
 
@@ -663,6 +737,7 @@ pub fn apply_mutation(
         change,
         rev,
         text,
+        removed,
         queue_now_empty: queue.is_empty(),
         // Recomputed over what is LEFT, not patched. An edit cannot change the
         // answer (the entry stays, and it was hard-fire before and after), but
@@ -1293,5 +1368,154 @@ mod tests {
             try_fold_tail(&mut queue, &user("hi"), 4 * 32_768),
             FoldOutcome::NotFolded
         );
+    }
+
+    // #1625 P3 — `Steer` is a delete that hands the entry back. The
+    // compare-and-swap is the same one the other two arms run, so each refusal
+    // below is pinned on the steer arm rather than assumed from the delete's.
+
+    #[test]
+    fn a_steer_takes_the_entry_out_and_hands_it_back() {
+        let mut queue = VecDeque::from(vec![user("first"), user("second"), user("third")]);
+        let target = queue[1].clone();
+        let entry_id = target.id().cloned().expect("user entry has an id");
+
+        let applied = apply_mutation(
+            &mut queue,
+            &QueueMutation::Steer {
+                entry_id: entry_id.clone(),
+                if_entry_rev: 0,
+            },
+        )
+        .expect("applies");
+
+        assert_eq!(applied.change, HarnessQueueChange::Steered);
+        assert_eq!(applied.entry_id, entry_id);
+        assert_eq!(applied.rev, 0);
+        assert_eq!(applied.text, None);
+        assert_eq!(
+            applied.removed.as_ref(),
+            Some(&target),
+            "the caller gets the same instance, id and rev included"
+        );
+        assert!(!applied.queue_now_empty);
+        assert!(
+            applied.remaining_hard_fire,
+            "two user entries are still waiting"
+        );
+        assert_eq!(queue.len(), 2);
+        assert!(
+            queue.iter().all(|entry| entry.id() != Some(&entry_id)),
+            "and it is no longer in the queue"
+        );
+    }
+
+    /// #1625 P3 review round 2 — the restore's CAS bump, on the one variant
+    /// that carries a rev. The entry the sweep hands back is the instance
+    /// the steer took (same id, same text, same message ids), one rev up.
+    #[test]
+    fn a_restore_bumps_the_rev_of_a_user_entry_and_nothing_else() {
+        let mut entry = user("came back");
+        let before = entry.clone();
+        entry.bump_rev_for_restore();
+        let (Some(was), Some(now)) = (before.user_view(), entry.user_view()) else {
+            panic!("a user entry has a user view");
+        };
+        assert_eq!(now.rev, was.rev + 1, "the CAS token moved");
+        assert_eq!(now.id, was.id, "the same instance");
+        assert_eq!(now.text, was.text, "the same text");
+        assert_eq!(entry.message_ids(), before.message_ids());
+
+        let mut legacy = QueueEntry::legacy_user("older".into(), None, Vec::new());
+        let legacy_before = legacy.clone();
+        legacy.bump_rev_for_restore();
+        assert_eq!(legacy, legacy_before, "no rev to move");
+    }
+
+    #[test]
+    fn a_steer_against_a_stale_rev_is_refused_and_changes_nothing() {
+        let mut queue = VecDeque::from(vec![user("keep")]);
+        let entry_id = queue[0].id().cloned().expect("user entry has an id");
+        if let QueueEntry::User { rev, .. } = &mut queue[0] {
+            *rev = 2;
+        }
+
+        let refused = apply_mutation(
+            &mut queue,
+            &QueueMutation::Steer {
+                entry_id: entry_id.clone(),
+                if_entry_rev: 1,
+            },
+        )
+        .expect_err("stale rev");
+
+        assert_eq!(
+            refused,
+            MutationRefused::Stale {
+                entry_id,
+                text: "keep".into(),
+                rev: 2,
+            }
+        );
+        assert_eq!(queue.len(), 1, "a refused steer removes nothing");
+    }
+
+    #[test]
+    fn a_steer_of_an_unknown_id_is_not_found_and_a_delete_hands_nothing_back() {
+        let mut queue = VecDeque::from(vec![user("only")]);
+        let entry_id = queue[0].id().cloned().expect("user entry has an id");
+        assert_eq!(
+            apply_mutation(
+                &mut queue,
+                &QueueMutation::Steer {
+                    entry_id: QueueEntryId::from_wire("no-such-entry".into()),
+                    if_entry_rev: 0,
+                },
+            ),
+            Err(MutationRefused::NotFound)
+        );
+        assert_eq!(queue.len(), 1);
+
+        // The paired negative for `removed`: a delete must never hand the
+        // entry to anything that could deliver it.
+        let applied = apply_mutation(
+            &mut queue,
+            &QueueMutation::Delete {
+                entry_id,
+                if_entry_rev: 0,
+            },
+        )
+        .expect("applies");
+        assert_eq!(applied.change, HarnessQueueChange::Deleted);
+        assert_eq!(applied.removed, None);
+        assert!(applied.queue_now_empty);
+    }
+
+    #[test]
+    fn locate_entry_answers_the_same_refusals_without_writing() {
+        let mut queue = VecDeque::from(vec![user("a"), user("b")]);
+        let entry_id = queue[1].id().cloned().expect("user entry has an id");
+        assert_eq!(locate_entry(&queue, &entry_id, 0), Ok(1));
+        assert_eq!(
+            locate_entry(&queue, &entry_id, 3),
+            Err(MutationRefused::Stale {
+                entry_id: entry_id.clone(),
+                text: "b".into(),
+                rev: 0,
+            })
+        );
+        assert_eq!(
+            locate_entry(&queue, &QueueEntryId::from_wire("nope".into()), 0),
+            Err(MutationRefused::NotFound)
+        );
+        // Two entries with one id is refused rather than resolved, exactly as
+        // `apply_mutation` refuses it.
+        let twin = queue[1].clone();
+        queue.push_back(twin);
+        assert_eq!(
+            locate_entry(&queue, &entry_id, 0),
+            Err(MutationRefused::AmbiguousId { entry_id, count: 2 })
+        );
+        assert_eq!(queue.len(), 3, "a locate never writes");
     }
 }

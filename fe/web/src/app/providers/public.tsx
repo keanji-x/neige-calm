@@ -25,8 +25,12 @@ import styles from './preflight-status.module.css';
  * must refresh before parsing the new block shape.
  * 26 -> 27: MCP JSON setup depends on headers/tools_all and the Check endpoint;
  * a bundled frontend must not install through a v26 server that ignores them.
+ * 27 -> 28: #1625 P3 adds `restored` to `harness.queue.changed`. A v27
+ * bundle's event union rejects the frame and `reduceEventFrame` skips a
+ * rejected frame without invalidating the queue, so it keeps showing a
+ * restored entry as sent; the curtain is what stops it.
  */
-export const WEB_COMPAT_VERSION = 27;
+export const WEB_COMPAT_VERSION = 28;
 export type ServerVersionInfo = Readonly<{ webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;

@@ -473,10 +473,12 @@ golden_test!(
 );
 
 // #1505 PR2. `change` is `deleted` here because that is the branch this golden
-// exercises; `edited` and `dropped` (PR2b, the kernel's load-time truncation)
-// are also emitted, and `steered` has no emitter until PR3, so this golden does
-// not demonstrate every branch being produced — the four spellings are pinned
-// separately by
+// exercises; `edited`, `dropped` (PR2b, the kernel's load-time truncation),
+// `steered` (#1625 P3, a queued entry taken into the running turn) and
+// `restored` (the same entry back in the queue: codex refused or never
+// answered, or its turn ended before codex recorded it) are also emitted, so
+// this golden does not demonstrate every branch being produced — the five
+// spellings are pinned separately by
 // `calm_types::event::tests::harness_queue_change_wire_spellings`.
 golden_test!(
     harness_queue_changed,

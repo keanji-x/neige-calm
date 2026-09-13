@@ -1186,6 +1186,39 @@ describe('plannerQueueWriteFailure', () => {
     )).toEqual({ kind: 'gone' });
   });
 
+  /* #1625 P3 — the steer's own 409. Not `stale` (there is no winning text to
+     retry against) and not `gone` (the message has not left): the entry is
+     exactly where it was, and only the body's code says so. */
+  it('reads the steer refusal as the entry still waiting, and nothing else as it', () => {
+    expect(plannerQueueWriteFailure({
+      kind: 'http', status: 409, code: 'planner_steer_no_running_turn', message: 'no turn',
+      body: { error: 'no turn', code: 'planner_steer_no_running_turn', entry_id: 'e1', phase: 'idle' },
+    }, 'fallback')).toEqual({ kind: 'not_running' });
+    /* A 409 whose body carries another code is not it, whatever the status. */
+    expect(plannerQueueWriteFailure({
+      kind: 'http', status: 409, code: 'conflict', message: 'shutting down',
+      body: { error: 'shutting down', code: 'conflict' },
+    }, 'fallback')).toEqual({ kind: 'failed', message: 'fallback' });
+  });
+
+  /* #1625 P3 review round 1 — the steer's other 409: codex never answered,
+     so the kernel cannot say whether the turn took the message. Its own kind,
+     because `not_running` would let the strip say "nothing happened". */
+  it('reads a timed-out steer as unanswered, distinct from the entry still waiting', () => {
+    expect(plannerQueueWriteFailure({
+      kind: 'http', status: 409, code: 'planner_steer_unknown_outcome', message: 'timed out',
+      body: {
+        error: 'codex did not answer in time', code: 'planner_steer_unknown_outcome',
+        entry_id: 'e1', phase: 'turn_running',
+      },
+    }, 'fallback')).toEqual({ kind: 'unanswered' });
+    /* The same code on any other status is not it. */
+    expect(plannerQueueWriteFailure({
+      kind: 'http', status: 500, code: 'planner_steer_unknown_outcome', message: 'boom',
+      body: { error: 'boom', code: 'planner_steer_unknown_outcome' },
+    }, 'fallback')).toEqual({ kind: 'failed', message: 'fallback' });
+  });
+
   it('reports anything else as an unexplained failure', () => {
     expect(plannerQueueWriteFailure(
       { kind: 'http', status: 500, code: 'internal', message: 'boom', body: null }, 'fallback',

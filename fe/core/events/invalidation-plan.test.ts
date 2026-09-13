@@ -272,8 +272,9 @@ describe('invalidation plan behavior', () => {
       ['harness-items', 'card-1'], ['planner-run', 'card-1'],
       ['track-conversations', 'track-1'],
     ]);
-    // #1505 PR2. `harness-items` is for the `steered` value, which nothing
-    // emits until PR3; the other three values do not add a transcript row.
+    // #1505 PR2. `harness-items` is for the `steered` value (#1625 P3), whose
+    // delivery adds a transcript row, and for `restored`, whose completion
+    // sweep deletes it again; the other three values do not touch it.
     expect(planned('harness.queue.changed')).toEqual([
       ['planner-run', 'card-1'], ['harness-items', 'card-1'],
       ['track-conversations', 'track-1'],

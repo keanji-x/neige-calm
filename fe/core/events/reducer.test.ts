@@ -28,6 +28,47 @@ describe('event reducer behavior', () => {
     expect(result.effects).toEqual([{ type: 'persist-cursor', id: 10 }]);
   });
 
+  /*
+   * #1625 P3 review round 2 — what an OLD bundle does with a `harness.queue.changed`
+   * value it does not know, played against this bundle with a value none
+   * knows. The union is strict: the frame is rejected, the cursor moves past
+   * it, and the queue is not invalidated — the same shape as the malformed
+   * case above, and the reason adding a value to this enum (`restored`,
+   * this slice) moves `WEB_COMPAT_VERSION` rather than trusting a running
+   * bundle to cope: a v27 bundle left running against a v28 kernel would
+   * keep showing a restored entry as sent. This pins the contract for the
+   * next value, too — a value is a floor bump, not a tolerated unknown.
+   */
+  it('skips a harness.queue.changed frame whose change value this bundle does not know, invalidating nothing', () => {
+    const result = reduceEventFrame(
+      { cursor: 9, syncEventVersion: 3 },
+      readyFrame({
+        ev: 'harness.queue.changed',
+        data: {
+          worker_session_id: 'rt', card_id: 'card-1', track_id: 'w1', entry_id: 'entry-9',
+          change: 'not-a-value-any-bundle-knows', actor: { kind: 'Kernel' },
+        },
+        _id: 10, eventVersion: 3,
+      }),
+    );
+    expect(result.state.cursor).toBe(10);
+    expect(result.effects).toEqual([{ type: 'persist-cursor', id: 10 }]);
+    /* The paired green: the value this slice added is decoded and refetches the queue. */
+    const restored = reduceEventFrame(
+      { cursor: 10, syncEventVersion: 3 },
+      readyFrame({
+        ev: 'harness.queue.changed',
+        data: {
+          worker_session_id: 'rt', card_id: 'card-1', track_id: 'w1', entry_id: 'entry-9',
+          change: 'restored', actor: { kind: 'Kernel' },
+        },
+        _id: 11, eventVersion: 3,
+      }),
+    );
+    expect(restored.effects.some((effect) => effect.type === 'invalidate'
+      && effect.keys?.some((key) => key[0] === 'planner-run' && key[1] === 'card-1'))).toBe(true);
+  });
+
   it('turns control frames into pure cache and reconnect effects', () => {
     const replay = reduceEventFrame(
       { cursor: 20, syncEventVersion: 3 },

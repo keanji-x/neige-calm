@@ -268,6 +268,29 @@ export interface paths {
         patch: operations["edit_planner_input"];
         trace?: never;
     };
+    "/api/cards/{id}/planner/input/{entry_id}/steer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * #1625 P3 — the third verb on the entry, kept beside PATCH/DELETE rather than
+         *     behind the operation adapter for the reason the module header gives for
+         *     those two: `run_planner_card_operation` flattens every failure to a class
+         *     and a message, and the two typed 409s this route answers with would not
+         *     survive it.
+         */
+        post: operations["steer_planner_input"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cards/{id}/planner/interrupt": {
         parameters: {
             query?: never;
@@ -2877,6 +2900,56 @@ export interface components {
              */
             used_tokens: number;
         };
+        /**
+         * @description #1625 P3 review round 1 — the steer route's 409, which has two typed
+         *     shapes told apart by `code`: `PlannerInputStaleBody` (`planner_input_stale`,
+         *     the compare-and-swap lost; carries the entry's current text and rev) and
+         *     `PlannerSteerRefusedBody` (`planner_steer_no_running_turn` /
+         *     `planner_steer_unknown_outcome`, the entry is still queued). utoipa binds
+         *     one body per status, so the pair is declared as this untagged union; the
+         *     stale arm is produced by `refusal_response`, shared with PATCH/DELETE, and
+         *     the refused arm by `steer_refused_response`. A third 409, the harness
+         *     shutting down, is a plain `ErrorBody` with code `conflict`.
+         */
+        PlannerSteerConflictBody: components["schemas"]["PlannerInputStaleBody"] | components["schemas"]["PlannerSteerRefusedBody"];
+        /**
+         * @description #1625 P3 — 409 body for a steer that delivered nothing, or nothing known.
+         *
+         *     Two codes. `planner_steer_no_running_turn` covers both ways of KNOWING
+         *     nothing was delivered — the harness saw no running turn and did not ask,
+         *     or codex was asked and said no (the turn had just ended, or a different
+         *     one was running) — because they license the same next move and nothing
+         *     else: the message is still queued, with the `rev` the client read, and it
+         *     goes with the next turn. `planner_steer_unknown_outcome` (review round 1)
+         *     is codex NOT answering — the request timed out or the connection dropped
+         *     — where the message is queued again just the same but may ALSO have
+         *     reached the turn; it is its own code because "nothing happened" would be
+         *     a claim this side cannot make. `error` says which, for the person reading
+         *     the notice; `phase` is the harness's own phase at the moment it answered.
+         */
+        PlannerSteerRefusedBody: {
+            /** @description `planner_steer_no_running_turn` or `planner_steer_unknown_outcome`. */
+            code: string;
+            entry_id: string;
+            error: string;
+            phase: components["schemas"]["HarnessPhaseTag"];
+        };
+        /**
+         * @description #1625 P3 — what a steer answers on success: codex has the message inside
+         *     `turn_id`, and the entry is no longer in the queue.
+         */
+        PlannerSteerResponse: {
+            card_id: string;
+            entry_id: string;
+            /**
+             * @description Always `true` on a 200, in the shape of `POST /planner/interrupt`'s
+             *     `stopped`: the refusals are typed 409s, never a `false` here.
+             */
+            steered: boolean;
+            /** @description The turn that took the message — the one that was running. */
+            turn_id: string;
+            worker_session_id: string;
+        };
         Plugin: {
             enabled: boolean;
             id: string;
@@ -3206,6 +3279,16 @@ export interface components {
             /** Format: int64 */
             docRev: number;
             taskKey: string;
+        };
+        /**
+         * @description #1625 P3 — body of `POST …/{entry_id}/steer`. The same compare-and-swap
+         *     token as the delete, for the same reason: "send the message I read" is a
+         *     precondition on the text, and a steer that ignored it could deliver a
+         *     sentence somebody else had just rewritten.
+         */
+        SteerPlannerInputBody: {
+            /** Format: int32 */
+            if_entry_rev: number;
         };
         TaskArtifactFileResponse: {
             attemptId: string;
@@ -5286,6 +5369,89 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlannerInputStaleBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Harness command channel saturated — retry shortly */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    steer_planner_input: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Planner card id */
+                id: string;
+                /** @description Pending queue entry id from `GET /planner/run` */
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SteerPlannerInputBody"];
+            };
+        };
+        responses: {
+            /** @description The entry left the queue and codex took it into the running turn */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlannerSteerResponse"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not `X-Calm-Actor: user`, or the card is not a planner codex card */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card not found, or the entry is no longer in the pending queue */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description By `code`: `planner_input_stale`; `planner_steer_no_running_turn`; `planner_steer_unknown_outcome`; `conflict` (shutting down) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlannerSteerConflictBody"];
                 };
             };
             /** @description Internal error */
