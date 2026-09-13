@@ -1,16 +1,18 @@
-# 声明式图表 `chart.series`（#1628）— 设计 v3
+# 声明式图表 `chart.series`（#1628）— 设计 v4
 
-基线：`origin/main` = `c534bf6b`（工作树 `feat/report-chart-series`）。所有 file:line 都在该基线上实测（[实测]），未核实的写 "未核实"。v1 → v2 → v3 的每条改动登记在 §11。
+基线：`origin/main` = `c534bf6b`（工作树 `feat/report-chart-series`）。所有 file:line 都在该基线上实测（[实测]），未核实的写 "未核实"。v1 → v2 → v3 → v4 的每条改动登记在 §11。
 
 **v2 的模型变化（用户 2026-09-12 拍板）**：解析是**后台任务**，`calm.report.read` 与浏览器只读**已存储的行**，读路径上永不调用插件。需要即时数据时 Planner 自己调 `market.series`。
 
 **v3 的模型变化（编排者 2026-09-13 裁决）**：**解析的唯一触发是读**。v2 的 bus 订阅者被第 2 轮证明拿不到块 id（`TrackReportEdited` 只带平铺 `body_after`，`BlockSlice` 只有 `raw`，F3.6/F1.11），且 bus 有损、无重放、无启动扫描；与其让订阅者再去加载权威块，不如删掉它。写路径什么都不做；`calm.report.read` 与 HTTP GET 读到无行 / 过期行时 `enqueue`。理由：读者兜底本来就是保证，订阅者只是优化；Planner 每轮都 read（CAS 必经，F3.3），人打开报告时浏览器 `pending` 轮询 3s，两个读者都会在几秒内触发。同时 v3 修正了第 1 轮两条被证伪的处置（超时泄漏"上界为 1"、2 MiB "内存上界"），把 `as_of` 改为**截止日**语义并用 `complete_through` 做钉住判据，删掉写端的时钟检查。
 
+**v4 的修正（编排者 2026-09-13 第 3 轮裁决）**：两通道各自独立发现 v3 的 `complete_through` 模型有两处缺陷：(1) 「插件总是拉最新 N 根再按 `as_of` 过滤」本身就是缺陷——旧 `as_of` 的 frozen 块被永久钉在截断的窗口上或永远 `unavailable`；v4 把 `range` 定义为**相对截止日的窗口** `[as_of − RANGE_DAYS, as_of]`，插件按窗口取数（spike 证实源支持 start/end），`complete_through` 来自单独一次探测。(2) `complete_through >= as_of` 在相等时钉住的是一根内核无法证明已收盘的 bar（Binance 必然返回当前未收盘日 K [实测]）；v4 改**严格 `complete_through > as_of`**，且 `complete_through` 定义为源未过滤的最新**日线** bar 日期、与 `period` 无关。另：周/月线只输出周期结束日 ≤ 截止日的完整周期；路由预检未命中的一次性任务携带否定结果、不再二次查找；lane 通道改 unbounded 且检查-重建-投递在锁内；§2.8 保证语句改写为带例外清单。
+
 ## 1. 目标与非目标
 
-**目标。** 让投研报告里的图表只*命名*数据与视图：Planner / 人写一个 `chart.series` 块（`{series, field, range, view, as_of?}`），内核在块被**读到**且无结果时投一个后台任务向 market 插件解析"资产 × 字段 × 区间 → 序列"并把结果存成一行；内核对每个这样的块提供两态（`as_of` 缺席 = live，截止日 = 解析时的昨天 UTC，按 TTL 随源流动；`as_of` 存在 = frozen，截止日 = `as_of`，源发布到截止日后钉住）；`calm.report.read` 对数据块返回存储行的 `resolved` 摘要（默认）或原始序列（按块显式要），read 是纯 DB 读、永不因插件失败而失败；前端 fe/ 用现有 SVG 路线画 line / normalized / bar / candles；钉住的行对人与 AI 字节相等。
+**目标。** 让投研报告里的图表只*命名*数据与视图：Planner / 人写一个 `chart.series` 块（`{series, field, range, view, as_of?}`），内核在块被**读到**且无结果时投一个后台任务向 market 插件解析"资产 × 字段 × 区间 → 序列"并把结果存成一行；内核对每个这样的块提供两态（`as_of` 缺席 = live，截止日 = 解析时的昨天 UTC，按 TTL 随源流动；`as_of` 存在 = frozen，截止日 = `as_of`，源发布出**晚于**截止日的日线 bar 后钉住）；`calm.report.read` 对数据块返回存储行的 `resolved` 摘要（默认）或原始序列（按块显式要），read 是纯 DB 读、永不因插件失败而失败；前端 fe/ 用现有 SVG 路线画 line / normalized / bar / candles；钉住的行对人与 AI 字节相等。
 
-**非目标。** 不在正文里发明宏语法；不给内核加行情源（数据仍由插件解析）；不把 `chart.candles` 的已存文档做数据迁移；不给 legacy `web/` 加新渲染器（它按现有规则显示 `unsupported block kind chart.series`，见 §4 D5）；不做缩放/联动/图表库懒加载；不做盘中序列（live 截止日 = 昨天 UTC，D2）；不做跨币种换算（每条序列自带 `currency`，normalized 视图天然可比，line 视图按原值画并标币种）；**不承诺 read 即时、不承诺有界新鲜度**（§2.8）；不在写时触发解析；不加固 MCP 传输层字节上界（#1634）。
+**非目标。** 不在正文里发明宏语法；不给内核加行情源（数据仍由插件解析）；不把 `chart.candles` 的已存文档做数据迁移；不给 legacy `web/` 加新渲染器（它按现有规则显示 `unsupported block kind chart.series`，见 §4 D5）；不做缩放/联动/图表库懒加载；不做盘中序列（live 截止日 = 昨天 UTC，D2）；不做跨币种换算（每条序列自带 `currency`，normalized 视图天然可比，line 视图按原值画并标币种）；**不承诺 read 即时、不承诺有界新鲜度**（§2.8）；不在写时触发解析；不加固 MCP 传输层字节上界（#1634）；不输出未完成的周/月周期（D2）；不在截止日当天钉住（严格 `>`，D3）。
 
 ## 2. 事实表
 
@@ -64,7 +66,7 @@
 | F3.6 | 报告写入走 `write_with_actor_events_typed`，calm-truth 在 `tx.commit().await?` **之后**逐条 `bus.emit_envelope`；`Event::TrackReportEdited` 带 `track_id, card_id, author, edit_id, summary_before/after, body_before, body_after: String`——**平铺文本，无块 id 列表** | [实测] `track_report/write.rs:832-880`；`calm-truth/src/db/sqlite/events.rs:787-789`；`calm-types/src/event.rs:579-597` |
 | F3.7 | 事务外后台反应的既有形状：`bus.subscribe()` + 自己的 `tokio::spawn` 循环，`RecvError::Lagged` 只 warn 继续（bus 是 lossy 的 `broadcast`；`subscribe()` 只收订阅之后的信封，无重放） | [实测] `card_fsm.rs:350-364`；`dispatcher/mod.rs:1118-1127`（poke scheduler）；`calm-truth/src/event_bus.rs:109-131`、`:185-189` |
 | F3.8 | 报告块快照在事务内可读：`report_blocks_snapshot_tx(tx, track_id)` | [实测] `track_report.rs:73` |
-| F3.9 | `Event::TrackReportEdited { .. }` 的**生产构造点只有一处** `track_report/write.rs:1098`（`grep -rn "TrackReportEdited" crates/calm-server/src --include='*.rs'` 共 7 处：`write.rs:1098` 构造；`dispatcher/mod.rs:117/1142/1646` 与 `decision_sink.rs:1220` 是 match 消费；`track_report.rs:322`、`contracts.rs:506` 是描述文字）。模板（F2.5）、fork（F2.6）、recipe（F2.7）写入不经 `write.rs` 的这条路径——v2 订阅者对它们本就只能靠读者兜底 | [实测] |
+| F3.9 | `Event::TrackReportEdited { .. }` 的**生产构造点只有一处** `track_report/write.rs:1098`（`grep -rn "TrackReportEdited" crates/calm-server/src --include='*.rs' | wc -l` = **26** [实测 2026-09-13]：`grep -rn "Event::TrackReportEdited {" crates/calm-server/src --include='*.rs' | grep -v tests.rs` = 5 处 = `write.rs:1098` 构造 + 4 处 match 消费（`dispatcher/mod.rs:117/1142/1646`、`decision_sink.rs:1220`）；`dispatcher/tests.rs:162/682/1053/1596` 是测试构造；其余 17 处是 doc 注释与描述文字。v3 写的「共 7 处」是错的，§11 A m6）。模板（F2.5）、fork（F2.6）、recipe（F2.7）写入不经 `write.rs` 的这条路径——v2 订阅者对它们本就只能靠读者兜底 | [实测] |
 
 ### 2.4 overlay 机制与内核↔插件调用面
 
@@ -112,7 +114,24 @@
 | 新浪港股 | `.../hkstock/api/json_v2.php/HK_MinKService.getDailyK?symbol=09988` | hk | `{"__ERROR":3,"__ERRORMSG":"Service not valid"}` — 不可用 |
 | Binance | `https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=2` | crypto | 200，标准 klines 数组 |
 
-S3 约束：腾讯 ifzq 为股票三市场主源（单端点、显式条数、复权；解析时 `qfqday`/`day` 两个键都要认、列序按 o,c,h,l,v 重排、按日期过滤）；Binance klines 为 crypto；新浪只作 A 股/美股兜底，**港股无兜底**（登记 G9，与 #1556 D3″ 同形）。插件**总是拉最新 N 根再按 `as_of` 过滤**，所以它知道源未过滤的最新 bar 日期——这就是 `complete_through`（D2）。
+
+**按截止日取窗口 [实测 2026-09-13 编排者]**（本机直连、无代理、UA=Mozilla/5.0；第 3 轮 spike，回答 A M1 / codex R3-2 的「源能否按窗口取」）：
+
+| 调用 | 结果 | 含义 |
+|---|---|---|
+| ifzq `usNVDA,day,,2026-03-10,3,qfq`（只给 end） | 只回 2011-06-02 那一行基准 | **只给 end 不可用**（美股），必须 start+end 都给 |
+| ifzq `hk09988,day,2026-03-01,2026-03-10,50,qfq`（start+end） | 7 根，2026-03-02 … 2026-03-10 | **按窗口取可用**，行数以窗口内交易日为准 |
+| ifzq `sh600519,day,,,1300,qfq`（要 1300 根） | 只回 640 根（2024-01-22 … 2026-09-11） | **单次上限约 640 根**；5Y 日线（≈1260）必须按 start/end 分页 |
+| ifzq `usNVDA,week,,,3,qfq` / `month` | 各只回 1 行（2026-09-11） | **周/月端点不可用**（只给当前一根，且日期是最新日线日期）；周/月线由插件从日线自聚合 |
+| Binance `klines?...&endTime=1772000000000&limit=2` | 2 根，都 ≤ endTime | `endTime` 可用；`startTime` 同理（Binance 文档，本次未测） |
+| Binance `klines?symbol=BTCUSDT&interval=1d&limit=2`（不带 end）[实测 2026-09-13 02:39 UTC 修订者] | 末根 `closeTime` 在未来 | **不带 end 的探测必然含当前未收盘日 K**（A M2 的断言成立）；`complete_through` = 今天，严格 `>` 判据下无害 |
+
+S3 约束（v4 按第 3 轮 spike 重写）：腾讯 ifzq 为股票三市场主源（单端点、复权；解析时 `qfqday`/`day` 两个键都要认、列序按 o,c,h,l,v 重排、按日期过滤）；Binance klines 为 crypto；新浪只作 A 股/美股兜底，**港股无兜底**（登记 G9，与 #1556 D3″ 同形）。取数规则：
+
+1. **窗口显式**：请求带内核算好的 `start`（= `as_of − RANGE_DAYS[range]`，D1）与 `as_of`；插件向源要 `[start − SERIES_FETCH_MARGIN_DAYS(=14), as_of]`（ifzq 给 start+end 两个日期；Binance 给 `startTime`/`endTime`），再过滤到 `[start, as_of]`。单次超过约 600 根就按日期分页拼接（去重按日期）。**不再「拉最新 N 根再过滤」**——那句话是 v3 的缺陷本身（§11 第 3 轮交叉命中 1）。
+2. **`complete_through` 来自单独一次探测**：不带 start/end 的「最新 2 根」调用（ifzq 首行可能是复权基准行 U6，取日期最大者；Binance `limit=2` 末根是当前未收盘 K 线，日期即今天），取其最新**日线** bar 日期。与 `period` 无关：周/月请求的 `complete_through` 也是这个日线日期。
+3. **周/月线由插件从日线聚合**（源端周/月端点不可用）：ISO 周（周一至周日）/ 自然月，UTC 日期；只输出 `period_start ≥ start ∧ period_end ≤ as_of` 的**完整周期**；`ts_ms` = 周期起始日（周一 / 1 日）UTC 零点；聚合值 open = 首日 open、high = max、low = min、close = 末日 close、volume = sum；未完成周期永不出现。周期的「完整」按历法（周期结束日 ≤ 截止日），不要求源已发布到周期结束日（周日不是交易日）。
+4. **超出源深度**：分页向前直到覆盖 `start − SERIES_FETCH_MARGIN_DAYS` 或某页返回零根；若得到的最早 bar 日期 > `start + SERIES_FETCH_MARGIN_DAYS` → 该条 `unavailable, reason:"lookback exceeds source depth"`（插件分不清「源没那么深」与「标的上市/复牌晚于窗口起点」，两者同落此态，登记 G18）。
 
 ### 2.6 前端
 
@@ -143,13 +162,13 @@ S3 约束：腾讯 ifzq 为股票三市场主源（单端点、显式条数、�
 
 ### 2.8 简化假设（用户："水合只需要给一个够用的简化就行"）
 
-- 只做日线及以上（`period ∈ day/week/month`），不做盘中：**live 的截止日是解析时的昨天 UTC**，当天的 bar 永远不进 live 行（D2）。
+- 只做日线及以上（`period ∈ day/week/month`），不做盘中：**live 的截止日是解析时的昨天 UTC**，当天的 bar 永远不进 live 行（D2）。周/月线只含周期结束日 ≤ 截止日的完整周期：**live 周线最多滞后一周、月线最多滞后一个月**（截止日落在周期中间时，该周期不出现）。
 - **解析在写后的第一次读触发，不在写时触发；写完立刻读到的是 `pending`。** 触发点只有两个读者（`calm.report.read`、HTTP GET），写路径不做任何事。
-- **保证语句**：一个块在被读过之后，其 job 在该插件队列里排到时至多 30s（`tokio::time::timeout(SERIES_RESOLVE_TIMEOUT)`，D2 步骤 5）得到一行（`ok` 或 `unavailable`）；队列延迟 = 排在前面的 job 数 × 各自 ≤ 30s。**从未被读的块不解析。不承诺有界新鲜度**：过期行要等下一次读才重投，浏览器停轮询后过期行可见到下一次 fetch。
-- 解析失败不重试风暴：失败行也按同一 TTL 才再投；同一键同一时刻至多一个任务（in-flight 去重）；job 出队时行已新鲜或已钉住 → 丢弃（drain 准入，D2 步骤 1）。
+- **保证语句（带例外清单，§11 第 3 轮 codex R3-MINOR-1）**：一个块被读过之后，其 job 在该插件 lane 里排到时，`tools_call` 至多 30s（`tokio::time::timeout(SERIES_RESOLVE_TIMEOUT)`，D2 步骤 5）返回或超时，之后**一次写行**得到 `ok` 或 `unavailable`；lane 延迟 = 排在前面的 job 数 × 各自 ≤ 30s（+ 每 job 一次短事务准入与写行）。**例外**（都以「下一次读重投」收口，不另加机制）：(a) 步骤 7 写行失败（FK、IO）→ 无行，warn，键释放；(b) drain 任务 panic → 该 lane 队列里的 job 随 receiver drop 丢失、键释放；(c) `enqueue` 在 `lanes` 锁内替换了一条 lane → 被替换 lane 队列里的 job 同 (b)；(d) 路由预检未命中的一次性任务写的是预检时刻的 `unavailable`（插件之后启动也要等 TTL + 下一次读）。**从未被读的块不解析。不承诺有界新鲜度**：过期行要等下一次读才重投，浏览器停轮询后过期行可见到下一次 fetch。
+- 解析失败不重试风暴：失败行也按同一 TTL 才再投；同一键同一时刻至多一个任务（in-flight 去重）；job 出队时行已新鲜或已钉住 → 丢弃（drain 准入，D2 步骤 1）。**TTL 是时长不是日历**：23:59 写入的行 00:01 仍新鲜，「过夜后第一次打开」只在距上次解析 ≥ 6h 时才刷新。
 - 人与 AI 读同一行：摘要在写入行时由同一个 Rust 函数算好存下，两个读者只做序列化。**钉住的行**任何两个读者任何时刻字节相等；**未钉住的行**同一次读拿到同一行、两次读之间可被后台刷新替换，`resolved_at` 暴露这一点（D3）。
 - 行写入不发事件：浏览器在 `pending` 时短轮询，其它时候靠既有失效与刷新（D5）。
-- 内核不理解 venue、不理解交易日历、不做复权声明；这些归插件源。内核只比较日期字符串与 `ts_ms` 整数。
+- 内核不理解 venue、不理解交易日历、不做复权声明；这些归插件源。内核只比较日期字符串与 `ts_ms` 整数，外加历法算术（`start = as_of − RANGE_DAYS`、ISO 周一 / 月首末日，calm-server 的 `chrono`，F7.7）——历法不是交易日历。
 
 ## 3. Oracle trace
 
@@ -160,16 +179,19 @@ Planner 写 `chart.series` → 内核校验落盘（不触发任何事）→ 某
 | 1 | discover | Planner | `calm.report.blocks.kinds` | 返回含 `chart.series` 的 kinds 表 | 无 | `upsert.kind.enum == commit.ops.kind.enum == kinds_table.kinds`（`contracts.rs:695-711`） | ⚠️ | S1 |
 | 2 | write | Planner | `calm.report.commit{ops:[{op:"upsert", kind:"chart.series", payload:{source:"neige://plugin/dev-neige-market/market.series", series:["US:NVDA","HK:9988"], view:"normalized", range:"1Y"}}], if_doc_rev, message}` | `validate_payload` 通过 → canonical fence 落盘，docRev+1；**事务里不调插件、不写 `report_series`、不 enqueue** | `CardUpdated` + `TrackReportEdited` 恰好各一 | `flatten(split_body(body))==body`；`parse_fence` 回同 payload；假插件 tools/call 计数 0 | ⚠️ | S1 |
 | 2n | write-neg | Planner | 同上但 `series:["NVDA"]`（无 venue）/ 9 条 / `view:"candles"` 配 2 条 / `source:"https://…"` / `as_of:"2026/09/10"`（形状错） | `-32602` 字段级错误；不写不发事件 | 无 | 拒绝发生在 `validate_chart_series`（纯形状，无时钟），F2 的 9 个入口都经它 | ⚠️ | S1 |
-| 3 | resolve | 内核任务 | drain 任务取出 job：准入（重读块、hash 仍等于当前 payload、行不存在或已过期且未钉住）→ `plugin_tool_entry` 命中 → `connector_client` 为本地变体 → `timeout(30s, tools_call("market.series", args{…, as_of, deadline_ms}, Some(track_id)))` | 回复通过校验清单 → 事务内 `INSERT … ON CONFLICT DO UPDATE … WHERE pinned=0` 一行 `status=ok`，`summary` 算好存下 | 无 | 同一 `(track,block,hash)` 同一时刻至多一个任务；写入受 FK 约束 | ⚠️ | S2 |
+| 3 | resolve | 内核任务 | drain 任务取出 job：准入（重读块、hash 仍等于当前 payload、行不存在或已过期且未钉住）→ `plugin_tool_entry` 命中 → `connector_client` 为本地变体 → `timeout(30s, tools_call("market.series", args{…, start, as_of, deadline_ms}, Some(track_id)))` | 回复通过校验清单 → 事务内 `INSERT … ON CONFLICT DO UPDATE … WHERE pinned=0` 一行 `status=ok`，`summary` 算好存下 | 无 | 同一 `(track,block,hash)` 同一时刻至多一个任务；写入受 FK 约束 | ⚠️ | S2 |
 | 3a | resolve-admit | 内核任务 | 两个读者各对同一过期行 `enqueue`；第一个 job 写了新行后第二个 job 出队 | 第二个 job 重读行：`resolved_at` 在 TTL 内 → **丢弃，零次 tools/call** | 无 | in-flight 去重之外还有出队准入；TTL 在 drain 侧执行 | ⚠️ | S2 |
-| 3b | resolve-neg | 内核任务 | (i) `source` 的插件未安装 / 未运行；(ii) 绑定 track 的 owner 不可用（`TrackPluginScope::None`，source 插件可能在跑） | (i) 写 `unavailable, reason="plugin dev-neige-market is not installed"` / `"… is not running"`；(ii) 写 `unavailable, reason="track owner plugin unavailable"` | 无 | 不发插件调用；TTL 后再投；reason 说的是真话（m8） | ⚠️ | S2 |
-| 3c | resolve-neg | 内核任务 | 超时 / `isError`（含 S3 前的 `unknown tool`）/ 回复非 object | 写一行 `unavailable, reason`（≤256 字符） | 无 | 超时只影响该插件队列，读者不等；**超时后 `McpClient.responders` 里该 id 已被 guard 移除**（假插件永不回复，两次超时后 `pending_responders() == 0`） | ⚠️ | S2 |
+| 3b | resolve-neg | 内核任务 | (i) `source` 的插件未安装 / 未运行；(ii) 绑定 track 的 owner 不可用（`TrackPluginScope::None`，source 插件可能在跑）；(iii) 绑定 track 的 owner 是另一个插件（`Only(other)`，`tool_visibility.rs:141`） | (i) 写 `unavailable, reason="plugin dev-neige-market is not installed"` / `"… is not running"`——**由携带预检结果的一次性任务写，即使插件在任务执行前启动也不二次查找、不调用**（§11 第 3 轮 codex R3-4）；(ii) 写 `unavailable, reason="track owner plugin unavailable"`；(iii) 写 `unavailable, reason="plugin dev-neige-market is outside this track's plugin scope"`（永久，G17） | 无 | 不发插件调用；TTL 后再投；reason 说的是预检/作用域判定时刻的真话（m8） | ⚠️ | S2 |
+| 3c | resolve-neg | 内核任务 | 超时 / `isError` / 回复非 object（S3 前 `market.series` 不在 manifest → 走 3f 的 `NotExposed`，到不了插件的 `unknown tool` 分支，§11 R3-MINOR-3） | 写一行 `unavailable, reason`（≤256 字符） | 无 | 超时只影响该插件队列，读者不等；**超时后 `McpClient.responders` 里该 id 已被 guard 移除**（假插件永不回复，两次超时后 `pending_responders() == 0`） | ⚠️ | S2 |
 | 3d | resolve-partial | 插件 | 请求 `series` 里有 `US:NOPE` | 回复 `series[j].status="unknown_asset", reason`，其它条 `ok`（各带 `complete_through`） | 无 | 插件不因一条未知资产拒绝整个请求 | ⚠️ | S3 |
 | 3d′ | resolve-partial | 内核任务 | 收到 3d 的回复 | 内核块级 `ok`，`pinned=false`，`summary.series[j]` 保留 `unknown_asset` | 无 | 部分失败不拖垮整块，也不钉住 | ⚠️ | S2 |
-| 3e | resolve-neg | 内核任务 | 回复超 `MAX_SERIES_REPLY_BYTES` / 资产不一一对应 / `ts_ms` 非严格升序或非 UTC 零点 / 非有限数 / bar 日期 > 请求 `as_of` / 点数 > 区间上界 / `ok` 项 `points.len() < 2` / `ok` 项缺 `complete_through` | 整行 `unavailable, reason` | 无 | 校验清单在内核边界（D2 步骤 6） | ⚠️ | S2 |
-| 3f | resolve-neg | 内核任务 | `source` 指向不在 manifest 的工具 / `kind: ForgeAction` / `readOnlyHint != true` / `ConnectorClient::Http` / plugin_id 段含 `_`（`neige://plugin/a_b/c`） | 整行 `unavailable, reason`（reason 里的 plugin id 是 `source` 里的原字符串），**零次** tools/call | 无 | 精确查找 `plugin_tool_entry(registry, running, plugin_id, tool)`，不反解字符串；与 `plugin_tool_route` 的集合相等元测试（A19） | ⚠️ | S2 |
+| 3e | resolve-neg | 内核任务 | 回复超 `MAX_SERIES_REPLY_BYTES` / 资产不一一对应 / `ts_ms` 非严格升序或非 UTC 零点 / 非有限数 / bar 日期 > 请求 `as_of` / bar 日期 < 请求 `start` / 周或月 `ts_ms` 非周期起始日 / 周期结束日 > `as_of` / 点数 > 区间上界 / `ok` 项 `points.len() < 2` / `ok` 项缺 `complete_through` | 整行 `unavailable, reason` | 无 | 校验清单在内核边界（D2 步骤 6） | ⚠️ | S2 |
+| 3f | resolve-neg | 内核任务 | `source` 指向不在 manifest 的工具 / `kind: ForgeAction` / `readOnlyHint != true` / `ConnectorClient::Http` / plugin_id 段含 `_`（`neige://plugin/aa_b/c`，fixture 插件 `aa` 暴露 `b_c`） | 整行 `unavailable, reason`（reason 里的 plugin id 是 `source` 里的原字符串 `aa_b`），**零次** tools/call | 无 | 精确查找 `plugin_tool_entry(registry, running, plugin_id, tool)`，不反解字符串；与 `plugin_tool_route` 的集合相等元测试（A19） | ⚠️ | S2 |
 | 3g | resolve-deadline | 插件 | 出队时 `deadline_ms` 已过（内核早已超时） | 不打网络，回 `tool_error("deadline exceeded")`（内核侧 responder 已清，回复被 `mcp.rs:804` 的 else 臂 warn 丢弃） | 无 | 插件按自身时钟丢弃过期请求；fixture 源计数 0 | ⚠️ | S3 |
-| 3h | resolve-fail | 内核任务 | 步骤 7 写行失败（测试 failpoint）/ drain 任务 panic（测试 failpoint） | in-flight 键随 RAII guard 释放；lane 在下一次 `enqueue` 时因 `send` 失败或 `JoinHandle::is_finished()` 重建 | 无 | 同键再 `enqueue` 仍会调插件（不 fail-locked 成永久 `pending`） | ⚠️ | S2 |
+| 3h | resolve-fail | 内核任务 | 步骤 7 写行失败（测试 failpoint）/ drain 任务 panic（测试 failpoint） | in-flight 键随 RAII guard 释放；lane 在下一次 `enqueue` 时于 `lanes` 锁内因 `JoinHandle::is_finished()` 或 `send` 失败重建；被替换 lane 队列里的 job 随 receiver drop 一起 drop（tokio `Rx::drop` 排空缓冲区）→ 键释放 | 无 | 同键再 `enqueue` 仍会调插件（不 fail-locked 成永久 `pending`）；任何时刻每插件至多一条 lane 在跑 | ⚠️ | S2 |
+| 3i | resolve-window | 插件 | 请求 `start=2024-12-31−366d`, `as_of="2024-12-31"`（两年前的 frozen）；fixture 源有 2011 起全量 | 回复窗口 `[start, as_of]` 内的日线，`complete_through` = 单独探测到的最新日线日期（2026-09-11） | 无 | 窗口相对截止日取，不是「最新 N 根」；fixture 源收到带 start+end 的请求且分页拼接后无重复日期 | ⚠️ | S3 |
+| 3i′ | resolve-window-neg | 插件 | 同上但 fixture 源最早只有 `start + 30d` 起的 bar | 该条 `unavailable, reason:"lookback exceeds source depth"` | 无 | 最早 bar 晚于 `start + 14d` 即报深度不足（G18） | ⚠️ | S3 |
+| 3j | resolve-period | 插件 | `period:"week"`，`as_of` = 某周三，fixture 日线覆盖到该周四 | 回复只到上一个完整 ISO 周（`ts_ms` = 该周一 UTC 零点）；含周三在内的当前周不出现 | 无 | 未完成周期永不输出；`complete_through` 仍是日线日期（周四） | ⚠️ | S3 |
 | 4 | read-pending | Planner | `calm.report.read{}`，该块尚无行 | `resolved.status="pending"`；read 顺手 `enqueue`（内存操作 + spawn，不写 DB） | 无 | read 期间假插件收到零次 tools/call；read 永远 200 | ❌→⚠️ | S2 |
 | 4a | read-summary | Planner | 同上，行已存在 | `blocks[i].resolved` = 行里的 `status/as_of/resolved_at/pinned/summary` | 无 | 纯 DB 读，无超时无并发预算 | ⚠️ | S2 |
 | 4b | read-full | Planner | `calm.report.read{resolve:{"b_x":"full"}}` | 该块附 `series[j].points`；未点名的仍 summary | 无 | `points` 来自同一行的 `data` | ⚠️ | S2 |
@@ -177,11 +199,11 @@ Planner 写 `chart.series` → 内核校验落盘（不触发任何事）→ 某
 | 5a | render | fe | `ReportSeriesBlock` | SVG line/normalized/bar/candles；`pending`/`unavailable` 各渲染 caption + 一行文字；`pending` 时 3s 轮询直到非 pending；未钉住的 frozen 图标 "source data through <complete_through>" | 无 | 不含字面颜色；normalized 首点 ≤ 0 的序列显式标"不可归一化" | ⚠️ | S4 |
 | 6 | live-stale | 任一读者 | 读到 live 行 `resolved_at < now - 6h` | 返回旧行 + `enqueue`（stale-while-revalidate） | 无 | 正在跑的键不再投（in-flight 去重） | ⚠️ | S2 |
 | 7 | freeze-write | Planner | `commit` 写 `as_of:"2026-09-06"`（周日） | 存 fence；同 seq 2 | 同 seq 2 | 内核只查 `YYYY-MM-DD` 形状；不与今天比较 | ⚠️ | S1 |
-| 7a | freeze-pin | 内核任务 | 回复每条 `ok` ∧ 每条末点日期 ≤ `as_of` ∧ 每条 `complete_through >= as_of` | 写行 `pinned=true` | 无 | 之后 enqueue 对该键是 no-op；`DO UPDATE … WHERE pinned=0` 拒绝覆盖 | ⚠️ | S2 |
+| 7a | freeze-pin | 内核任务 | 回复每条 `ok` ∧ 每条末点日期 ≤ `as_of` ∧ 每条 `complete_through > as_of`（严格，§11 第 3 轮交叉命中 2） | 写行 `pinned=true` | 无 | 之后 enqueue 对该键是 no-op；`DO UPDATE … WHERE pinned=0` 拒绝覆盖 | ⚠️ | S2 |
 | 7b | freeze-hold | 源 | 钉住后假插件换数据、TTL 过期 | 行**不变**，`resolved` 仍是钉住的数据 | 无 | 两个并发首解析竞争者只有一个能写、之后谁都不能覆盖 | ⚠️ | S2 |
 | 7c | freeze-rehash | Planner | 改 `range`/`series`/`as_of`/`source`（hash 变）或 `view` 在 `candles` 与其它之间切换（`fields` 变 → hash 变）；改 `caption`/`overlays` 或 `view` 在 `line↔normalized↔bar` 之间切换（hash 不变） | 前者新行、旧行留到 track 删除；后者复用原行 | `CardUpdated`+`TrackReportEdited` | 行身份 = `(track,block,request_hash)`，不是 rev；指纹含 `plugin_id, tool` | ⚠️ | S2 |
-| 7d | freeze-incomplete | 内核任务 | frozen 块回复里有 `unknown_asset`，或某条 `complete_through < as_of`（源最新 bar 是周五、`as_of` 是周日） | 写行 `ok, pinned=false`；TTL 后再投；源发布下一个交易日的 bar 后 `complete_through ≥ as_of` → 钉住 | 无 | 不完整快照永不钉住；**最多延迟到下一个交易日** | ⚠️ | S2 |
-| 8 | live-drift | 假插件 fixture | live 行过期后 fixture 多给一根（日期 ≤ 昨天 UTC 的）bar | 新行 `summary.last` 日期前进；docRev **不变** | 无 | 用受控 fixture 断言，不用日历时间 | ⚠️ | S2 |
+| 7d | freeze-incomplete | 内核任务 | frozen 块回复里有 `unknown_asset`，或某条 `complete_through ≤ as_of`（源最新日线 bar 是周五、`as_of` 是周日；**或 `as_of` 就是周五本身**） | 写行 `ok, pinned=false`；TTL 后再投；源发布出**晚于** `as_of` 的日线 bar（周一）后 `complete_through > as_of` → 钉住，数据仍止于 ≤ `as_of` | 无 | 不完整快照永不钉住；钉住发生在「更晚的日线 bar 出现 ∧ 之后一次读 ∧ TTL 已过」；退市/停牌标的永不出现更晚 bar → 永不钉住（G3） | ⚠️ | S2 |
+| 8 | live-drift | 假插件 fixture | live 行过期后（注入 `now` 前进一天）fixture 多给一根（日期 ≤ 新的昨天 UTC 的）bar | 新行 `summary.last` 日期前进；行 `as_of` = 新的 `yesterday_utc(now)`（**前进**，§11 A m7）；docRev **不变**；`pinned` 仍 0 | 无 | 用受控 fixture 与注入时钟断言，不用日历时间 | ⚠️ | S2 |
 | 9 | delete | 人 | 删 track | `ON DELETE CASCADE` 清掉 `report_series`；迟到的任务写入被 FK 拒绝 | `TrackDeleted` | 无孤儿行；in-flight 键随 guard 释放 | ⚠️ | S2 |
 | 10 | human-read | 人 | 打开报告 | **钉住行**：seq 5 的字节 = seq 4a 的 `resolved`（任何时刻）；**未钉住行**：`resolved_at` 相同 ⇒ 字节相同 | — | 人与 AI 同源的精确边界 | ⚠️ | S4 |
 | 11 | legacy | 人（web/） | 打开报告 | `unsupported block kind chart.series` | — | 差异被声明（§7 G5） | ✅ | — |
@@ -204,11 +226,11 @@ Planner 写 `chart.series` → 内核校验落盘（不触发任何事）→ 某
   "series":  ["US:NVDA", "HK:9988"],                 // 必填，1..MAX_CHART_SERIES(=8)，字面去重；
                                                     // 每条 ^[A-Z]{2,8}:[A-Za-z0-9._-]{1,32}$（内核只查形状，venue 语义归插件 F5.1）
   "field":   "close",                                // 可选，close|open|high|low|volume，默认 close；view=candles 时必须缺席
-  "range":   "1Y",                                   // 可选，1M|3M|6M|1Y|2Y|5Y，默认 1Y
-  "period":  "day",                                  // 可选，day|week|month，默认 day
+  "range":   "1Y",                                   // 可选，1M|3M|6M|1Y|2Y|5Y，默认 1Y；定义窗口 [as_of − RANGE_DAYS, as_of]（下）
+  "period":  "day",                                  // 可选，day|week|month，默认 day；week/month 只含完整周期（D2）
   "view":    "line",                                 // 可选，line|normalized|bar|candles，默认 line；candles 要求 series.len()==1
   "as_of":   "2026-09-10",                           // 可选，截止日。只查 YYYY-MM-DD 形状（四位-两位-两位，月 01-12、日 01-31），
-                                                    // 不查历法、不与今天比较；存在 = frozen；缺席 = live
+                                                    // 不查历法、不与今天比较；存在 = frozen；缺席 = live（截止日 = 解析时的昨天 UTC）
   "overlays": ["ma20"],                              // 可选，ma20|ma60，只对 line/candles 生效
   "caption": "…"                                     // 可选
 }
@@ -216,9 +238,10 @@ Planner 写 `chart.series` → 内核校验落盘（不触发任何事）→ 某
 
 - 不允许 inline 数据：数据只由 `source` 解析。要内联的数据继续用 `chart.candles`。
 - `series` 去重按字面；`HK:9988` 与 `HK:09988` 在插件里是同一身份（F5.1 `canonical_symbol`），**内核不折叠**（不复制插件的 venue 规则），插件回复里两条同资产序列由校验清单的"资产一一对应"规则接受（回复 `asset` 必须逐项等于请求字符串）。
-- **`as_of` 是截止日（cutoff），不是"最后一根 bar 的日期"**：插件返回所有 bar 日期 ≤ `as_of` 的点；每条序列的末点日期可以早于 `as_of`（周末、假日、停牌）。**没有 `as_of` 上界**：写端不与今天比较（F1.12 该 crate 无时钟，§11 A M2）；未来日期的 `as_of` 只是"源尚未发布到截止日"的 frozen 块——`complete_through < as_of` → 未钉住，按 TTL 重投，到期后自动钉住（D3）。v2 担心的"`as_of:"2099-01-01"` 让钉住退化成钉在第一个任务跑的时刻"由 `complete_through` 判据消解，不需要时钟。fe zod 对未来日期可**提示**，不拒绝。
+- **`as_of` 是截止日（cutoff），不是"最后一根 bar 的日期"**：插件返回窗口 `[start, as_of]` 内的所有 bar（`start` 见下一条）；每条序列的末点日期可以早于 `as_of`（周末、假日、停牌）。**没有 `as_of` 上界**：写端不与今天比较（F1.12 该 crate 无时钟，§11 A M2）；未来日期的 `as_of` 只是"源尚未发布出晚于截止日的 bar"的 frozen 块——`complete_through ≤ as_of` → 未钉住，按 TTL 重投，源发布出更晚的日线 bar 后自动钉住（D3）。v2 担心的"`as_of:"2099-01-01"` 让钉住退化成钉在第一个任务跑的时刻"由 `complete_through` 判据消解，不需要时钟。fe zod 对未来日期可**提示**，不拒绝。
+- **`range` 是相对截止日的窗口**（§11 第 3 轮交叉命中 1）：`RANGE_DAYS = {1M: 31, 3M: 92, 6M: 183, 1Y: 366, 2Y: 731, 5Y: 1827}`（历日，与 `max_points` 用同一张表），窗口 = `[as_of − RANGE_DAYS[range], as_of]`（两端含），live 即 `[昨天 − RANGE_DAYS, 昨天]`。内核在请求里显式填 `start`（calm-server `chrono` 做日期减法，F7.7），插件不自己算窗口（一个算法一个实现）；校验清单查每点日期 ∈ `[start, as_of]`。旧 `as_of`（如两年前）的 frozen 块窗口非空，v3 的「拉最新 N 根再过滤」对它是 0 点 → 永久 `unavailable`，那句话已删。
 - `chart.candles` **不收编、不迁移**：已存文档、两个前端各有渲染器（F6.1、F6.8）、有校验与集成测试。折衷：`kinds_table` 里 `chart.candles` 的 usage 改为"内联数据的逃生口；行情能由插件解析的标的请用 `chart.series`"（F2.12 那句删掉）。**这是与 issue 方向 1 的出入**（§8）。
-- caps：`MAX_CHART_SERIES = 8`（新常量，放 `kinds.rs:46-55` 旁）。点数上界不再复用 `MAX_CHART_CANDLES`，改为按区间自然大小（D2）。
+- caps：`MAX_CHART_SERIES = 8`（新常量，放 `kinds.rs:46-55` 旁）。点数上界不再复用 `MAX_CHART_CANDLES`，改为按窗口自然大小 `max_points(range, period)`（D2 步骤 6，用同一张 `RANGE_DAYS`）。
 - 校验落点：`kinds.rs` 新 `validate_chart_series`（挨着 `validate_chart :483`，**纯形状函数，无时钟**），`DATA_KINDS` 变 5 项，`KIND_CHART_SERIES` 常量；`contracts.rs::kinds_table` 加一项并改 F2.11 两段手写文字；`fe/core/domain/report.ts` 加 `chartSeriesPayloadSchema` + `payloadSchemaFor` 分支；`web/` 不加（落 opaque，F6.8）。
 - Rust 侧派生（calm-server）：`SeriesRequest::from_payload(&Value) -> (SeriesRequest, request_hash)`，`fields` 由 `view` 派生（candles → `[open,high,low,close,volume]`，否则 `[field]`）；**`request_hash = hex(sha256(canonical_json({plugin_id, tool, series, fields, range, period, as_of})))`**——`plugin_id, tool` 入指纹（§11 R2-3：换源必须换行，否则 P 的结果会钉在 Q 的声明下）；`as_of` 是 payload 里的值（live 缺席，**live 的运行时截止日不入指纹**，否则每天一行）。`caption/overlays` **不入指纹**（表现层）；`view` 只通过 `fields` 间接入指纹：`line↔normalized↔bar` 互换 `fields` 不变 → 复用行，`candles` 与其它互换 → 换行（§11 R2-MINOR / A m1）。
 
@@ -238,28 +261,28 @@ Planner 写 `chart.series` → 内核校验落盘（不触发任何事）→ 某
   3. 写路径不做任何事；不做启动扫描、不做定时扫描。
 - **`enqueue(track_id, block_id, request)`**（NEW `SeriesResolver`，挂在 `AppContext`）：
   1. `inflight: Mutex<HashSet<Key>>`，`Key = (TrackId, BlockId, RequestHash)`；已在集合 → no-op。否则插入并构造 `InflightGuard { set, key }`（`Drop` 时 `remove`）随 job 走——job 无论正常完成、提前 `return Err`、panic 展开、还是随 lane receiver 一起被 drop，键都释放（§11 A M4 构造 1）。
-  2. 路由预检 `plugin_tool_entry(registry, &running_ids, plugin_id, tool)`（见步骤 2）：**命中** → 该插件的 lane；**未命中** → 不建 lane，`tokio::spawn(resolve(job))` 一次性任务（`resolve` 步骤 2 会再次未命中并写 `unavailable`）。所以 lane 只为路由命中的插件存在，一篇写了 1000 个不存在 plugin_id 的报告只产生 1000 个短命写行任务、零条 lane（§11 A m6）。
-  3. lane：`lanes: Mutex<HashMap<PluginId, Lane { tx: mpsc::Sender<Job>, drain: JoinHandle<()> }>>`，首次命中时 `tokio::spawn` drain 循环；`enqueue` 时若 `drain.is_finished()` 或 `tx.send()` 失败（receiver 已随 panic 掉的 drain 一起 drop）→ 重建 lane 再 send（§11 A M4 构造 2）。**按插件串行**——与 market 插件自身的单工作线程（F4.13）同构。测试 seam：`SeriesResolver::new_unstarted()` 只记录不 drain（A10 用）；`#[cfg(test)] failpoints { fail_write_once, panic_drain_once }`（A9c/A9d 用）；`now: fn() -> i64` 注入（默认 `calm_truth::model::now_ms`，A8 用）。
+  2. 路由预检 `plugin_tool_entry(registry, &running_ids, plugin_id, tool)`（见步骤 2）：**命中** → `Job { key, request, route: Found(entry) }` 投该插件的 lane；**未命中** → 不建 lane，`tokio::spawn(write_precheck_miss(job))` 一次性任务，**job 携带预检结果**（`NotInstalled | NotRunning | NotExposed`），任务只做步骤 1 准入 + 步骤 7 写 `unavailable, reason`（reason 由携带的结果生成），**不再二次查找、不调 `connector_client`、不调插件**（§11 第 3 轮 codex R3-4：v3 的「`resolve` 步骤 2 会再次未命中」是假的——`running_plugin_ids()`（`plugin_host/mod.rs:3260`）与 `connector_client()`（`:3312`）各自取一次表锁，插件在两次采样之间启动就会让一批一次性任务在 lane 之外并发调用它）。所以 lane 只为路由命中的插件存在，一篇写了 1000 个不存在 plugin_id 的报告只产生 1000 个短命写行任务、零条 lane（§11 A m6），且这些任务零次插件调用。
+  3. lane：`lanes: std::sync::Mutex<HashMap<PluginId, Lane { tx: mpsc::UnboundedSender<Job>, drain: JoinHandle<()> }>>`。**通道 unbounded**：`enqueue` 的投递是同步非阻塞的 `UnboundedSender::send`，读者永远不等通道容量（§11 第 3 轮 codex R3-5：v3 的有界 `mpsc::Sender` + `send().await` 会在一个挂住 30s 的调用后面让读者等容量，与「enqueue 不等插件」矛盾）。**队列上界来自 in-flight 集合**，不来自通道：每个 `(track, block, hash)` 键同一时刻至多一个 job（步骤 1），所以所有 lane 的排队 job 总数 ≤ `inflight.len()` ≤ 工作区内 `chart.series` 块数（每块一个当前 hash）——这是执行上界的机制，不是估计。**检查-重建-投递在 `lanes` 锁内一次完成**（§11 A m1）：`let mut lanes = self.lanes.lock(); let lane = lanes.entry(id).or_insert_with(spawn_lane); if lane.drain.is_finished() || lane.tx.send(job).is_err() { *lane = spawn_lane(); lane.tx.send(job) }`——锁内没有 `.await`（spawn 与 send 都是同步的），两个并发 `enqueue` 不可能各建一条 lane，任何时刻每插件至多一条 drain 在跑；`rebuild` 只以 `&mut HashMap<…>`（即锁的内容）为参数，拿不到锁就调不了。被替换 lane 的 `UnboundedReceiver` 随 panic 掉的 drain 任务一起 drop，tokio 1.52.3 的 `Rx::drop` 关闭并排空缓冲区（`sync/mpsc/chan.rs:487-508` `drain`）→ 队列里的 job 被 drop → 各自的 `InflightGuard` 释放键 → 下次读重投（§2.8 例外 (b)(c)）。**按插件串行**——与 market 插件自身的单工作线程（F4.13）同构。测试 seam：`SeriesResolver::new_unstarted()` 只记录 `enqueue` 调用与 job、不 drain、不 spawn 一次性任务（A9e/A10/A10b 用，测试可手动执行记录下的 job）；`#[cfg(test)] failpoints { fail_write_once, panic_drain_once }`（A9c/A9d/A9f 用）；`now: fn() -> i64` 注入（默认 `calm_truth::model::now_ms`，A8 用）；`SERIES_RESOLVE_TIMEOUT` 是 `SeriesResolver` 的字段而非常量（A5 注入毫秒级）。
 - **任务 `resolve(job)`**：
-  1. **准入**：重读块（`load_report_read_snapshot`）与行。块不存在 / 当前 payload 的 hash ≠ job 的 hash → 丢弃（stale job）。行存在且（`pinned = 1` 或 `resolved_at ≥ now − SERIES_TTL`，含 `unavailable` 行）→ 丢弃（§11 R2-5：TTL 在 drain 侧执行，不信任读者的旧观察）。
-  2. **路由**：NEW `pub(crate) fn plugin_tool_entry(registry: &PluginRegistry, running_ids: &BTreeSet<String>, plugin_id: &str, tool: &str) -> ToolEntry` 放在 `transport.rs` `plugin_tool_route` 旁；实现 = `registry.get(plugin_id)`（F4.16 精确查找，**不拼 `plugin.{id}_{tool}` 再反解**）→ `manifest.exposes_tools.iter().find(name == tool)` → `running_ids.contains(plugin_id)`。返回枚举 `NotInstalled | NotRunning | NotExposed | Found(ExposedTool)`（一个布尔装不下四种结论）。`NotInstalled` → `unavailable, reason="plugin <id> is not installed"`；`NotRunning` → `"… is not running"`；`NotExposed` → `"… does not expose <tool>"`；`Found(entry)` 且 `entry.kind.is_some()` → `"tool is not an ordinary read-only tool"`；`entry.annotations["readOnlyHint"] != true` → 同上。**G7 由此关闭**（未安装/未运行/未暴露三态可分）。`plugin_tool_route` 不改（不需要 `pub(crate)`）；S2 加一条元测试：对 fixture registry 里每个 `(id, tool)` 与若干不存在的组合，`plugin_tool_entry(...) is Found` ⇔ `plugin_tool_route(registry, "plugin.{id}_{tool}", running) == Ok(Some((id, tool, kind)))`（A19）。
-  3. **作用域**：`plugin_scope_for_track(ctx, Some(track_id)).allows(plugin_id)`（与 agent 路由同一规则 F4.11）。`TrackPluginScope::None`（绑定 track 的 owner 不可用）→ `unavailable, reason="track owner plugin unavailable"`（不是"plugin X is not running"——source 插件可能正在跑，§11 A m8）；`Only(other)` → `unavailable, reason="plugin <id> is outside this track's plugin scope"`。
+  1. **准入**：在一次短事务里（`write_in_tx_typed` 闭包，先例 `task_recovery/admission.rs:158`）用 `report_blocks_snapshot_tx(tx, track_id)`（F3.8，`track_report.rs:73`，返回带 payload 的 `Vec<ReportBlock>`）重读块，并读行。**不用 `load_report_read_snapshot`**（`track_report_read.rs:43-52`：它先 `load_settings` 再按 `task_budget` 算 `task_diagnostics`，那是 read 面的诊断，与准入无关，§11 A m4）。事务在准入判定后立即提交，不跨插件调用持有。块不存在 / 当前 payload 的 hash ≠ job 的 hash → 丢弃（stale job）。行存在且（`pinned = 1` 或 `resolved_at ≥ now − SERIES_TTL`，含 `unavailable` 行）→ 丢弃（§11 R2-5：TTL 在 drain 侧执行，不信任读者的旧观察）。一次性任务（enqueue 步骤 2 未命中）也走这一步，然后直接到步骤 7。
+  2. **路由**（只有 lane 里的 job 走这步；一次性任务用 job 携带的预检结果，见 enqueue 步骤 2）：NEW `pub(crate) fn plugin_tool_entry(registry: &PluginRegistry, running_ids: &BTreeSet<String>, plugin_id: &str, tool: &str) -> ToolEntry` 放在 `transport.rs` `plugin_tool_route` 旁；实现 = `registry.get(plugin_id)`（F4.16 精确查找，**不拼 `plugin.{id}_{tool}` 再反解**）→ `manifest.exposes_tools.iter().find(name == tool)` → `running_ids.contains(plugin_id)`。返回枚举 `NotInstalled | NotRunning | NotExposed | Found(ExposedTool)`（一个布尔装不下四种结论）。`NotInstalled` → `unavailable, reason="plugin <id> is not installed"`；`NotRunning` → `"… is not running"`；`NotExposed` → `"… does not expose <tool>"`；`Found(entry)` 且 `entry.kind.is_some()` → `"tool is not an ordinary read-only tool"`；`entry.annotations["readOnlyHint"] != true` → 同上。**G7 由此关闭**（未安装/未运行/未暴露三态可分）。`plugin_tool_route` 不改（不需要 `pub(crate)`）；S2 加一条元测试：对 fixture registry 里每个 `(id, tool)` 与若干不存在的组合，`plugin_tool_entry(...) is Found` ⇔ `plugin_tool_route(registry, "plugin.{id}_{tool}", running) == Ok(Some((id, tool, kind)))`（A19）。
+  3. **作用域**：`plugin_scope_for_track(ctx, Some(track_id)).allows(plugin_id)`（与 agent 路由同一规则 F4.11）。`TrackPluginScope::None`（绑定 track 的 owner 不可用）→ `unavailable, reason="track owner plugin unavailable"`（不是"plugin X is not running"——source 插件可能正在跑，§11 A m8）；`Only(other)` → `unavailable, reason="plugin <id> is outside this track's plugin scope"`——插件模板创建的 Owned track 上，非 owner 插件的 `chart.series` **永久** `unavailable`（G17，seq 3b(iii)；§11 A m2 维持保守规则）。影响面：track 只在「创建时某个运行中的可信插件用 manifest `templates` 认领了该模板 key」时才带 owner（`routes/tracks.rs:1683-1688`、`:1691-1695`、`:1750-1752`；`grep -n '"templates"' plugins/*/manifest.json` 只有 `git-forge` 认领 `issue-development`），投研模板 `investment-research`（#1626，origin/main `7754fd32`，不在基线）是内核花名册项、无插件认领 → `plugin_scope = NULL` → `All`。
   4. **客户端**：`connector_client(plugin_id)`：`None` → `unavailable, "not running"`；`Http(_)` → `unavailable, reason="remote connectors are not series sources"`（远端服务不该由文档内容驱动被内核请求，§11 B1 构造 2）；`Stdio(c)` → `c.tools_call(tool, args, Some(&track_id))`；`Cli(c)` → `c.tools_call(tool, args)`。
   5. **超时与 responder 清理**：`tokio::time::timeout(SERIES_RESOLVE_TIMEOUT = 30s, …)`。理由：后台执行、按插件串行，长超时的代价是该插件队列的延迟而不是任何读者的等待；8 条资产逐条打腾讯/Binance 各 ≤3s 的最坏情况在 30s 内。**超时不再泄漏 responder**：S2 在 `McpClient::call` 里、`responders.insert`（`mcp.rs:667`）与 `rx.await`（`:676`）之间加一个 `ResponderSlot { map: &ResponderMap, id }` RAII guard，`Drop` 时 `map.lock().remove(&id)`（对端已回复时 `:804` 已 `remove`，再 `remove` 是 no-op）；超时取消 = future 被 drop = guard 被 drop = 槽位移除。这是对**所有**内核→插件调用的修复（agent 路由 `transport.rs:722-738`、`cards.rs:588` 一并受益）；`#[cfg(test)] pub(crate) fn pending_responders(&self) -> usize` 给 A5b 用。v2 的"串行化把泄漏封顶为 1"是假的：永不回复的插件下每次超时留一个槽位，跨块、跨 TTL 周期无界累积（§11 R2-1，第 1 轮处置作废）。**插件侧**：内核超时不通知插件取消（登记 G11），请求仍留在插件单工作线程队列里按序处理（F4.13）；缓解在 S3——请求带 `deadline_ms`（内核 `now_ms() + 30_000`），`market.series` 出队时若自身时钟已过 `deadline_ms` → 不打网络，回 `tool_error("deadline exceeded")`（seq 3g）。
-  6. **回复校验清单**（内核边界，任一不过 → 整行 `unavailable, reason`）：`isError != true`；`structuredContent` 是 object；序列化整个 `CallToolResult` ≤ `MAX_SERIES_REPLY_BYTES = 2 MiB`（**这是内核接受并存储的回复上限，是校验，不是内存上界**——传输层 `read_line` 在此之前已把整行读进内存，字节上界见 #1634 / G11）；`series` 数组长度 == 请求长度且第 j 项 `asset` == 请求第 j 条（一一对应）；每项 `status ∈ {ok, unknown_asset, unavailable}`；`unknown_asset`/`unavailable` 项的 `reason` 是字符串（存储时截到 256 字符）；`ok` 项：`complete_through` 是 `YYYY-MM-DD`；**`points.len() >= 2`**（图与摘要都需要两点；空或单点由插件自己报 `unavailable, reason:"no data in range"`，内核收到 `ok` 配 <2 点视为 malformed，§11 R2-9）；每点长度 == 1 + `fields.len()`；`ts_ms` 是整数、**`ts_ms % 86_400_000 == 0`（= 交易日 UTC 零点，§11 A m11）**、严格升序；数值全部有限（`f64::is_finite`）；每点日期（`ts_ms / 86_400_000` 折成 `YYYY-MM-DD`）≤ **请求 `as_of`**（两态统一，因为 live 请求也带 `as_of`）；`complete_through` ≥ 末点日期；点数 ≤ `max_points(range, period)`（区间日历天数 / period 天数 + 2：1Y day = 368、5Y day = 1829、5Y week = 263、5Y month = 62）；存储 `data` 序列化 ≤ `MAX_SERIES_ROW_BYTES = 1 MiB`。
+  6. **回复校验清单**（内核边界，任一不过 → 整行 `unavailable, reason`）：`isError != true`；`structuredContent` 是 object；序列化整个 `CallToolResult` ≤ `MAX_SERIES_REPLY_BYTES = 2 MiB`（**这是内核接受并存储的回复上限，是校验，不是内存上界**——传输层 `read_line` 在此之前已把整行读进内存，字节上界见 #1634 / G11）；`series` 数组长度 == 请求长度且第 j 项 `asset` == 请求第 j 条（一一对应）；每项 `status ∈ {ok, unknown_asset, unavailable}`；`unknown_asset`/`unavailable` 项的 `reason` 是字符串（存储时截到 256 字符）；`ok` 项：`complete_through` 是 `YYYY-MM-DD`；**`points.len() >= 2`**（图与摘要都需要两点；空或单点由插件自己报 `unavailable, reason:"no data in range"`，内核收到 `ok` 配 <2 点视为 malformed，§11 R2-9）；每点长度 == 1 + `fields.len()`；`ts_ms` 是整数、**`ts_ms % 86_400_000 == 0`（= 交易日 UTC 零点，§11 A m11）**、严格升序；数值全部有限（`f64::is_finite`）；每点日期（`ts_ms / 86_400_000` 折成 `YYYY-MM-DD`）∈ **`[请求 start, 请求 as_of]`**（两态统一，因为 live 请求也带 `start`/`as_of`）；`period = week` → 每点是周一（`(ts_ms / 86_400_000 + 3) % 7 == 0`，1970-01-01 是周四）且 `ts_ms 日期 + 6d ≤ as_of`；`period = month` → 每点是 1 日且该月最后一日 ≤ `as_of`（`chrono` 历法，§11 第 3 轮 codex R3-3：未完成周期在内核边界也拒绝，不只靠插件）；`complete_through` ≥ 末点日期；点数 ≤ `max_points(range, period)`（`RANGE_DAYS[range] / period_days + 2`，period_days day=1 / week=7 / month=30：1Y day = 368、5Y day = 1829、5Y week = 263、5Y month = 62）；存储 `data` 序列化 ≤ `MAX_SERIES_ROW_BYTES = 1 MiB`。
   7. 写行（D3），`summary` 由 `summarize(&Series) -> Summary` 在写入前算出并一起存。写失败（FK、IO）→ warn 并返回；键由 guard 释放。
   8. （无显式清理步骤：`InflightGuard` 在 job 作用域结束时 drop。）
-- **请求截止日**：内核在每个请求里显式填 `as_of`：frozen = payload `as_of`；**live = 昨天 UTC**（`yesterday_utc(now_ms)`，calm-server 用 `chrono` 算，F7.7）。插件对两态走同一条过滤路径，不再有"无 `as_of`"的请求形状；当天的盘中半根 bar 永远不进 live 行（§11 A M3）。代价：CN/HK 市场按 UTC 日期可能多滞后一天（G14）。
+- **请求窗口**：内核在每个请求里显式填 `start` 与 `as_of`：frozen `as_of` = payload `as_of`；**live `as_of` = 昨天 UTC**（`yesterday_utc(now_ms)`，calm-server 用 `chrono` 算，F7.7）；`start = as_of − RANGE_DAYS[range]`（D1）。请求不带 `range`：窗口只在内核算一次，插件按 `[start, as_of]` 取数（§2.5 S3 约束 1）。插件对两态走同一条过滤路径，不再有"无 `as_of`"的请求形状；当天的盘中半根 bar 永远不进 live 行（§11 A M3）。代价：CN/HK 市场按 UTC 日期可能多滞后一天（G14）。
 - **请求形状**（内核由 payload 派生）与**回复形状**（`structuredContent`）：
   ```jsonc
-  // 请求（frozen 与 live 同形；live 的 as_of 由内核填昨天 UTC）
-  { "series": ["US:NVDA","HK:9988"], "fields": ["close"], "range": "1Y", "period": "day",
-    "as_of": "2026-09-10", "deadline_ms": 1789000000000 }
+  // 请求（frozen 与 live 同形；live 的 as_of 由内核填昨天 UTC；start = as_of − RANGE_DAYS[range]，内核算好）
+  { "series": ["US:NVDA","HK:9988"], "fields": ["close"], "period": "day",
+    "start": "2025-09-09", "as_of": "2026-09-10", "deadline_ms": 1789000000000 }
   // 回复（无顶层 as_of——回显请求值是空洞检查，§11 A M1）
   { "series": [
       { "asset": "US:NVDA", "currency": "USD", "status": "ok",
-        "complete_through": "2026-09-11",           // 源未过滤的最新 bar 日期（插件总是拉最新 N 根再过滤）
-        "points": [[ts_ms, close], …] },             // ts_ms = 交易日 UTC 零点；全部日期 ≤ 请求 as_of；≥ 2 点
+        "complete_through": "2026-09-11",           // 源未过滤的最新**日线** bar 日期，来自单独一次不带 end 的探测（§2.5 S3 约束 2）；与 period 无关
+        "points": [[ts_ms, close], …] },             // ts_ms = 交易日（week/month：周期起始日）UTC 零点；全部日期 ∈ [start, as_of]；≥ 2 点；week/month 只含完整周期
       { "asset": "HK:9988", "status": "unknown_asset", "reason": "…" },
       { "asset": "US:NEW",  "status": "unavailable",   "reason": "no data in range" } ] }
   ```
@@ -288,7 +311,7 @@ CREATE TABLE report_series (
     as_of        TEXT    NOT NULL,                 -- 请求截止日 YYYY-MM-DD：frozen = payload；live = 解析时的昨天 UTC
     resolved_at  INTEGER NOT NULL,                 -- ms
     pinned       INTEGER NOT NULL DEFAULT 0,
-    summary      TEXT    NOT NULL,                 -- JSON，写入时算好
+    summary      TEXT,                             -- JSON，ok 行写入时算好；unavailable 行为 NULL（§11 A m3）
     data         TEXT,                             -- JSON：series[] 含 points，ok 时
     PRIMARY KEY (track_id, block_id, request_hash)
 );
@@ -297,8 +320,8 @@ CREATE TABLE report_series (
 - **外键 vs 事务内存在性校验**：选外键 `ON DELETE CASCADE`。理由：`foreign_keys = ON` 每连接、同形先例 0104/0106（F4.15）；删除时 `track_delete_tx` 级联清掉行，迟到的任务写入在约束处失败（任务 warn 并丢弃，键由 guard 释放），没有"先查后插"的窗口。
 - **写入**：任务在 `write_in_tx_typed` 里 `INSERT … ON CONFLICT(track_id, block_id, request_hash) DO UPDATE SET status, reason, as_of, resolved_at, pinned, summary, data = excluded.* WHERE report_series.pinned = 0`。`pinned` 行在 DB 层不可覆盖（A7 的变异靶点）。不发事件（F7.2 不 bump）。
 - **`pending` 不是行的状态**：无行 = `pending`（读时词）。行的 `status` 只有 `ok | unavailable`。
-- **live**：payload `as_of` 缺席。每次解析的截止日 = 昨天 UTC（D2），存进 `as_of` 列。TTL = `SERIES_TTL = 6h`：日线一天一根、收盘后源才更新；6h 让一天内被反复打开的报告最多刷新 4 次（读触发 + drain 准入共同保证，D2 步骤 1），一天开一次的报告刷新一次，且过夜后第一次打开必刷新。失败行同一 TTL。
-- **frozen**：payload `as_of` 存在；请求带它；插件只返回日期 ≤ `as_of` 的 bar。**钉住条件**（内核可验证，不依赖插件回显）：每条 series `status == ok` **∧** 每条末点日期 ≤ `as_of`（校验清单已保证）**∧** 每条 `complete_through >= as_of`（源已发布截止日当日或之后的数据 ⇒ "≤ as_of 的集合"是终态）→ `pinned = 1`，此后 `enqueue` 对该键 no-op、写入被 `WHERE pinned = 0` 拒绝。不满足 → `pinned = 0` 的 `ok` 行（图能画，但标"未钉住，source data through <min complete_through>"），按 TTL 再投直到满足。**非交易日**：`as_of` = 周日、源最新 bar = 周五 → `complete_through`(周五) < 周日 → 未钉住；周一收盘出 bar 后 `complete_through`(周一) ≥ 周日 → 下次 TTL 重投钉住，数据仍是"≤ 周日"即到周五——**钉住最多延迟到下一个交易日**（§11 A M1 / R2-8）。并发首解析：串行队列 + in-flight 去重使同键同一时刻只有一个任务；即便测试直接并发调用两次 `resolve`，第一个写成 `pinned=1` 后第二个的 `DO UPDATE … WHERE pinned=0` 是 no-op。
+- **live**：payload `as_of` 缺席。每次解析的截止日 = 昨天 UTC（D2），存进 `as_of` 列。TTL = `SERIES_TTL = 6h`：日线一天一根、收盘后源才更新；6h 让一天内被反复打开的报告最多刷新 4 次（读触发 + drain 准入共同保证，D2 步骤 1），一天开一次的报告刷新一次；**TTL 是时长不是日历**——过夜后第一次打开只在距上次解析 ≥ 6h 时刷新（23:59 写入的行 00:01 仍新鲜，§2.8）。失败行同一 TTL。**live 行永远 `pinned = 0`**：钉住判据只对 frozen 评估（Binance 的探测让 live 行也能满足 `complete_through > 昨天`，但 live 的语义是随源流动，不钉）。
+- **frozen**：payload `as_of` 存在；请求带它；插件只返回日期 ∈ `[start, as_of]` 的 bar。**钉住条件**（内核可验证，不依赖插件回显）：每条 series `status == ok` **∧** 每条末点日期 ≤ `as_of`（校验清单已保证）**∧** 每条 **`complete_through > as_of`**（严格，§11 第 3 轮交叉命中 2：源已发布出**晚于**截止日的日线 bar ⇒ 截止日当日的 bar 已收盘、"≤ as_of 的集合"是终态；`>=` 在 `complete_through == as_of` 时钉住的是内核无法证明已收盘的那一根——Binance 不带 end 的探测必然含当前未收盘日 K [实测 2026-09-13]，ifzq 盘中是否列当日 bar 未测但已无关）→ `pinned = 1`，此后 `enqueue` 对该键 no-op、写入被 `WHERE pinned = 0` 拒绝。前提假设：源的 bar 日期正确且按时间顺序发布（更晚日期的 bar 出现 ⇒ 更早日期的 bar 已收盘）；判据不证明历史完整性，也不阻止源事后修正（前复权基准变化，G1）。不满足 → `pinned = 0` 的 `ok` 行（图能画，但标"未钉住，source data through <min complete_through>"），按 TTL 再投直到满足。**逐场景**：`as_of` = 周日、源最新日线 = 周五 → 周五 > 周日假 → 未钉住；周一收盘出 bar → 周一 > 周日 → 下次 TTL 重投钉住，数据仍止于周五。`as_of` = 周五（最常见写法：最近一个交易日）→ 周五 > 周五假 → **也要等周一的 bar**（周末最多延迟 3-4 天；若源在周一盘中就列出周一 bar 则周一早上即可）；`as_of` = 昨天 → 若探测含今天的 bar 立即钉住（昨天已收盘），否则等今天收盘；`as_of` = 今天 → 永不在当天钉住；未来 `as_of` → 等到那天之后。**代价**：`as_of` = 最近交易日的钉住统一推迟到下一根日线 bar 出现，且需要「之后一次读 ∧ TTL 已过」（§2.8）；退市/停牌标的永不出现更晚 bar → 永不钉住（`pinned=false` 但数据可画、图上有标记，G3）。`complete_through` 是**日线**日期与 `period` 无关（A M2：若周/月请求用聚合 bar 的日期，进行中的周 bar 标成周五会在周三就骗过判据）。并发首解析：串行队列 + in-flight 去重使同键同一时刻只有一个任务；即便测试直接并发调用两次 `resolve`，第一个写成 `pinned=1` 后第二个的 `DO UPDATE … WHERE pinned=0` 是 no-op。
 - **身份**：`(track_id, block_id, request_hash)`。改 `caption/overlays`、`view` 在 `line↔normalized↔bar` 间切换 → 不换行；改 `series/range/period/as_of/source`、`view` 与 `candles` 互换 → 换行，旧行留到 track 删除（G8）。
 - **人/AI 同源的精确边界**：钉住行——任何两个读者任何时刻拿到同一字节（DB 层不可覆盖）；未钉住行——同一次读拿到同一行，两次读之间行可被后台刷新替换（`resolved_at` 变），无法取回旧版本（§11 R2-7：v2 的"同一份字节"对 live 行不成立，收窄而不是措辞）。
 - **fork**：`routes/tracks.rs:2322` 的 fork 在事务里、block id 保留（F2.6）——同一事务里 `INSERT INTO report_series SELECT <new_track_id>, block_id, request_hash, status, reason, as_of, resolved_at, pinned, summary, data FROM report_series WHERE track_id = <source>`，**复制全部行**（不只 pinned：未钉住的 frozen 行也是人看到的图，复制后子 track 不会空一段再解析出修订价，§11 R2-8）。保证边界：钉住行 fork 后不变；未钉住行在两个 track 里各按 TTL 刷新，可能分叉。
@@ -357,7 +380,7 @@ CREATE TABLE report_series (
 - `series` 字符串经内核形状检查后作为 tool 参数原样交给插件，插件用 `parse_asset` 再判；内核不解释 venue。
 - 解析以内核身份在后台执行；作用域 `plugin_scope_for_track` 与 agent 路由同一规则。
 - 读路径：HTTP 路由走既有 Principal；MCP read 走 `resolve_report_for_caller`；两者都不调插件、不写 DB。
-- 资源约束（每条指到执行它的机制）：8 条序列（`validate_chart_series`）；每插件串行（lane）；30s 超时（`tokio::time::timeout`）且超时清 responder（`ResponderSlot` guard）；2 MiB 是**接受上限**（步骤 6 校验，不是传输层内存上界——那是 #1634）；区间上界点数、`points.len() ≥ 2`、`ts_ms` 零点（步骤 6）；1 MiB 行、`reason` 256 字符（写入前截断）；in-flight 去重 + drain 准入 TTL；lane 只为路由命中的插件建；插件侧 `deadline_ms` 丢弃。
+- 资源约束（每条指到执行它的机制）：8 条序列（`validate_chart_series`）；每插件串行（lane）；30s 超时（`tokio::time::timeout`）且超时清 responder（`ResponderSlot` guard）；2 MiB 是**接受上限**（步骤 6 校验，不是传输层内存上界——那是 #1634）；区间上界点数、`points.len() ≥ 2`、`ts_ms` 零点（步骤 6）；1 MiB 行、`reason` 256 字符（写入前截断）；in-flight 去重 + drain 准入 TTL；lane 通道 unbounded、排队 job 总数 ≤ in-flight 键数（每键一个 job）、`enqueue` 同步非阻塞；lane 只为路由命中的插件建，未命中的一次性任务携带否定结果、零次插件调用；检查-重建-投递在 `lanes` 锁内；插件侧 `deadline_ms` 丢弃。
 - 插件 `market.series` 只读，不写 overlay/KV；不新增 `neige.*` 回调，不扩权限模型；不新增 Event kind。
 
 ### D7 与 #1612 `layout` 的取舍
@@ -371,11 +394,11 @@ CREATE TABLE report_series (
 | 片 | 内容 | 依赖 | 可独立合入 | 行为变化 | 估算行数 |
 |---|---|---|---|---|---|
 | S1 契约 | `kinds.rs` `KIND_CHART_SERIES` + `validate_chart_series`（纯形状；`as_of` 只查 `YYYY-MM-DD`）+ `MAX_CHART_SERIES`；`DATA_KINDS` 5 项；`kinds_tests.rs` 正反例；`contracts.rs` kinds_table 项 + F2.11/F2.12 文字；`fe/core/domain/report.ts` zod + `payloadSchemaFor`；`document/public.tsx` `case 'chart.series'` 占位；`mcp_track_report_blocks.rs` 加入口拒绝用例 | 无 | 是 | agent 可写 `chart.series`，read 无 `resolved`，fe 占位，web unsupported | ~550 |
-| S2 解析任务 + 存储 + read 水合 | 迁移 `report_series`；`SeriesRequest`/`request_hash`（含 plugin_id, tool）/`summarize`/`yesterday_utc`；`SeriesResolver`（`InflightGuard`、lane + `JoinHandle` 监督、drain 准入、`resolve`、校验清单、写行、pinned 规则、failpoints）；`plugin_tool_entry` + 与 `plugin_tool_route` 的元测试；**`McpClient::call` 的 `ResponderSlot` guard + `pending_responders()`**；`calm.report.read` `resolve` 入参 + `resolved`（chart.series 与 live table）+ enqueue；fork 复制全部行；集成测试用假插件（`boot_plugin_host`）覆盖 seq 3/3a/3b/3c/3d′/3e/3f/3h/4/4a/4b/6/7a/7b/7c/7d/8/9/12 | S1 | 是 | Planner/Assistant read 到摘要；插件缺席时 `pending`→`unavailable`；所有内核→插件调用超时后不再留 responder | ~950 |
-| S3 market 插件 | `market.series` tool（manifest、`tools_call_reply` 分支、腾讯 ifzq + Binance klines 源、新浪兜底、内存缓存、统一的 `as_of` 截止日过滤、`complete_through`、`deadline_ms` 出队丢弃、`unknown_asset`、<2 点报 `unavailable`、`ts_ms` 折到 UTC 零点）、README、fixture server 测试 | S1（只共享 wire 形状；与 S2 并行） | 是 | `plugin.dev-neige-market_market.series` 对 agent 可用；S2 合入后图有数据 | ~950 |
+| S2 解析任务 + 存储 + read 水合 | 迁移 `report_series`；`SeriesRequest`/`request_hash`（含 plugin_id, tool）/`summarize`/`yesterday_utc`；`SeriesResolver`（`InflightGuard`、unbounded lane + 锁内检查-重建-投递、携带预检结果的一次性任务、`report_blocks_snapshot_tx` 准入、`resolve`、校验清单含窗口下界与周/月周期完整性、写行、严格 `>` 钉住、可注入超时、failpoints）；`plugin_tool_entry` + 与 `plugin_tool_route` 的元测试；**`McpClient::call` 的 `ResponderSlot` guard + `pending_responders()`**；`calm.report.read` `resolve` 入参 + `resolved`（chart.series 与 live table）+ enqueue；fork 复制全部行；集成测试用假插件（`boot_plugin_host`）覆盖 seq 3/3a/3b/3c/3d′/3e/3f/3h/4/4a/4b/6/7a/7b/7c/7d/8/9/12 | S1 | 是 | Planner/Assistant read 到摘要；插件缺席时 `pending`→`unavailable`；所有内核→插件调用超时后不再留 responder | ~1000 |
+| S3 market 插件 | `market.series` tool（manifest、`tools_call_reply` 分支、腾讯 ifzq + Binance klines 源、新浪兜底、内存缓存、按 `[start, as_of]` 窗口取数 + 按日期分页拼接、`complete_through` 单独探测、周/月从日线聚合且只输出完整周期、深度不足 `unavailable`、`deadline_ms` 出队丢弃、`unknown_asset`、<2 点报 `unavailable`、`ts_ms` 折到 UTC 零点）、README、fixture server 测试 | S1（只共享 wire 形状；与 S2 并行） | 是 | `plugin.dev-neige-market_market.series` 对 agent 可用；S2 合入后图有数据 | ~1100 |
 | S4 路由 + fe 渲染 | `routes/track_report_series.rs`（rev 绑定、409、enqueue）、两份 OpenAPI 重生成、`queries.ts` 查询 + 失效 + pending 轮询、`features/report/series/`、`CandlesFigure` 抽取、未钉住标记、browser 测试 | S2 | 是 | 人看到图；S3 未合时看到 `unavailable` 文案 | ~800 |
 
-顺序：S1 → (S2 ∥ S3) → S4。总规模 ≈ 3250（v2 ≈ 3300、v1 ≈ 3900）：S2 删订阅者（−~150）、加 responder guard / 准入 / lane 监督 / `plugin_tool_entry`（+~100）；S1 删时钟检查；S3 加 `complete_through`/`deadline_ms`。S2 与 S3 的接缝是 D2 的请求/回复 JSON，两边共用 `crates/calm-server/tests/fixtures/market_series_reply.json`。S2 先于 S3 合入时，已装的 market 插件对 `market.series` 回 `unknown tool`（F4.13）→ `isError` → 行 `unavailable, reason: "plugin error: unknown tool `market.series`"`（§11 C16）。S2 合入后 #1634 只剩传输层字节上界一项（F4.17）。
+顺序：S1 → (S2 ∥ S3) → S4。总规模 ≈ 3450（v3 ≈ 3250、v2 ≈ 3300、v1 ≈ 3900）：S2 +~50（携带预检结果、锁内重建、周期校验）；S3 +~150（窗口分页、探测、周/月聚合）。S2 与 S3 的接缝是 D2 的请求/回复 JSON，两边共用 `crates/calm-server/tests/fixtures/market_series_reply.json`。**S2 先于 S3 合入时**：已装的 market 插件 manifest 只暴露 `market.quote` / `market.holdings.set` / `market.holdings.list`（`plugins/market/manifest.json:10-62`），`plugin_tool_entry` 回 `NotExposed` → 行 `unavailable, reason: "plugin dev-neige-market does not expose market.series"`，**零次** tools/call——到不了插件的 `unknown tool` 分支（`main.rs:2572`，F4.13；v3 写成 `unknown tool` 是错的，§11 R3-MINOR-3）。S2 合入后 #1634 只剩传输层字节上界一项（F4.17）。
 
 ## 6. 验收场景与 must-red 变异
 
@@ -387,22 +410,24 @@ CREATE TABLE report_series (
 | A2 | 经 `calm.report.commit` 写无 venue 的 `series:["NVDA"]` / `as_of:"2026/09/10"`（形状错）；**`as_of:"2099-01-01"` 被接受** | 前两者 `-32602`，docRev 不变，事件零；后者 200 落盘 | **直接测入口**：`validate_chart_series` 删掉 venue 正则 → `mcp_track_report_blocks::commit_rejects_chart_series_without_venue`（S1 新增，走真实 MCP 入口）红；给 `validate_chart_series` 加一条硬编码的 `year > 2026 → Err`（模拟任何"与今天比"的检查）→ `commit_accepts_future_as_of` 红。不再用"跳过 `render_data_block`"做变异：F2.2 的 op 层复核会让那种变异保持绿 |
 | A3 | kinds 表、upsert enum、commit enum 三者含 `chart.series` 且相等 | `contracts.rs:695-711` | `block_kind_enum()` 硬编码四项 → 既有测试红 |
 | A4 | 行存在时 read 默认给 summary，`n/first/last/change_pct/high/low/as_of/complete_through` 与 fixture 一致 | 集成测试比对 fixture 期望 | `summarize` 里 `change_pct` 用 `(last-first)/last` → `read_hydrates_chart_series_summary_from_row` 红 |
-| A5 | 插件未安装 / 未运行 / 超时 / `isError` → 行 `unavailable`，reason 各不同；read 仍 200 | 四条用例，直接调 `resolve` | `resolve` 删掉 `tokio::time::timeout` 包裹 → `resolve_marks_a_hung_plugin_unavailable`（永不回复的假插件 + 测试超时 40s）红（挂死） |
+| A5 | 插件未安装 / 未运行 / 超时 / `isError` → 行 `unavailable`，reason 各不同；read 仍 200 | 四条用例，直接调 `resolve`；超时用例把 `SeriesResolver` 的 `resolve_timeout` 注入为 50ms（不是常量 30s，§11 A m5） | `resolve` 删掉 `tokio::time::timeout` 包裹 → `resolve_marks_a_hung_plugin_unavailable`（永不回复的假插件；测试自身 5s 上限）红（挂死） |
 | A5b | **超时不泄漏 responder**：永不回复的假插件，`timeout(1s, client.call(…))` 两次 | 两次都 `Err(Elapsed)`；`client.pending_responders() == 0` | `ResponderSlot` 的 `Drop` 改成空实现 → `timed_out_calls_leave_no_responder`（`plugin_host/mcp.rs` 单元测试）红（读到 2） |
 | A6 | `resolve:{b:"full"}` 才有 `points`；默认无 | JSON 断言 | read 无条件塞 `points` → `read_full_is_opt_in_per_block` 红 |
 | A7 | frozen：直接并发调两次 `resolve`（假插件两次回不同数据、都满足钉住条件），再改 fixture 并第三次调 | 行 = 第一次完成者的数据；`pinned=true`；第三次后行不变 | 写入去掉 `WHERE report_series.pinned = 0` → `frozen_row_is_pinned_by_first_complete_resolution_and_never_overwritten` 红 |
-| A7b | frozen 回复含 `unknown_asset` / 某条 `complete_through` 早于请求 `as_of`（fixture：`as_of` 周日、`complete_through` 周五） | 行 `ok, pinned=false`；TTL 过期后 enqueue 非 no-op；fixture 把 `complete_through` 推到周一后再 resolve → `pinned=true` 且数据仍止于周五 | 钉住条件删掉 `complete_through >= as_of` 一项 → `frozen_reply_behind_cutoff_is_not_pinned` 红 |
-| A8 | live：行过期后 read 返回旧行并 enqueue；fixture 多给一根 bar 后 drain，`summary.last` 日期前进；docRev 不变；请求里 `as_of == yesterday_utc(now)` | 用注入的 `now` 把 `resolved_at` 设成过期；断言假插件收到的请求 `as_of` | read 对过期行不 enqueue → `stale_live_row_is_served_and_refreshed` 红；内核对 live 请求不填 `as_of` → `live_request_carries_yesterday_utc_cutoff` 红 |
+| A7b | frozen 回复含 `unknown_asset` / 某条 `complete_through` **不晚于**请求 `as_of`（fixture 两例：`as_of` 周日、`complete_through` 周五；`as_of` 周五、`complete_through` 周五） | 行 `ok, pinned=false`；TTL 过期后 enqueue 非 no-op；fixture 把 `complete_through` 推到周一后再 resolve → `pinned=true` 且数据仍止于周五 | 钉住条件 `complete_through > as_of` 改成 `>=` → `frozen_reply_at_cutoff_is_not_pinned`（周五/周五例）红；整项删掉 → `frozen_reply_behind_cutoff_is_not_pinned`（周日/周五例）红 |
+| A8 | live：行过期后 read 返回旧行并 enqueue；注入 `now` 前进一天、fixture 多给一根 bar 后 drain，`summary.last` 日期前进、行 `as_of` 前进到新的 `yesterday_utc(now)`；docRev 不变；请求里 `as_of == yesterday_utc(now)`、`start == as_of − 366d` | 用注入的 `now` 把 `resolved_at` 设成过期；断言假插件收到的请求 `start`/`as_of` 与新行 `as_of` | read 对过期行不 enqueue → `stale_live_row_is_served_and_refreshed` 红；内核对 live 请求不填 `as_of` → `live_request_carries_yesterday_utc_cutoff` 红；写行时 `as_of` 列不更新（`DO UPDATE` 漏掉 `as_of`）→ `refreshed_live_row_advances_as_of` 红 |
 | A9 | in-flight 去重：同键连续 enqueue 十次，假插件只收到一次 tools/call | 计数 | `enqueue` 不查 `inflight` → `refresh_is_deduplicated_per_key` 红 |
 | A9b | **drain 准入执行 TTL**：先让一次 resolve 写下新鲜行，再对同键 enqueue（模拟迟到读者的旧观察） | 假插件 tools/call 计数仍为 1 | `resolve` 步骤 1 删掉 `resolved_at ≥ now − TTL → 丢弃` → `fresh_row_is_not_re_resolved_by_late_reader` 红（计数 2） |
 | A9c | **失败路径不 fail-locked**：`failpoints.fail_write_once` 使步骤 7 返回 Err；再对同键 enqueue | 假插件 tools/call 计数 == 2 | `InflightGuard` 改成只在步骤 7 成功后显式 `remove` → `failed_resolve_releases_inflight_key` 红（计数 1） |
 | A9d | **lane 自愈**：`failpoints.panic_drain_once` 让 drain 任务 panic；再 enqueue | 假插件收到 tools/call | `enqueue` 删掉 `is_finished()/send 失败 → 重建 lane` 分支 → `panicked_lane_is_rebuilt` 红 |
+| A9e | **预检未命中不二次查找**：插件已安装但停止；`new_unstarted()` 记录器下 enqueue 一个块（记录到一次性 job，携带 `NotRunning`）；**启动插件**；再手动执行记录下的 job | 行 `unavailable, reason` 含 `is not running`；假插件 tools/call 计数 0 | 一次性任务改回重跑 `plugin_tool_entry`/`connector_client` → `precheck_miss_task_never_calls_the_plugin` 红（计数 1） |
+| A9f | **重建在锁内**：`rebuild_lane(&mut HashMap<PluginId, Lane>, id)` 只以锁内容为参数（签名层）；循环 200 轮：`panic_drain_once` → 8 路并发 `enqueue` 同键不同块 → 断言本轮 `drain_spawned == 1` 且假插件按序收到 8 次调用 | 计数 | 把重建移到锁外（`lock().get()` 判断后释放锁再 spawn+insert）→ 循环里出现 `drain_spawned == 2`（概率性，200 轮内必现）；改签名收 `Arc<Mutex<…>>` 自己加锁则 `rebuild_lane_takes_the_guard` 编译期红（`&mut` 只能来自 `MutexGuard`） |
 | A10 | **读路径零插件调用**：`SeriesResolver::new_unstarted()` 下对无行的块 read → `pending`，假插件 tools/call 计数为 0 | 计数 | read 里改成内联调用 resolver → `read_never_calls_the_plugin` 红 |
-| A10b | **写路径不触发**：commit 一个 `chart.series` 块后等 2s 不 read | 假插件计数 0；`report_series` 无行 | 在 `write.rs` 提交后加 `enqueue` → `write_does_not_trigger_resolution` 红 |
-| A11 | 3f：`source` 指向 `market.holdings.set`（`readOnlyHint:false`）/ 不在 manifest 的名字 / ForgeAction 工具 / `neige://plugin/a_b/c`（fixture 注册插件 `a` 暴露工具 `b_c`） | 行 `unavailable`，假插件计数 0；最后一例 reason 含 `a_b` 不含插件 `a` | `resolve` 删掉 `readOnlyHint` 检查 → `resolve_refuses_non_read_only_tools` 红；`plugin_tool_entry` 改成拼 `plugin.{id}_{tool}` 再 `plugin_tool_route` → `underscore_plugin_id_never_routes` 红 |
-| A12 | 校验清单：回复 9 条 / 时间戳降序 / `ts_ms` 非零点 / bar > as_of / NaN / 点数超上界 / `ok` 配 1 点 / `ok` 缺 `complete_through` 各一条 | 行 `unavailable, reason` 各不同 | 删掉"`points.len() >= 2`"检查 → `ok_series_with_one_point_is_malformed` 红；删掉"严格升序"检查 → `reply_with_descending_timestamps_is_unavailable` 红 |
+| A10b | **写路径不触发**：`SeriesResolver::new_unstarted()` 记录器下 commit 一个 `chart.series` 块，**不 read** | 记录器 `enqueue` 调用数 == 0；`report_series` 无行；假插件计数 0（不是「等 2s」的计时型负测试，§11 A m5） | 在 `write.rs` 提交后加 `enqueue` → `write_does_not_trigger_resolution` 红（调用数 1） |
+| A11 | 3f：`source` 指向 `market.holdings.set`（`readOnlyHint:false`）/ 不在 manifest 的名字 / ForgeAction 工具 / `neige://plugin/aa_b/c`（fixture 注册插件 `aa` 暴露工具 `b_c`；`a` 不是合法 id，`manifest.rs:2305` `len < 2` 拒绝，§11 R3-MINOR-2） | 行 `unavailable`，假插件计数 0；最后一例 reason 是 `plugin aa_b is not installed`（原字符串），且插件 `aa` 收到零次 tools/call | `resolve` 删掉 `readOnlyHint` 检查 → `resolve_refuses_non_read_only_tools` 红；`plugin_tool_entry` 改成拼 `plugin.{id}_{tool}` 再 `plugin_tool_route` → `underscore_plugin_id_never_routes` 红（`plugin.aa_b_c` 反解命中 `aa`/`b_c`） |
+| A12 | 校验清单：回复 9 条 / 时间戳降序 / `ts_ms` 非零点 / bar > as_of / **bar < start** / **week `ts_ms` 非周一** / **week 周期结束日 > as_of** / **month 非 1 日** / NaN / 点数超上界 / `ok` 配 1 点 / `ok` 缺 `complete_through` 各一条 | 行 `unavailable, reason` 各不同 | 删掉"`points.len() >= 2`"检查 → `ok_series_with_one_point_is_malformed` 红；删掉"严格升序"检查 → `reply_with_descending_timestamps_is_unavailable` 红；删掉"周期结束日 ≤ as_of" → `partial_week_is_rejected_at_the_boundary` 红 |
 | A13 | 删 track 后迟到的 `resolve` 写入 | 无行；任务不 panic；in-flight 键已释放 | 去掉 FK（改成无约束表）→ `late_resolution_after_track_delete_leaves_no_orphan` 红 |
-| A14 | 插件 `market.series` 对 fixture 源返回升序、`ts_ms` 为 UTC 零点、按 `as_of` 截止（含当日 bar）、`complete_through` = 未过滤最新 bar 日期、未知标的 `unknown_asset`、区间内 <2 点报 `unavailable`、腾讯 `qfqday`/`day` 两键、列序重排 | S3 进程级测试 | 截断条件 `<= as_of` 改 `<` → `series_as_of_includes_that_days_bar` 红；`complete_through` 改成过滤后的末点 → `complete_through_is_unfiltered_latest` 红 |
+| A14 | 插件 `market.series` 对 fixture 源返回升序、`ts_ms` 为 UTC 零点、窗口 `[start, as_of]`（含 `as_of` 当日 bar）、**旧 `as_of`（两年前）窗口非空**、**> 640 根按日期分页拼接无重复**、`complete_through` = 单独探测的最新日线日期（与 `period` 无关）、**week 只含完整 ISO 周、month 只含完整自然月**、**最早 bar 晚于 `start + 14d` → `lookback exceeds source depth`**、未知标的 `unknown_asset`、区间内 <2 点报 `unavailable`、腾讯 `qfqday`/`day` 两键、列序重排 | S3 进程级测试 | 截断条件 `<= as_of` 改 `<` → `series_as_of_includes_that_days_bar` 红；窗口取数改回「最新 N 根再过滤」→ `old_as_of_window_is_non_empty` 红（0 点）；`complete_through` 改成过滤后的末点 → `complete_through_is_unfiltered_latest` 红；聚合时不剔除未完成周 → `aggregated_week_never_partial` 红 |
 | A14b | 插件 `deadline_ms` 已过的请求 | 回 `isError`，fixture 源 HTTP 计数 0 | 删掉出队 deadline 检查 → `expired_request_does_not_hit_network` 红（计数 1） |
 | A15 | fe：`ok` 画出与序列数相同的 `<polyline>`；`normalized` 首点=100、首点 ≤ 0 的序列标不可归一化；`pending`/`unavailable` 文案；未钉住 frozen 标 `complete_through`；不含字面颜色 | `series/public.test.tsx` | normalized 除以 `last` 而非 `first` → `rebases every series to 100 at its first point` 红 |
 | A16 | HTTP：`?rev=` 不等于当前块 rev → 409 | 路由测试 | 路由忽略 `rev` → `series_route_rejects_stale_rev` 红 |
@@ -413,22 +438,25 @@ CREATE TABLE report_series (
 
 ## 7. KNOWN GAPS（登记，不加固）
 
-- G1 价格是否复权由插件源决定（腾讯 `qfq` = 前复权），本设计不声明；`resolved` 不带 `adjusted` 字段。
+- G1 价格是否复权由插件源决定（腾讯 `qfq` = 前复权），本设计不声明；`resolved` 不带 `adjusted` 字段。钉住的行冻结的是钉住时刻的复权基准：源之后因分红/拆股重算历史价，钉住行不跟随（这正是钉住的含义，D3 前提假设）。
 - G2 `line` 视图多序列跨币种按原值画、只标币种，不换算、不双轴。
-- G3 `pinned=false` 的 frozen 行（部分 `unknown_asset`、某条 `unavailable`、或 `as_of` 在未来 / 源尚未发布到 `as_of`）会按 TTL 反复重投直到满足，可能永远满足不了（停牌、退市、未来日期）；图上标"未钉住"。
+- G3 `pinned=false` 的 frozen 行（部分 `unknown_asset`、某条 `unavailable`、或源尚未发布出晚于 `as_of` 的日线 bar：`as_of` 在未来 / `as_of` = 最近一个交易日 / 退市 / 停牌）会按 TTL 反复重投直到满足，可能永远满足不了：**退市/停牌标的永不出现更晚的 bar → 永不钉住**（数据可画，图上标"未钉住"）；`as_of` = 最近一个交易日的钉住推迟到下一根日线 bar 出现（周末 3-4 天）。
 - G4 **新鲜度无界**：解析只由读触发；从未被读的块不解析；过期行被读到时先返回旧数据，刷新后要等下一次读。
 - G5 legacy `web/` 只显示 unsupported 一行；手机端同 fe。
 - G6 `market.series` 对 agent 可见（无隐藏机制）。
 - ~~G7~~ 已关闭：`plugin_tool_entry` 用 `registry.get` 精确查找，未安装 / 未运行 / 未暴露三态可分（D2 步骤 2）。
 - G8 行不主动 GC（只随 track 删除级联）；改参数留下旧行。
 - G9 港股历史无兜底源（新浪港股日线不可用）；腾讯 ifzq 挂掉时 HK 序列 `unavailable`。
-- G10 周线/月线由插件从日线聚合（腾讯只用 `day`），`period` 语义"以 bar 收盘日为准"。
-- G11 **传输层**：`McpClient` 读循环 `read_line` 无字节上限（`mcp.rs:783`），2 MiB 接受上限在整行入内存之后才生效——归 #1634，本设计不加固。**插件侧**：内核超时不通知插件取消；请求留在插件单工作线程队列（`main.rs:2602`）按序处理，缓解只有 `deadline_ms` 出队丢弃（S3），排在前面的慢请求仍会被执行。responder 泄漏本身由 S2 的 `ResponderSlot` guard 关闭，不再是 GAP。
+- ~~G10~~ 已关闭：周/月线由插件从日线聚合，只输出周期结束日 ≤ 截止日的完整周期，`ts_ms` = 周期起始日；内核边界也校验（D2 步骤 6、§2.5 S3 约束 3）。
+- G11 **传输层**：`McpClient` 读循环 `read_line` 无字节上限（`mcp.rs:783`），2 MiB 接受上限在整行入内存之后才生效——归 #1634，本设计不加固（第 3 轮 codex R3-6 再次提出，编排者裁决：deferred by scope decision）。**插件侧**：内核超时不通知插件取消；请求留在插件单工作线程队列（`main.rs:2602`）按序处理，缓解只有 `deadline_ms` 出队丢弃（S3），排在前面的慢请求仍会被执行。responder 泄漏本身由 S2 的 `ResponderSlot` guard 关闭，不再是 GAP。
 - G12 行刷新不发事件：浏览器在 `pending` 时轮询，过期行刷新后的新数据要等下一次 fetch；浏览器停轮询后过期行可见到下一次 fetch。
 - G13 内核对 `series` 只做字面去重；`HK:9988`/`HK:09988` 会得到两条同资产序列。
 - G14 live 截止日按 UTC 日期取昨天：CN/HK 市场当日收盘（UTC 07-08h）后到 UTC 零点之间，live 行仍止于前一交易日，比按本地日历多滞后一天。
 - G15 Assistant 可经 `resolved.reason` 读到只读工具的错误文本（≤ 256 字符）；D4 对"Assistant 不得拿 `resolved`"的驳回仍成立，这是它的间接通道。
 - G16 未钉住行在 fork 后两个 track 各自刷新、可能分叉；只有钉住行有 fork 不变保证。
+- G17 插件模板创建的 Owned track（`plugin_scope = <owner>`）上，非 owner 插件的 `chart.series` 永久 `unavailable, reason:"plugin <id> is outside this track's plugin scope"`（D2 步骤 3 与 agent 路由同一作用域，保守）。今天只有 `git-forge` 认领模板（`issue-development`），投研模板无 owner，不受影响。
+- G18 `lookback exceeds source depth`：插件分不清「源历史没那么深」与「标的上市/复牌晚于窗口起点 + 14 天」，两者同落 `unavailable`；新上市标的要用更短的 `range`。
+- G19 预检未命中写下的 `unavailable` 行是预检时刻的事实：插件之后启动，要等 TTL 过期 + 下一次读才重投。
 
 ## 8. 与 issue 的出入
 
@@ -437,23 +465,24 @@ CREATE TABLE report_series (
 3. issue 方向 2 "overlay 是推送不是查询 … 内核契约改动" → 请求-响应通道已存在（F4.6-F4.10），改动缩小为"内核后台任务作为调用者 + 插件声明一个只读 tool + 一张结果表 + `McpClient` 超时清 responder"。
 4. issue 方向 4 "不新增工具" → MCP 面不新增；浏览器需要一条 NEW HTTP 路由（D5）。
 5. issue "`as_of` / `frozen`" 两个名字 → 只用 `as_of`，语义是**截止日**。
-6. **v2 新增**：read 不即时；**v3 新增**：不承诺有界新鲜度，从未被读的块不解析（§2.8）。
+6. **v2 新增**：read 不即时；**v3 新增**：不承诺有界新鲜度，从未被读的块不解析（§2.8）；**v4 新增**：不在截止日当天钉住——`as_of` = 最近交易日的 frozen 块要等下一根日线 bar 出现（D3）。
 
 ## 9. 不确定点
 
 - U2 `SERIES_RESOLVE_TIMEOUT = 30s`、`SERIES_TTL = 6h`、`MAX_SERIES_REPLY_BYTES = 2 MiB`、`MAX_SERIES_ROW_BYTES = 1 MiB`、`reason` 256 字符是估值，S2 评审可调；改数不改结构。
 - U5 `pending` 轮询节奏（3s / 2 分钟后 30s）是估值，S4 定。
 - U6 腾讯 ifzq 的复权基准行（首行 2011 年）是否对所有 us 代码出现，S3 实现按日期过滤规避，测试 fixture 要包含这一行。
-- U7 腾讯 ifzq 在盘中是否返回当日未收盘的 bar：无论是否返回，live 的昨天 UTC 截止日都把它过滤掉；但它会影响 `complete_through`（若源在盘中就把当日 bar 列出，`complete_through` 会提前一天到达 `as_of`，frozen 块可能钉在含盘中价的当日 bar 上）。S3 实现要实测并在 fixture 里覆盖；若为真，`complete_through` 取"源最新 bar 日期的前一天"作保守值。
+- ~~U7~~ 已关闭（第 3 轮）：腾讯 ifzq 盘中是否列出当日未收盘的 bar 仍未实测（2026-09-13 是周日），但严格 `complete_through > as_of` 使它只影响钉住的时点、不影响正确性；Binance 不带 end 的探测必然含未收盘日 K 已实测（§2.5）。S3 fixture 两种情形都覆盖。
 
 （v1 的 U1 由 §2.5 实测关闭；U3 由 D4 裁决关闭；U4 由 F7.6 关闭。）
 
 ## 10. 参考
 
 - 本文 §2 所有 file:line 基于 `c534bf6b`。
-- 第 1 轮评审原文：`docs/_1628-design-review-codex-v1.md`、`docs/_1628-design-review-subagent-v1.md`；第 2 轮：`docs/_1628-design-review-codex-v2.md`、`docs/_1628-design-review-subagent-v2.md`。
-- U1 spike：编排者 2026-09-12 实测，表已复制进 §2.5。
+- 第 1 轮评审原文：`docs/_1628-design-review-codex-v1.md`、`docs/_1628-design-review-subagent-v1.md`；第 2 轮：`docs/_1628-design-review-codex-v2.md`、`docs/_1628-design-review-subagent-v2.md`；第 3 轮：`docs/_1628-design-review-codex-v3.md`、`docs/_1628-design-review-subagent-v3.md`（A 通道原文第 49 行有一个 #1316 退役词，修订者替换为「OpenAPI 文件」并在文内加注，其余原文未动）。
+- U1 spike：编排者 2026-09-12 实测，表已复制进 §2.5。窗口 spike：编排者 2026-09-13 实测，表已复制进 §2.5；Binance 未收盘 K 线一行由修订者同日补测。
 - 相关：#1556 S1（venue-qualified identity）、#1623（`calm.report.commit`）、#960 PR3（kinds 词汇）、#1612（layout 讨论，材料不在基线）、#1634（MCP 传输层字节上限，本设计的 G11 归它）。
+- origin/main 在 `c534bf6b` 之后 3 提交（`7754fd32` #1626 投研模板、`60f33140` #1631 worker grants、`bd033633`）：#1631 在 `transport.rs` 的 agent 路径加 `worker_grants::require`，本设计的内核发起调用不经 `dispatch_plugin_tools_call`，不受影响，但 F4.9 行号变基后偏移 +3…+7，S2 实现时重核。
 
 ## 11. 处置历史
 
@@ -524,7 +553,7 @@ CREATE TABLE report_series (
 | 2 | codex | R2-8 MAJOR 非交易日冻结未定义（周日 `as_of` 永不满足回显相等）；fork 只复制 pinned 行使子 track 先空后解析出修订价，违反冻结不变式 | 采纳。`as_of` 改为**截止日**语义：插件返回日期 ≤ `as_of` 的点，每条另带 `complete_through`（钉住判据见 A M1）；fork 复制**全部** `report_series` 行（核实 `tracks.rs:2322-2329` fork 在事务里拿快照、`:2717` 保留 id）；保证边界"钉住行不变；未钉住行各自刷新可能分叉"登记 G16 | D1、D3 frozen/fork、seq 7/7d/12、G16 |
 | 2 | codex | R2-9 MAJOR 完整性校验允许 `ok` + 空 `points` 被永久钉住 | 采纳（与 A m7 合并）。校验清单加 `ok` 项 `points.len() >= 2`，否则整个回复 malformed → `unavailable`；插件对 <2 点自己报 `unavailable, reason:"no data in range"`；A12 加变异 | D2 步骤 6、回复形状、seq 3e、A12/A14 |
 | 2 | codex | R2-MINOR "改 view 不换行"与 `fields` 由 `view` 派生矛盾 | 采纳（与 A m1 合并）。不变式收窄为"不改变派生 `fields` 的 view 切换复用行"：`line↔normalized↔bar` 复用，`candles` 与其它互换换行 | D1、D3 身份、seq 7c |
-| 2 | A | M1 MAJOR 钉住条件"回复 `as_of == 请求 as_of`"要么空洞（回显）要么对非交易日永不满足 | 采纳 A 的方案。插件回复每条 series 带 `complete_through` = 源**未过滤**的最新 bar 日期（插件总是拉最新 N 根再按 `as_of` 过滤，§2.5）；钉住 = 每条 `ok` ∧ 每条末点 ≤ `as_of` ∧ 每条 `complete_through >= as_of`；周日 `as_of` → 源最新周五 → 未钉住 → 周一出 bar 后 TTL 重投钉住，"最多延迟到下一个交易日"；回复顶层 `as_of` 删除；A7b 改用新判据 | D2 步骤 6、回复形状、D3 frozen、seq 7a/7d、A7b、G3 |
+| 2 | A | M1 MAJOR 钉住条件"回复 `as_of == 请求 as_of`"要么空洞（回显）要么对非交易日永不满足 | 采纳 A 的方案。插件回复每条 series 带 `complete_through` = 源**未过滤**的最新 bar 日期；钉住 = 每条 `ok` ∧ 每条末点 ≤ `as_of` ∧ 每条 `complete_through >= as_of`。**[第 3 轮修正：v3 用「插件总是拉最新 N 根再按 `as_of` 过滤」实现 `complete_through`，被 codex R3-2 / A M1 证明是缺陷本身（旧 `as_of` 永久截断或 0 点）；`>=` 被 codex R3-1 / A M2 证明在相等时钉住未收盘 bar。v4 改窗口取数 + 单独探测 + 严格 `>`]**；周日 `as_of` → 源最新周五 → 未钉住 → 周一出 bar 后 TTL 重投钉住，"最多延迟到下一个交易日"；回复顶层 `as_of` 删除；A7b 改用新判据 | D2 步骤 6、回复形状、D3 frozen、seq 7a/7d、A7b、G3 |
 | 2 | A | M2 MAJOR `as_of < 今天(UTC)` 落在无时钟的 calm-types 纯函数 | 采纳，且**整个删掉这条写端校验**。核实：`calm-types/Cargo.toml` 无 chrono/time/jiff，`src` 无 `Utc::now`/`SystemTime::now`（F1.12）。有了 `complete_through` 判据，未来 `as_of` 自然是"未钉住、到期后自动钉住"；`validate_chart_series` 只查 `YYYY-MM-DD` 形状；A2/2n 的"`as_of` ≥ 今天"用例删掉，A2 加"接受未来日期"正例与"加时钟检查必红"变异；fe zod 可提示不拒绝。第 1 轮 A M3 的处置作废 | D1、F1.12、seq 2n/7、A2、D5 zod、§5 S1 |
 | 2 | A | M3 MAJOR live 吞盘中半根 bar（`≤ 今天`） | 采纳。live 请求截止日 = **昨天 UTC**，内核在请求里显式填 `as_of = yesterday_utc(now_ms)`（calm-server，有 `chrono`，F7.7），插件对两态走同一条过滤路径；校验清单"每点日期 ≤ 请求 `as_of`"两态统一；登记 G14（CN/HK 按 UTC 多滞后一天）；`report_series.as_of` 改 `NOT NULL`（两态都有截止日）；A8 加"live 请求带昨天 UTC"断言 | D2 请求截止日、请求形状、D3 表/live、F7.7、A8、G14、§1 非目标 |
 | 2 | A | M4 MAJOR resolver 失败路径 fail-locked：步骤 7 Err → 键留在 `inflight` → 永久 `pending`；drain panic → receiver 丢 → `send` 静默失败 | 采纳。`InflightGuard` RAII（任何退出路径释放键）；lane 用 `JoinHandle` 监督，`enqueue` 时 `is_finished()` 或 `send` 失败 → 重建；`#[cfg(test)] failpoints`；seq 3h；A9c/A9d 两条 must-red；D2 步骤 8 显式清理删除 | D2 enqueue 1/3、步骤 7-8、seq 3h/9、A9c/A9d |
@@ -542,3 +571,34 @@ CREATE TABLE report_series (
 | 2 | A | §2 F3.7 `event_bus.rs` 在 calm-truth，文档未标 crate | 采纳 | F3.7 |
 | 2 | A | 切片与纪律核对（S1→(S2∥S3)→S4 各自可合入；迁移号推迟；不 bump 三常量；`Resolved` 用枚举）✓ | 无改动 | — |
 | 2 | 编排者 | 切片影响：删订阅者后 S2 变小，`McpClient` guard 计入 S2，重算行数 | 采纳。S1 ~550 / S2 ~950 / S3 ~950 / S4 ~800，总 ≈ 3250（v2 3300） | §5 |
+
+
+### 第 3 轮（v3 → v4）
+
+每条先到代码核实再处置；驳回附 file:line。两通道各自独立命中同两处缺陷（窗口截断、相等判据），编排者裁决与评审并列。
+
+| 轮次 | 通道 | 发现 | 处置 | 落点 |
+|---|---|---|---|---|
+| 3 | 编排者 | **交叉命中 1：窗口截断**（codex R3-2 / A M1）——「拉最新 N 根再按 `as_of` 过滤」让 `range=1Y`、`as_of` 六个月前的块钉在半年数据上，两年前的块 0 点永久 `unavailable`；那句话就是缺陷本身 | 采纳，整段重写。窗口定义进 D1：`[as_of − RANGE_DAYS[range], as_of]`（历日表与 `max_points` 共用），live 即 `[昨天 − RANGE_DAYS, 昨天]`；内核在请求里填 `start`、删 `range`（一个算法一个实现）；校验清单加 `≥ start`；S3 按 spike（编排者 U7 spike 行）显式 start/end 取数、约 640 根按日期分页、`complete_through` 单独探测；超出源深度 → `unavailable, reason:"lookback exceeds source depth"`（判据：最早 bar > `start + 14d`）登记 G18；A14 加旧 `as_of` 窗口非空 + 分页 + 深度不足用例；§2.5 与 D2 回复注释里的「总是拉最新 N 根」删除；seq 3i/3i′ 新增 | D1、§2.5、D2 请求窗口/形状/步骤 6、seq 3/3e/3i/3i′、A8/A12/A14、G18、§11 第 2 轮 A M1 行标注 |
+| 3 | 编排者 | **交叉命中 2：严格 `>`**（codex R3-1 / A M2）——`complete_through == as_of` 时钉住的是内核无法证明已收盘的那根 bar | 采纳。核实 A 的断言：Binance `klines?interval=1d&limit=2` 不带 end 的末根 `closeTime` 在未来 [实测 2026-09-13 02:39 UTC]，即不带 end 的探测**必然**含当前未收盘日 K，`>=` 下 `as_of = 今天` 的 crypto frozen 块会钉在半根 bar 上。判据改 `complete_through > as_of`；`complete_through` 定义为源未过滤的最新**日线** bar 日期、与 `period` 无关（A：周/月聚合 bar 的日期会骗过判据）；D3 加前提假设（bar 日期正确、按时间顺序发布）与逐场景表；U7 关闭；G3 登记退市/停牌永不钉住、最近交易日的钉住推迟到下一根 bar；§8 加出入 7；附带：live 行永远 `pinned=0`（探测让 live 也能满足 `>`，修订者补写进 D3） | D1、D3 frozen/live、seq 7a/7d、A7b、G3、U7、§8 |
+| 3 | codex | R3-1 MAJOR 相等不能证明截止 bar 已收盘；U7 仍开；记录 U7 不等于解决已采纳的 A M1/M2 | 采纳（同交叉 2）。codex 自己给的边界（延迟到更晚 bar 出现、退市序列永不钉、不证明历史完整、不防事后修正）全部写进 D3/G3/G1 | 同上 |
+| 3 | codex | R3-2 MAJOR 「最新 N 再过滤」永久钉住被截断的历史窗口 | 采纳（同交叉 1） | 同上 |
+| 3 | codex | R3-3 MAJOR 周/月聚合重新引入未完成 bar：周四冻结到周三，周一-周三聚成半根周 K，周四的日线日期满足严格 `>`；live 聚合把当前半周标成最新日期也能过昨天截止 | 采纳。核实 spike：ifzq `week`/`month` 端点只回当前一根且日期是最新日线日期（不可用），周/月必须插件自聚合。规则写进 §2.5 S3 约束 3：ISO 周 / 自然月、UTC 日期、只输出 `period_start ≥ start ∧ period_end ≤ as_of` 的完整周期、`ts_ms` = 周期起始日零点、聚合值定义；内核边界也校验（周一 / 1 日、周期结束日 ≤ `as_of`）；§2.8 写 live 周线最多滞后一周；G10 关闭；seq 3j、A12 三条、A14 两条 | §2.5、§2.8、D1 period、D2 步骤 6/回复形状、seq 3e/3j、A12/A14、G10 |
+| 3 | codex | R3-4 MAJOR 路由预检未命中绕过 lane：插件停止时 enqueue 多个块 → 各自一次性任务；插件在它们二次查找前启动 → 全部在 lane 外并发调用 | 采纳。核实：`running_plugin_ids()`（`plugin_host/mod.rs:3260`）与 `connector_client()`（`:3312`）各自 `lock_table()` 一次，状态在两次采样之间可变，v3 的「步骤 2 会再次未命中」不成立。v4：job 携带预检结果，一次性任务只做准入 + 写 `unavailable`，不二次查找、不取 `connector_client`、不调插件；lane 里的 job 才走 resolve 步骤 2；A9e must-red（`new_unstarted()` 记录器截住一次性 job，启动插件后再执行，断言零调用）；G19 登记「预检时刻的事实要等 TTL + 下次读」 | D2 enqueue 2 / resolve 2、D6、seq 3b、A9e、G19、§2.8 例外 (d) |
+| 3 | codex | R3-5 MAJOR 有界 mpsc `send().await` 在挂住 30s 的调用后面让读者等通道容量，与「enqueue 不等插件」矛盾 | 采纳（与 A m1 合并）。lane 通道改 `mpsc::unbounded_channel`，`enqueue` 用同步非阻塞 `UnboundedSender::send`；上界机制是 in-flight 集合（每键至多一个 job ⇒ 排队总数 ≤ `inflight.len()` ≤ 工作区 `chart.series` 块数），不是通道容量；D6 资源约束逐条指机制 | D2 enqueue 3、D6、§2.8 |
+| 3 | codex | R3-6 MAJOR R2-2 仍是措辞/范围处置：插件 stdout 无换行的任意长行在 `mcp.rs:783` 整行入内存后才到 `:802` 解析，guard/超时/reason 上限/接受上限都管不到 | **维持转 #1634，deferred by scope decision**（编排者第 3 轮裁决，范围裁决不是技术驳回）。核实 `mcp.rs:783` 未变；G11 加注 | G11、F4.17 |
+| 3 | codex | R3-MINOR-1 保证语句与失败规则矛盾：D:148「30s 内得到一行」但超时只盖插件调用，D:250 允许写失败无行，D:240 允许 lane panic 丢 job；D:183/301「下一个交易日钉住」却要求 TTL 后再读；D:300「过夜必刷新」但 23:59 写入的行 00:01 仍新鲜 | 采纳。§2.8 保证语句改写为「30s 内返回或超时 + 一次写行」并附例外清单 (a) 写失败无行 (b) lane panic 丢 job (c) 被替换 lane 丢 job (d) 预检 miss 行是预检时刻的事实，全部以「下次读重投」收口；「下一个交易日钉住」改为「更晚 bar 出现 ∧ 之后一次读 ∧ TTL 已过」；D3 live 与 §2.8 写明 TTL 是时长不是日历 | §2.8、D3 live/frozen、seq 7d、G4 |
+| 3 | codex | R3-MINOR-2 A11 fixture 插件 `a` 过不了 manifest 校验 | 采纳。核实 `manifest.rs:2303-2314` `is_valid_plugin_id`：`bytes.len() < 2 → false`（`:2305`）。fixture 改 `aa` / `b_c` / `neige://plugin/aa_b/c`；断言改为 reason 是原字符串 `aa_b` 且插件 `aa` 零调用（「不含 `a`」对 `aa_b` 是空洞断言） | A11 |
+| 3 | codex | R3-MINOR-3 S2 先于 S3 时的失败路径写成插件 `unknown tool`，但 manifest 未暴露 `market.series`，D2 步骤 2 在调用前就回 `NotExposed` | 采纳。核实 `plugins/market/manifest.json:10-62` `exposes_tools` 只有 `market.quote` / `market.holdings.set` / `market.holdings.list`。§5 与 seq 3c 改为 `NotExposed` → `unavailable, reason:"plugin dev-neige-market does not expose market.series"`、零调用；`main.rs:2572` 的分支对本构造不可达 | §5、seq 3c |
+| 3 | A | M1 MAJOR `range` 锚点未定义，旧 `as_of` 永久 `unavailable`（`{range:"1Y", as_of:"2024-12-31"}` 拉最新 1Y 全部 > `as_of` → 0 点 → 每 6h 重投永远如此） | 采纳（同交叉 1）。A 的「反推拉取深度」被 spike 替换为显式 start/end 窗口 + 分页 | 同交叉 1 |
+| 3 | A | M2 MAJOR 严格 `>` + `complete_through` 必须是日线定义 | 采纳（同交叉 2）。A 的逐场景表核对后写进 D3；「U7 提议的前一天保守值」随 U7 关闭作废 | 同交叉 2 |
+| 3 | A | m1 MINOR lane 重建竞态：两个并发 `enqueue` 都见 `is_finished()` → 各建一条，短暂两条 drain 同跑一个插件；被替换 lane 队列里的 job 随 receiver drop 丢失 | 采纳（与 codex R3-5 合并）。检查-重建-投递在 `std::sync::Mutex` 锁内、无 `.await`（spawn 与 unbounded send 都同步）；`rebuild_lane` 以 `&mut HashMap` 为参数（拿不到锁调不了）；核实 tokio 1.52.3（`Cargo.lock:3644`）`Rx::drop` 先 `close()` 再 `drain()` 排空缓冲区（`sync/mpsc/chan.rs:487-508`）→ 被替换 lane 的 job 被 drop、guard 释放键；写进 §2.8 例外 (b)(c)；A9f（签名 + 200 轮循环复现，循环部分是概率性的，已如实标注） | D2 enqueue 3、seq 3h、A9f、§2.8 |
+| 3 | A | m2 MINOR Owned track 只能解析 owner 的工具（`tool_visibility.rs:141` `Owned → Only(plugin.id)`）：绑定了非 market owner 的 track 上 market 图永久 `unavailable`；oracle/G 表未登记 | 采纳登记，规则维持（编排者：与 agent 路由同一作用域，保守）。核实影响面：owner 只在创建时由「运行中可信插件的 manifest `templates` 认领了该模板 key」得来（`routes/tracks.rs:1683-1688`、`:1691-1695`、`:1750-1752`）；`grep -n '"templates"' plugins/*/manifest.json` 只有 `git-forge` 认领 `issue-development`（`plugins/git-forge/manifest.json:302-306`）；投研模板 `investment-research`（#1626，origin/main `7754fd32`，不在基线）无认领 → `plugin_scope = NULL` → `All`。seq 3b 加 (iii)，G17 登记 | D2 步骤 3、seq 3b、G17 |
+| 3 | A | m3 MINOR `summary TEXT NOT NULL` 与 `unavailable` 行矛盾 | 采纳，改 nullable（`unavailable` 行 NULL；D4 的 `Resolved::Unavailable` 本就无 summary） | D3 表 |
+| 3 | A | m4 MINOR drain 准入用 `load_report_read_snapshot` 太重 | 采纳。核实 `track_report_read.rs:43-52` 先 `load_settings` 再算 `task_diagnostics`；`report_blocks_snapshot_tx(tx, track_id) -> (String, Vec<ReportBlock>)`（`track_report.rs:73`）在事务内给带 payload 的块，先例 `task_recovery/admission.rs:158`、`file_delivery/repair.rs:101`。准入改为一次短 `write_in_tx_typed` 事务，判定后即提交、不跨插件调用持有 | D2 步骤 1 |
+| 3 | A | m5 MINOR A10b「等 2s 不 read」是计时型负测试；A5「测试超时 40s」 | 采纳。A10b 改 `new_unstarted()` 记录器断言 `enqueue` 调用数 0 + 无行；`SERIES_RESOLVE_TIMEOUT` 改为 `SeriesResolver` 字段，A5 注入 50ms | A5、A10b、D2 seam |
+| 3 | A | m6 MINOR F3.9「共 7 处」错，实跑 26 | 采纳。`grep -rn "TrackReportEdited" crates/calm-server/src --include='*.rs' \| wc -l` = 26；`grep -rn "Event::TrackReportEdited {" … \| grep -v tests.rs` = 5（1 构造 `write.rs:1098` + 4 match）；结论「生产构造点只有一处」不变 [实测 2026-09-13] | F3.9 |
+| 3 | A | m7 MINOR seq 8 缺 live 行 `as_of` 前进断言 | 采纳。seq 8 与 A8 加「行 `as_of` = 新的 `yesterday_utc(now)`」，变异「`DO UPDATE` 漏 `as_of` 列」 | seq 8、A8 |
+| 3 | A | 第 2 轮处置复核全部落地为机制；残留「上界」措辞全是引述或否定 ✓ | 无改动 | — |
+| 3 | 编排者 | U7 spike 由编排者完成（`spike-u7-window-fetch.md`）：ifzq 只给 end 不可用、start+end 可用、单次约 640 根、周/月端点不可用；Binance `endTime` 可用 | 采纳。表复制进 §2.5 标 [实测 2026-09-13 编排者]；修订者补测 Binance 不带 end 的探测含未收盘 K（一行，标修订者） | §2.5、§10 |
+| 3 | 修订者 | 附带：请求形状加 `start`、删 `range`（内核算一次窗口，插件不再复算）；A12/A14 相应加窗口下界用例。编排者未裁决此项，可否决 | 待编排者确认 | D2 请求形状、§2.5 S3 约束 1 |
