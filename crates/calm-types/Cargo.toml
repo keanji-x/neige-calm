@@ -42,3 +42,6 @@ utoipa = "5"
 
 [dev-dependencies]
 proptest = "1"
+# #1635 S2a — sha256 pin of `report/legacy_initial_v4.md` in the tests only.
+# Pure hashing, dev-only; none of sqlx/axum/tokio comes with it.
+sha2 = "0.10"

@@ -135,6 +135,30 @@ fn initial_body() -> &'static str {
     &BODY
 }
 
+/// #1635 S2a — the default report body exactly as shipped up to and including
+/// `7754fd32` (no contract header line). Frozen as a file so the bytes survive
+/// squash merges: the header-less compatibility fallback of
+/// `report_startup_read_required` (S3) compares against THIS, and the
+/// post-S2b default body is pinned as `header line + "\n" + this`.
+/// Never edit the file; a change here is a change to what "unwritten" means
+/// for every pre-header track in every database.
+///
+/// The file was generated, not typed, from the fragments `initial_body()`
+/// concatenates at that commit — and the pin in `legacy_initial_v4_bytes_are_pinned`
+/// is the output of the same command:
+///
+/// ```sh
+/// { cat crates/calm-types/src/track_report_contract_rules.md \
+///       crates/calm-types/src/track_report_section_rules.md; \
+///   printf -- '-->\n\n# 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n'; } \
+///   > crates/calm-types/src/report/legacy_initial_v4.md
+/// sha256sum crates/calm-types/src/report/legacy_initial_v4.md
+/// # 6cd893b62424185a842cccc790712a0c1d05151ec84cb6d9d85544f0d2e3f9f3
+/// wc -c crates/calm-types/src/report/legacy_initial_v4.md
+/// # 2647
+/// ```
+pub const LEGACY_INITIAL_V4_BODY: &str = include_str!("report/legacy_initial_v4.md");
+
 /// Report-body prefix for the kernel's built-in templates: writing
 /// rules + section rules + the pre-set section notes, **already closed**.
 ///
@@ -500,6 +524,46 @@ mod tests {
         assert!(
             !prefix.contains("优先用表格"),
             "the 关键数据 table is a requirement, not a preference"
+        );
+    }
+
+    /// #1635 S2a — the frozen file IS today's default body, byte for byte.
+    /// S2b will replace this with
+    /// `initial().body == HEADER_LINE + "\n" + LEGACY_INITIAL_V4_BODY`;
+    /// do not weaken it any other way.
+    #[test]
+    fn legacy_initial_v4_is_today_s_initial_body() {
+        assert_eq!(LEGACY_INITIAL_V4_BODY, TrackReportPayload::initial().body);
+    }
+
+    /// #1635 S2a — the bytes are pinned independently of `initial_body()`, so
+    /// a fragment edit that drifts BOTH sides in step still goes red here.
+    /// Length, no CR, and the sha256 printed by the generating command in the
+    /// constant's doc comment.
+    #[test]
+    fn legacy_initial_v4_bytes_are_pinned() {
+        use sha2::{Digest as _, Sha256};
+
+        assert_eq!(LEGACY_INITIAL_V4_BODY.len(), 2647);
+        assert!(
+            !LEGACY_INITIAL_V4_BODY.contains('\r'),
+            "a CRLF checkout would silently change the frozen bytes"
+        );
+        let digest = format!("{:x}", Sha256::digest(LEGACY_INITIAL_V4_BODY.as_bytes()));
+        assert_eq!(
+            digest,
+            "6cd893b62424185a842cccc790712a0c1d05151ec84cb6d9d85544f0d2e3f9f3"
+        );
+    }
+
+    /// #1635 S2a — a pre-header track whose body is exactly the frozen bytes
+    /// reads as "unwritten" today; S3's legacy fallback must keep it so.
+    #[test]
+    fn legacy_initial_v4_reads_as_unwritten_today() {
+        let payload = TrackReportPayload::new("", LEGACY_INITIAL_V4_BODY);
+        assert!(
+            !payload.report_startup_read_required(),
+            "the frozen pre-header body must not require a startup read"
         );
     }
 }
