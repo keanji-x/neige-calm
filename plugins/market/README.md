@@ -297,9 +297,142 @@ identical `/api/v3` paths with no key, no geo gate, and over a direct
 connection, which matters because the systemd unit carries no proxy variables.
 Point `binance_endpoint` at the main API if your host is eligible.
 
+## Historical series (`market.series`)
+
+The plugin's second read tool. It is the resolution backend of a report's
+`chart.series` block — the kernel derives one request per block and calls it
+in the background — and it is also callable directly as
+`plugin.dev-neige-market_market.series`. Both callers get one contract.
+
+**All seven keys are required, none is defaulted.** A request is
+`{series, fields, period, mode, start, as_of, deadline_ms}`:
+
+| key | shape | meaning |
+| --- | --- | --- |
+| `series` | 1–8 asset names | venue-qualified, same grammar as everywhere else; each item is answered on its own |
+| `fields` | 1–5 of `open` `high` `low` `close` `volume` | what each point carries, in this order after `ts_ms` |
+| `period` | `day` \| `week` \| `month` | week = ISO Monday–Sunday, month = calendar month, both aggregated from daily bars |
+| `mode` | `live` \| `frozen` | `frozen` for a block with its own `as_of`; `live` when the kernel filled `as_of` with yesterday UTC |
+| `start` | `YYYY-MM-DD` | first day of the window, inclusive, a real calendar date |
+| `as_of` | `YYYY-MM-DD` | the **cutoff** day, inclusive |
+| `deadline_ms` | integer | unix milliseconds after which the caller no longer wants the answer |
+
+A missing or malformed key is a tool error before any request goes out. In
+particular `mode` is never guessed from `as_of` and never defaults to `live`:
+`live` relaxes the inclusion rule for some venues, and a caller that did not
+say so must not get it. A request dequeued after its `deadline_ms` is refused
+the same way — the kernel gave up on it already, and the network is not spent
+on a reply nobody reads.
+
+`as_of` is a cutoff, not "the date of the last bar": the reply carries every
+bar of `[start, as_of]` the source lists, so the last point may be earlier
+(weekend, holiday, halt).
+
+### What comes back
+
+`structuredContent.series` has one item per request item, in order, each
+`{asset, currency?, status, complete_through?, points?, reason?}`. `asset`
+echoes the request string. `status` is `ok`, `unknown_asset` (no venue, `CN:`,
+or a crypto name Binance does not list) or `unavailable` (with a `reason`).
+`currency` is the source's — `USD`, `HKD`, `CNY`, `USDT`. `points` are
+`[ts_ms, <one value per requested field>]`, `ts_ms` the UTC midnight of the
+bar (or of the period's first day), strictly ascending, at least two of them;
+fewer is `unavailable, no data in range`. `complete_through` is the newest
+**daily** bar the source listed when it was probed, whatever the period.
+
+### Probe first, then the window
+
+Each item is resolved in a fixed order: **probe** the source for its newest
+daily bar (`complete_through`), **fetch** the window `[start − 14d, as_of]`,
+check its **depth** and **near end**, then **aggregate and include**. The probe
+comes first because it is what certifies a bar as closed: a bar is emitted
+under the strict rule only when a later daily bar was already listed *before*
+the window was fetched. The other order would let a still-changing intraday
+bar be certified by a probe made after it was read.
+
+Two checks refuse a window rather than draw it short: the earliest bar more
+than 14 days after `start` is `lookback exceeds source depth` (the source's
+history is not that deep, or the listing is younger than the window — the
+plugin cannot tell which); the newest bar in the window more than 14 days
+before `as_of` is `no data near cutoff` (delisting, a long halt, a source that
+truncates its near end).
+
+### Inclusion: `live` vs `frozen`, by venue
+
+A bar or period is emitted when its **period end** (the bar's day, the week's
+Sunday, the month's last day) satisfies the rule for its `(mode, period, venue)`:
+
+| `mode` | `period` | venue | rule |
+| --- | --- | --- | --- |
+| `live` | `day` | `HK`, `SH`, `SZ` | `start ≤ date ≤ as_of` — relaxed |
+| `live` | `day` | `US`, `CRYPTO` | strict |
+| `live` | `week`, `month` | any | strict |
+| `frozen` | any | any | strict |
+
+**Strict** means `period_start ≥ start`, `period_end ≤ as_of` **and**
+`period_end < complete_through`: the source must already list a *later* daily
+bar, which is the proof that this one closed. Under it the newest closed bar
+waits for the next one to appear; a weekly point waits for the following
+Monday's bar.
+
+**Relaxed** drops the last clause, and is taken only where the regular session
+for day D ends hours before D+1 00:00 UTC: Hong Kong closes 08:00 UTC and the
+mainland exchanges 07:00 UTC, so a bar dated yesterday UTC or earlier has
+closed by the time any `live` request is made. `CRYPTO` is never relaxed —
+Binance's day closes exactly at the next UTC midnight, so the margin is zero.
+`US` is **not relaxed today** either, although its regular session also ends
+before midnight UTC: whether Tencent's (and Sina's) US daily bar absorbs
+after-hours trades (20:00–00:00 UTC in EDT) has not been measured — the spike
+needs two reads of one ticker during that session, on each source, compared
+against the exchange's regular-session volume. Until that evidence exists US
+takes the strict arm; the switch is the one function `venue_relaxes_live_daily`
+in `series.rs`.
+
+Weekly and monthly points are always strict, even under `live`: the source's
+daily feed can lag, and a week aggregated from Monday to Thursday because
+Friday's bar had not been published yet would otherwise be emitted as a full
+week. The comparison is on the period's *end*, never its `ts_ms` (a Monday):
+a Wednesday's live weekly request does not emit the half-built current week.
+
+### Sources and their limits
+
+| venue | source | code | page behaviour |
+| --- | --- | --- | --- |
+| `SH`, `SZ` | Tencent ifzq, `qfqday` rows | `sh600519`, `sz000001` | a window answers at most its newest **640** rows; the plugin pages backwards (`end = earliest − 1 day`) until `start − 14d` is covered, at most 8 pages, deduplicated by date |
+| `HK` | Tencent ifzq, `day` rows | `hk` + five zero-padded digits | full window in one page (≥ 1400 rows measured) |
+| `US` | Tencent ifzq, `day` rows | probe bare `usNVDA`; window `us` + the exchange-suffixed code the probe's `qt[2]` names (`usNVDA.OQ`, `usJPM.N`) | a bare code answers nothing to a windowed request, so the suffix is discovered first; no suffix → `unavailable, exchange suffix unknown` |
+| `CRYPTO` | Binance `/api/v3/klines`, `1d` | `<SYMBOL>USDT` | at most 1000 klines per page, returned from `startTime` forward; the plugin pages forwards |
+
+ifzq rows are `[date, open, close, high, low, volume]` — o,c,h,l,v, which the
+plugin reorders — and a refused request answers `code: 0` with a non-empty
+`msg`, which is what the plugin reads. Its US probe answers a 2011 adjustment
+baseline row plus the newest bar; a probe with only the baseline row is
+`unavailable, probe returned no recent bar`. Weekly and monthly bars are
+aggregated here (open of the first day, close of the last, max high, min low,
+summed volume) because the source's own `week`/`month` modes answer only the
+current bar. There is no fallback source yet: an ifzq failure is `unavailable`
+with its reason.
+
+### Cache
+
+Fetched pages are kept in memory, keyed by source, code, page range **and the
+UTC date they were fetched on** — a page is never reused across a UTC midnight,
+for any venue or mode. Each page records the probe value observed before it
+was fetched, and that is the only probe that may certify its bars. Within a
+day, the page covering `as_of` is fetched again whenever the current probe is
+ahead of the one it was fetched under (the source published a newer bar since);
+older pages are reused. So a frozen block whose `as_of` is yesterday picks up
+today's bar as its proof the moment the source lists it, without a restart.
+
+### `debug_clock_ms`
+
+A test seam, not a setting: when configured, the plugin's wall clock is frozen
+at that instant — the deadline check and the cache's date key read it. The
+handshake logs a warning when it is set. Never configure it on a real install.
+
 ## Settings
 
-Four keys, all optional, all with working defaults — an unconfigured install
+Six keys, all optional, all with working defaults — an unconfigured install
 is a working install.
 
 | key | default | meaning |
@@ -308,6 +441,8 @@ is a working install.
 | `poll_seconds` | `30` | seconds between refreshes (floored at 5) |
 | `binance_endpoint` | `https://data-api.binance.vision` | the Binance market-data base URL |
 | `sina_endpoint` | `https://hq.sinajs.cn` | the US/HK/SH/SZ quote-list base URL |
+| `tencent_endpoint` | `https://web.ifzq.gtimg.cn` | the US/HK/SH/SZ daily K-line base URL (`market.series`) |
+| `debug_clock_ms` | unset | test seam — freezes the plugin's wall clock; never set on a real install |
 
 `quote` is **not** a pricing input: each market is quoted in its own currency
 and that is what every price cell says. It is the unit **totals** are stated

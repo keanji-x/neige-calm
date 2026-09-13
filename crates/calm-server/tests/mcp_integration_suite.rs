@@ -2,6 +2,8 @@ mod support;
 
 #[path = "cases/market_plugin_process.rs"]
 mod market_plugin_process;
+#[path = "cases/market_series_process.rs"]
+mod market_series_process;
 
 #[path = "cases/mcp_assistant_report_channel.rs"]
 mod mcp_assistant_report_channel;

@@ -43,6 +43,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+/// `market.series` — historical bars for `chart.series` blocks (#1628 S3).
+mod series;
+
 /// Callback ids start high enough that a forensic reader never confuses one of
 /// ours with a kernel-originated request id.
 const FIRST_CALLBACK_ID: u64 = 1_000;
@@ -436,6 +439,13 @@ struct Config {
     poll: Duration,
     binance_endpoint: String,
     sina_endpoint: String,
+    /// Tencent's daily K-line source (`market.series`, US/HK/SH/SZ).
+    tencent_endpoint: String,
+    /// **Test seam.** When set, the plugin's wall clock is frozen at this
+    /// instant: `market.series` reads it for its deadline check, its cache's
+    /// UTC-date key, and nothing else. A real install never sets it; the
+    /// handshake warns on stderr when one does.
+    debug_clock_ms: Option<i64>,
 }
 
 impl Default for Config {
@@ -445,6 +455,8 @@ impl Default for Config {
             poll: Duration::from_secs(30),
             binance_endpoint: "https://data-api.binance.vision".into(),
             sina_endpoint: "https://hq.sinajs.cn".into(),
+            tencent_endpoint: "https://web.ifzq.gtimg.cn".into(),
+            debug_clock_ms: None,
         }
     }
 }
@@ -481,6 +493,18 @@ fn config_from_initialize(init: &Value) -> Config {
         && !endpoint.trim().is_empty()
     {
         cfg.sina_endpoint = endpoint.trim().trim_end_matches('/').to_string();
+    }
+    if let Some(endpoint) = values.get("tencent_endpoint").and_then(Value::as_str)
+        && !endpoint.trim().is_empty()
+    {
+        cfg.tencent_endpoint = endpoint.trim().trim_end_matches('/').to_string();
+    }
+    if let Some(frozen) = values.get("debug_clock_ms").and_then(Value::as_i64) {
+        eprintln!(
+            "market: WARNING debug_clock_ms={frozen} is set — the wall clock is frozen; \
+             this is a test seam and must never be configured on a real install"
+        );
+        cfg.debug_clock_ms = Some(frozen);
     }
     cfg
 }
@@ -2424,6 +2448,12 @@ fn tools_call_reply(rpc: &Rpc, cfg: &Config, wake: &mpsc::Sender<()>, frame: &Va
         };
     }
 
+    // Like `market.quote`, a read of public data that depends on the request
+    // alone: no Track is needed and none is read.
+    if name == "market.series" {
+        return series::handle(cfg, &args);
+    }
+
     let Some(track_id) = track_from_call(frame) else {
         return tool_error(
             "This tool acts on the Track it is called from, and this call carries no Track.",
@@ -2659,11 +2689,12 @@ fn main() {
                 rpc.reply(id, initialize_reply(&frame));
                 let parsed = config_from_initialize(&frame);
                 eprintln!(
-                    "market: configured — quote={} poll={}s binance={} sina={}",
+                    "market: configured — quote={} poll={}s binance={} sina={} tencent={}",
                     parsed.quote,
                     parsed.poll.as_secs(),
                     parsed.binance_endpoint,
                     parsed.sina_endpoint,
+                    parsed.tencent_endpoint,
                 );
                 if let Ok(mut cfg) = config.lock() {
                     *cfg = parsed;

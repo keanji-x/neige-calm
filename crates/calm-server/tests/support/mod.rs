@@ -20,6 +20,8 @@ pub mod kernel_proc;
 #[allow(unused_macros)]
 pub mod macros;
 #[allow(dead_code)]
+pub mod market_plugin;
+#[allow(dead_code)]
 pub mod mcp;
 #[allow(dead_code)]
 pub mod migration_replay;
