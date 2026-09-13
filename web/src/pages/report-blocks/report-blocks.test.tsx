@@ -1087,6 +1087,11 @@ describe('a prose block that carries a maintenance contract (#1185)', () => {
     expect(container.innerHTML).not.toContain('neige:contract');
     expect(container.textContent).not.toContain('散文正文');
     expect(container.innerHTML).not.toContain('散文正文');
+    // Zero child nodes, not merely no text: block 0 is TWO comment blocks
+    // (the `<!-- neige:contract … -->` header line, then the prose contract),
+    // and `skipHtml` alone would leave the "\n" separator mdast-to-hast puts
+    // between them — a whitespace text node `.report-block:empty` does not
+    // match (#1635 S2b, `remarkDropHtmlComments`).
     expect(container.querySelector('#b_contract')?.childNodes.length).toBe(0);
   });
 
@@ -1106,6 +1111,9 @@ describe('a prose block that carries a maintenance contract (#1185)', () => {
     // person who reaches for `rehype-raw` to make `<details>` work again goes
     // red here first. Installing it re-opens the leak above: the maintenance
     // contract would render as visible page content for every user.
+    // It is also the negative case for `remarkDropHtmlComments` (#1635 S2b):
+    // a root-level raw HTML block that is not a comment is left alone by the
+    // plugin and still dropped by `skipHtml`.
     const { container } = render(
       <ReportBlockView
         block={contractBlock('<details><summary>x</summary>y</details>\n')}

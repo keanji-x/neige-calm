@@ -2791,6 +2791,17 @@ describe('TrackReportPage', () => {
     expect(container.innerHTML).not.toContain('neige:contract');
     expect(container.textContent).not.toContain('散文正文');
     expect(container.innerHTML).not.toContain('散文正文');
+    // The flat path renders the whole body as ONE `.report-block`, so it can
+    // never be `:empty`; the mirror of the block path's zero-child-node
+    // assertion is that nothing is left behind ahead of the first section:
+    // the two dropped comments (header line + prose contract) must not leave
+    // a "\n" text node before `# 概要` (#1635 S2b, `remarkDropHtmlComments`).
+    const flatBlock = container.querySelector('.report-block.report-prose');
+    expect(flatBlock).not.toBeNull();
+    const first = flatBlock!.firstChild;
+    expect(first?.nodeType).toBe(Node.ELEMENT_NODE);
+    expect((first as Element).tagName).toBe('H1');
+    expect(first?.textContent).toBe('概要');
     // The first h1 is the page's own track title, not report content.
     expect(
       screen
