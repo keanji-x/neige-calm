@@ -358,7 +358,9 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     /*
      * #1625 P3 — the second queue write: hand a queued message to the turn
      * that is running now. Same classification as the delete, plus the
-     * steer's own 409 (`not_running`: nothing took it, it is still queued).
+     * steer's own two 409s (`not_running`: nothing took it, it is still
+     * queued; `unanswered`: codex never replied, it is queued again and may
+     * also have reached the turn).
      * The refresh runs on every path for the same reason as above, and on a
      * 200 it is what makes the transcript pick up the row the kernel wrote
      * before it fetches the queue page that no longer lists the entry.
