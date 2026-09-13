@@ -56,6 +56,36 @@ pub(super) async fn before_completion(publication: &str, path: PathBuf) {
     }
 }
 
+// One-shot pause before the parked observer's first kernel observation, while
+// the spawn's Child is retained and the recorded group runs untouched. A test
+// that simulates a restart parks the in-process observer here: a restarted
+// kernel has no observer for this spawn, but in one process the observer stays
+// alive and would SIGKILL the recorded group once it observes the leader die.
+static OBSERVE: LazyLock<Mutex<HashMap<String, Hook>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+pub struct CandidateObserverHook(String);
+pub fn install_candidate_observer_hook(publication: &str, hook: Hook) -> CandidateObserverHook {
+    assert!(
+        OBSERVE
+            .lock()
+            .unwrap()
+            .insert(publication.into(), hook)
+            .is_none()
+    );
+    CandidateObserverHook(publication.into())
+}
+impl Drop for CandidateObserverHook {
+    fn drop(&mut self) {
+        OBSERVE.lock().unwrap().remove(&self.0);
+    }
+}
+pub(super) async fn before_observe(publication: &str, path: PathBuf) {
+    let hook = OBSERVE.lock().unwrap().remove(publication);
+    if let Some(hook) = hook {
+        hook(path).await;
+    }
+}
+
 // Pause after the read-only decision to exercise both stale-hint directions.
 type HintHook = Arc<dyn Fn(bool) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
 static RECOVERY_HINT: LazyLock<Mutex<HashMap<String, HintHook>>> =
