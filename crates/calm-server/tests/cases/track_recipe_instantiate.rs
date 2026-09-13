@@ -1278,3 +1278,117 @@ async fn a_stored_recipe_that_starts_with_front_matter_does_not_instantiate() {
         "no track was minted"
     );
 }
+
+/// The structural door runs the contract-header funnel (`check_document` in
+/// `write_report_row_and_project_tx`), not only the persist door. A recipe
+/// row inserted through the repo — the way a row written before the recipe
+/// boundary normalized would have got there — with the header on line 2
+/// reaches the funnel untouched by any ingress, and the create answers
+/// `Misplaced` as a 400 with nothing minted.
+#[tokio::test]
+async fn a_stored_recipe_with_the_header_off_line_1_does_not_instantiate() {
+    use calm_types::report_contract::canonical_line;
+    use calm_types::track_report::work_brief_header;
+
+    let boot = boot().await;
+    let stored = boot
+        .repo
+        .track_recipe_create(calm_types::model::NewTrackRecipe {
+            title: "late header".into(),
+            body: format!("# Plan\n{}\n", canonical_line(&work_brief_header())),
+        })
+        .await
+        .expect("the repo itself does not validate bodies");
+    let tracks_before = boot
+        .repo
+        .tracks_by_area(&boot.area_id)
+        .await
+        .expect("list tracks")
+        .len();
+
+    let (status, error) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/tracks",
+        Some(create_track_body(
+            &boot.area_id,
+            "from-late-header",
+            json!({ "recipe_id": stored.id }),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(error["code"], json!("bad_request"));
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("first line"),
+        "the header's own Misplaced message: {error}"
+    );
+    assert_eq!(
+        boot.repo
+            .tracks_by_area(&boot.area_id)
+            .await
+            .expect("list tracks")
+            .len(),
+        tracks_before,
+        "no track was minted"
+    );
+}
+
+/// KNOWN GAP (#1635 S2c, issue §6), pinned rather than papered over: a row
+/// whose line 1 was stored NON-canonical before S2c (nothing normalized it on
+/// the way in) reaches the funnel through the structural door, and the funnel
+/// reads a non-canonical line 1 as "an ingress skipped `normalize_header`" —
+/// `HeaderError::Internal`, a 500. That is the fail-closed answer the design
+/// accepts for such rows; this test says so, so a change that turns it into
+/// a 400 (or lets it through) is a decision, not a drift.
+#[tokio::test]
+async fn a_stored_recipe_with_a_non_canonical_header_is_a_fail_closed_500() {
+    let boot = boot().await;
+    let stored = boot
+        .repo
+        .track_recipe_create(calm_types::model::NewTrackRecipe {
+            title: "pre-S2c header".into(),
+            body: "<!-- neige:contract {\"sections\":[{\"omit_if_empty\":false,\"h1\":\"概要\"}],\"version\":1} -->\n\n# 概要\n".into(),
+        })
+        .await
+        .expect("the repo itself does not validate bodies");
+    let tracks_before = boot
+        .repo
+        .tracks_by_area(&boot.area_id)
+        .await
+        .expect("list tracks")
+        .len();
+
+    let (status, error) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/tracks",
+        Some(create_track_body(
+            &boot.area_id,
+            "from-pre-s2c",
+            json!({ "recipe_id": stored.id }),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{error}");
+    assert_eq!(error["code"], json!("internal"));
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("non-canonical header reached the funnel"),
+        "the funnel's own Internal message: {error}"
+    );
+    assert_eq!(
+        boot.repo
+            .tracks_by_area(&boot.area_id)
+            .await
+            .expect("list tracks")
+            .len(),
+        tracks_before,
+        "fail-closed: no track was minted"
+    );
+}

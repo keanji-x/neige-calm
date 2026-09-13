@@ -364,8 +364,10 @@ fn header_bad_request(error: HeaderError) -> CalmError {
 }
 
 /// #1635 S2c — prose content is the only block content that can carry the
-/// header line, so it is the only kind normalized at the block ingress. Data
-/// kinds are canonical fences and pass through untouched.
+/// header line, so it is the only kind normalized at the block ingress
+/// (inside [`apply_upsert_existing`] / [`apply_upsert_new`], after the rev
+/// checks their callers and they run). Data kinds are canonical fences and
+/// pass through untouched.
 fn normalize_prose_content<'a>(kind: &str, content: &'a str) -> Result<Cow<'a, str>, CalmError> {
     if kind == KIND_PROSE {
         normalize_header(content).map_err(header_bad_request)
@@ -536,11 +538,16 @@ fn apply_upsert_existing(
     validate_caller_content: bool,
 ) -> Result<BlockOpOutcome, CalmError> {
     check_rev(doc, id, expected_rev)?;
+    // #1635 S2c — after the rev check, so a stale `if_rev` is still the
+    // `Conflict` it was (the #1269 verdict order) even when the content also
+    // carries a malformed header. Whether the header may sit where this
+    // block lands is the funnel's call.
+    let content = normalize_prose_content(kind, content)?;
     if validate_caller_content {
-        validate_block_content(kind, content)?;
+        validate_block_content(kind, &content)?;
     }
     let (id, rev) = doc
-        .upsert_block(Some(id), kind, content)
+        .upsert_block(Some(id), kind, &content)
         .map_err(block_op_internal)?;
     Ok(BlockOpOutcome { id, rev })
 }
@@ -555,8 +562,11 @@ fn apply_upsert_new(
     position: Option<usize>,
     validate_caller_content: bool,
 ) -> Result<BlockOpOutcome, CalmError> {
+    // #1635 S2c — the caller has already checked its document-wide anchor,
+    // so a stale `if_doc_rev` stays a `Conflict` ahead of a malformed header.
+    let content = normalize_prose_content(kind, content)?;
     if validate_caller_content {
-        validate_block_content(kind, content)?;
+        validate_block_content(kind, &content)?;
     }
     let len = doc.block_index().map_err(block_op_internal)?.len();
     if let Some(position) = position
@@ -567,7 +577,7 @@ fn apply_upsert_new(
         )));
     }
     let (id, rev) = doc
-        .upsert_block(None, kind, content)
+        .upsert_block(None, kind, &content)
         .map_err(block_op_internal)?;
     if let Some(position) = position
         && position < len
@@ -737,10 +747,6 @@ pub(crate) fn apply_report_op(
             // gap open (the delete rewrite only ever produces the replace
             // arm, since it carries the stored block's id).
             let validate = caller_block_content.is_some();
-            // #1635 S2c — a prose block may carry the header line; canonical
-            // before it lands. Whether it may sit where it lands (line 1 of
-            // the document, and only once) is the funnel's call.
-            let content = normalize_prose_content(kind, content)?;
             match id {
                 Some(id) => {
                     let expected = if_rev.ok_or_else(|| {
@@ -748,14 +754,14 @@ pub(crate) fn apply_report_op(
                             "if_rev is required when replacing an existing block".into(),
                         )
                     })?;
-                    apply_upsert_existing(doc, id, kind, &content, expected, validate).map(Some)
+                    apply_upsert_existing(doc, id, kind, content, expected, validate).map(Some)
                 }
                 None => {
                     let expected = if_doc_rev.ok_or_else(|| {
                         CalmError::BadRequest("if_doc_rev is required when creating a block".into())
                     })?;
                     check_doc_rev(doc, expected)?;
-                    apply_upsert_new(doc, kind, &content, *position, validate).map(Some)
+                    apply_upsert_new(doc, kind, content, *position, validate).map(Some)
                 }
             }
         }
@@ -798,26 +804,20 @@ pub(crate) fn apply_report_op(
                         content,
                         if_rev,
                         position,
-                    } => {
-                        // #1635 S2c — same ingress rule as the single op.
-                        let content = normalize_prose_content(kind, content).map_err(step)?;
-                        match id {
-                            Some(id) => {
-                                let expected = if_rev.ok_or_else(|| {
-                                    CalmError::BadRequest(
-                                        "if_rev is required when replacing an existing block"
-                                            .into(),
-                                    )
-                                })?;
-                                apply_upsert_existing(doc, id, kind, &content, expected, true)
-                                    .map_err(step)?;
-                            }
-                            None => {
-                                apply_upsert_new(doc, kind, &content, *position, true)
-                                    .map_err(step)?;
-                            }
+                    } => match id {
+                        Some(id) => {
+                            let expected = if_rev.ok_or_else(|| {
+                                CalmError::BadRequest(
+                                    "if_rev is required when replacing an existing block".into(),
+                                )
+                            })?;
+                            apply_upsert_existing(doc, id, kind, content, expected, true)
+                                .map_err(step)?;
                         }
-                    }
+                        None => {
+                            apply_upsert_new(doc, kind, content, *position, true).map_err(step)?;
+                        }
+                    },
                     BatchBlockOp::Move { id, to_index } => {
                         apply_move(doc, id, *to_index).map_err(step)?;
                     }
@@ -1534,6 +1534,75 @@ mod tests {
             matches!(&err, CalmError::BadRequest(m)
                 if m.starts_with("ops[0]: report contract header: ")),
             "got {err:?}"
+        );
+    }
+
+    /// The #1269 verdict order survives S2c: a stale anchor is judged before
+    /// the content, so stale `if_rev` / `if_doc_rev` plus a malformed header
+    /// is still the `Conflict` it was, on both upsert arms and on a batch.
+    #[test]
+    fn a_stale_rev_beside_a_malformed_header_is_still_a_conflict() {
+        let malformed = format!("{HEADER_OPEN}not json -->\n");
+        let payload = TrackReportPayload::new("s", "# A\n\nalpha\n");
+        let mut doc = ReportDoc::from_payload(&payload);
+        let (id, _, rev) = doc.block_index().unwrap()[0].clone();
+
+        let err = apply_report_op(
+            &mut doc,
+            &ReportDocOp::UpsertBlock {
+                id: Some(id.clone()),
+                kind: KIND_PROSE.into(),
+                content: malformed.clone(),
+                if_rev: Some(rev + 1),
+                if_doc_rev: None,
+                position: None,
+            },
+            EditAuthor::Planner,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, CalmError::Conflict(_)),
+            "replace arm: {err:?}"
+        );
+
+        let err = apply_report_op(
+            &mut doc,
+            &ReportDocOp::UpsertBlock {
+                id: None,
+                kind: KIND_PROSE.into(),
+                content: malformed.clone(),
+                if_rev: None,
+                if_doc_rev: Some(7),
+                position: Some(0),
+            },
+            EditAuthor::Planner,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::Conflict(_)), "create arm: {err:?}");
+
+        let err = apply_report_op(
+            &mut doc,
+            &ReportDocOp::Batch {
+                if_doc_rev: 0,
+                summary: None,
+                ops: vec![BatchBlockOp::Upsert {
+                    id: Some(id),
+                    kind: KIND_PROSE.into(),
+                    content: malformed,
+                    if_rev: Some(rev + 1),
+                    position: None,
+                }],
+            },
+            EditAuthor::Planner,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, CalmError::Conflict(m) if m.starts_with("ops[0]: ")),
+            "batch step: {err:?}"
+        );
+        assert_eq!(
+            doc.project().unwrap(),
+            ("s".to_string(), "# A\n\nalpha\n".to_string())
         );
     }
 }

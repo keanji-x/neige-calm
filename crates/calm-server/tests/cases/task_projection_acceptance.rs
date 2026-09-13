@@ -1962,7 +1962,7 @@ async fn document_order_is_ceiling_priority_and_move_reprojects_pending_rows() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         planner_identity(&boot),
-        json!({"id":second,"to_index":5,"if_doc_rev":read(&boot).await["docRev"]}),
+        json!({"id":second,"to_index":1,"if_doc_rev":read(&boot).await["docRev"]}),
     )
     .await
     .unwrap();

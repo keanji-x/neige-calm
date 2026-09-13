@@ -957,3 +957,101 @@ async fn a_header_off_line_1_is_a_400() {
         "the header's own Misplaced message: {error}"
     );
 }
+
+/// The PUT verb runs the same boundary: a non-canonical header written over
+/// an existing recipe is stored — and read back — canonical.
+#[tokio::test]
+async fn update_stores_a_non_canonical_header_canonical() {
+    use calm_types::report_contract::canonical_line;
+
+    let boot = boot().await;
+    let (_, created) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("user"),
+        Some(json!({ "title": "mine", "body": "# Plan\n" })),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let (status, updated) = send(
+        boot.app.clone(),
+        "PUT",
+        &format!("/api/track-recipes/{id}"),
+        Some("user"),
+        Some(json!({
+            "title": "mine",
+            "body": format!("{NON_CANONICAL_HEADER}\n\n# 概要\n\nprose\n"),
+            "if_revision": created["revision"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={updated}");
+    let canonical = canonical_line(&one_section_header());
+    assert_eq!(first_line(updated["body"].as_str().unwrap()), canonical);
+
+    let (status, fetched) = send(
+        boot.app.clone(),
+        "GET",
+        &format!("/api/track-recipes/{id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first_line(fetched["body"].as_str().unwrap()), canonical);
+    assert_eq!(
+        &fetched["body"].as_str().unwrap()[canonical.len()..],
+        "\n\n# 概要\n\nprose\n",
+        "only line 1 was rewritten"
+    );
+}
+
+/// And the PUT verb refuses a header off line 1 the same way, writing nothing.
+#[tokio::test]
+async fn update_with_a_header_off_line_1_is_a_400_that_writes_nothing() {
+    let boot = boot().await;
+    let (_, created) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("user"),
+        Some(json!({ "title": "mine", "body": "# Plan\n" })),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let (status, error) = send(
+        boot.app.clone(),
+        "PUT",
+        &format!("/api/track-recipes/{id}"),
+        Some("user"),
+        Some(json!({
+            "title": "mine",
+            "body": format!("# Plan\n\n{NON_CANONICAL_HEADER}\n"),
+            "if_revision": created["revision"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={error}");
+    assert_eq!(error["code"], json!("bad_request"));
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("first line"),
+        "the header's own Misplaced message: {error}"
+    );
+    let (_, unchanged) = send(
+        boot.app.clone(),
+        "GET",
+        &format!("/api/track-recipes/{id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(unchanged["body"], json!("# Plan\n"));
+    assert_eq!(
+        unchanged["revision"], created["revision"],
+        "the refused PUT wrote nothing"
+    );
+}
