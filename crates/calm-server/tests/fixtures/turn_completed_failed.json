@@ -30,12 +30,12 @@
     "`threadId` here is a PLACEHOLDER and is not part of the transcription. The",
     "kernel's `on_notification` prologue drops any notification whose `threadId` is",
     "not the harness's current thread, so the test substitutes its own seeded id",
-    "(`SEED_THREAD_ID` in tests/cases/planner_harness_items_persist.rs) over this",
-    "value before emitting the frame.",
+    "(`SEED_THREAD_ID` in the kernel test that `include_str!`s this file) over",
+    "this value before emitting the frame.",
     "",
-    "Once #1625 P1 ships, `SELECT params FROM harness_items WHERE",
-    "method='turn/completed' AND json_extract(params,'$.status')='failed'` on a",
-    "production DB promotes this to a captured payload."
+    "Once #1625 P1 ships, a `SELECT params` on the transcript table of a",
+    "production DB, filtered to `method='turn/completed' AND",
+    "json_extract(params,'$.status')='failed'`, promotes this to a captured payload."
   ],
   "params": {
     "threadId": "PLACEHOLDER-substituted-by-the-test",

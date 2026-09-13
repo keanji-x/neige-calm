@@ -3637,7 +3637,7 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
 
 /// #1625 P1 — make a turn's terminal status durable and readable.
 ///
-/// One `harness_items` row per finished turn, `method = "turn/completed"`,
+/// One transcript row per finished turn, `method = "turn/completed"`,
 /// `params` = codex's final `turn` object minus `items` / `itemsView` (the
 /// items are already rows of their own; what is new here is `status`,
 /// `error { message, codexErrorInfo }` and the timings). Written from the
@@ -3646,7 +3646,7 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
 /// `persist_snapshot_stamping_issued_head`, so by the time the resulting
 /// `HarnessPhaseChanged` reaches a client the row is already there to fetch.
 /// That ordering is what lets the phase event double as the delivery signal:
-/// no `HarnessItemAdded` is emitted for this row (one fewer track-vcs commit
+/// no item-added event is emitted for this row (one fewer track-vcs commit
 /// per turn), and `fe/core/events/invalidation-plan.ts` invalidates
 /// `['harness-items', card_id]` on `harness.phase.changed` instead.
 ///
@@ -3659,19 +3659,19 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn: &Value) {
     // per-turn grouping keys on — so a frame without one writes nothing.
     let Some(turn_id) = turn.get("id").and_then(Value::as_str) else {
         tracing::warn!(
-            runtime_id = %inner.worker_session_id,
+            worker_session_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             "planner harness skipping turn/completed row: the turn object carries no id"
         );
         return;
     };
-    // Same guard as the `turn/plan/updated` arm: `harness_items.thread_id` is
-    // NOT NULL, and `Notification::TurnCompleted.thread_id` is
+    // Same guard as the `turn/plan/updated` arm: the transcript table's
+    // `thread_id` column is NOT NULL, and `Notification::TurnCompleted.thread_id` is
     // `unwrap_or_default()` upstream, so the harness's own thread is the only
     // value that is never `""`.
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
         tracing::warn!(
-            runtime_id = %inner.worker_session_id,
+            worker_session_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             turn_id,
             "planner harness skipping turn/completed row: no thread is known yet"
@@ -3708,7 +3708,7 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn: &Value) {
         .await
     {
         tracing::warn!(
-            runtime_id = %inner.worker_session_id,
+            worker_session_id = %inner.worker_session_id,
             card_id = %inner.card_id,
             turn_id,
             error = %error,

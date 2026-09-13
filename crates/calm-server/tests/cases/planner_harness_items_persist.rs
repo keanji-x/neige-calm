@@ -676,9 +676,9 @@ async fn phase_transition_persists_row_and_emits_durable_event_id() {
 /// see the `_provenance` block inside the file.
 const TURN_COMPLETED_FAILED_FIXTURE: &str = include_str!("../fixtures/turn_completed_failed.json");
 
-/// #1625 P1 — a turn's terminal status is a `harness_items` row, and the
-/// transcript read (`RepoRead::harness_item_list_transcript_by_card`, the
-/// exact method `GET /api/cards/{id}/harness/items` calls) returns it.
+/// #1625 P1 — a turn's terminal status is a transcript row, and the
+/// transcript read the `GET /api/cards/{id}/harness/items` route calls (the
+/// exact repo method, below) returns it.
 ///
 /// Driven through the real harness: `TurnStarted` moves the FSM to
 /// `TurnRunning`, then the fixture's `TurnCompleted { status: failed }` lands

@@ -1605,7 +1605,7 @@ function codexErrorCode(info: string | Readonly<Record<string, unknown>> | null 
  * time separator prints, so the row's own clock is the one that keeps the
  * separators honest against their neighbours.
  */
-export function harnessItemToTurnOutcome(item: HarnessItem): ConversationTurnOutcome | null {
+export function transcriptRowToTurnOutcome(item: HarnessItem): ConversationTurnOutcome | null {
   if (item.method !== 'turn/completed') return null;
   let parsed: unknown;
   try { parsed = JSON.parse(item.params); } catch { return null; }
@@ -1646,12 +1646,12 @@ export function harnessItemToTurnOutcome(item: HarnessItem): ConversationTurnOut
  * reject it.
  *
  * Honest about what this does and does not buy: `harnessItemToTurns`,
- * `harnessItemToActivity` and `harnessItemToTurnOutcome` check the method
+ * `harnessItemToActivity` and `transcriptRowToTurnOutcome` check the method
  * themselves, and must keep doing so (they are exported and called directly —
  * `harnessItemToTurns` from `web/src/app/router/public.tsx`). So *deleting*
  * this gate leaves the suite green: the converters still reject everything it
  * rejects. *Narrowing* it is a different matter — drop `turn/completed` from
- * the list and outcome rows are gone before `harnessItemToTurnOutcome` sees
+ * the list and outcome rows are gone before `transcriptRowToTurnOutcome` sees
  * them (`renders a turn/completed row as a turn outcome` goes red), which is
  * the gate doing its job. It is a fail-closed backstop, and stating the
  * allowlist in the loop is what makes "the transcript renders `item/*` and
@@ -1693,7 +1693,7 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
     if (!isTranscriptMethod(item.method)) continue;
     // A turn outcome is its own line, keyed by its own row: nothing pairs
     // with it and nothing overwrites it.
-    const outcome = harnessItemToTurnOutcome(item);
+    const outcome = transcriptRowToTurnOutcome(item);
     if (outcome !== null) {
       order.push(outcome.id);
       byKey.set(outcome.id, outcome);

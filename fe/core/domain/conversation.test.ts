@@ -10,13 +10,12 @@ import {
   buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
   CONVERSATION_STATE_SOURCE, conversationCreateFailure,
   createSerialWriter, createTrackConversationOperation,
-  harnessItemToActivity, harnessItemToTurnOutcome, harnessItemToTurns as transcriptRowToMessages,
-  isLiveConversation,
+  harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages, isLiveConversation,
   isOptimisticConversationTurn, isQueuedConversationTurn, kernelQueuesInput,
   mergeTranscript, plannerQueueWriteFailure, readableCommand,
   reconcileOptimisticConversationTurns, reconcileUserEchoes, serverItemHighWater,
   toTrackConversation, trackConversationCardId,
-  trackConversationsOperation,
+  trackConversationsOperation, transcriptRowToTurnOutcome,
   type Conversation, type ConversationKind, type ConversationTurn, type OptimisticConversationTurn,
   type TranscriptEntry,
 } from './conversation.js';
@@ -930,7 +929,7 @@ describe('buildTranscript', () => {
      nor overwrites anything, and a `completed` one is kept (as the anchor a
      later slice groups by) rather than filtered here. */
   it('renders a turn/completed row as a turn outcome, in row order', () => {
-    const outcomeRow = (id: number, turn: unknown): HarnessItem => ({
+    const outcomeRow = (id: number, turn: unknown) => ({
       id, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: `turn-${id}`,
       item_uuid: null, item_type: null, method: 'turn/completed',
       params: JSON.stringify(turn), created_at_ms: 1000 + id,
@@ -979,8 +978,8 @@ describe('buildTranscript', () => {
   });
 });
 
-describe('harnessItemToTurnOutcome', () => {
-  const outcome = (params: unknown, overrides: Partial<HarnessItem> = {}): HarnessItem => ({
+describe('transcriptRowToTurnOutcome', () => {
+  const outcome = (params: unknown, overrides: { turn_id?: string | null; method?: string } = {}) => ({
     id: 9, worker_session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn-9',
     item_uuid: null, item_type: null, method: 'turn/completed',
     params: typeof params === 'string' ? params : JSON.stringify(params), created_at_ms: 5000,
@@ -988,42 +987,42 @@ describe('harnessItemToTurnOutcome', () => {
   });
 
   it.each(['completed', 'interrupted', 'failed'] as const)('parses a %s turn', (status) => {
-    expect(harnessItemToTurnOutcome(outcome({ id: 'turn-9', status }))).toEqual({
+    expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status }))).toEqual({
       id: 'outcome-9', author: 'turn', turnId: 'turn-9', status, atMs: 5000,
     });
   });
 
   it('carries the error message and the bare codexErrorInfo token', () => {
-    expect(harnessItemToTurnOutcome(outcome({
+    expect(transcriptRowToTurnOutcome(outcome({
       id: 'turn-9', status: 'failed',
       error: { message: 'Usage limit hit', codexErrorInfo: 'usageLimitExceeded', additionalDetails: null },
     }))).toMatchObject({ status: 'failed', message: 'Usage limit hit', code: 'usageLimitExceeded' });
   });
 
   it('reduces the object form of codexErrorInfo to its single key', () => {
-    expect(harnessItemToTurnOutcome(outcome({
+    expect(transcriptRowToTurnOutcome(outcome({
       id: 'turn-9', status: 'failed',
       error: { message: 'gateway', codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 502 } } },
     }))).toMatchObject({ status: 'failed', message: 'gateway', code: 'httpConnectionFailed' });
   });
 
   it('surfaces an unknown status as failed with the raw status, never dropping it', () => {
-    expect(harnessItemToTurnOutcome(outcome({ id: 'turn-9', status: 'inProgress' }))).toEqual({
+    expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'inProgress' }))).toEqual({
       id: 'outcome-9', author: 'turn', turnId: 'turn-9', status: 'failed', rawStatus: 'inProgress', atMs: 5000,
     });
   });
 
   it('takes the turn id from the row column before the params', () => {
-    expect(harnessItemToTurnOutcome(outcome({ status: 'completed' }))?.turnId).toBe('turn-9');
-    expect(harnessItemToTurnOutcome(outcome({ id: 'from-params', status: 'completed' }, { turn_id: null }))?.turnId)
+    expect(transcriptRowToTurnOutcome(outcome({ status: 'completed' }))?.turnId).toBe('turn-9');
+    expect(transcriptRowToTurnOutcome(outcome({ id: 'from-params', status: 'completed' }, { turn_id: null }))?.turnId)
       .toBe('from-params');
-    expect(harnessItemToTurnOutcome(outcome({ status: 'completed' }, { turn_id: null }))).toBeNull();
+    expect(transcriptRowToTurnOutcome(outcome({ status: 'completed' }, { turn_id: null }))).toBeNull();
   });
 
   it('is null for any other method and for params that are not a turn', () => {
-    expect(harnessItemToTurnOutcome(outcome({ id: 'turn-9', status: 'failed' }, { method: 'item/completed' }))).toBeNull();
-    expect(harnessItemToTurnOutcome(outcome('not json'))).toBeNull();
-    expect(harnessItemToTurnOutcome(outcome({ id: 'turn-9' }))).toBeNull();
+    expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'failed' }, { method: 'item/completed' }))).toBeNull();
+    expect(transcriptRowToTurnOutcome(outcome('not json'))).toBeNull();
+    expect(transcriptRowToTurnOutcome(outcome({ id: 'turn-9' }))).toBeNull();
   });
 });
 
