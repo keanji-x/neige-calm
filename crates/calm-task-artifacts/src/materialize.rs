@@ -182,6 +182,7 @@ impl ArtifactStore {
             .permissions(fs::Permissions::from_mode(0o700))
             .rand_bytes(12)
             .tempdir_in(self.root.join("staging"))?;
+        disk::own_private_mode(stage.path())?;
         for entry in plan.entries.values() {
             match entry {
                 Entry::Directory { path } => disk::private_dir(&stage.path().join(path))?,

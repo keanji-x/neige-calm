@@ -217,6 +217,7 @@ impl ArtifactStore {
             .prefix("capture-")
             .rand_bytes(12)
             .tempdir_in(self.root.join("staging"))?;
+        disk::own_private_mode(stage.path())?;
         let snapshot_stage = stage.path().join("snapshot");
         disk::private_dir(&snapshot_stage)?;
         let snapshot = capture(&snapshot_stage)?;
