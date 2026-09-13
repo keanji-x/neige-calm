@@ -214,11 +214,12 @@ fn parse_line_rejects_one_rule_at_a_time() {
     );
 }
 
-/// Review round 1 MAJOR: `{"h1":"-->"}` passes the serialized-text check
-/// (there is no literal `-->` before the closing ` -->`), yet
-/// `canonical_line` would emit one — so `normalize_header` would produce a
-/// header its own parser rejects. Both delimiters are rejected on the decoded
-/// value, and a JSON-escaped spelling is rejected the same way.
+/// Review round 1 MAJOR: a literal `{"h1":"-->"}` is caught by the
+/// serialized-text check, but an escaped spelling such as `{"h1":"-\u002d>"}`
+/// passes it and decodes to `-->` — `canonical_line` would then emit a literal
+/// `-->` inside the JSON, so `normalize_header` would produce a header its own
+/// parser rejects. Both delimiters are rejected on the decoded value, so every
+/// spelling is rejected the same way.
 #[test]
 fn h1_containing_a_comment_delimiter_is_malformed_even_when_json_escaped() {
     let malformed = |line: &str| match parse_line(line) {

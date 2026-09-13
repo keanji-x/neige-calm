@@ -28,7 +28,8 @@
 //! * [`check_document`] — the one-shot funnel check on a marker-free body:
 //!   at most one header, on line 1, canonical, and block 0 does not end
 //!   inside an HTML comment (line-based scan, see
-//!   `block0_ends_inside_a_comment`).
+//!   `block0_ends_inside_a_comment`; it runs only when a header is present —
+//!   headerless bodies return `Ok(None)` before it).
 //!
 //! Plus [`is_pure_comment_block`], which S3's `is_unwritten` uses to decide
 //! whether block 0 is "just the contract".

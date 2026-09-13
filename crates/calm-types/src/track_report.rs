@@ -659,7 +659,8 @@ mod tests {
     }
 
     /// #1635 S2b — the default body passes the funnel check as-is: one
-    /// header, on line 1, canonical, every block-0 comment closed. Birth
+    /// header, on line 1, canonical, block 0 does not end inside a comment
+    /// (line-based scan). Birth
     /// bypasses the funnel (`card.rs` compares the whole payload to
     /// `initial()`), so this is where `initial()` is held to the funnel.
     #[test]

@@ -67,7 +67,8 @@ pub struct TodayLaunchpad {
 pub struct TodayLaunchpadResolved {
     pub track_id: String,
     /// Whether this report's `summary`/`body` differ **right now** from the
-    /// canonical freshly-minted pair.
+    /// canonical freshly-minted pair or from the frozen pre-header body
+    /// (`LEGACY_INITIAL_V4_BODY`).
     ///
     /// It is NOT "has anyone ever written it": no history is consulted, so
     /// none can be reported, and restoring the text to the canonical pair
