@@ -12,14 +12,20 @@ use support::limits;
 
 struct Fixture {
     temp: tempfile::TempDir,
+    /// Store, source and destination all live directly beneath this directory.
+    base: PathBuf,
     store: ArtifactStore,
     id: SnapshotId,
 }
 impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open_files(&temp.path().join("store"), limits()).unwrap();
-        let source = temp.path().join("source");
+        let base = temp.path().to_path_buf();
+        Self::beneath(temp, base)
+    }
+    fn beneath(temp: tempfile::TempDir, base: PathBuf) -> Self {
+        let store = ArtifactStore::open_files(&base.join("store"), limits()).unwrap();
+        let source = base.join("source");
         fs::write(&source, b"original").unwrap();
         let path = FileArtifactPath::new("result.json", &limits()).unwrap();
         let receipt = store
@@ -41,12 +47,13 @@ impl Fixture {
         fs::remove_file(source).unwrap();
         Self {
             temp,
+            base,
             store,
             id: receipt.snapshot,
         }
     }
     fn destination(&self) -> PathBuf {
-        self.temp.path().join("consumer")
+        self.base.join("consumer")
     }
     fn bindings(&self) -> Vec<SlotBinding> {
         vec![SlotBinding {
@@ -92,6 +99,46 @@ fn materialized_reconciliation_reopens_exact_published_inputs_without_replacemen
     assert_eq!(verified.destination, original.destination);
     assert_eq!(verified.entries, original.entries);
     assert_eq!(fs::metadata(file).unwrap().ino(), inode);
+}
+
+/// #1636: mkdir(2) beneath a setgid directory yields `0o2700`, not the requested
+/// `0o700` (CI's self-hosted `$RUNNER_TEMP` is such a directory). The store owns
+/// the final mode of every directory it creates, so the exact-mode fence in
+/// preparation and reconciliation passes wherever the store root lives.
+#[test]
+fn materialization_owns_exact_directory_modes_beneath_setgid_parent() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().join("setgid-parent");
+    fs::create_dir(&parent).unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o2700)).unwrap();
+    assert_eq!(
+        fs::metadata(&parent).unwrap().mode() & 0o7777,
+        0o2700,
+        "fixture parent must carry the setgid bit"
+    );
+    let fixture = Fixture::beneath(temp, parent.clone());
+    let destination = fixture.destination();
+    let published = fixture
+        .store
+        .materialize(&fixture.bindings(), &destination)
+        .unwrap();
+    for directory in [destination.clone(), destination.join("input")] {
+        assert_eq!(
+            fs::metadata(&directory).unwrap().mode() & 0o7777,
+            0o700,
+            "{}",
+            directory.display()
+        );
+    }
+    let reopened = ArtifactStore::open_files(&parent.join("store"), limits()).unwrap();
+    let verified = reopened
+        .verify_materialized(&fixture.bindings(), &destination)
+        .unwrap();
+    assert_eq!(verified.entries, published.entries);
+    assert_eq!(
+        fs::read(destination.join("input/result.json")).unwrap(),
+        b"original"
+    );
 }
 
 #[test]

@@ -373,12 +373,23 @@ fn runtime_refuses_existing_endpoint_without_unlinking_it() -> anyhow::Result<()
 async fn runtime_create_preserves_literal_cwd_argv_and_explicit_environment() -> anyhow::Result<()>
 {
     let (mut host, client) = Host::start(private_root()?).await?;
-    let cwd = host.root.path().join("work #{session_name}");
-    std::fs::create_dir(&cwd)?;
+    // #1636: a full path soft-wraps on the 80-column grid once $TMPDIR is long, so
+    // the cwd is made longer than one row everywhere and the probe prints only its
+    // basename, which carries the unexpanded tmux format on one short line.
+    let cwd = host
+        .root
+        .path()
+        .join("nested-".repeat(12))
+        .join("work #{session_name}");
+    std::fs::create_dir_all(&cwd)?;
+    assert!(
+        cwd.to_str().unwrap().len() > 80,
+        "cwd must exceed one 80-column row regardless of TMPDIR"
+    );
     let mut launch_config = terminal_launch(
         &cwd,
         "literal-probe",
-        "printf 'cwd:%s\\narg:%s\\nexplicit:%s\\n' \"$PWD\" \"$1\" \"$NEIGE_EXPLICIT\"; read line",
+        "printf 'cwd:%s\\narg:%s\\nexplicit:%s\\n' \"${PWD##*/}\" \"$1\" \"$NEIGE_EXPLICIT\"; read line",
     );
     let argument = "spaces ; $(not-a-command)";
     launch_config
@@ -391,7 +402,7 @@ async fn runtime_create_preserves_literal_cwd_argv_and_explicit_environment() ->
     pane.wait_for_text("explicit:intentional").await?;
     let text = pane.snapshot().await?.visible_lines().join("\n");
     assert!(
-        text.contains(cwd.to_str().unwrap()),
+        text.contains("cwd:work #{session_name}"),
         "literal working directory must survive tmux format expansion"
     );
     assert!(
