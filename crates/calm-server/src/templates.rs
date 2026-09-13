@@ -508,6 +508,8 @@ const ISSUE_DEVELOPMENT_INTRO: &str = include_str!("templates/issue-development.
 mod tests {
     use super::*;
     use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
+    use calm_types::report_contract::check_document;
+    use calm_types::track_report::{research_header, work_brief_header};
     use std::collections::BTreeSet;
 
     /// Each recipe builder beside the task list it is built from.
@@ -767,10 +769,12 @@ mod tests {
                 "{name}: the contract must be its own closed block, got {:?}",
                 slices[0].raw
             );
+            // #1635 D2: one canonical header on line 1 and every block-0
+            // comment closed — the funnel check the persisted body must pass.
             assert_eq!(
-                report.body.matches("-->").count(),
-                1,
-                "{name}: a second `-->` would close the comment early and leak the tail"
+                check_document(&report.body),
+                Ok(Some(work_brief_header())),
+                "{name}: the body must pass the contract funnel check"
             );
             assert!(
                 report.body.contains("# Plan"),
@@ -838,10 +842,15 @@ mod tests {
                 .starts_with(report_contract_prefix(ReportContract::WorkBrief)),
             "must not carry the work-brief contract"
         );
-        assert_eq!(report.body.matches("-->").count(), 1);
+        assert_eq!(check_document(&report.body), Ok(Some(research_header())));
         assert!(report.report_startup_read_required());
 
         let slices = split_body(&report.body);
+        assert!(
+            slices[0].raw.ends_with("-->\n\n"),
+            "the research contract must be its own closed block, got {:?}",
+            slices[0].raw
+        );
         let heads: Vec<&str> = slices[1..]
             .iter()
             .map(|slice| slice.raw.lines().next().unwrap_or(""))

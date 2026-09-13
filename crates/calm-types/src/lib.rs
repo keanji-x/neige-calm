@@ -16,6 +16,7 @@ pub mod observation;
 pub mod planner_attachment;
 pub mod proposal;
 pub mod report_blocks;
+pub mod report_contract;
 pub mod report_links;
 pub mod runtime;
 pub mod task_recovery;
