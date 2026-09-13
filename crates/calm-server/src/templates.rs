@@ -791,6 +791,41 @@ mod tests {
         }
     }
 
+    /// #1635 S2b review — the "header ↔ document shape" pin for the research
+    /// skeleton: the H1 lines `INVESTMENT_RESEARCH_SKELETON` ships, in order,
+    /// are exactly `research_header()`'s sections. Rename one side and this
+    /// goes red; nothing else ties the constant to the header. (The
+    /// work-brief twin lives in calm-types:
+    /// `default_h1s_are_the_work_brief_header_sections`.)
+    #[test]
+    fn investment_research_h1s_are_the_research_header_sections() {
+        let report = investment_research_report();
+        let slices = split_body(&report.body);
+        let h1s: Vec<String> = slices[1..]
+            .iter()
+            .map(|slice| {
+                slice
+                    .raw
+                    .lines()
+                    .next()
+                    .and_then(|line| line.strip_prefix("# "))
+                    .unwrap_or_else(|| panic!("block does not start with an H1: {:?}", slice.raw))
+                    .to_string()
+            })
+            .collect();
+        let declared: Vec<String> = research_header()
+            .sections
+            .into_iter()
+            .map(|section| section.h1)
+            .collect();
+        assert_eq!(h1s, declared);
+        assert_eq!(
+            check_document(&report.body).unwrap().unwrap().sections,
+            research_header().sections,
+            "and the header the body carries is the one the constructor builds"
+        );
+    }
+
     /// #1185 §1.5 B — the anti-flattening rewrite of the three intros.
     ///
     /// Activation targets `task` blocks only. Ordering the agent to "replace

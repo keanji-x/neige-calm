@@ -1075,9 +1075,11 @@ export interface paths {
          *     existing route `POST /api/tracks/{id}/report` can express a reset: send the
          *     canonical `summary` and `body` and `report_startup_read_required` flips back
          *     to false. But that predicate is a **byte-for-byte** comparison against
-         *     [`TrackReportPayload::initial`], whose body is two `include_str!`-ed
-         *     markdown files plus a closing `-->` and four empty H1s — around 2.6 kB that
-         *     no client can reproduce without copying kernel-owned text. One byte out and
+         *     [`TrackReportPayload::initial`] (or the frozen pre-header body), whose
+         *     body is the kernel's default body file
+         *     `crates/calm-types/src/report/default.md` (a contract header line, the
+         *     prose contract, four empty H1s) — around 2.8 kB that no client can
+         *     reproduce without copying kernel-owned text. One byte out and
          *     the predicate stays `true`, so the reset fails *silently*: a 200, an edited
          *     report, and an empty state that never appears. Worse, the two contract
          *     fragments are private and **unclosed** on purpose (`track_report.rs`), so a

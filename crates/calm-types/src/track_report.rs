@@ -122,11 +122,13 @@ const CONTRACT_RESEARCH_RULES: &str = include_str!("track_report_research_rules.
 const CONTRACT_CLOSE: &str = "-->\n\n";
 
 /// #1635 D2 — the work-brief contract header: the four default sections,
-/// `待你定` omitted when empty. With [`research_header`] this is the ONLY
-/// place section names appear in Rust until S4 moves them into template
-/// files; `report/default.md` line 1 is `canonical_line(&work_brief_header())`
-/// and the pin in `initial_body_is_header_line_plus_legacy_v4` holds the two
-/// together.
+/// `待你定` omitted when empty. With [`research_header`] this is the source
+/// the header lines are built from; `report/default.md` line 1 is
+/// `canonical_line(&work_brief_header())`, the pin in
+/// `initial_body_is_header_line_plus_legacy_v4` holds the two together, and
+/// `default_h1s_are_the_work_brief_header_sections` ties the file's H1s to
+/// these sections (calm-server's templates test does the same for the
+/// research skeleton). S4 moves the names into template files.
 pub fn work_brief_header() -> ContractHeader {
     ContractHeader {
         version: 1,
@@ -293,12 +295,17 @@ impl TrackReportPayload {
 
     /// #1110 S3 — whether planner's first turn must `calm.report.read`.
     ///
-    /// False only when `summary` and `body` equal [`Self::initial()`].
-    /// `doc_rev` / `blocks` are ignored so a CRDT-materialized placeholder
-    /// stays false. Forked or edited content is true.
+    /// False only when `summary` is empty and `body` is byte-equal to
+    /// [`Self::initial()`]'s body or to the frozen pre-header body
+    /// [`LEGACY_INITIAL_V4_BODY`] (#1635 S2b: every track minted before the
+    /// contract header still carries those bytes and must keep reading as
+    /// unwritten — the launchpad empty state depends on it). `doc_rev` /
+    /// `blocks` are ignored so a CRDT-materialized placeholder stays false.
+    /// Forked or edited content is true. #1635 S3 replaces the byte
+    /// comparison with the structural predicate (D3) and keeps both cells.
     pub fn report_startup_read_required(&self) -> bool {
-        let initial = Self::initial();
-        self.summary != initial.summary || self.body != initial.body
+        !(self.summary.is_empty()
+            && (self.body == initial_body() || self.body == LEGACY_INITIAL_V4_BODY))
     }
 }
 
@@ -434,10 +441,10 @@ mod tests {
             "a CRLF checkout would silently change split_body's input"
         );
         assert!(body.ends_with('\n') && !body.ends_with("\n\n"));
-        // Exactly one header line, it is line 1, and the block-0 scan finds
-        // every comment closed (#1635 D2 (a)–(e)). A `-->` smuggled into a
-        // fragment is caught by the byte pin in
-        // `initial_body_is_header_line_plus_legacy_v4`, not here.
+        // Exactly one header line, it is line 1, and block 0 does not end
+        // inside a comment (#1635 D2 (a)–(e)). `default.md` is pinned byte for
+        // byte in `initial_body_is_header_line_plus_legacy_v4`, so a stray
+        // `-->` in the file is caught there, not here.
         assert_eq!(
             body.lines().filter(|l| l.starts_with(HEADER_OPEN)).count(),
             1,
@@ -670,10 +677,45 @@ mod tests {
         ));
     }
 
+    /// #1635 S2b review — the first "header ↔ document shape" pin: the H1s
+    /// `default.md` ships, in order, are exactly `work_brief_header()`'s
+    /// sections. Rename one side and this goes red (the byte pin alone would
+    /// not notice a header edit that is mirrored into the file). S3's
+    /// structural predicate relies on this correspondence.
+    #[test]
+    fn default_h1s_are_the_work_brief_header_sections() {
+        let body = TrackReportPayload::initial().body;
+        let slices = crate::report_blocks::split_body(&body);
+        let h1s: Vec<String> = slices[1..]
+            .iter()
+            .map(|slice| {
+                slice
+                    .raw
+                    .lines()
+                    .next()
+                    .and_then(|line| line.strip_prefix("# "))
+                    .unwrap_or_else(|| panic!("block does not start with an H1: {:?}", slice.raw))
+                    .to_string()
+            })
+            .collect();
+        let declared: Vec<String> = work_brief_header()
+            .sections
+            .into_iter()
+            .map(|section| section.h1)
+            .collect();
+        assert_eq!(h1s, declared);
+        assert_eq!(
+            check_document(&body).unwrap().unwrap().sections,
+            work_brief_header().sections,
+            "and the header the file carries is the one the constructor builds"
+        );
+    }
+
     /// The module comment's claim, pinned: none of the fragments closes the
-    /// comment itself. (A `-->` inside one would close the prose contract
-    /// early and render its tail; for the two fragments in `default.md` the
-    /// byte pin above also catches it, for the plan note only this does.)
+    /// comment itself. The fragments still feed `report_contract_prefix`
+    /// (`default.md` is a frozen file, not fragment output); a `-->` inside
+    /// one would close a template's prose contract early and render its tail,
+    /// and nothing else checks the plan-note fragment.
     #[test]
     fn contract_fragments_stay_unclosed() {
         for (name, fragment) in [
@@ -706,18 +748,28 @@ mod tests {
         );
     }
 
-    /// #1635 S2b transitional state, pinned honestly: pre-header bodies read
-    /// as written until S3 adds the legacy fallback. `report_startup_read_required`
-    /// is still byte-equality against `initial()`, and `initial()` now carries
-    /// the header line, so the frozen v4 bytes no longer match. S3 flips this
-    /// to `false` (D3 `Ok(None) => body == LEGACY_INITIAL_V4_BODY`); the flip
-    /// must be visible in S3's diff, not silent.
+    /// #1635 S2b — a pre-header track whose body is exactly the frozen bytes
+    /// reads as unwritten, exactly as it did before the header existed:
+    /// `initial()` grew a header line, the rows in every database did not.
+    /// S3 replaces the byte comparison by the structural predicate (D3,
+    /// `Ok(None) => body == LEGACY_INITIAL_V4_BODY`) and must keep this cell
+    /// green. A non-empty summary or any other byte still reads as written.
     #[test]
-    fn legacy_initial_v4_reads_as_written_until_s3_adds_the_fallback() {
+    fn legacy_initial_v4_reads_as_unwritten() {
         let payload = TrackReportPayload::new("", LEGACY_INITIAL_V4_BODY);
         assert!(
-            payload.report_startup_read_required(),
-            "pre-header bodies read as written until S3 adds the legacy fallback"
+            !payload.report_startup_read_required(),
+            "the frozen pre-header body must not require a startup read"
+        );
+        assert!(
+            TrackReportPayload::new("fork source summary", LEGACY_INITIAL_V4_BODY)
+                .report_startup_read_required(),
+            "a non-empty summary is not the canonical placeholder"
+        );
+        assert!(
+            TrackReportPayload::new("", format!("{LEGACY_INITIAL_V4_BODY}\n"))
+                .report_startup_read_required(),
+            "one byte off the frozen body is a written body"
         );
     }
 }

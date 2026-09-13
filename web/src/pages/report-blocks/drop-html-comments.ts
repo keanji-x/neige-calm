@@ -13,9 +13,10 @@
  *
  * Removing the comment nodes at the mdast level, before the separators are
  * inserted, leaves nothing behind. A root-level `html` node whose value
- * starts with `<!--` is exactly one CommonMark HTML block of type 2 (the
- * block ends on the line containing `-->`), so this never drops anything but
- * the comment itself.
+ * starts with `<!--` is one CommonMark HTML block of type 2 (it runs through
+ * the whole line containing `-->`, so `<!-- c -->VISIBLE` is one node), and
+ * that is exactly the node `skipHtml` already drops — nothing becomes
+ * invisible that was visible before; only the separator artefact goes away.
  *
  * Deliberately narrow: only root children, only comments. Inline `html` nodes
  * (a comment inside a paragraph) and non-comment raw HTML blocks are left to

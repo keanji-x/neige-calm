@@ -236,9 +236,10 @@ fn planner_next_note(current: TrackLifecycle, target: TrackLifecycle) -> &'stati
     }
 }
 
-/// #1110 S3 — false only for the canonical empty initial report (or when
-/// the track has no report card). Unparseable payloads are not that
-/// placeholder, so they require a startup read.
+/// #1110 S3 — false only for the canonical empty initial report (today's
+/// `initial()` or the frozen pre-header body, #1635 S2b) or when the track
+/// has no report card. Unparseable payloads are not that placeholder, so
+/// they require a startup read.
 fn report_startup_read_required(cards: &[Card]) -> bool {
     match cards.iter().find(|card| card.kind == "track-report") {
         Some(card) => serde_json::from_value::<TrackReportPayload>(card.payload.clone())
