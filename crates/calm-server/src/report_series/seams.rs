@@ -1,0 +1,77 @@
+//! Test seams of the resolver (#1628 D2 seam list): a recorder for the
+//! unstarted mode and the failpoints the lane / admission tests drive.
+//! Compiled only for tests and the `fixtures` feature; production builds
+//! carry none of it.
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex as StdMutex, PoisonError};
+
+use super::resolver::{Enqueue, Job};
+
+/// `SeriesResolver::new_unstarted` records here instead of spawning lanes.
+#[derive(Default)]
+pub(super) struct Recorder {
+    pub(super) enqueue_calls: AtomicUsize,
+    pub(super) outcomes: StdMutex<Vec<Enqueue>>,
+    pub(super) jobs: StdMutex<Vec<Job>>,
+}
+
+/// Deterministic seams for the acceptance tests. Each `*_once` flag fires
+/// exactly once; the two holds block until released.
+#[derive(Default)]
+pub struct Failpoints {
+    pub(super) fail_write_once: AtomicBool,
+    pub(super) panic_drain_once: AtomicBool,
+    pub(super) hold_in_rebuild: AtomicBool,
+    pub(super) hold_in_precheck: AtomicBool,
+    pub(super) rebuild_released: StdMutex<bool>,
+    pub(super) rebuild_condvar: std::sync::Condvar,
+    pub(super) precheck_release: tokio::sync::Notify,
+    pub(super) rebuild_entered: AtomicUsize,
+    pub(super) precheck_entered: AtomicUsize,
+    pub(super) drain_spawned: AtomicUsize,
+}
+
+impl Failpoints {
+    /// The next row write returns an error instead of writing.
+    pub fn fail_write_once(&self) {
+        self.fail_write_once.store(true, Ordering::SeqCst);
+    }
+    /// The next `resolve` panics before doing anything (kills a drain task).
+    pub fn panic_drain_once(&self) {
+        self.panic_drain_once.store(true, Ordering::SeqCst);
+    }
+    /// The next lane rebuild blocks (holding the `lanes` lock) until
+    /// [`Self::release_rebuild`].
+    pub fn hold_in_rebuild(&self) {
+        *self
+            .rebuild_released
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = false;
+        self.hold_in_rebuild.store(true, Ordering::SeqCst);
+    }
+    pub fn release_rebuild(&self) {
+        *self
+            .rebuild_released
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = true;
+        self.rebuild_condvar.notify_all();
+    }
+    /// The next `enqueue` parks after its in-flight insert, before the
+    /// route pre-check, until [`Self::release_precheck`].
+    pub fn hold_in_precheck(&self) {
+        self.hold_in_precheck.store(true, Ordering::SeqCst);
+    }
+    pub fn release_precheck(&self) {
+        self.precheck_release.notify_one();
+    }
+    pub fn rebuild_entered(&self) -> usize {
+        self.rebuild_entered.load(Ordering::SeqCst)
+    }
+    pub fn precheck_entered(&self) -> usize {
+        self.precheck_entered.load(Ordering::SeqCst)
+    }
+    pub fn drain_spawned(&self) -> usize {
+        self.drain_spawned.load(Ordering::SeqCst)
+    }
+}

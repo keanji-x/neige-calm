@@ -23,6 +23,7 @@ pub mod track_history;
 pub mod track_rename;
 pub mod track_report;
 pub mod track_report_blocks;
+pub(crate) mod track_report_hydrate;
 pub mod track_state;
 
 /// Register every default tool onto a fresh registry. Callers build

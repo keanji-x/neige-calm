@@ -206,6 +206,9 @@ async fn boot() -> Boot {
         task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+        series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
+            None,
+        )),
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);

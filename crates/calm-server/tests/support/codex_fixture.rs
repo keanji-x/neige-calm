@@ -517,6 +517,9 @@ pub async fn boot_forge_e2e_fixture(
         task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: plugin_host_cell,
         operation_runtime: operation_runtime_cell,
+        series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
+            None,
+        )),
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);

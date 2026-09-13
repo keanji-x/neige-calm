@@ -668,6 +668,7 @@ pub mod workspace_repoint;
 // #679 PR1 — `track_fs_dto` moved wholesale to calm-types (pure TS DTOs).
 pub use calm_types::track_fs_dto;
 pub mod report_backlinks;
+pub mod report_series;
 /// The template roster: the built-in template files (`templates/builtin/*.md`,
 /// #1635 S4), parsed once, plus — when the process runs with `--templates-dir`
 /// — the operator's `*.md` files as `site/<stem>` entries (#1635 S5).

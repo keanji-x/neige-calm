@@ -1645,6 +1645,9 @@ async fn boot_fixture() -> Fixture {
         task_budget_default: calm_server::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         plugin_host: plugin_host_cell.clone(),
         operation_runtime: operation_runtime_cell.clone(),
+        series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
+            None,
+        )),
     });
     let mut review_registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut review_registry);

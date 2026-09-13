@@ -198,6 +198,9 @@ impl McpServer {
         }
 
         let track_vcs = repo.sqlite_pool().map(SqlxTrackVcsRepo::shared);
+        let series_resolver = Arc::new(crate::report_series::SeriesResolver::new(
+            repo.sqlite_pool(),
+        ));
         let route_repo: Arc<dyn RouteRepo> = repo;
         let ctx = Arc::new(AppContext {
             terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
@@ -210,6 +213,7 @@ impl McpServer {
             task_budget_default,
             plugin_host,
             operation_runtime,
+            series_resolver,
         });
 
         let terminal_interaction = ctx.terminal_interaction.clone();
@@ -827,6 +831,66 @@ fn plugin_tool_route(
     }
 }
 
+/// #1628 S2 (D2 step 2) — what the kernel finds when it looks a plugin tool up
+/// by its two exact names instead of by a minted `plugin.<id>_<tool>` string.
+/// Four outcomes, not a boolean: the read end of `calm.report.read` reports
+/// the three negatives as distinct `pending` reasons, and the resolver treats
+/// them all as "do not call, do not store".
+#[derive(Debug, Clone)]
+pub(crate) enum ToolEntry {
+    /// `registry.get(plugin_id)` is `None`.
+    NotInstalled,
+    /// Installed, exposes the tool, but not in the running set.
+    NotRunning,
+    /// Installed, but `exposes_tools` has no entry of that name.
+    NotExposed,
+    Found(crate::plugin_host::manifest::ExposedTool),
+}
+
+impl ToolEntry {
+    /// The `pending` reason a reader gets for a negative outcome; `None` for
+    /// `Found`.
+    pub(crate) fn miss_reason(&self, plugin_id: &str, tool: &str) -> Option<String> {
+        match self {
+            Self::NotInstalled => Some(format!("plugin {plugin_id} is not installed")),
+            Self::NotRunning => Some(format!("plugin {plugin_id} is not running")),
+            Self::NotExposed => Some(format!("plugin {plugin_id} does not expose {tool}")),
+            Self::Found(_) => None,
+        }
+    }
+}
+
+/// Exact lookup of `(plugin_id, tool)` against the registry and the running
+/// set — the kernel-as-caller counterpart of [`plugin_tool_route`].
+///
+/// `registry.get` is a precise key lookup, never a `plugin.{id}_{tool}` string
+/// re-parse: a `source` segment such as `aa_b` (legal in a block, impossible
+/// as a manifest id because ids exclude `_`) is a clean `NotInstalled` here,
+/// whereas re-parsing `plugin.aa_b_c` would land on plugin `aa`'s tool `b_c`.
+/// The meta-test `tool_entry_matches_tool_route` pins that the two functions
+/// agree wherever both are defined.
+pub(crate) fn plugin_tool_entry(
+    registry: &crate::plugin_host::PluginRegistry,
+    running_ids: &BTreeSet<String>,
+    plugin_id: &str,
+    tool: &str,
+) -> ToolEntry {
+    let Some(manifest) = registry.get(plugin_id) else {
+        return ToolEntry::NotInstalled;
+    };
+    let Some(entry) = manifest
+        .exposes_tools
+        .iter()
+        .find(|entry| entry.name == tool)
+    else {
+        return ToolEntry::NotExposed;
+    };
+    if !running_ids.contains(plugin_id) {
+        return ToolEntry::NotRunning;
+    }
+    ToolEntry::Found(entry.clone())
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct PluginForgePayload {
     pub(crate) argv: Vec<String>,
@@ -1340,6 +1404,84 @@ mod connector_tool_routing_tests {
             names.is_empty(),
             "tools must vanish the instant the id leaves the running set: {names:?}"
         );
+    }
+
+    /// #1628 S2 A19 — `plugin_tool_entry` and `plugin_tool_route` are two
+    /// spellings of one routing decision. For every `(id, tool)` the fixture
+    /// registry knows, plus pairs it does not, and with each id running or
+    /// not: `entry is Found(e)` iff `route(plugin.{id}_{tool}) == Some((id,
+    /// tool, e.kind))`.
+    #[test]
+    fn tool_entry_matches_tool_route() {
+        let sibling = "mcp";
+        let near_miss = format!("wisburg_{UNDERSCORE_TOOL}");
+        let registry = PluginRegistry::from_manifests([
+            (
+                materialized_connector(
+                    CONNECTOR_ID,
+                    &[UNDERSCORE_TOOL, OTHER_TOOL],
+                    &[UNDERSCORE_TOOL, OTHER_TOOL, DENIED_TOOL],
+                ),
+                None,
+            ),
+            (
+                materialized_connector_schemaless(sibling, &[&near_miss], &[&near_miss]),
+                None,
+            ),
+        ]);
+        let pairs: Vec<(String, String)> = registry
+            .list()
+            .into_iter()
+            .flat_map(|manifest| {
+                let id = manifest.id.clone();
+                manifest
+                    .exposes_tools
+                    .into_iter()
+                    .map(move |tool| (id.clone(), tool.name))
+            })
+            .chain([
+                (CONNECTOR_ID.to_string(), DENIED_TOOL.to_string()),
+                (CONNECTOR_ID.to_string(), "no_such_tool".to_string()),
+                ("nobody".to_string(), UNDERSCORE_TOOL.to_string()),
+                (sibling.to_string(), UNDERSCORE_TOOL.to_string()),
+            ])
+            .collect();
+        assert!(
+            pairs.len() >= 7,
+            "fixture must cover both plugins: {pairs:?}"
+        );
+
+        let running_sets = [
+            running(&[]),
+            running(&[CONNECTOR_ID]),
+            running(&[sibling]),
+            running(&[CONNECTOR_ID, sibling]),
+        ];
+        let mut found = 0usize;
+        for running in &running_sets {
+            for (id, tool) in &pairs {
+                let entry = plugin_tool_entry(&registry, running, id, tool);
+                let minted = format!("plugin.{id}_{tool}");
+                let route = plugin_tool_route(&registry, &minted, running)
+                    .unwrap_or_else(|e| panic!("{minted}: {e:?}"));
+                match entry {
+                    ToolEntry::Found(exposed) => {
+                        found += 1;
+                        assert_eq!(exposed.name, *tool);
+                        assert_eq!(
+                            route,
+                            Some((id.clone(), tool.clone(), exposed.kind)),
+                            "{minted} with running={running:?}: entry Found but route disagrees"
+                        );
+                    }
+                    negative => assert_eq!(
+                        route, None,
+                        "{minted} with running={running:?}: entry {negative:?} but route hit"
+                    ),
+                }
+            }
+        }
+        assert!(found > 0, "at least one pair must be Found");
     }
 
     #[test]
