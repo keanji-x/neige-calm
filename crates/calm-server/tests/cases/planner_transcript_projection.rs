@@ -18,10 +18,10 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
-use calm_server::event::EventBus;
+use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, Observation, PlannerHarness,
-    PlannerHarnessParams, QueueEntry,
+    PlannerHarnessParams, QueueEntry, QueueEntryId,
 };
 use calm_server::model::{
     CardRole, HarnessInputPresentation, NewArea, NewCard, NewTrack, new_id, now_ms,
@@ -31,7 +31,7 @@ use calm_server::routes;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
-use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_server::shared_codex_appserver::{SharedCodexAppServer, TurnStartReturnHook};
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
@@ -48,12 +48,61 @@ struct Boot {
     daemon: Arc<SharedCodexAppServer>,
     harness: PlannerHarness,
     card_id: String,
+    worker_session_id: String,
+    /// Subscribed BEFORE the harness runs, so the first phase event is in it.
+    events_rx: tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
+}
+
+/// A transcript row that is already on the table when the harness boots —
+/// the leftover of a drain that a restart cut short.
+struct SeededProjection {
+    client_id: String,
+    text: String,
+}
+
+struct BootSpec {
+    pending: Vec<QueueEntry>,
+    fail_turn_start: bool,
+    /// `HarnessSnapshot::projection_client_id` as the restarted harness reads
+    /// it back: the key its predecessor persisted before writing the row.
+    projection_client_id: Option<QueueEntryId>,
+    seeded: Vec<SeededProjection>,
+    /// Installed before the harness runs, so the first `turn/start` is held
+    /// inside the daemon until the test releases it.
+    turn_start_hook: Option<TurnStartReturnHook>,
+}
+
+impl BootSpec {
+    fn new(pending: Vec<QueueEntry>) -> Self {
+        Self {
+            pending,
+            fail_turn_start: false,
+            projection_client_id: None,
+            seeded: Vec::new(),
+            turn_start_hook: None,
+        }
+    }
 }
 
 /// One planner card with `pending` already on its harness queue, a fake
 /// daemon that answers `turn/start` (or refuses it, when `fail_turn_start`),
 /// and the REST router over the same repo.
 async fn boot(pending: Vec<QueueEntry>, fail_turn_start: bool) -> Boot {
+    boot_with(BootSpec {
+        fail_turn_start,
+        ..BootSpec::new(pending)
+    })
+    .await
+}
+
+async fn boot_with(spec: BootSpec) -> Boot {
+    let BootSpec {
+        pending,
+        fail_turn_start,
+        projection_client_id,
+        seeded,
+        turn_start_hook,
+    } = spec;
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let area = repo
@@ -94,9 +143,39 @@ async fn boot(pending: Vec<QueueEntry>, fail_turn_start: bool) -> Boot {
     track_area_cache.insert(track.id.clone(), area.id);
 
     let worker_session_id = new_id();
+    // The predecessor's leftovers, written the way `write_projection_row`
+    // writes them (same key shape, `turn_id` NULL, `item/completed`), before
+    // the harness that must replace them exists.
+    for row in seeded {
+        let params = json!({
+            "item": {
+                "id": row.client_id,
+                "clientId": row.client_id,
+                "type": "userMessage",
+                "content": [{ "type": "text", "text": row.text }],
+            },
+            "_projection": true,
+        });
+        let segments = json!([{ "presentation": "user", "text": row.text, "attachments": [] }]);
+        repo.harness_item_insert(
+            "predecessor-session",
+            card.id.as_str(),
+            card.track_id.as_str(),
+            SEED_THREAD_ID,
+            None,
+            Some(row.client_id.as_str()),
+            Some("userMessage"),
+            "item/completed",
+            &params.to_string(),
+            Some(&segments.to_string()),
+        )
+        .await
+        .unwrap();
+    }
     let mut snapshot = HarnessSnapshot::initial(0, pending);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(SEED_THREAD_ID.to_string());
+    snapshot.projection_client_id = projection_client_id;
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
@@ -123,9 +202,13 @@ async fn boot(pending: Vec<QueueEntry>, fail_turn_start: bool) -> Boot {
     if fail_turn_start {
         daemon.fail_turn_start_for_test();
     }
+    if let Some(hook) = turn_start_hook {
+        daemon.install_turn_start_return_hook_for_test(hook);
+    }
+    let events_rx = events.subscribe();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id,
+        worker_session_id: worker_session_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(SEED_THREAD_ID.to_string()),
@@ -171,6 +254,34 @@ async fn boot(pending: Vec<QueueEntry>, fail_turn_start: bool) -> Boot {
         daemon,
         harness,
         card_id: card.id.to_string(),
+        worker_session_id,
+        events_rx,
+    }
+}
+
+/// The next `harness.phase.changed` on the bus, as `(old, new)`.
+async fn next_phase_change(boot: &mut Boot) -> (HarnessPhaseTag, HarnessPhaseTag) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "timed out waiting for a phase event");
+        let env = tokio::time::timeout(remaining, boot.events_rx.recv())
+            .await
+            .expect("event timeout")
+            .expect("event receive");
+        if let Event::HarnessPhaseChanged {
+            old_phase,
+            new_phase,
+            ..
+        } = &env.event
+        {
+            assert_eq!(
+                env.event.kind_tag(),
+                "harness.phase.changed",
+                "the wire kind `fe/core/events/invalidation-plan.ts` keys its plan on"
+            );
+            return (*old_phase, *new_phase);
+        }
     }
 }
 
@@ -386,17 +497,40 @@ async fn projection_key_is_the_first_entry_with_an_id_and_segments_carry_every_e
 
 /// `turn/start` refused: the row that said "sent" goes, and the entry is
 /// back on the queue where the queue region lists it.
+///
+/// Review round 1 (B1) — and a reader is TOLD the row is gone: the delete
+/// emits no event of its own, so the signal is the phase change the
+/// re-buffer persists right after it (`IssuingTurn → TurnCompleted`, wire
+/// kind `harness.phase.changed`). The other half of that promise is
+/// `fe/core/events/invalidation-plan.ts`, whose plan for that kind carries
+/// `['harness-items', card_id]` (pinned in `invalidation-plan.test.ts`).
 #[tokio::test]
 async fn refused_turn_start_deletes_the_projection_and_rebuffers_the_entry() {
     let entries = QueueEntry::entries_from_observations_for_test(vec![Observation::UserMessage {
         text: "never sent".into(),
     }]);
     let entry_id = entries[0].id().unwrap().clone();
-    let boot = boot(entries, true).await;
+    let mut boot = boot(entries, true).await;
     wait_until("the first refusal", || {
         boot.harness.refused_issuances_for_test() >= 1
     })
     .await;
+    // Idle → IssuingTurn is the drain; the change after it is the one that
+    // follows the delete, and it must be a phase event — nothing else on
+    // the bus says "refetch the transcript" for a deleted row.
+    let first = next_phase_change(&mut boot).await;
+    assert_eq!(first, (HarnessPhaseTag::Idle, HarnessPhaseTag::IssuingTurn));
+    let after_rebuffer = next_phase_change(&mut boot).await;
+    assert_eq!(
+        after_rebuffer,
+        (HarnessPhaseTag::IssuingTurn, HarnessPhaseTag::TurnCompleted),
+        "the re-buffer's snapshot emits the phase change a client refetches on"
+    );
+    assert_eq!(
+        get_items(&boot).await,
+        Vec::<Value>::new(),
+        "by the time that event is on the bus, the row is already gone"
+    );
     // The refusal is counted before the row is deleted and the batch put
     // back; the retry is paced (2s), so this settles well inside the window.
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -424,4 +558,289 @@ async fn refused_turn_start_deletes_the_projection_and_rebuffers_the_entry() {
     );
 
     boot.harness.shutdown().await.unwrap();
+}
+
+/// Review round 1 (C1) — a restart between the pre-drain snapshot and the
+/// issuance outcome. The predecessor wrote the projection row for entry X
+/// and died before `persist_issuance_outcome`; the successor reads a snapshot
+/// that still lists X and drains it again. One row for X afterwards, not two:
+/// `write_projection_row` replaces the stale row under the same key.
+#[tokio::test]
+async fn a_restarted_harness_replaces_the_stale_projection_of_a_user_entry() {
+    let entries = QueueEntry::entries_from_observations_for_test(vec![Observation::UserMessage {
+        text: "said once, drained twice".into(),
+    }]);
+    let entry_id = entries[0].id().unwrap().to_string();
+    let boot = boot_with(BootSpec {
+        seeded: vec![SeededProjection {
+            client_id: entry_id.clone(),
+            text: "said once, drained twice".into(),
+        }],
+        ..BootSpec::new(entries)
+    })
+    .await;
+    assert_eq!(
+        get_items(&boot).await.len(),
+        1,
+        "the predecessor's row is on the table before the successor drains"
+    );
+    wait_for_turn_start(&boot).await;
+
+    let rows = wait_for_row_count(&boot, 1).await;
+    assert_eq!(rows[0]["item_uuid"], entry_id);
+    assert_eq!(rows[0]["turn_id"], Value::Null);
+    assert_ne!(
+        rows[0]["worker_session_id"], "predecessor-session",
+        "the surviving row is the successor's write, not the leftover"
+    );
+    assert_eq!(
+        boot.daemon.started_turn_client_ids_for_test(),
+        vec![Some(entry_id)]
+    );
+    // Give a late duplicate every chance to appear.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(get_items(&boot).await.len(), 1);
+
+    boot.harness.shutdown().await.unwrap();
+}
+
+/// Review round 1 (B2 + C1) — the same restart, for a batch of system
+/// observations alone. Such a batch has no entry id to key by; its key was
+/// minted by the predecessor and persisted in the snapshot
+/// (`projection_client_id`) BEFORE the row was written, so the successor
+/// re-drains it under the same key and the stale row is replaced rather than
+/// joined.
+#[tokio::test]
+async fn a_restarted_harness_replaces_the_stale_projection_of_a_system_only_batch() {
+    let entries =
+        QueueEntry::entries_from_observations_for_test(vec![Observation::TaskCompleted {
+            idempotency_key: "task-done".into(),
+            result: json!({"status": "ok"}),
+        }]);
+    assert_eq!(entries[0].id(), None, "a system entry carries no id");
+    let persisted_key = QueueEntryId::from_wire("minted-by-the-predecessor".into());
+    let boot = boot_with(BootSpec {
+        projection_client_id: Some(persisted_key.clone()),
+        seeded: vec![SeededProjection {
+            client_id: persisted_key.to_string(),
+            text: "task task-done completed".into(),
+        }],
+        ..BootSpec::new(entries)
+    })
+    .await;
+    assert_eq!(get_items(&boot).await.len(), 1);
+    wait_for_turn_start(&boot).await;
+
+    assert_eq!(
+        boot.daemon.started_turn_client_ids_for_test(),
+        vec![Some(persisted_key.to_string())],
+        "the successor keys the re-drain by the persisted mint, not a fresh one"
+    );
+    let rows = wait_for_row_count(&boot, 1).await;
+    assert_eq!(rows[0]["item_uuid"], persisted_key.to_string());
+    assert_ne!(rows[0]["worker_session_id"], "predecessor-session");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(get_items(&boot).await.len(), 1);
+    // Once the turn is out the slot is cleared: the next batch decides its
+    // own key, and no restart can pair this one with a later batch.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while boot.harness.snapshot().await.projection_client_id.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the issuance outcome to clear the key"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    boot.harness.shutdown().await.unwrap();
+}
+
+/// Review round 1 (B2) — the key a first issuance mints for a system-only
+/// batch is on disk BEFORE the row is written, which is the only order under
+/// which a restart can find it. Read at the one moment that tells the two
+/// apart: inside `turn/start`, held open by the fake daemon, after the row
+/// and before the issuance outcome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_system_only_batch_persists_its_minted_key_before_the_row() {
+    let entries =
+        QueueEntry::entries_from_observations_for_test(vec![Observation::TaskCompleted {
+            idempotency_key: "task-first".into(),
+            result: json!({"status": "ok"}),
+        }]);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let boot = boot_with(BootSpec {
+        turn_start_hook: Some(TurnStartReturnHook {
+            entered: entered.clone(),
+            release: release.clone(),
+        }),
+        ..BootSpec::new(entries)
+    })
+    .await;
+    entered.notified().await;
+
+    // The row is there, keyed by a mint …
+    let rows = boot
+        .repo
+        .harness_item_list_by_card(&boot.card_id, 0, 10, false)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1, "the projection row precedes turn/start");
+    let key = rows[0]
+        .item_uuid
+        .clone()
+        .expect("a projection row is keyed");
+    // … and the snapshot ON DISK — what a restart reads, not the live
+    // harness — already names that same mint while the batch is still listed
+    // in it: exactly the state a successor re-drains from.
+    let stored = boot
+        .repo
+        .session_projection_by_id(&boot.worker_session_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .handle_state_json
+        .unwrap();
+    assert_eq!(stored["projection_client_id"], key);
+    let persisted = HarnessSnapshot::from_value_strict(stored);
+    assert_eq!(
+        persisted.pending_entries().len(),
+        1,
+        "the pre-drain snapshot still lists the batch"
+    );
+    assert_eq!(
+        boot.daemon.started_turn_client_ids_for_test(),
+        vec![Some(key.clone())],
+        "and it is the key codex is being handed"
+    );
+
+    release.notify_one();
+    // Once the turn is out the slot is cleared: the next batch decides its
+    // own key.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while boot.harness.snapshot().await.projection_client_id.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the issuance outcome to clear the key"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    boot.harness.shutdown().await.unwrap();
+}
+
+/// Review round 1 (C2) — the projection key is `(card_id, client_id)`, and
+/// the `card_id` half does work: two cards can hold a projection under the
+/// same client id, and an echo on one upgrades only that one.
+#[tokio::test]
+async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let area = repo
+        .area_create(NewArea {
+            name: "two-cards".into(),
+            color: "#111111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let track = repo
+        .track_create(NewTrack {
+            template_input: None,
+            area_id: area.id.clone(),
+            title: "two cards".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let mut card_ids = Vec::new();
+    for _ in 0..2 {
+        let card = repo
+            .card_create(NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1, "planner_harness": true}),
+            })
+            .await
+            .unwrap();
+        card_ids.push(card.id.to_string());
+    }
+    let (card_a, card_b) = (card_ids[0].clone(), card_ids[1].clone());
+    let client_id = "shared-client-id";
+    let mut row_ids = Vec::new();
+    // A first, B second: an upgrade that ignored the card would pick B's row
+    // (`ORDER BY id DESC`), which is what the mutation of this test looks like.
+    for card in [&card_a, &card_b] {
+        let id = repo
+            .harness_item_insert(
+                "session",
+                card,
+                track.id.as_str(),
+                SEED_THREAD_ID,
+                None,
+                Some(client_id),
+                Some("userMessage"),
+                "item/completed",
+                r#"{"item":{"type":"userMessage"},"_projection":true}"#,
+                Some(r#"[{"presentation":"user","text":"shared words","attachments":[]}]"#),
+            )
+            .await
+            .unwrap();
+        row_ids.push(id);
+    }
+    let (row_a, row_b) = (row_ids[0], row_ids[1]);
+
+    let upgraded = repo
+        .transcript_projection_upgrade(
+            &card_a,
+            client_id,
+            Some("turn-a"),
+            "codex-item-a",
+            r#"{"item":{"id":"codex-item-a","type":"userMessage"}}"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(upgraded, Some(row_a), "A's echo upgrades A's row");
+    assert_eq!(
+        repo.transcript_projection_id(&card_a, client_id)
+            .await
+            .unwrap(),
+        None,
+        "A no longer holds a projection under that key"
+    );
+    assert_eq!(
+        repo.transcript_projection_id(&card_b, client_id)
+            .await
+            .unwrap(),
+        Some(row_b),
+        "B's projection is untouched"
+    );
+    let b_rows = repo
+        .harness_item_list_by_card(&card_b, 0, 10, false)
+        .await
+        .unwrap();
+    assert_eq!(b_rows.len(), 1);
+    assert_eq!(b_rows[0].turn_id, None);
+    assert_eq!(b_rows[0].item_uuid.as_deref(), Some(client_id));
+
+    // The delete is scoped the same way.
+    assert_eq!(
+        repo.transcript_projection_delete(&card_a, client_id)
+            .await
+            .unwrap(),
+        0,
+        "nothing left to delete on A"
+    );
+    assert_eq!(
+        repo.transcript_projection_delete(&card_b, client_id)
+            .await
+            .unwrap(),
+        1
+    );
 }

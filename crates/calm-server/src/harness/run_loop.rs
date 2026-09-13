@@ -203,6 +203,9 @@ pub(super) struct Inner {
     last_turn_id: Mutex<Option<String>>,
     issued_turn_id: Mutex<Option<String>>,
     issued_turn_head: Mutex<Option<track_vcs::CommitHash>>,
+    /// See `HarnessSnapshot::projection_client_id`. Live copy of the slot;
+    /// `maybe_issue_turn` is its only writer.
+    projection_client_id: Mutex<Option<QueueEntryId>>,
     last_report_body_sha256: Mutex<Option<String>>,
     last_seen_head: Mutex<Option<track_vcs::CommitHash>>,
     /// #1255 S3 — latest context-window reading from `thread/tokenUsage/updated`.
@@ -1026,6 +1029,7 @@ fn inner_from_params(
         last_turn_id: Mutex::new(snapshot.last_turn_id),
         issued_turn_id: Mutex::new(None),
         issued_turn_head: Mutex::new(snapshot.issued_turn_head),
+        projection_client_id: Mutex::new(snapshot.projection_client_id),
         last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
         last_seen_head: Mutex::new(snapshot.last_seen_head),
         // Round-trips through the snapshot so the reading survives a reboot
@@ -2142,14 +2146,16 @@ async fn emit_item_added(
 /// other entries are readable through `input_segments`.
 ///
 /// A projection with this key may already stand. The snapshot persisted at
-/// the top of `maybe_issue_turn` still lists the batch, so a harness
-/// restarted between that write and `persist_issuance_outcome` drains the
-/// same entries again under the same ids (`state_from_snapshot`: an
-/// `IssuingTurn` phase comes back as `TurnCompleted`/`Resumed`, and the
-/// queue is intact); a failed `turn/start` whose delete failed leaves one
-/// too. Either way it is stale — this drain is the batch's current
-/// issuance — so it is replaced, not joined. That is also why the delete in
-/// the failure arm of `maybe_issue_turn` only warns when it fails.
+/// the top of `maybe_issue_turn` still lists the batch AND carries this key
+/// (`HarnessSnapshot::projection_client_id`), so a harness restarted between
+/// that write and `persist_issuance_outcome` drains the same entries again
+/// under the same key — a user entry's own id, or the persisted mint for a
+/// batch of system entries alone (`state_from_snapshot`: an `IssuingTurn`
+/// phase comes back as `TurnCompleted`/`Resumed`, and the queue is intact);
+/// a failed `turn/start` whose delete failed leaves one too. Either way it
+/// is stale — this drain is the batch's current issuance — so it is
+/// replaced, not joined. That is also why the delete in the failure arm of
+/// `maybe_issue_turn` only warns when it fails.
 async fn write_projection_row(
     inner: &Arc<Inner>,
     thread_id: &str,
@@ -3083,6 +3089,38 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     *inner.issued_turn_id.lock().await = None;
     *inner.issued_turn_head.lock().await = None;
+    // #1625 P2 — the key shared by the projection row and `turn/start`'s
+    // `clientUserMessageId`, decided HERE so that the snapshot written next
+    // carries it: a harness restarted between that write and
+    // `persist_issuance_outcome` re-drains the same batch (the queue is
+    // intact in that snapshot) and must project it under the SAME key, or
+    // the stale-row replacement in `write_projection_row` matches nothing and
+    // the batch stands on the transcript twice.
+    //
+    // In order: the first entry that has an id — a person's sentence keeps
+    // its own id as the row's `item_uuid`, which the queue already persists;
+    // else the key an earlier issuance of this batch already used — the slot
+    // survives a re-buffer and a restart precisely so a system-only batch is
+    // not re-keyed; else a fresh mint, for a batch of system entries alone
+    // (a commit notification, a task result) on its first issuance. Read
+    // from the queue rather than from `drained` because the queue does not
+    // change between here and the drain below: every enqueue and every
+    // re-buffer runs on this task.
+    let client_id = {
+        let from_queue = inner
+            .pending_queue
+            .lock()
+            .await
+            .iter()
+            .find_map(QueueEntry::id)
+            .cloned();
+        let mut slot = inner.projection_client_id.lock().await;
+        let key = from_queue
+            .or_else(|| slot.clone())
+            .unwrap_or_else(QueueEntryId::mint);
+        *slot = Some(key.clone());
+        key
+    };
     persist_snapshot(inner).await?;
 
     let drained = {
@@ -3267,20 +3305,21 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             .flat_map(QueueEntry::attachments)
             .map(|attachment| InputItem::local_image(attachment.path.clone())),
     );
-    // #1625 P2 — the key shared by the projection row and `turn/start`'s
-    // `clientUserMessageId`: the first drained entry that has an id. A batch
-    // of system entries alone (a commit notification, a task result) has
-    // none, and still becomes one turn and one echoed `userMessage`, so it
-    // gets a minted one from the same namespace.
-    let client_id = drained
-        .iter()
-        .find_map(QueueEntry::id)
-        .cloned()
-        .unwrap_or_else(QueueEntryId::mint);
+    // The two failures this block can end in are told apart because they are
+    // opposite facts about the batch: a projection row that could not be
+    // written is a LOCAL failure before codex was asked anything, and a
+    // refused `turn/start` is codex's answer. Both re-buffer (below), but the
+    // log must not call the first "turn/start failed" — the operator reading
+    // it would look at codex for a fault in sqlite.
+    enum IssueFailure {
+        ProjectionWrite(CalmError),
+        TurnStart(CalmError),
+    }
     let issued = async {
         if !prepared.actions.is_empty()
             && let Some(problem) = crate::semantic_recovery::binding_problem(
-                &serde_json::to_string(&items)?,
+                &serde_json::to_string(&items)
+                    .map_err(|e| IssueFailure::TurnStart(CalmError::from(e)))?,
                 &prepared.actions,
             )
         {
@@ -3312,19 +3351,25 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                     &items,
                     std::mem::take(&mut prepared.actions),
                 )
-                .await?,
+                .await
+                .map_err(IssueFailure::TurnStart)?,
             )
         };
         // Written before `turn/start` goes out, and after the last edit to
         // `prepared.segments` above, so the row says what codex is told.
-        write_projection_row(inner, &thread_id, client_id.as_str(), &prepared.segments).await?;
+        write_projection_row(inner, &thread_id, client_id.as_str(), &prepared.segments)
+            .await
+            .map_err(IssueFailure::ProjectionWrite)?;
         let turn = IssueTurnHandle::from_reconciliation(inner)
             .issue(&thread_id, items, &selection, Some(client_id.as_str()))
-            .await?;
+            .await
+            .map_err(IssueFailure::TurnStart)?;
         if let Some(issuance) = issuance {
-            crate::semantic_recovery::bind_turn(inner.repo.as_ref(), &issuance, &turn).await?;
+            crate::semantic_recovery::bind_turn(inner.repo.as_ref(), &issuance, &turn)
+                .await
+                .map_err(IssueFailure::TurnStart)?;
         }
-        Ok::<_, CalmError>(turn)
+        Ok::<_, IssueFailure>(turn)
     }
     .await;
     match issued {
@@ -3345,9 +3390,13 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
             *inner.issued_turn_id.lock().await = Some(turn_id.clone());
             *inner.issued_turn_head.lock().await = diff.current_head.clone();
+            // The batch is out and its row is keyed; the next batch decides
+            // its own key. Cleared in the same snapshot that empties the
+            // queue, so no restart can pair this key with a later batch.
+            *inner.projection_client_id.lock().await = None;
             persist_issuance_outcome(inner).await?;
         }
-        Err(e) => {
+        Err(failure) => {
             // #1505 S4 review round 2 — paced, like the refusal above.
             //
             // This arm is older than #1505 and was unpaced: `rebuffer_head`
@@ -3382,18 +3431,36 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             // `NeedsAChoice`: no choice the reader can make is KNOWN to remove
             // the need for `turn/start`, so its sentence names no certain
             // remedy the way the other two do.
-            let refusal = classify_codex_failure(
-                &e,
-                format!("turn/start failed: {e}"),
-                IssuanceRefusal::rejected,
-            );
+            let (e, stage) = match failure {
+                IssueFailure::ProjectionWrite(e) => {
+                    (e, "projection row write failed before turn/start was sent")
+                }
+                IssueFailure::TurnStart(e) => (e, "turn/start failed"),
+            };
+            let refusal =
+                classify_codex_failure(&e, format!("{stage}: {e}"), IssuanceRefusal::rejected);
             apply_refusal(inner, &refusal).await;
             #[cfg(feature = "fixtures")]
             inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
             // #1625 P2 — the batch goes back on the queue, so the row that
             // said it was sent goes too; the queue region lists it again.
             // A failed delete is logged, not propagated: the next drain of
-            // this batch replaces the row (`write_projection_row`).
+            // this batch replaces the row (`write_projection_row`), under
+            // the same key because `projection_client_id` is kept across the
+            // re-buffer. (On a projection-write failure there may be no row
+            // to delete, or a row whose event never went out; the delete is
+            // right either way.)
+            //
+            // How a reader learns the row is gone: the delete emits no event
+            // of its own. The phase change that follows the re-buffer —
+            // `IssuingTurn → TurnCompleted`, written by
+            // `persist_issuance_outcome` below — is the signal, and
+            // `fe/core/events/invalidation-plan.ts` maps
+            // `harness.phase.changed` to `['harness-items', card_id]` for
+            // it. Legacy `web/` (`usePlannerChatHistory`, being deleted under
+            // #1334) fetches only rows above its last id and never drops one,
+            // so it keeps showing the deleted row until a reload; declared,
+            // not fixed.
             if let Err(delete_error) = inner
                 .repo
                 .transcript_projection_delete(inner.card_id.as_str(), client_id.as_str())
@@ -3416,7 +3483,13 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             *inner.issued_turn_id.lock().await = None;
             *inner.issued_turn_head.lock().await = None;
             persist_issuance_outcome(inner).await?;
-            tracing::warn!(error = %e, "planner harness turn/start failed; re-buffered batch");
+            tracing::warn!(
+                worker_session_id = %inner.worker_session_id,
+                card_id = %inner.card_id,
+                stage,
+                error = %e,
+                "planner harness could not issue the batch; re-buffered it"
+            );
         }
     }
     Ok(())
@@ -3765,6 +3838,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     let last_thread_id = inner.thread_id.read().await.clone();
     let last_turn_id = inner.last_turn_id.lock().await.clone();
     let issued_turn_head = inner.issued_turn_head.lock().await.clone();
+    let projection_client_id = inner.projection_client_id.lock().await.clone();
     let last_report_body_sha256 = inner.last_report_body_sha256.lock().await.clone();
     let last_seen_head = inner.last_seen_head.lock().await.clone();
     let token_usage = inner.token_usage.lock().await.clone();
@@ -3778,6 +3852,7 @@ async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
     );
     snapshot.last_seen_head = last_seen_head;
     snapshot.issued_turn_head = issued_turn_head;
+    snapshot.projection_client_id = projection_client_id;
     snapshot.token_usage = token_usage;
     snapshot
 }

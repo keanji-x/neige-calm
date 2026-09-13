@@ -279,6 +279,24 @@ pub struct HarnessSnapshot {
     // the projection row the drain writes to the transcript table, which is
     // durable on its own; a snapshot on disk that still carries the old key
     // is read without it (no `deny_unknown_fields`, see `token_usage`).
+    /// #1625 P2 — the key under which the batch at the head of the queue is,
+    /// or is about to be, projected onto the transcript table: the row's
+    /// `item_uuid` and `turn/start`'s `clientUserMessageId`.
+    ///
+    /// Written by `maybe_issue_turn` in the snapshot that precedes the drain
+    /// and cleared once the turn is out (`persist_issuance_outcome` on the
+    /// success arm). A batch holding a user entry is keyed by that entry's
+    /// own id, which the queue already persists; this slot exists for a
+    /// batch of system observations alone, whose key is minted. Without it a
+    /// harness restarted between the projection write and the issuance
+    /// outcome re-drained the same batch under a fresh key, so the stale-row
+    /// replacement in `write_projection_row` matched nothing and the batch
+    /// stood on the transcript twice. Additive and defaulted, same
+    /// compatibility argument as `token_usage` below: an old row reads as
+    /// `None`, an old binary drops it — and what it loses is exactly one
+    /// duplicate-row repair for one in-flight batch.
+    #[serde(default)]
+    pub projection_client_id: Option<QueueEntryId>,
     #[serde(default)]
     pub wedged_reason: Option<String>,
     /// #1255 S3 — latest `thread/tokenUsage/updated` reading for this thread.
@@ -341,6 +359,7 @@ impl HarnessSnapshot {
             last_report_body_sha256: None,
             last_seen_head: None,
             issued_turn_head: None,
+            projection_client_id: None,
             wedged_reason: None,
             token_usage: None,
         };
@@ -375,6 +394,7 @@ impl HarnessSnapshot {
             last_report_body_sha256,
             last_seen_head: None,
             issued_turn_head: None,
+            projection_client_id: None,
             // Set by `snapshot_for` from `Inner`, exactly like
             // `last_seen_head` / `issued_turn_head` above: `from_state` sees
             // only `HarnessState`, and token usage does not live there.
