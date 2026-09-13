@@ -750,8 +750,9 @@ mod card_role_tests {
 /// recipe row has neither problem: nothing schedules it, nothing lists it
 /// among tracks, and every byte in one was written by a human.
 ///
-/// The built-in templates (`calm_server::templates::TEMPLATES`) stay Rust
-/// constants and are **not** rows here. Both feed the same instantiation
+/// The built-in templates (`crates/calm-server/templates/builtin/*.md`,
+/// loaded into the roster at boot) and operator templates (`--templates-dir`,
+/// `site/<stem>`) are **not** rows here. Both feed the same instantiation
 /// seam, so "built-in" and "mine" differ only in where the payload came
 /// from — see `routes::track_recipes`.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
