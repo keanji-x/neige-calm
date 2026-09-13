@@ -632,6 +632,9 @@ pub mod planner_model;
 pub mod plugin_host;
 pub mod proc_identity;
 pub(crate) mod proc_supervisor;
+/// #1635 S1c — runtime-assembled agent prose: `prompts/**.md` fragments
+/// rendered through a placeholder seam that is checked in both directions.
+pub(crate) mod prompts;
 pub mod provider_impls;
 pub(crate) mod ratify_state;
 pub(crate) mod recorder_shadow;

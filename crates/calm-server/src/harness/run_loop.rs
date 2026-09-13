@@ -2910,7 +2910,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             &drained,
             &mut prepared.segments,
         )
-        .await;
+        .await?;
         crate::error::Result::Ok(prepared)
     }
     .await;
@@ -3050,7 +3050,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 &prepared.actions,
             )
         {
-            prepared.use_exact_interface(problem);
+            prepared.use_exact_interface(problem)?;
             items[0] = InputItem::text(prepend_diff_block(
                 diff.block.clone(),
                 prepared

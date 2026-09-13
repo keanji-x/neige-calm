@@ -7,8 +7,17 @@ use crate::error::{CalmError, Result};
 use crate::event::Event;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{HarnessInputSegment, now_ms};
+use crate::prompts::render_named;
 use calm_types::task_recovery::TaskRecoveryCapability;
 use serde_json::json;
+
+/// The briefing's two prose fragments (#1635 S1c): the frame around the
+/// kernel-snapshot JSON, and the notice that replaces a semantic briefing when
+/// this turn falls back to the exact MCP interface. `pub(super)` so the
+/// run-loop tests can locate the JSON through the fragment's own shape.
+pub(super) const BRIEFING: &str = include_str!("../../prompts/recovery-briefing/briefing.md");
+pub(super) const EXACT_INTERFACE: &str =
+    include_str!("../../prompts/recovery-briefing/exact-interface.md");
 
 pub(super) struct PreparedBriefing {
     pub segments: Vec<HarnessInputSegment>,
@@ -17,13 +26,13 @@ pub(super) struct PreparedBriefing {
 }
 
 impl PreparedBriefing {
-    pub(super) fn use_exact_interface(&mut self, reason: &str) {
+    pub(super) fn use_exact_interface(&mut self, reason: &str) -> Result<()> {
         for (index, text) in self.exact_texts.drain(..) {
-            self.segments[index].text = format!(
-                "No semantic actions are bound for this batch: {reason}. Recover is unavailable for this turn. Use the exact MCP interface after checking the precise evidence; retain the expected attempt and request identity on retries.\n{text}"
-            );
+            self.segments[index].text =
+                render_named(EXACT_INTERFACE, &[("reason", reason), ("text", &text)])?;
         }
         self.actions.clear();
+        Ok(())
     }
 }
 
@@ -182,8 +191,8 @@ pub(super) async fn input_segments(
 }
 
 fn render(briefing: &serde_json::Value) -> Result<String> {
-    Ok(format!(
-        "Recovery decision briefing (kernel snapshot):\n{}\nEnd recovery decision briefing.",
-        serde_json::to_string_pretty(briefing)?
-    ))
+    Ok(render_named(
+        BRIEFING,
+        &[("briefing_json", &serde_json::to_string_pretty(briefing)?)],
+    )?)
 }

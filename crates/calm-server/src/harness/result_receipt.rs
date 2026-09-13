@@ -2,11 +2,76 @@
 //! No new queue fields, task-key aliases, workspace paths, or authority claims.
 use super::{Observation, QueueEntry};
 use crate::db::Repo;
+use crate::error::Result;
 use crate::ids::TrackId;
 use crate::model::HarnessInputSegment;
+use crate::prompts::render_named;
 use crate::state::WriteContext;
 use calm_truth::track_fs_view::TrackFsView;
 use serde_json::Value;
+
+/// The three receipt-detail fragments (#1635 S1c). Which one is appended is
+/// decided here; what it says is the file's business. `pub(super)` so the
+/// run-loop tests can name a branch through its fragment instead of through a
+/// copy of its sentence.
+pub(super) const RECORDED_WITH_EVENT: &str =
+    include_str!("../../prompts/result-receipt/recorded-with-event.md");
+pub(super) const RECORDED_LEGACY: &str =
+    include_str!("../../prompts/result-receipt/recorded-legacy.md");
+pub(super) const UNAVAILABLE: &str = include_str!("../../prompts/result-receipt/unavailable.md");
+
+/// What `enrich` found for one receipt, i.e. which fragment it appends and
+/// with which values bound.
+pub(super) enum Detail<'a> {
+    /// The run record still holds the queued event (the queue carried its ID).
+    RecordedWithEvent {
+        path: &'a str,
+        kind: &'a str,
+        event_id: i64,
+    },
+    /// A legacy queue entry without an envelope ID: only execution identity and
+    /// report value could be matched.
+    RecordedLegacy {
+        path: &'a str,
+        kind: &'a str,
+        event_id: i64,
+    },
+    /// No exact record through the current track reader.
+    Unavailable,
+}
+
+/// Render one receipt's detail text. The fragment/value seam is checked in
+/// both directions by `render_named`; a mismatch is our bug and surfaces as
+/// `CalmError::Internal`.
+pub(super) fn render_detail(detail: &Detail<'_>) -> Result<String> {
+    Ok(match detail {
+        Detail::RecordedWithEvent {
+            path,
+            kind,
+            event_id,
+        } => render_named(
+            RECORDED_WITH_EVENT,
+            &[
+                ("path_json", &serde_json::json!({"path": path}).to_string()),
+                ("kind", kind),
+                ("event_id", &event_id.to_string()),
+            ],
+        )?,
+        Detail::RecordedLegacy {
+            path,
+            kind,
+            event_id,
+        } => render_named(
+            RECORDED_LEGACY,
+            &[
+                ("path_json", &serde_json::json!({"path": path}).to_string()),
+                ("kind", kind),
+                ("event_id", &event_id.to_string()),
+            ],
+        )?,
+        Detail::Unavailable => render_named(UNAVAILABLE, &[])?,
+    })
+}
 
 pub(super) async fn enrich(
     repo: &dyn Repo,
@@ -14,7 +79,7 @@ pub(super) async fn enrich(
     track_id: &TrackId,
     entries: &[QueueEntry],
     segments: &mut [HarnessInputSegment],
-) {
+) -> Result<()> {
     let receipts: Vec<_> = entries
         .iter()
         .enumerate()
@@ -45,7 +110,7 @@ pub(super) async fn enrich(
         })
         .collect();
     if receipts.is_empty() {
-        return;
+        return Ok(());
     }
     let track = match repo.track_get(track_id.as_str()).await {
         Ok(track) => track,
@@ -92,18 +157,22 @@ pub(super) async fn enrich(
                 }
             }
         }
-        segments[index].text.push_str(&match detail {
-            Some((path, event_id)) if envelope_id.is_some() => format!(
-                "\nRecorded execution details: calm.track.cat({}). This virtual JSON record contains the recorded events and any artifact claims; it is not a worker report file or independent verification. Read events.{kind} and require event_id={event_id}; do not substitute another event or attempt.",
-                serde_json::json!({"path": path}),
-            ),
-            Some((path, event_id)) => format!(
-                "\nRecorded execution details: calm.track.cat({}). This virtual JSON record contains the recorded events and any artifact claims; it is not a worker report file or independent verification. Current matching record: events.{kind}, event_id={event_id}. Only execution identity and report value match; this legacy receipt has no queued event ID. Original event identity and original artifact version cannot be confirmed. Retain the original queued report preview.",
-                serde_json::json!({"path": path}),
-            ),
-            None => "\nExact execution details unavailable through the current track reader. No worker report file is asserted to exist; retain the original queued receipt.".into(),
-        });
+        let detail = match &detail {
+            Some((path, event_id)) if envelope_id.is_some() => Detail::RecordedWithEvent {
+                path,
+                kind,
+                event_id: *event_id,
+            },
+            Some((path, event_id)) => Detail::RecordedLegacy {
+                path,
+                kind,
+                event_id: *event_id,
+            },
+            None => Detail::Unavailable,
+        };
+        segments[index].text.push_str(&render_detail(&detail)?);
     }
+    Ok(())
 }
 
 // This address is an existing virtual run record, not a filesystem path or a
