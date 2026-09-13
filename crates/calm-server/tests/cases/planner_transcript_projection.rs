@@ -730,9 +730,10 @@ async fn a_recovered_key_outranks_a_sentence_enqueued_before_the_re_drain() {
         .as_array()
         .expect("the projection carries its segments");
     assert!(
-        segments
-            .iter()
-            .any(|segment| segment["text"].as_str().unwrap().contains("typed after the restart")),
+        segments.iter().any(|segment| segment["text"]
+            .as_str()
+            .unwrap()
+            .contains("typed after the restart")),
         "the sentence rides in the recovered batch's row: {segments:?}"
     );
     // Give a second row every chance to appear.
@@ -995,7 +996,10 @@ async fn an_echo_of_a_turn_issued_before_the_upgrade_takes_the_snapshots_segment
         ..BootPlan::new(Vec::new())
     })
     .await;
-    assert!(get_items(&boot).await.is_empty(), "no projection row: the old drain wrote none");
+    assert!(
+        get_items(&boot).await.is_empty(),
+        "no projection row: the old drain wrote none"
+    );
 
     // The echo, as codex sends it for a turn whose `turn/start` named no
     // client id: started, then completed, no `clientId`.
@@ -1046,7 +1050,11 @@ async fn an_echo_of_a_turn_issued_before_the_upgrade_takes_the_snapshots_segment
         .iter()
         .find(|row| row["item_uuid"] == "item-user-codex-pre-p2-again")
         .unwrap();
-    assert_eq!(again.get("input_segments"), None, "the slot was consumed by the first completed echo");
+    assert_eq!(
+        again.get("input_segments"),
+        None,
+        "the slot was consumed by the first completed echo"
+    );
 
     // Never written: the snapshot this binary persisted after the echo has
     // no such key, whatever the old one carried.
@@ -1059,7 +1067,10 @@ async fn an_echo_of_a_turn_issued_before_the_upgrade_takes_the_snapshots_segment
         .handle_state_json
         .unwrap();
     assert_eq!(persisted.get("issued_input_segments"), None);
-    assert_eq!(persisted["last_turn_id"], turn, "the rest of the snapshot round-tripped");
+    assert_eq!(
+        persisted["last_turn_id"], turn,
+        "the rest of the snapshot round-tripped"
+    );
 
     boot.harness.shutdown().await.unwrap();
 }
