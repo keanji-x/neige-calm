@@ -20,6 +20,9 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'ErrorBody', 'GetPlannerRunResponse', 'GitDiffResponse', 'GitStatusResponse',
   'InterruptPlannerCardResponse', 'ListdirResponse', 'ModelsResponse', 'PluginDetail', 'PluginListItem',
   'PlannerInputMutationResponse', 'PlannerInputStaleBody',
+  // calm-server/routes/planner_input.rs (#1625 P3); core/domain/conversation.ts
+  // owns `plannerSteerSchema`.
+  'PlannerSteerResponse',
   'RatifyCardResponse', 'ReadFileResponse', 'ReportBlockWriteResponse',
   'ResetPlannerCardResponse', 'SendPlannerInputResponse', 'SetPlannerModelResponse',
   'SettingsBag', 'Terminal',
