@@ -1370,7 +1370,7 @@
   },
   {
     "name": "calm.terminal.input",
-    "description_sha256": "f99a2c68c7842472676edaeefafe1047fb0890445bb327066d8c4cbaf5da69db",
+    "description_sha256": "abd29522e86676cfca91020d486c2f71aee3fe8e69bd3613fefee952e5d94c3c",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

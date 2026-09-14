@@ -99,7 +99,9 @@ encoding lives in `terminal_interaction/actions.rs`.
 observation/binding/age/availability/pending checks → the checks that need no
 live screen (live-viewport fence, the action encoded against the saved
 surface, which the surface fence later proves equal to the live one), so a
-claim is never granted on a request that errors anyway → claim → pre-write
+claim is never granted on an invalid action or a history-view observation (a
+surface change since the observation, e.g. a resize, needs the live screen:
+it still claims and then errors with the claim note) → claim → pre-write
 capture and the remaining fences (availability and age again, control, surface,
 the action against the live surface, revision) → write. Cases: this connection holds
 control → no claim, `claim: {status: "held"}`, the ordinary fences apply
@@ -171,7 +173,7 @@ presentational change). Anything else stays `stale_observation`.
 both are set. The tolerance is accepted only for draft edits — `text`,
 `sequence` and a `key` from the sequence vocabulary — and refused (invalid
 params at the MCP layer, the same refusal in `TerminalInteraction::input`)
-for `submit`, `click`, Enter, Tab, Escape, control keys and PageUp/PageDown:
+for `submit`, `click`, Enter, Tab, Escape, other control keys and PageUp/PageDown:
 Claude Code's slash-command menu renders below the input row and re-sorts
 while it loads, so an Enter admitted by the tolerance could pick a different
 item than the one observed; a submission in a field whose status text moves

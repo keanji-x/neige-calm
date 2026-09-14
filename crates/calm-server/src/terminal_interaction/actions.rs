@@ -114,7 +114,7 @@ pub fn sequence_steps(action: &Value) -> Option<usize> {
 /// a different item than the one observed; a submission in a field whose
 /// status text moves keeps using `allow_output_since_observation` after
 /// inspecting the fresh state. Never submit, click, Enter, Tab, Escape,
-/// control keys or PageUp/PageDown.
+/// other control keys or PageUp/PageDown.
 pub fn edits_the_draft(action: &Value) -> bool {
     match action["type"].as_str() {
         Some("text" | "sequence") => true,
@@ -125,7 +125,7 @@ pub fn edits_the_draft(action: &Value) -> bool {
     }
 }
 /// Reason `allow_output_below_cursor` is refused for other actions.
-pub const BELOW_CURSOR_EDITS_ONLY: &str = "allow_output_below_cursor admits only text, sequence and editing keys; not submit, click, Enter, Tab, Escape, Ctrl keys";
+pub const BELOW_CURSOR_EDITS_ONLY: &str = "allow_output_below_cursor admits only text, sequence and editing keys; no submit/click/Enter/Tab/Escape/other Ctrl keys";
 pub fn encode(action: &Value, surface: &InputSurface) -> Result<Vec<u8>> {
     let object = action
         .as_object()
