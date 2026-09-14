@@ -53,10 +53,19 @@ async fn dispatch(
         super::track_report::resolve_report_for_caller(&ctx, &identity).await?;
     // #1668 — the model only sees Codex-sanitized spellings; resolve them to
     // registry names before validation so the frozen contract (and its
-    // replay lookup) carries what the Worker side matches exactly.
+    // replay lookup) carries what the Worker side matches exactly. An
+    // existing receipt's frozen names take precedence over the live set.
+    let frozen = crate::track_report::dispatch::frozen_plugin_tools(
+        ctx.repo.as_ref(),
+        &track.id,
+        args.name().trim(),
+    )
+    .await
+    .map_err(map_error)?;
     let (plugin_tools, admission) = crate::mcp_server::transport::resolve_dispatch_plugin_tools(
         &ctx,
         identity.track_id.as_deref(),
+        &frozen,
         args.plugin_tools(),
     )
     .await?;

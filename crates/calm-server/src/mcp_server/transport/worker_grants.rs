@@ -75,23 +75,38 @@ fn codex_sanitized(name: &str) -> String {
 /// ineligible name is refused. Returns the names to freeze (sorted, deduped)
 /// and the admission snapshot the report writer checks against.
 ///
+/// `frozen` is what an earlier dispatch under the same Track-local `name`
+/// froze (empty when there is no receipt): a sanitized replay must resolve
+/// against that first, or a revoked plugin's still-delegable collider would
+/// win and the contract compare would conflict instead of replaying.
+///
 /// Rules per requested name:
-/// * an exact registry name (installed, any state) stays as written;
-/// * otherwise it is matched by Codex-sanitized equality against the
-///   delegable set — one hit resolves, several are ambiguous (`-32602`);
-/// * with no delegable hit, one sanitized hit among installed-but-ineligible
-///   tools resolves too, so the refusal names the real tool and its reason
-///   and a replay after revocation still finds its receipt;
-/// * anything else stays as written and is refused as unknown.
+/// * a frozen name or a Track-visible registry name stays as written;
+/// * otherwise Codex-sanitized equality, first against `frozen`, then
+///   against the delegable set — one hit resolves, several are ambiguous
+///   (`-32602`);
+/// * with no such hit, one sanitized hit among visible-but-ineligible tools
+///   resolves too, so the refusal names the real tool and its reason;
+/// * anything else stays as written (a leading `plugin_` rewritten to
+///   `plugin.` so validation lets the named refusal through) and is refused
+///   as `unknown tool`.
+///
+/// The universe for sanitized matching and for refusal reasons is the
+/// Track-VISIBLE set — every tool of every plugin `scope` allows, whatever
+/// its running state or kind — never the whole registry. Out-of-scope and
+/// nonexistent names get the byte-identical `unknown tool` wording, the
+/// #891 non-disclosure contract `dispatch_plugin_tools_call` keeps for
+/// `tools/call`: a bound Track cannot probe other plugins through dispatch.
 pub(crate) async fn resolve_dispatch_plugin_tools(
     ctx: &Arc<AppContext>,
     track_id: Option<&str>,
+    frozen: &[String],
     requested: &[String],
 ) -> Result<(Vec<String>, PluginToolAdmission), RpcError> {
     let Some(host) = ctx.plugin_host.get().cloned() else {
         let denied = requested
             .iter()
-            .map(|name| (name.clone(), format!("{name} (no plugin host)")))
+            .map(|name| (name.clone(), format!("{name} ({UNKNOWN_TOOL})")))
             .collect();
         return Ok((
             requested.to_vec(),
@@ -103,31 +118,40 @@ pub(crate) async fn resolve_dispatch_plugin_tools(
     };
     let running = host.running_plugin_ids().await;
     let scope = plugin_scope_for_track(ctx, track_id).await;
-    resolve_dispatch_plugin_tools_from(host.registry(), &running, &scope, requested)
+    resolve_dispatch_plugin_tools_from(host.registry(), &running, &scope, frozen, requested)
 }
+
+/// One wording for every name the Track cannot see: out of scope, not
+/// installed, or not a plugin tool at all.
+const UNKNOWN_TOOL: &str = "unknown tool";
 
 fn resolve_dispatch_plugin_tools_from(
     registry: &crate::plugin_host::PluginRegistry,
     running: &BTreeSet<String>,
     scope: &TrackPluginScope,
+    frozen: &[String],
     requested: &[String],
 ) -> Result<(Vec<String>, PluginToolAdmission), RpcError> {
     let eligible = eligible_plugin_tools_from(registry, running, scope)?;
-    // Every minted name the registry knows, whatever its running state,
-    // scope or kind: the universe the refusal reasons are computed over.
-    let installed: BTreeSet<String> = registry.list().into_iter().map(|m| m.id).collect();
-    let minted: BTreeSet<String> =
-        plugin_tool_descriptors_from(registry.list(), &installed, &TrackPluginScope::All)
-            .into_iter()
-            .map(|d| d.name)
-            .collect();
+    let in_scope: BTreeSet<String> = registry
+        .list()
+        .into_iter()
+        .map(|m| m.id)
+        .filter(|id| scope.allows(id))
+        .collect();
+    let visible: BTreeSet<String> = plugin_tool_descriptors_from(registry.list(), &in_scope, scope)
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
     let reason = |name: &str| -> Result<String, RpcError> {
-        let Some((plugin_id, tool, kind)) = plugin_tool_route(registry, name, &installed)? else {
-            return Ok("not an installed plugin tool".into());
+        if !visible.contains(name) {
+            return Ok(UNKNOWN_TOOL.into());
+        }
+        let Some((plugin_id, tool, kind)) = plugin_tool_route(registry, name, &in_scope)? else {
+            return Ok(UNKNOWN_TOOL.into());
         };
         Ok(
             match plugin_tool_entry(registry, running, &plugin_id, &tool) {
-                ToolEntry::Found(_) if !scope.allows(&plugin_id) => "out of track scope".into(),
                 ToolEntry::Found(_) if kind.is_some() => "execution-backed".into(),
                 ToolEntry::Found(_) => "not delegable".into(),
                 miss => miss
@@ -136,16 +160,27 @@ fn resolve_dispatch_plugin_tools_from(
             },
         )
     };
-    let sanitized_hits = |pool: &BTreeSet<String>, key: &str| -> Vec<String> {
+    let sanitized_hits = |pool: &[String], key: &str| -> Vec<String> {
         pool.iter()
             .filter(|candidate| codex_sanitized(candidate) == key)
             .cloned()
             .collect()
     };
+    let eligible_list: Vec<String> = eligible.iter().cloned().collect();
+    let visible_list: Vec<String> = visible.iter().cloned().collect();
+    // A verbatim Codex spelling has no `plugin.` prefix; give an unresolved
+    // one the registry shape so `validate_plugin_tools` lets the named
+    // refusal below reach the Planner instead of a generic shape error.
+    let kept = |name: &str| -> String {
+        match name.strip_prefix("plugin_") {
+            Some(rest) => format!("plugin.{rest}"),
+            None => name.to_string(),
+        }
+    };
     let mut resolved = Vec::with_capacity(requested.len());
     let mut denied = std::collections::BTreeMap::new();
     for name in requested {
-        if minted.contains(name) {
+        if frozen.contains(name) || visible.contains(name) {
             if !eligible.contains(name) {
                 denied.insert(name.clone(), format!("{name} ({})", reason(name)?));
             }
@@ -153,31 +188,46 @@ fn resolve_dispatch_plugin_tools_from(
             continue;
         }
         let key = codex_sanitized(name);
-        let hits = sanitized_hits(&eligible, &key);
+        let mut hits = sanitized_hits(frozen, &key);
+        if hits.is_empty() {
+            hits = sanitized_hits(&eligible_list, &key);
+        }
         match hits.as_slice() {
-            [real] => resolved.push(real.clone()),
-            [] => {
-                let installed_hits = sanitized_hits(&minted, &key);
-                if let [real] = installed_hits.as_slice() {
+            [real] => {
+                if !eligible.contains(real) {
+                    denied.insert(
+                        real.clone(),
+                        format!("{name} (resolves to {real}: {})", reason(real)?),
+                    );
+                }
+                resolved.push(real.clone());
+            }
+            [] => match sanitized_hits(&visible_list, &key).as_slice() {
+                [real] => {
                     denied.insert(
                         real.clone(),
                         format!("{name} (resolves to {real}: {})", reason(real)?),
                     );
                     resolved.push(real.clone());
-                } else {
-                    let detail = if installed_hits.is_empty() {
-                        "not an installed plugin tool".to_string()
-                    } else {
-                        let mut parts = Vec::with_capacity(installed_hits.len());
-                        for real in &installed_hits {
-                            parts.push(format!("{real}: {}", reason(real)?));
-                        }
-                        format!("matches {}", parts.join("; "))
-                    };
-                    denied.insert(name.clone(), format!("{name} ({detail})"));
-                    resolved.push(name.clone());
                 }
-            }
+                [] => {
+                    let kept = kept(name);
+                    denied.insert(kept.clone(), format!("{name} ({UNKNOWN_TOOL})"));
+                    resolved.push(kept);
+                }
+                several => {
+                    let mut parts = Vec::with_capacity(several.len());
+                    for real in several {
+                        parts.push(format!("{real}: {}", reason(real)?));
+                    }
+                    let kept = kept(name);
+                    denied.insert(
+                        kept.clone(),
+                        format!("{name} (matches {})", parts.join("; ")),
+                    );
+                    resolved.push(kept);
+                }
+            },
             _ => {
                 return Err(RpcError::invalid_params(format!(
                     "plugin_tools entry `{name}` is ambiguous; use one exact registry name: {}",
@@ -267,13 +317,23 @@ mod dispatch_resolution_tests {
         ids.iter().map(|id| id.to_string()).collect()
     }
 
+    fn strings(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
     fn resolve(
         running_ids: &[&str],
         scope: TrackPluginScope,
+        frozen: &[&str],
         requested: &[&str],
     ) -> Result<(Vec<String>, PluginToolAdmission), RpcError> {
-        let requested: Vec<String> = requested.iter().map(|s| s.to_string()).collect();
-        resolve_dispatch_plugin_tools_from(&registry(), &running(running_ids), &scope, &requested)
+        resolve_dispatch_plugin_tools_from(
+            &registry(),
+            &running(running_ids),
+            &scope,
+            &strings(frozen),
+            &strings(requested),
+        )
     }
 
     const ALL: &[&str] = &["dev.echo", "dev", TRUSTED_ID];
@@ -293,6 +353,7 @@ mod dispatch_resolution_tests {
         let (resolved, admission) = resolve(
             ALL,
             TrackPluginScope::All,
+            &[],
             &[
                 "plugin.dev_neige_git_forge_wf_tool",
                 "plugin_dev_neige_git_forge_wf_tool",
@@ -312,6 +373,7 @@ mod dispatch_resolution_tests {
         let (resolved, admission) = resolve(
             &["dev.echo", TRUSTED_ID],
             TrackPluginScope::All,
+            &[],
             &[COLLIDING],
         )
         .unwrap();
@@ -327,7 +389,7 @@ mod dispatch_resolution_tests {
     #[test]
     fn ambiguous_sanitized_spelling_is_invalid_params_listing_candidates() {
         for spelling in ["plugin.dev_echo_do_thing", "plugin_dev_echo_do_thing"] {
-            let error = resolve(ALL, TrackPluginScope::All, &[spelling]).unwrap_err();
+            let error = resolve(ALL, TrackPluginScope::All, &[], &[spelling]).unwrap_err();
             assert_eq!(error.code, RpcError::INVALID_PARAMS, "{error}");
             assert!(error.message.contains(spelling), "{error}");
             assert!(error.message.contains(DOTTED), "{error}");
@@ -337,6 +399,7 @@ mod dispatch_resolution_tests {
         let (resolved, admission) = resolve(
             &["dev", TRUSTED_ID],
             TrackPluginScope::All,
+            &[],
             &["plugin.dev_echo_do_thing"],
         )
         .unwrap();
@@ -349,6 +412,7 @@ mod dispatch_resolution_tests {
         let (resolved, admission) = resolve(
             &["dev.echo", "dev"],
             TrackPluginScope::All,
+            &[],
             &["plugin.dev_neige_git_forge_wf_tool"],
         )
         .unwrap();
@@ -365,40 +429,9 @@ mod dispatch_resolution_tests {
 
     #[test]
     fn refusal_names_every_ineligible_tool_with_its_reason() {
-        let (resolved, admission) = resolve(
-            ALL,
-            TrackPluginScope::Only("dev".into()),
-            &[
-                FORGE_ACTION,
-                DOTTED,
-                COLLIDING,
-                "plugin.nope_x",
-                "calm_report_read",
-                "plugin.dev_echo_do_thing",
-            ],
-        )
-        .unwrap();
-        // Only `dev` is in scope, so the collision resolves to its tool.
-        assert!(resolved.contains(&COLLIDING.to_string()), "{resolved:?}");
-        let refusal = admission.refusal(&resolved).expect("refused");
-        assert!(
-            refusal.starts_with("plugin_tools not delegable: "),
-            "{refusal}"
-        );
-        for expected in [
-            &format!("{FORGE_ACTION} (out of track scope)"),
-            &format!("{DOTTED} (out of track scope)"),
-            "plugin.nope_x (not an installed plugin tool)",
-            "calm_report_read (not an installed plugin tool)",
-        ] {
-            assert!(
-                refusal.contains(expected),
-                "missing `{expected}` in {refusal}"
-            );
-        }
-        assert!(!refusal.contains(COLLIDING), "{refusal}");
-        // Execution-backed is reported when scope is not the blocker.
-        let (resolved, admission) = resolve(ALL, TrackPluginScope::All, &[FORGE_ACTION]).unwrap();
+        // Execution-backed is reported for a visible tool.
+        let (resolved, admission) =
+            resolve(ALL, TrackPluginScope::All, &[], &[FORGE_ACTION]).unwrap();
         let refusal = admission.refusal(&resolved).expect("refused");
         assert_eq!(
             refusal,
@@ -408,6 +441,7 @@ mod dispatch_resolution_tests {
         let (resolved, admission) = resolve(
             &[TRUSTED_ID],
             TrackPluginScope::All,
+            &[],
             &["plugin.dev_echo_do_thing"],
         )
         .unwrap();
@@ -418,6 +452,132 @@ mod dispatch_resolution_tests {
                 "plugin.dev_echo_do_thing (matches {DOTTED}: plugin dev.echo is not running; {COLLIDING}: plugin dev is not running)"
             )),
             "{refusal}"
+        );
+        // Names outside the registry are unknown, whatever their shape.
+        let (resolved, admission) = resolve(
+            ALL,
+            TrackPluginScope::All,
+            &[],
+            &["plugin.nope_x", "calm_report_read"],
+        )
+        .unwrap();
+        assert_eq!(resolved, strings(&["calm_report_read", "plugin.nope_x"]));
+        assert_eq!(
+            admission.refusal(&resolved).expect("refused"),
+            format!(
+                "plugin_tools not delegable: calm_report_read ({UNKNOWN_TOOL}), \
+                 plugin.nope_x ({UNKNOWN_TOOL})"
+            )
+        );
+    }
+
+    /// #891 non-disclosure through dispatch: on a Track bound to `dev`, a
+    /// probe for another plugin's tool — exact, `plugin.`-spelled or
+    /// verbatim — reads exactly like a probe for a tool that does not exist,
+    /// and an out-of-scope collider never turns an in-scope match ambiguous.
+    #[test]
+    fn bound_track_cannot_distinguish_out_of_scope_from_unknown() {
+        let scope = TrackPluginScope::Only("dev".into());
+        let probes = [
+            TRUSTED,
+            FORGE_ACTION,
+            "plugin.dev_neige_git_forge_wf_tool",
+            "plugin_dev_neige_git_forge_wf_tool",
+            "plugin.zzz_nope",
+            "plugin_zzz_nope",
+        ];
+        for probe in probes {
+            let (resolved, admission) = resolve(ALL, scope.clone(), &[], &[probe]).unwrap();
+            let expected = match probe.strip_prefix("plugin_") {
+                Some(rest) => format!("plugin.{rest}"),
+                None => probe.to_string(),
+            };
+            assert_eq!(resolved, vec![expected], "{probe}");
+            assert_eq!(
+                admission.refusal(&resolved).expect("refused"),
+                format!("plugin_tools not delegable: {probe} ({UNKNOWN_TOOL})"),
+                "{probe}"
+            );
+        }
+        // The out-of-scope `DOTTED` is just another unknown string here: like
+        // the verbatim spelling it sanitizes to the in-scope tool and resolves
+        // there — refusing it instead would itself be an existence oracle.
+        for probe in ["plugin_dev_echo_do_thing", DOTTED] {
+            let (resolved, admission) = resolve(ALL, scope.clone(), &[], &[probe]).unwrap();
+            assert_eq!(resolved, vec![COLLIDING.to_string()], "{probe}");
+            assert!(admission.refusal(&resolved).is_none(), "{probe}");
+        }
+        // `TrackPluginScope::None` sees nothing at all.
+        let (resolved, admission) =
+            resolve(ALL, TrackPluginScope::None, &[], &[COLLIDING, TRUSTED]).unwrap();
+        assert_eq!(
+            admission.refusal(&resolved).expect("refused"),
+            format!(
+                "plugin_tools not delegable: {TRUSTED} ({UNKNOWN_TOOL}), {COLLIDING} ({UNKNOWN_TOOL})"
+            )
+        );
+    }
+
+    /// A receipt's frozen names win over live candidates: after `dev.echo`
+    /// stops, the sanitized replay of a dispatch that froze its tool must
+    /// still resolve to that tool, not to the delegable collider.
+    #[test]
+    fn frozen_names_win_over_live_candidates_for_sanitized_replay() {
+        let (resolved, admission) = resolve(
+            &["dev", TRUSTED_ID],
+            TrackPluginScope::All,
+            &[DOTTED],
+            &["plugin_dev_echo_do_thing"],
+        )
+        .unwrap();
+        assert_eq!(resolved, vec![DOTTED.to_string()]);
+        assert_eq!(
+            admission.refusal(&resolved).expect("refused"),
+            format!(
+                "plugin_tools not delegable: plugin_dev_echo_do_thing \
+                 (resolves to {DOTTED}: plugin dev.echo is not running)"
+            )
+        );
+        // Without the receipt the same spelling resolves live.
+        let (resolved, _) = resolve(
+            &["dev", TRUSTED_ID],
+            TrackPluginScope::All,
+            &[],
+            &["plugin_dev_echo_do_thing"],
+        )
+        .unwrap();
+        assert_eq!(resolved, vec![COLLIDING.to_string()]);
+        // A frozen name that left the registry stays as written.
+        let (resolved, admission) = resolve(
+            ALL,
+            TrackPluginScope::All,
+            &["plugin.gone_x"],
+            &["plugin.gone_x"],
+        )
+        .unwrap();
+        assert_eq!(resolved, vec!["plugin.gone_x".to_string()]);
+        assert_eq!(
+            admission.refusal(&resolved).expect("refused"),
+            format!("plugin_tools not delegable: plugin.gone_x ({UNKNOWN_TOOL})")
+        );
+    }
+
+    /// An unresolved verbatim spelling gets the `plugin.` shape so the
+    /// contract validator lets the named refusal through.
+    #[test]
+    fn verbatim_unresolved_spelling_gets_registry_shape() {
+        let (resolved, admission) = resolve(
+            ALL,
+            TrackPluginScope::All,
+            &[],
+            &["plugin_dev_missing_tool"],
+        )
+        .unwrap();
+        assert_eq!(resolved, vec!["plugin.dev_missing_tool".to_string()]);
+        calm_types::task_execution::validate_plugin_tools(&resolved).expect("registry shape");
+        assert_eq!(
+            admission.refusal(&resolved).expect("refused"),
+            format!("plugin_tools not delegable: plugin_dev_missing_tool ({UNKNOWN_TOOL})")
         );
     }
 }

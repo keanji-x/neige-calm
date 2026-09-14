@@ -38,9 +38,13 @@ async fn bind_isolated_task(fx: &Fixture, task_id: &str) {
 
 /// A Planner report card plus a Planner thread on the unbound track.
 async fn planner_on_unbound_track(fx: &Fixture) -> (String, String) {
+    planner_on_track(fx, &fx.track_id).await
+}
+
+async fn planner_on_track(fx: &Fixture, track_id: &str) -> (String, String) {
     fx.repo
         .card_create(calm_server::model::NewCard {
-            track_id: fx.track_id.clone().into(),
+            track_id: track_id.to_string().into(),
             title: None,
             kind: "track-report".into(),
             sort: Some(-1.0),
@@ -52,7 +56,7 @@ async fn planner_on_unbound_track(fx: &Fixture) -> (String, String) {
     mint_card_with_thread(
         &fx.repo,
         &fx.card_role_cache,
-        fx.track_id.clone().into(),
+        track_id.to_string().into(),
         CardRole::Planner,
     )
     .await
@@ -281,6 +285,25 @@ async fn isolated_plugin_dispatch_names_the_stopped_tool_in_its_refusal() {
             "{name}: {message}"
         );
     }
+    // A verbatim Codex spelling that resolves to nothing reaches the named
+    // refusal too, instead of the contract validator's shape error.
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            5,
+            "calm.task.dispatch",
+            &thread,
+            dispatch_args("Missing", json!(["plugin_dev_missing_tool"])),
+        ),
+    )
+    .await;
+    let refused = recv_frame(&mut rd).await;
+    assert_eq!(refused["error"]["code"], -32403, "{refused}");
+    assert_eq!(
+        refused["error"]["message"],
+        "plugin_tools not delegable: plugin_dev_missing_tool (unknown tool)",
+        "{refused}"
+    );
     assert!(
         fx.repo
             .tasks_by_track(&fx.track_id)
@@ -288,6 +311,149 @@ async fn isolated_plugin_dispatch_names_the_stopped_tool_in_its_refusal() {
             .unwrap()
             .is_empty(),
         "a refused dispatch must not declare a task"
+    );
+}
+
+/// #891 non-disclosure through dispatch: on the template-bound track only the
+/// owning plugin is visible, so a probe for `dev.echo`'s tool — exact or in
+/// either sanitized spelling — is refused with the same wording as a tool
+/// that does not exist, while the owner's own sanitized spelling resolves.
+#[tokio::test]
+async fn isolated_plugin_dispatch_on_bound_track_refuses_out_of_scope_as_unknown() {
+    let fx = boot_fixture().await;
+    let (token, thread) = planner_on_track(&fx, &fx.bound_track_id).await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &token).await;
+    let probes = [
+        EXPOSED_NAME.to_string(),
+        planner_spelling(EXPOSED_NAME),
+        codex_spelling(EXPOSED_NAME),
+        "plugin.zzz_nope".to_string(),
+        "plugin_zzz_nope".to_string(),
+    ];
+    for (index, probe) in probes.iter().enumerate() {
+        send_frame(
+            &mut wr,
+            tools_call_frame(
+                2 + index as i64,
+                "calm.task.dispatch",
+                &thread,
+                dispatch_args(&format!("Probe {index}"), json!([probe])),
+            ),
+        )
+        .await;
+        let refused = recv_frame(&mut rd).await;
+        assert_eq!(refused["error"]["code"], -32403, "{probe}: {refused}");
+        assert_eq!(
+            refused["error"]["message"],
+            format!("plugin_tools not delegable: {probe} (unknown tool)"),
+            "{probe}: {refused}"
+        );
+    }
+    assert!(
+        fx.repo
+            .tasks_by_track(&fx.bound_track_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // Positive control: the owner's tool resolves from its sanitized spelling.
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            20,
+            "calm.task.dispatch",
+            &thread,
+            dispatch_args("Owner", json!([planner_spelling(&fx.trusted_exposed_name)])),
+        ),
+    )
+    .await;
+    let accepted = recv_frame(&mut rd).await;
+    assert!(accepted.get("error").is_none(), "{accepted}");
+    assert_eq!(
+        accepted["result"]["structuredContent"]["requested_executor_environment"]["plugin_tools"],
+        json!([fx.trusted_exposed_name]),
+        "{accepted}"
+    );
+}
+
+/// The frozen receipt wins over the live set: after the granted plugin stops,
+/// a sanitized replay of the same dispatch name must still find its receipt
+/// even though the still-running collider is the only live sanitized match.
+#[tokio::test]
+async fn isolated_plugin_dispatch_sanitized_replay_survives_revocation() {
+    let fx = boot_fixture().await;
+    let (token, thread) = planner_on_unbound_track(&fx).await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &token).await;
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            2,
+            "calm.task.dispatch",
+            &thread,
+            dispatch_args("Research", json!([EXPOSED_NAME])),
+        ),
+    )
+    .await;
+    let first = recv_frame(&mut rd).await;
+    assert!(first.get("error").is_none(), "{first}");
+    let receipt = first["result"]["structuredContent"]["receipt"].clone();
+    fx.plugin_host.stop(PLUGIN_ID).await.unwrap();
+    let events_before: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+        .fetch_one(&fx.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    // Sanity: live resolution alone would now pick the running collider.
+    assert_eq!(
+        planner_spelling(EXPOSED_NAME),
+        planner_spelling(COLLIDING_EXPOSED_NAME)
+    );
+    for (id, spelling) in [
+        (3, codex_spelling(EXPOSED_NAME)),
+        (4, planner_spelling(EXPOSED_NAME)),
+        (5, EXPOSED_NAME.to_string()),
+    ] {
+        send_frame(
+            &mut wr,
+            tools_call_frame(
+                id,
+                "calm.task.dispatch",
+                &thread,
+                dispatch_args("Research", json!([spelling])),
+            ),
+        )
+        .await;
+        let replay = recv_frame(&mut rd).await;
+        assert!(replay.get("error").is_none(), "{spelling}: {replay}");
+        assert_eq!(
+            replay["result"]["structuredContent"]["receipt"], receipt,
+            "{spelling}: {replay}"
+        );
+    }
+    let events_after: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+        .fetch_one(&fx.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(events_after, events_before, "replay must not write");
+    // A genuinely new dispatch with the same spelling resolves live and is
+    // frozen as the collider, not the revoked tool.
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            6,
+            "calm.task.dispatch",
+            &thread,
+            dispatch_args("Research 2", json!([planner_spelling(EXPOSED_NAME)])),
+        ),
+    )
+    .await;
+    let second = recv_frame(&mut rd).await;
+    assert!(second.get("error").is_none(), "{second}");
+    assert_eq!(
+        second["result"]["structuredContent"]["requested_executor_environment"]["plugin_tools"],
+        json!([COLLIDING_EXPOSED_NAME]),
+        "{second}"
     );
 }
 

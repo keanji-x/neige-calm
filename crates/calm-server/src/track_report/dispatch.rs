@@ -224,6 +224,37 @@ pub(super) async fn authorize_tx(
     .map_err(|error| CalmError::Forbidden(error.to_string()))
 }
 
+/// The grants an earlier dispatch under this Track-local `name` froze, read
+/// outside the report transaction (#1668); empty when there is no receipt.
+/// `calm.task.dispatch` resolves sanitized spellings against these before
+/// today's delegable set, so a replay after revocation still finds its
+/// receipt instead of resolving to a live collider and conflicting.
+pub(crate) async fn frozen_plugin_tools(
+    repo: &dyn crate::db::RepoEventWrite,
+    track: &TrackId,
+    name: &str,
+) -> Result<Vec<String>> {
+    let (track, name) = (track.as_str().to_string(), name.to_string());
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let saved: Option<String> = sqlx::query_scalar(
+                "SELECT contract_json FROM planner_dispatch_receipts WHERE track_id=?1 AND name=?2",
+            )
+            .bind(&track)
+            .bind(&name)
+            .fetch_optional(&mut **tx)
+            .await?;
+            Ok(match saved {
+                Some(saved) => serde_json::from_str::<DispatchArgs>(&saved)?
+                    .plugin_tools()
+                    .to_vec(),
+                None => Vec::new(),
+            })
+        })
+    })
+    .await
+}
+
 pub(super) async fn lookup_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track: &TrackId,
