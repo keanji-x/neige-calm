@@ -300,7 +300,10 @@ in `terminal_interaction/replace_plan.rs`:
   review r1 B: a cursor in the last column over a non-blank cell is refused
   — after a write into the last column the terminal parks the cursor there
   with a pending wrap, one cell left of the application's position, and
-  `Cursor` does not expose the flag; review r1 D: a `from` whose end lies
+  `Cursor` does not expose the flag; the refusal is conservative: a cursor
+  genuinely placed before the final character of a row-filling draft (no
+  pending wrap) is refused too, and a `sequence` still edits it; review r1
+  D: a `from` whose end lies
   past both the cursor and the last non-blank cell (it reaches into the
   trailing blank run) is refused, since the moves would run past the
   buffer's end;
