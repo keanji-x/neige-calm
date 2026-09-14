@@ -871,6 +871,21 @@ jobs:
             exit 1
           fi
 
+  # Branch protection requires this stable context. After retirement its
+  # acceptance condition is absence of the legacy source, not building it.
+  web-unit:
+    name: web-unit (build + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the legacy frontend is retired
+        run: |
+          if [ -e web ]; then
+            echo "::error::The retired legacy web/ tree must not be reintroduced."
+            exit 1
+          fi
+
   fe-unit:
     permissions:
       contents: read
