@@ -4,9 +4,11 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
 use calm_server::event::EventBus;
+use calm_server::mcp_server::registry::ToolCallIdentity;
 use calm_server::mcp_server::{McpServer, build_default_registry};
 use calm_server::model::{CardRole, NewArea, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
+use calm_server::session_projection_repo::AgentProvider;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_interaction::TerminalInteraction;
 use calm_server::track_area_cache::TrackAreaCache;
@@ -38,6 +40,11 @@ pub struct Harness {
     socket: PathBuf,
     pub token: String,
     pub track: String,
+    /// The Planner card behind `token`, for direct service calls that bypass
+    /// the MCP layer (`identity()`).
+    pub card_id: String,
+    pub session_id: String,
+    pub area_id: String,
     /// #1620 — the production REST router over the same state, for hook
     /// POSTs (`tower::ServiceExt::oneshot`) and card deletes.
     pub app: axum::Router,
@@ -70,7 +77,7 @@ impl Harness {
         let track = repo
             .track_create(NewTrack {
                 template_input: None,
-                area_id: area.id,
+                area_id: area.id.clone(),
                 title: "terminal".into(),
                 sort: None,
                 cwd: root.path().to_str().unwrap().into(),
@@ -85,10 +92,11 @@ impl Harness {
         let areas = TrackAreaCache::new();
         repo.seed_track_area_cache(&areas).await.unwrap();
         let mut tx = sql.pool().begin().await.unwrap();
+        let (card_id, session_id) = (new_id(), new_id());
         let (_, _, token) = card_with_codex_create_tx(
             &mut tx,
-            new_id(),
-            &new_id(),
+            card_id.clone(),
+            &session_id,
             None,
             track.id.clone(),
             None,
@@ -193,10 +201,27 @@ impl Harness {
             socket,
             token: token.expect("planner MCP token"),
             track: track.id.to_string(),
+            card_id,
+            session_id,
+            area_id: area.id.to_string(),
             app,
             base_url,
             bridge,
             http,
+        }
+    }
+    /// The identity the MCP transport builds for `token` (card-bound), for
+    /// calling `TerminalInteraction` directly where the MCP layer would
+    /// refuse first.
+    pub fn identity(&self) -> ToolCallIdentity {
+        ToolCallIdentity {
+            card_id: self.card_id.clone(),
+            role: CardRole::Planner,
+            provider: AgentProvider::Codex,
+            session_id: self.session_id.clone(),
+            track_id: Some(self.track.clone()),
+            area_id: self.area_id.clone(),
+            thread_id: "card-bound".to_string(),
         }
     }
     /// POST a hook body for `card_id` through the production ingest route.

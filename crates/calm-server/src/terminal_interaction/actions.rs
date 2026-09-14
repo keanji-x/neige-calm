@@ -1,5 +1,6 @@
 //! Input action validation and encoding against the live input surface.
-//! Every action is one bounded physical write: one receipt, one barrier.
+//! Every action is one ordered write request: one barrier, one
+//! acknowledgement, one receipt (no claim about OS-level write atomicity).
 use anyhow::{Result, ensure};
 use calm_terminal_view::{InputSurface, click_bytes, key_bytes};
 use serde_json::Value;
@@ -106,6 +107,25 @@ pub fn sequence_steps(action: &Value) -> Option<usize> {
         .then(|| action["steps"].as_array().map(Vec::len))
         .flatten()
 }
+/// The actions `allow_output_below_cursor` may admit (#1666 r1): draft
+/// edits only — `text`, `sequence`, and a `key` from [`SEQUENCE_KEYS`].
+/// Claude Code's slash-command menu renders below the input row and
+/// re-sorts while it loads, so an Enter admitted by the tolerance could pick
+/// a different item than the one observed; a submission in a field whose
+/// status text moves keeps using `allow_output_since_observation` after
+/// inspecting the fresh state. Never submit, click, Enter, Tab, Escape,
+/// control keys or PageUp/PageDown.
+pub fn edits_the_draft(action: &Value) -> bool {
+    match action["type"].as_str() {
+        Some("text" | "sequence") => true,
+        Some("key") => action["key"]
+            .as_str()
+            .is_some_and(|key| SEQUENCE_KEYS.contains(&key)),
+        _ => false,
+    }
+}
+/// Reason `allow_output_below_cursor` is refused for other actions.
+pub const BELOW_CURSOR_EDITS_ONLY: &str = "allow_output_below_cursor admits only text, sequence and editing keys (Left/Right/Up/Down/Home/End/Backspace/Delete/Ctrl+U); never submit, click, Enter, Tab, Escape or control keys: the layout must be current";
 pub fn encode(action: &Value, surface: &InputSurface) -> Result<Vec<u8>> {
     let object = action
         .as_object()
@@ -134,9 +154,10 @@ pub fn encode(action: &Value, surface: &InputSurface) -> Result<Vec<u8>> {
             click_bytes(coordinate("column")?, coordinate("row")?, surface)
         }
         Some("sequence") => {
-            // #1666 — a bounded edit in ONE physical write: the step
-            // encodings concatenated, one receipt, one barrier, one
-            // fingerprint. The tool guarantees no CR and no LF (the key
+            // #1666 — a bounded edit in one ordered write request: the step
+            // encodings concatenated, one barrier, one acknowledgement, one
+            // receipt, one fingerprint (no claim about OS-level write or
+            // read atomicity). The tool guarantees no CR and no LF (the key
             // vocabulary has neither); it does not guarantee what the
             // application does with Up/Down/Home/End/Ctrl+U.
             ensure!(
@@ -324,5 +345,36 @@ mod tests {
             json!([{"type":"text","text":"x".repeat(8192)},{"type":"text","text":"y".repeat(8192)}]),
         );
         assert_eq!(encode(&full, &surface).unwrap().len(), 16384);
+    }
+
+    /// #1666 r1: the below-cursor tolerance admits draft edits only.
+    #[test]
+    fn edits_the_draft_admits_text_sequence_and_editing_keys_only() {
+        for action in [
+            json!({"type":"text","text":"abc"}),
+            json!({"type":"sequence","steps":[{"type":"text","text":"a"},{"type":"key","key":"Left"}]}),
+            json!({"type":"key","key":"Backspace"}),
+            json!({"type":"key","key":"Ctrl+U","repeat":1}),
+        ] {
+            assert!(edits_the_draft(&action), "{action}");
+        }
+        for key in SEQUENCE_KEYS {
+            assert!(edits_the_draft(&json!({"type":"key","key":key})), "{key}");
+        }
+        for action in [
+            json!({"type":"submit","text":"abc"}),
+            json!({"type":"click","column":0,"row":0}),
+            json!({"type":"key","key":"Enter"}),
+            json!({"type":"key","key":"Tab"}),
+            json!({"type":"key","key":"Escape"}),
+            json!({"type":"key","key":"Ctrl+C"}),
+            json!({"type":"key","key":"Ctrl+J"}),
+            json!({"type":"key","key":"PageUp"}),
+            json!({"type":"key"}),
+            json!({"type":"unknown"}),
+            json!("text"),
+        ] {
+            assert!(!edits_the_draft(&action), "{action}");
+        }
     }
 }

@@ -667,7 +667,7 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
         stale["next"]
             .as_str()
             .unwrap()
-            .contains("resend the same request_id with allow_output_since_observation=true"),
+            .contains("resend the same request_id with observation_id omitted and allow_output_since_observation=true"),
         "{stale}"
     );
     assert!(stale.get("output_since_observation").is_none());

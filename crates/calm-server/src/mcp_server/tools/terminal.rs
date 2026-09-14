@@ -12,7 +12,8 @@ use crate::operation::terminal_adapter::{
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::terminal_interaction::{
-    InputOptions, ObservationFormat, Target, TerminalInteraction, WaitFor, WaitPlan,
+    BELOW_CURSOR_EDITS_ONLY, InputOptions, ObservationFormat, Target, TerminalInteraction, WaitFor,
+    WaitPlan, edits_the_draft,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -559,10 +560,11 @@ async fn call(
                 },
                 false,
             )?;
-            if args.allow_output_below_cursor && args.action["type"] == "click" {
-                return Err(RpcError::invalid_params(
-                    "allow_output_below_cursor cannot admit a click; the layout must be current",
-                ));
+            // #1666 r1 — the below-cursor tolerance admits draft edits only
+            // (see `terminal_interaction::edits_the_draft`); the service
+            // refuses it again, this is the invalid-params shape.
+            if args.allow_output_below_cursor && !edits_the_draft(&args.action) {
+                return Err(RpcError::invalid_params(BELOW_CURSOR_EDITS_ONLY));
             }
             service
                 .input(

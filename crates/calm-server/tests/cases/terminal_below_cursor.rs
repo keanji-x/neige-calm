@@ -328,19 +328,85 @@ async fn changes_at_or_above_the_cursor_and_cursor_changes_stay_stale() {
         rows(observation(&both))[1].starts_with("Type here: abc"),
         "{both}"
     );
-    // The tolerance is refused for clicks before any fence runs.
-    let click = h
+    h.stop(&terminal).await;
+}
+
+/// #1666 r1 (F) — the tolerance admits draft edits only. Every other action
+/// is refused as invalid params by the MCP layer before any fence runs, and
+/// the service refuses the same shapes on its own when called directly
+/// (nothing reserved or written either way); an editing key is admitted.
+#[tokio::test]
+async fn below_cursor_tolerance_is_refused_for_everything_but_draft_edits() {
+    use calm_server::terminal_interaction::{InputOptions, Target};
+    let h = Harness::start().await;
+    let (terminal, view) = open_claimed(&h, QUIET_BOX, "below-edits-only").await;
+    let before = h.interaction().input_ack_sequence(&terminal).await.unwrap();
+    let refused: [(&str, Value); 8] = [
+        ("submit", json!({"type":"submit","text":"abc"})),
+        ("click", json!({"type":"click","column":0,"row":0})),
+        ("enter", json!({"type":"key","key":"Enter"})),
+        ("tab", json!({"type":"key","key":"Tab"})),
+        ("escape", json!({"type":"key","key":"Escape"})),
+        ("ctrl-c", json!({"type":"key","key":"Ctrl+C"})),
+        ("ctrl-j", json!({"type":"key","key":"Ctrl+J"})),
+        ("page-down", json!({"type":"key","key":"PageDown"})),
+    ];
+    for (name, action) in &refused {
+        let response = h
+            .call(
+                "calm.terminal.input",
+                json!({"terminal_id":terminal,"request_id":name,"action":action,"allow_output_below_cursor":true}),
+            )
+            .await;
+        assert_eq!(response["error"]["code"], -32602, "{name}: {response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("allow_output_below_cursor admits only text, sequence and editing keys"),
+            "{name}: {response}"
+        );
+        let direct = h
+            .interaction()
+            .input(
+                &h.identity(),
+                &Target::Terminal(terminal.clone()),
+                None,
+                name,
+                action.clone(),
+                InputOptions {
+                    allow_output_below_cursor: true,
+                    ..InputOptions::default()
+                },
+                None,
+            )
+            .await;
+        let message = direct.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            message
+                .contains("allow_output_below_cursor admits only text, sequence and editing keys"),
+            "{name} (service): {message}"
+        );
+        assert!(!h.interaction().input_pending(&terminal).await, "{name}");
+    }
+    assert_eq!(
+        h.interaction().input_ack_sequence(&terminal).await,
+        Some(before)
+    );
+    // An editing key is admitted: a row below the cursor changed, the write
+    // proceeds with the tolerance.
+    inject(&h, &terminal, b"\x1b7\x1b[5;1Hhint\x1b8");
+    wait_past(&h, &terminal, revision(&view)).await;
+    let admitted = h
         .call(
             "calm.terminal.input",
-            json!({"terminal_id":terminal,"request_id":"click","action":{"type":"click","column":0,"row":0},"allow_output_below_cursor":true}),
+            json!({"terminal_id":terminal,"observation_id":view["observation_id"],"request_id":"left","action":{"type":"key","key":"Left"},"allow_output_below_cursor":true,"observe":true,"wait_ms":100}),
         )
         .await;
-    assert_eq!(click["error"]["code"], -32602, "{click}");
-    assert!(
-        click["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("allow_output_below_cursor cannot admit a click")
+    assert_eq!(receipt(&admitted)["outcome"], "written", "{admitted}");
+    assert_eq!(
+        receipt(&admitted)["observation_drift"]["tolerance"],
+        "below_cursor"
     );
     h.stop(&terminal).await;
 }

@@ -455,6 +455,15 @@ async fn input_claim_then_stale_fence_reports_the_claim() {
     let stale = receipt(&response);
     assert_eq!(stale["outcome"], "stale_observation", "{stale}");
     assert_eq!(stale["claim"]["status"], "claimed", "{stale}");
+    // The resend below omits observation_id, as `next` says: the fresh
+    // observation (owner) is now the latest on this connection.
+    assert!(
+        stale["next"]
+            .as_str()
+            .unwrap()
+            .contains("resend the same request_id with observation_id omitted and allow_output_since_observation=true"),
+        "{stale}"
+    );
     let control = stale["claim"]["control_id"].as_str().unwrap().to_owned();
     assert_eq!(stale["control_id"], control);
     assert_eq!(
@@ -481,6 +490,106 @@ async fn input_claim_then_stale_fence_reports_the_claim() {
     assert_eq!(receipt(&resent)["outcome"], "written", "{resent}");
     assert_eq!(receipt(&resent)["claim"], json!({"status":"held"}));
     assert!(has_line(observation(&resent), "abc"));
+    h.stop(&terminal).await;
+}
+
+/// #1666 r1 (B) — the checks that need no live screen run before the claim:
+/// an invalid action (a sequence carrying Enter) and an observation taken as
+/// a history view are errors on a still-unowned terminal, no claim happened.
+/// Once a claim IS granted, every later error names the lease (here the
+/// surface fence after a resize).
+#[tokio::test]
+async fn input_claim_is_not_granted_on_a_request_that_errors_anyway() {
+    let h = Harness::start().await;
+    let terminal = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"i=0; while [ $i -lt 40 ]; do printf \"L$i\\n\"; i=$((i+1)); done; printf 'READY\\n'; cat >/dev/null","request_id":"claim-errors"}),
+        )
+        .await["terminal_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ready = h.observe_text(&terminal, "READY").await;
+    assert_eq!(ready["role"], "observer");
+    let invalid = h
+        .call(
+            "calm.terminal.input",
+            json!({"terminal_id":terminal,"request_id":"enter-seq","claim":true,
+                "action":{"type":"sequence","steps":[{"type":"text","text":"x"},{"type":"key","key":"Enter"}]}}),
+        )
+        .await;
+    assert!(
+        error_text(&invalid).contains("a sequence step may send only"),
+        "{invalid}"
+    );
+    assert!(
+        !error_text(&invalid).contains("control claimed"),
+        "no claim to report: {invalid}"
+    );
+    assert_eq!(registry_owner(&h, &terminal), None, "no claim happened");
+    let history = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"scroll_offset":1}),
+        )
+        .await;
+    assert_eq!(history["scroll_offset"], 1, "{history}");
+    let scrolled = h
+        .call(
+            "calm.terminal.input",
+            json!({"terminal_id":terminal,"observation_id":history["observation_id"],"request_id":"scrolled","claim":true,
+                "action":{"type":"text","text":"x"}}),
+        )
+        .await;
+    assert!(
+        error_text(&scrolled).contains("return to live viewport before input"),
+        "{scrolled}"
+    );
+    assert_eq!(registry_owner(&h, &terminal), None, "no claim happened");
+    assert!(!h.interaction().input_pending(&terminal).await);
+    assert!(physical_lines(&h).is_empty());
+    // The surface fence needs the live screen, so it runs after the claim:
+    // the error then says the caller holds control.
+    let live = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(live["role"], "observer");
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    let size = entry.handle.render_plane.lock().unwrap().current_size();
+    entry
+        .handle
+        .render_plane
+        .lock()
+        .unwrap()
+        .on_resize(size.cols + 2, size.rows);
+    let resized = h
+        .call(
+            "calm.terminal.input",
+            json!({"terminal_id":terminal,"observation_id":live["observation_id"],"request_id":"resized","claim":true,
+                "action":{"type":"text","text":"x"}}),
+        )
+        .await;
+    let message = error_text(&resized);
+    assert!(
+        message.contains("terminal surface changed since observation"),
+        "{resized}"
+    );
+    assert!(
+        registry_owner(&h, &terminal).is_some(),
+        "the claim was granted before the surface fence"
+    );
+    let lease = h
+        .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    assert_eq!(lease["role"], "owner", "{lease}");
+    assert!(
+        message.contains(&format!(
+            "; control claimed (control_id {})",
+            lease["control_id"].as_str().unwrap()
+        )),
+        "the error names the granted lease: {message}"
+    );
     h.stop(&terminal).await;
 }
 

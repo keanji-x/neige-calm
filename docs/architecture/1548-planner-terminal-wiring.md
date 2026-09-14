@@ -8,7 +8,7 @@ The application entry point is a Planner-only MCP tool set:
 | `calm.terminal.resolve` | Resolve an exact current task attempt or Terminal ID to its real Worker card, worker session and view availability. |
 | `calm.terminal.observe` | Text/cursor/mode state and observation/connection IDs by default. Explicit `format=image` includes a PNG from that same captured RMUX frame. Reads never create or restart a process. |
 | `calm.terminal.control` | Claim/release control, optionally returning fresh text with `observe=true`, or detach the model client while retaining the card/program. |
-| `calm.terminal.input` | One text/key/cell-click/sequence action, bound to a recent live observation and current control; navigation/editing keys support bounded `repeat`, a `sequence` is a bounded edit in one write (#1666). Optional `observe=true` returns fresh text after the action; `claim`/`release` bracket a scenario and `allow_output_below_cursor` tolerates status-line refreshes (#1666). A matching request ID replays its receipt without another write. |
+| `calm.terminal.input` | One text/key/cell-click/sequence action, bound to a recent live observation and current control; navigation/editing keys support bounded `repeat`, a `sequence` is a bounded edit in one ordered write request (#1666). Optional `observe=true` returns fresh text after the action; `claim`/`release` bracket a scenario and `allow_output_below_cursor` tolerates status-line refreshes (#1666). A matching request ID replays its receipt without another write. |
 
 ## Model discovery schema
 
@@ -640,7 +640,7 @@ capture that confirmed it; `observation_revision` can be later) or null.
 in every mode. The argument contract moved from `wait.rs` to
 `terminal_interaction/wait_plan.rs` so the loop file did not grow.
 
-### `sequence` — a bounded edit in one write
+### `sequence` — a bounded edit in one ordered write request
 
 `{"type":"sequence","steps":[…]}`: 2..=8 steps, each a `text` or `key` action
 with the same validation and `repeat` rules as the standalone actions. Keys
@@ -651,9 +651,9 @@ guarantees: a sequence carries no CR and no LF. What it does not guarantee:
 whether Up/Down/Ctrl+U/Home/End edit, recall history or do something else is
 application-defined (the description says so). Total encoded size ≤ 16384
 bytes. The encoding is the concatenation of the step encodings against the
-live surface, sent as ONE ordered write (`ClientMsg::Input`), through one
-barrier, with one acknowledgement, one receipt (which adds `steps: n`) and
-one fingerprint (the whole action; nested arrays hash deterministically). No
+live surface, sent as one ordered write request (`ClientMsg::Input`): one
+barrier, one acknowledgement, one receipt (which adds `steps: n`) and one
+fingerprint (the whole action; nested arrays hash deterministically). No
 claim about OS-level write or read atomicity: the supervisor uses `write_all`
 and the application may read the bytes in any chunking. The same fences, the
 same stale result, the same readback; the recommended shape is `sequence` +
@@ -663,8 +663,12 @@ encoding lives in `terminal_interaction/actions.rs`.
 ### `claim` / `release` on input — control per scenario
 
 `input claim: true` (default false). Order under the serial guard:
-observation/binding/age/availability/pending checks → claim → pre-write
-capture and the remaining fences → write. Cases: this connection holds
+observation/binding/age/availability/pending checks → the checks that need no
+live screen (live-viewport fence, the action encoded against the saved
+surface, which the surface fence later proves equal to the live one), so a
+claim is never granted on a request that errors anyway → claim → pre-write
+capture and the remaining fences (availability and age again, control, surface,
+the action against the live surface, revision) → write. Cases: this connection holds
 control → no claim, `claim: {status: "held"}`, the ordinary fences apply
 unchanged; the observation was taken as observer (`saved.control == None`) and
 the connection holds no control → the same atomic `claim_if_unowned` as `open
@@ -673,9 +677,13 @@ human), then wait for the grant delivery (`grants` counter) and re-read: the
 None → Some(new control id) transition is authorized explicitly for this
 observation (the equality fence is not re-run against the observer
 observation); `owner != me` after delivery (a grant folded with a takeover) is
-a refusal; then availability, pending, surface and revision are re-checked on a
-fresh capture and the write proceeds with `control_id` and `claim: {status:
-"claimed", control_id}` on the receipt. Anything else (`saved.control` set but
+a refusal; then availability, pending, observation age, surface and revision
+are re-checked on a fresh capture and the write proceeds with `control_id` and
+`claim: {status: "claimed", control_id}` on the receipt. The control fence
+authorizes exactly the granted lease: a takeover applied between the
+post-grant re-read and the fence (the cached `control` no longer equals the
+granted id) fails closed with the same `control_unavailable` result as a
+folded takeover. Anything else (`saved.control` set but
 no longer held, or another client owns the terminal) → no write, nothing
 cached, `outcome: "control_unavailable"` with `reason`, `claim: {status:
 "unavailable"}` and a fresh observation (same envelope as `stale_observation`,
@@ -683,21 +691,27 @@ cached, `outcome: "control_unavailable"` with `reason`, `claim: {status:
 `claim: {status: "unconfirmed"}`; a cancelled call may leave the claim granted
 and the next `claim: true` on the connection reports `held`. A granted claim
 followed by the stale fence carries `claim: {status: "claimed", control_id}` on
-the stale result; when the surface fence fails after a grant the RPC error
-message ends with `; control claimed (control_id <id>)`, since an error carries
-no receipt.
+the stale result (its `next` says to resend with `observation_id` omitted:
+the fresh observation is the connection's latest); every RPC error after a
+granted claim ends with `; control claimed (control_id <id>)`, since an error
+carries no receipt.
 
-`input release: true` (default false). Order: write → ack/refusal/unknown → the
-receipt is cached with `release: {status: "requested"}` → release (a helper
-that assumes the serial guard is held; the public `control()` re-takes the
-guard and is never called) → the cached receipt is updated to `release:
-{status: "released"}` (control held and the release applied), `"not_held"`
-(the cache or the owner registry says this connection did not hold control,
-e.g. after a takeover) or `"unconfirmed"` (send failure or 7 s timeout) →
-readback with the pre-write baseline. A release never clears `pending`, never
-rewrites the write outcome, and the readback shows the state after the release
-(`role: observer`, text always carried: the release `text_omitted` economy is
-not extended). A call cancelled between the write and the release update leaves
+`input release: true` (default false). Order: write → ack/refusal/unknown (the
+unknown/written/refused receipts already carry `release: {status:
+"requested"}`, so the cached unknown receipt has the release fact) → release
+(a helper that assumes the serial guard is held; the public `control()`
+re-takes the guard and is never called) → the cached receipt is updated to
+`release: {status: "released"}` (this connection held control — cache and
+registry — before the release was sent and held none after it; a takeover
+applied in between is reported as released too, since the outcome for the
+caller is the same), `"not_held"` (the cache or the owner registry said this
+connection did not hold control when the release ran, e.g. after a takeover)
+or `"unconfirmed"` (send failure or 7 s timeout) → readback with the
+pre-write baseline. A release never clears `pending`, never rewrites the write
+outcome, and the readback shows the state after the release (`role: observer`
+when released; after `unconfirmed` or `requested` the role may still be owner:
+read `role`; text always carried: the release `text_omitted` economy is not
+extended). A call cancelled between the write and the release update leaves
 `"requested"` in the cached receipt: a replay returns it unchanged with a fresh
 readback whose `role` says whether control is still held, and never releases.
 `claim`, `release`, `allow_output_below_cursor` and
@@ -721,7 +735,15 @@ with index ≤ cursor.row hashes identically — only rows strictly below the
 cursor differ (possibly none: a revision can move without a textual or
 presentational change). Anything else stays `stale_observation`.
 `allow_output_since_observation: true` remains the wider opt-in and wins when
-both are set. The tolerance is refused (invalid params) for `click`.
+both are set. The tolerance is accepted only for draft edits — `text`,
+`sequence` and a `key` from the sequence vocabulary — and refused (invalid
+params at the MCP layer, the same refusal in `TerminalInteraction::input`)
+for `submit`, `click`, Enter, Tab, Escape, control keys and PageUp/PageDown:
+Claude Code's slash-command menu renders below the input row and re-sorts
+while it loads, so an Enter admitted by the tolerance could pick a different
+item than the one observed; a submission in a field whose status text moves
+keeps using `allow_output_since_observation` after inspecting the fresh
+state.
 
 Receipt: when the tolerance admitted the write, `observation_drift` gains
 `tolerance: "below_cursor"`, `rows_changed_below_cursor: [indices]` (first 16),
@@ -741,8 +763,8 @@ the other fences (documented residual window unchanged).
 
 ### Measured one-write edits with Claude Code 2.1.259 (2026-09-13)
 
-Real `claude` in a PTY (`pexpect` + `pyte`, 80×24), each edit sent as ONE
-physical write:
+Real `claude` in a PTY (`pexpect` + `pyte`, 80×24), each edit sent as one
+write request:
 
 | Write | Draft afterwards |
 |---|---|
@@ -751,8 +773,8 @@ physical write:
 | `old draft` + Ctrl+U + `new draft` | `new draft` |
 | Left/Right mixes, CJK edits | as expected |
 
-So a bounded edit can be one write, like `submit` (text + CR) and `repeat`
-(Left×5) already are. The focused suite pins the same facts against the real
+So a bounded edit can be one ordered write request, like `submit` (text + CR)
+and `repeat` (Left×5) already are. The focused suite pins the same facts against the real
 PTY with `stty raw -echo; exec cat -v` (the bytes arrive concatenated, in
 order, as `7200 + 19^[[D^[[D^[[D^[[D^[[D^?9`) and against bash's readline
 (the draft reads `echo 7209 + 19`).

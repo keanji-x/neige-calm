@@ -105,11 +105,15 @@ pub async fn wait_for_text(
             });
         }
         let quiet_until = last_change + settle;
-        if matched.is_some() && now >= quiet_until && quiet_until < deadline {
-            return verdict(matched, true, false);
-        }
+        // Exit, disconnect and invalidation win over a settled match, as in
+        // the timer branch: an exit that becomes ready together with the
+        // quiet timer, or a screen that already exited while showing the
+        // pattern, is `exited`, never `matched`/`settled`.
         if stopped() {
             return verdict(matched, false, true);
+        }
+        if matched.is_some() && now >= quiet_until && quiet_until < deadline {
+            return verdict(matched, true, false);
         }
         if now >= deadline {
             return verdict(matched, false, false);
@@ -406,6 +410,38 @@ mod tests {
             let (verdict, waited) = task.await.unwrap();
             assert!(verdict.settled && verdict.matched.is_some());
             assert_eq!(waited, Duration::from_millis(300));
+        }
+    }
+
+    /// Exit wins over a settled match: a screen that already exited while
+    /// showing the pattern (`settle` 0) is `exited`, and an exit whose flag
+    /// and protocol event become ready in the same driver pass as the quiet
+    /// timer is `exited` whichever branch `select!` picks (repeated because
+    /// the pick is random; the helper's earlier sleep fires first).
+    #[tokio::test(start_paused = true)]
+    async fn exit_wins_over_a_settled_match() {
+        let (fixture, task) = start(&["READY"], &["READY"], 0, 5_000);
+        fixture.stopped.store(true, Ordering::SeqCst);
+        let (verdict, waited) = task.await.unwrap();
+        assert!(verdict.exited && !verdict.settled, "{verdict:?}");
+        assert_eq!(verdict.matched, found("READY", 0, 0, true));
+        assert_eq!(waited, Duration::ZERO);
+        for _ in 0..64 {
+            let (fixture, task) = start(&["READY"], &["READY"], 150, 5_000);
+            tokio::task::yield_now().await;
+            let (stopped, events) = (fixture.stopped.clone(), fixture.events.clone());
+            let helper = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                stopped.store(true, Ordering::SeqCst);
+                events.send_modify(|value| *value += 1);
+            });
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_millis(200)).await;
+            helper.await.unwrap();
+            let (verdict, waited) = task.await.unwrap();
+            assert!(verdict.exited && !verdict.settled, "{verdict:?}");
+            assert_eq!(verdict.matched, found("READY", 0, 0, true));
+            assert_eq!(waited, Duration::from_millis(200));
         }
     }
 

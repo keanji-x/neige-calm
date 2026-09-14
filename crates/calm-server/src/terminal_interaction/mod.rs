@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 mod action_observation;
 mod actions;
+pub use actions::{BELOW_CURSOR_EDITS_ONLY, edits_the_draft};
 mod client;
 mod input_control;
 mod observation;
