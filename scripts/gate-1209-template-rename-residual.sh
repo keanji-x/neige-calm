@@ -193,7 +193,7 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 #          `task` variant must send no `workflow_*` key at all. The claim is
 #          about a wire shape that no longer exists, which is exactly why the
 #          spelling has to stay.
-1   docs/oracle/pages-shared.yaml
+1   docs/archive/legacy-web-oracle/pages-shared.yaml
 # --- 12. GitHub Actions, not us. This one line is a deliberate NEAR-MISS
 #         fixture: `'workflows/ci.yml'` written WITHOUT the `.github/` prefix,
 #         asserting the mutation runner does not treat it as the CI file. The

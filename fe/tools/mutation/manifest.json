@@ -102,7 +102,7 @@
   {
     "mutation_id": "test-tier-map-jsdom-to-node",
     "defends": [
-      "oracle:INV-OVERLAY-006"
+      "oracle:INV-LOGIN-001"
     ],
     "target": "tools/test-tier/checker.ts",
     "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -23,7 +23,7 @@ const LOCATION = /^([^\\s:]+):(\\d+)(?:-(\\d+))?$/;\n  */\n const EXPECTED_PROJECTS = Object.freeze({\n   browser: Object.freeze(['browser', 'browser-coarse', 'playwright']),\n-  jsdom: Object.freeze(['web-dom', 'browser', 'browser-coarse']),\n+  jsdom: Object.freeze(['web-dom']),\n   static: Object.freeze(['platform-independent', 'web-dom', 'browser', 'browser-coarse', 'playwright']),\n   none: Object.freeze(['platform-independent', 'web-dom', 'browser', 'browser-coarse', 'playwright']),\n } as const);\n",
@@ -119,7 +119,7 @@
   {
     "mutation_id": "test-tier-allow-browser-overlap",
     "defends": [
-      "oracle:INV-OVERLAY-006"
+      "oracle:INV-LOGIN-001"
     ],
     "target": "vitest.config.ts",
     "patch": "diff --git a/vitest.config.ts b/vitest.config.ts\nindex 8dbab0c4..5156ef01 100644\n--- a/vitest.config.ts\n+++ b/vitest.config.ts\n@@ -15,7 +15,7 @@ export default defineConfig({\n           environment: 'node',\n           setupFiles,\n           include: ['core/**/*.test.ts', 'tools/**/*.test.ts'],\n-          exclude: ['**/*.browser.test.{ts,tsx}', 'tools/architecture/fixtures/**'],\n+          exclude: ['tools/architecture/fixtures/**'],\n         },\n       },\n       {\n",
@@ -164,7 +164,7 @@
   {
     "mutation_id": "test-tier-ignore-migrated",
     "defends": [
-      "oracle:INV-OVERLAY-006"
+      "oracle:INV-LOGIN-001"
     ],
     "target": "tools/test-tier/checker.ts",
     "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -92,5 +92,5 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly\n   repoRoot: string, configRoot: string): TierViolation[] {\n   const violations: TierViolation[] = [];\n   for (const entry of entries) {\n-    if (entry.migration !== 'migrated' || typeof entry.id !== 'string' || typeof entry.authoritative_test !== 'string') continue;\n+    if (entry.migration === 'migrated' || typeof entry.id !== 'string' || typeof entry.authoritative_test !== 'string') continue;\n     const expected = EXPECTED_PROJECTS[entry.test_tier as keyof typeof EXPECTED_PROJECTS];\n",
@@ -191,7 +191,7 @@
   {
     "mutation_id": "test-tier-ignore-capability",
     "defends": [
-      "oracle:INV-OVERLAY-006"
+      "oracle:INV-LOGIN-001"
     ],
     "target": "tools/test-tier/checker.ts",
     "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -96,5 +96,5 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly\n     for (const source of new Set(referencedPaths(entry.authoritative_test))) {\n       const testPath = configRelativePath(repoRoot, configRoot, source);\n       const actual = testPath === null ? [] : projectsForPath(testPath, projects);\n-      if (actual.length !== 1 || !expected.some((project) => project === actual[0])) violations.push({\n+      if (actual.length !== 1) violations.push({\n         id: entry.id, rule: 'test-tier-project', source,\n",
@@ -213,7 +213,7 @@
   {
     "mutation_id": "test-tier-allow-overlap",
     "defends": [
-      "oracle:INV-OVERLAY-006"
+      "oracle:INV-LOGIN-001"
     ],
     "target": "tools/test-tier/checker.ts",
     "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -96,5 +96,5 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly\n     for (const source of new Set(referencedPaths(entry.authoritative_test))) {\n       const testPath = configRelativePath(repoRoot, configRoot, source);\n       const actual = testPath === null ? [] : projectsForPath(testPath, projects);\n-      if (actual.length !== 1 || !expected.some((project) => project === actual[0])) violations.push({\n+      if (!expected.some((project) => project === actual[0])) violations.push({\n         id: entry.id, rule: 'test-tier-project', source,\n",
@@ -793,7 +793,7 @@
   {
     "mutation_id": "app-adapter-drop-track-invalidation",
     "defends": [
-      "oracle:GATE-APP-029"
+      "oracle:CAP-APP-032"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
     "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -35,7 +35,7 @@\n   const [head, first, second] = key;\n   if (head === 'areas' && key.length === 1) return queryKeys.areas();\n   if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);\n-  if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);\n+  if (head === 'track' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);\n   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n   if (head === 'planner-run' && typeof first === 'string' && key.length === 2) return queryKeys.plannerRun(first);\n",
@@ -1144,7 +1144,7 @@
   {
     "mutation_id": "events-harness-item-plan-becomes-empty",
     "defends": [
-      "oracle:CAP-CHATHIST-005"
+      "oracle:CAP-APP-117"
     ],
     "target": "core/events/invalidation-plan.ts",
     "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -236,7 +236,7 @@ function policies(): PolicyMap {\n   'worker_session.started': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   /*\n    * #1625 P1 — `harness-items` is here because the phase event IS the\n    * delivery signal for the per-turn outcome row. The kernel writes the\n",
@@ -1161,8 +1161,7 @@
   {
     "mutation_id": "app-adapter-drops-harness-items",
     "defends": [
-      "oracle:CAP-CHATHIST-005",
-      "oracle:CAP-SPECCONVO-017"
+      "oracle:CAP-APP-117"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
     "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -37,7 +37,7 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {\n   if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);\n   if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);\n   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);\n-  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'planner-run' && typeof first === 'string' && key.length === 2) return queryKeys.plannerRun(first);\n   /* The track's task verdicts. Both arities are mapped, and the bare one is not\n      an oversight: the four `task.*` events carry no track-id *field*, so\n",

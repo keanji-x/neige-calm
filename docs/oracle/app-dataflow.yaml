@@ -631,3 +631,120 @@
   test_tier: jsdom
   intentional_omission: false
   migration: migrated
+
+# Contracts still defended by the maintained frontend mutation suite.
+- id: CAP-APP-006
+  kind: capability
+  family: app-compat-gate
+  statement: 当 minWebCompatVersion 高于 WEB_COMPAT_VERSION 时，RefreshRequiredOverlay 必须阻止旧客户端操作，显示两侧版本号并提供 Refresh now 按钮。
+  why: |
+    issue #45 / docs/upgrade-stability.md Tier B：前后端 skew 时用户必须被明确阻断， 并且运维式的 "compat v3 vs v1" 对照要一眼可见。
+  source: fe/web/src/app/providers/public.tsx:1-113
+  authoritative_test: fe/web/src/app/providers/providers.browser.test.tsx:1-30
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: migrated
+- id: INV-APP-020
+  kind: invariant
+  family: app-event-bridge
+  statement: EventBridge 是所注入事件流的唯一 start() 调用方；client、cursor 或 context 更新不得重新打开连接，其他消费者仅订阅而不触发连接。
+  why: >
+    issue #198 followup / PR #215：以前 `sharedEventStream()` 会自动 start， ServerCompatGate 提前渲染的 children 一调它就在
+    compat 裁决前开了 socket。 改成惰性单例后，"不兼容前端永不打开 /api/events" 才从"实践上成立"变成"构造上成立"。 【新架构】typestate **不覆盖此条**：同一
+    Unconfigured 实例可被多次 configure， 也可能产生多个持有 start() 的 handle。仍需 ownership 约束 + architecture test。
+  source: fe/web/src/app/events/event-bridge.tsx:1-72
+  authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:1-361
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+- id: INV-APP-044
+  kind: invariant
+  family: app-event-stream
+  statement: connectionState 的 connected 状态必须由解码后的 replay-complete 控制帧驱动，不得由 socket.onopen 驱动。
+  why: |
+    open 只代表握手成功；从 open 到 replay 播完这段时间服务端还在补历史事件，此时报 "you're live" 是骗用户。注释与 ConnectionState 文档都把这条列为权威信号。
+  source: fe/web/src/systems/events/websocket-driver.ts:1-151
+  authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1-229
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+- id: INV-APP-049
+  kind: invariant
+  family: app-event-stream
+  statement: "每次打开连接时，eventSubscriptionFrame 都必须携带 since 字段；冷启动发送 since: 0，而不是省略该字段。"
+  why: |
+    fixture 在 WS 连接前 seed 的事件必须也能到达 trace ring buffer；省略 since 会让 这些事件永远看不到。
+  source: fe/web/src/systems/events/websocket-driver.ts:1-151 ; fe/core/events/protocol.ts:1-70
+  authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1-229
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+- id: INV-APP-050
+  kind: invariant
+  family: app-event-stream
+  statement: cursor 向注入 storage 的写入必须经 idle.schedule 批处理；默认使用 requestIdleCallback，不支持时降级为 setTimeout(0)，忙流下不得每帧同步写。
+  why: |
+    每帧一次 localStorage 写在高频事件流下是显著同步开销；`cursorFlushQueued` 闩锁保证 同时最多排队一次 flush。
+  source: fe/web/src/app/events/browser-cursor-store.ts:1-91
+  authoritative_test: fe/web/src/app/events/browser-cursor-store.test.ts:1-91
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+- id: INV-APP-055
+  kind: invariant
+  family: app-event-stream
+  statement: configure 保存的 topics 必须在每次重连的 socket.onopen 后通过 eventSubscriptionFrame 重新发送给服务端。
+  why: |
+    重连后不重发订阅 = 静默变成收不到任何事件的僵尸连接。
+  source: fe/web/src/systems/events/websocket-driver.ts:1-151
+  authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1-229
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+- id: INV-APP-059
+  kind: invariant
+  family: app-session-auth
+  statement: React Query 的 retryUnless401 对 unauthorized 失败不重试，其他失败只重试一次。
+  why: >
+    issue #189：401 表示会话 cookie 已消失（过期、服务端重启、兄弟标签页登出）。 重试只会拖慢 SessionProvider 的 onUnauthorized 清理 → LoginPage
+    跳转 （`api/calm.ts` 的 request() 已经发过信号了），期间还堆一个注定失败的第二请求。
+  source: fe/web/src/app/providers/public.tsx:1-113
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1-33
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+- id: CAP-APP-117
+  kind: capability
+  family: app-invalidation-policy
+  statement: harness.item.added 必须失效同 card 的 harness-items；harness.transcript.cleared 必须同时失效同 card 的
+    harness-items 与 planner-run。applyEventEffects 必须把这些计划键映射为现行查询键，不能丢弃。
+  why: 转录新增与清空必须刷新可见投影。旧界面的本地 seq 状态实现已退役；新版由 core 计划和 app 查询适配器共同履行此约束。
+  source: fe/core/events/invalidation-plan.ts:247-278 ; fe/web/src/app/events/query-invalidation-adapter.ts:30-134
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:286-316
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
