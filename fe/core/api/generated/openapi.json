@@ -5591,6 +5591,137 @@
         }
       }
     },
+    "/api/tracks/{id}/sources": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "list_track_sources",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Track id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The track's captured sources, oldest first, without bodies",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackSourceList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Track not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tracks/{id}/sources/{source_id}": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "get_track_source",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Track id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source_id",
+            "in": "path",
+            "description": "The source (`src_` + 8 hex)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The source with its stored body and anchors",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackSourceDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Track not found, or no such source in this track",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tracks/{id}/tasks/{key}/attempts": {
       "get": {
         "tags": [
@@ -9623,6 +9754,111 @@
           }
         }
       },
+      "SourceOrigin": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The recorded plugin call the body was read off.",
+            "required": [
+              "plugin_id",
+              "tool",
+              "args_sha256",
+              "args_canon",
+              "kind"
+            ],
+            "properties": {
+              "args_canon": {
+                "type": "string",
+                "description": "Canonicalization version behind `args_sha256` (`v1`: compact\nserde_json text with sorted keys)."
+              },
+              "args_sha256": {
+                "type": "string"
+              },
+              "content_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "plugin"
+                ]
+              },
+              "plugin_id": {
+                "type": "string"
+              },
+              "tool": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The Planner's own bytes.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "content_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "manual"
+                ]
+              },
+              "url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Where a body came from. Stored as the `origin` JSON column."
+      },
+      "SourceProvenance": {
+        "type": "string",
+        "enum": [
+          "full_text",
+          "summary",
+          "web_page",
+          "manual"
+        ]
+      },
+      "SourceQuote": {
+        "type": "object",
+        "description": "One anchor of a source: `text` is a byte-exact substring of the body.\n`start`/`end` are UTF-8 byte offsets into `body` — a kernel-side\ndetail; the page locates the anchor by `text`.",
+        "required": [
+          "id",
+          "text",
+          "start",
+          "end"
+        ],
+        "properties": {
+          "end": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
       "StartIsolatedTaskBody": {
         "type": "object",
         "required": [
@@ -11019,6 +11255,104 @@
             "items": {
               "$ref": "#/components/schemas/BlockVerdict"
             }
+          }
+        }
+      },
+      "TrackSourceDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TrackSourceSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "body"
+            ],
+            "properties": {
+              "body": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "A captured source with its body: the raw text the kernel stored,\nverbatim (not Markdown-rendered by the panel)."
+      },
+      "TrackSourceList": {
+        "type": "object",
+        "required": [
+          "sources"
+        ],
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrackSourceSummary"
+            }
+          }
+        }
+      },
+      "TrackSourceSummary": {
+        "type": "object",
+        "description": "A captured source without its body.",
+        "required": [
+          "source_id",
+          "provenance",
+          "origin",
+          "title",
+          "body_bytes",
+          "body_sha256",
+          "captured_at",
+          "quotes"
+        ],
+        "properties": {
+          "body_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "body_sha256": {
+            "type": "string"
+          },
+          "captured_at": {
+            "type": "string",
+            "description": "RFC 3339, UTC."
+          },
+          "content_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`origin.content_id`, surfaced for the panel header."
+          },
+          "origin": {
+            "$ref": "#/components/schemas/SourceOrigin"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/SourceProvenance"
+          },
+          "published_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quotes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceQuote"
+            }
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`origin.url` (manual sources only)."
           }
         }
       },
