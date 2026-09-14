@@ -1,5 +1,7 @@
 # 声明式图表 `chart.series`（#1628）— 设计 v7
 
+> **实现状态（2026-09-14）**：S1 #1656、S3 #1657、S2 #1660、S4 #1661 已合入 main；设计折入 #1658 + 本次。未闭合：S3b（新浪兜底）、U9（US live 日线放宽需交易日盘后实测）、#1662（边缘测试）。
+
 基线：`origin/main` = `c534bf6b`（工作树 `feat/report-chart-series`）。所有 file:line 都在该基线上实测（[实测]），未核实的写 "未核实"。v1 → v2 → v3 → v4 → v5 → v6 → v7 的每条改动登记在 §11。
 
 **v2 的模型变化（用户 2026-09-12 拍板）**：解析是**后台任务**，`calm.report.read` 与浏览器只读**已存储的行**，读路径上永不调用插件。需要即时数据时 Planner 自己调 `market.series`。
@@ -462,7 +464,7 @@ CREATE TABLE report_series (
 
 - S2.1 in-flight：`Key = (TrackId, BlockId)`，不含 hash；检查与插入是锁内一次 `HashSet::insert`（原子），只有插入成功者构造 `InflightGuard`；预检未命中 → guard drop 释放键、返回 `Miss(reason)`。`inflight.len()` = 排队 job 数 + 执行中 job 数（每 lane ≤ 1）。（D2 enqueue 1/3、A9、A9g、A9i）
 - S2.2 `inflight` 与 `lanes` 两把 `std::sync::Mutex` 一律 `lock().unwrap_or_else(PoisonError::into_inner)`；检查-重建-投递在 `lanes` 锁内、无 `.await`；`rebuild_lane(&mut MutexGuard<'_, HashMap<…>>)`；lane 通道 `mpsc::unbounded_channel`。（D2 enqueue 3、A9d、A9f）
-- S2.3 准入用读事务：`repo.sqlite_pool()` 为 `None` → 丢弃 + warn、不落行；`Some(pool)` → `pool.begin()`（DEFERRED），`report_blocks_snapshot_tx` 重读块，判定后 rollback、不跨插件调用持有；只有步骤 7 写行用 `write_in_tx_typed`。（D2 步骤 1/7、F7.8）
+- S2.3 准入**不开事务**（实现期修正，§11「实现期修正」）：`repo.sqlite_pool()` 为 `None` → 丢弃 + warn、不落行；`Some(pool)` → `report_blocks_snapshot(pool)` + `select_row(pool)` 两条 autocommit 语句——本仓 #930/#1016 门禁（`deferred_write_tx_invariant`）禁止生产代码出现任何 deferred 事务，只读也不行（多表只读 deferred tx 持 R 锁再 park 是死锁环的一方，allowlist 刻意为空）；写入本来就是 `ON CONFLICT … WHERE pinned = 0`，准入只是过滤，不需要原子性；只有步骤 7 写行用 `write_in_tx_typed`。v7 写的「`pool.begin()`（DEFERRED，只读不取写锁）」在本仓不成立。（D2 步骤 1/7、F7.8）
 - S2.4 出队时由**当前** payload 派生 `SeriesRequest`（含 `mode`）与 hash；`(plugin_id, tool)` 不属本 lane → 丢弃；`start = as_of − RANGE_DAYS` 在此算，`from_ymd_opt` 失败 → 丢弃 + warn。（D2 步骤 1、seq 3a′、A9g）
 - S2.5 行查询一律按全主键 `(track_id, block_id, request_hash)`：准入先派生 hash 再精确选行，**不按 `(track, block)` 任取**；读端（`calm.report.read` 与 HTTP 路由）同样；用例「h1 钉住行保留 + h2 无行 → 解析 h2」。（D2 步骤 1、D4、D5、A9h）
 - S2.6 默认摘要读只 SELECT `status, reason, as_of, resolved_at, pinned, summary`，不取 `data` 列；`full` 才取 `data`。（D4、D5）
@@ -789,3 +791,7 @@ CREATE TABLE report_series (
 | S3 | Binance 向后翻页（保留最早 1000 根）；ifzq A 股向前翻页（保留最新 640 根）；美股需交易所后缀 | U8 实测 | §2.5 U8 表、S3.8 |
 | S3 | U9 未实测 → US 严格臂 | S3.1 规则 | S3.1、§9 |
 | S3 | 新浪兜底拆到 S3b | S3 已是最大切片；兜底是第二套源族 | §5 切片表 |
+| S2（#1660） | 准入不用 DEFERRED 读事务，改两条 autocommit 语句 | 仓内 #930/#1016 门禁禁止生产代码的一切 deferred 事务（六轮评审未查该门禁，见记忆 `feedback_design_must_scan_source_invariant_gates`） | S2.3、`report_series/admission.rs` |
+| S2 | `now` 注入是 `Arc<dyn Fn() -> i64>`；seams 用 `cfg(any(test, feature = "fixtures"))`；读端 `enqueue_scoped` 复用一次 read 的作用域；A9g 断言 `inflight_len() == 2`（执行中 + 排队，§6 那行写 1 是笔误） | 验收是集成测试；测试要推进自己的时钟 | D2、A9g |
+| S4（#1661） | 路由与 MCP read 共用 `report_series::hydrate::hydrate_chart_series`；载体是 `AppContext::new` + `McpServer::spawn_with_context` + `RouteState.mcp_context`（生产与 MCP listener 同一 `Arc`） | 一个解析器、一套 lane、两条读路径 | D5、S4.1 |
+| S4 | `ReportBlock.chart.series` 带 `rev`；`CandlesFigure` 多 `label`；轮询退避按快速轮询次数计 | key 含 `rev`；aria；隐藏页 react-query 暂停计时器 | D5、S4.3 |
