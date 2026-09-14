@@ -8,6 +8,7 @@ use crate::terminal_renderer::{
 use anyhow::{Result, ensure};
 use calm_session::ClientMsg;
 use calm_terminal_view::{InputSurface, Rasterizer};
+use screen_diff::{CursorSnapshot, row_hashes};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -16,19 +17,27 @@ use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
 mod action_observation;
+mod actions;
+pub use actions::{BELOW_CURSOR_EDITS_ONLY, edits_the_draft};
 mod client;
+mod input_control;
 mod observation;
 mod operations;
 pub use observation::ObservationFormat;
+pub use operations::InputOptions;
+mod screen_diff;
 mod target;
+mod text_wait;
 mod wait;
+mod wait_plan;
 use client::{Client, LatestObservation};
 pub(crate) use target::Binding;
 pub use target::Target;
 #[cfg(test)]
 pub(crate) use target::TaskBinding;
-pub use wait::{
-    SETTLE_MS_DEFAULT, SETTLE_MS_MAX, SIGNAL_WAIT_MS_DEFAULT, WAIT_MS_MAX, WaitFor, WaitPlan,
+pub use wait_plan::{
+    SETTLE_MS_DEFAULT, SETTLE_MS_MAX, SIGNAL_WAIT_MS_DEFAULT, TEXT_WAIT_MS_DEFAULT, WAIT_MS_MAX,
+    WaitFor, WaitPlan,
 };
 
 /// Baseline an action readback compares against: the projection revision and
@@ -67,6 +76,10 @@ struct Observation {
     revision: u64,
     control: Option<Uuid>,
     surface: InputSurface,
+    /// #1666 S4 — what `allow_output_below_cursor` compares: the cursor and
+    /// one hash per rendered row (glyphs and presentation).
+    cursor: CursorSnapshot,
+    row_hashes: Vec<u64>,
     created: Instant,
 }
 impl TerminalInteraction {
@@ -162,6 +175,18 @@ impl TerminalInteraction {
             control: scope_check(true),
         }
     }
+    /// The highest input sequence acknowledged on this identity's connection
+    /// to `terminal_id` (#1666: one sequence action advances it by exactly
+    /// one). Test observability only; no tool reports it.
+    #[doc(hidden)]
+    pub async fn input_ack_sequence(&self, terminal_id: &str) -> Option<u64> {
+        self.clients
+            .lock()
+            .await
+            .values()
+            .find(|client| client.binding.terminal_id == terminal_id)
+            .and_then(|client| client.screen.lock().ok().map(|state| state.ack))
+    }
     /// Whether a Planner input on `terminal_id` is reserved but not yet
     /// acknowledged or refused (the write is parked at the physical barrier
     /// or in flight). Test observability only; no tool reports it.
@@ -197,6 +222,12 @@ impl TerminalInteraction {
         format: ObservationFormat,
     ) -> Result<(Value, Option<Vec<u8>>)> {
         wait.validate()?;
+        // #1666 — a text wait is tested on the live viewport and returns that
+        // same viewport (the MCP layer refuses this as invalid params first).
+        ensure!(
+            wait.mode != WaitFor::Text || offset == 0,
+            "wait_for=text observes the live viewport; scroll_offset must be 0"
+        );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let client = self.client(identity, &resolved.binding).await?;
         self.capture(identity, resolved, &client, offset, wait, None, format)
@@ -287,6 +318,8 @@ impl TerminalInteraction {
         if png.is_some() {
             metadata["image_source"] = json!("rmux_client_projection");
         }
+        // Hashed outside the registry lock, from the capture already taken.
+        let row_hashes = row_hashes(&frame);
         let mut observations = self
             .observations
             .lock()
@@ -304,6 +337,8 @@ impl TerminalInteraction {
                 revision,
                 control,
                 surface: frame.input_surface(),
+                cursor: CursorSnapshot::from(&frame.cursor),
+                row_hashes,
                 created: Instant::now(),
             },
         );
@@ -431,9 +466,10 @@ impl TerminalInteraction {
             .await)
     }
     /// Test seam (#1620): runs between the cached-owner read and the atomic
-    /// claim of the next [`Self::claim_after_open`] (the terminal id is not
-    /// known before the open), so a test can let a human claim inside exactly
-    /// that window. Consumed once.
+    /// claim of the next claim-if-unowned — [`Self::claim_after_open`] (the
+    /// terminal id is not known before the open) or an `input claim:true`
+    /// (#1666) — so a test can let a human claim inside exactly that window.
+    /// Consumed once.
     #[cfg(feature = "fixtures")]
     #[doc(hidden)]
     pub fn set_claim_window_seam(&self, seam: ClaimWindowSeam) {

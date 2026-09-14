@@ -1,150 +1,19 @@
-//! Change and signal waiting for observations: wake on renderer revisions,
-//! hook signals and client protocol events, never on a sleep-poll loop.
-//! Waiting is presentation; it never touches a receipt or the physical action.
+//! Change, signal and text waiting for observations: wake on renderer
+//! revisions, hook signals and client protocol events, never on a sleep-poll
+//! loop. Waiting is presentation; it never touches a receipt or the physical
+//! action. The argument contract lives in `wait_plan.rs`, the text loop in
+//! `text_wait.rs` (#1666); this file dispatches and runs the change and
+//! signal loops.
 use super::client::Client;
-use crate::terminal_hooks::{DEFAULT_SIGNAL_EVENTS, TERMINAL_SIGNAL_EVENTS};
+use super::text_wait::{self, TextMatch, TextWait};
+pub use super::wait_plan::{WaitFor, WaitPlan};
 use crate::terminal_renderer::{SharedModelView, Signal};
-use anyhow::{Result, ensure};
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::sync::watch;
 // tokio's Instant equals std's on a live runtime and follows the paused
 // clock in tests, so the loop and its timers share one time base.
 use tokio::time::Instant;
-
-pub const WAIT_MS_MAX: u64 = 20_000;
-pub const SETTLE_MS_MAX: u64 = 2_000;
-pub const SETTLE_MS_DEFAULT: u64 = 150;
-/// Budget when `wait_ms` is omitted in change mode. Elapsed mode keeps 0 so an
-/// observation without waiting arguments stays an immediate read.
-pub const CHANGE_WAIT_MS_DEFAULT: u64 = 2_000;
-/// Budget when `wait_ms` is omitted in signal mode (#1620): a model answer
-/// takes seconds, and the wait ends early on the signal anyway.
-pub const SIGNAL_WAIT_MS_DEFAULT: u64 = 15_000;
-/// Signal mode (#1628): how long after the signal to wait for the first
-/// repaint. Claude's `Stop` hook fires before the TUI paints the answer, so
-/// a signal readback that returned at once would still show the spinner.
-pub const REPAINT_MS_MAX: u64 = 5_000;
-pub const REPAINT_MS_DEFAULT: u64 = 1_500;
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum WaitFor {
-    #[default]
-    Elapsed,
-    Change,
-    Signal,
-}
-impl WaitFor {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Elapsed => "elapsed",
-            Self::Change => "change",
-            Self::Signal => "signal",
-        }
-    }
-}
-
-/// Validated waiting arguments shared by observe and action readbacks.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct WaitPlan {
-    pub mode: WaitFor,
-    pub budget_ms: u64,
-    pub settle_ms: u64,
-    /// Signal mode only: snake_case hook events that end the wait.
-    pub signal_events: Vec<String>,
-    /// Signal mode only: how long after the signal to wait for a repaint
-    /// (0 returns at the signal as before #1628). 0 in the other modes.
-    pub repaint_ms: u64,
-}
-impl WaitPlan {
-    /// `wait_ms == None` selects the mode's default budget:
-    /// [`CHANGE_WAIT_MS_DEFAULT`] for change, [`SIGNAL_WAIT_MS_DEFAULT`] for
-    /// signal, 0 for elapsed. `signal_events == None` selects
-    /// [`DEFAULT_SIGNAL_EVENTS`] in signal mode; `repaint_ms == None` selects
-    /// [`REPAINT_MS_DEFAULT`] there.
-    pub fn new(
-        wait_for: Option<WaitFor>,
-        wait_ms: Option<u64>,
-        settle_ms: Option<u64>,
-        signal_events: Option<Vec<String>>,
-        repaint_ms: Option<u64>,
-    ) -> Result<Self> {
-        let mode = wait_for.unwrap_or_default();
-        let wait_ms = wait_ms.unwrap_or(match mode {
-            WaitFor::Change => CHANGE_WAIT_MS_DEFAULT,
-            WaitFor::Signal => SIGNAL_WAIT_MS_DEFAULT,
-            WaitFor::Elapsed => 0,
-        });
-        ensure!(wait_ms <= WAIT_MS_MAX, "wait_ms must be 0..{WAIT_MS_MAX}");
-        ensure!(
-            settle_ms.is_none_or(|settle| settle <= SETTLE_MS_MAX),
-            "settle_ms must be 0..{SETTLE_MS_MAX}"
-        );
-        ensure!(
-            settle_ms.is_none() || matches!(mode, WaitFor::Change | WaitFor::Signal),
-            "settle_ms requires wait_for=change or wait_for=signal"
-        );
-        ensure!(
-            signal_events.is_none() || mode == WaitFor::Signal,
-            "signal_events requires wait_for=signal"
-        );
-        ensure!(
-            repaint_ms.is_none_or(|repaint| repaint <= REPAINT_MS_MAX),
-            "repaint_ms must be 0..{REPAINT_MS_MAX}"
-        );
-        ensure!(
-            repaint_ms.is_none() || mode == WaitFor::Signal,
-            "repaint_ms requires wait_for=signal"
-        );
-        let signal_events = match mode {
-            WaitFor::Signal => {
-                let events = signal_events.unwrap_or_else(|| {
-                    DEFAULT_SIGNAL_EVENTS
-                        .iter()
-                        .map(|e| e.to_string())
-                        .collect()
-                });
-                ensure!(
-                    !events.is_empty(),
-                    "signal_events must name at least one event"
-                );
-                for event in &events {
-                    ensure!(
-                        TERMINAL_SIGNAL_EVENTS.contains(&event.as_str()),
-                        "unknown signal event {event:?}; expected one of {TERMINAL_SIGNAL_EVENTS:?}"
-                    );
-                }
-                events
-            }
-            _ => Vec::new(),
-        };
-        Ok(Self {
-            mode,
-            budget_ms: wait_ms,
-            settle_ms: settle_ms.unwrap_or(SETTLE_MS_DEFAULT),
-            signal_events,
-            repaint_ms: match mode {
-                WaitFor::Signal => repaint_ms.unwrap_or(REPAINT_MS_DEFAULT),
-                _ => 0,
-            },
-        })
-    }
-    pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.budget_ms <= WAIT_MS_MAX
-                && self.settle_ms <= SETTLE_MS_MAX
-                && self.repaint_ms <= REPAINT_MS_MAX,
-            "observation wait exceeds limits"
-        );
-        ensure!(
-            self.mode != WaitFor::Signal || !self.signal_events.is_empty(),
-            "signal wait without events"
-        );
-        Ok(())
-    }
-}
 
 /// What the wait did, reported verbatim on the observation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +23,10 @@ pub enum WaitOutcome {
     Exited,
     Elapsed,
     Signal,
+    /// Text mode (#1666): a pattern is on the live viewport.
+    Matched,
+    /// Text mode: no pattern was on the viewport when the budget ended.
+    Unmatched,
 }
 pub struct WaitReport {
     pub mode: WaitFor,
@@ -172,6 +45,8 @@ pub struct WaitReport {
     pub signal_at: Option<Duration>,
     /// Signal mode: what happened on the screen after the signal (#1628).
     pub repaint: Option<RepaintReport>,
+    /// Text mode (#1666): the match the wait ended on, if any.
+    pub text: Option<TextMatch>,
 }
 /// Signal mode (#1628): the screen's behaviour after the signal arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +98,8 @@ impl WaitReport {
             WaitOutcome::Exited => "exited",
             WaitOutcome::Elapsed => "elapsed",
             WaitOutcome::Signal => "signal",
+            WaitOutcome::Matched => "matched",
+            WaitOutcome::Unmatched => "unmatched",
         };
         let mut report = json!({"mode":self.mode.name(),"outcome":outcome,
             "waited_ms":millis(self.waited),"settled":self.settled,
@@ -240,6 +117,13 @@ impl WaitReport {
                 .map(RepaintReport::to_json)
                 .unwrap_or(Value::Null);
         }
+        if self.mode == WaitFor::Text {
+            report["text"] = self
+                .text
+                .as_ref()
+                .map(TextMatch::to_json)
+                .unwrap_or(Value::Null);
+        }
         report
     }
 }
@@ -250,7 +134,9 @@ impl WaitReport {
 /// from the baseline and stayed quiet for `settle_ms`, or at the budget, or
 /// when the process exited / the client went away. Signal mode returns once a
 /// signal with `seq > signal_baseline` and an event in `plan.signal_events`
-/// exists, or at the budget, or on exit / disconnect.
+/// exists, or at the budget, or on exit / disconnect. Text mode (#1666)
+/// returns once a `plan.wait_text` pattern is on a live viewport row and the
+/// screen then stayed quiet for `settle_ms`, or at the budget, or on exit.
 pub async fn wait(
     client: &Client,
     plan: &WaitPlan,
@@ -269,6 +155,7 @@ pub async fn wait(
         signal,
         signal_at: None,
         repaint: None,
+        text: None,
     };
     if plan.mode == WaitFor::Elapsed {
         if plan.budget_ms > 0 {
@@ -336,6 +223,45 @@ pub async fn wait(
         return report;
     }
     let settle = Duration::from_millis(plan.settle_ms);
+    if plan.mode == WaitFor::Text {
+        // One capture per revision wake, the view lock dropped before the
+        // rows are tested; the frame's own revision names the tested screen.
+        let capture = || {
+            client
+                .entry
+                .handle
+                .model_view
+                .lock()
+                .ok()
+                .and_then(|view| view.capture(0).ok())
+                .map(|(frame, revision)| (frame.text, revision))
+        };
+        let TextWait {
+            matched,
+            settled,
+            exited,
+        } = text_wait::wait_for_text(
+            revisions,
+            events,
+            stopped,
+            capture,
+            &plan.wait_text,
+            started,
+            deadline,
+            settle,
+        )
+        .await;
+        let outcome = if exited {
+            WaitOutcome::Exited
+        } else if matched.is_some() {
+            WaitOutcome::Matched
+        } else {
+            WaitOutcome::Unmatched
+        };
+        let mut report = report(outcome, started.elapsed(), settled && !exited, None);
+        report.text = matched;
+        return report;
+    }
     let Progress {
         changed,
         settled,
@@ -653,10 +579,6 @@ mod tests {
     use super::*;
     use tokio::sync::watch;
 
-    fn plan(wait_for: Option<WaitFor>, wait_ms: Option<u64>) -> WaitPlan {
-        WaitPlan::new(wait_for, wait_ms, None, None, None).unwrap()
-    }
-
     /// `baseline_revision` is the string form of the revision the wait
     /// compared against, in both modes, next to the existing fields.
     #[test]
@@ -671,6 +593,7 @@ mod tests {
             signal: None,
             signal_at: None,
             repaint: None,
+            text: None,
         };
         assert_eq!(
             report.to_json(),
@@ -686,6 +609,7 @@ mod tests {
             signal: None,
             signal_at: None,
             repaint: None,
+            text: None,
         };
         assert_eq!(report.to_json()["baseline_revision"], "7");
         assert_eq!(report.to_json()["outcome"], "changed");
@@ -719,6 +643,7 @@ mod tests {
                 outcome: RepaintOutcome::Settled,
                 waited: Duration::from_millis(2),
             }),
+            text: None,
         };
         assert_eq!(report.to_json()["outcome"], "signal");
         assert_eq!(report.to_json()["signal"], signal.to_json());
@@ -739,6 +664,7 @@ mod tests {
             signal: None,
             signal_at: None,
             repaint: None,
+            text: None,
         };
         assert_eq!(report.to_json()["signal_at_ms"], Value::Null);
         assert_eq!(report.to_json()["repaint"], Value::Null);
@@ -751,125 +677,42 @@ mod tests {
         ] {
             assert_eq!(outcome.name(), name);
         }
-    }
-
-    #[test]
-    fn omitted_wait_ms_defaults_per_mode() {
-        assert_eq!(plan(None, None).budget_ms, 0);
-        assert_eq!(plan(Some(WaitFor::Elapsed), None).budget_ms, 0);
+        assert!(
+            report.to_json().get("text").is_none(),
+            "text only in text mode"
+        );
+        // #1666 text mode: `text` is the match or null, next to the same
+        // baseline fields; the signal fields stay absent.
+        let matched = TextMatch {
+            pattern: "❯".into(),
+            row: 5,
+            revision: 9,
+            already: false,
+        };
+        let report = WaitReport {
+            mode: WaitFor::Text,
+            outcome: WaitOutcome::Matched,
+            waited: Duration::from_millis(400),
+            settled: true,
+            baseline: 7,
+            signal_baseline: 3,
+            signal: None,
+            signal_at: None,
+            repaint: None,
+            text: Some(matched.clone()),
+        };
         assert_eq!(
-            plan(Some(WaitFor::Change), None).budget_ms,
-            CHANGE_WAIT_MS_DEFAULT
+            report.to_json(),
+            json!({"mode":"text","outcome":"matched","waited_ms":400,"settled":true,"baseline_revision":"7","baseline_signal_seq":3,
+                "text":{"pattern":"❯","row":5,"revision":"9","already":false}})
         );
-        assert_eq!(CHANGE_WAIT_MS_DEFAULT, 2_000);
-        assert_eq!(plan(Some(WaitFor::Change), Some(0)).budget_ms, 0);
-        assert_eq!(plan(Some(WaitFor::Change), Some(15_000)).budget_ms, 15_000);
-        assert!(
-            WaitPlan::new(
-                Some(WaitFor::Change),
-                Some(WAIT_MS_MAX + 1),
-                None,
-                None,
-                None
-            )
-            .is_err()
-        );
-        assert!(WaitPlan::new(None, None, Some(10), None, None).is_err());
-        assert!(
-            WaitPlan::new(Some(WaitFor::Change), None, None, None, Some(0)).is_err(),
-            "repaint_ms outside signal mode"
-        );
-        assert!(WaitPlan::new(None, None, None, None, Some(0)).is_err());
-        assert_eq!(plan(Some(WaitFor::Change), None).repaint_ms, 0);
-    }
-
-    /// #1620 signal mode: its own default budget, the default event set, the
-    /// same 20 s ceiling, a validated event vocabulary and (#1628) a settle
-    /// window plus a bounded repaint window.
-    #[test]
-    fn signal_mode_defaults_and_validation() {
-        let signal = plan(Some(WaitFor::Signal), None);
-        assert_eq!(signal.budget_ms, SIGNAL_WAIT_MS_DEFAULT);
-        assert_eq!(SIGNAL_WAIT_MS_DEFAULT, 15_000);
-        assert_eq!(signal.repaint_ms, REPAINT_MS_DEFAULT);
-        assert_eq!(REPAINT_MS_DEFAULT, 1_500);
-        assert_eq!(signal.settle_ms, SETTLE_MS_DEFAULT);
-        let tuned = WaitPlan::new(Some(WaitFor::Signal), None, Some(300), None, Some(0)).unwrap();
-        assert_eq!((tuned.settle_ms, tuned.repaint_ms), (300, 0));
-        assert!(
-            WaitPlan::new(
-                Some(WaitFor::Signal),
-                None,
-                None,
-                None,
-                Some(REPAINT_MS_MAX + 1)
-            )
-            .is_err()
-        );
-        assert!(
-            WaitPlan::new(
-                Some(WaitFor::Signal),
-                None,
-                Some(SETTLE_MS_MAX + 1),
-                None,
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            WaitPlan {
-                repaint_ms: REPAINT_MS_MAX + 1,
-                ..plan(Some(WaitFor::Signal), None)
-            }
-            .validate()
-            .is_err()
-        );
-        assert_eq!(
-            signal.signal_events,
-            vec!["stop", "notification", "permission_request", "session_end"]
-        );
-        assert!(plan(Some(WaitFor::Change), None).signal_events.is_empty());
-        assert!(
-            WaitPlan::new(
-                Some(WaitFor::Signal),
-                Some(WAIT_MS_MAX + 1),
-                None,
-                None,
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            WaitPlan::new(
-                Some(WaitFor::Change),
-                None,
-                None,
-                Some(vec!["stop".into()]),
-                None
-            )
-            .is_err()
-        );
-        assert!(WaitPlan::new(Some(WaitFor::Signal), None, None, Some(vec![]), None).is_err());
-        assert!(
-            WaitPlan::new(
-                Some(WaitFor::Signal),
-                None,
-                None,
-                Some(vec!["Stop".into()]),
-                None
-            )
-            .is_err()
-        );
-        let only = WaitPlan::new(
-            Some(WaitFor::Signal),
-            Some(0),
-            None,
-            Some(vec!["session_end".into()]),
-            None,
-        )
-        .unwrap();
-        assert_eq!(only.signal_events, vec!["session_end"]);
-        assert_eq!(only.budget_ms, 0);
+        let report = WaitReport {
+            outcome: WaitOutcome::Unmatched,
+            text: None,
+            ..report
+        };
+        assert_eq!(report.to_json()["outcome"], "unmatched");
+        assert_eq!(report.to_json()["text"], Value::Null);
     }
 
     fn incoming(event: &str) -> crate::terminal_renderer::IncomingSignal {

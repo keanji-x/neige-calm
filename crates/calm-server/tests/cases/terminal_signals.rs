@@ -4,7 +4,7 @@
 //! file and runs the registered hook command with synthetic payloads, so the
 //! whole path settings file → bridge command → `/internal/claude/hook` →
 //! renderer ring → `wait_for=signal` is exercised end to end.
-use crate::terminal_support::Harness;
+use crate::terminal_support::{Harness, human_takeover};
 use calm_server::event::Event;
 use calm_server::model::{CardRole, new_id};
 use calm_server::routes::theme::RequestTheme;
@@ -1491,86 +1491,6 @@ async fn hook_settings_file_is_removed_when_the_track_is_deleted() {
     assert!(sibling.exists());
     assert!(h.state.terminal_renderer.get(&terminal).is_none());
     h.stop(&terminal).await;
-}
-
-/// A human client on `terminal` (its own pump, no command channel) that has
-/// just taken control: returns once its `OwnerChanged` names `user`. The
-/// pump is aborted through the returned handle; the sender keeps it alive.
-async fn human_takeover(
-    entry: &std::sync::Arc<calm_server::terminal_renderer::RendererEntry>,
-    terminal: &str,
-    user: uuid::Uuid,
-) -> (
-    tokio::task::AbortHandle,
-    tokio::sync::mpsc::Sender<calm_session::ClientMsg>,
-) {
-    use calm_server::terminal_renderer::{ClientInputScope, ClientPumpContext, run_client_pump};
-    use calm_session::{
-        ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
-        RenderEncoding,
-    };
-    let (incoming, rx) = tokio::sync::mpsc::channel(8);
-    let (tx, mut outgoing) = tokio::sync::mpsc::channel(32);
-    let pump = tokio::spawn(run_client_pump(
-        rx,
-        tx,
-        ClientPumpContext {
-            input_barrier: entry.handle.input_barrier.clone(),
-            input_scope: ClientInputScope::InteractiveUser,
-            event_rx: entry.subscribe(),
-            event_tx: entry.handle.event_tx.clone(),
-            render_plane: entry.handle.render_plane.clone(),
-            exit: entry.exit.clone(),
-            supervisor_tx: entry.handle.supervisor_tx.clone(),
-            owner_registry: entry.handle.owner_registry.clone(),
-            session_id: entry.handle.session_id,
-            terminal_id: terminal.to_owned(),
-        },
-    ));
-    incoming
-        .send(ClientMsg::ClientHello {
-            protocol_version: PROTOCOL_VERSION,
-            terminal_id: terminal.to_owned(),
-            client_id: user,
-            desired_size: PtySize {
-                cols: 80,
-                rows: 24,
-                pixel_width: None,
-                pixel_height: None,
-            },
-            cell_size: None,
-            initial_scrollback: InitialScrollback::None,
-            resume_from: None,
-            role_hint: None,
-            capabilities: ClientCapabilities {
-                render_encodings: vec![RenderEncoding::Vt],
-                supports_scrollback: true,
-                supports_sixel: false,
-                supports_images: false,
-                kernel_originated_input: false,
-            },
-        })
-        .await
-        .unwrap();
-    assert!(matches!(
-        outgoing.recv().await,
-        Some(DaemonMsg::ServerHello { .. })
-    ));
-    incoming.send(ClientMsg::OwnerClaim).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if matches!(outgoing.recv().await, Some(DaemonMsg::OwnerChanged { owner_client_id: Some(id) }) if id == user) {
-                break;
-            }
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        entry.handle.owner_registry.lock().unwrap().current_owner(),
-        Some(user)
-    );
-    (pump.abort_handle(), incoming)
 }
 
 /// #1620 R1 — the hook route keys on the card's durable execution identity

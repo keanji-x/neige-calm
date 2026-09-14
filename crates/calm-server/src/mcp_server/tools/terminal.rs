@@ -12,7 +12,8 @@ use crate::operation::terminal_adapter::{
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::terminal_interaction::{
-    ObservationFormat, Target, TerminalInteraction, WaitFor, WaitPlan,
+    BELOW_CURSOR_EDITS_ONLY, InputOptions, ObservationFormat, Target, TerminalInteraction, WaitFor,
+    WaitPlan, edits_the_draft,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -36,23 +37,24 @@ pub fn register_into(registry: &mut ToolRegistry) {
         (
             "calm.terminal.observe",
             include_str!("../../../prompts/tools/calm.terminal.observe.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"scroll_offset":{"type":"integer","minimum":0,"maximum":2000},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"format":{"type":"string","enum":["text","image"],"default":"text"}}),
+            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"scroll_offset":{"type":"integer","minimum":0,"maximum":2000},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"format":{"type":"string","enum":["text","image"],"default":"text"}}),
             vec![],
         ),
         (
             "calm.terminal.control",
             include_str!("../../../prompts/tools/calm.terminal.control.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"action":{"type":"string","enum":["claim","release","detach"]},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
+            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"action":{"type":"string","enum":["claim","release","detach"]},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
             vec!["action"],
         ),
         (
             "calm.terminal.input",
             include_str!("../../../prompts/tools/calm.terminal.input.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"request_id":{"type":"string","minLength":1,"maxLength":128},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"allow_output_since_observation":{"type":"boolean","default":false},
+            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"request_id":{"type":"string","minLength":1,"maxLength":128},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"allow_output_since_observation":{"type":"boolean","default":false},"allow_output_below_cursor":{"type":"boolean","default":false},"claim":{"type":"boolean","default":false},"release":{"type":"boolean","default":false},
             "action":{"anyOf":[
                 {"type":"object","required":["type","text"],"additionalProperties":false,"properties":{"type":{"enum":["text","submit"]},"text":{"type":"string","minLength":1,"maxLength":16384}}},
                 {"type":"object","required":["type","key"],"additionalProperties":false,"properties":{"type":{"const":"key"},"key":{"type":"string"},"repeat":{"type":"integer","minimum":1,"maximum":32,"default":1}}},
-                {"type":"object","required":["type","column","row"],"additionalProperties":false,"properties":{"type":{"const":"click"},"column":{"type":"integer","minimum":0},"row":{"type":"integer","minimum":0}}}
+                {"type":"object","required":["type","column","row"],"additionalProperties":false,"properties":{"type":{"const":"click"},"column":{"type":"integer","minimum":0},"row":{"type":"integer","minimum":0}}},
+                {"type":"object","required":["type","steps"],"additionalProperties":false,"properties":{"type":{"const":"sequence"},"steps":{"type":"array","minItems":2,"maxItems":8,"items":{"type":"object"}}}}
             ]}}),
             vec!["request_id", "action"],
         ),
@@ -62,25 +64,12 @@ pub fn register_into(registry: &mut ToolRegistry) {
             let name = tool.clone();
             Box::pin(async move { call(&name, ctx, identity, args).await })
         });
-        let mut input_schema = json!({"type":"object","additionalProperties":false,"properties":properties,"required":required});
-        if name != "calm.terminal.open" {
-            // Discovery clients may render union arms before root properties.
-            // Clone the complete common schema so neither fields nor required
-            // constraints disappear. Closed arms with opposite selectors removed
-            // preserve exactly-one targeting without unsupported `not`/`oneOf`.
-            let arms = [("terminal_id", "task_id"), ("task_id", "terminal_id")].map(
-                |(selector, other)| {
-                    let mut arm = input_schema.clone();
-                    arm["properties"].as_object_mut().unwrap().remove(other);
-                    arm["required"]
-                        .as_array_mut()
-                        .unwrap()
-                        .push(json!(selector));
-                    arm
-                },
-            );
-            input_schema["anyOf"] = json!(arms);
-        }
+        // #1666 — no `terminal_id`/`task_id` selector arms: duplicating every
+        // root property into two closed arms tripled the input schema and
+        // left no room under the 4000-byte compaction threshold. Exactly-one
+        // targeting stays enforced server-side (`Target::from_ids`) and is the
+        // first sentence of every description; the action arms stay closed.
+        let input_schema = json!({"type":"object","additionalProperties":false,"properties":properties,"required":required});
         registry.register(ToolDescriptor { name:name.into(),description:description.into(),
             input_schema,
             // Terminal programs may reach network/filesystem; no auto-approval annotation.
@@ -112,6 +101,7 @@ struct Observe {
     settle_ms: Option<u64>,
     signal_events: Option<Vec<String>>,
     repaint_ms: Option<u64>,
+    wait_text: Option<Vec<String>>,
     #[serde(default)]
     format: ObservationFormat,
 }
@@ -128,6 +118,7 @@ struct Control {
     settle_ms: Option<u64>,
     signal_events: Option<Vec<String>>,
     repaint_ms: Option<u64>,
+    wait_text: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,8 +135,15 @@ struct Input {
     settle_ms: Option<u64>,
     signal_events: Option<Vec<String>>,
     repaint_ms: Option<u64>,
+    wait_text: Option<Vec<String>>,
     #[serde(default)]
     allow_output_since_observation: bool,
+    #[serde(default)]
+    allow_output_below_cursor: bool,
+    #[serde(default)]
+    claim: bool,
+    #[serde(default)]
+    release: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -232,40 +230,50 @@ fn open_failure_result(receipt: Value) -> ToolResult {
     let summary = open_failure_summary(&receipt);
     ToolResult::structured_with_summary(receipt, summary)
 }
-fn wait_plan(
+/// The waiting arguments every wait carrier accepts, in declaration order.
+struct WaitArgs {
     wait_for: Option<WaitFor>,
     wait_ms: Option<u64>,
     settle_ms: Option<u64>,
     signal_events: Option<Vec<String>>,
     repaint_ms: Option<u64>,
-) -> Result<WaitPlan, RpcError> {
-    WaitPlan::new(wait_for, wait_ms, settle_ms, signal_events, repaint_ms)
-        .map_err(|error| RpcError::invalid_params(error.to_string()))
+    wait_text: Option<Vec<String>>,
 }
-#[allow(clippy::too_many_arguments)]
+impl WaitArgs {
+    fn any(&self) -> bool {
+        self.wait_ms.is_some()
+            || self.wait_for.is_some()
+            || self.settle_ms.is_some()
+            || self.signal_events.is_some()
+            || self.repaint_ms.is_some()
+            || self.wait_text.is_some()
+    }
+    fn plan(self) -> Result<WaitPlan, RpcError> {
+        WaitPlan::new(
+            self.wait_for,
+            self.wait_ms,
+            self.settle_ms,
+            self.signal_events,
+            self.repaint_ms,
+            self.wait_text,
+        )
+        .map_err(|error| RpcError::invalid_params(error.to_string()))
+    }
+}
 fn action_observation(
     observe: bool,
-    wait_ms: Option<u64>,
-    wait_for: Option<WaitFor>,
-    settle_ms: Option<u64>,
-    signal_events: Option<Vec<String>>,
-    repaint_ms: Option<u64>,
+    wait: WaitArgs,
     detach: bool,
 ) -> Result<Option<WaitPlan>, RpcError> {
-    let waits = wait_ms.is_some()
-        || wait_for.is_some()
-        || settle_ms.is_some()
-        || signal_events.is_some()
-        || repaint_ms.is_some();
-    if (waits && !observe) || (detach && observe) {
+    if (wait.any() && !observe) || (detach && observe) {
         return Err(RpcError::invalid_params(
-            "wait_ms/wait_for/settle_ms/signal_events/repaint_ms require observe=true; detach cannot observe",
+            "wait_ms/wait_for/settle_ms/signal_events/repaint_ms/wait_text require observe=true; detach cannot observe",
         ));
     }
     if !observe {
         return Ok(None);
     }
-    wait_plan(wait_for, wait_ms, settle_ms, signal_events, repaint_ms).map(Some)
+    wait.plan().map(Some)
 }
 /// The observation an open returns. With `format=image` a failed render
 /// falls back to the text observation plus `image: {status: unavailable,
@@ -487,13 +495,20 @@ async fn call(
                     "scroll_offset exceeds history limit",
                 ));
             }
-            let wait = wait_plan(
-                args.wait_for,
-                args.wait_ms,
-                args.settle_ms,
-                args.signal_events,
-                args.repaint_ms,
-            )?;
+            if args.wait_for == Some(WaitFor::Text) && args.scroll_offset > 0 {
+                return Err(RpcError::invalid_params(
+                    "wait_for=text observes the live viewport; scroll_offset must be 0",
+                ));
+            }
+            let wait = WaitArgs {
+                wait_for: args.wait_for,
+                wait_ms: args.wait_ms,
+                settle_ms: args.settle_ms,
+                signal_events: args.signal_events,
+                repaint_ms: args.repaint_ms,
+                wait_text: args.wait_text,
+            }
+            .plan()?;
             let (metadata, png) = service
                 .observe(
                     &identity,
@@ -510,11 +525,14 @@ async fn call(
             let args: Control = parse(args)?;
             let readback = action_observation(
                 args.observe,
-                args.wait_ms,
-                args.wait_for,
-                args.settle_ms,
-                args.signal_events,
-                args.repaint_ms,
+                WaitArgs {
+                    wait_for: args.wait_for,
+                    wait_ms: args.wait_ms,
+                    settle_ms: args.settle_ms,
+                    signal_events: args.signal_events,
+                    repaint_ms: args.repaint_ms,
+                    wait_text: args.wait_text,
+                },
                 args.action == "detach",
             )?;
             service
@@ -532,13 +550,22 @@ async fn call(
             let args: Input = parse(args)?;
             let readback = action_observation(
                 args.observe,
-                args.wait_ms,
-                args.wait_for,
-                args.settle_ms,
-                args.signal_events,
-                args.repaint_ms,
+                WaitArgs {
+                    wait_for: args.wait_for,
+                    wait_ms: args.wait_ms,
+                    settle_ms: args.settle_ms,
+                    signal_events: args.signal_events,
+                    repaint_ms: args.repaint_ms,
+                    wait_text: args.wait_text,
+                },
                 false,
             )?;
+            // #1666 r1 — the below-cursor tolerance admits draft edits only
+            // (see `terminal_interaction::edits_the_draft`); the service
+            // refuses it again, this is the invalid-params shape.
+            if args.allow_output_below_cursor && !edits_the_draft(&args.action) {
+                return Err(RpcError::invalid_params(BELOW_CURSOR_EDITS_ONLY));
+            }
             service
                 .input(
                     &identity,
@@ -546,7 +573,12 @@ async fn call(
                     args.observation_id,
                     &args.request_id,
                     args.action,
-                    args.allow_output_since_observation,
+                    InputOptions {
+                        allow_output_since_observation: args.allow_output_since_observation,
+                        allow_output_below_cursor: args.allow_output_below_cursor,
+                        claim: args.claim,
+                        release: args.release,
+                    },
                     readback,
                 )
                 .await

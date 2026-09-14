@@ -361,9 +361,135 @@ class CollectorTests(unittest.TestCase):
                                    "signal_wait_requests": 0, "signal_wait_outcomes": {},
                                    "signal_repaint_outcomes": {}, "submit_actions": 0,
                                    "open_with_claim": 0, "hooks_seen_observations": 0, "signals_observed": 0,
-                                   "unmeasured_signal_observations": 1})
+                                   "unmeasured_signal_observations": 1,
+                                   "text_wait_requests": 0, "text_wait_outcomes": {}, "sequence_actions": 0,
+                                   "sequence_steps": 0, "input_with_claim": 0, "input_with_release": 0,
+                                   "below_cursor_allowed_inputs": 0, "below_cursor_tolerated_inputs": 0})
         self.assertEqual(json.loads(json.dumps(summary)), summary)
-        self.assertEqual(ux.SUMMARY_METRIC_KEYS, ux.WAIT_METRIC_KEYS + ux.SIGNAL_METRIC_KEYS)
+        self.assertEqual(ux.SUMMARY_METRIC_KEYS,
+                         ux.WAIT_METRIC_KEYS + ux.SIGNAL_METRIC_KEYS + ux.ROUND_TRIP_METRIC_KEYS)
+
+    # #1666 round-trip counters.
+    def test_text_wait_requests_and_outcomes_are_read_from_arguments_and_observations(self):
+        def text_state(outcome):
+            state = row(1)["params"]["item"]["result"]["structuredContent"]
+            wait = {"mode": "text", "outcome": outcome, "waited_ms": 812, "settled": outcome == "matched"}
+            wait["text"] = ({"pattern": "❯", "row": 5, "revision": "9", "already": False}
+                            if outcome == "matched" else None)
+            state.update({"wait": wait})
+            return state
+        matched = row(1)
+        matched["params"]["item"]["arguments"].update({"wait_for": "text", "wait_text": ["trust the files", "❯"]})
+        matched["params"]["item"]["result"]["structuredContent"] = text_state("matched")
+        unmatched = row(2)
+        unmatched["params"]["item"]["arguments"].update({"wait_for": "text", "wait_text": ["x"], "wait_ms": 300})
+        unmatched["params"]["item"]["result"]["structuredContent"] = text_state("unmatched")
+        readback = row(3, "calm.terminal.input")
+        readback["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "claude"},
+                                                         "observe": True, "wait_for": "text", "wait_text": ["❯"]})
+        readback["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "r3", "outcome": "written", "application_result": "unverified",
+            "observation": {"status": "available", "state": text_state("matched")}}}
+        # Refused: a request, no observation, no outcome.
+        refused = row(4)
+        refused["params"]["item"]["arguments"].update({"wait_for": "text"})
+        refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "wait_for=text requires wait_text"}
+        # wait_for=text on a control call without observe=true requests nothing.
+        control = row(5, "calm.terminal.control")
+        control["params"]["item"]["arguments"].update({"action": "claim", "wait_for": "text", "wait_text": ["x"]})
+        control["params"]["item"]["result"] = {"structuredContent": {"terminal_id": "t1", "connection_id": "c1", "control_id": "o1"}}
+        # A change wait that happens to carry a text-shaped result stays in the change tally.
+        change = row(6)
+        change["params"]["item"]["arguments"]["wait_for"] = "change"
+        change["params"]["item"]["result"]["structuredContent"] = text_state("matched")
+        calls = [matched, unmatched, readback, refused, control, change]
+        original = copy.deepcopy(calls)
+        result = ux.metrics(calls)
+        self.assertEqual(result["text_wait_requests"], 4)
+        self.assertEqual(result["text_wait_outcomes"], {"matched": 2, "unmatched": 1})
+        self.assertEqual(result["change_wait_outcomes"], {"matched": 1})
+        self.assertEqual(result["signal_wait_requests"], 0)
+        self.assertEqual(result["tool_errors"], 1)
+        self.assertEqual(calls, original)
+        # Pre-#1666 server: a request without a wait block is unmeasured.
+        older = row(7)
+        older["params"]["item"]["arguments"].update({"wait_for": "text", "wait_text": ["x"]})
+        result = ux.metrics([older])
+        self.assertEqual(result["text_wait_requests"], 1)
+        self.assertEqual(result["text_wait_outcomes"], {})
+        self.assertEqual(result["unmeasured_wait_observations"], 1)
+
+    def test_sequence_claim_release_and_below_cursor_counters_are_read_from_arguments_and_receipts(self):
+        def input_call(identifier, arguments, receipt=None, failed=False):
+            call = row(identifier, "calm.terminal.input")
+            item = call["params"]["item"]
+            item["arguments"].update({"request_id": f"r{identifier}", **arguments})
+            item["result"] = {"structuredContent": {"terminal_id": "t1", "request_id": f"r{identifier}",
+                                                    "outcome": "written", "application_result": "unverified",
+                                                    "observation_id_used": "obs-1", **(receipt or {})}}
+            if failed:
+                item["status"], item["error"] = "failed", {"message": "sequence must carry 2..8 steps"}
+            return call
+        edit = {"type": "sequence", "steps": [{"type": "key", "key": "Left", "repeat": 5},
+                                             {"type": "key", "key": "Backspace"}, {"type": "text", "text": "9"}]}
+        calls = [
+            input_call(1, {"action": edit, "claim": True},
+                       {"steps": 3, "claim": {"status": "claimed", "control_id": "o1"}, "control_id": "o1"}),
+            # A refused sequence is still a request with its steps.
+            input_call(2, {"action": {"type": "sequence", "steps": [{"type": "text", "text": "x"}]}}, failed=True),
+            # A malformed steps field adds no steps.
+            input_call(3, {"action": {"type": "sequence", "steps": "Left"}}, failed=True),
+            input_call(4, {"action": {"type": "text", "text": "hello"}, "allow_output_below_cursor": True},
+                       {"output_since_observation": True,
+                        "observation_drift": {"observed_revision": 7, "input_revision": 9, "tolerance": "below_cursor",
+                                              "rows_changed_below_cursor": [3], "rows_changed_total": 1, "truncated": False}}),
+            # Requested but not needed: the revision had not moved.
+            input_call(5, {"action": {"type": "text", "text": "x"}, "allow_output_below_cursor": True},
+                       {"output_since_observation": False}),
+            # Admitted by the wider flag: no tolerance in the drift.
+            input_call(6, {"action": {"type": "text", "text": "x"}, "allow_output_below_cursor": True,
+                           "allow_output_since_observation": True},
+                       {"output_since_observation": True, "observation_drift": {"observed_revision": 1, "input_revision": 2}}),
+            input_call(7, {"action": {"type": "submit", "text": "bye"}, "release": True, "claim": False},
+                       {"release": {"status": "released"}}),
+            # String flags are not true.
+            input_call(8, {"action": {"type": "submit", "text": "x"}, "claim": "true", "release": "true"}),
+        ]
+        original = copy.deepcopy(calls)
+        result = ux.metrics(calls)
+        self.assertEqual(result["sequence_actions"], 3)
+        self.assertEqual(result["sequence_steps"], 4)
+        self.assertEqual(result["input_with_claim"], 1)
+        self.assertEqual(result["input_with_release"], 1)
+        self.assertEqual(result["below_cursor_allowed_inputs"], 3)
+        self.assertEqual(result["below_cursor_tolerated_inputs"], 1)
+        self.assertEqual(result["drift_allowed_inputs"], 1)
+        self.assertEqual(result["drift_observed_inputs"], 2)
+        self.assertEqual(result["tool_errors"], 2)
+        self.assertEqual(calls, original)
+        # A tolerated write on a failed call is not counted.
+        failed = input_call(9, {"action": {"type": "text", "text": "x"}, "allow_output_below_cursor": True},
+                            {"observation_drift": {"tolerance": "below_cursor"}}, failed=True)
+        self.assertEqual(ux.metrics([failed])["below_cursor_tolerated_inputs"], 0)
+        self.assertEqual(ux.metrics([failed])["below_cursor_allowed_inputs"], 1)
+
+    def test_sequence_correction_step_satisfies_the_edit_scenario_check(self):
+        edited = row(1, "calm.terminal.input", text=("7219",))
+        edited["params"]["item"]["arguments"].update({
+            "action": {"type": "sequence", "steps": [{"type": "key", "key": "Left", "repeat": 5},
+                                                     {"type": "key", "key": "Backspace"}, {"type": "text", "text": "9"}]},
+            "observe": True, "request_id": "edit-1"})
+        edited["params"]["item"]["result"] = {"structuredContent": {
+            "terminal_id": "t1", "request_id": "edit-1", "outcome": "written", "application_result": "unverified",
+            "observation": {"status": "available", "state": row(1, text=("7219",))["params"]["item"]["result"]["structuredContent"]}}}
+        _, evidence = ux.check_scenario("edit", [edited], None)
+        self.assertEqual(evidence["status"], "review_required")
+        # Movement alone is not a correction, in a sequence or on its own.
+        moved = copy.deepcopy(edited)
+        moved["params"]["item"]["arguments"]["action"]["steps"] = [{"type": "key", "key": "Left", "repeat": 5},
+                                                                   {"type": "text", "text": "9"}]
+        with self.assertRaises(ux.EvidenceError):
+            ux.check_scenario("edit", [moved], None)
 
     # #1620 hook-signal counters.
     @staticmethod

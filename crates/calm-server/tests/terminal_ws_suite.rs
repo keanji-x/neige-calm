@@ -2,14 +2,22 @@
 mod planner_terminal;
 #[path = "cases/terminal_action_observation.rs"]
 mod terminal_action_observation;
+#[path = "cases/terminal_below_cursor.rs"]
+mod terminal_below_cursor;
 #[path = "cases/terminal_card_endpoint.rs"]
 mod terminal_card_endpoint;
+#[path = "cases/terminal_input_control.rs"]
+mod terminal_input_control;
 #[path = "cases/terminal_lifecycle.rs"]
 mod terminal_lifecycle;
+#[path = "cases/terminal_sequence.rs"]
+mod terminal_sequence;
 #[path = "cases/terminal_signals.rs"]
 mod terminal_signals;
 #[path = "cases/terminal_sweeper.rs"]
 mod terminal_sweeper;
+#[path = "cases/terminal_text_wait.rs"]
+mod terminal_text_wait;
 #[path = "cases/terminal_wait_and_drift.rs"]
 mod terminal_wait_and_drift;
 #[path = "cases/theme_required.rs"]

@@ -4,9 +4,11 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
 use calm_server::event::EventBus;
+use calm_server::mcp_server::registry::ToolCallIdentity;
 use calm_server::mcp_server::{McpServer, build_default_registry};
 use calm_server::model::{CardRole, NewArea, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
+use calm_server::session_projection_repo::AgentProvider;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_interaction::TerminalInteraction;
 use calm_server::track_area_cache::TrackAreaCache;
@@ -38,6 +40,11 @@ pub struct Harness {
     socket: PathBuf,
     pub token: String,
     pub track: String,
+    /// The Planner card behind `token`, for direct service calls that bypass
+    /// the MCP layer (`identity()`).
+    pub card_id: String,
+    pub session_id: String,
+    pub area_id: String,
     /// #1620 — the production REST router over the same state, for hook
     /// POSTs (`tower::ServiceExt::oneshot`) and card deletes.
     pub app: axum::Router,
@@ -70,7 +77,7 @@ impl Harness {
         let track = repo
             .track_create(NewTrack {
                 template_input: None,
-                area_id: area.id,
+                area_id: area.id.clone(),
                 title: "terminal".into(),
                 sort: None,
                 cwd: root.path().to_str().unwrap().into(),
@@ -85,10 +92,11 @@ impl Harness {
         let areas = TrackAreaCache::new();
         repo.seed_track_area_cache(&areas).await.unwrap();
         let mut tx = sql.pool().begin().await.unwrap();
+        let (card_id, session_id) = (new_id(), new_id());
         let (_, _, token) = card_with_codex_create_tx(
             &mut tx,
-            new_id(),
-            &new_id(),
+            card_id.clone(),
+            &session_id,
             None,
             track.id.clone(),
             None,
@@ -193,10 +201,27 @@ impl Harness {
             socket,
             token: token.expect("planner MCP token"),
             track: track.id.to_string(),
+            card_id,
+            session_id,
+            area_id: area.id.to_string(),
             app,
             base_url,
             bridge,
             http,
+        }
+    }
+    /// The identity the MCP transport builds for `token` (card-bound), for
+    /// calling `TerminalInteraction` directly where the MCP layer would
+    /// refuse first.
+    pub fn identity(&self) -> ToolCallIdentity {
+        ToolCallIdentity {
+            card_id: self.card_id.clone(),
+            role: CardRole::Planner,
+            provider: AgentProvider::Codex,
+            session_id: self.session_id.clone(),
+            track_id: Some(self.track.clone()),
+            area_id: self.area_id.clone(),
+            thread_id: "card-bound".to_string(),
         }
     }
     /// POST a hook body for `card_id` through the production ingest route.
@@ -333,4 +358,85 @@ pub fn assert_text_observation(response: &Value) -> &Value {
     assert!(metadata["cols"].as_u64().unwrap() > 0);
     assert!(metadata["rows"].as_u64().unwrap() > 0);
     metadata
+}
+
+/// A human client on `terminal` (its own pump, no command channel) that has
+/// just taken control: returns once its `OwnerChanged` names `user`. The
+/// pump is aborted through the returned handle (its drop releases the
+/// lease); the sender keeps it alive.
+pub async fn human_takeover(
+    entry: &Arc<calm_server::terminal_renderer::RendererEntry>,
+    terminal: &str,
+    user: uuid::Uuid,
+) -> (
+    tokio::task::AbortHandle,
+    tokio::sync::mpsc::Sender<calm_session::ClientMsg>,
+) {
+    use calm_server::terminal_renderer::{ClientInputScope, ClientPumpContext, run_client_pump};
+    use calm_session::{
+        ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
+        RenderEncoding,
+    };
+    let (incoming, rx) = tokio::sync::mpsc::channel(8);
+    let (tx, mut outgoing) = tokio::sync::mpsc::channel(32);
+    let pump = tokio::spawn(run_client_pump(
+        rx,
+        tx,
+        ClientPumpContext {
+            input_barrier: entry.handle.input_barrier.clone(),
+            input_scope: ClientInputScope::InteractiveUser,
+            event_rx: entry.subscribe(),
+            event_tx: entry.handle.event_tx.clone(),
+            render_plane: entry.handle.render_plane.clone(),
+            exit: entry.exit.clone(),
+            supervisor_tx: entry.handle.supervisor_tx.clone(),
+            owner_registry: entry.handle.owner_registry.clone(),
+            session_id: entry.handle.session_id,
+            terminal_id: terminal.to_owned(),
+        },
+    ));
+    incoming
+        .send(ClientMsg::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            terminal_id: terminal.to_owned(),
+            client_id: user,
+            desired_size: PtySize {
+                cols: 80,
+                rows: 24,
+                pixel_width: None,
+                pixel_height: None,
+            },
+            cell_size: None,
+            initial_scrollback: InitialScrollback::None,
+            resume_from: None,
+            role_hint: None,
+            capabilities: ClientCapabilities {
+                render_encodings: vec![RenderEncoding::Vt],
+                supports_scrollback: true,
+                supports_sixel: false,
+                supports_images: false,
+                kernel_originated_input: false,
+            },
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        outgoing.recv().await,
+        Some(DaemonMsg::ServerHello { .. })
+    ));
+    incoming.send(ClientMsg::OwnerClaim).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if matches!(outgoing.recv().await, Some(DaemonMsg::OwnerChanged { owner_client_id: Some(id) }) if id == user) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        entry.handle.owner_registry.lock().unwrap().current_owner(),
+        Some(user)
+    );
+    (pump.abort_handle(), incoming)
 }

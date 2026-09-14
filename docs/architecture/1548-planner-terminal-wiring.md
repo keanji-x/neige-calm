@@ -8,29 +8,15 @@ The application entry point is a Planner-only MCP tool set:
 | `calm.terminal.resolve` | Resolve an exact current task attempt or Terminal ID to its real Worker card, worker session and view availability. |
 | `calm.terminal.observe` | Text/cursor/mode state and observation/connection IDs by default. Explicit `format=image` includes a PNG from that same captured RMUX frame. Reads never create or restart a process. |
 | `calm.terminal.control` | Claim/release control, optionally returning fresh text with `observe=true`, or detach the model client while retaining the card/program. |
-| `calm.terminal.input` | One text/key/cell-click action, bound to a recent live observation and current control; navigation/editing keys support bounded `repeat`. Optional `observe=true` returns fresh text after the action. A matching request ID replays its receipt without another write. |
+| `calm.terminal.input` | One text/key/cell-click/sequence action, bound to a recent live observation and current control; navigation/editing keys support bounded `repeat`, a `sequence` is a bounded edit in one ordered write request (#1666). Optional `observe=true` returns fresh text after the action; `claim`/`release` bracket a scenario and `allow_output_below_cursor` tolerates status-line refreshes (#1666). A matching request ID replays its receipt without another write. |
 
 ## Model discovery schema
 
-The four targeted tools expose complete, closed `anyOf` object arms for
-`terminal_id` and `task_id`. Each arm derives from the same common schema, retains
-all common properties and required fields, requires its selected target, and
-excludes the other target property. Root common properties remain present for
-MCP clients that require an object surface. The accepted request set is unchanged.
-
-Input action variants also use `anyOf`; their distinct required `type` literals
-keep text, key and click mutually exclusive. Existing `const` discriminators are
-preserved: the inspected local Codex sanitizer converts them to singleton enums.
-That parser does not retain `oneOf`, and its TypeScript renderer handles union
-arms before sibling properties. Complete arms prevent nested action fields from
-turning into an uninformative object in discovery. The registered schemas stay
-below the local 4000-byte compaction threshold. This local source inspection does
-not attest the installed Codex build; fresh Planner discovery remains the end-to-end
-acceptance check.
-
-Planner guidance uses exact Terminal tool names once and includes a complete
-nested-action example. This changes discovery metadata and guidance only; input
-execution, targeting guards and MCP result envelopes retain their existing paths.
+The four targeted tools are flat objects: `terminal_id` and `task_id` are both
+optional root properties, exactly-one targeting is enforced server-side by
+`Target::from_ids`, and the closed `action` arms stay under the 4000-byte
+threshold. Why the selector arms went (#1666), the action arms and the Codex
+renderer facts: [round-trip cuts, Model discovery schema](1666-planner-terminal-round-trips.md#model-discovery-schema).
 
 ## Ownership and observation
 
@@ -593,6 +579,28 @@ evict a matching one before `first_matching` sees it, so the wait may run to
 its budget although the event happened; only
 `signals.dropped_since_previous_observation` on the next observation reveals
 it.
+
+## Round-trip cuts (#1666)
+
+After #1619/#1621/#1632 the real Planner's remaining asks were round-trip
+costs; each has one explicit opt-in shape, specified in
+[1666-planner-terminal-round-trips.md](1666-planner-terminal-round-trips.md):
+
+* `wait_for=text` + `wait_text`: wait until the live viewport shows a target —
+  settles from the wait's start when it already matches; `matched|unmatched`, `wait.text`; loop in `text_wait.rs`.
+  See [`wait_for=text` — wait for a target screen](1666-planner-terminal-round-trips.md#wait_fortext--wait-for-a-target-screen).
+* `sequence`: 2..=8 text/editing-key steps in one ordered write request —
+  no CR/LF, ≤16384 bytes, `steps: n`; encoding in `actions.rs`.
+  See [`sequence` — a bounded edit in one ordered write request](1666-planner-terminal-round-trips.md#sequence--a-bounded-edit-in-one-ordered-write-request).
+* `input claim:true` / `release:true`: control per scenario —
+  claim-if-unowned before the write, `control_unavailable` result, release status `requested|released|not_held|unconfirmed`; helpers in `input_control.rs`.
+  See [`claim` / `release` on input — control per scenario](1666-planner-terminal-round-trips.md#claim--release-on-input--control-per-scenario).
+* `allow_output_below_cursor`: a status-line refresh below an unmoved cursor is not stale —
+  row hashes over glyphs and presentation (`screen_diff.rs`), draft edits only, `screen_diff` on stale results.
+  See [`allow_output_below_cursor` — status-line refreshes are not stale](1666-planner-terminal-round-trips.md#allow_output_below_cursor--status-line-refreshes-are-not-stale).
+* Measured one-write edits with Claude Code 2.1.259 —
+  one write carries `7200 + 19` + Left×5 + Backspace + `9` and leaves `7209 + 19`.
+  See [Measured one-write edits with Claude Code 2.1.259 (2026-09-13)](1666-planner-terminal-round-trips.md#measured-one-write-edits-with-claude-code-21259-2026-09-13).
 
 ## Acceptance evidence and limits
 
