@@ -9822,10 +9822,11 @@
             }
           }
         ],
-        "description": "Where a body came from. Stored as the `origin` JSON column."
+        "description": "Where a body came from. Stored verbatim as the row's `origin` column."
       },
       "SourceProvenance": {
         "type": "string",
+        "description": "What the body *is*: the Planner's declaration, page-visible.\n`full_text` / `summary` / `web_page` bodies come from a recorded plugin\ncall (the kernel vouches for the bytes); `manual` bodies are the\nPlanner's own and are marked as not kernel-verified.",
         "enum": [
           "full_text",
           "summary",
@@ -9835,7 +9836,7 @@
       },
       "SourceQuote": {
         "type": "object",
-        "description": "One anchor of a source: `text` is a byte-exact substring of the body.\n`start`/`end` are UTF-8 byte offsets into `body` — a kernel-side\ndetail; the page locates the anchor by `text`.",
+        "description": "One anchor of a source: `text` is a byte-exact substring of the body\n(`body[start..end]`, UTF-8 byte offsets — a kernel-side detail; the page\nlocates the anchor by `text`).",
         "required": [
           "id",
           "text",
@@ -11259,23 +11260,70 @@
         }
       },
       "TrackSourceDetail": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/TrackSourceSummary"
-          },
-          {
-            "type": "object",
-            "required": [
-              "body"
-            ],
-            "properties": {
-              "body": {
-                "type": "string"
-              }
-            }
-          }
+        "type": "object",
+        "description": "A captured source with its body: the raw text the kernel stored,\nverbatim (the panel does not render it as Markdown).",
+        "required": [
+          "source_id",
+          "provenance",
+          "origin",
+          "title",
+          "body_bytes",
+          "body_sha256",
+          "captured_at",
+          "quotes",
+          "body"
         ],
-        "description": "A captured source with its body: the raw text the kernel stored,\nverbatim (not Markdown-rendered by the panel)."
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "body_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "body_sha256": {
+            "type": "string"
+          },
+          "captured_at": {
+            "type": "string"
+          },
+          "content_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "origin": {
+            "$ref": "#/components/schemas/SourceOrigin"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/SourceProvenance"
+          },
+          "published_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quotes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceQuote"
+            }
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "TrackSourceList": {
         "type": "object",
