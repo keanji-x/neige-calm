@@ -44,12 +44,16 @@ hint line refreshing below the input box. Each has one explicit, opt-in shape.
 ### `wait_for=text` — wait for a target screen
 
 `wait_text: [pattern, …]` (1..=8 literal strings, each 1..=200 bytes, no
-control characters; required with `wait_for=text`, refused with any other
-mode) on observe and on every action readback. The wait ends when any pattern
-is a substring of any row of the live viewport (`Frame.text`, trailing spaces
-trimmed) and the screen has then stayed quiet for `settle_ms`, or the process
-exits / the client disconnects / the projection is invalidated (`exited`), or
-the budget elapses (default 15000 ms when `wait_ms` is omitted, max 20000).
+control characters) on observe, open and every action readback. Since #1677
+r16 the rule is: `wait_for=text` requires at least one of `wait_text` /
+`wait_text_absent`, `wait_for=signal` accepts either as conditions on its
+repaint phase, and change / elapsed mode refuse both (see "Text conditions on
+waits"). In text mode the wait ends when the conditions hold — for
+`wait_text`, any pattern is a substring of any row of the live viewport
+(`Frame.text`, trailing spaces trimmed) — and the screen has then stayed quiet
+for `settle_ms`, or the process exits / the client disconnects / the
+projection is invalidated (`exited`), or the budget elapses (default 15000 ms
+when `wait_ms` is omitted, max 20000).
 "Until the screen shows X", not "until X appears anew": a screen that already
 matches at the first capture returns after `settle_ms` from the wait's start
 with `wait.text.already: true`, so the Planner names the target state
@@ -228,7 +232,7 @@ several levels down. Each has one explicit shape.
 ### `open` waits like a readback
 
 `calm.terminal.open` accepts `wait_for`, `wait_ms`, `settle_ms`,
-`signal_events`, `repaint_ms` and `wait_text` with observe's semantics and
+`signal_events`, `repaint_ms`, `wait_text` and (r16) `wait_text_absent` with observe's semantics and
 validation (`WaitPlan::new`, checked before the create operation is
 submitted: an invalid wait creates no card). Order inside the handler:
 create (or the idempotent replay, `SucceededViaCollision` included) →
@@ -287,18 +291,29 @@ in `terminal_interaction/replace_plan.rs`:
 * the character index at a boundary is Σ `cell.text.chars().count()` over
   the non-padding cells before it; `from` is searched in the row string built
   from those cells in the same scalar convention, counting overlapping
-  occurrences (`aaa` holds two `aa`); a match must start and end on cell
-  boundaries (one cutting through a combining sequence is refused); exactly
-  one occurrence is required;
+  occurrences (`aaa` holds two `aa`); exactly one occurrence is required;
+  review r1 A: the application moves and erases per CELL while the plan
+  counts scalars, so a cell holding several scalars (a combining sequence,
+  an emoji) inside the match or between the match and the cursor is refused
+  (`> 11 café` with `é` = e+U+0301 gave `Left×6/Backspace×2` → `191 café`
+  on readline; this also covers a match cutting through such a cell);
+  review r1 B: a cursor in the last column over a non-blank cell is refused
+  — after a write into the last column the terminal parks the cursor there
+  with a pending wrap, one cell left of the application's position, and
+  `Cursor` does not expose the flag; review r1 D: a `from` whose end lies
+  past both the cursor and the last non-blank cell (it reaches into the
+  trailing blank run) is refused, since the moves would run past the
+  buffer's end;
 * moves = `end_index(from) − cursor_index` (negative → `Left`, positive →
   `Right`, zero → none), bounded by the row width and `ACTION_BYTES_MAX`, not
   by the public `repeat ≤ 32`; the bytes are `Left×n` or `Right×n`, then
   `Backspace×chars(from)`, then `to`, with the `sequence` key encoding, in one
   ordered write (one barrier, one ack, one receipt).
 
-Refusals (cursor row outside the viewport, cursor inside a wide cell or off
-the row, absent, N occurrences, another row, unaligned match, control
-characters, size) follow the invalid-action convention: an RPC error through
+Refusals (cursor row outside the viewport, cursor inside a wide cell, off
+the row or parked in the last column, absent, N occurrences, another row,
+past the draft, a multi-scalar cell in the span, control characters, size)
+follow the invalid-action convention: an RPC error through
 `failure` (−32403), nothing written, nothing cached; after a granted
 `claim:true` the error carries the `note_claim` disclosure. The Planner then
 falls back to a `sequence`. The plan is stamped on all three `WriteReceipts`
@@ -325,7 +340,12 @@ the cursor's position (a cursor hidden in both captures is admitted; the
 suite's hint box under `\033[?25l` reports `screen_diff.cursor {moved: false,
 visible: false}` and writes with `tolerance: below_cursor`), while a
 visibility change between the observation and the live frame stays refused
-by the surface fence through the mode bit, as before.
+by the surface fence through the mode bit, as before. Known gap (review r1
+L): with visibility no longer required, an application that hides its cursor
+and parks it on row 0 leaves only row 0 in the at-or-above set, so
+`allow_output_below_cursor` would admit an edit onto a largely repainted
+screen; the edits-only allowlist still excludes Enter, submit and clicks, and
+the Planner opts in only for a draft box whose cursor sits on the draft.
 
 ### `summary` on receipts
 
@@ -349,8 +369,9 @@ verdict and not proof of a current screen change. The text block
 screen changed settled; signal stop, repaint settled; role observer; details
 in structuredContent` — so a client that shows only text gets the digest too.
 The summary adds no input-schema bytes; the open wait properties and the
-`replace` arm do (open 824 bytes, input 2008 bytes against the strict
-`< 4000` per-tool schema test).
+`replace` arm do (after r16's `wait_text_absent`: open 942 bytes, input
+2126, observe 847, control 833 per `schema.to_string().len()` on the golden
+registration, against the strict `< 4000` per-tool schema test).
 
 ### Text conditions on waits (#1677 r16)
 
@@ -395,13 +416,26 @@ patterns is vacuously true and reported as `null`.
   service).
 
 Recommended Claude prompt readback: `submit` + `observe: true, wait_for:
-"signal", wait_text_absent: ["esc to interrupt"]` — the readback returns
-when the answer is painted and the busy hint is gone (`wait.conditions.absent
-true`); `repaint.outcome unsettled` means the budget ended while the hint was
-still there: observe again. The focused suite drives a fake Claude that
-posts `Stop` while a busy row is painted and replaces it with the answer
-800 ms later: without conditions the readback returns at the spinner
-(#1628), with `wait_text_absent` it returns with the answer.
+"signal", wait_text_absent: ["esc to interrupt"]` — the readback returns once
+the busy hint is gone and the screen is quiet; the Planner reads the answer
+from the state (the tool does not know it is an answer).
+`wait.conditions.absent` reports whether the absent patterns were gone on the
+LAST tested screen and `repaint.outcome` reports the quiet window separately:
+`unsettled` means the budget ended before quiet-with-conditions (the hint may
+have vanished just before the budget), so observe again. `wait.conditions` is
+`{present: null, absent: null}` when no signal arrived within the budget (the
+phase never ran), and `repaint_ms: 0` together with text conditions is
+invalid params (`WaitPlan::new`: the phase that tests them would be skipped).
+The focused suite drives a fake Claude that posts `Stop` while a busy row is
+painted and replaces it with the answer 800 ms later: without conditions the
+readback returns at the spinner (#1628), with `wait_text_absent` it returns
+with the answer. The phase tests the rows the capture renders, which can be
+a NEWER revision than the channel value it woke on (review r1 C: the hint
+cleared between the channel read and the rows read); that captured revision
+is recorded as a change at the capture time, so no quiet window is credited
+to a screen the conditions were not read from — `Repaint::observe` treats
+revisions monotonically and `Tested` never re-captures a revision it has
+already rendered.
 
 The second repeated friction is guidance only (input.md, planner.md, no
 fence change): the Planner pressed Enter right after an edit readback and

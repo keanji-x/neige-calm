@@ -88,9 +88,11 @@ impl Repaint {
             last_change: started,
         }
     }
-    /// Record `current`; true when it is a new revision.
+    /// Record `current`; true when it is a newer revision than the last
+    /// recorded one (revisions only grow; a channel value older than a
+    /// revision a capture already rendered is not a change).
     pub(super) fn observe(&mut self, current: u64, now: Instant) -> bool {
-        if current == self.seen {
+        if current <= self.seen {
             return false;
         }
         self.seen = current;
@@ -118,24 +120,51 @@ impl Tested {
             holds: conditions.is_empty(),
         }
     }
+    /// Test the screen for channel revision `revision` and return the
+    /// revision the capture actually rendered: the projection may already
+    /// be past the channel value (review r1 C), and the conditions then
+    /// describe that newer screen, whose quiet window the caller must
+    /// restart from now rather than credit with the older revision's.
     fn test(
         &mut self,
         conditions: &TextConditions,
         revision: u64,
         capture: &impl Fn() -> Option<(Vec<String>, u64)>,
-    ) {
-        if conditions.is_empty() || self.at == Some(revision) {
-            return;
+    ) -> Option<u64> {
+        if conditions.is_empty() || self.at.is_some_and(|at| at >= revision) {
+            return None;
         }
         self.at = Some(revision);
         match capture() {
-            Some((rows, _)) => {
+            Some((rows, captured)) => {
                 self.state = conditions.test(&rows).1;
                 self.holds = self.state.holds();
+                self.at = Some(captured.max(revision));
+                Some(captured)
             }
             // An unavailable projection holds nothing; `stopped` reports it.
-            None => self.holds = false,
+            None => {
+                self.holds = false;
+                None
+            }
         }
+    }
+}
+/// Test the conditions on `current` and, when the capture rendered a newer
+/// revision, record that revision as a change at `now` so no quiet window
+/// is credited to a screen the conditions were not read from.
+fn observe_and_test(
+    screen: &mut Repaint,
+    tested: &mut Tested,
+    conditions: &TextConditions,
+    current: u64,
+    now: Instant,
+    capture: &impl Fn() -> Option<(Vec<String>, u64)>,
+) {
+    if let Some(captured) = tested.test(conditions, current, capture)
+        && captured != current
+    {
+        screen.observe(captured, now);
     }
 }
 
@@ -177,7 +206,14 @@ pub(super) async fn settle_after_signal(
     }
     let current = *revisions.borrow_and_update();
     screen.observe(current, signal_at);
-    tested.test(conditions, current, &capture);
+    observe_and_test(
+        screen,
+        &mut tested,
+        conditions,
+        current,
+        signal_at,
+        &capture,
+    );
     if screen.changed && screen.quiet_for(signal_at) >= plan.settle && tested.holds {
         return (report(RepaintOutcome::Already), tested.state);
     }
@@ -197,7 +233,7 @@ pub(super) async fn settle_after_signal(
         let now = Instant::now();
         let current = *revisions.borrow_and_update();
         if screen.observe(current, now) {
-            tested.test(conditions, current, &capture);
+            observe_and_test(screen, &mut tested, conditions, current, now, &capture);
         }
         if screen.changed && screen.quiet_for(now) >= plan.settle && tested.holds {
             return (report(RepaintOutcome::Settled), tested.state);
@@ -245,6 +281,9 @@ mod tests {
         rows: Arc<Mutex<Vec<String>>>,
         revision: Arc<AtomicU64>,
         captures: Arc<AtomicUsize>,
+        /// Added to the revision every capture reports (review r1 C: the
+        /// projection can be past the channel value when the rows are read).
+        ahead: Arc<AtomicU64>,
     }
     impl Fixture {
         /// Paint `rows` as a new revision.
@@ -274,15 +313,17 @@ mod tests {
         ));
         let revision = Arc::new(AtomicU64::new(initial));
         let captures = Arc::new(AtomicUsize::new(0));
+        let ahead = Arc::new(AtomicU64::new(0));
         let conditions = TextConditions {
             present: present.iter().map(|s| (*s).to_owned()).collect(),
             absent: absent.iter().map(|s| (*s).to_owned()).collect(),
         };
-        let (flag, screen, current, count) = (
+        let (flag, screen, current, count, offset) = (
             stopped.clone(),
             rows.clone(),
             revision.clone(),
             captures.clone(),
+            ahead.clone(),
         );
         let signal_at = Instant::now();
         let started = signal_at - Duration::from_millis(painted_ms_ago.unwrap_or(0));
@@ -296,7 +337,7 @@ mod tests {
                     count.fetch_add(1, Ordering::SeqCst);
                     Some((
                         screen.lock().unwrap().clone(),
-                        current.load(Ordering::SeqCst),
+                        current.load(Ordering::SeqCst) + offset.load(Ordering::SeqCst),
                     ))
                 },
                 &conditions,
@@ -316,6 +357,7 @@ mod tests {
                 rows,
                 revision,
                 captures,
+                ahead,
             },
             task,
         )
@@ -428,6 +470,68 @@ mod tests {
         assert_eq!(conditions, state(Some(true), Some(true)));
         assert_eq!(waited, Duration::from_millis(950));
         assert_eq!(fixture.captures.load(Ordering::SeqCst), 5);
+    }
+
+    /// Review r1 C: the capture renders a revision newer than the channel
+    /// value — the hint was cleared between the channel read and the rows
+    /// read. The conditions then describe that newer screen, so no quiet
+    /// window may be credited from the older revision: not `already` at the
+    /// signal, and in the loop the window restarts at the capture.
+    #[tokio::test(start_paused = true)]
+    async fn a_newer_captured_revision_restarts_the_quiet_window() {
+        // Channel 1, quiet 200 ms, would be `already`; the capture reports
+        // revision 2 without the hint.
+        let (fixture, task) = start(&[], &["esc to interrupt"], &["❯ answer"], Some(200), 5_000);
+        fixture.ahead.store(1, Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        assert!(
+            !task.is_finished(),
+            "already credited to a screen never tested"
+        );
+        tokio::time::advance(Duration::from_millis(149)).await;
+        assert!(
+            !task.is_finished(),
+            "settled before the newer screen was quiet"
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let ((report, conditions), waited) = task.await.unwrap();
+        assert_eq!(report.outcome, RepaintOutcome::Settled);
+        assert_eq!(conditions, state(None, Some(true)));
+        assert_eq!(waited, Duration::from_millis(150));
+        // The channel later reports the revision the capture already saw:
+        // no second capture, no second window.
+        let (fixture, task) = start(
+            &[],
+            &["esc to interrupt"],
+            &["busy: esc to interrupt"],
+            None,
+            5_000,
+        );
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+        *fixture.rows.lock().unwrap() = vec!["❯ answer".into()];
+        fixture.ahead.store(1, Ordering::SeqCst);
+        fixture.paint(&["❯ answer"]); // channel 1; the capture reports 2
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+        fixture.ahead.store(0, Ordering::SeqCst);
+        fixture.paint(&["❯ answer"]); // channel 2: the screen the capture saw
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(149)).await;
+        assert!(
+            !task.is_finished(),
+            "{}",
+            fixture.captures.load(Ordering::SeqCst)
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let ((report, _), waited) = task.await.unwrap();
+        assert_eq!(report.outcome, RepaintOutcome::Settled);
+        assert_eq!(waited, Duration::from_millis(350));
+        assert_eq!(
+            fixture.captures.load(Ordering::SeqCst),
+            2,
+            "one capture at the signal, one for revision 2; none for its channel echo"
+        );
     }
 
     /// The budget ends with the hint still shown: `unsettled` (a revision

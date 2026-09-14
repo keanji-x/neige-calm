@@ -46,12 +46,26 @@ pub struct ReplacePlan {
     /// The text inserted in their place (may be empty).
     pub inserted: String,
 }
+/// The cursor row as the plan reads it.
+struct CursorRow {
+    /// The row's characters: padding cells skipped, blank cells kept.
+    chars: Vec<char>,
+    /// `(first character index, character count)` of every non-padding
+    /// cell, in column order.
+    cells: Vec<(usize, usize)>,
+    /// The cursor's character index when it sits on a cell boundary (`None`
+    /// inside a wide cell or off the row).
+    cursor_index: Option<usize>,
+    /// One past the last non-blank cell's characters (the draft's end as
+    /// the screen shows it).
+    draft_end: usize,
+    /// The cursor is in the last column and that cell is not blank: after a
+    /// write into the last column the terminal parks the cursor there with
+    /// a pending wrap, one cell left of where the application has it.
+    pending_wrap: bool,
+}
 impl ReplacePlan {
-    /// The cursor row's characters (padding cells skipped, blank cells kept),
-    /// the character index at the start of every cell plus one past the last,
-    /// and the cursor's character index when the cursor sits on a cell
-    /// boundary (`None` inside a wide cell or off the row).
-    fn cursor_row(frame: &Frame) -> Result<(Vec<char>, Vec<usize>, Option<usize>)> {
+    fn cursor_row(frame: &Frame) -> Result<CursorRow> {
         let cols = usize::from(frame.cols);
         let row = frame.cursor.row as usize;
         ensure!(
@@ -64,8 +78,9 @@ impl ReplacePlan {
             .ok_or_else(|| anyhow::anyhow!("replace: the frame has no cells for the cursor row"))?;
         let column = frame.cursor.column as usize;
         let mut chars = Vec::new();
-        let mut boundaries = Vec::new();
+        let mut spans = Vec::new();
         let mut cursor_index = None;
+        let mut draft_end = 0;
         for (index, cell) in cells.iter().enumerate() {
             // A continuation cell of a wide glyph: width 0, text " ".
             if cell.width == 0 {
@@ -74,21 +89,49 @@ impl ReplacePlan {
             if index == column {
                 cursor_index = Some(chars.len());
             }
-            boundaries.push(chars.len());
+            let count = cell.text.chars().count();
+            spans.push((chars.len(), count));
             chars.extend(cell.text.chars());
+            if !cell.text.trim().is_empty() {
+                draft_end = chars.len();
+            }
         }
-        boundaries.push(chars.len());
-        Ok((chars, boundaries, cursor_index))
+        let pending_wrap = column + 1 == cols
+            && cells
+                .last()
+                .is_some_and(|cell| !cell.text.trim().is_empty());
+        Ok(CursorRow {
+            chars,
+            cells: spans,
+            cursor_index,
+            draft_end,
+            pending_wrap,
+        })
     }
     /// Derive the plan for `from` → `to` on the cursor row of `frame`. Every
     /// refusal is an error: cursor row outside the viewport, cursor inside a
-    /// wide cell or off the row, `from` absent or ambiguous (overlapping
-    /// occurrences count), or a match cutting through a cell's text.
+    /// wide cell or off the row, cursor parked in the last column (pending
+    /// wrap), `from` absent or ambiguous (overlapping occurrences count),
+    /// `from` reaching into the blank run past the draft, or a cell holding
+    /// several scalars (a combining sequence, an emoji) inside the match or
+    /// the movement span — the application moves and erases per cell, the
+    /// plan counts scalars, and the two agree only when every cell touched
+    /// holds one.
     pub fn derive(frame: &Frame, from: &str, to: &str) -> Result<Self> {
-        let (chars, boundaries, cursor_index) = Self::cursor_row(frame)?;
+        let CursorRow {
+            chars,
+            cells,
+            cursor_index,
+            draft_end,
+            pending_wrap,
+        } = Self::cursor_row(frame)?;
         let cursor_index = cursor_index.ok_or_else(|| {
             anyhow::anyhow!("replace: the cursor is inside a wide cell or off the row")
         })?;
+        ensure!(
+            !pending_wrap,
+            "replace: the cursor sits in the last column (pending wrap); edit with a sequence"
+        );
         let needle: Vec<char> = from.chars().collect();
         let starts: Vec<usize> = if chars.len() < needle.len() {
             Vec::new()
@@ -108,8 +151,18 @@ impl ReplacePlan {
         );
         let end = starts[0] + needle.len();
         ensure!(
-            boundaries.binary_search(&starts[0]).is_ok() && boundaries.binary_search(&end).is_ok(),
-            "replace: {from:?} cuts through a cell (a combining sequence); edit with a sequence"
+            end <= cursor_index || end <= draft_end,
+            "replace: from extends past the draft; drop its trailing spaces"
+        );
+        // Every cell inside the match or between its end and the cursor
+        // must hold exactly one scalar (this also covers a match that cuts
+        // through a cell's text).
+        let (low, high) = (starts[0].min(cursor_index), end.max(cursor_index));
+        ensure!(
+            cells
+                .iter()
+                .all(|&(start, count)| count == 1 || start >= high || start + count <= low),
+            "replace: a cell holds a combining sequence or emoji; edit with a sequence"
         );
         let moves = match end.cmp(&cursor_index) {
             Ordering::Less => Some(Moves {
@@ -269,14 +322,17 @@ mod tests {
         let f = frame("> 松".as_bytes());
         assert_eq!(f.cells[3].width, 0);
         assert_eq!(f.cells[3].text, " ");
-        assert_eq!(ReplacePlan::cursor_row(&f).unwrap().0.len(), 19);
+        assert_eq!(ReplacePlan::cursor_row(&f).unwrap().chars.len(), 19);
     }
 
-    /// Blank cells count (a blank is a character of the buffer); a combining
-    /// sequence stays one cell with several scalars, so a `from` that stops
-    /// inside it is refused while one that covers it is accepted.
+    /// Blank cells count (a blank is a character of the buffer). A combining
+    /// sequence is one cell with several scalars: the application moves and
+    /// erases per cell while the plan counts scalars, so such a cell inside
+    /// the match or between the match and the cursor is refused (review r1
+    /// A: on readline `> 11 café` + Left×6/Backspace×2 gave `191 café`, and
+    /// `from "é"` ate the `f`); cells outside that span do not matter.
     #[test]
-    fn blank_cells_count_and_combining_sequences_stay_cell_aligned() {
+    fn blank_cells_count_and_multi_scalar_cells_in_the_span_are_refused() {
         let blanks = plan(b"a b", "a b", "ab").unwrap();
         assert_eq!(blanks.cursor_index, 3);
         assert_eq!(blanks.erased, 3);
@@ -287,18 +343,85 @@ mod tests {
             "{blank_pairs}"
         );
         // "e" + U+0301 combine into one cell of width 1 and two scalars.
-        let f = frame("caf\u{65}\u{301} au lait".as_bytes());
-        assert_eq!(f.cells[3].text, "e\u{301}");
-        assert_eq!(f.cells[3].width, 1);
-        let (chars, boundaries, cursor) = ReplacePlan::cursor_row(&f).unwrap();
-        assert_eq!(chars.len(), 21);
-        assert_eq!(cursor, Some(13), "cursor column 12 is character 13");
-        assert!(boundaries.contains(&5) && !boundaries.contains(&4));
-        let covered = ReplacePlan::derive(&f, "caf\u{65}\u{301}", "tea").unwrap();
-        assert_eq!(covered.erased, 5, "five scalars erased");
-        assert_eq!(covered.moves, moves("Left", 8));
+        let f = frame("> 11 caf\u{65}\u{301}".as_bytes());
+        assert_eq!(f.cells[8].text, "e\u{301}");
+        assert_eq!(f.cells[8].width, 1);
+        let row = ReplacePlan::cursor_row(&f).unwrap();
+        assert_eq!(row.chars.len(), 21);
+        assert_eq!(
+            row.cursor_index,
+            Some(10),
+            "cursor column 9 is character 10"
+        );
+        assert_eq!(row.cells[8], (8, 2));
+        for (from, why) in [
+            ("11", "é between the match and the cursor"),
+            ("e\u{301}", "é in the match"),
+        ] {
+            let refused = ReplacePlan::derive(&f, from, "x").unwrap_err();
+            assert!(
+                refused
+                    .to_string()
+                    .contains("a cell holds a combining sequence or emoji"),
+                "{why}: {refused}"
+            );
+        }
         let cut = ReplacePlan::derive(&f, "cafe", "tea").unwrap_err();
-        assert!(cut.to_string().contains("cuts through a cell"), "{cut}");
+        assert!(cut.to_string().contains("combining sequence"), "{cut}");
+        // The multi-scalar cell before both the match and the cursor does
+        // not enter the moves: cells and scalars agree on the span.
+        let f = frame("> caf\u{65}\u{301} 11".as_bytes());
+        let after = ReplacePlan::derive(&f, "11", "19").unwrap();
+        assert_eq!(after.cursor_index, 10);
+        assert_eq!(after.moves, None);
+        assert_eq!(after.erased, 2);
+        let f = frame("caf\u{65}\u{301} au lait".as_bytes());
+        let tail = ReplacePlan::derive(&f, "au", "de").unwrap();
+        assert_eq!(tail.moves, moves("Left", 5), "five cells, five scalars");
+    }
+
+    /// Review r1 B: after a write into the last column the terminal parks
+    /// the cursor there with a pending wrap, one cell left of where the
+    /// application has it; the plan cannot see the flag and refuses the
+    /// shape. A cursor in the last column over a blank cell is not that.
+    #[test]
+    fn a_cursor_parked_in_the_last_column_over_text_is_refused() {
+        let filled = frame(b"> 7200 + 11 done xyz");
+        assert_eq!(
+            (filled.cursor.column, filled.cursor.row),
+            (19, 0),
+            "{:?}",
+            filled.cursor
+        );
+        let refused = ReplacePlan::derive(&filled, "11", "19").unwrap_err();
+        assert!(refused.to_string().contains("pending wrap"), "{refused}");
+        let moved = frame(b"> 7200 + 11\x1b[20G");
+        assert_eq!(moved.cursor.column, 19);
+        let plan = ReplacePlan::derive(&moved, "11", "19").unwrap();
+        assert_eq!(plan.cursor_index, 19);
+        assert_eq!(plan.moves, moves("Left", 8));
+    }
+
+    /// Review r1 D: a `from` that reaches into the blank run past the draft
+    /// would move Right past the buffer's end; refused unless the cursor
+    /// itself is past that point (the blanks are then typed text).
+    #[test]
+    fn from_extending_past_the_draft_is_refused() {
+        let past = plan(b"> 7200 + 11", "11 ", "19").unwrap_err();
+        assert!(
+            past.to_string().contains("extends past the draft"),
+            "{past}"
+        );
+        let past = plan(b"> 7200 + 11\x1b[9G", "11 ", "19").unwrap_err();
+        assert!(
+            past.to_string().contains("extends past the draft"),
+            "{past}"
+        );
+        // Two typed trailing spaces, cursor after them: the space is real.
+        let typed = plan(b"> 7200 + 11  ", "11 ", "19").unwrap();
+        assert_eq!(typed.cursor_index, 13);
+        assert_eq!(typed.moves, moves("Left", 1));
+        assert_eq!(typed.erased, 3);
     }
 
     /// A hidden cursor (DECTCEM off, as in Claude Code's draft box) is

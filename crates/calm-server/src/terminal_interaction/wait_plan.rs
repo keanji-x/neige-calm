@@ -150,6 +150,13 @@ impl WaitPlan {
             mode != WaitFor::Text || wait_text.is_some() || wait_text_absent.is_some(),
             "wait_for=text requires wait_text or wait_text_absent"
         );
+        // Review r1 E: `repaint_ms: 0` skips the phase that tests them.
+        ensure!(
+            mode != WaitFor::Signal
+                || repaint_ms != Some(0)
+                || (wait_text.is_none() && wait_text_absent.is_none()),
+            "text conditions need a repaint window; repaint_ms must be > 0"
+        );
         let patterns = |list: Option<Vec<String>>| -> Result<Vec<String>> {
             match list {
                 Some(patterns) => {
@@ -217,6 +224,10 @@ impl WaitPlan {
         ensure!(
             self.mode != WaitFor::Text || !self.conditions().is_empty(),
             "wait_for=text without text conditions"
+        );
+        ensure!(
+            self.mode != WaitFor::Signal || self.repaint_ms > 0 || self.conditions().is_empty(),
+            "text conditions need a repaint window; repaint_ms must be > 0"
         );
         Ok(())
     }
@@ -615,6 +626,52 @@ mod tests {
             );
             assert!(absent(vec!["a\tb"]).is_err(), "{mode:?}: tab");
         }
+        // Review r1 E: repaint_ms 0 would skip the phase that tests them.
+        for (present, absent) in [
+            (Some(vec!["❯".into()]), None),
+            (None, Some(vec!["busy".into()])),
+        ] {
+            let skipped = WaitPlan::new(
+                Some(WaitFor::Signal),
+                None,
+                None,
+                None,
+                Some(0),
+                present,
+                absent,
+            );
+            assert!(
+                skipped
+                    .unwrap_err()
+                    .to_string()
+                    .contains("repaint_ms must be > 0")
+            );
+        }
+        assert!(
+            WaitPlan::new(Some(WaitFor::Signal), None, None, None, Some(0), None, None).is_ok(),
+            "repaint_ms 0 without conditions stays valid"
+        );
+        assert!(
+            WaitPlan::new(
+                Some(WaitFor::Signal),
+                None,
+                None,
+                None,
+                Some(1),
+                None,
+                Some(vec!["busy".into()])
+            )
+            .is_ok()
+        );
+        assert!(
+            WaitPlan {
+                repaint_ms: 0,
+                ..signal.clone()
+            }
+            .validate()
+            .is_err(),
+            "validate refuses the hand-built shape too"
+        );
         // Hand-built plans: conditions outside their modes, text without any.
         assert!(
             WaitPlan {

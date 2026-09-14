@@ -275,10 +275,12 @@ def text_condition_metrics(terminal):
     "signal"` and carry `wait_text` or `wait_text_absent` (failed ones
     included). `signal_condition_outcomes` tallies, over the non-failed ones
     that returned an observation whose wait ended on a signal with a
-    `conditions` block, the string `<repaint outcome>/<held|not_held>`, held
-    meaning every asked side is true; a missing repaint or conditions block
-    (older server) adds nothing. A held condition is a screen fact, not an
-    application result.
+    `conditions` block, the string `<repaint outcome>/<held|not_held|untested>`:
+    held when every asked side is true, not_held when one is false, untested
+    when the repaint was `skipped` or an asked side came back null (the
+    server never tested the screen; review r1 H); a missing repaint or
+    conditions block (older server) adds nothing. A held condition is a
+    screen fact, not an application result.
     """
     counts = collections.Counter()
     outcomes = collections.Counter()
@@ -303,8 +305,14 @@ def text_condition_metrics(terminal):
         conditions = condition_state(wait)
         if repaint is None or conditions is None:
             continue
-        held = all(conditions[side] is not False for side in ("present", "absent"))
-        outcomes[f"{repaint['outcome']}/{'held' if held else 'not_held'}"] += 1
+        asked = [side for side, key in (("present", "wait_text"), ("absent", "wait_text_absent")) if key in args]
+        if repaint["outcome"] == "skipped" or any(conditions.get(side) is None for side in asked):
+            verdict = "untested"
+        elif all(conditions[side] is not False for side in asked):
+            verdict = "held"
+        else:
+            verdict = "not_held"
+        outcomes[f"{repaint['outcome']}/{verdict}"] += 1
     return {"text_condition_requests": counts["text_condition_requests"],
             "signal_condition_outcomes": dict(sorted(outcomes.items()))}
 

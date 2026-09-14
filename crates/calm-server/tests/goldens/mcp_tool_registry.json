@@ -1468,7 +1468,7 @@
   },
   {
     "name": "calm.terminal.input",
-    "description_sha256": "d287c2cc95fca94a59b675beb84985e48770641ff68086e9c6ac9c16ec10a089",
+    "description_sha256": "fc194abffe902c0b2cd994928611b6f97a4aa22b07f4daa07e9569c59e103c8f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1691,7 +1691,7 @@
   },
   {
     "name": "calm.terminal.observe",
-    "description_sha256": "c3c8fa01f9ad726891cbe01e153c57fc7aedcb54a5770f8f5748308d5328f484",
+    "description_sha256": "3a98f2036177c99a367bae9b0d7867a6b28055b2afb0ac8bfd9cddf268d6850e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

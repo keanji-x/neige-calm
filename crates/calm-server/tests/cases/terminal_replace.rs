@@ -378,7 +378,7 @@ async fn replace_refuses_wide_cell_cursor_and_unaligned_matches() {
             "printf 'cafe\\314\\201 au lait'; cat >/dev/null",
             "au lait",
             "cafe",
-            "cuts through a cell",
+            "a cell holds a combining sequence or emoji",
         ),
     ] {
         let terminal = open_claimed(&h, program, request).await;
@@ -400,6 +400,177 @@ async fn replace_refuses_wide_cell_cursor_and_unaligned_matches() {
         last = terminal;
     }
     h.stop(&last).await;
+}
+
+/// Review r1 A: readline moves and erases per cell while the plan counts
+/// scalars, so a cell holding a combining sequence inside the match or
+/// between the match and the cursor is refused; the same edit as a
+/// `sequence` (Left per cell) still lands.
+#[tokio::test]
+async fn replace_refuses_a_combining_sequence_in_the_span_and_a_sequence_edits_it() {
+    let h = Harness::start().await;
+    let (terminal, draft) = readline_draft(&h, "replace-combining", "11 cafe\u{301}").await;
+    assert_eq!(
+        draft["cursor"]["column"], 9,
+        "e+U+0301 is one cell: {draft}"
+    );
+    let before = ack(&h, &terminal).await;
+    for from in ["11", "e\u{301}"] {
+        let refused = h
+            .call(
+                "calm.terminal.input",
+                json!({"terminal_id":terminal,"request_id":"fix","action":replace(from, "19")}),
+            )
+            .await;
+        assert_eq!(refused["error"]["code"], -32403, "{from}: {refused}");
+        assert!(
+            error_text(&refused).contains("a cell holds a combining sequence or emoji"),
+            "{from}: {refused}"
+        );
+    }
+    assert_eq!(ack(&h, &terminal).await, before, "nothing was written");
+    let edited = h
+        .call(
+            "calm.terminal.input",
+            edit(
+                &terminal,
+                "fix",
+                json!({"type":"sequence","steps":[
+                    {"type":"key","key":"Left","repeat":5},
+                    {"type":"key","key":"Backspace","repeat":2},
+                    {"type":"text","text":"19"}]}),
+                json!({}),
+            ),
+        )
+        .await;
+    assert_eq!(receipt(&edited)["outcome"], "written", "{edited}");
+    assert_eq!(
+        cursor_row(observation(&edited)),
+        "> 19 cafe\u{301}",
+        "{edited}"
+    );
+    let submitted = h
+        .call(
+            "calm.terminal.input",
+            edit(
+                &terminal,
+                "enter",
+                json!({"type":"key","key":"Enter"}),
+                json!({}),
+            ),
+        )
+        .await;
+    assert!(
+        has_line(observation(&submitted), "GOT:19 cafe\u{301}"),
+        "{submitted}"
+    );
+    h.stop(&terminal).await;
+}
+
+/// Review r1 B: a write into the last column parks the terminal cursor
+/// there with a pending wrap, one cell left of where the application has
+/// it (readline forces its own wrap, so the shape comes from an echoing
+/// `cat` here): the plan refuses it and a `sequence` still edits the line.
+#[tokio::test]
+async fn replace_refuses_a_cursor_parked_in_the_last_column() {
+    let h = Harness::start().await;
+    let terminal = open_claimed(&h, "printf '> '; exec cat", "replace-wrap").await;
+    h.observe_text(&terminal, ">").await;
+    let filling = format!("7200 + 11 done {}", "x".repeat(63));
+    assert_eq!(filling.len(), 78, "prompt + 78 = 80 columns");
+    let typed = h
+        .call(
+            "calm.terminal.input",
+            edit(
+                &terminal,
+                "draft",
+                json!({"type":"text","text":filling}),
+                json!({}),
+            ),
+        )
+        .await;
+    assert_eq!(receipt(&typed)["outcome"], "written", "{typed}");
+    let draft = observation(&typed);
+    assert_eq!(cursor_row(draft), format!("> {filling}"), "{draft}");
+    assert_eq!(
+        draft["cursor"]["column"], 79,
+        "parked in the last column: {draft}"
+    );
+    assert_eq!(draft["cursor"]["row"], 0, "{draft}");
+    let before = ack(&h, &terminal).await;
+    let refused = h
+        .call(
+            "calm.terminal.input",
+            json!({"terminal_id":terminal,"request_id":"fix","action":replace("11", "19")}),
+        )
+        .await;
+    assert_eq!(refused["error"]["code"], -32403, "{refused}");
+    assert!(error_text(&refused).contains("pending wrap"), "{refused}");
+    assert_eq!(ack(&h, &terminal).await, before);
+    // The line is still editable as a sequence; what `cat` echoes after
+    // Enter is the line discipline's buffer, the fact the screen (one
+    // column off after erasing from a pending wrap) cannot vouch for.
+    let edited = h
+        .call(
+            "calm.terminal.input",
+            edit(
+                &terminal,
+                "fix",
+                json!({"type":"sequence","steps":[
+                    {"type":"key","key":"Backspace","repeat":3},
+                    {"type":"text","text":"abc"}]}),
+                json!({}),
+            ),
+        )
+        .await;
+    assert_eq!(receipt(&edited)["outcome"], "written", "{edited}");
+    let submitted = h
+        .call(
+            "calm.terminal.input",
+            edit(
+                &terminal,
+                "enter",
+                json!({"type":"key","key":"Enter"}),
+                json!({}),
+            ),
+        )
+        .await;
+    let expected = format!("7200 + 11 done {}abc", "x".repeat(60));
+    assert!(
+        has_line(observation(&submitted), &expected),
+        "cat echoes the edited line: {submitted}"
+    );
+    h.stop(&terminal).await;
+}
+
+/// Review r1 D: a `from` reaching into the blank run past the draft would
+/// move Right past the buffer's end (readline ignores it); refused, and
+/// the same `from` without the trailing space is the intended edit.
+#[tokio::test]
+async fn replace_refuses_from_extending_past_the_draft() {
+    let h = Harness::start().await;
+    let (terminal, _draft) = readline_draft(&h, "replace-past", "7200 + 11").await;
+    let refused = h
+        .call(
+            "calm.terminal.input",
+            json!({"terminal_id":terminal,"request_id":"fix","action":replace("11 ", "19")}),
+        )
+        .await;
+    assert_eq!(refused["error"]["code"], -32403, "{refused}");
+    assert!(
+        error_text(&refused).contains("extends past the draft"),
+        "{refused}"
+    );
+    assert!(!h.interaction().input_pending(&terminal).await);
+    let edited = h
+        .call(
+            "calm.terminal.input",
+            edit(&terminal, "fix", replace("11", "19"), json!({})),
+        )
+        .await;
+    assert_eq!(receipt(&edited)["outcome"], "written", "{edited}");
+    assert_eq!(cursor_row(observation(&edited)), "> 7200 + 19");
+    h.stop(&terminal).await;
 }
 
 /// A refusal after a granted claim carries the claim note (an error has no

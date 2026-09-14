@@ -258,6 +258,14 @@ async fn text_condition_validation_on_every_carrier() {
             "1..200 bytes of printable text",
         ),
         (
+            json!({"wait_for":"signal","repaint_ms":0,"wait_text_absent":["x"]}),
+            "text conditions need a repaint window; repaint_ms must be > 0",
+        ),
+        (
+            json!({"wait_for":"signal","repaint_ms":0,"wait_text":["x"]}),
+            "repaint_ms must be > 0",
+        ),
+        (
             json!({"wait_for":"signal","wait_text_absent":["x"],"scroll_offset":1}),
             "scroll_offset must be 0",
         ),

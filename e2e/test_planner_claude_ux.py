@@ -669,6 +669,17 @@ class CollectorTests(unittest.TestCase):
         bad = readback(11, absent, signal_state("settled", {"present": "yes", "absent": True}))
         with self.assertRaises(ux.EvidenceError):
             ux.metrics([bad])
+        # Review r1 H: a skipped repaint (repaint_ms 0, the exact shape an
+        # older server produced) or an asked side that came back null was
+        # never tested: `untested`, never `held`.
+        skipped = readback(12, {**absent, "repaint_ms": 0},
+                           signal_state("skipped", {"present": None, "absent": None}))
+        skipped["params"]["item"]["result"]["structuredContent"]["observation"]["state"]["wait"]["repaint"]["waited_ms"] = 0
+        untested = readback(13, {"wait_text": ["❯"], **absent},
+                            signal_state("settled", {"present": True, "absent": None}))
+        result = ux.metrics([skipped, untested])
+        self.assertEqual(result["text_condition_requests"], 2)
+        self.assertEqual(result["signal_condition_outcomes"], {"settled/untested": 1, "skipped/untested": 1})
 
     # #1620 hook-signal counters.
     @staticmethod
