@@ -44,11 +44,10 @@ neige-calm-0.1.0-alpha.1-linux-x86_64/
     ├── bin/{neige-app,calm-server,calm-proc-supervisor,
     │        neige-codex-bridge,neige-mcp-stdio-shim,neige}
     └── web/dist/
-        ├── index.html, assets/...     # legacy /calm/
         └── next/{index.html,assets/...} # new /next/
 ```
 
-`web/dist/next` is included in the **same Web manifest unit and hashes** as the
+`web/dist/next` is included in the **Web manifest unit and hashes** as the
 legacy bundle: a next-only change changes the Web upgrade identity. Do not copy
 extra files into `release/` after packaging; integrity verification rejects them.
 The outer BUILD.json, INSTALL.md and docs/ are covered by the archive checksum.
@@ -104,8 +103,8 @@ Edit `~/.config/neige-app/config.toml` before starting:
 - Set `[child] auth_password` to your chosen password; default username is `owner`.
   Keep `auth_dev_autologin = false`. This credential is separate from Codex login
   and from the generated admin token. Keep the config private (`0600`).
-- Keep `[child] web_dist` at `.../current-web/web/dist` and **fe_dist** at
-  `.../current-web/web/dist/next`. The generated starter config includes both.
+- Set `[child] fe_dist` to `.../current-web/web/dist/next`. The legacy
+  `web_dist` setting is retired and can be removed from existing configs.
 - Check `[child] calm_listen` (default `127.0.0.1:4040`) and `[admin] listen`
   (default `127.0.0.1:4050`) are free. Use separate ports **and data/config/release
   directories**, including explicit `[child] plugins_dir` and `plugins_data_dir`,
@@ -165,7 +164,7 @@ Without systemd, after the same `system install` preparation above:
 
 Keep that process running. The default browser URL is <http://127.0.0.1:4040/>;
 with `fe_dist` configured it redirects to `/next/`. Log in with the configured
-owner credentials. `/calm/` remains the legacy fallback. The admin port serves
+owner credentials. `/calm/` is retired and returns 404. The admin port serves
 operator APIs, not the product UI; keep it loopback-only.
 
 ### Network setup before the first agent task

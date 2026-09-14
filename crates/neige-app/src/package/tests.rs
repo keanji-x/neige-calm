@@ -394,3 +394,35 @@ fn alpha_package_rejects_legacy_next_namespace_collision() {
             .contains("reserved next/")
     );
 }
+
+#[test]
+fn maintained_frontend_package_does_not_require_legacy_assets() {
+    let tmp = test_temp_dir("next-only-package");
+    let src = fake_build_output(&tmp);
+    let fe = src.join("fe-dist");
+    fs::create_dir(&fe).unwrap();
+    fs::write(fe.join("index.html"), "next-only").unwrap();
+    let cfg = PackageConfig {
+        release_dir: tmp.join("package"),
+        out: None,
+        release_id: "next-only".into(),
+        app_bin: Some(src.join("neige-app")),
+        web_dist: None,
+        fe_dist: Some(fe),
+        bins: required_bins(&src),
+    };
+    let package = build_package(&cfg).unwrap();
+    let manifest = crate::upgrade::verify_v2_package_integrity(&package).unwrap();
+    assert!(!package.join("web/dist/index.html").exists());
+    assert_eq!(
+        fs::read_to_string(package.join("web/dist/next/index.html")).unwrap(),
+        "next-only"
+    );
+    assert!(
+        manifest
+            .files
+            .iter()
+            .filter(|f| f.unit == FileUnit::Web)
+            .all(|f| f.path.starts_with("web/dist/next/"))
+    );
+}

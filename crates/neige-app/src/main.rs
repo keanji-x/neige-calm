@@ -258,9 +258,9 @@ struct SystemPackageArgs {
     #[arg(long)]
     app_bin: PathBuf,
 
-    /// web/dist directory copied to web/dist.
+    /// Optional root assets for inspecting or repackaging historical releases.
     #[arg(long)]
-    web_dist: PathBuf,
+    web_dist: Option<PathBuf>,
 
     /// Next frontend copied to web/dist/next in the same Web release unit.
     #[arg(long)]
@@ -1047,7 +1047,7 @@ fn run_package_cli(args: SystemPackageArgs) -> anyhow::Result<()> {
         out: args.out,
         release_id: args.release_id,
         app_bin: Some(args.app_bin),
-        web_dist: Some(args.web_dist),
+        web_dist: args.web_dist,
         fe_dist: args.fe_dist,
         bins: args.bins,
     })?;

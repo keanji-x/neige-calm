@@ -216,8 +216,8 @@ impl AppConfig {
             child: ChildConfig {
                 bin: current_server.join("bin").join("calm-server"),
                 proc_supervisor_bin: current_server.join("bin").join("calm-proc-supervisor"),
-                web_dist: Some(current_web.join("web").join("dist")),
-                fe_dist: None,
+                web_dist: None,
+                fe_dist: Some(current_web.join("web/dist/next")),
                 calm_listen: "127.0.0.1:4040".into(),
                 db_url: None,
                 data_dir: Some(expand_tilde("~/.local/share/neige-calm")),
@@ -527,8 +527,6 @@ backups = "~/.local/share/neige-app/backups"
 [child]
 bin = "~/.local/share/neige-app/releases/current-server/bin/calm-server"
 proc_supervisor_bin = "~/.local/share/neige-app/releases/current-server/bin/calm-proc-supervisor"
-web_dist = "~/.local/share/neige-app/releases/current-web/web/dist"
-# Omit for legacy-only releases; Alpha packages include this subtree.
 fe_dist = "~/.local/share/neige-app/releases/current-web/web/dist/next"
 calm_listen = "127.0.0.1:4040"
 db_url = ""
@@ -795,10 +793,10 @@ mod tests {
         assert!(cfg.child.bin.ends_with("current-server/bin/calm-server"));
         assert!(
             cfg.child
-                .web_dist
+                .fe_dist
                 .as_ref()
-                .expect("web dist")
-                .ends_with("current-web/web/dist")
+                .expect("maintained frontend dist")
+                .ends_with("current-web/web/dist/next")
         );
         assert!(
             cfg.child

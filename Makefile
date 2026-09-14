@@ -6,7 +6,7 @@
 # backend lives on the compose bridge network; nginx is the only host-facing
 # entrypoint.
 #
-#   make dev                  # build both frontends + bring stack up in background
+#   make dev                  # build the maintained frontend + bring stack up in background
 #   make dev-fresh            # wipe this DEV_ID's /tmp state, then start
 #   make prod                 # run host production process (no docker)
 #   make stop                 # tear stack down
@@ -78,7 +78,7 @@ export CALM_DB_URL
 export CALM_PLUGINS_DATA_DIR
 
 # Host production mode: no docker, no nginx. 4040 is reserved for prod by
-# default. calm-server serves both frontend bundles itself and uses the host's
+# default. calm-server serves the maintained frontend bundle itself and uses the host's
 # HOME, ~/.codex, PATH, and login shell.
 LOCAL_SHELL ?= $(shell command -v zsh 2>/dev/null || getent passwd $(USER) | cut -d: -f7 2>/dev/null || echo /bin/sh)
 PROD_PORT ?= 4040
@@ -110,7 +110,7 @@ XDG_DIRS := \
 #
 # Implementation: every source path the build touches is made absolute
 # relative to $(WORKTREE), and docker-compose asset variables are exported
-# pointing at $(WORKTREE)'s release binaries plus both frontend bundles so
+# pointing at $(WORKTREE)'s release binaries plus the maintained frontend bundle so
 # the containers pick up the right worktree.
 #
 # Caveat: two stacks can run side-by-side only when both DEV_ID and CALM_PORT
@@ -144,8 +144,6 @@ MCP_SHIM := $(WORKTREE)/target/release/neige-mcp-stdio-shim
 # No such file or directory`. neige-app peer-supervises it.
 PROC_SUP := $(WORKTREE)/target/release/calm-proc-supervisor
 NEIGE_CLI := $(WORKTREE)/target/release/neige
-DIST     := $(WORKTREE)/web/dist
-NODE_MODULES_STAMP := $(WORKTREE)/web/node_modules/.package-lock.json
 FE_DIST  := $(WORKTREE)/fe/web/dist
 FE_NODE_MODULES_STAMP := $(WORKTREE)/fe/node_modules/.package-lock.json
 CHECK_FE_NODE := node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 20 || (major === 20 && minor < 19) || (major === 21) || (major === 22 && minor < 12)) { console.error("fe requires Node ^20.19.0 or >=22.12.0 (found " + process.versions.node + ")"); process.exit(1); }'
@@ -160,7 +158,6 @@ export CALM_BIN := $(BIN)
 export CALM_CODEX_BRIDGE_BIN := $(BRIDGE)
 export CALM_MCP_SHIM_BIN := $(MCP_SHIM)
 export CALM_PROC_SUPERVISOR_BIN := $(PROC_SUP)
-export CALM_WEB_DIST := $(DIST)
 export CALM_FE_DIST := $(FE_DIST)
 
 # Resolve the installed Codex package as one unit. Current Codex releases defer
@@ -209,7 +206,7 @@ help: ## Show this help.
 # ---- build (on host, not in docker) -------------------------------------
 
 .PHONY: build
-build: $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(DIST) ## Build binaries and the legacy frontend bundle.
+build: $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(FE_DIST) ## Build binaries and the maintained frontend bundle.
 
 # Single cargo invocation builds all binaries — cheaper than separate
 # calls because deps overlap. Touch every output so the rule re-fires
@@ -218,17 +215,6 @@ build: $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(DIST) ## B
 # neige-app and contacted by calm-server for every terminal spawn).
 $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) &: $(shell find $(WORKTREE)/crates -name '*.rs' -o -name 'Cargo.toml' 2>/dev/null) $(WORKTREE)/Cargo.toml $(WORKTREE)/Cargo.lock
 	cargo build --manifest-path $(WORKTREE)/Cargo.toml --release -p calm-server -p calm-codex-bridge -p neige-app -p neige-mcp-stdio-shim -p calm-proc-supervisor -p neige-cli --bin calm-server --bin neige-codex-bridge --bin neige-app --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin neige
-
-# npm rewrites node_modules/.package-lock.json after npm ci/install, so use
-# it as the dependency stamp for lockfile-driven web installs. Match CI's
-# --legacy-peer-deps incantation; see ci.yml note / TODO(#2).
-$(NODE_MODULES_STAMP): $(WORKTREE)/web/package-lock.json
-	cd $(WORKTREE)/web && npm ci --legacy-peer-deps
-
-# The legacy persister imports the shared IDB name from fe/core. Keep this
-# narrow cross-bundle contract in the legacy dist dependency graph as well.
-$(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/fe/core/keys/storage.ts $(WORKTREE)/web/package.json $(WORKTREE)/web/vite.config.ts $(WORKTREE)/web/index.html $(NODE_MODULES_STAMP)
-	cd $(WORKTREE)/web && npm run build
 
 $(FE_NODE_MODULES_STAMP): $(WORKTREE)/fe/package-lock.json
 	@$(CHECK_FE_NODE)
@@ -250,7 +236,7 @@ fe-dev: $(FE_NODE_MODULES_STAMP) ## Preview the next-generation frontend at http
 # mounting them; source files and node_modules keep their original permissions.
 .PHONY: dev-bundles
 dev-bundles: build fe-build
-	chmod -R a+rX "$(DIST)" "$(FE_DIST)"
+	chmod -R a+rX "$(FE_DIST)"
 
 # ---- docker lifecycle ---------------------------------------------------
 
@@ -350,7 +336,7 @@ e2e-codex-isolated-check: ## shellcheck + dry-run golden + fence & tool-prefligh
 	scripts/e2e-isolated/check_tools.sh
 
 .PHONY: dev
-dev: check-codex-host proxy-forwarder-up dev-bundles dirs ## Build both frontends, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
+dev: check-codex-host proxy-forwarder-up dev-bundles dirs ## Build the maintained frontend, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
 ifeq ($(FRESH),1)
 	@echo "  FRESH=1 — stopping stack, removing container state, then bringing up"
 	-$(COMPOSE) down -v --remove-orphans
@@ -371,7 +357,7 @@ endif
 	@echo "  health: make health DEV_ID=$(DEV_ID) CALM_PORT=$(CALM_PORT)"
 
 .PHONY: dev-fresh
-dev-fresh: check-codex-host proxy-forwarder-up dev-bundles ## Remove this DEV_ID's containers/state, then start a fresh stack with both frontends.
+dev-fresh: check-codex-host proxy-forwarder-up dev-bundles ## Remove this DEV_ID's containers/state, then start a fresh stack with the maintained frontend.
 	-$(COMPOSE) down -v --remove-orphans
 	$(MAKE) dirs
 	$(COMPOSE) up -d --build
@@ -450,7 +436,6 @@ prod: build fe-build prod-dirs prod-repair-codex-homes ## Run production locally
 	  CALM_DB_URL="$(PROD_DB_URL)" \
 	  CALM_DATA_DIR="$(PROD_DATA_DIR)" \
 	  CALM_PLUGINS_DATA_DIR="$(PROD_PLUGINS_DATA_DIR)" \
-	  CALM_WEB_DIST="$(DIST)" \
 	  CALM_FE_DIST="$(FE_DIST)" \
 	  CALM_MCP_STDIO_SHIM_BIN="$(LOCAL_MCP_STDIO_SHIM)" \
 	  CALM_AUTH_USERNAME="$(PROD_AUTH_USERNAME)" \
@@ -481,9 +466,8 @@ prod-dirs:
 	@mkdir -p "$(PROD_DATA_DIR)" "$(PROD_PLUGINS_DATA_DIR)"
 
 .PHONY: clean
-clean: ## Remove build artifacts (target/, web/dist, fe/web/dist).
+clean: ## Remove build artifacts (target/, fe/web/dist).
 	cargo clean --manifest-path $(WORKTREE)/Cargo.toml
-	rm -rf $(DIST)
 	rm -rf $(FE_DIST)
 
 .PHONY: clean-data

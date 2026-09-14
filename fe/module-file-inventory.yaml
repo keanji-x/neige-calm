@@ -122,3 +122,5 @@
 
 # Non-runtime styles owner (§3 diseases 6/7 and frozen interface §6.8).
 - { path: fe/web/src/styles, type: directory, owner: styles, readonly: true, basis: "frozen interface §6.8" }
+
+- { path: fe/web/src/app/__snapshots__/markdown-legacy-differential.test.ts.snap, type: file, owner: app/markdown-migration, readonly: false, basis: "Legacy frontend retirement: preserved outline regression expectations" }

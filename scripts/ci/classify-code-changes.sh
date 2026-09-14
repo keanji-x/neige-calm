@@ -78,7 +78,7 @@ while IFS= read -r -d '' path; do
         continue
       fi
       case "$path" in
-        Cargo.toml|Cargo.lock|*/Cargo.toml|rust-toolchain|rust-toolchain.toml|.cargo/*|crates/*/src/*|web/package.json|web/package-lock.json|web/src/api/openapi.json|web/src/api/generated.ts|web/src/api/generated-terminal.ts|web/src/api/generated-events.ts|web/src/editor/types/*|fe/core/api/generated/*) relevant=true ;;
+        Cargo.toml|Cargo.lock|*/Cargo.toml|rust-toolchain|rust-toolchain.toml|.cargo/*|crates/*/src/*|fe/package.json|fe/package-lock.json|web/package.json|web/package-lock.json|web/src/api/openapi.json|web/src/api/generated.ts|web/src/api/generated-terminal.ts|web/src/api/generated-events.ts|web/src/editor/types/*|fe/core/api/generated/*) relevant=true ;;
         crates/*|plugins/*|fe/*|web/*|scripts/*|e2e/*|docker/*|rustfmt.toml|.config/*|Makefile|docker-compose.yml) ;;
         *) relevant=true ;;
       esac

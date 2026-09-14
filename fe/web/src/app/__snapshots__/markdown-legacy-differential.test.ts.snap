@@ -1,0 +1,823 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`markdown outline retirement regression > atx closing preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 3,
+    "id": "md-h-0",
+    "text": "Closed",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > atx closing preserves both outline policies > report 1`] = `[]`;
+
+exports[`markdown outline retirement regression > atx preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Title",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Usage",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > atx preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Title",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Usage",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > blank before thematic break preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Visible",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > blank before thematic break preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Visible",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > blockquote preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > blockquote preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Quoted",
+  },
+  {
+    "depth": 2,
+    "id": "block-h3",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > crlf preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "One",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Two",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > crlf preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "One",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Two",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > emphasis strong preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "one two",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > emphasis strong preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "one two",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > exempt inline html preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Safe label",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > exempt inline html preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Safe label",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > exempt strike preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "gone kept",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > exempt strike preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "gone kept",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > fenced backticks preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Before",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "After",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > fenced backticks preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Before",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "After",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > fenced tildes preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Visible",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > fenced tildes preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Visible",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > html block preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Visible",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > html block preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Visible",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > indented code preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Visible",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > indented code preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Visible",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > inline code preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Use x < y",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > inline code preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Use x < y",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > inline link and image preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "link alt",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > inline link and image preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "link alt",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > list heading four spaces preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "T",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > list heading four spaces preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "T",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Deep",
+  },
+  {
+    "depth": 2,
+    "id": "block-h3",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > list two spaces preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Install",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-2",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > list two spaces preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Install",
+  },
+  {
+    "depth": 2,
+    "id": "block-h3",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > literal punctuation preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "price * tax and snake_case",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > literal punctuation preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "price * tax and snake_case",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > nested list heading four spaces preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "T",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > nested list heading four spaces preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "T",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Nested",
+  },
+  {
+    "depth": 2,
+    "id": "block-h3",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > nested list preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 2,
+    "id": "md-h-0",
+    "text": "Nested",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > nested list preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 2,
+    "id": "block-h1",
+    "text": "Nested",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > ordered list three spaces preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 2,
+    "id": "md-h-0",
+    "text": "InList",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > ordered list three spaces preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 2,
+    "id": "block-h1",
+    "text": "InList",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > reference collapsed preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "[label][]",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > reference collapsed preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "label",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > reference full case preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "[label][ID]",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > reference full case preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "label",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > reference image preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "![alt][IMG]",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > reference image preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "alt",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > reference nested inline preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "[em x][id]",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > reference nested inline preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "em x",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > reference shortcut preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "[label]",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > reference shortcut preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "label",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > setext h1 preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Title",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > setext h1 preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Title",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > setext h2 preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 2,
+    "id": "md-h-0",
+    "text": "Title",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > setext h2 preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 2,
+    "id": "block-h1",
+    "text": "Title",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > space tab heading preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > space tab heading preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > tab heading preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > tab heading preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > tab list then heading preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > tab list then heading preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Tab",
+  },
+  {
+    "depth": 2,
+    "id": "block-h3",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > tab space heading preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > tab space heading preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > table cell hash preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Visible",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > table cell hash preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Visible",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > two spaces tab heading preserves both outline policies > file-viewer 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "md-h-0",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "md-h-1",
+    "text": "Tail",
+  },
+]
+`;
+
+exports[`markdown outline retirement regression > two spaces tab heading preserves both outline policies > report 1`] = `
+[
+  {
+    "depth": 1,
+    "id": "block-h1",
+    "text": "Root",
+  },
+  {
+    "depth": 2,
+    "id": "block-h2",
+    "text": "Tail",
+  },
+]
+`;

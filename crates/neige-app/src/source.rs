@@ -40,14 +40,8 @@ pub(crate) fn build_source_package_from_source(
         out: None,
         release_id,
         app_bin: Some(source_dir.join("target").join("release").join("neige-app")),
-        web_dist: Some(source_dir.join("web").join("dist")),
-        // The serving configuration is the explicit frontend selection. Old
-        // configs/build commands stay legacy-only, even if a stale FE tree exists.
-        fe_dist: cfg
-            .child
-            .fe_dist
-            .as_ref()
-            .map(|_| source_dir.join("fe/web/dist")),
+        web_dist: None,
+        fe_dist: Some(source_dir.join("fe/web/dist")),
         bins: required_bins(&source_dir),
     })
 }
@@ -277,6 +271,7 @@ mod tests {
             std::fs::read_to_string(package.join("web/dist/next/index.html")).unwrap(),
             "next frontend"
         );
+        assert!(!package.join("web/dist/index.html").exists());
         assert_eq!(manifest.schema_version, 2);
         assert_eq!(manifest.units.len(), 7);
         assert!(
@@ -288,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn source_package_legacy_config_does_not_require_next_assets() {
+    fn source_package_requires_maintained_frontend_assets() {
         let tmp = test_temp_dir("source-legacy-only");
         let source = tmp.join("checkout");
         fake_build_output(&source);
@@ -297,10 +292,11 @@ mod tests {
         cfg.release.root = tmp.join("releases");
         cfg.source.url = Some(source.display().to_string());
         cfg.source.build_args = vec!["true".into()];
-        let package =
-            build_source_package(&cfg, None).expect("legacy source build remains supported");
-        assert!(package.join("web/dist/index.html").is_file());
-        assert!(!package.join("web/dist/next").exists());
+        let err = build_source_package(&cfg, None).expect_err("next assets are required");
+        assert!(
+            err.to_string()
+                .contains("next frontend must contain index.html")
+        );
     }
 
     #[test]
@@ -320,14 +316,6 @@ mod tests {
         std::fs::write(source.join("fe/web/dist/index.html"), "next frontend").unwrap();
         let release = source.join("target").join("release");
         std::fs::create_dir_all(&release).expect("create release dir");
-        std::fs::create_dir_all(source.join("web").join("dist")).expect("create web dist");
-        std::fs::write(source.join("web").join("dist").join("index.html"), "web")
-            .expect("write web");
-        std::fs::write(
-            source.join("web").join("package.json"),
-            r#"{"version":"1.0.0"}"#,
-        )
-        .expect("write package json");
         write_script(
             &release.join("calm-server"),
             r#"case "$1" in

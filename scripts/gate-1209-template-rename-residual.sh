@@ -176,10 +176,6 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 #        third reader was missed" a green regression.
 4   fe/core/api/schemas.ts
 6   fe/core/api/schemas.contract.test.ts
-4   web/src/api/schemas.ts
-5   web/src/api/schemas.test.ts
-3   web/src/track-fs-viewers/schemas.ts
-8   web/src/track-fs-viewers/schemas.test.ts
 # --- 10. Design + historical records. The #1209 design doc argues about both
 #         spellings by name (and #1268 added dated notes marking the plugin-side
 #         half of that argument as overtaken, rather than deleting it);
@@ -197,7 +193,7 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 #          `task` variant must send no `workflow_*` key at all. The claim is
 #          about a wire shape that no longer exists, which is exactly why the
 #          spelling has to stay.
-1   docs/oracle/pages-shared.yaml
+1   docs/archive/legacy-web-oracle/pages-shared.yaml
 # --- 12. GitHub Actions, not us. This one line is a deliberate NEAR-MISS
 #         fixture: `'workflows/ci.yml'` written WITHOUT the `.github/` prefix,
 #         asserting the mutation runner does not treat it as the CI file. The

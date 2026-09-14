@@ -55,9 +55,8 @@ pub struct Config {
     )]
     pub allowed_origin: String,
 
-    /// Optional built web bundle to serve under `/calm/`.
-    /// Docker dev usually lets nginx serve this. Host prod sets this to
-    /// `web/dist` so a single local calm-server process serves both SPA and API.
+    /// Retired legacy bundle setting, accepted so existing service configs can
+    /// upgrade. It logs a warning and never mounts `/calm/`; use `fe_dist`.
     #[arg(long, env = "CALM_WEB_DIST")]
     pub web_dist: Option<PathBuf>,
 

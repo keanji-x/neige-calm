@@ -65,16 +65,19 @@ pub(crate) fn build_package(cfg: &PackageConfig) -> anyhow::Result<PathBuf> {
     );
 
     let mut files = vec![app_hash];
-    copy_dir_with_hashes(
-        cfg.web_dist
-            .as_deref()
-            .ok_or_else(|| anyhow!("missing required web/dist"))?,
-        &package_dir.join("web").join("dist"),
-        "web/dist",
-        FileUnit::Web,
-        &mut files,
-        &mut output_paths,
-    )?;
+    if cfg.web_dist.is_none() && cfg.fe_dist.is_none() {
+        return Err(anyhow!("missing required frontend distribution"));
+    }
+    if let Some(web_dist) = &cfg.web_dist {
+        copy_dir_with_hashes(
+            web_dist,
+            &package_dir.join("web/dist"),
+            "web/dist",
+            FileUnit::Web,
+            &mut files,
+            &mut output_paths,
+        )?;
+    }
     if let Some(fe_dist) = &cfg.fe_dist {
         let next = package_dir.join("web/dist/next");
         if next.exists() {
@@ -97,11 +100,10 @@ pub(crate) fn build_package(cfg: &PackageConfig) -> anyhow::Result<PathBuf> {
     units.insert(
         UnitName::Web,
         ReleaseUnit {
-            version: web_package_version(
-                cfg.web_dist
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("missing required web/dist"))?,
-            )?,
+            version: match &cfg.web_dist {
+                Some(web_dist) => web_package_version(web_dist)?,
+                None => cfg.release_id.clone(),
+            },
             binary_sha256: None,
             tree_sha256: Some(tree_sha256(&package_dir.join("web/dist"))?),
             restart_policy: RestartPolicy::RefreshFrontend,

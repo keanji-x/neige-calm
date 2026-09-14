@@ -204,7 +204,6 @@ services:
     depends_on:
       - server
     volumes:
-      - ${CALM_WEB_DIST:-./web/dist}:/usr/share/nginx/html/calm:ro
       - ${CALM_FE_DIST:-./fe/web/dist}:/usr/share/nginx/html/next:ro
       - ./docker/nginx.conf:/etc/nginx/conf.d/calm.conf:ro
     ports:
