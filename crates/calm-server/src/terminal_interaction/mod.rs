@@ -25,8 +25,14 @@ mod observation;
 mod operations;
 pub use observation::ObservationFormat;
 pub use operations::InputOptions;
+mod receipt_summary;
+pub use receipt_summary::{receipt_summary, summary_line};
+mod receipts;
+mod repaint;
+mod replace_plan;
 mod screen_diff;
 mod target;
+mod text_conditions;
 mod text_wait;
 mod wait;
 mod wait_plan;
@@ -223,10 +229,11 @@ impl TerminalInteraction {
     ) -> Result<(Value, Option<Vec<u8>>)> {
         wait.validate()?;
         // #1666 — a text wait is tested on the live viewport and returns that
-        // same viewport (the MCP layer refuses this as invalid params first).
+        // same viewport (the MCP layer refuses this as invalid params first);
+        // #1677 r16: so is a signal wait with text conditions.
         ensure!(
-            wait.mode != WaitFor::Text || offset == 0,
-            "wait_for=text observes the live viewport; scroll_offset must be 0"
+            !wait.tests_text() || offset == 0,
+            "wait_for=text or text conditions observe the live viewport; scroll_offset must be 0"
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let client = self.client(identity, &resolved.binding).await?;

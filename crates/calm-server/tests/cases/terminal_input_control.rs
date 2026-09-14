@@ -132,11 +132,20 @@ async fn input_claim_grants_when_free_and_writes_with_the_claim_in_the_receipt()
     assert_eq!(state["role"], "owner", "{state}");
     assert_eq!(state["control_id"], control);
     assert!(has_line(state, "COUNT:1:hello"), "{state}");
+    // #1677 S3: the text block is the summary in words; the claim is named.
     assert_eq!(
         summary(&first),
         format!(
-            "terminal {terminal} input written readback available; details in structuredContent"
+            "terminal {terminal} input written; screen changed settled; role owner; claim claimed; \
+             details in structuredContent"
         )
+    );
+    assert_eq!(
+        written["summary"],
+        json!({"action":"written","readback":"available","screen":"changed","settled":true,
+            "signal":null,"repaint":null,"matched":null,"role":"owner","control_id":control,
+            "exited":false,"claim":"claimed","release":null}),
+        "{written}"
     );
     // Held: no second claim, the same lease, the ordinary fences.
     let second = h
@@ -226,9 +235,13 @@ async fn input_claim_is_refused_while_a_human_holds_control_and_writes_nothing()
     assert_eq!(
         summary(&refused),
         format!(
-            "terminal {terminal} input control_unavailable readback available; details in structuredContent"
+            "terminal {terminal} input control_unavailable; screen elapsed; role observer; \
+             claim unavailable; details in structuredContent"
         )
     );
+    assert_eq!(result["summary"]["action"], "control_unavailable");
+    assert_eq!(result["summary"]["claim"], "unavailable");
+    assert_eq!(result["summary"]["control_id"], Value::Null);
     assert_eq!(
         registry_owner(&h, &terminal),
         Some(user),

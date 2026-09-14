@@ -191,6 +191,77 @@ async fn hint_line_refresh_below_the_cursor_is_admitted_with_the_tolerance() {
     h.stop(&terminal).await;
 }
 
+/// A cursor hidden in both captures (Claude Code keeps DECTCEM off in its
+/// draft box while positioning the cursor at the edit point, #1677): the
+/// hint refresh below it is stale without the flag, with `screen_diff`
+/// reporting `visible: false`, and admitted with it on the position alone.
+#[tokio::test]
+async fn hidden_cursor_in_both_captures_is_admitted_on_its_position() {
+    let h = Harness::start().await;
+    let hidden = format!("printf '\\033[?25l'; {HINT_BOX}");
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":hidden,"request_id":"below-hidden","claim":true}),
+        )
+        .await;
+    assert_eq!(opened["claim"]["status"], "claimed", "{opened}");
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    let view = h.observe_text(&terminal, "Type here:").await;
+    assert_eq!(view["cursor"]["visible"], false, "{view}");
+    assert_eq!(view["cursor"]["row"], 1, "{view}");
+    assert_eq!(view["cursor"]["column"], 11, "{view}");
+    wait_past(&h, &terminal, revision(&view)).await;
+    let refused = h
+        .call(
+            "calm.terminal.input",
+            typed(&terminal, "type", &view, json!({})),
+        )
+        .await;
+    let stale = receipt(&refused);
+    assert_eq!(stale["outcome"], "stale_observation", "{stale}");
+    assert_eq!(
+        stale["screen_diff"]["cursor"],
+        json!({"moved":false,"visible":false}),
+        "{stale}"
+    );
+    assert_eq!(stale["screen_diff"]["rows_changed_at_or_above_cursor"], 0);
+    assert!(
+        stale["screen_diff"]["rows_changed_below_cursor"]
+            .as_u64()
+            .unwrap()
+            >= 1,
+        "{stale}"
+    );
+    let before = h.interaction().input_ack_sequence(&terminal).await.unwrap();
+    let admitted = h
+        .call(
+            "calm.terminal.input",
+            typed(
+                &terminal,
+                "type",
+                &view,
+                json!({"allow_output_below_cursor":true}),
+            ),
+        )
+        .await;
+    let written = receipt(&admitted);
+    assert_eq!(written["outcome"], "written", "{written}");
+    assert_eq!(written["output_since_observation"], true);
+    assert_eq!(
+        written["observation_drift"]["tolerance"], "below_cursor",
+        "{written}"
+    );
+    assert_eq!(
+        h.interaction().input_ack_sequence(&terminal).await,
+        Some(before + 1)
+    );
+    let after = observation(&admitted);
+    assert_eq!(after["cursor"]["visible"], false, "{after}");
+    assert_eq!(rows(after)[1], "Type here: abc", "{after}");
+    h.stop(&terminal).await;
+}
+
 /// The refusal table with the tolerance requested: a change on the cursor
 /// row, a text change above, a presentation-only (bold) change above and a
 /// cursor move each stay stale, with `screen_diff` naming why; a hidden
@@ -360,10 +431,9 @@ async fn below_cursor_tolerance_is_refused_for_everything_but_draft_edits() {
             .await;
         assert_eq!(response["error"]["code"], -32602, "{name}: {response}");
         assert!(
-            response["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("allow_output_below_cursor admits only text, sequence and editing keys"),
+            response["error"]["message"].as_str().unwrap().contains(
+                "allow_output_below_cursor admits only text, sequence, replace and editing keys"
+            ),
             "{name}: {response}"
         );
         let direct = h
@@ -383,8 +453,9 @@ async fn below_cursor_tolerance_is_refused_for_everything_but_draft_edits() {
             .await;
         let message = direct.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(
-            message
-                .contains("allow_output_below_cursor admits only text, sequence and editing keys"),
+            message.contains(
+                "allow_output_below_cursor admits only text, sequence, replace and editing keys"
+            ),
             "{name} (service): {message}"
         );
         assert!(!h.interaction().input_pending(&terminal).await, "{name}");

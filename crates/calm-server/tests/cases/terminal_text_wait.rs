@@ -372,7 +372,7 @@ async fn text_wait_validation_and_readbacks_on_every_carrier() {
         )
         .await;
     assert_eq!(no_observe["error"]["code"], -32602, "{no_observe}");
-    assert!(error_text(&no_observe).contains("wait_text require observe=true"));
+    assert!(error_text(&no_observe).contains("wait_text/wait_text_absent need observe=true"));
     // Readbacks in text mode: claim, then a submit whose readback waits for
     // the program's echo line.
     let claimed = h

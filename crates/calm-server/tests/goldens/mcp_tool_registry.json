@@ -1376,7 +1376,7 @@
   },
   {
     "name": "calm.terminal.control",
-    "description_sha256": "a7e710a9a889751398bcfef225254149332cd6c3f6e981f80fc3680f2f3e1592",
+    "description_sha256": "22128e2b9df6778ee5fcf34cdcc5f803f0031a270e8710bb7a3446c6c14078cf",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1440,6 +1440,16 @@
           "maxItems": 8,
           "minItems": 1,
           "type": "array"
+        },
+        "wait_text_absent": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [
@@ -1458,7 +1468,7 @@
   },
   {
     "name": "calm.terminal.input",
-    "description_sha256": "abd29522e86676cfca91020d486c2f71aee3fe8e69bd3613fefee952e5d94c3c",
+    "description_sha256": "9c172ab533d7b3e0a7a95b495fef79f0bc5c1455e4d1840d9949132e9e5dca65",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1549,6 +1559,29 @@
                 "steps"
               ],
               "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "from": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "to": {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                "type": {
+                  "const": "replace"
+                }
+              },
+              "required": [
+                "type",
+                "from",
+                "to"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -1629,6 +1662,16 @@
           "maxItems": 8,
           "minItems": 1,
           "type": "array"
+        },
+        "wait_text_absent": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [
@@ -1648,7 +1691,7 @@
   },
   {
     "name": "calm.terminal.observe",
-    "description_sha256": "dfd9a5f4ae4b5d19bb7158022fc3a5dfee99b117e563a3512581b82dbc663a20",
+    "description_sha256": "3a98f2036177c99a367bae9b0d7867a6b28055b2afb0ac8bfd9cddf268d6850e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1713,6 +1756,16 @@
           "maxItems": 8,
           "minItems": 1,
           "type": "array"
+        },
+        "wait_text_absent": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [],
@@ -1729,7 +1782,7 @@
   },
   {
     "name": "calm.terminal.open",
-    "description_sha256": "9fbc985f8a1ad94372535740da35c283706d9cafae0caee5e37528a4f0737d64",
+    "description_sha256": "0d73bbc82dc9b5c6e923f8dd5dea0b4fa511bea6c1b3acd24c6bb29b36ae5c55",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1750,14 +1803,67 @@
           "minLength": 1,
           "type": "string"
         },
+        "repaint_ms": {
+          "maximum": 5000,
+          "minimum": 0,
+          "type": "integer"
+        },
         "request_id": {
           "maxLength": 128,
           "minLength": 1,
           "type": "string"
         },
+        "settle_ms": {
+          "default": 150,
+          "maximum": 2000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "signal_events": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
         "title": {
           "maxLength": 200,
           "type": "string"
+        },
+        "wait_for": {
+          "default": "elapsed",
+          "enum": [
+            "elapsed",
+            "change",
+            "signal",
+            "text"
+          ],
+          "type": "string"
+        },
+        "wait_ms": {
+          "maximum": 20000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wait_text": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
+        },
+        "wait_text_absent": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [

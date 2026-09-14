@@ -1,8 +1,11 @@
 //! Text waiting (#1666): wake on renderer revisions and client protocol
-//! events, re-test the live viewport rows against literal patterns on every
-//! revision, and return once a match has stayed quiet for the settle window.
+//! events, re-test the live viewport rows against the text conditions on
+//! every revision, and return once they have held for the settle window.
 //! "Until the screen shows X", not "until X appears anew": a screen that
-//! already matches settles from the wait's start.
+//! already matches settles from the wait's start. #1677 r16: the conditions
+//! are `wait_text` (any present) and `wait_text_absent` (none present),
+//! see `text_conditions.rs`.
+use super::text_conditions::{ConditionState, TextConditions};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -30,22 +33,18 @@ impl TextMatch {
 /// The text loop's verdict.
 #[derive(Debug, PartialEq, Eq)]
 pub struct TextWait {
-    /// The match present when the wait ended, if any.
+    /// The present match on the screen the wait ended on, if any (null
+    /// when only an absence condition was asked or the screen had none).
     pub matched: Option<TextMatch>,
-    /// A match was present and the screen quiet for the settle window.
+    /// Every condition held on the screen the wait ended on.
+    pub holds: bool,
+    /// Which conditions held on that screen (null for a condition without
+    /// patterns).
+    pub conditions: ConditionState,
+    /// The conditions held and the screen was quiet for the settle window.
     pub settled: bool,
     /// Exit / disconnect / invalidation ended the wait.
     pub exited: bool,
-}
-
-/// First pattern in argument order, then first row top-down; a pattern is a
-/// substring of a row as rendered (rows are already trailing-trimmed).
-pub fn find_match(patterns: &[String], rows: &[String]) -> Option<(String, usize)> {
-    patterns.iter().find_map(|pattern| {
-        rows.iter()
-            .position(|row| row.contains(pattern.as_str()))
-            .map(|row| (pattern.clone(), row))
-    })
 }
 
 /// The text-mode loop, separated from the client so its timing can be
@@ -54,33 +53,38 @@ pub fn find_match(patterns: &[String], rows: &[String]) -> Option<(String, usize
 /// `stopped`), `capture` one read of the live viewport (its trimmed rows and
 /// revision; `None` when the projection is unavailable, which `stopped`
 /// then reports). The rows are captured once per revision wake — never on a
-/// protocol event or a timer wake alone — and re-tested against `patterns`;
-/// a match that disappears returns the wait to "no match". Only a revision
-/// starts or extends the quiet window; it ends the wait while a match is
-/// present. As in change mode, a timer wake re-reads the revision before
-/// settling, and a window that would end at or after the deadline reports
-/// the budget verdict instead.
+/// protocol event or a timer wake alone — and re-tested against
+/// `conditions`; a screen on which they stop holding returns the wait to
+/// "not held". Only a revision starts or extends the quiet window; it ends
+/// the wait while the conditions hold. As in change mode, a timer wake
+/// re-reads the revision before settling, and a window that would end at
+/// or after the deadline reports the budget verdict instead.
 #[allow(clippy::too_many_arguments)]
 pub async fn wait_for_text(
     mut revisions: watch::Receiver<u64>,
     mut events: watch::Receiver<u64>,
     stopped: impl Fn() -> bool,
     capture: impl Fn() -> Option<(Vec<String>, u64)>,
-    patterns: &[String],
+    conditions: &TextConditions,
     started: Instant,
     deadline: Instant,
     settle: Duration,
 ) -> TextWait {
     let mut seen: Option<u64> = None;
     let mut matched: Option<TextMatch> = None;
+    let mut state = ConditionState::default();
+    let mut holds = false;
     // Present since the first capture without interruption: `already`.
     let mut continuous = true;
     let mut last_change = started;
-    let verdict = |matched: Option<TextMatch>, settled: bool, exited: bool| TextWait {
-        matched,
-        settled,
-        exited,
-    };
+    let verdict =
+        |matched: Option<TextMatch>, state: ConditionState, settled: bool, exited: bool| TextWait {
+            matched,
+            holds: state.holds(),
+            conditions: state,
+            settled,
+            exited,
+        };
     loop {
         events.borrow_and_update();
         let current = *revisions.borrow_and_update();
@@ -92,10 +96,17 @@ pub async fn wait_for_text(
                 last_change = now;
             }
             // The capture's own revision names the screen that was tested; the
-            // channel value only says a wake was due.
-            let found = capture().and_then(|(rows, revision)| {
-                find_match(patterns, &rows).map(|(pattern, row)| (pattern, row, revision))
-            });
+            // channel value only says a wake was due. An unavailable capture
+            // holds nothing (`stopped` reports it).
+            let tested = capture().map(|(rows, revision)| (conditions.test(&rows), revision));
+            let found = tested
+                .as_ref()
+                .and_then(|((found, _), revision)| found.clone().map(|(p, r)| (p, r, *revision)));
+            state = tested
+                .as_ref()
+                .map(|((_, state), _)| *state)
+                .unwrap_or_default();
+            holds = tested.is_some() && state.holds();
             continuous = continuous && found.is_some();
             matched = found.map(|(pattern, row, revision)| TextMatch {
                 pattern,
@@ -110,15 +121,15 @@ pub async fn wait_for_text(
         // quiet timer, or a screen that already exited while showing the
         // pattern, is `exited`, never `matched`/`settled`.
         if stopped() {
-            return verdict(matched, false, true);
+            return verdict(matched, state, false, true);
         }
-        if matched.is_some() && now >= quiet_until && quiet_until < deadline {
-            return verdict(matched, true, false);
+        if holds && now >= quiet_until && quiet_until < deadline {
+            return verdict(matched, state, true, false);
         }
         if now >= deadline {
-            return verdict(matched, false, false);
+            return verdict(matched, state, false, false);
         }
-        let timer = if matched.is_some() {
+        let timer = if holds {
             quiet_until.min(deadline)
         } else {
             deadline
@@ -126,12 +137,12 @@ pub async fn wait_for_text(
         tokio::select! {
             result = revisions.changed() => {
                 if result.is_err() {
-                    return verdict(matched, false, stopped());
+                    return verdict(matched, state, false, stopped());
                 }
             }
             result = events.changed() => {
                 if result.is_err() {
-                    return verdict(matched, false, stopped());
+                    return verdict(matched, state, false, stopped());
                 }
             }
             _ = tokio::time::sleep_until(timer) => {
@@ -141,12 +152,12 @@ pub async fn wait_for_text(
                     continue;
                 }
                 if stopped() {
-                    return verdict(matched, false, true);
+                    return verdict(matched, state, false, true);
                 }
-                if matched.is_some() && timer < deadline {
-                    return verdict(matched, true, false);
+                if holds && timer < deadline {
+                    return verdict(matched, state, true, false);
                 }
-                return verdict(matched, false, false);
+                return verdict(matched, state, false, false);
             }
         }
     }
@@ -159,23 +170,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn find_match_prefers_the_first_pattern_then_the_first_row() {
-        let patterns = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        let rows = patterns(&["a x", "b y", "b z", "", "a"]);
-        assert_eq!(
-            find_match(&patterns(&["b", "a"]), &rows),
-            Some(("b".into(), 1))
-        );
-        assert_eq!(
-            find_match(&patterns(&["a", "b"]), &rows),
-            Some(("a".into(), 0))
-        );
-        assert_eq!(
-            find_match(&patterns(&["z", "b z"]), &rows),
-            Some(("z".into(), 2))
-        );
-        assert_eq!(find_match(&patterns(&["q"]), &rows), None);
-        assert_eq!(find_match(&patterns(&["a"]), &[]), None);
+    fn text_match_json_shape() {
         assert_eq!(
             TextMatch {
                 pattern: "❯".into(),
@@ -211,6 +206,16 @@ mod tests {
     /// Every sender is kept alive by the fixture (a dropped sender ends the
     /// loop at once, which would make a budget test vacuous).
     fn start(patterns: &[&str], rows: &[&str], settle_ms: u64, budget_ms: u64) -> (Fixture, Task) {
+        start_with(patterns, &[], rows, settle_ms, budget_ms)
+    }
+    /// The same with both condition lists (#1677 r16).
+    fn start_with(
+        present: &[&str],
+        absent: &[&str],
+        rows: &[&str],
+        settle_ms: u64,
+        budget_ms: u64,
+    ) -> (Fixture, Task) {
         let (revisions, revisions_rx) = watch::channel(0u64);
         let (events, events_rx) = watch::channel(0u64);
         let stopped = Arc::new(AtomicBool::new(false));
@@ -219,7 +224,10 @@ mod tests {
         ));
         let revision = Arc::new(AtomicU64::new(0));
         let captures = Arc::new(AtomicUsize::new(0));
-        let patterns: Vec<String> = patterns.iter().map(|s| (*s).to_owned()).collect();
+        let conditions = TextConditions {
+            present: present.iter().map(|s| (*s).to_owned()).collect(),
+            absent: absent.iter().map(|s| (*s).to_owned()).collect(),
+        };
         let (flag, screen, current, count) = (
             stopped.clone(),
             rows.clone(),
@@ -239,7 +247,7 @@ mod tests {
                         current.load(Ordering::SeqCst),
                     ))
                 },
-                &patterns,
+                &conditions,
                 started,
                 started + Duration::from_millis(budget_ms),
                 Duration::from_millis(settle_ms),
@@ -484,5 +492,114 @@ mod tests {
         tokio::time::advance(Duration::from_millis(300)).await;
         let (verdict, _) = task.await.unwrap();
         assert!(verdict.exited, "exit at the deadline reported as unmatched");
+    }
+
+    /// #1677 r16 absent-only: the wait ends once no absent pattern is on
+    /// any row and the screen is quiet; `matched` stays null, `conditions`
+    /// names the side that held.
+    #[tokio::test(start_paused = true)]
+    async fn absent_condition_alone_ends_the_wait_when_the_pattern_is_gone() {
+        let (fixture, task) = start_with(
+            &[],
+            &["esc to interrupt"],
+            &["· Noodling… (esc to interrupt)"],
+            150,
+            5_000,
+        );
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(300)).await;
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "the busy hint is still on the screen");
+        fixture.paint(&["❯ the answer"]);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(149)).await;
+        assert!(!task.is_finished(), "settled before the quiet window");
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.matched, None, "no present pattern was asked");
+        assert!(verdict.holds && verdict.settled && !verdict.exited);
+        assert_eq!(
+            verdict.conditions,
+            ConditionState {
+                present: None,
+                absent: Some(true)
+            }
+        );
+        assert_eq!(waited, Duration::from_millis(450));
+        assert_eq!(fixture.captures.load(Ordering::SeqCst), 2);
+        // Already absent at the start: settles from the wait's start.
+        let (_fixture, task) = start_with(&[], &["busy"], &["❯ done"], 150, 5_000);
+        let (verdict, waited) = task.await.unwrap();
+        assert!(verdict.holds && verdict.settled);
+        assert_eq!(waited, Duration::from_millis(150));
+        // Still present at the budget: not held, unsettled.
+        let (_fixture, task) = start_with(&[], &["busy"], &["busy"], 150, 300);
+        let (verdict, waited) = task.await.unwrap();
+        assert!(!verdict.holds && !verdict.settled && !verdict.exited);
+        assert_eq!(verdict.conditions.absent, Some(false));
+        assert_eq!(waited, Duration::from_millis(300));
+    }
+
+    /// #1677 r16 present AND absent: a screen showing the prompt and the
+    /// busy hint matches the present pattern (reported, `already`) but does
+    /// not hold; the wait keeps going until a revision removes the hint,
+    /// then settles; both sides are reported.
+    #[tokio::test(start_paused = true)]
+    async fn present_match_with_the_absent_pattern_still_on_screen_keeps_waiting() {
+        let (fixture, task) = start_with(
+            &["❯"],
+            &["esc to interrupt"],
+            &["❯ ", "· Noodling… (esc to interrupt)"],
+            150,
+            5_000,
+        );
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(400)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !task.is_finished(),
+            "a present match must not settle while an absent pattern is shown"
+        );
+        fixture.paint(&["❯ the answer", ""]);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(150)).await;
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.matched, found("❯", 0, 1, true), "{verdict:?}");
+        assert!(verdict.holds && verdict.settled);
+        assert_eq!(
+            verdict.conditions,
+            ConditionState {
+                present: Some(true),
+                absent: Some(true)
+            }
+        );
+        assert_eq!(waited, Duration::from_millis(550));
+        // The other order: the hint is gone but the prompt not yet there.
+        let (fixture, task) = start_with(&["❯"], &["esc to interrupt"], &["thinking"], 150, 5_000);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(200)).await;
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        fixture.paint(&["❯ "]);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(150)).await;
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.matched, found("❯", 0, 1, false));
+        assert!(verdict.holds && verdict.settled);
+        assert_eq!(waited, Duration::from_millis(350));
+        // Budget with the present match shown but the hint still there:
+        // matched is reported, held is false, unsettled.
+        let (_fixture, task) = start_with(&["❯"], &["busy"], &["❯ busy"], 150, 300);
+        let (verdict, waited) = task.await.unwrap();
+        assert_eq!(verdict.matched, found("❯", 0, 0, true));
+        assert!(!verdict.holds && !verdict.settled);
+        assert_eq!(
+            verdict.conditions,
+            ConditionState {
+                present: Some(true),
+                absent: Some(false)
+            }
+        );
+        assert_eq!(waited, Duration::from_millis(300));
     }
 }

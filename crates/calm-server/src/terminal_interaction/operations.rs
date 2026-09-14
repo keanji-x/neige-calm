@@ -1,5 +1,9 @@
-use super::actions::{BELOW_CURSOR_EDITS_ONLY, edits_the_draft, encode, sequence_steps};
+use super::actions::{BELOW_CURSOR_EDITS_ONLY, Encoded, edits_the_draft, encode, sequence_steps};
 use super::input_control::ClaimStep;
+use super::receipts::{
+    WriteReceipts, attach_claim, control_unavailable_receipt, merge, stale_receipt,
+};
+use super::replace_plan::ReplacePlan;
 use super::screen_diff::{CursorSnapshot, ScreenDiff, row_hashes};
 use super::*;
 
@@ -172,6 +176,7 @@ impl TerminalInteraction {
             input_revision,
             signal_seq,
             tolerated,
+            replace,
         } = match fence {
             Fence::Ready(ready) => ready,
             Fence::ControlLost => {
@@ -220,6 +225,7 @@ impl TerminalInteraction {
             observation,
             drift.as_ref(),
             sequence_steps(&action),
+            replace.as_ref(),
             options.release,
         );
         receipts.attach(claim.as_ref());
@@ -308,7 +314,8 @@ impl TerminalInteraction {
     }
     /// The fences that read the live screen: availability and age again
     /// (the claim may have taken seconds), control ([`control_fence`]), the
-    /// surface, the action against the live surface, the revision.
+    /// surface, the action against the live surface, the revision; then a
+    /// `replace` plan (#1677) against the frame the revision fence admitted.
     fn pre_write_fences(
         &self,
         client: &Client,
@@ -350,32 +357,43 @@ impl TerminalInteraction {
         // before deciding stale vs ready: an invalid action is an RPC
         // error whatever the revision did, so only the exact-revision
         // fence is relaxed by the stale result.
-        let bytes = encode(action, &now)?;
-        let ready = |tolerated| {
-            Fence::Ready(Ready {
-                bytes,
-                input_revision: current,
-                signal_seq,
-                tolerated,
-            })
+        let encoded = encode(action, &now)?;
+        let tolerated = if saved.revision == current || options.allow_output_since_observation {
+            None
+        } else {
+            // Every other fence passed and only the exact revision differs.
+            // The row comparison (#1666 S4) says whether only rows strictly
+            // below an unmoved cursor changed; it admits the write only on
+            // opt-in and is reported on the stale result either way.
+            let diff = ScreenDiff::compare(
+                saved.cursor,
+                &saved.row_hashes,
+                CursorSnapshot::from(&frame.cursor),
+                &row_hashes(&frame),
+            );
+            if !(options.allow_output_below_cursor && diff.only_below_cursor()) {
+                return Ok(Fence::Stale { current, diff });
+            }
+            Some(diff)
         };
-        if saved.revision == current || options.allow_output_since_observation {
-            return Ok(ready(None));
-        }
-        // Every other fence passed and only the exact revision differs. The
-        // row comparison (#1666 S4) says whether only rows strictly below an
-        // unmoved cursor changed; it admits the write only on opt-in and is
-        // reported on the stale result either way.
-        let diff = ScreenDiff::compare(
-            saved.cursor,
-            &saved.row_hashes,
-            CursorSnapshot::from(&frame.cursor),
-            &row_hashes(&frame),
-        );
-        if options.allow_output_below_cursor && diff.only_below_cursor() {
-            return Ok(ready(Some(diff)));
-        }
-        Ok(Fence::Stale { current, diff })
+        // #1677 — a replace looks the draft up on the live frame only once
+        // the revision (or a tolerance) admitted the write, so a stale
+        // observation is reported before any lookup; its refusals are RPC
+        // errors like an invalid action's.
+        let (bytes, replace) = match encoded {
+            Encoded::Bytes(bytes) => (bytes, None),
+            Encoded::Replace { from, to } => {
+                let plan = ReplacePlan::derive(&frame, &from, &to)?;
+                (plan.bytes(&now)?, Some(plan))
+            }
+        };
+        Ok(Fence::Ready(Ready {
+            bytes,
+            input_revision: current,
+            signal_seq,
+            tolerated,
+            replace,
+        }))
     }
 }
 /// Outcome of the pre-write fences: bytes to write with the live revision, or
@@ -429,47 +447,8 @@ struct Ready {
     signal_seq: u64,
     /// The comparison that admitted a moved revision (`allow_output_below_cursor`).
     tolerated: Option<ScreenDiff>,
-}
-/// The three receipts a write can end with, built before the reservation so
-/// the cached unknown receipt already carries every fact of the request.
-struct WriteReceipts {
-    unknown: Value,
-    written: Value,
-    refused: Value,
-}
-impl WriteReceipts {
-    /// `release` stamps `release: {status: "requested"}` on every receipt,
-    /// so the cached unknown receipt already carries the release fact; the
-    /// release step later updates it to released/not_held/unconfirmed.
-    fn new(
-        terminal: &str,
-        request_key: &str,
-        observation: Uuid,
-        drift: Option<&Value>,
-        steps: Option<usize>,
-        release: bool,
-    ) -> Self {
-        let mut receipts = Self {
-            unknown: unknown_receipt(terminal, request_key, observation, drift),
-            written: acknowledged_receipt(terminal, request_key, observation, drift, true),
-            refused: acknowledged_receipt(terminal, request_key, observation, drift, false),
-        };
-        if let Some(steps) = steps {
-            receipts.each(|receipt| receipt["steps"] = json!(steps));
-        }
-        if release {
-            receipts.each(|receipt| receipt["release"] = json!({"status":"requested"}));
-        }
-        receipts
-    }
-    fn attach(&mut self, claim: Option<&ClaimStep>) {
-        self.each(|receipt| attach_claim(receipt, claim));
-    }
-    fn each(&mut self, mut apply: impl FnMut(&mut Value)) {
-        apply(&mut self.unknown);
-        apply(&mut self.written);
-        apply(&mut self.refused);
-    }
+    /// The plan a `replace` (#1677) derived from the live cursor row.
+    replace: Option<ReplacePlan>,
 }
 /// Reserve the next input sequence, cache the unknown receipt under the
 /// request key, send one ordered write request and await its acknowledgement
@@ -531,221 +510,10 @@ async fn cache(client: &Client, key: &str, fingerprint: &str, receipt: &Value) {
         .await
         .insert(key.to_owned(), (fingerprint.to_owned(), receipt.clone()));
 }
-/// `claim` (and, once granted, `control_id`) on every result of a
-/// `claim:true` request, so the caller knows what it holds even when the
-/// write did not happen.
-fn attach_claim(receipt: &mut Value, claim: Option<&ClaimStep>) {
-    let Some(claim) = claim else {
-        return;
-    };
-    receipt["claim"] = claim.to_json();
-    if let ClaimStep::Claimed(control) = claim {
-        receipt["control_id"] = json!(control);
-    }
-}
-fn merge(target: &mut Value, fields: Value) {
-    if let (Some(target), Some(fields)) = (target.as_object_mut(), fields.as_object()) {
-        for (key, value) in fields {
-            target.insert(key.clone(), value.clone());
-        }
-    }
-}
-/// The stale-observation result: the request was not written, and the caller
-/// is told what to compare and how to resend. `screen_diff` (#1666 S4) says
-/// whether `allow_output_below_cursor` would admit the resend.
-fn stale_receipt(
-    terminal: &str,
-    request_key: &str,
-    observation: Uuid,
-    observed_revision: u64,
-    current_revision: u64,
-    diff: &ScreenDiff,
-) -> Value {
-    json!({"terminal_id":terminal,"request_id":request_key,"outcome":"stale_observation",
-        "application_result":"unverified","observation_id_used":observation,
-        "observed_revision":observed_revision,"current_revision":current_revision,
-        "screen_diff":diff.to_json(observed_revision, current_revision),
-        "next":"inspect observation.state and screen_diff (that fresh observation is now the latest on this connection); if only rows below the cursor changed (cursor unmoved, rows_changed_at_or_above_cursor 0) and the action edits the draft, resend the same request_id with observation_id omitted and allow_output_below_cursor=true; if only status text changed elsewhere, resend the same request_id with observation_id omitted and allow_output_since_observation=true; else act on the new state. Neither flag bypasses the control, surface, viewport or pending fences"})
-}
-/// The control-unavailable result (#1666 S3): `claim:true` could not put
-/// control in this connection's hands, nothing was written or cached.
-fn control_unavailable_receipt(
-    terminal: &str,
-    request_key: &str,
-    observation: Uuid,
-    status: &str,
-    reason: &str,
-) -> Value {
-    json!({"terminal_id":terminal,"request_id":request_key,"outcome":"control_unavailable",
-        "application_result":"unverified","observation_id_used":observation,
-        "reason":reason,"claim":{"status":status,"reason":reason},
-        "next":"nothing was written; read observation.state role/control_id; when free, observe and resend with claim=true"})
-}
-/// Every input receipt, whatever its outcome, carries
-/// `application_result:"unverified"`: an acknowledgement says bytes reached the
-/// PTY, an unknown outcome says not even that is known, and neither says what
-/// the application did with them.
-fn unknown_receipt(
-    terminal: &str,
-    request_key: &str,
-    observation: Uuid,
-    drift: Option<&Value>,
-) -> Value {
-    let mut receipt = json!({"terminal_id":terminal,"request_id":request_key,"outcome":"unknown","repeat_input":false,
-        "application_result":"unverified","observation_id_used":observation,"output_since_observation":drift.is_some()});
-    if let Some(drift) = drift {
-        receipt["observation_drift"] = drift.clone();
-    }
-    receipt
-}
-fn acknowledged_receipt(
-    terminal: &str,
-    request_key: &str,
-    observation: Uuid,
-    drift: Option<&Value>,
-    written: bool,
-) -> Value {
-    let mut receipt = json!({"terminal_id":terminal,"request_id":request_key,"outcome":if written{"written"}else{"refused"},
-        "application_result":"unverified","next":"observe the application result",
-        "observation_id_used":observation,"output_since_observation":drift.is_some()});
-    if let Some(drift) = drift {
-        receipt["observation_drift"] = drift.clone();
-    }
-    receipt
-}
 
 #[cfg(test)]
-mod receipt_tests {
+mod fence_tests {
     use super::*;
-
-    fn diff() -> ScreenDiff {
-        let at = CursorSnapshot {
-            row: 1,
-            column: 0,
-            visible: true,
-        };
-        ScreenDiff::compare(at, &[1, 2, 3], at, &[1, 2, 9])
-    }
-
-    /// The field contract is uniform: written, refused and unknown receipts
-    /// all say `application_result:"unverified"`; only acknowledged ones add
-    /// `next`, and drift evidence is copied whenever it exists.
-    #[test]
-    fn every_terminal_input_receipt_outcome_reports_application_result_unverified() {
-        let observation = Uuid::new_v4();
-        let drift = json!({"observed_revision":3,"input_revision":5});
-        let unknown = unknown_receipt("t1", "r1", observation, None);
-        let written = acknowledged_receipt("t1", "r1", observation, None, true);
-        let refused = acknowledged_receipt("t1", "r1", observation, Some(&drift), false);
-        for (receipt, outcome) in [
-            (&unknown, "unknown"),
-            (&written, "written"),
-            (&refused, "refused"),
-        ] {
-            assert_eq!(receipt["outcome"], outcome, "{receipt}");
-            assert_eq!(receipt["application_result"], "unverified", "{receipt}");
-            assert_eq!(receipt["terminal_id"], "t1");
-            assert_eq!(receipt["request_id"], "r1");
-            assert_eq!(receipt["observation_id_used"], json!(observation));
-            assert!(receipt.get("application_completed").is_none());
-        }
-        assert_eq!(unknown["repeat_input"], false);
-        assert!(unknown.get("next").is_none());
-        assert_eq!(unknown["output_since_observation"], false);
-        assert_eq!(written["next"], "observe the application result");
-        assert_eq!(refused["output_since_observation"], true);
-        assert_eq!(refused["observation_drift"], drift);
-        assert_eq!(
-            unknown_receipt("t1", "r1", observation, Some(&drift))["observation_drift"],
-            drift
-        );
-        let stale = stale_receipt("t1", "r1", observation, 3, 5, &diff());
-        assert_eq!(stale["outcome"], "stale_observation");
-        assert_eq!(stale["application_result"], "unverified");
-        assert_eq!(stale["terminal_id"], "t1");
-        assert_eq!(stale["request_id"], "r1");
-        assert_eq!(stale["observation_id_used"], json!(observation));
-        assert_eq!(stale["observed_revision"], 3);
-        assert_eq!(stale["current_revision"], 5);
-        let next = stale["next"].as_str().unwrap();
-        assert!(next.contains(
-            "resend the same request_id with observation_id omitted and allow_output_since_observation=true"
-        ));
-        assert!(next.contains(
-            "resend the same request_id with observation_id omitted and allow_output_below_cursor=true"
-        ));
-        assert!(
-            next.contains("Neither flag bypasses the control, surface, viewport or pending fences")
-        );
-        assert_eq!(
-            stale["screen_diff"],
-            json!({"compared":{"observed_revision":3,"current_revision":5},"cursor":{"moved":false,"visible":true},
-                "rows_changed_total":1,"rows_changed_at_or_above_cursor":0,"rows_changed_below_cursor":1})
-        );
-        assert!(stale.get("output_since_observation").is_none());
-        assert!(stale.get("observation_drift").is_none());
-        let unavailable =
-            control_unavailable_receipt("t1", "r1", observation, "unconfirmed", "why");
-        assert_eq!(unavailable["outcome"], "control_unavailable");
-        assert_eq!(unavailable["application_result"], "unverified");
-        assert_eq!(unavailable["reason"], "why");
-        assert_eq!(
-            unavailable["claim"],
-            json!({"status":"unconfirmed","reason":"why"})
-        );
-        assert!(
-            unavailable["next"]
-                .as_str()
-                .unwrap()
-                .contains("nothing was written")
-        );
-    }
-
-    /// #1666: `steps` on every write receipt of a sequence, `claim` and
-    /// `control_id` on every result of a claim, whatever the outcome, and
-    /// (r1) `release: requested` on every write receipt of a release request
-    /// before the release runs.
-    #[test]
-    fn write_receipts_carry_steps_claim_and_release_uniformly() {
-        let observation = Uuid::new_v4();
-        let control = Uuid::new_v4();
-        let mut receipts = WriteReceipts::new("t1", "r1", observation, None, Some(4), true);
-        receipts.attach(Some(&ClaimStep::Claimed(control)));
-        for receipt in [&receipts.unknown, &receipts.written, &receipts.refused] {
-            assert_eq!(receipt["steps"], 4, "{receipt}");
-            assert_eq!(
-                receipt["claim"],
-                json!({"status":"claimed","control_id":control})
-            );
-            assert_eq!(receipt["control_id"], json!(control));
-            assert_eq!(
-                receipt["release"],
-                json!({"status":"requested"}),
-                "{receipt}"
-            );
-        }
-        let mut plain = WriteReceipts::new("t1", "r1", observation, None, None, false);
-        plain.attach(Some(&ClaimStep::Held));
-        assert!(plain.written.get("steps").is_none());
-        assert!(plain.written.get("release").is_none());
-        assert!(plain.unknown.get("release").is_none());
-        assert_eq!(plain.written["claim"], json!({"status":"held"}));
-        assert!(plain.written.get("control_id").is_none());
-        let mut none = WriteReceipts::new("t1", "r1", observation, None, None, false);
-        none.attach(None);
-        assert!(none.written.get("claim").is_none());
-        let mut stale = stale_receipt("t1", "r1", observation, 3, 5, &diff());
-        attach_claim(&mut stale, Some(&ClaimStep::Claimed(control)));
-        assert_eq!(stale["claim"]["status"], "claimed");
-        assert_eq!(stale["control_id"], json!(control));
-        let mut drift = json!({"observed_revision":3,"input_revision":5});
-        merge(&mut drift, diff().tolerance_json());
-        assert_eq!(
-            drift,
-            json!({"observed_revision":3,"input_revision":5,"tolerance":"below_cursor",
-                "rows_changed_below_cursor":[2],"rows_changed_total":1,"truncated":false})
-        );
-    }
 
     /// #1666 r1 (C): a granted claim authorizes exactly the lease it
     /// granted; a lease that moved since is `Lost` (fail closed), and

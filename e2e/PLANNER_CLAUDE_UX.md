@@ -165,6 +165,28 @@ arguments say `claim`, `release` or `allow_output_below_cursor` is true;
 `below_cursor_tolerated_inputs`: non-failed input receipts whose
 `observation_drift.tolerance` is `below_cursor`.
 
+#1677 counters (also in `wait_summary`), read the same way: `open_with_wait`:
+`open` calls whose arguments carry any wait argument (`wait_for`, `wait_ms`,
+`settle_ms`, `signal_events`, `repaint_ms`, `wait_text`; failed ones
+included); `open_wait_outcomes`: tally of those calls' returned
+`wait.outcome`; `replace_actions`: input requests whose action type is
+`replace` (failed ones included) and `replace_written`: the non-failed ones
+whose receipt `outcome` is `written` (an acknowledgement, not an application
+result; a `replace` satisfies the edit scenario's correction check like an
+editing key); `summary_present`: non-failed control/input receipts carrying a
+`summary` object. An `open` result is an observation for every wait, signal
+and text tally from this change on (its wait runs as the open's final
+observation), so an open with `wait_for: "change"` or `"text"` counts as that
+wait request with its outcome. r16: `text_condition_requests`:
+observation-requesting calls in signal mode whose arguments carry `wait_text`
+or `wait_text_absent` (failed ones included); `signal_condition_outcomes`:
+tally of those calls' returned `wait.repaint.outcome` joined with whether
+every asked condition held (`settled/held`, `unsettled/not_held`, …); a
+missing `repaint` or `conditions` block (older server) adds nothing.
+
+The counters live in `e2e/planner_claude_ux_metrics.py` (one program, two
+files; `planner_claude_ux.py` star-imports it).
+
 ## Model-free driver checks
 
 These validate only collection/failure handling; they are not a fake passing
