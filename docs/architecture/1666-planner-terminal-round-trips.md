@@ -163,12 +163,13 @@ highlight change counts), computed from the capture already taken, outside the
 registry lock (`terminal_interaction/screen_diff.rs`). `input
 allow_output_below_cursor: true` (default false): when only the revision fence
 fails, the live frame is compared with the observation and the write proceeds
-iff the cursor is visible, within `0..rows` and identical, the surface fence
-passed (already required; a hidden cursor flips an input mode and is refused
-there first), `scroll_offset == 0`, the row count is unchanged and every row
-with index ≤ cursor.row hashes identically — only rows strictly below the
-cursor differ (possibly none: a revision can move without a textual or
-presentational change). Anything else stays `stale_observation`.
+iff the cursor is within `0..rows` and identical (position and visibility;
+#1677: it may be hidden in both captures — a visibility CHANGE flips an input
+mode and is refused by the surface fence first, which is already required),
+`scroll_offset == 0`, the row count is unchanged and every row with index ≤
+cursor.row hashes identically — only rows strictly below the cursor differ
+(possibly none: a revision can move without a textual or presentational
+change). Anything else stays `stale_observation`.
 `allow_output_since_observation: true` remains the wider opt-in and wins when
 both are set. The tolerance is accepted only for draft edits — `text`,
 `sequence` and a `key` from the sequence vocabulary — and refused (invalid
@@ -277,7 +278,12 @@ in `terminal_interaction/replace_plan.rs`:
   is skipped; blank cells are kept (one character each: the plan assumes the
   row is the application's line buffer with one character per non-padding
   cell); the cursor column is a zero-based cell column and a cursor inside a
-  wide cell (`start < column < start+width`) or off the row is refused;
+  wide cell (`start < column < start+width`) or off the row is refused; the
+  cursor may be hidden — round 15 on Claude Code 2.1.259 observed `cursor
+  {column: 29, row: 12, visible: false}` on the draft `❯ 请只回答 7200 + 11
+  的结果。`: Claude Code keeps DECTCEM off in its draft box while positioning
+  the cursor at the edit point, so the plan uses the position whether or not
+  the cursor is shown and the receipt reports `cursor_visible` for audit;
 * the character index at a boundary is Σ `cell.text.chars().count()` over
   the non-padding cells before it; `from` is searched in the row string built
   from those cells in the same scalar convention, counting overlapping
@@ -290,15 +296,15 @@ in `terminal_interaction/replace_plan.rs`:
   `Backspace×chars(from)`, then `to`, with the `sequence` key encoding, in one
   ordered write (one barrier, one ack, one receipt).
 
-Refusals (hidden cursor, cursor row outside the viewport, cursor inside a wide
-cell, absent, N occurrences, another row, unaligned match, control
+Refusals (cursor row outside the viewport, cursor inside a wide cell or off
+the row, absent, N occurrences, another row, unaligned match, control
 characters, size) follow the invalid-action convention: an RPC error through
 `failure` (−32403), nothing written, nothing cached; after a granted
 `claim:true` the error carries the `note_claim` disclosure. The Planner then
 falls back to a `sequence`. The plan is stamped on all three `WriteReceipts`
 (unknown/written/refused) before the unknown receipt is cached, as `replace:
-{row, cursor_index, moves: {key, repeat} | null, erased, inserted}`; a replay
-returns the cached plan and never recomputes it. `allow_output_below_cursor`
+{row, cursor_index, cursor_visible, moves: {key, repeat} | null, erased,
+inserted}`; a replay returns the cached plan and never recomputes it. `allow_output_below_cursor`
 admits `replace` (an editing action: it joins the edits-only allowlist and
 its reason string, not `SEQUENCE_KEYS`); the fingerprint covers the action
 as given. `application_result` stays `unverified`; the recommended shape is
@@ -311,8 +317,15 @@ line editors), that the text belongs to an unsubmitted draft (the screen
 cannot prove it), or wrapped drafts (a `from` on another row is refused).
 The focused suite drives Python's `input()` with GNU readline under
 `LANG=C.UTF-8`: `11 松果` → `19 松果` moves Left 3 (characters, not the 5
-columns), Home then `松果` → `苹果` moves Right 5, and a separate Enter
-prints the edited line.
+columns), Home then `松果` → `苹果` moves Right 5, a separate Enter prints
+the edited line, and the same edit under `printf '\033[?25l'` (cursor hidden,
+as in Claude Code) is written with `cursor_visible: false`. The same fact
+reaches `allow_output_below_cursor`: `ScreenDiff::only_below_cursor` compares
+the cursor's position (a cursor hidden in both captures is admitted; the
+suite's hint box under `\033[?25l` reports `screen_diff.cursor {moved: false,
+visible: false}` and writes with `tolerance: below_cursor`), while a
+visibility change between the observation and the live frame stays refused
+by the surface fence through the mode bit, as before.
 
 ### `summary` on receipts
 

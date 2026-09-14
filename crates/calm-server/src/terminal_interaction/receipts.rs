@@ -266,6 +266,7 @@ mod tests {
         let plan = ReplacePlan {
             row: 3,
             cursor_index: 12,
+            cursor_visible: false,
             moves: Some(super::super::replace_plan::Moves {
                 key: "Left",
                 repeat: 5,
@@ -277,7 +278,7 @@ mod tests {
         for receipt in [&replaced.unknown, &replaced.written, &replaced.refused] {
             assert_eq!(
                 receipt["replace"],
-                json!({"row":3,"cursor_index":12,"moves":{"key":"Left","repeat":5},"erased":2,"inserted":"19"}),
+                json!({"row":3,"cursor_index":12,"cursor_visible":false,"moves":{"key":"Left","repeat":5},"erased":2,"inserted":"19"}),
                 "{receipt}"
             );
             assert!(receipt.get("steps").is_none());

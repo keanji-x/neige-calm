@@ -6,8 +6,12 @@
 //! The plan assumes the cursor row is the application's line buffer with one
 //! character per non-padding cell, and that the application moves one
 //! character per arrow key and erases one per Backspace (true for Claude
-//! Code, readline and most line editors). The tool guarantees that the bytes
-//! correspond to the plan against the row as captured; nothing more.
+//! Code, readline and most line editors). The cursor may be hidden: Claude
+//! Code keeps DECTCEM off in its draft box while still positioning the
+//! cursor at the edit point, so the plan uses the position whether or not
+//! the cursor is shown and reports `cursor_visible` for the Planner to
+//! audit. The tool guarantees that the bytes correspond to the plan against
+//! the row as captured; nothing more.
 use super::actions::ACTION_BYTES_MAX;
 use anyhow::{Result, ensure};
 use calm_terminal_view::{Frame, InputSurface, key_bytes};
@@ -31,6 +35,9 @@ pub struct ReplacePlan {
     pub row: u32,
     /// The cursor's character index on that row.
     pub cursor_index: usize,
+    /// Whether the cursor was shown (DECTCEM) when the plan was derived; a
+    /// hidden cursor is positioned all the same.
+    pub cursor_visible: bool,
     /// Moves that bring the cursor to the end of `from`; `None` when it is
     /// there already.
     pub moves: Option<Moves>,
@@ -74,11 +81,10 @@ impl ReplacePlan {
         Ok((chars, boundaries, cursor_index))
     }
     /// Derive the plan for `from` → `to` on the cursor row of `frame`. Every
-    /// refusal is an error: hidden cursor, cursor row outside the viewport,
-    /// cursor inside a wide cell, `from` absent or ambiguous (overlapping
+    /// refusal is an error: cursor row outside the viewport, cursor inside a
+    /// wide cell or off the row, `from` absent or ambiguous (overlapping
     /// occurrences count), or a match cutting through a cell's text.
     pub fn derive(frame: &Frame, from: &str, to: &str) -> Result<Self> {
-        ensure!(frame.cursor.visible, "replace needs a visible cursor");
         let (chars, boundaries, cursor_index) = Self::cursor_row(frame)?;
         let cursor_index = cursor_index.ok_or_else(|| {
             anyhow::anyhow!("replace: the cursor is inside a wide cell or off the row")
@@ -119,6 +125,7 @@ impl ReplacePlan {
         Ok(Self {
             row: frame.cursor.row,
             cursor_index,
+            cursor_visible: frame.cursor.visible,
             moves,
             erased: needle.len(),
             inserted: to.to_owned(),
@@ -142,7 +149,7 @@ impl ReplacePlan {
     }
     /// The `replace` block of every write receipt.
     pub fn to_json(&self) -> Value {
-        json!({"row":self.row,"cursor_index":self.cursor_index,
+        json!({"row":self.row,"cursor_index":self.cursor_index,"cursor_visible":self.cursor_visible,
             "moves":self.moves.map(|moves| json!({"key":moves.key,"repeat":moves.repeat})),
             "erased":self.erased,"inserted":self.inserted})
     }
@@ -176,6 +183,7 @@ mod tests {
             ReplacePlan {
                 row: 0,
                 cursor_index: 16,
+                cursor_visible: true,
                 moves: moves("Left", 5),
                 erased: 2,
                 inserted: "19".into()
@@ -198,7 +206,7 @@ mod tests {
         assert_eq!(exact.bytes(&surface).unwrap(), b"\x7f\x7f19".to_vec());
         assert_eq!(
             exact.to_json(),
-            json!({"row":0,"cursor_index":11,"moves":null,"erased":2,"inserted":"19"})
+            json!({"row":0,"cursor_index":11,"cursor_visible":true,"moves":null,"erased":2,"inserted":"19"})
         );
         assert_eq!(end.to_json()["moves"], json!({"key":"Left","repeat":5}));
         // Deleting: an empty `to` writes only the Backspaces.
@@ -293,10 +301,32 @@ mod tests {
         assert!(cut.to_string().contains("cuts through a cell"), "{cut}");
     }
 
-    /// Absent, ambiguous (overlapping occurrences included), hidden cursor,
-    /// another row, and the size bound.
+    /// A hidden cursor (DECTCEM off, as in Claude Code's draft box) is
+    /// positioned all the same: the plan uses it and reports the fact.
     #[test]
-    fn refusals_absent_ambiguous_hidden_cursor_other_row_and_size() {
+    fn hidden_cursor_is_used_by_position_and_reported() {
+        let hidden = plan(b"> 7200 + 11 done\x1b[?25l", "11", "19").unwrap();
+        assert!(!hidden.cursor_visible);
+        assert_eq!(hidden.cursor_index, 16);
+        assert_eq!(hidden.moves, moves("Left", 5));
+        assert_eq!(hidden.to_json()["cursor_visible"], false);
+        let shown = plan(b"> 7200 + 11 done", "11", "19").unwrap();
+        assert!(shown.cursor_visible);
+        assert_eq!(shown.to_json()["cursor_visible"], true);
+        assert_eq!(
+            ReplacePlan {
+                cursor_visible: true,
+                ..hidden.clone()
+            },
+            shown,
+            "visibility is the only difference"
+        );
+    }
+
+    /// Absent, ambiguous (overlapping occurrences included), another row,
+    /// off the row, and the size bound.
+    #[test]
+    fn refusals_absent_ambiguous_other_row_off_row_and_size() {
         let absent = plan(b"> 7200 + 11", "12", "19").unwrap_err();
         assert!(
             absent.to_string().contains("is not on the cursor row"),
@@ -310,8 +340,6 @@ mod tests {
             "aaa holds two aa: {overlapping}"
         );
         assert!(plan(b"> aaa", "aaa", "b").is_ok());
-        let hidden = plan(b"> 11\x1b[?25l", "11", "19").unwrap_err();
-        assert!(hidden.to_string().contains("visible cursor"), "{hidden}");
         // `from` is on the row above the cursor row.
         let above = plan(b"> 11\r\n> 12", "11", "19").unwrap_err();
         assert!(

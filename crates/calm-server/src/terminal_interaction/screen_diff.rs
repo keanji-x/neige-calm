@@ -95,14 +95,17 @@ impl ScreenDiff {
             rows_changed_below_cursor: below,
         }
     }
-    /// The tolerance admits the write only when the cursor is visible,
-    /// within the viewport and identical, the row count is unchanged and
-    /// every row at or above the cursor hashes identically: only rows
-    /// strictly below the cursor differ (possibly none: a revision can move
-    /// without a textual or presentational change).
+    /// The tolerance admits the write only when the cursor is within the
+    /// viewport and identical (position AND visibility, though a visibility
+    /// change never reaches this comparison: it flips an input mode the
+    /// surface fence refuses first), the row count is unchanged and every
+    /// row at or above the cursor hashes identically: only rows strictly
+    /// below the cursor differ (possibly none: a revision can move without
+    /// a textual or presentational change). A cursor hidden in both
+    /// captures is admitted (#1677): Claude Code keeps its terminal cursor
+    /// hidden in the draft box while positioning it at the edit point.
     pub fn only_below_cursor(&self) -> bool {
         !self.cursor_moved
-            && self.cursor_visible
             && self.cursor_in_range
             && !self.row_count_changed
             && self.rows_changed_at_or_above_cursor == 0
@@ -177,8 +180,8 @@ mod tests {
         );
     }
 
-    /// The admission table: only rows strictly below an unmoved, visible,
-    /// in-range cursor may differ.
+    /// The admission table: only rows strictly below an unmoved, in-range
+    /// cursor may differ; the cursor may be hidden in both captures.
     #[test]
     fn only_below_cursor_admits_exactly_the_hint_line_case() {
         let saved = [1, 2, 3, 4, 5];
@@ -209,14 +212,23 @@ mod tests {
         assert_eq!(both.rows_changed_at_or_above_cursor, 1);
         assert_eq!(both.rows_changed_below_cursor, vec![3, 4]);
         assert_eq!(both.rows_changed_total, 3);
-        // Cursor moved (column), hidden, or out of range: refused even with
+        // Cursor moved (column) or out of range: refused even with
         // identical rows.
         let moved = diff(cursor(1, 5, true), &saved);
         assert!(moved.cursor_moved && !moved.only_below_cursor());
         let down = diff(cursor(2, 4, true), &saved);
         assert!(down.cursor_moved && !down.only_below_cursor());
+        // Hidden in both captures (Claude Code's draft box): admitted on the
+        // position; the visibility is still reported.
         let hidden = ScreenDiff::compare(cursor(1, 4, false), &saved, cursor(1, 4, false), &saved);
-        assert!(!hidden.cursor_visible && !hidden.only_below_cursor());
+        assert!(!hidden.cursor_visible && hidden.only_below_cursor());
+        let hidden_moved =
+            ScreenDiff::compare(cursor(1, 4, false), &saved, cursor(1, 5, false), &saved);
+        assert!(hidden_moved.cursor_moved && !hidden_moved.only_below_cursor());
+        // Visibility differs between the captures: `cursor_moved` (the
+        // surface fence refuses this earlier through the mode bit).
+        let toggled = ScreenDiff::compare(cursor(1, 4, true), &saved, cursor(1, 4, false), &saved);
+        assert!(toggled.cursor_moved && !toggled.only_below_cursor());
         let out = ScreenDiff::compare(cursor(7, 0, true), &saved, cursor(7, 0, true), &saved);
         assert!(!out.cursor_in_range && !out.only_below_cursor());
         // Row count changed: refused, and unpaired rows count as changed.

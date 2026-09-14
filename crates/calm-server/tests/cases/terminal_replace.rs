@@ -112,7 +112,7 @@ async fn replace_moves_left_from_the_end_and_the_receipt_carries_the_plan() {
     assert_eq!(written["application_result"], "unverified");
     assert_eq!(
         written["replace"],
-        json!({"row":row,"cursor_index":16,"moves":{"key":"Left","repeat":5},"erased":2,"inserted":"19"}),
+        json!({"row":row,"cursor_index":16,"cursor_visible":true,"moves":{"key":"Left","repeat":5},"erased":2,"inserted":"19"}),
         "{written}"
     );
     assert!(written.get("steps").is_none());
@@ -210,8 +210,8 @@ async fn replace_counts_cjk_characters_and_moves_right_from_home() {
     assert_eq!(receipt(&right)["outcome"], "written", "{right}");
     assert_eq!(
         receipt(&right)["replace"],
-        json!({"row":draft["cursor"]["row"],"cursor_index":2,"moves":{"key":"Right","repeat":5},
-            "erased":2,"inserted":"苹果"}),
+        json!({"row":draft["cursor"]["row"],"cursor_index":2,"cursor_visible":true,
+            "moves":{"key":"Right","repeat":5},"erased":2,"inserted":"苹果"}),
         "{right}"
     );
     assert_eq!(cursor_row(observation(&right)), "> 19 苹果", "{right}");
@@ -298,21 +298,74 @@ async fn replace_refusals_are_rpc_errors_before_any_write() {
     h.stop(&terminal).await;
 }
 
-/// The cursor facts: a hidden cursor (under an exact revision), a cursor
-/// inside a wide cell, and a match that cuts through a combining sequence
-/// are refused on the live frame; nothing is written.
+/// A hidden cursor is positioned all the same (Claude Code keeps DECTCEM
+/// off in its draft box while moving the cursor to the edit point): the
+/// plan uses the position, the receipt reports `cursor_visible: false`,
+/// and readline applies the edit.
 #[tokio::test]
-async fn replace_refuses_hidden_cursor_wide_cell_cursor_and_unaligned_matches() {
+async fn replace_with_a_hidden_cursor_uses_its_position() {
+    let h = Harness::start().await;
+    let hidden = format!("printf '\\033[?25l'; {READLINE}");
+    let terminal = open_claimed(&h, &hidden, "replace-hidden").await;
+    let view = h.observe_text(&terminal, ">").await;
+    assert_eq!(view["cursor"]["visible"], false, "{view}");
+    let typed = h
+        .call(
+            "calm.terminal.input",
+            edit(
+                &terminal,
+                "draft",
+                json!({"type":"text","text":"7200 + 11 done"}),
+                json!({}),
+            ),
+        )
+        .await;
+    assert_eq!(receipt(&typed)["outcome"], "written", "{typed}");
+    let draft = observation(&typed);
+    assert_eq!(cursor_row(draft), "> 7200 + 11 done", "{draft}");
+    assert_eq!(draft["cursor"]["visible"], false, "{draft}");
+    assert_eq!(draft["cursor"]["column"], 16, "{draft}");
+    let edited = h
+        .call(
+            "calm.terminal.input",
+            edit(&terminal, "fix", replace("11", "19"), json!({})),
+        )
+        .await;
+    let written = receipt(&edited);
+    assert_eq!(written["outcome"], "written", "{edited}");
+    assert_eq!(
+        written["replace"],
+        json!({"row":draft["cursor"]["row"],"cursor_index":16,"cursor_visible":false,
+            "moves":{"key":"Left","repeat":5},"erased":2,"inserted":"19"}),
+        "{written}"
+    );
+    assert_eq!(cursor_row(observation(&edited)), "> 7200 + 19 done");
+    let submitted = h
+        .call(
+            "calm.terminal.input",
+            edit(
+                &terminal,
+                "enter",
+                json!({"type":"key","key":"Enter"}),
+                json!({}),
+            ),
+        )
+        .await;
+    assert!(
+        has_line(observation(&submitted), "GOT:7200 + 19 done"),
+        "{submitted}"
+    );
+    h.stop(&terminal).await;
+}
+
+/// The cursor facts: a cursor inside a wide cell and a match that cuts
+/// through a combining sequence are refused on the live frame; nothing is
+/// written.
+#[tokio::test]
+async fn replace_refuses_wide_cell_cursor_and_unaligned_matches() {
     let h = Harness::start().await;
     let mut last = String::new();
     for (request, program, needle, from, expected) in [
-        (
-            "hidden",
-            "printf '\\033[?25l> 11'; cat >/dev/null",
-            "> 11",
-            "11",
-            "replace needs a visible cursor",
-        ),
         (
             "wide",
             "printf '> 松果\\033[4G'; cat >/dev/null",
@@ -505,7 +558,7 @@ async fn replace_is_admitted_by_the_below_cursor_tolerance() {
     );
     assert_eq!(
         written["replace"],
-        json!({"row":1,"cursor_index":14,"moves":null,"erased":3,"inserted":"xyz"}),
+        json!({"row":1,"cursor_index":14,"cursor_visible":true,"moves":null,"erased":3,"inserted":"xyz"}),
         "{written}"
     );
     assert_eq!(ack(&h, &terminal).await, before + 1);
