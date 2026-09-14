@@ -43,7 +43,7 @@ import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
 import { ReportCandlesBlock } from '../candles/public.tsx';
 import { ReportSeriesBlock } from '../series/public.tsx';
-import { SOURCE_PANEL_COPY } from '../source/copy.ts';
+import { SOURCE_PANEL_COPY } from '../source/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
 import { ReportTaskBlock } from '../task/public.tsx';
 import styles from './document.module.css';

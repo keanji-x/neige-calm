@@ -89,23 +89,46 @@ describe('ReportSourcePanel', () => {
     expect(body?.textContent).toBe(BODY);
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
     expect(scrollIntoView.mock.instances[0]).toBe(marks[0]);
-    expect(container.querySelector('[data-nc-report-source-anchor-missed]')).toBeNull();
+    expect(container.querySelector('[data-nc-report-source-missing]')).toBeNull();
   });
 
-  it('shows the whole body and says so when the anchor cannot be placed', () => {
+  /* §2.5: the anchor does not exist → the missing state, with the destination
+     as written — and the source underneath, because the reader still gains
+     from it. Same shape as the source-missing case (`data-nc-report-source-missing`). */
+  it('keeps the source but shows the missing state with the destination when the anchor is not on the row', () => {
     const missingAnchor = target('neige://source/src_2c9e0a1b#q7', 'src_2c9e0a1b', 'q7');
     const { container } = render(<ReportSourcePanel target={missingAnchor} resolution={{ status: 'ok', source: row() }} onRetry={() => undefined} />);
+    // The source is still there: badge, title, raw body, no highlight.
+    expect(container.querySelector('[data-nc-report-source-provenance="full_text"]')?.textContent).toBe('智堡全文');
+    expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('Mikko 全球市场日志 9-13');
     expect(container.querySelector('mark')).toBeNull();
     expect(container.querySelector('pre[data-nc-report-source-body]')?.textContent).toBe(BODY);
-    expect(screen.getByRole('status').textContent).toBe(SOURCE_PANEL_COPY.anchorMissed);
     expect(scrollIntoView).not.toHaveBeenCalled();
+    // …and above it, the missing state naming the anchor that is not there.
+    const notice = container.querySelector('[data-nc-report-source-missing="anchor"]');
+    expect(notice).not.toBeNull();
+    expect(screen.getByRole('heading', { level: 3 }).textContent).toBe(SOURCE_PANEL_COPY.anchorMissingTitle);
+    expect(SOURCE_PANEL_COPY.anchorMissingTitle).toBe('引用锚点缺失');
+    expect(notice?.textContent).toContain(SOURCE_PANEL_COPY.anchorMissingDetail);
+    expect(notice?.querySelector('code')?.textContent).toBe('neige://source/src_2c9e0a1b#q7');
+    // The body itself is not decorated with the notice's words.
+    expect(container.querySelector('pre')?.textContent).not.toContain('引用锚点缺失');
   });
 
-  it('says the anchor missed when the quote text is not in the body either', () => {
+  it('treats a quote whose text is not in the body the same way', () => {
     const source = row({ quotes: [{ id: 'q1', text: '不在正文里', start: 0, end: 0 }] });
     const { container } = render(<ReportSourcePanel target={WELL_FORMED} resolution={{ status: 'ok', source }} onRetry={() => undefined} />);
     expect(container.querySelector('mark')).toBeNull();
-    expect(container.querySelector('[data-nc-report-source-anchor-missed]')).not.toBeNull();
+    const notice = container.querySelector('[data-nc-report-source-missing="anchor"]');
+    expect(notice?.querySelector('code')?.textContent).toBe('neige://source/src_2c9e0a1b#q1');
+    expect(container.querySelector('pre[data-nc-report-source-body]')?.textContent).toBe(BODY);
+  });
+
+  it('shows no missing state at all when the anchor resolves or the citation has none', () => {
+    const { container, rerender } = render(<ReportSourcePanel target={WELL_FORMED} resolution={{ status: 'ok', source: row() }} onRetry={() => undefined} />);
+    expect(container.querySelector('[data-nc-report-source-missing]')).toBeNull();
+    rerender(<ReportSourcePanel target={NO_ANCHOR} resolution={{ status: 'ok', source: row() }} onRetry={() => undefined} />);
+    expect(container.querySelector('[data-nc-report-source-missing]')).toBeNull();
   });
 
   it('says the source is missing, with the destination, when the track has no such row (404)', () => {

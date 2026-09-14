@@ -29,6 +29,11 @@ import { ErrorBox } from '../../../ui/error-box/public.tsx';
 import { SOURCE_PANEL_COPY, SOURCE_PROVENANCE_COPY } from './copy.ts';
 import styles from './source.module.css';
 
+/* The feature's one public entry: the document's inline citation badge and
+   the app's drawer chrome read their words through here, so `copy.ts` stays
+   internal to this directory. */
+export { SOURCE_PANEL_COPY, SOURCE_PROVENANCE_COPY } from './copy.ts';
+
 export type ReportSourcePanelProps = Readonly<{
   /** The citation that opened the panel. */
   target: ReportSourceLinkTarget;
@@ -58,33 +63,53 @@ export function ReportSourcePanel({ target, resolution, onRetry }: ReportSourceP
             ? <p className={styles.state} role="status">{SOURCE_PANEL_COPY.loading}</p>
             : resolution.status === 'error'
               ? <ErrorBox message="无法读取来源。" details={resolution.message} onRetry={onRetry} />
-              : <Source source={resolution.source} quoteId={target.quoteId} />}
+              : <Source source={resolution.source} target={target} />}
     </div>
   );
 }
 
 /**
- * "来源缺失", two ways. A dangling id is the design's own admitted state (a
- * recipe-born track, a link written for another track); a link that will not
- * parse is the author's typo. Both print the destination as written, because
- * that is the one thing the reader can act on.
+ * The missing state, in one shape for its three causes (§2.5: the panel says
+ * the citation is missing and prints the destination as written, because
+ * that is the one thing the reader can act on). A dangling id is the
+ * design's own admitted state (a recipe-born track, a link written for
+ * another track); a link that will not parse is the author's typo; an
+ * anchor the row does not carry is a citation written ahead of — or against
+ * — the source's quotes. The first two are the whole panel; the third sits
+ * above a source that is still shown, so its heading is one rank down.
  */
-function Missing({ target, reason }: { target: ReportSourceLinkTarget; reason: 'dangling' | 'malformed' }) {
+function MissingNotice({ destination, reason, title, detail }: {
+  destination: string;
+  reason: 'dangling' | 'malformed' | 'anchor';
+  title: string;
+  detail: string;
+}) {
+  const Heading = reason === 'anchor' ? 'h3' : 'h2';
   return (
     <section className={styles.missing} data-nc-report-source-missing={reason} aria-live="polite">
-      <h2 className={styles.missingTitle}>{SOURCE_PANEL_COPY.missingTitle}</h2>
-      <p className={styles.state}>
-        {reason === 'dangling' ? SOURCE_PANEL_COPY.missingDangling : SOURCE_PANEL_COPY.missingMalformed}
-      </p>
+      <Heading className={styles.missingTitle}>{title}</Heading>
+      <p className={styles.state}>{detail}</p>
       <p className={styles.destination}>
         <span className={styles.metaLabel}>{SOURCE_PANEL_COPY.destinationLabel}</span>
-        <code className={styles.destinationCode}>{target.destination}</code>
+        <code className={styles.destinationCode}>{destination}</code>
       </p>
     </section>
   );
 }
 
-function Source({ source, quoteId }: { source: TrackSourceDetail; quoteId: string | null }) {
+function Missing({ target, reason }: { target: ReportSourceLinkTarget; reason: 'dangling' | 'malformed' }) {
+  return (
+    <MissingNotice
+      destination={target.destination}
+      reason={reason}
+      title={SOURCE_PANEL_COPY.missingTitle}
+      detail={reason === 'dangling' ? SOURCE_PANEL_COPY.missingDangling : SOURCE_PANEL_COPY.missingMalformed}
+    />
+  );
+}
+
+function Source({ source, target }: { source: TrackSourceDetail; target: ReportSourceLinkTarget }) {
+  const { quoteId } = target;
   const highlight = quoteId === null ? null : sourceHighlight(source, quoteId);
   const anchorMissed = quoteId !== null && highlight === null;
   const markRef = useRef<HTMLElement | null>(null);
@@ -123,10 +148,15 @@ function Source({ source, quoteId }: { source: TrackSourceDetail; quoteId: strin
           <Origin source={source} />
         </dl>
       </header>
+      {/* The source exists, the anchor does not: the missing state, with the
+          destination as written, above a body that is still worth reading. */}
       {anchorMissed && (
-        <p className={styles.notice} role="status" data-nc-report-source-anchor-missed="">
-          {SOURCE_PANEL_COPY.anchorMissed}
-        </p>
+        <MissingNotice
+          destination={target.destination}
+          reason="anchor"
+          title={SOURCE_PANEL_COPY.anchorMissingTitle}
+          detail={SOURCE_PANEL_COPY.anchorMissingDetail}
+        />
       )}
       {/* `<pre>`, never a Markdown pass: see the file header. */}
       <pre className={styles.body} data-nc-report-source-body="">

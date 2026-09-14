@@ -21,8 +21,7 @@ import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { ReportSourceLinkTarget, SourceResolution } from '../../../../core/domain/report-source.ts';
-import { SOURCE_PANEL_COPY } from '../../features/report/source/copy.ts';
-import { ReportSourcePanel, reportSourcePanelTitle } from '../../features/report/source/public.tsx';
+import { ReportSourcePanel, reportSourcePanelTitle, SOURCE_PANEL_COPY } from '../../features/report/source/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { ApiError, trackSourceQueryOptions, type SourceRead } from '../providers/queries.ts';
 

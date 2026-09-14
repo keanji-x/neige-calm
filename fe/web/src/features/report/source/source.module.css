@@ -94,25 +94,22 @@
     font-family: var(--font-mono);
   }
 
-  .state,
-  .notice {
+  .state {
     margin: 0;
     font-size: var(--text-sm);
     line-height: var(--leading-base);
     color: var(--text-3);
   }
 
-  /* An anchor that could not be placed: the one thing on this surface a
-     reader must not miss, so it takes the warn register. */
-  .notice {
-    color: var(--warn-text);
-  }
-
+  /* The missing state — the whole panel when the source is missing, a
+     block above the body when only the anchor is. One shape for both, so
+     "this citation did not resolve" reads the same wherever it appears. */
   .missing {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
   }
+
 
   .missingTitle {
     margin: 0;
@@ -120,6 +117,20 @@
     font-size: var(--text-lg);
     font-weight: var(--weight-medium);
     line-height: var(--leading-snug);
+  }
+
+  /* An anchor that could not be placed sits above a source that is still
+     shown: the one thing on that surface a reader must not miss, so its
+     heading takes the warn register, and a hairline sets it off from the
+     body it introduces. */
+  .missing[data-nc-report-source-missing='anchor'] {
+    padding-block-end: var(--space-4);
+    border-block-end: 1px solid var(--hairline);
+  }
+
+  .missing[data-nc-report-source-missing='anchor'] .missingTitle {
+    font-size: var(--text-md);
+    color: var(--warn-text);
   }
 
   .destination {

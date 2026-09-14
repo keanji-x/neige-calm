@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { SOURCE_PANEL_COPY } from '../../features/report/source/copy.ts';
+import { SOURCE_PANEL_COPY } from '../../features/report/source/public.tsx';
 import { ApiError } from '../providers/queries.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
@@ -33,7 +33,7 @@ const REPORT_CARD = {
     schemaVersion: 3, docRev: 1, summary: '', body: '',
     blocks: [{
       id: 'b_1', rev: 1, kind: 'prose',
-      payload: { markdown: '央行加息在即（[Mikko 日志](neige://source/src_2c9e0a1b#q1)），另见[旧引用](neige://source/src_0badf00d)。' },
+      payload: { markdown: '央行加息在即（[Mikko 日志](neige://source/src_2c9e0a1b#q1)），另见[旧引用](neige://source/src_0badf00d)与[未追加的锚点](neige://source/src_2c9e0a1b#q7)。' },
     }],
   },
 };
@@ -169,6 +169,20 @@ describe('the source panel on the track page', () => {
     expect(within(drawer).queryByRole('alert')).toBeNull();
     // One read, no retry: the 404 is data.
     expect(requests.filter((request) => request.path === '/api/tracks/w1/sources/src_0badf00d')).toHaveLength(1);
+  });
+
+  it('shows the source with the missing-anchor state and its destination when the anchor is not on the row', async () => {
+    setup();
+    fireEvent.click(await screen.findByRole('button', { name: '未追加的锚点' }));
+    const drawer = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
+    // The source is shown — badge, body — with nothing highlighted…
+    expect(within(drawer).getByText('智堡摘要，非机构原文')).toBeTruthy();
+    expect(drawer.querySelector('mark')).toBeNull();
+    expect(drawer.querySelector('pre[data-nc-report-source-body]')?.textContent).toBe(SOURCE_ROW.body);
+    // …under the missing state that names the citation as written.
+    const notice = drawer.querySelector('[data-nc-report-source-missing="anchor"]');
+    expect(within(drawer).getByRole('heading', { level: 3 }).textContent).toBe(SOURCE_PANEL_COPY.anchorMissingTitle);
+    expect(notice?.querySelector('code')?.textContent).toBe('neige://source/src_2c9e0a1b#q7');
   });
 
   it('paints the source card over the conversation, which goes inert until the source closes', async () => {

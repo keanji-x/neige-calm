@@ -30,8 +30,14 @@ export const SOURCE_PANEL_COPY = Object.freeze({
   missingDangling: '本 track 里没有这条来源。配方生成的 track、或来源被指向别的 track 时会出现这种情况。',
   missingMalformed: '这条引用的链接格式不合法，无法定位来源。',
   destinationLabel: '链接',
-  /** The anchor names a quote the row does not carry, or its text is not in the body. */
-  anchorMissed: '锚点未命中：这条引用指向的片段不在来源正文里，下面显示的是完整正文。',
+  /**
+   * The source exists but the anchor does not (§2.5: 「来源/锚点不存在：面板
+   * 显示「来源缺失」并给出 destination」): a quote the row does not carry, or
+   * a text that is not in the body. The source is still shown underneath —
+   * the reader benefits from it — but the notice is the missing state.
+   */
+  anchorMissingTitle: '引用锚点缺失',
+  anchorMissingDetail: '这条引用指向的锚点不在来源里（锚点可能尚未追加，或其文本不在正文中），下面显示的是完整正文。',
   publishedAt: '发布',
   capturedAt: '抓取',
   origin: '来源',

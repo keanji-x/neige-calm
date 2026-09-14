@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import type { ReportBlock, TrackReport } from '../../../../../core/domain/report.ts';
-import { SOURCE_PANEL_COPY } from '../source/copy.ts';
+import { SOURCE_PANEL_COPY } from '../source/public.tsx';
 import { initialBody, splitInitialBody } from './kernel-initial-body.ts';
 import { ReportDocument } from './public.tsx';
 
