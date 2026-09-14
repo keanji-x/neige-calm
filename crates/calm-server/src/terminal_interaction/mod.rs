@@ -25,6 +25,7 @@ mod observation;
 mod operations;
 pub use observation::ObservationFormat;
 pub use operations::InputOptions;
+mod receipts;
 mod screen_diff;
 mod target;
 mod text_wait;
