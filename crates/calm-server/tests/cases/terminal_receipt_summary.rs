@@ -47,8 +47,8 @@ async fn open_observed(h: &Harness, request: &str) -> String {
 
 /// Written receipts: with a change readback (screen, settled, role), with
 /// a text readback (matched pattern), without a readback, and with
-/// `release:true`, where the receipt keeps the granted lease while the
-/// summary's `control_id` is the readback's null.
+/// `claim:true, release:true` in one request, where the receipt keeps the
+/// granted lease while the summary's `control_id` is the readback's null.
 #[tokio::test]
 async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     let h = Harness::start().await;
@@ -57,32 +57,42 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
         .call(
             "calm.terminal.input",
             json!({"terminal_id":terminal,"request_id":"first","action":{"type":"submit","text":"one"},
-                "claim":true,"observe":true,"wait_for":"change","wait_ms":3000}),
+                "claim":true,"release":true,"observe":true,"wait_for":"change","wait_ms":3000}),
         )
         .await;
     let written = receipt(&first);
     assert_eq!(written["outcome"], "written", "{first}");
-    let control = written["claim"]["control_id"].as_str().unwrap().to_owned();
+    assert_eq!(written["release"]["status"], "released", "{written}");
+    let lease = written["control_id"]
+        .as_str()
+        .expect("the granted lease")
+        .to_owned();
+    assert_eq!(
+        written["claim"],
+        json!({"status":"claimed","control_id":lease})
+    );
+    assert_eq!(observation(&first)["role"], "observer");
+    assert_eq!(observation(&first)["control_id"], Value::Null);
     assert_eq!(
         written["summary"],
         digest(
             json!({"action":"written","readback":"available","screen":"changed","settled":true,
-            "role":"owner","control_id":control,"exited":false,"claim":"claimed"})
+            "role":"observer","control_id":null,"exited":false,"claim":"claimed","release":"released"})
         ),
-        "{written}"
+        "the readback's control, not the receipt's lease: {written}"
     );
     assert_eq!(
         summary(&first),
         format!(
-            "terminal {terminal} input written; screen changed settled; role owner; claim claimed; \
-             details in structuredContent"
+            "terminal {terminal} input written; screen changed settled; role observer; claim claimed; \
+             release released; details in structuredContent"
         )
     );
     let text = h
         .call(
             "calm.terminal.input",
             json!({"terminal_id":terminal,"request_id":"second","action":{"type":"submit","text":"two"},
-                "observe":true,"wait_for":"text","wait_text":["COUNT:2:two"],"wait_ms":5000}),
+                "claim":true,"observe":true,"wait_for":"text","wait_text":["COUNT:2:two"],"wait_ms":5000}),
         )
         .await;
     let state = observation(&text);
@@ -93,7 +103,13 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     assert_eq!(digested["settled"], state["wait"]["settled"]);
     assert_eq!(digested["matched"], "COUNT:2:two");
     assert_eq!(digested["signal"], Value::Null);
-    assert_eq!(digested["claim"], Value::Null, "no claim requested");
+    assert_eq!(
+        digested["claim"], "claimed",
+        "a new lease after the release"
+    );
+    assert_eq!(digested["role"], "owner");
+    assert_eq!(digested["control_id"], receipt(&text)["control_id"]);
+    assert_ne!(digested["control_id"], lease);
     let settled = if state["wait"]["settled"] == true {
         " settled"
     } else {
@@ -103,23 +119,25 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
         summary(&text),
         format!(
             "terminal {terminal} input written; screen matched{settled}; matched COUNT:2:two; \
-             role owner; details in structuredContent"
+             role owner; claim claimed; details in structuredContent"
         )
     );
     let bare = h
         .call(
             "calm.terminal.input",
-            json!({"terminal_id":terminal,"request_id":"third","action":{"type":"text","text":"three"}}),
+            json!({"terminal_id":terminal,"request_id":"third","action":{"type":"text","text":"three"},"claim":true}),
         )
         .await;
     assert_eq!(
         receipt(&bare)["summary"],
-        digest(json!({"action":"written","readback":"none"})),
+        digest(json!({"action":"written","readback":"none","claim":"held"})),
         "{bare}"
     );
     assert_eq!(
         summary(&bare),
-        format!("terminal {terminal} input written; no readback; details in structuredContent")
+        format!(
+            "terminal {terminal} input written; no readback; claim held; details in structuredContent"
+        )
     );
     // The unobserved write echoed: observe before the next input.
     h.observe_text(&terminal, "three").await;
@@ -132,15 +150,9 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
         .await;
     let last = receipt(&released);
     assert_eq!(last["release"]["status"], "released", "{last}");
-    assert_eq!(observation(&released)["role"], "observer");
-    assert_eq!(observation(&released)["control_id"], Value::Null);
     assert_eq!(last["summary"]["release"], "released");
     assert_eq!(last["summary"]["role"], "observer");
-    assert_eq!(
-        last["summary"]["control_id"],
-        Value::Null,
-        "the readback's control, not the receipt's lease: {last}"
-    );
+    assert_eq!(last["summary"]["control_id"], Value::Null);
     assert!(
         summary(&released)
             .ends_with("; role observer; release released; details in structuredContent"),
