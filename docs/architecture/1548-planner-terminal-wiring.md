@@ -4,11 +4,11 @@ The application entry point is a Planner-only MCP tool set:
 
 | Tool | Behavior |
 |---|---|
-| `calm.terminal.open` | Idempotent visible Terminal-card creation through `terminal-create` OperationRuntime, attributed to the authenticated Planner session. Returns text by default; `format=image` requests a PNG. Presentation does not change creation idempotency. |
+| `calm.terminal.open` | Idempotent visible Terminal-card creation through `terminal-create` OperationRuntime, attributed to the authenticated Planner session. Returns text by default; `format=image` requests a PNG; the observe wait arguments run as the open's final observation, after the claim (#1677). Presentation, claim and wait do not change creation idempotency. |
 | `calm.terminal.resolve` | Resolve an exact current task attempt or Terminal ID to its real Worker card, worker session and view availability. |
 | `calm.terminal.observe` | Text/cursor/mode state and observation/connection IDs by default. Explicit `format=image` includes a PNG from that same captured RMUX frame. Reads never create or restart a process. |
 | `calm.terminal.control` | Claim/release control, optionally returning fresh text with `observe=true`, or detach the model client while retaining the card/program. |
-| `calm.terminal.input` | One text/key/cell-click/sequence action, bound to a recent live observation and current control; navigation/editing keys support bounded `repeat`, a `sequence` is a bounded edit in one ordered write request (#1666). Optional `observe=true` returns fresh text after the action; `claim`/`release` bracket a scenario and `allow_output_below_cursor` tolerates status-line refreshes (#1666). A matching request ID replays its receipt without another write. |
+| `calm.terminal.input` | One text/key/cell-click/sequence/replace action, bound to a recent live observation and current control; navigation/editing keys support bounded `repeat`, a `sequence` is a bounded edit in one ordered write request (#1666), a `replace` is derived from the live cursor row (#1677). Optional `observe=true` returns fresh text after the action; `claim`/`release` bracket a scenario and `allow_output_below_cursor` tolerates status-line refreshes (#1666). Every receipt carries a flat `summary` (#1677). A matching request ID replays its receipt without another write. |
 
 ## Model discovery schema
 
@@ -602,6 +602,11 @@ costs; each has one explicit opt-in shape, specified in
 * Measured one-write edits with Claude Code 2.1.259 —
   one write carries `7200 + 19` + Left×5 + Backspace + `9` and leaves `7209 + 19`.
   See [Measured one-write edits with Claude Code 2.1.259 (2026-09-13)](1666-planner-terminal-round-trips.md#measured-one-write-edits-with-claude-code-21259-2026-09-13).
+* #1677: `open` takes the wait arguments (run after the claim, as the open's
+  final observation), `replace` derives Left/Right + Backspace + text from the
+  live cursor row (`replace_plan.rs`), and input/claim/release receipts carry
+  a flat `summary` (`receipt_summary.rs`).
+  See [Open with a wait, replace in the draft, receipt summary (#1677)](1666-planner-terminal-round-trips.md#open-with-a-wait-replace-in-the-draft-receipt-summary-1677).
 
 ## Acceptance evidence and limits
 

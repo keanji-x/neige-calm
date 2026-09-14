@@ -213,3 +213,139 @@ and `repeat` (Left×5) already are. The focused suite pins the same facts agains
 PTY with `stty raw -echo; exec cat -v` (the bytes arrive concatenated, in
 order, as `7200 + 19^[[D^[[D^[[D^[[D^[[D^?9`) and against bash's readline
 (the draft reads `echo 7209 + 19`).
+
+## Open with a wait, replace in the draft, receipt summary (#1677)
+
+Round 14 (#1666) ran the Claude TUI scenarios in 16 terminal tool calls
+with zero errors; the interview left three asks, all round trips or reading
+cost: starting a program and waiting for its first screen took an open plus
+a submit with `wait_for=text`; fixing one number in a draft meant counting
+characters (CJK width included) to build a `sequence`; and the facts that
+matter on a receipt (screen change, hook signal, repaint, control state) sat
+several levels down. Each has one explicit shape.
+
+### `open` waits like a readback
+
+`calm.terminal.open` accepts `wait_for`, `wait_ms`, `settle_ms`,
+`signal_events`, `repaint_ms` and `wait_text` with observe's semantics and
+validation (`WaitPlan::new`, checked before the create operation is
+submitted: an invalid wait creates no card). Order inside the handler:
+create (or the idempotent replay, `SucceededViaCollision` included) →
+immediate text observation (establishes the client, as before) → when
+`claim:true`, `claim_after_open` with an immediate readback → the final
+observation with the wait plan and the requested format, which is what the
+open returns with `claim {status}` and the ids attached. The wait therefore
+runs after the claim, never inside `claim_after_open`'s serial guard, and a
+failed claim still returns the waited state with `claim {status:
+unavailable, reason}`. Its baseline is the connection's previous observation
+(the immediate read, or the claim readback), as `capture` already does: a
+change wait waits for a change after the open/claim, a text wait ignores the
+baseline and matches a screen that is already present (`already: true`).
+Without wait arguments an open returns as before (the immediate read, or the
+claim readback). `format=image` with a wait is one capture (wait → frame →
+render); when the render fails the open keeps its #1620 F6 behaviour and
+falls back to an immediate text observation plus `image {status:
+unavailable, reason}`: the screen shown is the post-wait one, but that
+fallback's `wait` block is the immediate read's (a known limitation; no round
+has used an image). The operation runtime's deadline covers only the create;
+the wait (≤ 20 s) and the claim (≤ 7 s) run after it inside the MCP call, as
+observe's 20 s already does. The wait arguments never enter
+`open_payload_hash` (like `format` and `claim`): a replayed request_id
+returns the same terminal and runs the wait as asked.
+
+`program` is a `/bin/sh -c` command line run with the terminal's env
+(`routes/terminal.rs`: `args: ["-c", program]`, hook env merged by the
+Planner create adapter), so `$NEIGE_CLAUDE_SETTINGS` expands and there is no
+persistent shell once the command line exits. The recommended Claude start is
+one call: `{"request_id":"…","program":"claude --settings
+\"$NEIGE_CLAUDE_SETTINGS\"","claim":true,"wait_for":"text","wait_text":["trust
+this folder","❯"]}` → the trust dialog (or the prompt) with control held.
+
+### `replace` — the server derives the edit from the screen
+
+`{"type":"replace","from":"11","to":"19"}`: `from` nonempty printable text
+(≤ 200 bytes), `to` printable (may be empty = delete), neither with control
+characters (so no CR/LF), no other fields. The shape is checked where every
+action's shape is checked (`actions.rs`, before the claim; `encode` returns
+`Encoded::Replace` instead of bytes). The plan is derived from the live frame
+captured at the pre-write fences, only after the revision/tolerance admission
+(a stale observation is reported as `stale_observation` before any lookup),
+in `terminal_interaction/replace_plan.rs`:
+
+* the cursor row is `cells[row*cols..(row+1)*cols]`; a continuation cell of
+  a wide glyph (`width == 0`, text `" "`, measured against rmux-core 0.10.0)
+  is skipped; blank cells are kept (one character each: the plan assumes the
+  row is the application's line buffer with one character per non-padding
+  cell); the cursor column is a zero-based cell column and a cursor inside a
+  wide cell (`start < column < start+width`) or off the row is refused;
+* the character index at a boundary is Σ `cell.text.chars().count()` over
+  the non-padding cells before it; `from` is searched in the row string built
+  from those cells in the same scalar convention, counting overlapping
+  occurrences (`aaa` holds two `aa`); a match must start and end on cell
+  boundaries (one cutting through a combining sequence is refused); exactly
+  one occurrence is required;
+* moves = `end_index(from) − cursor_index` (negative → `Left`, positive →
+  `Right`, zero → none), bounded by the row width and `ACTION_BYTES_MAX`, not
+  by the public `repeat ≤ 32`; the bytes are `Left×n` or `Right×n`, then
+  `Backspace×chars(from)`, then `to`, with the `sequence` key encoding, in one
+  ordered write (one barrier, one ack, one receipt).
+
+Refusals (hidden cursor, cursor row outside the viewport, cursor inside a wide
+cell, absent, N occurrences, another row, unaligned match, control
+characters, size) follow the invalid-action convention: an RPC error through
+`failure` (−32403), nothing written, nothing cached; after a granted
+`claim:true` the error carries the `note_claim` disclosure. The Planner then
+falls back to a `sequence`. The plan is stamped on all three `WriteReceipts`
+(unknown/written/refused) before the unknown receipt is cached, as `replace:
+{row, cursor_index, moves: {key, repeat} | null, erased, inserted}`; a replay
+returns the cached plan and never recomputes it. `allow_output_below_cursor`
+admits `replace` (an editing action: it joins the edits-only allowlist and
+its reason string, not `SEQUENCE_KEYS`); the fingerprint covers the action
+as given. `application_result` stays `unverified`; the recommended shape is
+`replace` + `observe: true, wait_for: "change"` (the readback IS the
+preview), then `submit`. What the tool guarantees: the bytes correspond to
+that plan against the row as captured. What it does not: that the
+application moves one character per arrow key and erases one per Backspace
+(true for Claude Code — measured with CJK in rounds 13/14 — readline and most
+line editors), that the text belongs to an unsubmitted draft (the screen
+cannot prove it), or wrapped drafts (a `from` on another row is refused).
+The focused suite drives Python's `input()` with GNU readline under
+`LANG=C.UTF-8`: `11 松果` → `19 松果` moves Left 3 (characters, not the 5
+columns), Home then `松果` → `苹果` moves Right 5, and a separate Enter
+prints the edited line.
+
+### `summary` on receipts
+
+Every `calm.terminal.input` receipt and every `calm.terminal.control`
+claim/release receipt (not detach: it has no readback) gains `summary`, a
+flat object derived in the MCP layer's `receipt_result`
+(`terminal_interaction/receipt_summary.rs`) once the readback and release
+facts are final — no new facts, no fence reads it: `{"action":
+written|refused|unknown|stale_observation|control_unavailable|claim|release,
+"readback": available|unavailable|none, "screen": wait.outcome, "settled":
+wait.settled, "signal": wait.signal.event, "repaint": wait.repaint.outcome,
+"matched": wait.text.pattern, "role": state.role, "control_id":
+state.control_id, "exited": state.exited, "claim": claim.status, "release":
+release.status}`. Every field is nullable; mode-dependent wait fields are null
+outside their mode; `control_id` is the readback's (explicit null included),
+never the receipt's own lease — after `release:true` the receipt still names
+the granted lease while the summary says `null`. `application_result:
+"unverified"` stays where it is: the summary is a digest of evidence, not a
+verdict and not proof of a current screen change. The text block
+(`content[0].text`) says the same in words — `terminal <id> input written;
+screen changed settled; signal stop, repaint settled; role observer; details
+in structuredContent` — so a client that shows only text gets the digest too.
+The summary adds no input-schema bytes; the open wait properties and the
+`replace` arm do (open 824 bytes, input 2008 bytes against the strict
+`< 4000` per-tool schema test).
+
+### Collector (#1677)
+
+`open_with_wait` (open calls with any wait argument), `open_wait_outcomes`
+(tally of those opens' returned `wait.outcome`), `replace_actions`
+(requested, failed ones included), `replace_written` (non-failed replace
+receipts with outcome `written`), `summary_present` (non-failed input/control
+receipts carrying `summary`); the wait accounting no longer excludes open
+results, so an open with `wait_for=change` or `text` counts as a change or
+text wait request with its outcome; the edit scenario's `corrects` rule
+accepts a `replace`.

@@ -228,7 +228,12 @@ SIGNAL_METRIC_TALLIES = ("signal_wait_outcomes", "signal_repaint_outcomes")
 ROUND_TRIP_METRIC_KEYS = ("text_wait_requests", "text_wait_outcomes", "sequence_actions", "sequence_steps",
                           "input_with_claim", "input_with_release", "below_cursor_allowed_inputs",
                           "below_cursor_tolerated_inputs")
-SUMMARY_METRIC_KEYS = WAIT_METRIC_KEYS + SIGNAL_METRIC_KEYS + ROUND_TRIP_METRIC_KEYS
+OPEN_REPLACE_SUMMARY_METRIC_KEYS = ("open_with_wait", "open_wait_outcomes", "replace_actions", "replace_written",
+                                    "summary_present")
+SUMMARY_METRIC_KEYS = (WAIT_METRIC_KEYS + SIGNAL_METRIC_KEYS + ROUND_TRIP_METRIC_KEYS
+                       + OPEN_REPLACE_SUMMARY_METRIC_KEYS)
+# The observe wait arguments every wait carrier accepts (#1677: open included).
+WAIT_ARGUMENT_KEYS = ("wait_for", "wait_ms", "settle_ms", "signal_events", "repaint_ms", "wait_text")
 
 
 def wait_outcome(state):
@@ -271,9 +276,10 @@ def observation_signals(state):
 
 
 def requests_observation(call):
-    """True when a completed call's arguments ask for an observation (observe, or observe=true readback)."""
+    """True when a completed call returns an observation: observe and open always do (#1677: an open's
+    wait arguments run as its final observation), control/input with an observe=true readback."""
     args = call.get("arguments", {})
-    return call["tool"] == "calm.terminal.observe" or (
+    return call["tool"] in ("calm.terminal.open", "calm.terminal.observe") or (
         call["tool"] in ("calm.terminal.control", "calm.terminal.input") and args.get("observe") is True)
 
 
@@ -307,7 +313,7 @@ def signal_metrics(terminal):
             counts["signal_wait_requests"] += 1
         if tool_failed(call):
             continue
-        state = observed_state(call, metadata(call)) if tool != "calm.terminal.open" else None
+        state = observed_state(call, metadata(call))
         if state is None:
             continue
         wait = wait_outcome(state)
@@ -370,7 +376,7 @@ def round_trip_metrics(terminal):
             drift = data.get("observation_drift")
             if isinstance(drift, dict) and drift.get("tolerance") == "below_cursor":
                 counts["below_cursor_tolerated_inputs"] += 1
-        state = observed_state(call, data) if tool != "calm.terminal.open" else None
+        state = observed_state(call, data)
         if state is None:
             continue
         wait = wait_outcome(state)
@@ -380,15 +386,57 @@ def round_trip_metrics(terminal):
             "text_wait_outcomes": dict(sorted(outcomes.items()))}
 
 
+def open_replace_summary_metrics(terminal):
+    """#1677 counters, each read from a completed call's own arguments or result.
+
+    `open_with_wait` counts `open` calls whose arguments carry any wait
+    argument (failed ones included); `open_wait_outcomes` tallies those
+    calls' returned `wait.outcome` (a missing block, older server, adds
+    none). `replace_actions` counts input requests whose action type is
+    `replace` (failed ones included) and `replace_written` the non-failed
+    ones whose receipt `outcome` is `written` (an acknowledgement, not an
+    application result). `summary_present` counts non-failed control/input
+    receipts carrying a `summary` object. Nothing is inferred from screen
+    text.
+    """
+    counts = collections.Counter()
+    outcomes = collections.Counter()
+    for call in terminal:
+        if not call.get("completed"):
+            continue
+        args, tool = call.get("arguments", {}), call["tool"]
+        open_wait = tool == "calm.terminal.open" and any(key in args for key in WAIT_ARGUMENT_KEYS)
+        if open_wait:
+            counts["open_with_wait"] += 1
+        action = args.get("action")
+        replace = tool == "calm.terminal.input" and isinstance(action, dict) and action.get("type") == "replace"
+        if replace:
+            counts["replace_actions"] += 1
+        if tool_failed(call):
+            continue
+        data = metadata(call)
+        if replace and data.get("outcome") == "written":
+            counts["replace_written"] += 1
+        if tool in ("calm.terminal.control", "calm.terminal.input") and isinstance(data.get("summary"), dict):
+            counts["summary_present"] += 1
+        if open_wait:
+            wait = wait_outcome(data)
+            if wait is not None:
+                outcomes[wait["outcome"]] += 1
+    return {**{key: counts[key] for key in OPEN_REPLACE_SUMMARY_METRIC_KEYS if key != "open_wait_outcomes"},
+            "open_wait_outcomes": dict(sorted(outcomes.items()))}
+
+
 def wait_metrics(terminal):
     """#1618 counters, each read from a completed call's own arguments or result.
 
     A change wait is an `observe` call, or a control/input call requesting an
-    `observe=true` readback, whose arguments say `wait_for: "change"`. Outcomes
-    are read from the returned observation (`observe` result or readback
+    `observe=true` readback, whose arguments say `wait_for: "change"` (#1677:
+    an `open` too, whose wait runs as its final observation). Outcomes are
+    read from the returned observation (`open`/`observe` result or readback
     `observation.state`); a failed call or unavailable readback returns no
-    observation and therefore no outcome. Open results are not observations
-    here. A settled/unchanged outcome is not application completion.
+    observation and therefore no outcome. A settled/unchanged outcome is not
+    application completion.
     """
     counts = collections.Counter()
     outcomes = collections.Counter()
@@ -413,7 +461,7 @@ def wait_metrics(terminal):
         data = metadata(call)
         if tool == "calm.terminal.input" and data.get("output_since_observation") is True:
             counts["drift_observed_inputs"] += 1
-        state = observed_state(call, data) if tool != "calm.terminal.open" else None
+        state = observed_state(call, data)
         if state is None:
             continue
         wait = wait_outcome(state)
@@ -479,6 +527,7 @@ def metrics(rows):
             "unmeasured_key_press_requests": unmeasured_requests,
             "observation_refusals": sum(observation_refused(call) for call in terminal),
             **wait_metrics(terminal), **signal_metrics(terminal), **round_trip_metrics(terminal),
+            **open_replace_summary_metrics(terminal),
             "human_intervention": "not_measured", "token_savings": "not_measured"}
 
 
@@ -558,10 +607,13 @@ def check_scenario(name, rows, binding):
     if not any(re.search(rf"(?<!\d){answer}(?!\d)", view["text"]) for view in observations):
         raise EvidenceError(f"{name}: actual terminal answer absent")
     # A correction is an editing key, sent on its own or as a step of a
-    # `sequence` (#1666: one bounded edit in one write).
+    # `sequence` (#1666: one bounded edit in one write), or a `replace`
+    # (#1677: the server erases `from` and writes `to`).
     def corrects(action):
         if action.get("type") == "sequence" and isinstance(action.get("steps"), list):
             return any(isinstance(step, dict) and corrects(step) for step in action["steps"])
+        if action.get("type") == "replace":
+            return True
         return action.get("type") == "key" and action.get("key") in ("Backspace", "Delete", "Ctrl+U")
     if name == "edit" and not any(corrects(action) for action in actions):
         raise EvidenceError("edit: no actual input correction action")

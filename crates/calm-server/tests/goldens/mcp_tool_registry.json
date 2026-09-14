@@ -1376,7 +1376,7 @@
   },
   {
     "name": "calm.terminal.control",
-    "description_sha256": "a7e710a9a889751398bcfef225254149332cd6c3f6e981f80fc3680f2f3e1592",
+    "description_sha256": "d24c05bada29caaf79fa2536a1650fa6d35ee37cf0bf7702aeb2e0d3e109d392",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1458,7 +1458,7 @@
   },
   {
     "name": "calm.terminal.input",
-    "description_sha256": "abd29522e86676cfca91020d486c2f71aee3fe8e69bd3613fefee952e5d94c3c",
+    "description_sha256": "bd2a84d724d58b18a1474bf2ce59990dd620b723e07e58115080c7bcc1807c14",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1547,6 +1547,29 @@
               "required": [
                 "type",
                 "steps"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "from": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "to": {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                "type": {
+                  "const": "replace"
+                }
+              },
+              "required": [
+                "type",
+                "from",
+                "to"
               ],
               "type": "object"
             }
@@ -1729,7 +1752,7 @@
   },
   {
     "name": "calm.terminal.open",
-    "description_sha256": "9fbc985f8a1ad94372535740da35c283706d9cafae0caee5e37528a4f0737d64",
+    "description_sha256": "ef34f944c2108e3eb68145a0acfdfd43bc98843fa209ffce4d21134988292678",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1750,14 +1773,57 @@
           "minLength": 1,
           "type": "string"
         },
+        "repaint_ms": {
+          "maximum": 5000,
+          "minimum": 0,
+          "type": "integer"
+        },
         "request_id": {
           "maxLength": 128,
           "minLength": 1,
           "type": "string"
         },
+        "settle_ms": {
+          "default": 150,
+          "maximum": 2000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "signal_events": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
         "title": {
           "maxLength": 200,
           "type": "string"
+        },
+        "wait_for": {
+          "default": "elapsed",
+          "enum": [
+            "elapsed",
+            "change",
+            "signal",
+            "text"
+          ],
+          "type": "string"
+        },
+        "wait_ms": {
+          "maximum": 20000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wait_text": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [
