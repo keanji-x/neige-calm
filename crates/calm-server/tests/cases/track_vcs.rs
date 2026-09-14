@@ -926,6 +926,7 @@ async fn since_last_turn_suppresses_legacy_planner_payload_cutover_noise() {
         Some(&legacy_head),
         None,
         Some(&planner.id),
+        track_vcs::ReportPatch::Include,
     )
     .await
     .expect("since-last-turn block")
@@ -1777,11 +1778,18 @@ async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
             .unwrap();
     assert_eq!(author, None);
 
-    let block = track_vcs::since_last_turn_block(repo.pool(), &track.id, Some(&before), None, None)
-        .await
-        .unwrap()
-        .block
-        .expect("diff block");
+    let block = track_vcs::since_last_turn_block(
+        repo.pool(),
+        &track.id,
+        Some(&before),
+        None,
+        None,
+        track_vcs::ReportPatch::Include,
+    )
+    .await
+    .unwrap()
+    .block
+    .expect("diff block");
     assert!(block.contains("track.json edited"), "block = {block}");
     assert!(
         block.contains("runs/mixed-actor-batch.json edited"),
@@ -2062,9 +2070,16 @@ async fn hook_only_commits_leave_transcript_paths_unchanged_until_turn_refresh()
             .all(|entry| entry.path != events_path && entry.path != conversation_path),
         "hook-only commits must not dirty transcript paths: {diff:?}"
     );
-    let since = track_vcs::since_last_turn_block(repo.pool(), &track.id, Some(&before), None, None)
-        .await
-        .expect("since-last-turn block");
+    let since = track_vcs::since_last_turn_block(
+        repo.pool(),
+        &track.id,
+        Some(&before),
+        None,
+        None,
+        track_vcs::ReportPatch::Include,
+    )
+    .await
+    .expect("since-last-turn block");
     assert_eq!(since.current_head.as_deref(), Some(after.as_str()));
     assert!(
         since.block.is_none(),
@@ -2149,11 +2164,18 @@ async fn turn_boundary_refresh_makes_hook_transcripts_fresh_once() {
         2,
         "turn-boundary transcript refresh should surface each transcript path once: {diff:?}"
     );
-    let block = track_vcs::since_last_turn_block(repo.pool(), &track.id, Some(&before), None, None)
-        .await
-        .expect("boundary since-last-turn")
-        .block
-        .expect("boundary diff block");
+    let block = track_vcs::since_last_turn_block(
+        repo.pool(),
+        &track.id,
+        Some(&before),
+        None,
+        None,
+        track_vcs::ReportPatch::Include,
+    )
+    .await
+    .expect("boundary since-last-turn")
+    .block
+    .expect("boundary diff block");
     assert_eq!(block.matches(&format!("- {events_path} edited")).count(), 1);
     assert_eq!(
         block
@@ -2766,9 +2788,16 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
         .unwrap()
         .expect("head after report edit");
 
-    let since = track_vcs::since_last_turn_block(repo.pool(), &track.id, Some(&before), None, None)
-        .await
-        .unwrap();
+    let since = track_vcs::since_last_turn_block(
+        repo.pool(),
+        &track.id,
+        Some(&before),
+        None,
+        None,
+        track_vcs::ReportPatch::Include,
+    )
+    .await
+    .unwrap();
     assert_eq!(since.current_head.as_deref(), Some(after.as_str()));
     let block = since.block.expect("diff block");
     assert!(
@@ -2828,11 +2857,18 @@ async fn since_last_turn_range_over_bound_falls_back_without_attribution() {
         .await;
     }
 
-    let block = track_vcs::since_last_turn_block(repo.pool(), &track.id, Some(&before), None, None)
-        .await
-        .unwrap()
-        .block
-        .expect("diff block");
+    let block = track_vcs::since_last_turn_block(
+        repo.pool(),
+        &track.id,
+        Some(&before),
+        None,
+        None,
+        track_vcs::ReportPatch::Include,
+    )
+    .await
+    .unwrap()
+    .block
+    .expect("diff block");
     assert!(block.contains("index.md edited"), "block = {block}");
     assert!(
         !block.contains("(by "),
@@ -2873,11 +2909,18 @@ async fn since_last_turn_legacy_null_author_commit_has_no_suffix() {
         .await
         .unwrap();
 
-    let block = track_vcs::since_last_turn_block(repo.pool(), &track.id, Some(&before), None, None)
-        .await
-        .unwrap()
-        .block
-        .expect("diff block");
+    let block = track_vcs::since_last_turn_block(
+        repo.pool(),
+        &track.id,
+        Some(&before),
+        None,
+        None,
+        track_vcs::ReportPatch::Include,
+    )
+    .await
+    .unwrap()
+    .block
+    .expect("diff block");
     assert!(block.contains("index.md edited"), "block = {block}");
     assert!(
         !block.contains("(by "),
@@ -3268,11 +3311,18 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
         Some(legacy_hash.as_str())
     );
 
-    let block = track_vcs::since_last_turn_block(repo.pool(), &track.id, Some(&before), None, None)
-        .await
-        .expect("since-last-turn block")
-        .block
-        .expect("payload heal block");
+    let block = track_vcs::since_last_turn_block(
+        repo.pool(),
+        &track.id,
+        Some(&before),
+        None,
+        None,
+        track_vcs::ReportPatch::Include,
+    )
+    .await
+    .expect("since-last-turn block")
+    .block
+    .expect("payload heal block");
     let payload_line = format!("- {payload_path} edited (by kernel)\n");
     assert_eq!(block.matches(&payload_line).count(), 1, "{block}");
 

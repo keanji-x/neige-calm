@@ -3759,10 +3759,21 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         refresh_head = ?refresh_head.as_deref(),
         "fetching since-last-turn diff"
     );
+    // #1667 round-2 F3 — a batch that is nothing but report edits issues a
+    // turn whose input IS the block-level diff of those edits; the
+    // since-last-turn block then names `report.md` but does not repeat the
+    // change as a unified patch. `only_report_edits` was read with the
+    // queue at the top of this function and the queue does not change
+    // between there and the drain below (see `client_id`).
+    let report_patch = if only_report_edits {
+        track_vcs::ReportPatch::Omit
+    } else {
+        track_vcs::ReportPatch::Include
+    };
     let diff = if skip_track_diff {
         track_vcs::SinceLastTurnBlock::empty()
     } else {
-        diff_with_timeout(inner, refresh_head.as_ref()).await
+        diff_with_timeout(inner, refresh_head.as_ref(), report_patch).await
     };
     // Deterministic drain-vs-supersede window for #1449. No-op in production.
     wait_at_planner_harness_drain_race_hook(&inner.worker_session_id).await;
@@ -4312,9 +4323,10 @@ where
 async fn diff_with_timeout(
     inner: &Arc<Inner>,
     current_override: Option<&track_vcs::CommitHash>,
+    report_patch: track_vcs::ReportPatch,
 ) -> track_vcs::SinceLastTurnBlock {
     diff_or_fallback_on_timeout(
-        since_last_turn_diff_block(inner, current_override),
+        since_last_turn_diff_block(inner, current_override, report_patch),
         SINCE_LAST_TURN_DIFF_TIMEOUT,
         &inner.worker_session_id,
         inner.card_id.as_str(),
@@ -4399,6 +4411,7 @@ async fn current_head_after_diff_timeout(
 async fn since_last_turn_diff_block(
     inner: &Arc<Inner>,
     current_override: Option<&track_vcs::CommitHash>,
+    report_patch: track_vcs::ReportPatch,
 ) -> track_vcs::SinceLastTurnBlock {
     let Some(pool) = inner.repo.sqlite_pool() else {
         return track_vcs::SinceLastTurnBlock::empty();
@@ -4410,6 +4423,7 @@ async fn since_last_turn_diff_block(
         last_seen_head.as_deref(),
         current_override,
         Some(&inner.card_id),
+        report_patch,
     )
     .await
     {

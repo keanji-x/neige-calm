@@ -138,6 +138,8 @@ fn report_edit(track_id: &TrackId, version: u32) -> Observation {
         body: format!("# R\n\nv{version}\n"),
         author: Some(EditAuthor::User),
         body_before: Some(format!("# R\n\nv{}\n", version - 1)),
+        doc_rev_after: None,
+        blocks_after: None,
     }
 }
 

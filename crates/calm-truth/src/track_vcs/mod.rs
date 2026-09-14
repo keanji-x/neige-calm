@@ -47,5 +47,5 @@ pub use snapshot::{backfill_existing_tracks, snapshot_tree};
 pub use store::{canonical_json_bytes, head, put_blob, tree_at};
 pub use types::{
     CommitLog, CommitLogEntry, CommitRecord, DiffEntry, DiffStatus, FileDiff, HistoricalBlob,
-    ManifestEntry, SinceLastTurnBlock, TreeManifest, TreeSnapshot,
+    ManifestEntry, ReportPatch, SinceLastTurnBlock, TreeManifest, TreeSnapshot,
 };

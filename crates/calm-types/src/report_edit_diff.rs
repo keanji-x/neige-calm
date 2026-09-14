@@ -13,8 +13,15 @@
 //! `Observation::to_turn_text`). The slicing is *the* report slicing —
 //! [`crate::report_blocks::split_body`] — so a "block" here is exactly a
 //! block of `calm.report.blocks.*`; nothing is restated. Block ids are
-//! not in either body and are not invented: a planner that wants to
-//! write still has to `calm.report.read` for `docRev` / `if_rev`.
+//! not in either body: the caller that has the report's block snapshot
+//! at hand position-aligns it with the `after` slices through
+//! [`align_block_refs`] and passes the result to
+//! [`render_report_diff_with_refs`], which then names each added or
+//! modified block by id and rev (#1667 round-2 F1). The alignment is
+//! all-or-nothing and best-effort — a snapshot that no longer projects
+//! to `after` yields no refs rather than wrong ones — and a planner
+//! that wants to write still `calm.report.read`s for the current
+//! `docRev` / `if_rev`.
 //!
 //! Pairing. Prose blocks pair by their H1/H2 heading line (same heading
 //! several times: by order of appearance); a headingless leading slice
@@ -35,9 +42,11 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::report_blocks::{KIND_TASK, parse_fence, split_body};
+use crate::report_blocks::{KIND_TASK, append_block_text, flat_text, parse_fence, split_body};
+use crate::track_report::ReportBlock;
 
 /// Excerpt lines per block.
 pub const MAX_BLOCK_LINES: usize = 24;
@@ -48,14 +57,91 @@ pub const MAX_TOTAL_BYTES: usize = 8192;
 /// Appended (on its own line) wherever a bound cut something.
 pub const TRUNCATED_MARKER: &str = "… (truncated)";
 
-/// Render the block-level diff from `before` to `after`.
+/// A block's identity in the body a diff was rendered against: the
+/// `id` / `rev` pair `calm.report.read` returns for it, as of the edit
+/// the diff describes. Persisted inside `Observation::ReportEdited`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportBlockRef {
+    pub id: String,
+    pub rev: u32,
+}
+
+/// Position-align a report's block snapshot with the slices this
+/// module cuts `after` into, so each `after` slice can be named by its
+/// block id and rev.
+///
+/// `Some` only when the snapshot is exactly the body being diffed: its
+/// projection (`append_block_text` over `flat_text`, the same fold
+/// `ReportDoc::project` and `calm.report.read` use) is byte-equal to
+/// `after` AND every block is exactly one slice, i.e. slice `i` ends
+/// where block `i + 1`'s text begins. Anything else — a later write
+/// having landed between the event and the read, a prose block that
+/// holds two headings and so splits in two, an empty block — yields
+/// `None`: no refs at all rather than a shifted or invented id.
+pub fn align_block_refs(after: &str, blocks: &[ReportBlock]) -> Option<Vec<ReportBlockRef>> {
+    let mut projected = String::new();
+    let mut starts = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        // The separator step of the projection on its own: with empty
+        // text `append_block_text` only inserts the line break an
+        // unterminated preceding block needs, so the length afterwards
+        // is where this block's text begins, and the second call cannot
+        // insert another (the body now ends in that break or is empty).
+        append_block_text(&mut projected, "");
+        starts.push(projected.len());
+        append_block_text(&mut projected, &flat_text(block));
+    }
+    if projected != after {
+        return None;
+    }
+    let slices = split_body(after);
+    if slices.len() != blocks.len() {
+        return None;
+    }
+    let mut end = 0;
+    for (index, slice) in slices.iter().enumerate() {
+        end += slice.raw.len();
+        let next_start = starts.get(index + 1).copied().unwrap_or(after.len());
+        if end != next_start {
+            return None;
+        }
+    }
+    Some(
+        blocks
+            .iter()
+            .map(|block| ReportBlockRef {
+                id: block.id.clone(),
+                rev: block.rev,
+            })
+            .collect(),
+    )
+}
+
+/// Render the block-level diff from `before` to `after`, naming no
+/// block by id.
 pub fn render_report_diff(before: &str, after: &str) -> String {
+    render_report_diff_with_refs(before, after, None)
+}
+
+/// Render the block-level diff from `before` to `after`. With `refs`
+/// (from [`align_block_refs`], position-aligned with the `after`
+/// slices) every added or modified block's line carries its id and
+/// rev — `## modified: b_ffb8 (rev 2) `## Next` (-1/+1 lines)`; a
+/// removed block has no after-side identity and reads as without refs.
+pub fn render_report_diff_with_refs(
+    before: &str,
+    after: &str,
+    refs: Option<&[ReportBlockRef]>,
+) -> String {
     if before == after {
         return "No block-level changes (the body is byte-identical).\n".to_string();
     }
     let before_blocks = classify(before);
     let after_blocks = classify(after);
     let (pairs, unchanged) = pair_blocks(&before_blocks, &after_blocks);
+    // A refs sequence that does not cover the `after` slices is not the
+    // one `align_block_refs` produced for this body; ignore it whole.
+    let refs = refs.filter(|refs| refs.len() == after_blocks.len());
 
     let added = pairs.iter().filter(|p| p.before.is_none()).count();
     let removed = pairs.iter().filter(|p| p.after.is_none()).count();
@@ -66,9 +152,18 @@ pub fn render_report_diff(before: &str, after: &str) -> String {
     )];
     for pair in &pairs {
         lines.push(String::new());
-        lines.extend(render_pair(pair));
+        let after_ref = refs.zip(pair.after_index).map(|(refs, index)| &refs[index]);
+        lines.extend(render_pair(pair, after_ref));
     }
     bound_total(lines)
+}
+
+/// `b_ffb8 (rev 2) ` — the identity prefix of an added / modified
+/// block's line; empty when the diff has no refs.
+fn ref_prefix(after_ref: Option<&ReportBlockRef>) -> String {
+    after_ref
+        .map(|r| format!("{} (rev {}) ", r.id, r.rev))
+        .unwrap_or_default()
 }
 
 struct Block {
@@ -139,6 +234,9 @@ fn first_line(raw: &str) -> Option<&str> {
 struct Pair<'a> {
     before: Option<&'a Block>,
     after: Option<&'a Block>,
+    /// Index of `after` in the `after` body's slice sequence — what a
+    /// refs sequence is aligned by. `None` for a removal.
+    after_index: Option<usize>,
 }
 
 /// Pair blocks across the two bodies; returns the changed pairs (in
@@ -195,12 +293,14 @@ fn pair_blocks<'a>(before: &'a [Block], after: &'a [Block]) -> (Vec<Pair<'a>>, u
                     pairs.push(Pair {
                         before: Some(b),
                         after: Some(a),
+                        after_index: Some(ai),
                     });
                 }
             }
             None => pairs.push(Pair {
                 before: None,
                 after: Some(a),
+                after_index: Some(ai),
             }),
         }
     }
@@ -209,6 +309,7 @@ fn pair_blocks<'a>(before: &'a [Block], after: &'a [Block]) -> (Vec<Pair<'a>>, u
             pairs.push(Pair {
                 before: Some(b),
                 after: None,
+                after_index: None,
             });
         }
     }
@@ -225,12 +326,13 @@ fn pair_key(block: &Block) -> String {
     }
 }
 
-fn render_pair(pair: &Pair<'_>) -> Vec<String> {
+fn render_pair(pair: &Pair<'_>, after_ref: Option<&ReportBlockRef>) -> Vec<String> {
     match (pair.before, pair.after) {
-        (Some(b), Some(a)) => render_modified(b, a),
+        (Some(b), Some(a)) => render_modified(b, a, after_ref),
         (None, Some(a)) => {
             let mut out = vec![format!(
-                "## added: {} (+{} lines)",
+                "## added: {}{} (+{} lines)",
+                ref_prefix(after_ref),
                 a.title(),
                 line_count(&a.raw)
             )];
@@ -254,7 +356,8 @@ fn render_pair(pair: &Pair<'_>) -> Vec<String> {
     }
 }
 
-fn render_modified(b: &Block, a: &Block) -> Vec<String> {
+fn render_modified(b: &Block, a: &Block, after_ref: Option<&ReportBlockRef>) -> Vec<String> {
+    let prefix = ref_prefix(after_ref);
     match (&b.shape, &a.shape) {
         (
             Shape::Fence {
@@ -271,7 +374,7 @@ fn render_modified(b: &Block, a: &Block) -> Vec<String> {
             } else {
                 format!("{} -> {}", b.title(), a.title())
             };
-            let mut out = vec![format!("## modified: {title}")];
+            let mut out = vec![format!("## modified: {prefix}{title}")];
             let changed = changed_top_level_keys(b_payload, a_payload);
             out.push(format!(
                 "fields changed: {}",
@@ -307,7 +410,7 @@ fn render_modified(b: &Block, a: &Block) -> Vec<String> {
                 format!("{} -> {}", b.title(), a.title())
             };
             let mut out = vec![format!(
-                "## modified: {title} (-{}/+{} lines)",
+                "## modified: {prefix}{title} (-{}/+{} lines)",
                 removed.len(),
                 added.len()
             )];

@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::event::{EditAuthor, RatifyDecision};
 use crate::ids::{CardId, TrackId};
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
-use crate::report_edit_diff;
+use crate::report_edit_diff::{self, ReportBlockRef};
 
 mod receipt;
 
@@ -57,6 +57,23 @@ pub enum Observation {
         /// entry's value so the diff spans every save in the fold.
         #[serde(default)]
         body_before: Option<String>,
+        /// #1667 round-2 F1 — the report's `docRev` once this edit had
+        /// landed, so the turn text can tell the planner whether its
+        /// last `calm.report.read` already contained the edit (ordering
+        /// hint). Best-effort: the dispatcher fills it from the report
+        /// read at push time only when that read still projects to
+        /// `body`; a later write having landed in between leaves it
+        /// `None` (so does a pre-round-2 queued row). Set together with
+        /// `blocks_after`; the fold takes the newest entry's value.
+        #[serde(default)]
+        doc_rev_after: Option<u64>,
+        /// #1667 round-2 F1 — `(id, rev)` of each block of `body`, in
+        /// document order and position-aligned with the diff's `after`
+        /// slices (`report_edit_diff::align_block_refs`), so the diff
+        /// names the blocks it reports. Same best-effort rule and same
+        /// fold rule as `doc_rev_after`.
+        #[serde(default)]
+        blocks_after: Option<Vec<ReportBlockRef>>,
     },
     TaskCompleted {
         idempotency_key: String,
@@ -265,20 +282,39 @@ impl Observation {
             // #1667 D1 — with a `body_before` the observation is information:
             // two fixed lines, then the block-level diff. No re-read order;
             // a write still needs `calm.report.read` for `docRev`/`if_rev`.
+            //
+            // #1667 round-2 F1/F2 — with `doc_rev_after` a third fixed line
+            // places the edit against the planner's last read, and the
+            // diff names blocks by id / rev when `blocks_after` aligned.
             Observation::ReportEdited {
                 author,
                 body_before: Some(before),
                 body,
+                doc_rev_after,
+                blocks_after,
                 ..
-            } => format!(
-                "The track report was edited (author = \"{}\").\n\
-                 Block-level diff follows; this is information, not an instruction to re-read.\n\
-                 {}",
-                author
-                    .map(EditAuthor::wire_str)
-                    .unwrap_or_else(|| "unknown".to_string()),
-                report_edit_diff::render_report_diff(before, body)
-            ),
+            } => {
+                let mut text = format!(
+                    "The track report was edited (author = \"{}\").\n\
+                     Block-level diff follows; this is information, not an instruction to re-read.\n",
+                    author
+                        .map(EditAuthor::wire_str)
+                        .unwrap_or_else(|| "unknown".to_string()),
+                );
+                if let Some(doc_rev) = doc_rev_after {
+                    text.push_str(&format!(
+                        "After this edit the report is at docRev {doc_rev}. \
+                         If your last calm.report.read returned docRev >= {doc_rev}, \
+                         this edit is already in what you read.\n"
+                    ));
+                }
+                text.push_str(&report_edit_diff::render_report_diff_with_refs(
+                    before,
+                    body,
+                    blocks_after.as_deref(),
+                ));
+                text
+            }
             // #1252 S0 R1/F2. `None` is only reachable for observations
             // queued before the `author` field existed; it must render the
             // byte-identical pre-#1252 sentence so replayed history does
@@ -545,11 +581,14 @@ mod tests {
             body: "body".into(),
             author,
             body_before: None,
+            doc_rev_after: None,
+            blocks_after: None,
         }
     }
 
-    /// #1667 A1 — with `body_before` the turn text is the two fixed lines
-    /// plus the block diff, and no longer an order to re-read.
+    /// #1667 A1 — with `body_before` (and no refs) the turn text is the
+    /// two fixed lines plus the block diff, and no longer an order to
+    /// re-read; there is no third line and no id in the block line.
     #[test]
     fn report_edited_with_body_before_renders_the_block_diff() {
         let obs = Observation::ReportEdited {
@@ -558,6 +597,8 @@ mod tests {
             body: "# T\n\n## Thesis\n\nnew\n".into(),
             author: Some(EditAuthor::User),
             body_before: Some("# T\n\n## Thesis\n\nold\n".into()),
+            doc_rev_after: None,
+            blocks_after: None,
         };
         let text = obs.to_turn_text();
         let mut lines = text.lines();
@@ -569,15 +610,79 @@ mod tests {
             lines.next(),
             Some("Block-level diff follows; this is information, not an instruction to re-read.")
         );
+        assert_eq!(
+            lines.next(),
+            Some("Blocks: 0 added, 0 removed, 1 modified (1 unchanged)."),
+            "without doc_rev_after the diff starts on line 3: {text}"
+        );
         assert!(
             !text.contains("Re-read the track state"),
             "the diff form must not order a re-read: {text}"
         );
         assert!(
-            text.contains("## modified: `## Thesis` (-1/+1 lines)"),
+            !text.contains("docRev"),
+            "no docRev line without doc_rev_after: {text}"
+        );
+        assert!(
+            text.contains("\n## modified: `## Thesis` (-1/+1 lines)\n"),
             "{text}"
         );
         assert!(text.contains("\n-old\n+new\n"), "{text}");
+    }
+
+    /// #1667 round-2 F1/F2 — with `doc_rev_after` and aligned
+    /// `blocks_after` the header gains the ordering line and every block
+    /// line carries `id (rev N)`.
+    #[test]
+    fn report_edited_with_refs_names_doc_rev_and_block_ids() {
+        let obs = Observation::ReportEdited {
+            track_id: TrackId::from("track-1"),
+            body_sha256: "sha".into(),
+            body: "# T\n\n## Thesis\n\nnew\n## Risks\n\nfx\n".into(),
+            author: Some(EditAuthor::User),
+            body_before: Some("# T\n\n## Thesis\n\nold\n".into()),
+            doc_rev_after: Some(8),
+            blocks_after: Some(vec![
+                ReportBlockRef {
+                    id: "b_0001".into(),
+                    rev: 1,
+                },
+                ReportBlockRef {
+                    id: "b_ffb8".into(),
+                    rev: 3,
+                },
+                ReportBlockRef {
+                    id: "b_c3ae".into(),
+                    rev: 1,
+                },
+            ]),
+        };
+        let text = obs.to_turn_text();
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("The track report was edited (author = \"user\").")
+        );
+        assert_eq!(
+            lines.next(),
+            Some("Block-level diff follows; this is information, not an instruction to re-read.")
+        );
+        assert_eq!(
+            lines.next(),
+            Some(
+                "After this edit the report is at docRev 8. If your last calm.report.read \
+                 returned docRev >= 8, this edit is already in what you read."
+            )
+        );
+        assert!(
+            text.contains("\n## modified: b_ffb8 (rev 3) `## Thesis` (-1/+1 lines)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n## added: b_c3ae (rev 1) `## Risks` (+3 lines)\n"),
+            "{text}"
+        );
+        assert!(!text.contains("b_0001"), "unchanged block named: {text}");
     }
 
     /// #1667 A1 — `body_before: None` keeps the pre-#1667 sentence byte
@@ -611,6 +716,8 @@ mod tests {
             Observation::ReportEdited {
                 author: None,
                 body_before: None,
+                doc_rev_after: None,
+                blocks_after: None,
                 ..
             }
         ));
@@ -630,6 +737,31 @@ mod tests {
         assert_eq!(
             obs.to_turn_text(),
             "The track report was edited (author = \"assistant\"). Re-read the track state."
+        );
+        // And a round-1 #1667 row (`body_before` present, no refs): the
+        // diff form without the docRev line and without ids.
+        let round_one = serde_json::json!({
+            "type": "report_edited",
+            "track_id": "track-1",
+            "body_sha256": "sha",
+            "body": "## A\n\nnew\n",
+            "author": "user",
+            "body_before": "## A\n\nold\n",
+        });
+        let obs: Observation = serde_json::from_value(round_one).unwrap();
+        assert!(matches!(
+            &obs,
+            Observation::ReportEdited {
+                doc_rev_after: None,
+                blocks_after: None,
+                ..
+            }
+        ));
+        let text = obs.to_turn_text();
+        assert!(!text.contains("docRev"), "{text}");
+        assert!(
+            text.contains("\n## modified: `## A` (-1/+1 lines)\n"),
+            "{text}"
         );
     }
 

@@ -885,6 +885,8 @@ pub fn try_fold_tail(
                         body,
                         author,
                         body_before,
+                        doc_rev_after,
+                        blocks_after,
                     },
                 ..
             },
@@ -896,6 +898,8 @@ pub fn try_fold_tail(
                         body: new_body,
                         author: new_author,
                         body_before: new_body_before,
+                        doc_rev_after: new_doc_rev_after,
+                        blocks_after: new_blocks_after,
                     },
                 ..
             },
@@ -906,6 +910,12 @@ pub fn try_fold_tail(
             // the planner is told to treat the surviving body as ground truth,
             // so it must be told who actually wrote that body (#1252 F2).
             *author = *new_author;
+            // #1667 round-2 F1 — the `docRev` and block refs describe `body`,
+            // so they follow it: the newest entry's values, `None` included
+            // (an older entry's refs would name blocks of a body that is no
+            // longer the one the diff shows).
+            *doc_rev_after = *new_doc_rev_after;
+            *blocks_after = new_blocks_after.clone();
             // #1667 D1 — but the OLDEST `body_before`: the diff the planner
             // reads must run from the version it last knew to the newest
             // body, not from the penultimate save. The first entry's value

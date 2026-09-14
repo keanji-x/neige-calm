@@ -1589,11 +1589,72 @@ pub(crate) async fn resolve_harness_observation(
     } else {
         None
     };
-    Ok(harness_observation_from_event(
-        track_id,
-        event,
-        task_key.as_deref(),
-    ))
+    let mut observation = harness_observation_from_event(track_id, event, task_key.as_deref());
+    if let Some(observation) = observation.as_mut() {
+        attach_report_block_refs(repo, event, observation).await;
+    }
+    Ok(observation)
+}
+
+/// #1667 round-2 F1 — give a `ReportEdited` observation the block ids /
+/// revs and the `docRev` of the body it carries, read from the report
+/// card now (the sync `Event -> Observation` mapping cannot query).
+///
+/// Best-effort by design: the refs are attached only when the report as
+/// read still projects to the event's `body_after` and each block is one
+/// diff slice (`report_edit_diff::align_block_refs`). A later write that
+/// landed before this push — or a read error — leaves both fields `None`
+/// and the diff nameless, rather than naming blocks by ids and revs that
+/// belong to a different body. Runs for live pushes and boot replay
+/// alike (both come through `resolve_harness_observation`); on replay the
+/// current report usually differs from an old event's body and the
+/// alignment simply declines.
+async fn attach_report_block_refs(
+    repo: &dyn crate::db::RepoRead,
+    event: &Event,
+    observation: &mut HarnessObservation,
+) {
+    let (
+        Event::TrackReportEdited {
+            card_id,
+            body_after,
+            ..
+        },
+        HarnessObservation::ReportEdited {
+            track_id,
+            doc_rev_after,
+            blocks_after,
+            ..
+        },
+    ) = (event, observation)
+    else {
+        return;
+    };
+    let snapshot =
+        match crate::track_report_read::load_report_doc_snapshot(repo, card_id.as_str()).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!(
+                    %track_id,
+                    report_card_id = %card_id,
+                    %error,
+                    "report edit observation: report read failed; the diff carries no block ids"
+                );
+                return;
+            }
+        };
+    match calm_types::report_edit_diff::align_block_refs(body_after, &snapshot.blocks) {
+        Some(refs) => {
+            *doc_rev_after = Some(snapshot.doc_rev);
+            *blocks_after = Some(refs);
+        }
+        None => tracing::debug!(
+            %track_id,
+            report_card_id = %card_id,
+            doc_rev = snapshot.doc_rev,
+            "report edit observation: report no longer projects to the event body; the diff carries no block ids"
+        ),
+    }
 }
 
 pub(crate) fn harness_observation_from_event(
@@ -1659,6 +1720,10 @@ pub(crate) fn harness_observation_from_event(
             // #1667 D1 — the event's pre-edit body, so the turn text can
             // render what changed instead of ordering a re-read.
             body_before: Some(body_before.clone()),
+            // #1667 round-2 F1 — filled by `attach_report_block_refs` in
+            // the async resolver; this sync mapping cannot read the report.
+            doc_rev_after: None,
+            blocks_after: None,
         }),
         Event::WorkspaceLeased {
             card_id,

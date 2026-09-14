@@ -114,6 +114,22 @@ pub struct SinceLastTurnBlock {
     pub block: Option<String>,
 }
 
+/// #1667 round-2 F3 — whether `since_last_turn_block` inlines the
+/// `report.md` unified patch under its `report.md` line.
+///
+/// A turn that a `ReportEdited` observation opened already carries the
+/// block-level diff of that edit as its input, so the patch would be
+/// the same change told twice in two shapes (and the patch's range —
+/// everything since the previous turn, the planner's own writes
+/// included — is wider, which misled the planner in the #1667 round-1
+/// interview). `Omit` keeps the `report.md` line and points at the
+/// block diff instead; every other turn keeps `Include`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportPatch {
+    Include,
+    Omit,
+}
+
 impl SinceLastTurnBlock {
     pub fn empty() -> Self {
         Self::default()

@@ -185,3 +185,134 @@ fn prose_replaced_by_fence_is_a_modification_plus_an_addition() {
     );
     assert!(!out.contains("hidden"), "{out}");
 }
+
+fn prose(id: &str, rev: u32, markdown: &str) -> ReportBlock {
+    ReportBlock {
+        id: id.into(),
+        kind: "prose".into(),
+        rev,
+        payload: json!({ "markdown": markdown }),
+    }
+}
+
+fn refs(pairs: &[(&str, u32)]) -> Vec<ReportBlockRef> {
+    pairs
+        .iter()
+        .map(|(id, rev)| ReportBlockRef {
+            id: (*id).into(),
+            rev: *rev,
+        })
+        .collect()
+}
+
+/// #1667 round-2 F1 — a snapshot that projects to exactly `after`, one
+/// block per slice, aligns by position; the last block may be
+/// unterminated and a terminated one may be followed by another.
+#[test]
+fn snapshot_that_projects_to_after_aligns_one_ref_per_slice() {
+    let blocks = [
+        prose("b_0001", 1, "# T\n\nintro\n"),
+        prose("b_0002", 4, "## Thesis\n\nclaim\n"),
+        prose("b_0003", 2, "## Next\n\nsteps"),
+    ];
+    let after = "# T\n\nintro\n## Thesis\n\nclaim\n## Next\n\nsteps";
+    assert_eq!(
+        align_block_refs(after, &blocks),
+        Some(refs(&[("b_0001", 1), ("b_0002", 4), ("b_0003", 2)]))
+    );
+}
+
+/// F1 — the projection inserts a line break after an unterminated block;
+/// that break belongs to the preceding slice and alignment still holds.
+#[test]
+fn unterminated_middle_block_still_aligns() {
+    let blocks = [
+        prose("b_0001", 1, "# T\n\nintro"),
+        prose("b_0002", 1, "## B\n\nx\n"),
+    ];
+    let after = "# T\n\nintro\n## B\n\nx\n";
+    assert_eq!(
+        align_block_refs(after, &blocks),
+        Some(refs(&[("b_0001", 1), ("b_0002", 1)]))
+    );
+}
+
+/// F1 — a snapshot from AFTER a later write (same layout, different
+/// text) is not the body being diffed: no refs, not shifted ones.
+#[test]
+fn snapshot_of_a_later_write_yields_no_refs() {
+    let blocks = [
+        prose("b_0001", 1, "# T\n\nintro\n"),
+        prose("b_0002", 5, "## Thesis\n\nclaim rewritten later\n"),
+    ];
+    let after = "# T\n\nintro\n## Thesis\n\nclaim\n";
+    assert_eq!(align_block_refs(after, &blocks), None);
+}
+
+/// F1 — a prose block that holds two headings is two slices; the id
+/// would be ambiguous, so nothing is named.
+#[test]
+fn block_that_splits_into_two_slices_yields_no_refs() {
+    let blocks = [prose("b_0001", 1, "# T\n\nintro\n## Inner\n\nx\n")];
+    let after = "# T\n\nintro\n## Inner\n\nx\n";
+    assert_eq!(align_block_refs(after, &blocks), None);
+}
+
+/// F1 — an empty block is no slice at all; the sequence cannot align.
+#[test]
+fn empty_block_yields_no_refs() {
+    let blocks = [prose("b_0001", 1, "# T\n"), prose("b_0002", 1, "")];
+    let after = "# T\n";
+    assert_eq!(align_block_refs(after, &blocks), None);
+}
+
+/// F1 — with refs every added / modified line carries `id (rev N)`;
+/// a removed block has no after-side identity and reads as before.
+#[test]
+fn refs_name_added_and_modified_blocks_by_id_and_rev() {
+    let before = "# Title\n\nintro\n\n## Thesis\n\nold claim\n\n## Draft\n\nscrap\n";
+    let after = "# Title\n\nintro\n\n## Thesis\n\nnew claim\n\n## Risks\n\nfx exposure\n";
+    let refs = refs(&[("b_aaaa", 1), ("b_ffb8", 2), ("b_c3ae", 1)]);
+    let out = render_report_diff_with_refs(before, after, Some(&refs));
+    assert!(
+        out.contains("## modified: b_ffb8 (rev 2) `## Thesis` (-1/+1 lines)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("## added: b_c3ae (rev 1) `## Risks` (+3 lines)"),
+        "{out}"
+    );
+    assert!(out.contains("## removed: `## Draft` (-3 lines)"), "{out}");
+    assert!(!out.contains("b_aaaa"), "unchanged block named: {out}");
+    assert_eq!(
+        render_report_diff(before, after),
+        render_report_diff_with_refs(before, after, None),
+        "no refs renders exactly the ref-less form"
+    );
+}
+
+/// F1 — a task fence line carries the ref too.
+#[test]
+fn refs_name_a_modified_fence() {
+    let before = format!("## Plan\n\n{}", task("build", false, "g"));
+    let after = format!("## Plan\n\n{}", task("build", true, "g"));
+    let refs = refs(&[("b_0001", 1), ("b_0002", 7)]);
+    let out = render_report_diff_with_refs(&before, &after, Some(&refs));
+    assert!(
+        out.contains("## modified: b_0002 (rev 7) `task` block key = \"build\""),
+        "{out}"
+    );
+}
+
+/// F1 — a refs sequence of the wrong length is not this body's and is
+/// ignored whole rather than applied to a prefix.
+#[test]
+fn refs_of_the_wrong_length_are_ignored() {
+    let before = "## A\n\nx\n";
+    let after = "## A\n\ny\n\n## B\n\nz\n";
+    let refs = refs(&[("b_0001", 1)]);
+    assert_eq!(
+        render_report_diff_with_refs(before, after, Some(&refs)),
+        render_report_diff(before, after)
+    );
+}
