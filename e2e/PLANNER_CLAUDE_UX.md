@@ -184,6 +184,9 @@ tally of those calls' returned `wait.repaint.outcome` joined with whether
 every asked condition held (`settled/held`, `unsettled/not_held`, …); a
 missing `repaint` or `conditions` block (older server) adds nothing.
 
+The counters live in `e2e/planner_claude_ux_metrics.py` (one program, two
+files; `planner_claude_ux.py` star-imports it).
+
 ## Model-free driver checks
 
 These validate only collection/failure handling; they are not a fake passing
