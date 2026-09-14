@@ -19,7 +19,58 @@ pub struct ReportReadSnapshot {
     pub task_diagnostics: Vec<crate::db::sqlite::BlockVerdict>,
 }
 
-/// Load the read snapshot for the report card.
+/// The document half of [`ReportReadSnapshot`]: everything the one row
+/// read yields before task diagnostics are evaluated. #1667 round-2 F1
+/// reads this on the dispatcher's push path (block ids / revs / `docRev`
+/// for the edit diff), where the diagnostics would be wasted work and
+/// the settings read is not wanted.
+pub struct ReportDocSnapshot {
+    pub updated_at: i64,
+    pub doc_rev: u64,
+    pub summary: String,
+    pub body: String,
+    pub blocks: Vec<ReportBlock>,
+}
+
+/// Load the read snapshot for the report card: [`load_report_doc_snapshot`]
+/// plus the task diagnostics evaluated against the effective task budget.
+pub async fn load_report_read_snapshot(
+    repo: &dyn RouteRepo,
+    report_card_id: &str,
+    task_budget_default: i64,
+) -> Result<ReportReadSnapshot, CalmError> {
+    // Diagnostics must explain the same effective budget the scheduler uses,
+    // including a Settings change made after server boot.
+    let task_budget_default = crate::routes::settings::load_settings(repo)
+        .await?
+        .task_budget_default
+        .unwrap_or(task_budget_default);
+    let (card_track_id, doc) = load_report_doc_snapshot_with_track(repo, report_card_id).await?;
+    let task_diagnostics = repo
+        .task_diagnostics(card_track_id.as_str(), &doc.blocks, task_budget_default)
+        .await?;
+    Ok(ReportReadSnapshot {
+        updated_at: doc.updated_at,
+        schema_version: TrackReportPayload::SCHEMA_VERSION,
+        doc_rev: doc.doc_rev,
+        summary: doc.summary,
+        body: doc.body,
+        blocks: doc.blocks,
+        task_diagnostics,
+    })
+}
+
+/// Load the document snapshot for the report card (no diagnostics).
+pub async fn load_report_doc_snapshot(
+    repo: &dyn crate::db::RepoRead,
+    report_card_id: &str,
+) -> Result<ReportDocSnapshot, CalmError> {
+    load_report_doc_snapshot_with_track(repo, report_card_id)
+        .await
+        .map(|(_, doc)| doc)
+}
+
+/// Load the document snapshot for the report card.
 ///
 /// Source selection (the CRDT is the source of truth, the JSON cache
 /// is best-effort — #960 PR2 review):
@@ -40,17 +91,10 @@ pub struct ReportReadSnapshot {
 ///      over `split_body` of the served body) — byte-identical to
 ///      what the CRDT seed / lazy migrator will mint on first write
 ///      with the same (absent) hint, so the ids stay valid targets.
-pub async fn load_report_read_snapshot(
-    repo: &dyn RouteRepo,
+async fn load_report_doc_snapshot_with_track(
+    repo: &dyn crate::db::RepoRead,
     report_card_id: &str,
-    task_budget_default: i64,
-) -> Result<ReportReadSnapshot, CalmError> {
-    // Diagnostics must explain the same effective budget the scheduler uses,
-    // including a Settings change made after server boot.
-    let task_budget_default = crate::routes::settings::load_settings(repo)
-        .await?
-        .task_budget_default
-        .unwrap_or(task_budget_default);
+) -> Result<(crate::ids::TrackId, ReportDocSnapshot), CalmError> {
     let (card, bytes) = repo
         .card_get_with_body_crdt(report_card_id)
         .await?
@@ -83,18 +127,16 @@ pub async fn load_report_read_snapshot(
     let Some(bytes) = bytes else {
         let blocks = normalize_legacy_terminal_task_blocks(&derive(&payload.body));
         let body = flatten(&blocks);
-        let task_diagnostics = repo
-            .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
-            .await?;
-        return Ok(ReportReadSnapshot {
-            updated_at: card.updated_at,
-            schema_version: TrackReportPayload::SCHEMA_VERSION,
-            doc_rev: 0,
-            summary: payload.summary,
-            body,
-            blocks,
-            task_diagnostics,
-        });
+        return Ok((
+            card.track_id,
+            ReportDocSnapshot {
+                updated_at: card.updated_at,
+                doc_rev: 0,
+                summary: payload.summary,
+                body,
+                blocks,
+            },
+        ));
     };
     let mut doc = crate::track_report_doc::ReportDoc::from_bytes(&bytes).map_err(|e| {
         CalmError::Internal(format!(
@@ -111,18 +153,16 @@ pub async fn load_report_read_snapshot(
     if let Some(blocks) = payload.blocks {
         let blocks = normalize_legacy_terminal_task_blocks(&blocks);
         let body = flatten(&blocks);
-        let task_diagnostics = repo
-            .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
-            .await?;
-        return Ok(ReportReadSnapshot {
-            updated_at: card.updated_at,
-            schema_version: TrackReportPayload::SCHEMA_VERSION,
-            doc_rev,
-            summary: payload.summary,
-            body,
-            blocks,
-            task_diagnostics,
-        });
+        return Ok((
+            card.track_id,
+            ReportDocSnapshot {
+                updated_at: card.updated_at,
+                doc_rev,
+                summary: payload.summary,
+                body,
+                blocks,
+            },
+        ));
     }
     let internal =
         |e: anyhow::Error| CalmError::Internal(format!("track_report: card {report_card_id}: {e}"));
@@ -132,18 +172,16 @@ pub async fn load_report_read_snapshot(
     doc.ensure_blocks_layout(None).map_err(internal)?;
     let (summary, body) = doc.project().map_err(internal)?;
     let blocks = doc.blocks_snapshot().map_err(internal)?;
-    let task_diagnostics = repo
-        .task_diagnostics(card.track_id.as_str(), &blocks, task_budget_default)
-        .await?;
-    Ok(ReportReadSnapshot {
-        updated_at: card.updated_at,
-        schema_version: TrackReportPayload::SCHEMA_VERSION,
-        doc_rev,
-        summary,
-        body,
-        blocks,
-        task_diagnostics,
-    })
+    Ok((
+        card.track_id,
+        ReportDocSnapshot {
+            updated_at: card.updated_at,
+            doc_rev,
+            summary,
+            body,
+            blocks,
+        },
+    ))
 }
 
 #[cfg(test)]

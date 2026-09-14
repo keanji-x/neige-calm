@@ -10,8 +10,8 @@ use super::store::{
 };
 use super::{
     CommitHash, CommitLog, CommitLogEntry, CommitRecord, DEFAULT_PATCH_MAX_LINES, DiffEntry,
-    DiffStatus, FileDiff, HistoricalBlob, ManifestEntry, SinceLastTurnBlock, TreeManifest, head,
-    tree_at,
+    DiffStatus, FileDiff, HistoricalBlob, ManifestEntry, ReportPatch, SinceLastTurnBlock,
+    TreeManifest, head, tree_at,
 };
 
 const LOG_PAGE_SIZE: usize = 200;
@@ -189,6 +189,7 @@ pub async fn since_last_turn_block(
     last_seen_head: Option<&str>,
     current_override: Option<&CommitHash>,
     planner_card_id: Option<&CardId>,
+    report_patch: ReportPatch,
 ) -> Result<SinceLastTurnBlock> {
     let Some(current) = (match current_override {
         Some(current) => Some(current.clone()),
@@ -220,10 +221,11 @@ pub async fn since_last_turn_block(
             block: None,
         });
     }
-    let report_patch = if entries.iter().any(|entry| {
+    let report_changed = entries.iter().any(|entry| {
         entry.path == "report.md"
             && matches!(entry.status, DiffStatus::Added | DiffStatus::Modified)
-    }) {
+    });
+    let patch = if report_changed && report_patch == ReportPatch::Include {
         diff_with_patches(
             pool,
             previous,
@@ -258,12 +260,17 @@ pub async fn since_last_turn_block(
             out.push_str(author);
             out.push(')');
         }
-        if entry.path == "report.md" && report_patch.is_some() {
+        if entry.path == "report.md" && patch.is_some() {
             out.push_str(" (unified patch follows)");
+        } else if entry.path == "report.md" && report_changed && report_patch == ReportPatch::Omit {
+            // #1667 round-2 F3 — the caller's turn input is the block-level
+            // diff of this very edit, so the patch is not repeated here.
+            // (Under `Include` a change that yielded no patch says nothing.)
+            out.push_str(" (see the block-level diff below)");
         }
         out.push('\n');
         if entry.path == "report.md"
-            && let Some(patch) = report_patch.as_deref()
+            && let Some(patch) = patch.as_deref()
         {
             let fence = markdown_code_fence_for(patch);
             out.push_str(&fence);

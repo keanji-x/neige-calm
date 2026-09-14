@@ -25,6 +25,7 @@ pub mod track_report;
 pub mod track_report_blocks;
 pub(crate) mod track_report_hydrate;
 pub mod track_state;
+pub mod user_notify;
 
 /// Register every default tool onto a fresh registry. Callers build
 /// the final `Arc<ToolRegistry>` from the result.
@@ -43,6 +44,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     report_links::register_into(registry);
     review::register_into(registry);
     track_rename::register_into(registry);
+    user_notify::register_into(registry);
     track_state::register_into(registry);
     track_report::register_into(registry);
     track_report_blocks::register_into(registry);

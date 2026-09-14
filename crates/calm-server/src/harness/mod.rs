@@ -11,7 +11,7 @@ pub mod snapshot;
 pub mod state;
 pub mod token_usage;
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::card_role_cache::CardRoleCache;
@@ -312,7 +312,7 @@ async fn replay_harness_events_since(
     let observations =
         catch_up::observations_since(repo.as_ref(), track_id, watermark, None).await?;
     let mut replayed = 0usize;
-    let mut entries = snapshot.pending_entries();
+    let mut entries: VecDeque<queue::QueueEntry> = snapshot.pending_entries().into();
     for (event_id, obs) in observations {
         // #1505 PR1 — a dispatcher observation can never be a `UserMessage`
         // (`harness_observation_from_event` has no arm that builds one), and
@@ -344,12 +344,21 @@ async fn replay_harness_events_since(
                 continue;
             }
         };
-        entries.push(entry);
+        // #1667 round-4 N3 — the same early fold the live enqueue applies:
+        // a replayed edit session (each event carrying two full bodies,
+        // each rendering up to 8 KB of diff) is one entry, not one per
+        // save. Contiguity (round-4 M2) is checked by the fold itself.
+        if !matches!(
+            queue::try_fold_report_edit_tail(&mut entries, &entry),
+            queue::FoldOutcome::Folded { .. }
+        ) {
+            entries.push_back(entry);
+        }
         snapshot.push_watermark = snapshot.push_watermark.max(event_id);
         replayed += 1;
     }
     if replayed > 0 {
-        snapshot.set_pending_entries(entries);
+        snapshot.set_pending_entries(entries.into());
         persist_recovered_snapshot(repo, card_id, snapshot).await?;
     }
     if replayed > 0 {

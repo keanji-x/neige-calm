@@ -24,7 +24,8 @@ use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
 use crate::harness::queue::{
     FoldOutcome, MutationApplied, MutationRefused, MutationResult, QueueEntry, QueueEntryId,
-    QueueMutation, apply_mutation, input_segments_for_entries, locate_entry, try_fold_tail,
+    QueueMutation, apply_mutation, input_segments_for_entries, locate_entry,
+    try_fold_report_edit_tail, try_fold_tail,
 };
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
@@ -1129,6 +1130,19 @@ impl PlannerHarness {
         )
     }
 
+    /// #1667 A3 — age the pending window by `by` without sleeping: both
+    /// debounce timestamps move into the past, so the next 50 ms tick sees
+    /// a window that has been idle for `by` longer than it really has. The
+    /// run loop reads `std::time::Instant`, which `tokio::time::pause`
+    /// cannot move, so this is the fixture clock.
+    #[cfg(feature = "fixtures")]
+    pub async fn rewind_debounce_for_test(&self, by: Duration) {
+        let mut debounce = self.inner.debounce.lock().await;
+        let rewind = |at: Instant| at.checked_sub(by).unwrap_or(at);
+        debounce.first_pending_at = debounce.first_pending_at.map(rewind);
+        debounce.last_pending_at = debounce.last_pending_at.map(rewind);
+    }
+
     /// How long the current pending window has been open, in milliseconds.
     /// Zero when there is no window.
     #[cfg(feature = "fixtures")]
@@ -1138,6 +1152,22 @@ impl PlannerHarness {
             .lock()
             .await
             .first_pending_at
+            .map(|at| at.elapsed().as_millis())
+            .unwrap_or(0)
+    }
+
+    /// #1667 round-4 N6 — how long since the newest pending entry landed,
+    /// in milliseconds; zero when there is no window. A test that drives
+    /// the clock with `rewind_debounce_for_test` reads this to know that an
+    /// observation sent through the channel has actually stamped the
+    /// window before it rewinds again.
+    #[cfg(feature = "fixtures")]
+    pub async fn debounce_last_pending_elapsed_ms_for_test(&self) -> u128 {
+        self.inner
+            .debounce
+            .lock()
+            .await
+            .last_pending_at
             .map(|at| at.elapsed().as_millis())
             .unwrap_or(0)
     }
@@ -2094,6 +2124,16 @@ async fn flush_dropped_announcements(inner: &Arc<Inner>) -> Result<()> {
 
 async fn enqueue_pending_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome {
     let mut queue = inner.pending_queue.lock().await;
+    // #1667 D1 — one edit session is many saves. Adjacent, contiguous report
+    // edits of the same track fold on every enqueue (first `body_before`,
+    // newest `body`), so the planner reads ONE diff from the version it last
+    // knew to the newest body instead of one bounded diff per save. Only
+    // this shape folds early: user text keeps its own slot (ids,
+    // attachments, separate `User says:` blocks) until the cap below forces
+    // a fold.
+    if let FoldOutcome::Folded { entry_id } = try_fold_report_edit_tail(&mut queue, &entry) {
+        return EnqueueOutcome::Accepted { entry_id };
+    }
     if queue.len() >= MAX_PENDING_QUEUE_LEN {
         match try_fold_tail(&mut queue, &entry, MAX_FOLDED_USER_MESSAGE_CHARS) {
             FoldOutcome::Folded { entry_id } => {
@@ -3421,6 +3461,48 @@ async fn consume_completed_worktree_commits(inner: &Arc<Inner>) -> Result<()> {
     Ok(())
 }
 
+/// #1667 D2 — true iff the queue is non-empty and EVERY entry is a
+/// `ReportEdited` observation. A single user message, task receipt or any
+/// other observation in the queue makes this false, and the ordinary
+/// debounce pair applies to the whole batch.
+fn queue_is_only_report_edits(queue: &VecDeque<QueueEntry>) -> bool {
+    !queue.is_empty()
+        && queue.iter().all(|entry| {
+            matches!(
+                entry,
+                QueueEntry::System {
+                    observation: Observation::ReportEdited { .. },
+                    ..
+                }
+            )
+        })
+}
+
+/// #1667 round-2 F3 / round-4 M3 — true iff the queue is non-empty and
+/// EVERY entry is a `ReportEdited` observation that carries its
+/// `body_before`, i.e. every entry renders a block-level diff and the
+/// since-last-turn unified patch may be omitted as the same change told
+/// twice. A pre-#1667 entry (`body_before: None`, a queue persisted before
+/// the upgrade) renders the old re-read sentence and no diff, so for it
+/// the unified patch is the only place its edit is visible: such a batch
+/// is still a quiet turn (`queue_is_only_report_edits`) but keeps the
+/// patch.
+fn queue_report_edits_all_carry_diffs(queue: &VecDeque<QueueEntry>) -> bool {
+    !queue.is_empty()
+        && queue.iter().all(|entry| {
+            matches!(
+                entry,
+                QueueEntry::System {
+                    observation: Observation::ReportEdited {
+                        body_before: Some(_),
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+}
+
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Issue #682 review — dev-forced harnesses run against the replay
     // binary's stub app-server; see `PlannerHarness::pause_issuance_for_dev`.
@@ -3429,7 +3511,14 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     }
     // Most ticks find the queue empty; bail before any logging so the 50ms
     // tick cadence does not flood the log with one entry line per tick.
-    let queue_len = inner.pending_queue.lock().await.len();
+    let (queue_len, only_report_edits, report_edits_carry_diffs) = {
+        let queue = inner.pending_queue.lock().await;
+        (
+            queue.len(),
+            queue_is_only_report_edits(&queue),
+            queue_report_edits_all_carry_diffs(&queue),
+        )
+    };
     if queue_len == 0 {
         return Ok(());
     }
@@ -3463,6 +3552,21 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     );
 
     let now = Instant::now();
+    // #1667 D2 — a queue that is nothing but report edits waits for the
+    // editor to go quiet (one wake per edit, not per save); any other
+    // soft entry keeps the ordinary pair. `hard_fire` is checked first
+    // and wins outright, so this only ever lengthens a wait.
+    let (min_idle, max_wait) = if only_report_edits {
+        (
+            inner.config.report_edit_min_idle,
+            inner.config.report_edit_max_wait,
+        )
+    } else {
+        (
+            inner.config.debounce_min_idle,
+            inner.config.debounce_max_wait,
+        )
+    };
     let should_issue = if hard_fire {
         true
     } else {
@@ -3488,8 +3592,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             );
             return Ok(());
         };
-        now.duration_since(last) >= inner.config.debounce_min_idle
-            || now.duration_since(first) >= inner.config.debounce_max_wait
+        now.duration_since(last) >= min_idle || now.duration_since(first) >= max_wait
     };
     if !should_issue {
         tracing::debug!(
@@ -3686,10 +3789,23 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         refresh_head = ?refresh_head.as_deref(),
         "fetching since-last-turn diff"
     );
+    // #1667 round-2 F3 — a batch that is nothing but report edits, each
+    // carrying its diff, issues a turn whose input IS the block-level diff
+    // of those edits; the since-last-turn block then names `report.md` but
+    // does not repeat the change as a unified patch. Round-4 M3 — a
+    // pre-#1667 entry in the batch renders no diff, so the patch stays
+    // (`queue_report_edits_all_carry_diffs`). The flag was read with the
+    // queue at the top of this function and the queue does not change
+    // between there and the drain below (see `client_id`).
+    let report_patch = if report_edits_carry_diffs {
+        track_vcs::ReportPatch::Omit
+    } else {
+        track_vcs::ReportPatch::Include
+    };
     let diff = if skip_track_diff {
         track_vcs::SinceLastTurnBlock::empty()
     } else {
-        diff_with_timeout(inner, refresh_head.as_ref()).await
+        diff_with_timeout(inner, refresh_head.as_ref(), report_patch).await
     };
     // Deterministic drain-vs-supersede window for #1449. No-op in production.
     wait_at_planner_harness_drain_race_hook(&inner.worker_session_id).await;
@@ -4239,9 +4355,10 @@ where
 async fn diff_with_timeout(
     inner: &Arc<Inner>,
     current_override: Option<&track_vcs::CommitHash>,
+    report_patch: track_vcs::ReportPatch,
 ) -> track_vcs::SinceLastTurnBlock {
     diff_or_fallback_on_timeout(
-        since_last_turn_diff_block(inner, current_override),
+        since_last_turn_diff_block(inner, current_override, report_patch),
         SINCE_LAST_TURN_DIFF_TIMEOUT,
         &inner.worker_session_id,
         inner.card_id.as_str(),
@@ -4326,6 +4443,7 @@ async fn current_head_after_diff_timeout(
 async fn since_last_turn_diff_block(
     inner: &Arc<Inner>,
     current_override: Option<&track_vcs::CommitHash>,
+    report_patch: track_vcs::ReportPatch,
 ) -> track_vcs::SinceLastTurnBlock {
     let Some(pool) = inner.repo.sqlite_pool() else {
         return track_vcs::SinceLastTurnBlock::empty();
@@ -4337,6 +4455,7 @@ async fn since_last_turn_diff_block(
         last_seen_head.as_deref(),
         current_override,
         Some(&inner.card_id),
+        report_patch,
     )
     .await
     {
@@ -5111,6 +5230,9 @@ mod completed_commit_tests;
 
 #[cfg(test)]
 mod recovery_briefing_tests;
+
+#[cfg(test)]
+mod report_edit_replay_tests;
 
 #[cfg(test)]
 mod result_receipt_tests;

@@ -1,0 +1,94 @@
+@layer features {
+  /*
+   * #1667 D3 — the folded background turn. Same register as the kernel's
+   * system disclosure in `thread.module.css` (`.system`): meta rank, the
+   * label ink, the native `<details>` with the marker replaced by the same
+   * glyph. It is one of those lines, only wider in what it covers. No fill,
+   * no side, no speaker: nobody said "synced".
+   */
+  .fold {
+    margin: 0;
+    color: var(--text-4);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+  }
+
+  .summary {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: var(--space-2);
+    min-block-size: var(--control-h);
+    min-inline-size: 0;
+    cursor: pointer;
+    list-style: none;
+    text-align: start;
+  }
+
+  .summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .disclosure {
+    flex: none;
+    inline-size: var(--space-5);
+    transform-origin: center;
+  }
+
+  .fold[open] > .summary .disclosure {
+    transform: rotate(90deg);
+  }
+
+  .label {
+    overflow: hidden;
+    min-inline-size: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The clock, in the numeric face the thread's gap separator uses. */
+  .time {
+    font-family: var(--font-numeric);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /*
+   * What the sync did, indented under the line so the column reads
+   * "this belongs to that". The children are the thread's own renderings —
+   * the system disclosure, activity lines, a reply — and keep their own
+   * type; the indent is the only thing this box adds. Spaced with the same
+   * `> * + *` rhythm the thread uses inside an exchange.
+   */
+  .body {
+    margin-block-start: var(--space-2);
+    padding-inline-start: var(--space-5);
+  }
+
+  .body > * + * {
+    margin-block-start: var(--space-3);
+  }
+
+  /* The same 6px accent dot and pulse the thread's own live mark takes. */
+  .live {
+    display: inline-block;
+    flex: none;
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    animation: quiet-sync-pulse var(--motion-pulse) ease-in-out infinite;
+  }
+
+  @keyframes quiet-sync-pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .live {
+      animation: none;
+    }
+  }
+}

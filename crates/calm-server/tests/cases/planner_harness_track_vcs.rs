@@ -7,7 +7,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, session_set_status_tx, session_start_runtime_tx,
 };
-use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, Observation, PlannerHarness,
     PlannerHarnessParams,
@@ -124,6 +124,11 @@ async fn boot() -> Boot {
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
             debounce_max_wait: Duration::from_millis(200),
+            // #1667 D2 — the report-edit pair too, so the round-2 F3 tests
+            // below (a queue of nothing but a `ReportEdited`) issue within
+            // the suite's budget instead of the shipped 20 s.
+            report_edit_min_idle: Duration::from_millis(10),
+            report_edit_max_wait: Duration::from_millis(200),
             ..HarnessConfig::default()
         },
         snapshot,
@@ -1126,6 +1131,128 @@ async fn next_turn_prepends_diff_since_completed_turn_head() {
     boot.harness.shutdown().await.unwrap();
 }
 
+/// #1667 round-2 F3 — a turn opened by a `ReportEdited` observation
+/// names `report.md` in the since-last-turn block but does not repeat
+/// the change as a unified patch: the turn's own input is the block-level
+/// diff, and the patch (which spans everything since the previous turn)
+/// was the same change told twice in two shapes.
+#[tokio::test]
+async fn report_edited_turn_names_report_md_without_the_unified_patch() {
+    let boot = boot().await;
+    let before = complete_first_turn_and_stamp(&boot).await;
+    add_report_card_event(&boot).await;
+
+    let text = issue_observation(
+        &boot,
+        Observation::ReportEdited {
+            track_id: boot.track_id.clone(),
+            body_sha256: "sha-after".into(),
+            body: "# Goal\n\nedited by the user\n".into(),
+            author: Some(EditAuthor::User),
+            body_before: Some("# Goal\n\n".into()),
+            doc_rev_after: None,
+            blocks_after: None,
+        },
+        2,
+    )
+    .await;
+    let issued_head = wait_for_runtime_snapshot(&boot, |s| s.issued_turn_head.is_some())
+        .await
+        .issued_turn_head
+        .expect("issued turn head");
+
+    assert!(text.starts_with("## Track state changes since your last turn"));
+    assert!(text.contains(&format!(
+        "HEAD {} -> {}",
+        short(&before),
+        short(&issued_head)
+    )));
+    assert!(
+        text.contains("report.md new (by kernel) (see the block-level diff below)\n"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("(unified patch follows)"),
+        "the patch must not be announced: {text}"
+    );
+    assert!(
+        !text.contains("```diff"),
+        "the patch must not be inlined: {text}"
+    );
+    assert!(
+        text.contains(
+            "Block-level diff follows; this is information, not an instruction to re-read."
+        ),
+        "the observation's own diff is the turn input: {text}"
+    );
+    assert!(text.contains("+edited by the user"), "{text}");
+    boot.harness.shutdown().await.unwrap();
+}
+
+/// #1667 round-4 M3 — a pre-#1667 `ReportEdited` (no `body_before`: a
+/// queue entry persisted before the upgrade) renders the re-read sentence
+/// and no block-level diff, so the unified patch is the only place that
+/// edit is visible: the batch is still a quiet turn, but the patch stays.
+#[tokio::test]
+async fn legacy_report_edited_turn_keeps_the_unified_patch() {
+    let boot = boot().await;
+    complete_first_turn_and_stamp(&boot).await;
+    add_report_card_event(&boot).await;
+
+    let text = issue_observation(
+        &boot,
+        Observation::ReportEdited {
+            track_id: boot.track_id.clone(),
+            body_sha256: "sha-after".into(),
+            body: "# Goal\n\nedited by the user\n".into(),
+            author: Some(EditAuthor::User),
+            body_before: None,
+            doc_rev_after: None,
+            blocks_after: None,
+        },
+        2,
+    )
+    .await;
+
+    assert!(
+        text.contains("report.md new (by kernel) (unified patch follows)\n"),
+        "{text}"
+    );
+    assert!(text.contains("```diff\n--- a/report.md"), "{text}");
+    assert!(!text.contains("(see the block-level diff below)"), "{text}");
+    assert!(
+        !text.contains("Block-level diff follows"),
+        "a legacy entry renders no diff: {text}"
+    );
+    boot.harness.shutdown().await.unwrap();
+}
+
+/// #1667 round-2 F3 — the counterpart: a turn opened by a user message
+/// (with the same report change since the last turn) still carries the
+/// unified patch, so the omission is scoped to report-edit-only batches.
+#[tokio::test]
+async fn user_message_turn_still_carries_the_unified_report_patch() {
+    let boot = boot().await;
+    complete_first_turn_and_stamp(&boot).await;
+    add_report_card_event(&boot).await;
+
+    boot.harness
+        .observe_user_message_durable("what changed?".into(), Vec::new())
+        .await
+        .unwrap();
+    wait_for_turn_count(&boot.daemon, 2).await;
+    let text = turn_text(&boot.daemon, 1);
+
+    assert!(
+        text.contains("report.md new (by kernel) (unified patch follows)\n"),
+        "{text}"
+    );
+    assert!(text.contains("```diff\n--- a/report.md"), "{text}");
+    assert!(!text.contains("(see the block-level diff below)"), "{text}");
+    assert!(text.contains("User says:\nwhat changed?"), "{text}");
+    boot.harness.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn turn_issuance_refreshes_hook_transcripts_before_diff() {
     let boot = boot().await;
@@ -1248,6 +1375,7 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
         Some(&before),
         Some(&refresh_head),
         Some(&boot.planner_card_id),
+        track_vcs::ReportPatch::Include,
     )
     .await
     .expect("fenced diff");
@@ -1272,6 +1400,7 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
         Some(&before),
         None,
         Some(&boot.planner_card_id),
+        track_vcs::ReportPatch::Include,
     )
     .await
     .expect("unfenced diff");
@@ -1291,6 +1420,7 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
         Some(&refresh_head),
         Some(&next_refresh_head),
         Some(&boot.planner_card_id),
+        track_vcs::ReportPatch::Include,
     )
     .await
     .expect("next fenced diff");
@@ -1318,6 +1448,7 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
         Some(&next_refresh_head),
         None,
         Some(&boot.planner_card_id),
+        track_vcs::ReportPatch::Include,
     )
     .await
     .expect("after next refresh diff");

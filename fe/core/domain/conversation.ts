@@ -7,7 +7,7 @@ import type {
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
-  TASK_VERDICT_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX,
+  TASK_VERDICT_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
 } from '../keys/mcp-tools.js';
 import { sha256Hex } from './sha256.js';
 
@@ -186,6 +186,15 @@ export type ConversationTurn = Readonly<{
    * which is why nothing branches on which one it is.
    */
   attachments?: readonly PlannerAttachment[];
+  /**
+   * #1667 D3 — set when the agent said this through `calm.user.notify`
+   * rather than as an ordinary reply. Same bubble either way; what differs
+   * is what the quiet-sync fold does with it (`conversation-quiet-sync.ts`):
+   * an ordinary reply inside a report-edit turn is folded away as background
+   * work, a notify is speech meant for the reader and stays outside the
+   * fold. Absent on every other turn.
+   */
+  origin?: 'notify';
 }>;
 
 /** A user turn accepted optimistically, carrying the newest persisted item the
@@ -243,6 +252,18 @@ export type ConversationSystemEntry = Readonly<{
   /** Full rendered observation, retained as disclosure/title context. */
   text: string;
   atMs: number;
+  /**
+   * #1667 D3 — set when this report-edit observation was the WHOLE of the
+   * batch that opened its turn: every segment of the persisted item is
+   * `system_report_edited`. That is the kernel's own definition of a
+   * background sync (`run_loop.rs` `queue_is_only_report_edits`: the quiet
+   * debounce, the omitted patch), and it is what the transcript folds
+   * (`conversation-quiet-sync.ts`). A report edit that shared its batch with
+   * a user message or a task event opened an ordinary turn — the planner
+   * answers the user or the event in it — and is NOT marked: folding that
+   * turn would hide the reply. Absent on every other entry; never `false`.
+   */
+  quiet?: true;
 }>;
 
 export type ConversationMessage = ConversationTurn | ConversationSystemEntry;
@@ -1177,7 +1198,7 @@ const DIFF_PREFIX = '## Track state changes since your last turn';
 const DIFF_END = '\n\n---\n\n';
 const USER_SAYS = 'User says:\n';
 
-const SYSTEM_PRESENTATION_LABELS: Readonly<
+export const SYSTEM_PRESENTATION_LABELS: Readonly<
 Record<Exclude<HarnessInputPresentation, 'user'>, string>
 > = Object.freeze({
   system: 'System update',
@@ -1208,7 +1229,63 @@ function isUserMessage(itemType: string | null): boolean {
   return itemType === USER_MESSAGE || itemType === USER_MESSAGE_SNAKE_CASE;
 }
 
+/*
+ * #1667 D3 — `calm.user.notify` is speech, not an action. The planner calls
+ * it to reach the reader from a background (report-edit) turn, so the row is
+ * a message: an agent turn whose text is `arguments.text`, verbatim.
+ *
+ * Only a SUCCESSFUL `item/completed` mints it (round-4 N1). The kernel
+ * refuses a call whose text is blank or over 2000 characters, and a refused
+ * call is not something the agent said: it is a failed action, and the row
+ * carries `error` / `status: 'failed'` to say so. Such a row, like every
+ * other tool call, falls through to the activity line, which reads `Failed`
+ * with the kernel's reason. The `item/started` row does the same — it is
+ * the running line while the call is in flight — and `buildTranscript` keys
+ * the notify turn on the same wire item as that line, so the bubble replaces
+ * the running line in place rather than standing beside it. A text that is
+ * empty after trimming is likewise not a message (the kernel refuses it as
+ * invalid params).
+ */
+function userNotifyToTurn(
+  item: Readonly<{
+    id: number; item_uuid: string | null; item_type: string | null; method: string; params: string;
+    created_at_ms: number;
+  }>,
+): ConversationTurn | null {
+  if (item.item_type !== 'mcpToolCall') return null;
+  if (item.method !== 'item/completed') return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(item.params); } catch { return null; }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const envelope = parsed as { completedAtMs?: unknown; item?: unknown };
+  if (typeof envelope.item !== 'object' || envelope.item === null) return null;
+  const payload = envelope.item as {
+    tool?: unknown; arguments?: unknown; error?: unknown; status?: unknown;
+  };
+  if (payload.tool !== USER_NOTIFY_TOOL) return null;
+  /* The same failure reading the activity line applies to every action:
+     an MCP error member, or a status the wire itself calls failed. */
+  if ((payload.error !== undefined && payload.error !== null) || payload.status === 'failed') {
+    return null;
+  }
+  const args = payload.arguments;
+  if (typeof args !== 'object' || args === null) return null;
+  const raw = (args as { text?: unknown }).text;
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (text === '') return null;
+  return {
+    id: `notify-${item.item_uuid ?? item.id}`,
+    author: 'agent',
+    text,
+    atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
+      ? envelope.completedAtMs : item.created_at_ms,
+    origin: 'notify',
+  };
+}
+
 export function harnessItemToTurns(item: HarnessItem): readonly ConversationMessage[] {
+  const notify = userNotifyToTurn(item);
+  if (notify !== null) return [notify];
   if (item.method !== 'item/completed' ||
       (!isAgentMessage(item.item_type) && !isUserMessage(item.item_type))) return [];
 
@@ -1226,6 +1303,11 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
     }
     const atMs = typeof completedAtMs === 'number' && Number.isFinite(completedAtMs)
       ? completedAtMs : item.created_at_ms;
+    /* #1667 D3 — the batch is a background sync only when it is nothing
+       but report edits; see `ConversationSystemEntry.quiet`. Decided over
+       the whole item, before the per-segment map, because it is a fact
+       about the batch and not about any one segment in it. */
+    const quiet = segments.every((segment) => segment.presentation === 'system_report_edited');
     return segments.flatMap<ConversationMessage>((segment, index) => {
       let text = segment.text;
       if (segment.presentation === 'user' && text.startsWith(USER_SAYS)) {
@@ -1246,6 +1328,7 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
       return [{
         id, author: 'system' as const,
         label: SYSTEM_PRESENTATION_LABELS[segment.presentation], text, atMs,
+        ...(quiet ? { quiet: true as const } : {}),
       }];
     });
   }
@@ -1790,7 +1873,12 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
     const turns = harnessItemToTurns(item);
     if (turns.length > 0) {
       for (const turn of turns) {
-        const key = `turn-${turn.id}`;
+        /* #1667 D3 — a notify bubble takes the key of the activity line its
+           own `item/started` row minted (below), so the line becomes the
+           bubble in place: one row of the transcript, not a `Calling` line
+           followed by what was said. */
+        const key = turn.author === 'agent' && turn.origin === 'notify'
+          ? `activity-${item.item_uuid ?? item.id}` : `turn-${turn.id}`;
         if (!byKey.has(key)) order.push(key);
         byKey.set(key, turn);
       }

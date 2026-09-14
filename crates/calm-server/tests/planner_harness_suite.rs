@@ -24,6 +24,8 @@ mod planner_harness_items_persist;
 mod planner_harness_items_rest;
 #[path = "cases/planner_harness_mcp_tool_render_persist.rs"]
 mod planner_harness_mcp_tool_render_persist;
+#[path = "cases/planner_harness_report_edit_debounce.rs"]
+mod planner_harness_report_edit_debounce;
 #[path = "cases/planner_harness_reset_clears_items.rs"]
 mod planner_harness_reset_clears_items;
 #[path = "cases/planner_harness_token_usage.rs"]

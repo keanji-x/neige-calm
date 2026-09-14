@@ -1046,7 +1046,8 @@ fn harness_observation_from_event_mapping_pin() {
     );
 
     // track.report_edited — body_after verbatim + its sha256 (golden hex
-    // computed externally, NOT via the same sha256_hex helper).
+    // computed externally, NOT via the same sha256_hex helper); #1667 D1
+    // carries `body_before` through verbatim as well.
     assert_eq!(
         harness_observation_from_event(
             &track,
@@ -1069,6 +1070,9 @@ fn harness_observation_from_event_mapping_pin() {
             body_sha256: "09b37878497ec46015d1913ba0dff1cd051ca244859c80f4a3fc14d88a4a9465".into(),
             body: "loop-pin-body".into(),
             author: Some(EditAuthor::User),
+            body_before: Some("old".into()),
+            doc_rev_after: None,
+            blocks_after: None,
         })
     );
 
@@ -2446,4 +2450,170 @@ async fn per_track_push_lock_serializes_same_track_runs_in_parallel_across_track
         max_in_flight_total.load(Ordering::SeqCst) > 1,
         "different-track locks must allow parallel runs; observed serialization"
     );
+}
+
+// ---------------------------------------------------------------
+// #1667 round-2 F1 — block ids / revs / docRev on the ReportEdited
+// observation, read from the report card at resolve time.
+// ---------------------------------------------------------------
+mod report_edit_block_refs {
+    use super::*;
+    use crate::db::{ServerRepoSyncDomainRawExt, sqlite::SqlxRepo};
+    use crate::model::{NewArea, NewTrack};
+    use crate::routes::theme::RequestTheme;
+    use crate::state::WriteContext;
+    use crate::track_area_cache::TrackAreaCache;
+    use crate::track_report::{TrackReportPayload, persist_report, resolve_report_for_track};
+    use calm_types::report_edit_diff::ReportBlockRef;
+
+    struct Fixture {
+        repo: SqlxRepo,
+        events: EventBus,
+        write: WriteContext,
+        track_id: TrackId,
+    }
+
+    async fn fixture() -> Fixture {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let area = repo
+            .area_create(NewArea {
+                name: "block-refs".into(),
+                color: "#123456".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                area_id: area.id,
+                title: "report".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                template_id: None,
+                plugin_scope: None,
+                template_input: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO cards \
+             (id, track_id, kind, sort, payload, role, deletable, body_crdt, created_at, updated_at) \
+             VALUES ('report', ?1, 'track-report', -1, ?2, 'reportcard', 0, NULL, 1, 1)",
+        )
+        .bind(track.id.as_str())
+        .bind(
+            serde_json::to_string(&serde_json::json!({"schemaVersion": 1, "summary": "", "body": ""}))
+                .unwrap(),
+        )
+        .execute(repo.pool())
+        .await
+        .unwrap();
+        Fixture {
+            repo,
+            events: EventBus::new(),
+            write: WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
+            track_id: track.id,
+        }
+    }
+
+    /// Persist `body` through the production writer and return the
+    /// `track.report_edited` it broadcast — the very event the dispatcher
+    /// resolves.
+    async fn persist_and_capture(fx: &Fixture, body: &str) -> Event {
+        let mut rx = fx.events.subscribe();
+        let (track, card, current) = resolve_report_for_track(&fx.repo, fx.track_id.as_str())
+            .await
+            .unwrap();
+        let if_doc_rev = current.doc_rev;
+        persist_report(
+            &fx.repo,
+            &fx.events,
+            &fx.write,
+            ActorId::User,
+            EditAuthor::User,
+            track,
+            card,
+            current,
+            TrackReportPayload::new("s".to_string(), body.to_string()),
+            if_doc_rev,
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        loop {
+            let envelope = rx.try_recv().expect("the persist broadcast its events");
+            if matches!(envelope.event, Event::TrackReportEdited { .. }) {
+                return envelope.event;
+            }
+        }
+    }
+
+    async fn resolve(fx: &Fixture, event: &Event) -> (Option<u64>, Option<Vec<ReportBlockRef>>) {
+        match resolve_harness_observation(&fx.repo, &fx.track_id, event)
+            .await
+            .unwrap()
+            .expect("a report edit maps to an observation")
+        {
+            HarnessObservation::ReportEdited {
+                doc_rev_after,
+                blocks_after,
+                ..
+            } => (doc_rev_after, blocks_after),
+            other => panic!("expected ReportEdited, got {other:?}"),
+        }
+    }
+
+    /// The report as read after the edit projects to the event's
+    /// `body_after`: the observation names every block by the id / rev
+    /// `calm.report.read` would return, and carries that read's `docRev`.
+    #[tokio::test]
+    async fn resolved_edit_carries_the_reads_doc_rev_and_block_refs() {
+        let fx = fixture().await;
+        let event = persist_and_capture(&fx, "# Goal\n\nalpha\n\n## Next\n\nbeta\n").await;
+
+        let (doc_rev_after, blocks_after) = resolve(&fx, &event).await;
+
+        let read = crate::track_report_read::load_report_read_snapshot(
+            &fx.repo,
+            "report",
+            crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
+        )
+        .await
+        .unwrap();
+        assert_eq!(doc_rev_after, Some(read.doc_rev));
+        assert!(read.doc_rev >= 1, "the persist bumped docRev");
+        let expected: Vec<ReportBlockRef> = read
+            .blocks
+            .iter()
+            .map(|block| ReportBlockRef {
+                id: block.id.clone(),
+                rev: block.rev,
+            })
+            .collect();
+        assert_eq!(expected.len(), 2, "two H1/H2 slices: {expected:?}");
+        assert_eq!(blocks_after, Some(expected));
+    }
+
+    /// A later write landed before the push was resolved (same block
+    /// layout, different text): the read no longer projects to the
+    /// event's body, so NO ids are attached — not the newer ones.
+    #[tokio::test]
+    async fn resolved_edit_omits_refs_when_a_later_write_landed() {
+        let fx = fixture().await;
+        let first = persist_and_capture(&fx, "# Goal\n\nalpha\n\n## Next\n\nbeta\n").await;
+        let second = persist_and_capture(&fx, "# Goal\n\nalpha\n\n## Next\n\ngamma\n").await;
+
+        assert_eq!(
+            resolve(&fx, &first).await,
+            (None, None),
+            "the first edit's body is not what the report reads as now"
+        );
+        let (doc_rev_after, blocks_after) = resolve(&fx, &second).await;
+        assert!(doc_rev_after.is_some(), "the newest edit still aligns");
+        assert_eq!(blocks_after.map(|refs| refs.len()), Some(2));
+    }
 }

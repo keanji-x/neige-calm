@@ -877,8 +877,11 @@ async function frame() {
 
 describe('the structured system disclosure in a real engine', () => {
   it('has a full control-height target and toggles from the keyboard', async () => {
+    /* A task receipt, not a report edit: since #1667 a `Report edited` entry
+       opens a quiet-sync fold and sits inside it, closed — which is its own
+       subject (`quiet-sync.browser.test.tsx`), not this one. */
     const system: ConversationSystemEntry = {
-      id: 'system-1', author: 'system', label: 'Report edited',
+      id: 'system-1', author: 'system', label: 'Task completed',
       text: 'The report changed in the kernel.', atMs: 0,
     };
     render(<RailPane turns={[system]} />);
