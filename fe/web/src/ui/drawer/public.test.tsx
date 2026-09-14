@@ -15,6 +15,7 @@ function open(props: Partial<Parameters<typeof Drawer>[0]> = {}) {
       open={props.open ?? true}
       title={props.title ?? 'Why the resolver drops a hop'}
       mobileBackLabel={props.mobileBackLabel}
+      closeLabel={props.closeLabel}
       onClose={props.onClose ?? vi.fn()}
       footer={props.footer}
     >
@@ -88,6 +89,17 @@ describe('Drawer', () => {
     expect(close.textContent).not.toContain('›');
     close.click();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  /* The drawer was built for the conversation and still names it by default;
+     a drawer holding something else (#1669's source panel) says what it
+     closes, on the same control. */
+  it('lets the caller name what the close control closes', () => {
+    const onClose = vi.fn();
+    open({ onClose, closeLabel: '关闭来源' });
+    expect(screen.queryByRole('button', { name: 'Close conversation' })).toBeNull();
+    screen.getByRole('button', { name: '关闭来源' }).click();
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it('uses the standard compact Header with Back on the left', () => {

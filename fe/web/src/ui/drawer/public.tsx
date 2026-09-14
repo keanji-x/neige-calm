@@ -110,7 +110,7 @@ function focusTook(element: HTMLElement): boolean {
   return document.activeElement === element;
 }
 
-export function Drawer({ open, title, mobileBackLabel, onClose, children, footer }: {
+export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conversation', onClose, children, footer }: {
   open: boolean;
   /**
    * The drawer's accessible name. Compact/mobile also paints it in the shared
@@ -123,6 +123,12 @@ export function Drawer({ open, title, mobileBackLabel, onClose, children, footer
   title: string;
   /** Accessible destination announced by the compact header's back control. */
   mobileBackLabel?: string;
+  /**
+   * The desktop close control's accessible name. The drawer was built for
+   * the conversation and still defaults to naming it; a drawer holding
+   * something else (#1669's source panel) says what *it* closes.
+   */
+  closeLabel?: string;
   onClose: () => void;
   children: ReactNode;
   /**
@@ -355,7 +361,7 @@ export function Drawer({ open, title, mobileBackLabel, onClose, children, footer
           type="button"
           data-nc-role="icon"
           className={styles.close}
-          aria-label="Close conversation"
+          aria-label={closeLabel}
           title="Close"
           onClick={onClose}
         >

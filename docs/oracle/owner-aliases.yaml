@@ -129,6 +129,8 @@ aliases:
   # 渲染体用的就是 report document 的 `ProseBlock`，而 features-no-cross-domain
   # 禁止别的 feature 引入 features/report/*，INV-DUP-004/005 又禁止再写一个渲染器。
   "features/report/recipe": "features/report/recipe"
+  # #1669 S2 — 来源面板（neige://source 引用打开的右栏抽屉）与它的窄屏省略声明。
+  "features/report/source": "features/report/source"
   "track/report": "features/report/write"
   "track/backlinks": "features/report/backlinks"
   "planner-chat": "features/planner/chat"
