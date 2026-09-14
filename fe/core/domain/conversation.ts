@@ -1400,6 +1400,13 @@ export type ConversationActivity = Readonly<{
    * see `failureDetail` for why that asymmetry is the rule and not an omission.
    */
   detail: string | null;
+  /**
+   * #1678 A4 — the wire name of the tool on an `mcpToolCall` row, verbatim
+   * (`calm.report.commit`); `null` on every other item type. `verb` is the
+   * English for the reader; this is the fact the quiet-sync fold reads to
+   * say whether the sync changed the report.
+   */
+  tool: string | null;
   atMs: number;
 }>;
 
@@ -1717,6 +1724,7 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
       && Number.isFinite(payload.durationMs)
       ? payload.durationMs : null,
     detail: failed ? failureDetail(payload) : null,
+    tool: item.item_type === 'mcpToolCall' && typeof payload.tool === 'string' ? payload.tool : null,
     atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
       ? envelope.completedAtMs : item.created_at_ms,
   };

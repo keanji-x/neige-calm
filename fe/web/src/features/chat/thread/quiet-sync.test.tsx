@@ -11,8 +11,9 @@ import {
   type Conversation, type ConversationActivity, type ConversationSystemEntry, type ConversationTurn,
   type ConversationTurnOutcome,
 } from '../../../../../core/domain/conversation.ts';
+import { REPORT_READ_TOOLS, REPORT_WRITE_TOOLS } from '../../../../../core/keys/mcp-tools.ts';
 import { ChatThread } from './public.tsx';
-import { EDITED_BY, EDITED_BY_UNKNOWN, quietSyncLine } from './quiet-sync.tsx';
+import { EDITED_BY, EDITED_BY_UNKNOWN, OUTCOME_LINE, quietSyncLine } from './quiet-sync.tsx';
 
 afterEach(cleanup);
 
@@ -55,7 +56,7 @@ function notify(id: string, text: string): ConversationTurn {
 function activity(id: string, overrides: Partial<ConversationActivity> = {}): ConversationActivity {
   return {
     id, author: 'activity', verb: 'Read report', target: null, state: 'done',
-    durationMs: null, detail: null, atMs: NOW, ...overrides,
+    durationMs: null, detail: null, tool: REPORT_READ_TOOLS[0] ?? null, atMs: NOW, ...overrides,
   };
 }
 
@@ -219,6 +220,40 @@ describe('QuietSyncFold in the thread', () => {
     expect(details?.getAttribute('data-nc-quiet-sync-author')).toBe('unknown');
     expect(details?.querySelector('[data-nc-quiet-sync-label]')?.textContent).toContain(EDITED_BY_UNKNOWN);
   });
+
+  /* #1678 A4 — once the sync has completed the line ends with what it did,
+     so a closed fold tells "taken in" from "missed"; while it runs, nothing
+     is appended (the live mark is the state). */
+  it('ends the line with the verdict once the sync has completed', () => {
+    const label = (turns: Parameters<typeof ChatThread>[0]['turns']) => {
+      const { container } = render(<ChatThread conversation={conversation()} turns={turns} />);
+      const details = fold(container);
+      const result = {
+        text: details?.querySelector('[data-nc-quiet-sync-label]')?.textContent ?? '',
+        outcome: details?.getAttribute('data-nc-quiet-sync-outcome'),
+        hasOutcome: details?.hasAttribute('data-nc-quiet-sync-outcome') ?? false,
+        title: details?.querySelector('summary')?.getAttribute('title'),
+      };
+      cleanup();
+      return result;
+    };
+    const accepted = label([reportEdited('user'), activity('act1'), outcome('o1', 'completed')]);
+    expect(accepted.text).toMatch(/^Synced · You edited the report · \d{1,2}:\d{2}(?: [AP]M)? · accepted, no action$/);
+    expect(accepted.outcome).toBe('accepted');
+    expect(accepted.title).toMatch(/ · accepted, no action$/);
+    const updated = label([
+      reportEdited('user'), activity('act1'),
+      activity('w1', { verb: 'Wrote report', tool: REPORT_WRITE_TOOLS[4] ?? null }), outcome('o1', 'completed'),
+    ]);
+    expect(updated.text).toMatch(/ · updated the report$/);
+    expect(updated.outcome).toBe('updated');
+    const running = label([reportEdited('user'), activity('act1', { verb: 'Reading report', state: 'running' })]);
+    expect(running.text).toMatch(/^Synced · You edited the report · \d{1,2}:\d{2}(?: [AP]M)?$/);
+    /* No verdict, no attribute: an existence selector on it must not match
+       a sync still running. */
+    expect(running.hasOutcome).toBe(false);
+    expect(running.outcome).toBeNull();
+  });
 });
 
 describe('quietSyncLine', () => {
@@ -233,5 +268,13 @@ describe('quietSyncLine', () => {
     expect(new Set(Object.values(EDITED_BY)).size).toBe(REPORT_EDIT_AUTHORS.length);
     expect(quietSyncLine(null)).toBe(EDITED_BY_UNKNOWN);
     expect(Object.isFrozen(EDITED_BY)).toBe(true);
+  });
+
+  /* #1678 A4 — the verdict table: exactly the two outcomes, two distinct
+     sentences, frozen. */
+  it('has one distinct sentence per outcome', () => {
+    expect([...Object.keys(OUTCOME_LINE)].sort()).toEqual(['accepted', 'updated']);
+    expect(new Set(Object.values(OUTCOME_LINE)).size).toBe(2);
+    expect(Object.isFrozen(OUTCOME_LINE)).toBe(true);
   });
 });

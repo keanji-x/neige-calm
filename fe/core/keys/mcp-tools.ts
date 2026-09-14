@@ -38,6 +38,12 @@ export const REPORT_READ_TOOLS: readonly string[] = Object.freeze([
   'calm.report.links.backlinks',
 ]);
 
+/** #1678 A4 — every report tool, read or write, is under this prefix. The
+ *  quiet-sync fold says "no action" only when every `calm.report.*` call in
+ *  the turn was one of `REPORT_READ_TOOLS`: a report tool this file has never
+ *  heard of counts as a change, so a new write can never read as silence. */
+export const REPORT_TOOL_PREFIX = 'calm.report.';
+
 export const TRACK_TOOL_PREFIX = 'calm.track.';
 
 /** #1211 S3 — the first `calm.track.*` tool that is a WRITE. It names the track,
