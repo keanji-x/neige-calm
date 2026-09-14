@@ -620,7 +620,7 @@ the budget elapses (default 15000 ms when `wait_ms` is omitted, max 20000).
 "Until the screen shows X", not "until X appears anew": a screen that already
 matches at the first capture returns after `settle_ms` from the wait's start
 with `wait.text.already: true`, so the Planner names the target state
-(`["trust the files","❯"]` for a Claude start). `wait_for=text` with
+(`["trust this folder","❯"]` for a Claude start). `wait_for=text` with
 `scroll_offset > 0` is invalid params.
 
 The loop (`terminal_interaction/text_wait.rs`, dispatched from `wait.rs`)

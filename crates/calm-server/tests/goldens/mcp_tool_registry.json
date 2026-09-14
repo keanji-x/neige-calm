@@ -1370,7 +1370,7 @@
   },
   {
     "name": "calm.terminal.input",
-    "description_sha256": "980ad268babfc86d5fb40256d750d385e53c1a1f3f359d73789a8fa4c2d8f279",
+    "description_sha256": "0ea4b649e2b470fd8dc186b874f789a7e33f909f6a3cd9f2266c032b82b4b2f4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1560,7 +1560,7 @@
   },
   {
     "name": "calm.terminal.observe",
-    "description_sha256": "2a90c17397cb500127ef9eb353a78564d90780da738f7316d27b20ef0bb3d969",
+    "description_sha256": "2842108142b61eada2e9d7c20c97463b72e525c541d5914586a218f82ddb49d2",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
