@@ -1,0 +1,25 @@
+{
+  "mode": "raw",
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "# 欧央行九月路径\n\n市场定价显示，九月加息概率接近九成，而十月暂停的呼声正在上升。"
+      },
+      {
+        "type": "image",
+        "data": "AAAA",
+        "mimeType": "image/png"
+      },
+      {
+        "type": "text",
+        "text": "Second block: the ECB's September path — “data-dependent” remains the phrase of the week.\n"
+      }
+    ],
+    "isError": false,
+    "structuredContent": {
+      "id": 752972,
+      "ignored": "structured content is not part of the body"
+    }
+  }
+}

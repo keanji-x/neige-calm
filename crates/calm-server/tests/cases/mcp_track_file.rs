@@ -236,6 +236,8 @@ async fn boot() -> Boot {
         series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
             None,
         )),
+        plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
+        sqlite_pool: None,
     });
 
     let mut registry = ToolRegistry::new();

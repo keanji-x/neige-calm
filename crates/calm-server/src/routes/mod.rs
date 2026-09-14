@@ -38,6 +38,7 @@ pub mod track_conversations;
 pub mod track_recipes;
 pub mod track_report_blocks;
 pub mod track_report_series;
+pub mod track_sources;
 pub mod track_templates;
 pub mod tracks;
 pub mod version;
@@ -72,6 +73,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(track_conversations::router())
         .merge(track_report_blocks::router())
         .merge(track_report_series::router())
+        .merge(track_sources::router())
         .merge(task_recovery::router())
         .merge(task_artifacts::router())
         .merge(isolated_tasks::router())

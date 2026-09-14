@@ -630,6 +630,7 @@ pub mod planner_card;
 // #1505 S4-3 — which model a planner conversation's turns run with.
 pub mod planner_model;
 pub mod plugin_host;
+pub mod plugin_results;
 pub mod proc_identity;
 pub(crate) mod proc_supervisor;
 /// #1635 S1c — runtime-assembled agent prose: `prompts/**.md` fragments
@@ -669,6 +670,7 @@ pub mod workspace_repoint;
 pub use calm_types::track_fs_dto;
 pub mod report_backlinks;
 pub mod report_series;
+pub mod report_sources;
 /// The template roster: the built-in template files (`templates/builtin/*.md`,
 /// #1635 S4), parsed once, plus — when the process runs with `--templates-dir`
 /// — the operator's `*.md` files as `site/<stem>` entries (#1635 S5).

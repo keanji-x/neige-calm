@@ -2367,6 +2367,18 @@ async fn create_track_structure(
                         track_id.as_str(),
                     )
                     .await?;
+                    // #1669 §2.4 (I3) — the captured sources travel too,
+                    // verbatim: source ids and quote anchors are what the
+                    // copied prose links point at, so the child resolves
+                    // them independently of the parent's lifetime. A
+                    // capture made after this transaction is not in the
+                    // child (the child shows it as missing).
+                    crate::report_sources::store::copy_rows_tx(
+                        tx,
+                        source_track_id,
+                        track_id.as_str(),
+                    )
+                    .await?;
                     Some(prepare_fork_report(
                         summary,
                         blocks,
@@ -4308,6 +4320,14 @@ impl RecycledTrackDeletion {
         prepared
             .turn_daemon
             .forget_turn_state_for_deleted_threads(&sealed_thread_ids);
+        // #1669 §2.1 — the transient plugin-result ring is process memory
+        // keyed by track; the row is gone, so its entries are dropped here
+        // (an area-cascade delete never reaches this arm and relies on the
+        // ring's TTL; track ids are never reused). Infallible.
+        route
+            .mcp_context
+            .plugin_results
+            .forget_track(track.id.as_str());
         // #1620 — post-commit, best effort: `<terminal-hooks>/<card_id>.json`
         // for every deleted Terminal card (server-derived path only).
         for card_id in &terminal_card_ids {

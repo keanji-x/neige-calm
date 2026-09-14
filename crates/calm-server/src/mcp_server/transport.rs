@@ -32,7 +32,7 @@
 //! hundred lines of `tokio::net::UnixListener` + `BufReader::lines()`;
 //! adding an HTTP framework would only obscure the framing.
 
-mod worker_grants;
+pub(crate) mod worker_grants;
 pub(crate) use worker_grants::resolve_dispatch_plugin_tools;
 
 use crate::db::{Repo, SessionCardIdentity};
@@ -736,6 +736,16 @@ async fn dispatch_plugin_tools_call(
                 .ok_or_else(|| {
                     RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
                 })?;
+            // #1669 §2.1 (I4) — only a Planner's call carrying a track is
+            // recorded for `calm.source.capture`; the identity is the
+            // resolved one, never anything in the request. The arguments
+            // are kept (canonical text) for the receipt's `matched_call`.
+            let record_for = match (&identity.role, identity.track_id.as_deref()) {
+                (CardRole::Planner, Some(track_id)) => {
+                    Some((track_id.to_string(), arguments.clone()))
+                }
+                _ => None,
+            };
             let result = match &client {
                 // The Track rides along only to LOCAL plugins. A remote
                 // `mcp-http` connector is somebody else's service: it has no
@@ -752,6 +762,12 @@ async fn dispatch_plugin_tools_call(
                 // `isError` verdict, an `Err` is a kernel-side refusal.
                 ConnectorClient::Cli(c) => c.tools_call(&tool_name, arguments).await?,
             };
+            // Recording reads `result`; the value handed back to the model
+            // is serialized from the same struct, untouched.
+            if let Some((track_id, args)) = record_for {
+                ctx.plugin_results
+                    .record(&track_id, &plugin_id, &tool_name, &args, &result);
+            }
             serde_json::to_value(result)
                 .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")))
         }

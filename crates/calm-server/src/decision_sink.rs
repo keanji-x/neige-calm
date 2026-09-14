@@ -18,12 +18,13 @@ use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
 };
+use crate::report_sources::{self, SourceLinkWarning};
 use crate::state::WriteContext;
 use crate::track_lifecycle::{
     apply_requested_transition_in_tx, auto_promote_draft_in_tx, auto_transition_if_current_in_tx,
 };
 use crate::track_report::{
-    self, BlockOpOutcome, ReportDocOp, ReportEditTarget, TrackReportPayload,
+    self, BlockOpOutcome, ReportBlock, ReportDocOp, ReportEditTarget, TrackReportPayload,
 };
 use async_trait::async_trait;
 use calm_exec::{AgentReactor, DecisionIntent, DecisionSink};
@@ -39,6 +40,20 @@ pub struct CardDecisionSink {
     repo: Arc<dyn RouteRepo>,
     events: EventBus,
     write: WriteContext,
+    /// #1669 §2.3 — read-only, for the post-commit `report_sources` lookup
+    /// behind the receipt warnings. `None` (no sqlite behind the repo) means
+    /// no warnings are computed.
+    sqlite_pool: Option<sqlx::SqlitePool>,
+}
+
+/// What [`CardDecisionSink::commit_report_op`] hands back: the updated
+/// card, the block-level outcome where the op has one, and (#1669 §2.3)
+/// the unresolved `neige://source/` links of the prose the write touched.
+#[derive(Debug, Clone)]
+pub struct ReportOpCommit {
+    pub card: Card,
+    pub block: Option<BlockOpOutcome>,
+    pub warnings: Vec<SourceLinkWarning>,
 }
 
 impl CardDecisionSink {
@@ -47,6 +62,7 @@ impl CardDecisionSink {
             repo: Arc::clone(&ctx.repo),
             events: ctx.events.clone(),
             write: ctx.write.clone(),
+            sqlite_pool: ctx.sqlite_pool.clone(),
         }
     }
 
@@ -464,7 +480,7 @@ impl CardDecisionSink {
         lifecycle: Option<TrackLifecycle>,
     ) -> Result<Card, CalmError> {
         let if_doc_rev = current_payload.doc_rev;
-        let (updated, _outcome) = self
+        let ReportOpCommit { card: updated, .. } = self
             .commit_report_op(
                 identity,
                 track,
@@ -513,9 +529,10 @@ impl CardDecisionSink {
         op: ReportDocOp,
         agent_message: Option<String>,
         lifecycle: Option<TrackLifecycle>,
-    ) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
+    ) -> Result<ReportOpCommit, CalmError> {
         let actor = identity.to_actor_id();
         let principal = identity.to_principal();
+        let track_id = track.id.clone();
         let recorder_shadow: Arc<dyn RecorderShadowProbe> =
             Arc::new(CardDecisionSinkRecorderShadowProbe {
                 principal,
@@ -526,7 +543,7 @@ impl CardDecisionSink {
         // reaches it through the one entry point that accepts a
         // caller-decided attribution, because the decision above is genuinely
         // this funnel's to make. The two REST entries cannot pass one at all.
-        track_report::write::agent_report_op(
+        let (card, trace) = track_report::write::agent_report_op(
             self.repo.as_ref(),
             &self.events,
             &self.write,
@@ -539,7 +556,38 @@ impl CardDecisionSink {
             auto_promote_draft,
             recorder_shadow,
         )
-        .await
+        .await?;
+        // #1669 §2.3 step 2 — after the transaction committed, before the
+        // receipt is assembled: the final snapshot (the card's own payload)
+        // plus one `report_sources` read. Never blocks the write; a lookup
+        // failure here is the receipt's problem, not the row's.
+        let warnings = match self.sqlite_pool.as_ref() {
+            Some(pool) if !trace.written_prose_block_ids.is_empty() => {
+                let blocks = card
+                    .payload
+                    .get("blocks")
+                    .cloned()
+                    .map(serde_json::from_value::<Vec<ReportBlock>>)
+                    .transpose()
+                    .map_err(|e| {
+                        CalmError::Internal(format!("track_report: decode written blocks: {e}"))
+                    })?
+                    .unwrap_or_default();
+                report_sources::warnings::for_write(
+                    pool,
+                    track_id.as_str(),
+                    &blocks,
+                    &trace.written_prose_block_ids,
+                )
+                .await?
+            }
+            _ => Vec::new(),
+        };
+        Ok(ReportOpCommit {
+            card,
+            block: trace.block,
+            warnings,
+        })
     }
 }
 
@@ -892,6 +940,7 @@ mod tests {
             repo: route_repo,
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
+            sqlite_pool: None,
         };
         let identity = ToolCallIdentity {
             card_id: worker_card.id.as_str().to_string(),
@@ -1026,6 +1075,7 @@ mod tests {
             repo: route_repo,
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
+            sqlite_pool: None,
         };
         let identity = ToolCallIdentity {
             card_id: planner_card.id.as_str().to_string(),
@@ -1174,6 +1224,7 @@ mod tests {
             repo: route_repo,
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
+            sqlite_pool: None,
         };
         let identity = ToolCallIdentity {
             card_id: planner_card.id.as_str().to_string(),

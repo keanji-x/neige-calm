@@ -377,7 +377,7 @@ pub(crate) async fn rest_user_block_op(
         None,
     )
     .await
-    .map(|(edit, _)| edit)
+    .map(|((card, trace), _)| (card, trace.block))
 }
 
 /// The explicit User start purpose. Attribution, lifecycle intent, and task
@@ -410,7 +410,7 @@ pub(crate) async fn rest_user_start(
         None,
     )
     .await
-    .map(|(edit, _)| edit)
+    .map(|((card, trace), _)| (card, trace.block))
 }
 
 #[derive(Clone)]
@@ -467,7 +467,7 @@ pub(crate) async fn agent_report_op(
     lifecycle: Option<TrackLifecycle>,
     auto_promote_draft: bool,
     recorder_shadow: Arc<dyn RecorderShadowProbe>,
-) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
+) -> Result<(Card, ReportOpTrace), CalmError> {
     persist(
         repo,
         events,
@@ -844,7 +844,7 @@ async fn persist(
     lifecycle: Option<TrackLifecycle>,
     auto_promote_draft: bool,
     recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
-) -> Result<((Card, Option<BlockOpOutcome>), Option<serde_json::Value>), CalmError> {
+) -> Result<((Card, ReportOpTrace), Option<serde_json::Value>), CalmError> {
     // Match task_recovery's zero-event replay: authorize/read in the same
     // transaction, then roll it back without weakening the event writer.
     const DISPATCH_REPLAY: &str = "planner dispatch receipt replay";
@@ -1013,7 +1013,7 @@ async fn persist(
                         let mut receipt = crate::file_delivery::repair::prepare_tx(tx, track_id.as_str(), &id, &args).await?;
                         let first = super::repair::prepare(&doc, &receipt.repair)?;
                         let (created, _) = apply_persisted_report_op(&mut doc, &first, author)?;
-                        receipt.repair.block_id = created.ok_or_else(||CalmError::Internal("repair block outcome missing".into()))?.id;
+                        receipt.repair.block_id = created.block.ok_or_else(||CalmError::Internal("repair block outcome missing".into()))?.id;
                         let second = super::repair::prepare(&doc, &receipt.reviewer)?;
                         repair_receipt = Some(receipt);
                         second
@@ -1043,7 +1043,8 @@ async fn persist(
                 //    checks happen in here, against the CRDT truth
                 //    inside this transaction — a conflict aborts the
                 //    tx (nothing written, no events emitted).
-                let (outcome, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
+                let (trace, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
+                let outcome = &trace.block;
                 // 4. Project back — these are the authoritative values
                 //    that go into the JSON cache. Since #960 PR2 the
                 //    CRDT block map is the source of truth: `body` is
@@ -1134,7 +1135,7 @@ async fn persist(
                     ));
                 }
                 events.extend(task_projection.kernel_events);
-                Ok((((updated, outcome), dispatch_response), events))
+                Ok((((updated, trace), dispatch_response), events))
             })
         },
     )
@@ -1147,7 +1148,7 @@ async fn persist(
                 .map_err(|_| CalmError::Internal("dispatch replay lock poisoned".into()))?
                 .take()
                 .ok_or_else(|| CalmError::Internal("dispatch replay lost its receipt".into()))?;
-            Ok(((card, None), Some(response)))
+            Ok(((card, ReportOpTrace::default()), Some(response)))
         }
         Err(error) => Err(error),
     }

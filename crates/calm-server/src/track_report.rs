@@ -521,6 +521,28 @@ pub struct BlockOpOutcome {
     pub rev: u32,
 }
 
+/// What one [`ReportDocOp`] resolved to: the block-level outcome where the
+/// op has one, plus (#1669 §2.3) the final ids of every **prose** block the
+/// op wrote — the set the receipt's `neige://source/` link warnings scan.
+/// `UpsertBlock` and each batch `Upsert` contribute their final id (new
+/// ids included, and a content-equal replace still counts as written);
+/// `WriteMarkdown` and `Replace` rewrite the whole document and contribute
+/// every prose block of the result; `MoveBlock` / `DeleteBlock` / a batch
+/// of only moves, deletes or a summary contribute nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReportOpTrace {
+    pub block: Option<BlockOpOutcome>,
+    pub written_prose_block_ids: Vec<String>,
+}
+
+/// Which blocks an op wrote, before the post-op snapshot exists.
+enum Written {
+    None,
+    Ids(Vec<String>),
+    /// Every prose block of the post-op document.
+    AllProse,
+}
+
 pub(crate) fn block_not_found(id: &str) -> CalmError {
     CalmError::BadRequest(format!("block {id} not found"))
 }
@@ -640,11 +662,23 @@ fn apply_delete(doc: &mut ReportDoc, id: &str, if_rev: u32) -> Result<(), CalmEr
 /// Upper bound on the ops one `calm.report.commit` may carry.
 pub const MAX_BATCH_OPS: usize = 64;
 
+/// The block-outcome half of [`apply_report_op_traced`]; production goes
+/// through the traced form, the in-crate guard tests through this one.
+#[cfg(test)]
 pub(crate) fn apply_report_op(
     doc: &mut ReportDoc,
     op: &ReportDocOp,
     author: EditAuthor,
 ) -> Result<Option<BlockOpOutcome>, CalmError> {
+    apply_report_op_traced(doc, op, author).map(|trace| trace.block)
+}
+
+/// [`apply_report_op`] plus the written-prose trace (#1669 §2.3).
+pub(crate) fn apply_report_op_traced(
+    doc: &mut ReportDoc,
+    op: &ReportDocOp,
+    author: EditAuthor,
+) -> Result<ReportOpTrace, CalmError> {
     let internal = block_op_internal;
     // `summary: None` = keep the current summary. Resolved HERE,
     // inside the persist transaction, from the doc itself — never from
@@ -688,6 +722,7 @@ pub(crate) fn apply_report_op(
     let before = doc.blocks_snapshot().map_err(|e| {
         CalmError::Internal(format!("track_report: snapshot before task guard: {e}"))
     })?;
+    let mut written = Written::None;
     let outcome: Result<Option<BlockOpOutcome>, CalmError> = match &op {
         ReportDocOp::Replace {
             summary,
@@ -703,6 +738,7 @@ pub(crate) fn apply_report_op(
             validate_body_fences(&body)?;
             guard_non_prose_stomp(doc, &body)?;
             doc.update(&summary, &body).map_err(internal)?;
+            written = Written::AllProse;
             Ok(None)
         }
         ReportDocOp::WriteMarkdown {
@@ -743,6 +779,7 @@ pub(crate) fn apply_report_op(
             validate_body_fences(&cleaned)?;
             doc.update_with_hints(&summary, slices, &marked.hints)
                 .map_err(internal)?;
+            written = Written::AllProse;
             Ok(None)
         }
         ReportDocOp::UpsertBlock {
@@ -773,23 +810,29 @@ pub(crate) fn apply_report_op(
             // gap open (the delete rewrite only ever produces the replace
             // arm, since it carries the stored block's id).
             let validate = caller_block_content.is_some();
-            match id {
+            let outcome = match id {
                 Some(id) => {
                     let expected = if_rev.ok_or_else(|| {
                         CalmError::BadRequest(
                             "if_rev is required when replacing an existing block".into(),
                         )
                     })?;
-                    apply_upsert_existing(doc, id, kind, content, expected, validate).map(Some)
+                    apply_upsert_existing(doc, id, kind, content, expected, validate)
                 }
                 None => {
                     let expected = if_doc_rev.ok_or_else(|| {
                         CalmError::BadRequest("if_doc_rev is required when creating a block".into())
                     })?;
                     check_doc_rev(doc, expected)?;
-                    apply_upsert_new(doc, kind, content, *position, validate).map(Some)
+                    apply_upsert_new(doc, kind, content, *position, validate)
                 }
-            }
+            };
+            outcome.map(|outcome| {
+                if kind == KIND_PROSE {
+                    written = Written::Ids(vec![outcome.id.clone()]);
+                }
+                Some(outcome)
+            })
         }
         ReportDocOp::MoveBlock {
             id,
@@ -817,6 +860,7 @@ pub(crate) fn apply_report_op(
             // same batch created only through its returned id, which the
             // caller does not have yet, so batches address existing
             // blocks. The first `?` aborts the whole persist tx.
+            let mut written_ids = Vec::new();
             for (index, block_op) in ops.iter().enumerate() {
                 let step = |e: CalmError| match e {
                     CalmError::Conflict(m) => CalmError::Conflict(format!("ops[{index}]: {m}")),
@@ -830,20 +874,25 @@ pub(crate) fn apply_report_op(
                         content,
                         if_rev,
                         position,
-                    } => match id {
-                        Some(id) => {
-                            let expected = if_rev.ok_or_else(|| {
-                                CalmError::BadRequest(
-                                    "if_rev is required when replacing an existing block".into(),
-                                )
-                            })?;
-                            apply_upsert_existing(doc, id, kind, content, expected, true)
-                                .map_err(step)?;
+                    } => {
+                        let outcome = match id {
+                            Some(id) => {
+                                let expected = if_rev.ok_or_else(|| {
+                                    CalmError::BadRequest(
+                                        "if_rev is required when replacing an existing block"
+                                            .into(),
+                                    )
+                                })?;
+                                apply_upsert_existing(doc, id, kind, content, expected, true)
+                                    .map_err(step)?
+                            }
+                            None => apply_upsert_new(doc, kind, content, *position, true)
+                                .map_err(step)?,
+                        };
+                        if kind == KIND_PROSE {
+                            written_ids.push(outcome.id);
                         }
-                        None => {
-                            apply_upsert_new(doc, kind, content, *position, true).map_err(step)?;
-                        }
-                    },
+                    }
                     BatchBlockOp::Move { id, to_index } => {
                         apply_move(doc, id, *to_index).map_err(step)?;
                     }
@@ -855,6 +904,9 @@ pub(crate) fn apply_report_op(
             if let Some(summary) = summary {
                 doc.set_summary(summary).map_err(internal)?;
             }
+            if !written_ids.is_empty() {
+                written = Written::Ids(written_ids);
+            }
             Ok(None)
         }
     };
@@ -862,6 +914,15 @@ pub(crate) fn apply_report_op(
     let after = doc.blocks_snapshot().map_err(|e| {
         CalmError::Internal(format!("track_report: snapshot after task guard: {e}"))
     })?;
+    let written_prose_block_ids = match written {
+        Written::None => Vec::new(),
+        Written::Ids(ids) => ids,
+        Written::AllProse => after
+            .iter()
+            .filter(|block| block.kind == KIND_PROSE)
+            .map(|block| block.id.clone())
+            .collect(),
+    };
     // The block-level delete endpoint is the ONLY way a live task
     // declaration may leave the document (#1179); the guard needs to know
     // which block, if any, this op deleted that way. `op` here is the
@@ -872,7 +933,10 @@ pub(crate) fn apply_report_op(
         _ => None,
     };
     guard_task_declarations(&before, &after, author, block_delete_id)?;
-    Ok(outcome)
+    Ok(ReportOpTrace {
+        block: outcome,
+        written_prose_block_ids,
+    })
 }
 
 /// Apply one successful persist operation and advance the document-wide
@@ -883,12 +947,12 @@ fn apply_persisted_report_op(
     doc: &mut ReportDoc,
     op: &ReportDocOp,
     author: EditAuthor,
-) -> Result<(Option<BlockOpOutcome>, u64), CalmError> {
-    let outcome = apply_report_op(doc, op, author)?;
+) -> Result<(ReportOpTrace, u64), CalmError> {
+    let trace = apply_report_op_traced(doc, op, author)?;
     let doc_rev = doc.increment_doc_rev().map_err(|e| {
         CalmError::Internal(format!("track_report: increment document revision: {e}"))
     })?;
-    Ok((outcome, doc_rev))
+    Ok((trace, doc_rev))
 }
 
 fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {

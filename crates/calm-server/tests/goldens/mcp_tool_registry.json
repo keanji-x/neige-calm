@@ -1016,6 +1016,94 @@
     ]
   },
   {
+    "name": "calm.source.capture",
+    "description_sha256": "379c35bd82e4d88e2c15793b3dd7987728444c3db8ad0a34d304cf1ad2a7bf17",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "call": {
+          "additionalProperties": false,
+          "properties": {
+            "args": {},
+            "tool": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tool"
+          ],
+          "type": "object"
+        },
+        "content_id": {
+          "type": "string"
+        },
+        "manual": {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        "provenance": {
+          "enum": [
+            "full_text",
+            "summary",
+            "web_page",
+            "manual"
+          ],
+          "type": "string"
+        },
+        "published_at": {
+          "type": "string"
+        },
+        "quotes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.source.list",
+    "description_sha256": "b2660cbcd5b9dd88f6513c7130001585c046c0c4e107eb958a52c8f31237ad9b",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
     "name": "calm.task.complete",
     "description_sha256": "6112aed62f9d8669a578ac69fc43e31f583f979934906e106da516bd33673835",
     "input_schema": {
