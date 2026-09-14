@@ -14,9 +14,24 @@ fn required(schema: &Value) -> BTreeSet<String> {
         .map(|field| field.as_str().unwrap().to_owned())
         .collect()
 }
+fn properties(schema: &Value) -> BTreeSet<String> {
+    schema["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect()
+}
 
+/// #1666 — the targeted tools are flat objects: both selectors are optional
+/// root properties (exactly-one targeting is enforced server-side by
+/// `Target::from_ids` and stated first in every description), no root
+/// `anyOf`/`oneOf`, and the closed `action` arms stay intact. The whole
+/// input schema of every tool stays under the local 4000-byte compaction
+/// threshold, which the former selector arms (3× every property) had
+/// exhausted.
 #[test]
-fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
+fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
     let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);
     // Reproducible diagnostics for real JSON Schema validator checks; emitted
     // from the actual registration, not a hand-written schema or renderer copy.
@@ -41,48 +56,42 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
         ]),
         "every registered targeted Terminal tool must be covered by this sweep"
     );
+    const WAIT: [&str; 6] = [
+        "wait_ms",
+        "wait_for",
+        "settle_ms",
+        "signal_events",
+        "repaint_ms",
+        "wait_text",
+    ];
     for (name, common, mandatory) in [
         ("resolve", vec![], vec![]),
         (
             "observe",
-            vec![
-                "scroll_offset",
-                "wait_ms",
-                "wait_for",
-                "settle_ms",
-                "signal_events",
-                "repaint_ms",
-                "format",
-            ],
+            [&["scroll_offset", "format"][..], &WAIT[..]].concat(),
             vec![],
         ),
         (
             "control",
-            vec![
-                "action",
-                "observe",
-                "wait_ms",
-                "wait_for",
-                "settle_ms",
-                "signal_events",
-                "repaint_ms",
-            ],
+            [&["action", "observe"][..], &WAIT[..]].concat(),
             vec!["action"],
         ),
         (
             "input",
-            vec![
-                "observation_id",
-                "request_id",
-                "action",
-                "observe",
-                "wait_ms",
-                "wait_for",
-                "settle_ms",
-                "signal_events",
-                "repaint_ms",
-                "allow_output_since_observation",
-            ],
+            [
+                &[
+                    "observation_id",
+                    "request_id",
+                    "action",
+                    "observe",
+                    "allow_output_since_observation",
+                    "allow_output_below_cursor",
+                    "claim",
+                    "release",
+                ][..],
+                &WAIT[..],
+            ]
+            .concat(),
             vec!["request_id", "action"],
         ),
     ] {
@@ -96,51 +105,48 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
             schema["type"], "object",
             "{name}: MCP root remains an object"
         );
+        assert_eq!(schema["additionalProperties"], false, "{name}");
         assert_eq!(
             required(schema),
             fields(&mandatory),
-            "{name}: root required fields"
+            "{name}: root required fields; neither selector is required"
         );
-        let arms = schema["anyOf"]
-            .as_array()
-            .unwrap_or_else(|| panic!("{name}: discovery needs supported complete anyOf arms"));
-        assert_eq!(arms.len(), 2, "{name}");
-        for (arm, selector) in arms.iter().zip(["terminal_id", "task_id"]) {
-            assert_eq!(arm["type"], "object", "{name}/{selector}");
-            assert_eq!(arm["additionalProperties"], false, "{name}/{selector}");
-            let mut expected_properties = fields(&common);
-            expected_properties.insert(selector.into());
+        let mut expected = fields(&common);
+        expected.insert("terminal_id".into());
+        expected.insert("task_id".into());
+        assert_eq!(
+            properties(schema),
+            expected,
+            "{name}: all common properties and both optional selectors"
+        );
+        for selector in ["terminal_id", "task_id"] {
             assert_eq!(
-                arm["properties"]
-                    .as_object()
-                    .unwrap()
-                    .keys()
-                    .cloned()
-                    .collect::<BTreeSet<_>>(),
-                expected_properties,
-                "{name}/{selector}: all common properties, exactly one selector"
+                schema["properties"][selector],
+                json!({"type":"string"}),
+                "{name}/{selector}"
             );
-            let mut expected_required = fields(&mandatory);
-            expected_required.insert(selector.into());
-            assert_eq!(
-                required(arm),
-                expected_required,
-                "{name}/{selector}: a renderer must not lose common required fields"
-            );
-            for field in expected_properties {
-                assert_eq!(
-                    arm["properties"][&field], schema["properties"][&field],
-                    "{name}/{selector}/{field}: retain complete field schema"
-                );
-            }
         }
+        assert!(
+            schema.get("anyOf").is_none() && schema.get("oneOf").is_none(),
+            "{name}: no root union arms (the local transformer does not model oneOf, and anyOf arms tripled the schema)"
+        );
         assert!(
             !schema.to_string().contains("\"oneOf\""),
             "{name}: local transformer does not model oneOf"
         );
+        let bytes = schema.to_string().len();
         assert!(
-            schema.to_string().len() < 4000,
-            "{name}: avoid model schema compaction"
+            bytes < 4000,
+            "{name}: {bytes} bytes; avoid model schema compaction"
+        );
+        assert!(
+            descriptor
+                .description
+                .starts_with("Select exactly one terminal_id or task_id")
+                || descriptor
+                    .description
+                    .starts_with("Resolve exactly one task_id"),
+            "{name}: exactly-one targeting is the first sentence"
         );
         if name != "calm.terminal.resolve" {
             // #1618 waiting arguments: raised budget, change mode and settle.
@@ -153,16 +159,21 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
             );
             assert_eq!(
                 schema["properties"]["wait_for"],
-                json!({"type":"string","enum":["elapsed","change","signal"],"default":"elapsed"}),
+                json!({"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"}),
                 "{name}"
             );
             // #1620 signal events: signal mode only. The vocabulary is
-            // validated server-side and stated in the descriptions; an enum
-            // in every arm would push the input schema over the 4000-byte
-            // compaction threshold.
+            // validated server-side and stated in the descriptions.
             assert_eq!(
                 schema["properties"]["signal_events"],
                 json!({"type":"array","minItems":1,"items":{"type":"string"}}),
+                "{name}"
+            );
+            // #1666 text patterns: text mode only (refused elsewhere
+            // server-side); the bounds are the server's.
+            assert_eq!(
+                schema["properties"]["wait_text"],
+                json!({"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}}),
                 "{name}"
             );
             assert_eq!(
@@ -195,80 +206,89 @@ fn terminal_discovery_preserves_complete_typed_selector_and_action_arms() {
         .find(|descriptor| descriptor.name == "calm.terminal.input")
         .unwrap()
         .input_schema;
-    assert_eq!(
-        input["properties"]["allow_output_since_observation"],
-        json!({"type":"boolean","default":false})
-    );
+    // #1618 drift opt-in, #1666 below-cursor tolerance and control steps:
+    // plain booleans, default false, validated server-side.
+    for flag in [
+        "allow_output_since_observation",
+        "allow_output_below_cursor",
+        "claim",
+        "release",
+    ] {
+        assert_eq!(
+            input["properties"][flag],
+            json!({"type":"boolean","default":false}),
+            "{flag}"
+        );
+    }
     assert_eq!(
         input["properties"]["observation_id"],
         json!({"type":"string","format":"uuid"}),
         "observation_id stays typed while optional"
     );
-    for arm in input["anyOf"].as_array().unwrap() {
-        assert!(
-            !required(arm).contains("observation_id"),
-            "observation_id is optional in both arms"
-        );
-        assert!(arm["properties"].get("observation_id").is_some());
-        assert!(
-            arm["properties"]
-                .get("allow_output_since_observation")
-                .is_some()
-        );
-        let actions = arm["properties"]["action"]["anyOf"].as_array().unwrap();
-        assert_eq!(actions.len(), 3);
-        // #1620: `submit` shares the text arm (same fields, same limits) as a
-        // two-value discriminator instead of a fourth arm, keeping the schema
-        // under the compaction threshold.
-        for (action, kind, properties, mandatory) in [
-            (
-                &actions[0],
-                json!(["text", "submit"]),
-                vec!["type", "text"],
-                vec!["type", "text"],
-            ),
-            (
-                &actions[1],
-                json!("key"),
-                vec!["type", "key", "repeat"],
-                vec!["type", "key"],
-            ),
-            (
-                &actions[2],
-                json!("click"),
-                vec!["type", "column", "row"],
-                vec!["type", "column", "row"],
-            ),
-        ] {
-            assert_eq!(action["type"], "object");
-            assert_eq!(action["additionalProperties"], false);
-            match &kind {
-                Value::Array(values) => {
-                    assert_eq!(action["properties"]["type"], json!({"enum":values}))
-                }
-                other => assert_eq!(action["properties"]["type"], json!({"const":other})),
+    let actions = input["properties"]["action"]["anyOf"].as_array().unwrap();
+    assert_eq!(actions.len(), 4);
+    // #1620: `submit` shares the text arm (same fields, same limits) as a
+    // two-value discriminator instead of a separate arm. #1666: `sequence`
+    // is its own arm; its steps are typed as objects here and validated
+    // server-side (text or editing-key actions, 2..=8 of them).
+    for (action, kind, properties, mandatory) in [
+        (
+            &actions[0],
+            json!(["text", "submit"]),
+            vec!["type", "text"],
+            vec!["type", "text"],
+        ),
+        (
+            &actions[1],
+            json!("key"),
+            vec!["type", "key", "repeat"],
+            vec!["type", "key"],
+        ),
+        (
+            &actions[2],
+            json!("click"),
+            vec!["type", "column", "row"],
+            vec!["type", "column", "row"],
+        ),
+        (
+            &actions[3],
+            json!("sequence"),
+            vec!["type", "steps"],
+            vec!["type", "steps"],
+        ),
+    ] {
+        assert_eq!(action["type"], "object");
+        assert_eq!(action["additionalProperties"], false);
+        match &kind {
+            Value::Array(values) => {
+                assert_eq!(action["properties"]["type"], json!({"enum":values}))
             }
+            other => assert_eq!(action["properties"]["type"], json!({"const":other})),
+        }
+        assert_eq!(
+            action["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            fields(&properties)
+        );
+        assert_eq!(required(action), fields(&mandatory));
+        for field in properties.into_iter().filter(|field| *field != "type") {
+            let expected = match field {
+                "column" | "row" | "repeat" => "integer",
+                "steps" => "array",
+                _ => "string",
+            };
             assert_eq!(
-                action["properties"]
-                    .as_object()
-                    .unwrap()
-                    .keys()
-                    .cloned()
-                    .collect::<BTreeSet<_>>(),
-                fields(&properties)
+                action["properties"][field]["type"], expected,
+                "{kind}/{field}: preserve the field type"
             );
-            assert_eq!(required(action), fields(&mandatory));
-            for field in properties.into_iter().filter(|field| *field != "type") {
-                let expected = if matches!(field, "column" | "row" | "repeat") {
-                    "integer"
-                } else {
-                    "string"
-                };
-                assert_eq!(
-                    action["properties"][field]["type"], expected,
-                    "{kind}/{field}: preserve the field type"
-                );
-            }
         }
     }
+    assert_eq!(
+        actions[3]["properties"]["steps"],
+        json!({"type":"array","minItems":2,"maxItems":8,"items":{"type":"object"}})
+    );
 }

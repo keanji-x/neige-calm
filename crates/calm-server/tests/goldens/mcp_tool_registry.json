@@ -1288,125 +1288,9 @@
   },
   {
     "name": "calm.terminal.control",
-    "description_sha256": "840999db8dc5a5385dd4793c7981950299baacf4b0e61d29a98dbd18d4a0474a",
+    "description_sha256": "a7e710a9a889751398bcfef225254149332cd6c3f6e981f80fc3680f2f3e1592",
     "input_schema": {
       "additionalProperties": false,
-      "anyOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "action": {
-              "enum": [
-                "claim",
-                "release",
-                "detach"
-              ],
-              "type": "string"
-            },
-            "observe": {
-              "default": false,
-              "type": "boolean"
-            },
-            "repaint_ms": {
-              "maximum": 5000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "settle_ms": {
-              "default": 150,
-              "maximum": 2000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "signal_events": {
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            "terminal_id": {
-              "type": "string"
-            },
-            "wait_for": {
-              "default": "elapsed",
-              "enum": [
-                "elapsed",
-                "change",
-                "signal"
-              ],
-              "type": "string"
-            },
-            "wait_ms": {
-              "maximum": 20000,
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "action",
-            "terminal_id"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "action": {
-              "enum": [
-                "claim",
-                "release",
-                "detach"
-              ],
-              "type": "string"
-            },
-            "observe": {
-              "default": false,
-              "type": "boolean"
-            },
-            "repaint_ms": {
-              "maximum": 5000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "settle_ms": {
-              "default": 150,
-              "maximum": 2000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "signal_events": {
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            "task_id": {
-              "type": "string"
-            },
-            "wait_for": {
-              "default": "elapsed",
-              "enum": [
-                "elapsed",
-                "change",
-                "signal"
-              ],
-              "type": "string"
-            },
-            "wait_ms": {
-              "maximum": 20000,
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "action",
-            "task_id"
-          ],
-          "type": "object"
-        }
-      ],
       "properties": {
         "action": {
           "enum": [
@@ -1449,7 +1333,8 @@
           "enum": [
             "elapsed",
             "change",
-            "signal"
+            "signal",
+            "text"
           ],
           "type": "string"
         },
@@ -1457,6 +1342,16 @@
           "maximum": 20000,
           "minimum": 0,
           "type": "integer"
+        },
+        "wait_text": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [
@@ -1475,275 +1370,9 @@
   },
   {
     "name": "calm.terminal.input",
-    "description_sha256": "6f22e9e423a1dcd3e694a67b6d773f8942edca326fe476c1a0087744f79a2a27",
+    "description_sha256": "980ad268babfc86d5fb40256d750d385e53c1a1f3f359d73789a8fa4c2d8f279",
     "input_schema": {
       "additionalProperties": false,
-      "anyOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "action": {
-              "anyOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "text": {
-                      "maxLength": 16384,
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "type": {
-                      "enum": [
-                        "text",
-                        "submit"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "text"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "key": {
-                      "type": "string"
-                    },
-                    "repeat": {
-                      "default": 1,
-                      "maximum": 32,
-                      "minimum": 1,
-                      "type": "integer"
-                    },
-                    "type": {
-                      "const": "key"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "key"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "column": {
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "row": {
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "type": {
-                      "const": "click"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "column",
-                    "row"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "allow_output_since_observation": {
-              "default": false,
-              "type": "boolean"
-            },
-            "observation_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "observe": {
-              "default": false,
-              "type": "boolean"
-            },
-            "repaint_ms": {
-              "maximum": 5000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "request_id": {
-              "maxLength": 128,
-              "minLength": 1,
-              "type": "string"
-            },
-            "settle_ms": {
-              "default": 150,
-              "maximum": 2000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "signal_events": {
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            "terminal_id": {
-              "type": "string"
-            },
-            "wait_for": {
-              "default": "elapsed",
-              "enum": [
-                "elapsed",
-                "change",
-                "signal"
-              ],
-              "type": "string"
-            },
-            "wait_ms": {
-              "maximum": 20000,
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "request_id",
-            "action",
-            "terminal_id"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "action": {
-              "anyOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "text": {
-                      "maxLength": 16384,
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "type": {
-                      "enum": [
-                        "text",
-                        "submit"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "text"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "key": {
-                      "type": "string"
-                    },
-                    "repeat": {
-                      "default": 1,
-                      "maximum": 32,
-                      "minimum": 1,
-                      "type": "integer"
-                    },
-                    "type": {
-                      "const": "key"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "key"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "column": {
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "row": {
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "type": {
-                      "const": "click"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "column",
-                    "row"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "allow_output_since_observation": {
-              "default": false,
-              "type": "boolean"
-            },
-            "observation_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "observe": {
-              "default": false,
-              "type": "boolean"
-            },
-            "repaint_ms": {
-              "maximum": 5000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "request_id": {
-              "maxLength": 128,
-              "minLength": 1,
-              "type": "string"
-            },
-            "settle_ms": {
-              "default": 150,
-              "maximum": 2000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "signal_events": {
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            "task_id": {
-              "type": "string"
-            },
-            "wait_for": {
-              "default": "elapsed",
-              "enum": [
-                "elapsed",
-                "change",
-                "signal"
-              ],
-              "type": "string"
-            },
-            "wait_ms": {
-              "maximum": 20000,
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "request_id",
-            "action",
-            "task_id"
-          ],
-          "type": "object"
-        }
-      ],
       "properties": {
         "action": {
           "anyOf": [
@@ -1811,10 +1440,39 @@
                 "row"
               ],
               "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "steps": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "maxItems": 8,
+                  "minItems": 2,
+                  "type": "array"
+                },
+                "type": {
+                  "const": "sequence"
+                }
+              },
+              "required": [
+                "type",
+                "steps"
+              ],
+              "type": "object"
             }
           ]
         },
+        "allow_output_below_cursor": {
+          "default": false,
+          "type": "boolean"
+        },
         "allow_output_since_observation": {
+          "default": false,
+          "type": "boolean"
+        },
+        "claim": {
           "default": false,
           "type": "boolean"
         },
@@ -1823,6 +1481,10 @@
           "type": "string"
         },
         "observe": {
+          "default": false,
+          "type": "boolean"
+        },
+        "release": {
           "default": false,
           "type": "boolean"
         },
@@ -1860,7 +1522,8 @@
           "enum": [
             "elapsed",
             "change",
-            "signal"
+            "signal",
+            "text"
           ],
           "type": "string"
         },
@@ -1868,6 +1531,16 @@
           "maximum": 20000,
           "minimum": 0,
           "type": "integer"
+        },
+        "wait_text": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [
@@ -1887,125 +1560,9 @@
   },
   {
     "name": "calm.terminal.observe",
-    "description_sha256": "d041e2aa61245286b0bb0d6a9f37aae34de1081fab065b59245bf99e162f9071",
+    "description_sha256": "2a90c17397cb500127ef9eb353a78564d90780da738f7316d27b20ef0bb3d969",
     "input_schema": {
       "additionalProperties": false,
-      "anyOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "format": {
-              "default": "text",
-              "enum": [
-                "text",
-                "image"
-              ],
-              "type": "string"
-            },
-            "repaint_ms": {
-              "maximum": 5000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "scroll_offset": {
-              "maximum": 2000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "settle_ms": {
-              "default": 150,
-              "maximum": 2000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "signal_events": {
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            "terminal_id": {
-              "type": "string"
-            },
-            "wait_for": {
-              "default": "elapsed",
-              "enum": [
-                "elapsed",
-                "change",
-                "signal"
-              ],
-              "type": "string"
-            },
-            "wait_ms": {
-              "maximum": 20000,
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "terminal_id"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "format": {
-              "default": "text",
-              "enum": [
-                "text",
-                "image"
-              ],
-              "type": "string"
-            },
-            "repaint_ms": {
-              "maximum": 5000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "scroll_offset": {
-              "maximum": 2000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "settle_ms": {
-              "default": 150,
-              "maximum": 2000,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "signal_events": {
-              "items": {
-                "type": "string"
-              },
-              "minItems": 1,
-              "type": "array"
-            },
-            "task_id": {
-              "type": "string"
-            },
-            "wait_for": {
-              "default": "elapsed",
-              "enum": [
-                "elapsed",
-                "change",
-                "signal"
-              ],
-              "type": "string"
-            },
-            "wait_ms": {
-              "maximum": 20000,
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "task_id"
-          ],
-          "type": "object"
-        }
-      ],
       "properties": {
         "format": {
           "default": "text",
@@ -2049,7 +1606,8 @@
           "enum": [
             "elapsed",
             "change",
-            "signal"
+            "signal",
+            "text"
           ],
           "type": "string"
         },
@@ -2057,6 +1615,16 @@
           "maximum": 20000,
           "minimum": 0,
           "type": "integer"
+        },
+        "wait_text": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [],
@@ -2123,32 +1691,6 @@
     "description_sha256": "fbc0cf4f231b24f8a00f19ac85a2157c3ecf70dd2e0357f86d2a3bcd99bbcd87",
     "input_schema": {
       "additionalProperties": false,
-      "anyOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "terminal_id": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "terminal_id"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "task_id": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "task_id"
-          ],
-          "type": "object"
-        }
-      ],
       "properties": {
         "task_id": {
           "type": "string"
