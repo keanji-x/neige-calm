@@ -2,30 +2,293 @@ use super::*;
 
 async fn bind_isolated(fx: &Fixture, grants: &[&str]) {
     let pool = fx.repo.sqlite_pool().unwrap();
-    let card: String = sqlx::query_scalar("SELECT card_id FROM worker_sessions WHERE thread_id=?1")
-        .bind(&fx.thread_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
     let context = json!({"neige_execution":{"version":"isolated-codex-v1","workspace":"empty","plugin_tools":grants}});
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,created_at_ms,updated_at_ms) VALUES('isolated-test',?1,'isolated-test','codex','query delegated plugin',?2,'running',?3,1,1)")
-        .bind(&fx.track_id).bind(context.to_string()).bind(card).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) VALUES('isolated-test',?1,'isolated-test','codex','query delegated plugin',?2,'running',1,1)")
+        .bind(&fx.track_id).bind(context.to_string()).execute(&pool).await.unwrap();
+    bind_isolated_task(fx, "isolated-test").await;
+}
+
+/// Bind the fixture Worker (`fx.thread_id`) to an existing task row as its
+/// running isolated attempt, the way the spawn journal would.
+async fn bind_isolated_task(fx: &Fixture, task_id: &str) {
+    let pool = fx.repo.sqlite_pool().unwrap();
     let (session, card): (String, String) =
         sqlx::query_as("SELECT id,card_id FROM worker_sessions WHERE thread_id=?1")
             .bind(&fx.thread_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    let request = json!({"version":"isolated-worker-v1","actor":calm_server::ids::ActorId::KernelDispatcher,"track_id":fx.track_id,"task_id":"isolated-test","idempotency_key":"isolated-test"});
+    sqlx::query("UPDATE tasks SET status='running',worker_card_id=?1 WHERE id=?2")
+        .bind(&card)
+        .bind(task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let request = json!({"version":"isolated-worker-v1","actor":calm_server::ids::ActorId::KernelDispatcher,"track_id":fx.track_id,"task_id":task_id,"idempotency_key":task_id});
     let output = json!({"result":{},"data":{"isolated_execution":{"version":"isolated-run-v1","track_id":fx.track_id,"native_token":"fixture-private-token","admission":"open","provider":{"state":"unprepared"},
-        "request":{"identity":{"run_id":"isolated-operation","attempt_id":"isolated-test","card_id":card,"session_id":session},"workspace":"/workspace","developer_instructions":"fixture"}}},"target_type":"card","target_id":card});
-    sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_id,target_json,payload_json,phase,tx_output_json,created_at_ms,updated_at_ms) VALUES('isolated-operation','isolated-operation','codex-isolated-worker','isolated-test','fixture','card',?1,'{}',?2,'spawn_started',?3,1,1)")
-        .bind(&card).bind(request.to_string()).bind(output.to_string()).execute(&pool).await.unwrap();
+        "request":{"identity":{"run_id":"isolated-operation","attempt_id":task_id,"card_id":card,"session_id":session},"workspace":"/workspace","developer_instructions":"fixture"}}},"target_type":"card","target_id":card});
+    sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_id,target_json,payload_json,phase,tx_output_json,created_at_ms,updated_at_ms) VALUES('isolated-operation','isolated-operation','codex-isolated-worker',?4,'fixture','card',?1,'{}',?2,'spawn_started',?3,1,1)")
+        .bind(&card).bind(request.to_string()).bind(output.to_string()).bind(task_id).execute(&pool).await.unwrap();
     sqlx::query("UPDATE worker_sessions SET spawn_op_id='isolated-operation' WHERE id=?1")
         .bind(session)
         .execute(&pool)
         .await
         .unwrap();
+}
+
+/// A Planner report card plus a Planner thread on the unbound track.
+async fn planner_on_unbound_track(fx: &Fixture) -> (String, String) {
+    fx.repo
+        .card_create(calm_server::model::NewCard {
+            track_id: fx.track_id.clone().into(),
+            title: None,
+            kind: "track-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
+                .unwrap(),
+        })
+        .await
+        .unwrap();
+    mint_card_with_thread(
+        &fx.repo,
+        &fx.card_role_cache,
+        fx.track_id.clone().into(),
+        CardRole::Planner,
+    )
+    .await
+}
+
+/// What Codex shows the model for `name`: every char outside `[A-Za-z0-9_]`
+/// becomes `_` (#1668). `plugin.dev.neige.git-forge_wf.tool` reads as
+/// `plugin_dev_neige_git_forge_wf_tool`.
+fn codex_spelling(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// The spelling a Planner produces from `codex_spelling` after following the
+/// prompt's `plugin.<id>_<tool>` shape: leading `plugin_` back to `plugin.`.
+fn planner_spelling(name: &str) -> String {
+    let sanitized = codex_spelling(name);
+    format!(
+        "plugin.{}",
+        sanitized.strip_prefix("plugin_").expect("plugin tool name")
+    )
+}
+
+fn dispatch_args(name: &str, plugin_tools: Value) -> Value {
+    json!({"name":name,"goal":"Look up source","acceptance":"Return source result","executor":"codex","workspace":"empty","plugin_tools":plugin_tools})
+}
+
+#[tokio::test]
+async fn isolated_plugin_dispatch_accepts_codex_sanitized_spelling_and_freezes_registry_name() {
+    let fx = boot_fixture().await;
+    let real = fx.trusted_exposed_name.clone();
+    let spelled = planner_spelling(&real);
+    assert_ne!(spelled, real);
+    assert_eq!(
+        spelled,
+        format!(
+            "plugin.{}",
+            codex_spelling(&fx.trusted_plugin_id) + "_wf_tool"
+        )
+    );
+    let (token, thread) = planner_on_unbound_track(&fx).await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &token).await;
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            2,
+            "calm.task.dispatch",
+            &thread,
+            dispatch_args("Research", json!([spelled])),
+        ),
+    )
+    .await;
+    let first = recv_frame(&mut rd).await;
+    assert!(first.get("error").is_none(), "{first}");
+    let out = &first["result"]["structuredContent"];
+    assert_eq!(
+        out["requested_executor_environment"]["plugin_tools"],
+        json!([real]),
+        "{first}"
+    );
+    let task = fx
+        .repo
+        .tasks_by_track(&fx.track_id)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let context: Value = serde_json::from_str(&task.context_json).unwrap();
+    assert_eq!(
+        context["neige_execution"]["plugin_tools"],
+        json!([real]),
+        "frozen grant must be the registry name"
+    );
+    // Either spelling replays the same receipt: the frozen contract is the
+    // resolved one. The verbatim Codex spelling has no `plugin.` prefix at all.
+    for (id, spelling) in [(3, codex_spelling(&real)), (4, real.clone())] {
+        send_frame(
+            &mut wr,
+            tools_call_frame(
+                id,
+                "calm.task.dispatch",
+                &thread,
+                dispatch_args("Research", json!([spelling])),
+            ),
+        )
+        .await;
+        let replay = recv_frame(&mut rd).await;
+        assert_eq!(
+            &replay["result"]["structuredContent"]["receipt"], &out["receipt"],
+            "{spelling}: {replay}"
+        );
+    }
+    // The Worker bound to that task discovers and calls the tool by registry name.
+    bind_isolated_task(&fx, &task.id).await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &fx.raw_token).await;
+    send_frame(&mut wr, tools_list_frame(2, &fx.thread_id)).await;
+    let list = recv_frame(&mut rd).await;
+    let names = tool_names_from_response(&list);
+    assert!(names.contains(&real), "{list}");
+    assert!(!names.contains(&EXPOSED_NAME.to_string()), "{list}");
+    send_frame(
+        &mut wr,
+        tools_call_frame(3, &real, &fx.thread_id, json!({"probe":true})),
+    )
+    .await;
+    let called = recv_frame(&mut rd).await;
+    assert!(called.get("error").is_none(), "{called}");
+    assert_eq!(
+        called["result"]["structuredContent"],
+        json!({"echo":"through-kernel-trusted","tool":TRUSTED_TOOL_NAME})
+    );
+}
+
+#[tokio::test]
+async fn isolated_plugin_dispatch_rejects_ambiguous_sanitized_spelling_listing_candidates() {
+    let fx = boot_fixture().await;
+    // `plugin.dev.echo_do.thing` and `plugin.dev_echo.do.thing` both read as
+    // `plugin_dev_echo_do_thing` once Codex sanitizes them.
+    let spelled = planner_spelling(EXPOSED_NAME);
+    assert_eq!(spelled, planner_spelling(COLLIDING_EXPOSED_NAME));
+    let (token, thread) = planner_on_unbound_track(&fx).await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &token).await;
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            2,
+            "calm.task.dispatch",
+            &thread,
+            dispatch_args("Research", json!([spelled])),
+        ),
+    )
+    .await;
+    let rejected = recv_frame(&mut rd).await;
+    assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
+    let message = rejected["error"]["message"].as_str().unwrap();
+    for expected in [spelled.as_str(), EXPOSED_NAME, COLLIDING_EXPOSED_NAME] {
+        assert!(
+            message.contains(expected),
+            "missing `{expected}`: {message}"
+        );
+    }
+    assert!(
+        fx.repo
+            .tasks_by_track(&fx.track_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "an ambiguous dispatch must not declare a task"
+    );
+}
+
+#[tokio::test]
+async fn isolated_plugin_dispatch_names_the_stopped_tool_in_its_refusal() {
+    let fx = boot_fixture().await;
+    let (token, thread) = planner_on_unbound_track(&fx).await;
+    fx.plugin_host.stop(PLUGIN_ID).await.unwrap();
+    fx.plugin_host.stop(&fx.trusted_plugin_id).await.unwrap();
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &token).await;
+    let real = fx.trusted_exposed_name.clone();
+    let spelled = planner_spelling(&real);
+    for (id, name, tools, expected) in [
+        (
+            2,
+            "Exact",
+            json!([EXPOSED_NAME]),
+            vec![format!(
+                "{EXPOSED_NAME} (plugin {PLUGIN_ID} is not running)"
+            )],
+        ),
+        (
+            3,
+            "Spelled",
+            json!([spelled]),
+            vec![format!(
+                "{spelled} (resolves to {real}: plugin {} is not running)",
+                fx.trusted_plugin_id
+            )],
+        ),
+        (
+            4,
+            "Both",
+            json!([EXPOSED_NAME, spelled, COLLIDING_EXPOSED_NAME]),
+            vec![
+                format!("{EXPOSED_NAME} (plugin {PLUGIN_ID} is not running)"),
+                format!("{spelled} (resolves to {real}:"),
+            ],
+        ),
+    ] {
+        send_frame(
+            &mut wr,
+            tools_call_frame(
+                id,
+                "calm.task.dispatch",
+                &thread,
+                dispatch_args(name, tools),
+            ),
+        )
+        .await;
+        let refused = recv_frame(&mut rd).await;
+        assert_eq!(refused["error"]["code"], -32403, "{name}: {refused}");
+        let message = refused["error"]["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("plugin_tools not delegable: "),
+            "{name}: {message}"
+        );
+        for part in expected {
+            assert!(
+                message.contains(&part),
+                "{name}: missing `{part}` in {message}"
+            );
+        }
+        // The still-running colliding tool is never listed as refused.
+        assert!(
+            !message.contains(COLLIDING_EXPOSED_NAME),
+            "{name}: {message}"
+        );
+    }
+    assert!(
+        fx.repo
+            .tasks_by_track(&fx.track_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a refused dispatch must not declare a task"
+    );
 }
 
 #[tokio::test]
@@ -211,7 +474,13 @@ async fn isolated_plugin_dispatch_freezes_grants_and_replay_survives_revocation(
         tools_call_frame(5, "calm.task.dispatch", &thread, new),
     )
     .await;
-    assert_eq!(recv_frame(&mut rd).await["error"]["code"], -32403);
+    let refused = recv_frame(&mut rd).await;
+    assert_eq!(refused["error"]["code"], -32403, "{refused}");
+    assert_eq!(
+        refused["error"]["message"],
+        format!("plugin_tools not delegable: {EXPOSED_NAME} (plugin {PLUGIN_ID} is not running)"),
+        "{refused}"
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM events")
             .fetch_one(&fx.repo.sqlite_pool().unwrap())

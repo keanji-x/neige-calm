@@ -33,7 +33,7 @@
 //! adding an HTTP framework would only obscure the framing.
 
 mod worker_grants;
-pub(crate) use worker_grants::eligible_plugin_tools;
+pub(crate) use worker_grants::resolve_dispatch_plugin_tools;
 
 use crate::db::{Repo, SessionCardIdentity};
 use crate::forge_trust::trusted_forge_plugin;

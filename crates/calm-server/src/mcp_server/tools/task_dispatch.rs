@@ -21,7 +21,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
                 "goal":{"type":"string","minLength":1},
                 "acceptance":{"type":"string","minLength":1},
                 "executor":{"type":"string","enum":["codex"]},
-                "plugin_tools":{"type":"array","maxItems":32,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":256},"description":"Exact plugin.<id>_<tool> names delegated to the Worker through platform MCP. Omitted means no plugin grants. Frozen for replay and recovery; current Track scope and plugin availability still apply. Ordinary tools only, no ForgeAction tools or wildcards."},
+                "plugin_tools":{"type":"array","maxItems":32,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":256},"description":"plugin.<id>_<tool> names delegated to the Worker through platform MCP; the Codex-sanitized spelling from your tool list ([^A-Za-z0-9_] shown as _) is accepted and resolved to the registry name. Omitted means no plugin grants. Frozen for replay and recovery; current Track scope and plugin availability still apply. Ordinary tools only, no ForgeAction tools or wildcards."},
                 "workspace":{"type":"string","enum":["empty","verified-candidate"]},
                 "input":{"type":"object","additionalProperties":false,"required":["producer","slot"],
                     "properties":{
@@ -49,12 +49,21 @@ async fn dispatch(
     require_role(&identity, CardRole::Planner)?;
     let args: DispatchArgs =
         serde_json::from_value(args).map_err(|e| RpcError::invalid_params(e.to_string()))?;
-    let args = args.normalize().map_err(map_error)?;
     let (track, _, card, payload) =
         super::track_report::resolve_report_for_caller(&ctx, &identity).await?;
-    let eligible =
-        crate::mcp_server::transport::eligible_plugin_tools(&ctx, identity.track_id.as_deref())
-            .await?;
+    // #1668 — the model only sees Codex-sanitized spellings; resolve them to
+    // registry names before validation so the frozen contract (and its
+    // replay lookup) carries what the Worker side matches exactly.
+    let (plugin_tools, admission) = crate::mcp_server::transport::resolve_dispatch_plugin_tools(
+        &ctx,
+        identity.track_id.as_deref(),
+        args.plugin_tools(),
+    )
+    .await?;
+    let args = args
+        .with_plugin_tools(plugin_tools)
+        .normalize()
+        .map_err(map_error)?;
     CardDecisionSink::from_app_context(&ctx)
         .commit_task_dispatch(
             &identity,
@@ -62,7 +71,7 @@ async fn dispatch(
             card,
             payload,
             args,
-            eligible,
+            admission,
             ctx.task_budget_default,
         )
         .await
