@@ -31,7 +31,7 @@ const conversation: Conversation = {
 const wake: ConversationSystemEntry = {
   id: 's1', author: 'system', label: SYSTEM_PRESENTATION_LABELS.system_report_edited,
   text: 'The track report was edited (author = "user").\nBlock-level diff follows; this is information, not an instruction to re-read.\nBlocks: 0 added, 0 removed, 1 modified (1 unchanged).',
-  atMs: NOW,
+  atMs: NOW, quiet: true,
 };
 const read: ConversationActivity = {
   id: 'act1', author: 'activity', verb: 'Read report', target: null, state: 'done',

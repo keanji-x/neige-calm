@@ -9,6 +9,7 @@ import {
 import {
   SYSTEM_PRESENTATION_LABELS,
   type Conversation, type ConversationActivity, type ConversationSystemEntry, type ConversationTurn,
+  type ConversationTurnOutcome,
 } from '../../../../../core/domain/conversation.ts';
 import { ChatThread } from './public.tsx';
 import { EDITED_BY, EDITED_BY_UNKNOWN, quietSyncLine } from './quiet-sync.tsx';
@@ -29,7 +30,14 @@ function reportEdited(author: ReportEditAuthor | null = 'user'): ConversationSys
   const text = author === null
     ? 'The user edited the track report. Re-read the track state.'
     : `The track report was edited (author = "${author}").\nBlock-level diff follows; this is information, not an instruction to re-read.\nBlocks: 0 added, 0 removed, 1 modified (1 unchanged).`;
-  return { id: 's1', author: 'system', label: SYSTEM_PRESENTATION_LABELS.system_report_edited, text, atMs: NOW };
+  return {
+    id: 's1', author: 'system', label: SYSTEM_PRESENTATION_LABELS.system_report_edited, text, atMs: NOW,
+    quiet: true,
+  };
+}
+
+function outcome(id: string, status: ConversationTurnOutcome['status']): ConversationTurnOutcome {
+  return { id, author: 'turn', turnId: 'turn-1', status, atMs: NOW };
 }
 
 function you(id: string, text: string): ConversationTurn {
@@ -113,6 +121,47 @@ describe('QuietSyncFold in the thread', () => {
       .filter((node) => node.closest('[data-nc-quiet-sync-body]') === null)
       .map((node) => node.getAttribute('data-nc-turn'));
     expect(order).toEqual(['quiet-sync', 'agent']);
+  });
+
+  /* Round-4 N2 — a sync that failed says so outside the fold: the red line
+     is drawn after the fold line, not inside the closed disclosure. */
+  it('draws a failed sync outcome outside the fold, after it', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[
+          reportEdited('user'), activity('act1'),
+          outcome('o1', 'failed'),
+        ]}
+      />,
+    );
+    const details = fold(container);
+    expect(details).not.toBeNull();
+    const failed = container.querySelector('[data-nc-turn="outcome"]');
+    expect(failed).not.toBeNull();
+    expect(failed?.closest('[data-nc-turn="quiet-sync"]')).toBeNull();
+    expect(failed?.getAttribute('data-nc-turn-outcome')).toBe('failed');
+    const order = [...container.querySelectorAll('[data-nc-turn="quiet-sync"], [data-nc-turn="outcome"]')]
+      .map((node) => node.getAttribute('data-nc-turn'));
+    expect(order).toEqual(['quiet-sync', 'outcome']);
+  });
+
+  /* Round-4 M1 — a report edit that shared its batch with a user message is
+     not marked quiet and opens no fold; the reply to the user stays visible. */
+  it('does not fold a report-edit line that is not a quiet sync', () => {
+    const { text } = reportEdited('user');
+    const plain: ConversationSystemEntry = {
+      id: 's1', author: 'system', label: SYSTEM_PRESENTATION_LABELS.system_report_edited, text, atMs: NOW,
+    };
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[you('u1', 'please add a risks section'), plain, activity('act1'), agent('a1', 'Added.')]}
+      />,
+    );
+    expect(fold(container)).toBeNull();
+    expect(container.querySelector('[data-nc-turn="system"]')).not.toBeNull();
+    expect(container.querySelector('[data-nc-turn="agent"]')?.textContent).toBe('Added.');
   });
 
   /* A6 — a turn the reader opened is never folded, and the reader speaking

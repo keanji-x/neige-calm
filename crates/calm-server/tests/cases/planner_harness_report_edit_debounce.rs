@@ -200,6 +200,64 @@ async fn report_edits_alone_wait_for_the_edit_session_to_go_quiet() {
     harness.shutdown().await.unwrap();
 }
 
+/// Wait until the newest observation has stamped the debounce window: after
+/// a rewind `last_pending_at` reads as seconds old, and the next `observe`
+/// (delivered through the run loop's channel) resets it to now.
+async fn wait_last_pending_refreshed(harness: &PlannerHarness) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while harness.debounce_last_pending_elapsed_ms_for_test().await >= 5_000 {
+        assert!(
+            Instant::now() < deadline,
+            "the observation never refreshed last_pending_at"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Round-4 N6 — `report_edit_max_wait` (120 s) bounds an edit session that
+/// never goes quiet. A save every 10 s folds into the held entry and
+/// refreshes `last_pending_at` (a fold never moves `first_pending_at`), so
+/// the 20 s idle rule is never met; at 121 s since the first save the turn
+/// issues anyway.
+#[tokio::test]
+async fn an_edit_session_that_never_goes_quiet_issues_at_max_wait() {
+    let (harness, daemon, track_id) = idle_harness(HarnessConfig::default()).await;
+    harness.observe(report_edit(&track_id, 1)).unwrap();
+    wait_queued(&harness, 1).await;
+    // Eleven more saves, 10 s apart: 110 s since the first, never 20 s idle.
+    for version in 2..=12 {
+        harness
+            .rewind_debounce_for_test(Duration::from_secs(10))
+            .await;
+        harness.observe(report_edit(&track_id, version)).unwrap();
+        wait_last_pending_refreshed(&harness).await;
+        assert_eq!(
+            harness.snapshot().await.pending_len(),
+            1,
+            "every contiguous save folds into the held entry"
+        );
+    }
+    tokio::time::sleep(TICKS).await;
+    assert_eq!(
+        daemon.turn_start_count_for_test(),
+        0,
+        "110 s since the first save and freshly saved: neither rule is met"
+    );
+    assert!(harness.debounce_first_pending_elapsed_ms_for_test().await >= 110_000);
+
+    // 11 s more: 121 s since the first save, 11 s idle (still under 20 s).
+    harness
+        .rewind_debounce_for_test(Duration::from_secs(11))
+        .await;
+    wait_for_turn_start(
+        &daemon,
+        "121 s since the first save is past report_edit_max_wait",
+    )
+    .await;
+    assert_eq!(daemon.turn_start_count_for_test(), 1);
+    harness.shutdown().await.unwrap();
+}
+
 /// A3 — a soft entry that is NOT a report edit (a workspace lease) in the
 /// same queue restores the ordinary pair: 1 s of idle issues.
 #[tokio::test]

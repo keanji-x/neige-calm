@@ -1189,6 +1189,44 @@ async fn report_edited_turn_names_report_md_without_the_unified_patch() {
     boot.harness.shutdown().await.unwrap();
 }
 
+/// #1667 round-4 M3 — a pre-#1667 `ReportEdited` (no `body_before`: a
+/// queue entry persisted before the upgrade) renders the re-read sentence
+/// and no block-level diff, so the unified patch is the only place that
+/// edit is visible: the batch is still a quiet turn, but the patch stays.
+#[tokio::test]
+async fn legacy_report_edited_turn_keeps_the_unified_patch() {
+    let boot = boot().await;
+    complete_first_turn_and_stamp(&boot).await;
+    add_report_card_event(&boot).await;
+
+    let text = issue_observation(
+        &boot,
+        Observation::ReportEdited {
+            track_id: boot.track_id.clone(),
+            body_sha256: "sha-after".into(),
+            body: "# Goal\n\nedited by the user\n".into(),
+            author: Some(EditAuthor::User),
+            body_before: None,
+            doc_rev_after: None,
+            blocks_after: None,
+        },
+        2,
+    )
+    .await;
+
+    assert!(
+        text.contains("report.md new (by kernel) (unified patch follows)\n"),
+        "{text}"
+    );
+    assert!(text.contains("```diff\n--- a/report.md"), "{text}");
+    assert!(!text.contains("(see the block-level diff below)"), "{text}");
+    assert!(
+        !text.contains("Block-level diff follows"),
+        "a legacy entry renders no diff: {text}"
+    );
+    boot.harness.shutdown().await.unwrap();
+}
+
 /// #1667 round-2 F3 — the counterpart: a turn opened by a user message
 /// (with the same report change since the last turn) still carries the
 /// unified patch, so the omission is scoped to report-edit-only batches.

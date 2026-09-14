@@ -24,7 +24,8 @@ use crate::harness::config::HarnessConfig;
 use crate::harness::observation::Observation;
 use crate::harness::queue::{
     FoldOutcome, MutationApplied, MutationRefused, MutationResult, QueueEntry, QueueEntryId,
-    QueueMutation, apply_mutation, input_segments_for_entries, locate_entry, try_fold_tail,
+    QueueMutation, apply_mutation, input_segments_for_entries, locate_entry,
+    try_fold_report_edit_tail, try_fold_tail,
 };
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments};
 use crate::harness::state::{HarnessState, IssuingKind, run_status_for};
@@ -1155,6 +1156,22 @@ impl PlannerHarness {
             .unwrap_or(0)
     }
 
+    /// #1667 round-4 N6 — how long since the newest pending entry landed,
+    /// in milliseconds; zero when there is no window. A test that drives
+    /// the clock with `rewind_debounce_for_test` reads this to know that an
+    /// observation sent through the channel has actually stamped the
+    /// window before it rewinds again.
+    #[cfg(feature = "fixtures")]
+    pub async fn debounce_last_pending_elapsed_ms_for_test(&self) -> u128 {
+        self.inner
+            .debounce
+            .lock()
+            .await
+            .last_pending_at
+            .map(|at| at.elapsed().as_millis())
+            .unwrap_or(0)
+    }
+
     pub async fn set_state_for_test(&self, state: HarnessState) {
         *self.inner.state.lock().await = state;
     }
@@ -2105,32 +2122,16 @@ async fn flush_dropped_announcements(inner: &Arc<Inner>) -> Result<()> {
     }
 }
 
-/// #1667 D1 — a `ReportEdited` system entry: the one shape that folds into
-/// an adjacent same-track predecessor on EVERY enqueue, not only under
-/// backpressure.
-fn is_report_edit(entry: &QueueEntry) -> bool {
-    matches!(
-        entry,
-        QueueEntry::System {
-            observation: Observation::ReportEdited { .. },
-            ..
-        }
-    )
-}
-
 async fn enqueue_pending_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome {
     let mut queue = inner.pending_queue.lock().await;
-    // #1667 D1 — one edit session is many saves. Adjacent report edits of the
-    // same track fold unconditionally (first `body_before`, newest `body`),
-    // so the planner reads ONE diff from the version it last knew to the
-    // newest body instead of one bounded diff per save. Only this shape
-    // folds early: user text keeps its own slot (ids, attachments,
-    // separate `User says:` blocks) until the cap below forces a fold.
-    if is_report_edit(&entry)
-        && queue.back().is_some_and(is_report_edit)
-        && let FoldOutcome::Folded { entry_id } =
-            try_fold_tail(&mut queue, &entry, MAX_FOLDED_USER_MESSAGE_CHARS)
-    {
+    // #1667 D1 — one edit session is many saves. Adjacent, contiguous report
+    // edits of the same track fold on every enqueue (first `body_before`,
+    // newest `body`), so the planner reads ONE diff from the version it last
+    // knew to the newest body instead of one bounded diff per save. Only
+    // this shape folds early: user text keeps its own slot (ids,
+    // attachments, separate `User says:` blocks) until the cap below forces
+    // a fold.
+    if let FoldOutcome::Folded { entry_id } = try_fold_report_edit_tail(&mut queue, &entry) {
         return EnqueueOutcome::Accepted { entry_id };
     }
     if queue.len() >= MAX_PENDING_QUEUE_LEN {
@@ -3477,6 +3478,31 @@ fn queue_is_only_report_edits(queue: &VecDeque<QueueEntry>) -> bool {
         })
 }
 
+/// #1667 round-2 F3 / round-4 M3 — true iff the queue is non-empty and
+/// EVERY entry is a `ReportEdited` observation that carries its
+/// `body_before`, i.e. every entry renders a block-level diff and the
+/// since-last-turn unified patch may be omitted as the same change told
+/// twice. A pre-#1667 entry (`body_before: None`, a queue persisted before
+/// the upgrade) renders the old re-read sentence and no diff, so for it
+/// the unified patch is the only place its edit is visible: such a batch
+/// is still a quiet turn (`queue_is_only_report_edits`) but keeps the
+/// patch.
+fn queue_report_edits_all_carry_diffs(queue: &VecDeque<QueueEntry>) -> bool {
+    !queue.is_empty()
+        && queue.iter().all(|entry| {
+            matches!(
+                entry,
+                QueueEntry::System {
+                    observation: Observation::ReportEdited {
+                        body_before: Some(_),
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+}
+
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Issue #682 review — dev-forced harnesses run against the replay
     // binary's stub app-server; see `PlannerHarness::pause_issuance_for_dev`.
@@ -3485,9 +3511,13 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     }
     // Most ticks find the queue empty; bail before any logging so the 50ms
     // tick cadence does not flood the log with one entry line per tick.
-    let (queue_len, only_report_edits) = {
+    let (queue_len, only_report_edits, report_edits_carry_diffs) = {
         let queue = inner.pending_queue.lock().await;
-        (queue.len(), queue_is_only_report_edits(&queue))
+        (
+            queue.len(),
+            queue_is_only_report_edits(&queue),
+            queue_report_edits_all_carry_diffs(&queue),
+        )
     };
     if queue_len == 0 {
         return Ok(());
@@ -3759,13 +3789,15 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         refresh_head = ?refresh_head.as_deref(),
         "fetching since-last-turn diff"
     );
-    // #1667 round-2 F3 — a batch that is nothing but report edits issues a
-    // turn whose input IS the block-level diff of those edits; the
-    // since-last-turn block then names `report.md` but does not repeat the
-    // change as a unified patch. `only_report_edits` was read with the
+    // #1667 round-2 F3 — a batch that is nothing but report edits, each
+    // carrying its diff, issues a turn whose input IS the block-level diff
+    // of those edits; the since-last-turn block then names `report.md` but
+    // does not repeat the change as a unified patch. Round-4 M3 — a
+    // pre-#1667 entry in the batch renders no diff, so the patch stays
+    // (`queue_report_edits_all_carry_diffs`). The flag was read with the
     // queue at the top of this function and the queue does not change
     // between there and the drain below (see `client_id`).
-    let report_patch = if only_report_edits {
+    let report_patch = if report_edits_carry_diffs {
         track_vcs::ReportPatch::Omit
     } else {
         track_vcs::ReportPatch::Include
@@ -5198,6 +5230,9 @@ mod completed_commit_tests;
 
 #[cfg(test)]
 mod recovery_briefing_tests;
+
+#[cfg(test)]
+mod report_edit_replay_tests;
 
 #[cfg(test)]
 mod result_receipt_tests;

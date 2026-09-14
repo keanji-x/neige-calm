@@ -209,6 +209,11 @@ fn task_key(kind: &str, payload: &Value) -> Option<String> {
 fn classify(body: &str) -> Vec<Block> {
     split_body(body)
         .into_iter()
+        // `split_body("")` is one empty slice (every byte belongs to a
+        // slice, and there are none). It is not a block: left in, an
+        // empty document diffed against anything reports a phantom
+        // `## removed: (untitled prose) (-0 lines)` (round-4 N8).
+        .filter(|slice| !slice.raw.is_empty())
         .map(|slice| {
             let raw = slice.raw;
             let shape = match parse_fence(&raw) {
@@ -472,6 +477,11 @@ fn changed_lines<'a>(before: &'a str, after: &'a str) -> (Vec<&'a str>, Vec<&'a 
 /// Per-block excerpt bound: at most [`MAX_BLOCK_LINES`] lines and
 /// [`MAX_BLOCK_BYTES`] bytes (newlines counted); ends with the marker
 /// when anything was cut.
+///
+/// A line that does not fit whole is cut to the room that is left and
+/// the excerpt ends there (round-4 N5): the budget is spent on content,
+/// so a block whose first line alone exceeds it still shows that line's
+/// head rather than the marker on its own.
 fn bound_block(lines: impl Iterator<Item = String>) -> Vec<String> {
     let mut out = Vec::new();
     let mut bytes = 0;
@@ -481,14 +491,14 @@ fn bound_block(lines: impl Iterator<Item = String>) -> Vec<String> {
             cut = true;
             break;
         }
-        let line = if line.len() > MAX_BLOCK_BYTES {
+        // The newline this line will cost is reserved up front.
+        let room = MAX_BLOCK_BYTES.saturating_sub(bytes + 1);
+        if line.len() > room {
             cut = true;
-            truncate_at_char_boundary(&line, MAX_BLOCK_BYTES).to_string()
-        } else {
-            line
-        };
-        if bytes + line.len() + 1 > MAX_BLOCK_BYTES {
-            cut = true;
+            let head = truncate_at_char_boundary(&line, room);
+            if !head.is_empty() {
+                out.push(head.to_string());
+            }
             break;
         }
         bytes += line.len() + 1;

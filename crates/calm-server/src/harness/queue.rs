@@ -760,6 +760,41 @@ pub enum FoldOutcome {
     Folded { entry_id: Option<QueueEntryId> },
 }
 
+/// #1667 D1 — a `ReportEdited` system entry: the one shape that folds into
+/// an adjacent same-track predecessor on EVERY enqueue, not only under
+/// backpressure.
+pub(crate) fn is_report_edit(entry: &QueueEntry) -> bool {
+    matches!(
+        entry,
+        QueueEntry::System {
+            observation: Observation::ReportEdited { .. },
+            ..
+        }
+    )
+}
+
+/// #1667 D1 — the early fold: when `incoming` and the queue tail are both
+/// report edits, [`try_fold_tail`] is tried now rather than only at the
+/// cap (the arm itself still requires the same track and, round-4 M2, a
+/// contiguous `body_before`). Round-4 N3 — shared by the live enqueue
+/// (`run_loop::enqueue_pending_observation`) and boot replay
+/// (`harness::replay_harness_events_since`), so a recovered queue of one
+/// edit session is one entry and one bounded diff, the same as a live one,
+/// instead of one full-body pair per save.
+///
+/// The user-text cap is passed as `0`: it bounds the `User` arms only, and
+/// neither entry here is one.
+pub(crate) fn try_fold_report_edit_tail(
+    queue: &mut VecDeque<QueueEntry>,
+    incoming: &QueueEntry,
+) -> FoldOutcome {
+    if is_report_edit(incoming) && queue.back().is_some_and(is_report_edit) {
+        try_fold_tail(queue, incoming, 0)
+    } else {
+        FoldOutcome::NotFolded
+    }
+}
+
 /// #615 F3 — merge an incoming entry into the queue tail under backpressure.
 ///
 /// Text-bearing folds bump the survivor's `rev` so a client that had already
@@ -876,6 +911,15 @@ pub fn try_fold_tail(
             *text = new_text.clone();
             true
         }
+        // #1667 D1 — adjacent report edits of one track fold; round-4 M2 —
+        // but only when the incoming edit CONTINUES the held one: its
+        // `body_before` is the body the survivor holds. Consecutive saves
+        // of one edit session always satisfy this. A write that landed
+        // between them without waking the planner (its own `calm.report.*`
+        // write, a kernel rewrite) breaks the chain, and folding across it
+        // would render that write's lines as the user's `+` lines and hand
+        // the conflict rule a diff nobody made. Such entries keep their own
+        // slots and each renders its own bounded diff.
         (
             QueueEntry::System {
                 observation:
@@ -884,7 +928,8 @@ pub fn try_fold_tail(
                         body_sha256,
                         body,
                         author,
-                        body_before,
+                        // Kept as it is — see the `body_before` note below.
+                        body_before: _,
                         doc_rev_after,
                         blocks_after,
                     },
@@ -903,7 +948,7 @@ pub fn try_fold_tail(
                     },
                 ..
             },
-        ) if track_id == new_track_id => {
+        ) if track_id == new_track_id && new_body_before.as_deref() == Some(body.as_str()) => {
             *body_sha256 = new_body_sha256.clone();
             *body = new_body.clone();
             // The fold keeps the NEWEST edit's state, attribution included:
@@ -919,11 +964,13 @@ pub fn try_fold_tail(
             // #1667 D1 — but the OLDEST `body_before`: the diff the planner
             // reads must run from the version it last knew to the newest
             // body, not from the penultimate save. The first entry's value
-            // is kept whenever it has one; only a pre-#1667 first entry
-            // (`None`) adopts the incoming value.
-            if body_before.is_none() {
-                *body_before = new_body_before.clone();
-            }
+            // is kept as it is, `None` included (round-4 M3): a pre-#1667
+            // first entry has no before-body, and adopting the incoming one
+            // would start the diff at that entry's AFTER-body — the edit it
+            // recorded would then be in neither the diff nor the unified
+            // patch. `None` keeps the whole survivor on the re-read path
+            // (`Observation::to_turn_text`), which is the only place that
+            // edit can still be seen.
             true
         }
         _ => false,

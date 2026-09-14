@@ -2,6 +2,8 @@
 //! `body_before` and the NEWEST entry's `body` / `body_sha256` / `author`
 //! (round-2 F1: and `doc_rev_after` / `blocks_after`, which describe
 //! `body`), so the diff the planner reads spans every save in the fold.
+//! Round-4 M2: only a CONTIGUOUS save folds (`body_before` equal to the
+//! held body); round-4 M3: a legacy first entry keeps `body_before: None`.
 
 use std::collections::VecDeque;
 
@@ -81,10 +83,14 @@ fn three_report_edits_fold_to_first_before_and_newest_after() {
     assert_eq!(author, Some(EditAuthor::Assistant), "the NEWEST author");
 }
 
-/// A pre-#1667 first entry has no `body_before`; the fold adopts the
-/// incoming one so the diff starts as early as the queue can know.
+/// Round-4 M3 — a pre-#1667 first entry has no `body_before`, and the
+/// fold leaves it that way: adopting the incoming `Some(v1)` would start
+/// the diff at v1 and drop the v0 -> v1 edit from everywhere the planner
+/// can see it (the survivor renders a diff, and `run_loop` omits the
+/// unified patch for a diff-carrying batch). `None` keeps the survivor on
+/// the re-read sentence, which covers both edits.
 #[test]
-fn a_legacy_first_entry_adopts_the_incoming_body_before() {
+fn a_legacy_first_entry_keeps_body_before_none() {
     let mut queue = VecDeque::from(vec![edit(EditAuthor::User, None, "v1")]);
     assert!(matches!(
         try_fold_tail(
@@ -94,10 +100,48 @@ fn a_legacy_first_entry_adopts_the_incoming_body_before() {
         ),
         FoldOutcome::Folded { .. }
     ));
-    let Observation::ReportEdited { body_before, .. } = folded_report_edit(&queue) else {
+    let Observation::ReportEdited {
+        body_before, body, ..
+    } = folded_report_edit(&queue)
+    else {
         panic!("the survivor is still a ReportEdited");
     };
-    assert_eq!(body_before.as_deref(), Some("v1"));
+    assert_eq!(body_before, None, "the legacy first entry stays legacy");
+    assert_eq!(body, "v2", "the NEWEST save's after");
+}
+
+/// Round-4 M2 — a save whose `body_before` is not the held body does not
+/// continue the held edit: something else wrote the report in between
+/// (a planner write, which does not wake the planner), and a fold across
+/// it would attribute that write's lines to the user. Both entries keep
+/// their slots.
+#[test]
+fn a_non_contiguous_report_edit_does_not_fold() {
+    let mut queue = VecDeque::from(vec![edit(EditAuthor::User, Some("v0"), "v1")]);
+    let incoming = edit(EditAuthor::User, Some("v1-planner"), "v2");
+    assert_eq!(
+        try_fold_tail(&mut queue, &incoming, 10_000),
+        FoldOutcome::NotFolded
+    );
+    assert_eq!(queue.len(), 1, "a refused fold leaves the tail untouched");
+    let Observation::ReportEdited {
+        body_before, body, ..
+    } = queue[0].observation()
+    else {
+        panic!("the tail is still a ReportEdited");
+    };
+    assert_eq!(body_before.as_deref(), Some("v0"));
+    assert_eq!(body, "v1");
+    // The same save, contiguous, folds.
+    assert!(matches!(
+        try_fold_tail(
+            &mut queue,
+            &edit(EditAuthor::User, Some("v1"), "v2"),
+            10_000
+        ),
+        FoldOutcome::Folded { .. }
+    ));
+    assert_eq!(queue.len(), 1);
 }
 
 /// #1667 round-2 F1 — `doc_rev_after` / `blocks_after` describe `body`,

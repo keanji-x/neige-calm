@@ -16,9 +16,11 @@
 // followed, and that is decided in `core/domain/conversation-quiet-sync.ts`,
 // not here; this component draws a group it is handed.
 //
-// **What the planner says out loud stays out.** A `calm.user.notify` turn is
-// lifted out of the group before it reaches this component and drawn by the
-// transcript as a normal agent bubble after the fold — see `foldQuietSyncs`.
+// **What the planner says out loud stays out, and so does a sync that ended
+// badly.** A `calm.user.notify` turn and a `failed` / `interrupted` outcome
+// are lifted out of the group before it reaches this component and drawn by
+// the transcript after the fold, as a normal agent bubble and as the red
+// outcome line — see `foldQuietSyncs`.
 //
 // One component for every width. The phone gets the same `<details>`: a
 // native disclosure needs no pointer geometry, and the line is short enough

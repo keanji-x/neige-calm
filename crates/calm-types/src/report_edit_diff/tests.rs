@@ -141,6 +141,55 @@ fn total_rendering_is_capped_and_ends_with_the_marker() {
     );
 }
 
+/// Round-4 N5 — a single line longer than the block budget still shows
+/// its head: the excerpt is the line cut to the room left (budget minus
+/// the newline) followed by the marker, never the marker alone.
+#[test]
+fn over_long_single_line_keeps_its_head_before_the_marker() {
+    let before = "## Long\n\nx\n";
+    let long = "y".repeat(3000);
+    let after = format!("## Long\n\n{long}\n");
+    let out = render_report_diff(before, &after);
+    let added: Vec<&str> = out.lines().filter(|l| l.starts_with('+')).collect();
+    assert_eq!(added.len(), 1, "{out}");
+    let head = added[0];
+    // The excerpt is `-x` then the head: together they spend the whole
+    // budget, newlines counted.
+    assert_eq!(
+        ("-x".len() + 1) + (head.len() + 1),
+        MAX_BLOCK_BYTES,
+        "cut to the room left: {out}"
+    );
+    assert!(head.starts_with("+yyyy"), "{out}");
+    assert!(
+        out.contains(&format!("{head}\n{TRUNCATED_MARKER}\n")),
+        "the marker follows the head: {out}"
+    );
+    assert!(out.contains("(-1/+1 lines)"), "{out}");
+}
+
+/// Round-4 N8 — an empty document is zero blocks, not one empty prose
+/// block: the first write into an empty report is a pure addition.
+#[test]
+fn empty_body_is_no_blocks() {
+    let out = render_report_diff("", "# A\n\nfirst words\n");
+    assert!(
+        out.starts_with("Blocks: 1 added, 0 removed, 0 modified (0 unchanged)."),
+        "{out}"
+    );
+    assert!(!out.contains("removed:"), "no phantom removal: {out}");
+    assert!(out.contains("## added: `# A` (+3 lines)"), "{out}");
+    let cleared = render_report_diff("# A\n\nfirst words\n", "");
+    assert!(
+        cleared.starts_with("Blocks: 0 added, 1 removed, 0 modified (0 unchanged)."),
+        "{cleared}"
+    );
+    assert!(
+        !cleared.contains("added:"),
+        "no phantom addition: {cleared}"
+    );
+}
+
 #[test]
 fn identical_bodies_say_so() {
     let out = render_report_diff("# A\n\nsame\n", "# A\n\nsame\n");

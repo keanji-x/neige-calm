@@ -12,17 +12,31 @@
  * that reply was the "system receipt" the owner asked to be rid of.
  *
  * So the transcript is regrouped here, once, on the way to the renderer: a
- * `system_report_edited` entry opens a group that swallows everything after
- * it — activity lines, agent messages, turn outcomes — up to the next user
- * turn or the next system entry. The renderer draws the group as one folded
- * line. Two consecutive edit wakes are two groups, never one: each is a
- * separate sync the reader may want to open on its own.
+ * `system_report_edited` entry that was the WHOLE of its batch
+ * (`ConversationSystemEntry.quiet`, set where `conversation.ts` converts the
+ * persisted segments) opens a group that swallows everything after it —
+ * activity lines, agent messages, completed turn outcomes — up to the next
+ * user turn or the next system entry. The renderer draws the group as one
+ * folded line. Two consecutive edit wakes are two groups, never one: each is
+ * a separate sync the reader may want to open on its own.
  *
- * The one thing that is NOT swallowed is speech the planner meant for the
- * reader: a `calm.user.notify` call. `conversation.ts` already turns that
- * tool call into an agent turn marked `origin: 'notify'`; here such a turn is
- * lifted out of the group and placed after it, so the reader sees the fold
- * line and then the bubble. It is placed after rather than at its original
+ * The batch rule is the kernel's, mirrored (round-4 M1): a turn is a quiet
+ * sync when its queue held nothing but report edits
+ * (`run_loop.rs` `queue_is_only_report_edits`). A report edit that rode
+ * along with a user message or a task event opened an ordinary turn in which
+ * the planner answers the user or the event; its `system_report_edited`
+ * segment is not marked `quiet`, so it is drawn as a plain system line and
+ * the reply after it stays visible. Folding on the label alone hid exactly
+ * that reply.
+ *
+ * Two things are NOT swallowed. Speech the planner meant for the reader: a
+ * `calm.user.notify` call, which `conversation.ts` already turns into an
+ * agent turn marked `origin: 'notify'`. And the turn ending badly: a
+ * `failed` or `interrupted` outcome (round-4 N2) — a sync that stopped on a
+ * model error would otherwise leave no visible sign at all, a closed fold
+ * being what a finished sync looks like too. Both are lifted out of the
+ * group and placed after it, so the reader sees the fold line and then the
+ * bubble or the red line. Placed after rather than at their original
  * position because the alternative splits one sync into two folded lines
  * around one sentence, and "the agent said this during that sync" reads
  * better as line-then-bubble than as fold-bubble-fold.
@@ -36,7 +50,8 @@
 
 import {
   SYSTEM_PRESENTATION_LABELS,
-  type ConversationSystemEntry, type ConversationTurn, type TranscriptEntry,
+  type ConversationSystemEntry, type ConversationTurn, type ConversationTurnOutcome,
+  type TranscriptEntry,
 } from './conversation.js';
 
 /** Who the kernel says edited the report; the wire spellings of `EditAuthor`
@@ -80,13 +95,25 @@ export function reportEditAuthor(text: string): ReportEditAuthor | null {
   return author === 'user' || author === 'assistant' || author === 'plugin' ? author : null;
 }
 
+/** The report-edit wake that opens a fold: a `system_report_edited` entry
+ *  whose batch was nothing else (`quiet`). The label is checked as well so
+ *  the flag can never fold a differently-labelled entry, whatever minted it. */
 export function isReportEditedEntry(entry: TranscriptEntry): entry is ConversationSystemEntry {
-  return entry.author === 'system' && entry.label === SYSTEM_PRESENTATION_LABELS.system_report_edited;
+  return entry.author === 'system'
+    && entry.label === SYSTEM_PRESENTATION_LABELS.system_report_edited
+    && entry.quiet === true;
 }
 
 /** Speech the planner meant for the reader: lifted out of a fold, never into one. */
 export function isNotifyTurn(entry: TranscriptEntry): entry is ConversationTurn {
   return entry.author === 'agent' && entry.origin === 'notify';
+}
+
+/** A turn that did not end well: the reader must see it, so it is lifted out
+ *  of a fold like a notify. A `completed` outcome renders as nothing and stays
+ *  inside. */
+export function isFailedOutcome(entry: TranscriptEntry): entry is ConversationTurnOutcome {
+  return entry.author === 'turn' && entry.status !== 'completed';
 }
 
 /** What closes a group: the reader speaking (a persisted or optimistic user
@@ -107,12 +134,12 @@ export function foldQuietSyncs(entries: readonly TranscriptEntry[]): readonly Tr
       continue;
     }
     const grouped: TranscriptEntry[] = [entry];
-    const lifted: ConversationTurn[] = [];
+    const lifted: TranscriptEntry[] = [];
     let next = index + 1;
     while (next < entries.length) {
       const candidate = entries[next];
       if (candidate === undefined || closesGroup(candidate)) break;
-      if (isNotifyTurn(candidate)) lifted.push(candidate);
+      if (isNotifyTurn(candidate) || isFailedOutcome(candidate)) lifted.push(candidate);
       else grouped.push(candidate);
       next += 1;
     }
@@ -123,7 +150,7 @@ export function foldQuietSyncs(entries: readonly TranscriptEntry[]): readonly Tr
       atMs: entry.atMs,
       entries: grouped,
     });
-    for (const turn of lifted) blocks.push({ kind: 'entry', entry: turn });
+    for (const raised of lifted) blocks.push({ kind: 'entry', entry: raised });
     index = next;
   }
   return blocks;

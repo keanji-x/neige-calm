@@ -443,18 +443,20 @@ describe('transcriptRowToMessages', () => {
     }))).toMatchObject([{ author: 'you', text: 'hello' }]);
   });
 
+  /* #1667 D3 — only the report-edit wake, and only when it is the whole
+     batch, carries `quiet`; every other presentation has no such key. */
   it.each([
-    ['system_worker_turn_finished', 'Worker turn finished'],
-    ['system_report_edited', 'Report edited'],
-    ['system_task_completed', 'Task completed'],
-    ['system_task_failed', 'Task failed'],
-    ['system', 'System update'],
-  ] as const)('uses structured %s metadata for the system label', (inputPresentation, label) => {
+    ['system_worker_turn_finished', 'Worker turn finished', {}],
+    ['system_report_edited', 'Report edited', { quiet: true }],
+    ['system_task_completed', 'Task completed', {}],
+    ['system_task_failed', 'Task failed', {}],
+    ['system', 'System update', {}],
+  ] as const)('uses structured %s metadata for the system label', (inputPresentation, label, quiet) => {
     const text = 'wording may change without changing who authored this';
     expect(transcriptRowToMessages(item({
       item_type: 'userMessage', input_segments: [{ presentation: inputPresentation, text, attachments: [] }],
       params: '{broken upstream frame',
-    }))).toEqual([{ id: '7', author: 'system', label, text, atMs: 50 }]);
+    }))).toStrictEqual([{ id: '7', author: 'system', label, text, atMs: 50, ...quiet }]);
   });
 
   it('uses ordered segments instead of the diff-prefixed flattened echo', () => {
@@ -465,8 +467,8 @@ describe('transcriptRowToMessages', () => {
       params: JSON.stringify({
         completedAtMs: 99, item: { content: [{ type: 'text', text: flattened }] },
       }),
-    }))).toEqual([{
-      id: '7', author: 'system', label: 'Report edited', text: 'new wording', atMs: 99,
+    }))).toStrictEqual([{
+      id: '7', author: 'system', label: 'Report edited', text: 'new wording', atMs: 99, quiet: true,
     }]);
   });
 
@@ -893,11 +895,14 @@ describe('buildTranscript', () => {
         { presentation: 'system_task_completed' as const, text: 'task completed', attachments: [] },
       ],
     };
-    expect(buildTranscript([mixed])).toMatchObject([
+    const entries = buildTranscript([mixed]);
+    expect(entries).toMatchObject([
       { id: '4:0', author: 'system', label: 'Report edited', text: 'report changed' },
       { id: '4:1', author: 'you', text: 'hello' },
       { id: '4:2', author: 'system', label: 'Task completed', text: 'task completed' },
     ]);
+    /* #1667 D3 — a report edit in a mixed batch is not a quiet sync. */
+    expect(entries.map((entry) => 'quiet' in entry)).toEqual([false, false, false]);
   });
 
   it('renders snake_case messages as turns, not generic activities', () => {
