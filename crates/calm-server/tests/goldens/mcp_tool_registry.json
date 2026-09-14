@@ -2329,7 +2329,7 @@
   },
   {
     "name": "calm.user.notify",
-    "description_sha256": "3b6c8d1bc3c628cbea17dbab290f021d5c1e7ac49967198004c630bd53ba2c89",
+    "description_sha256": "20ca83ec238e9c5acb18c6ee1f5a72a28d4c027a7e7fb925da26deab90febcf2",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
