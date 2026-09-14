@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use calm_server::report_series::Enqueue;
 use serde_json::json;
-use tokio::time::{Instant, sleep};
+use tokio::time::sleep;
 
 use crate::report_series_fixture::{
-    FixtureOptions, MARKET_PLUGIN_ID, SOURCE, SeriesFixture, ok_series, seam_fixture,
+    FixtureOptions, MARKET_PLUGIN_ID, SOURCE, SeriesFixture, ok_series, seam_fixture, wait_until,
 };
 
 fn started(timeout: Duration) -> FixtureOptions {
@@ -19,14 +19,6 @@ fn started(timeout: Duration) -> FixtureOptions {
         unstarted: false,
         resolve_timeout: timeout,
         ..FixtureOptions::default()
-    }
-}
-
-async fn wait_until(what: &str, within: Duration, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + within;
-    while !done() {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        sleep(Duration::from_millis(10)).await;
     }
 }
 
