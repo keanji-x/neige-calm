@@ -687,6 +687,15 @@ impl SeriesResolver {
             );
             return ResolveOutcome::WriteFailed("fail_write_once failpoint".to_string());
         }
+        #[cfg(any(test, feature = "fixtures"))]
+        if self
+            .failpoints
+            .hold_before_write
+            .swap(false, Ordering::SeqCst)
+        {
+            self.failpoints.write_held.fetch_add(1, Ordering::SeqCst);
+            self.failpoints.write_release.notified().await;
+        }
         let status = row.status.clone();
         let pinned = row.pinned;
         let key = (

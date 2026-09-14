@@ -17,18 +17,21 @@ pub(super) struct Recorder {
 }
 
 /// Deterministic seams for the acceptance tests. Each `*_once` flag fires
-/// exactly once; the two holds block until released.
+/// exactly once; the three holds block until released.
 #[derive(Default)]
 pub struct Failpoints {
     pub(super) fail_write_once: AtomicBool,
     pub(super) panic_drain_once: AtomicBool,
     pub(super) hold_in_rebuild: AtomicBool,
     pub(super) hold_in_precheck: AtomicBool,
+    pub(super) hold_before_write: AtomicBool,
     pub(super) rebuild_released: StdMutex<bool>,
     pub(super) rebuild_condvar: std::sync::Condvar,
     pub(super) precheck_release: tokio::sync::Notify,
+    pub(super) write_release: tokio::sync::Notify,
     pub(super) rebuild_entered: AtomicUsize,
     pub(super) precheck_entered: AtomicUsize,
+    pub(super) write_held: AtomicUsize,
     pub(super) drain_spawned: AtomicUsize,
 }
 
@@ -65,11 +68,25 @@ impl Failpoints {
     pub fn release_precheck(&self) {
         self.precheck_release.notify_one();
     }
+    /// The next row write parks after its row is built, before the DB is
+    /// touched, until [`Self::release_write`]. One-shot: only the first
+    /// `resolve` to reach the write is held; later ones write straight
+    /// through. Tests wait on [`Self::write_held`] for the park, an event,
+    /// instead of on a plugin delay.
+    pub fn hold_before_write(&self) {
+        self.hold_before_write.store(true, Ordering::SeqCst);
+    }
+    pub fn release_write(&self) {
+        self.write_release.notify_one();
+    }
     pub fn rebuild_entered(&self) -> usize {
         self.rebuild_entered.load(Ordering::SeqCst)
     }
     pub fn precheck_entered(&self) -> usize {
         self.precheck_entered.load(Ordering::SeqCst)
+    }
+    pub fn write_held(&self) -> usize {
+        self.write_held.load(Ordering::SeqCst)
     }
     pub fn drain_spawned(&self) -> usize {
         self.drain_spawned.load(Ordering::SeqCst)
