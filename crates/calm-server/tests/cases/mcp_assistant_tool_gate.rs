@@ -60,6 +60,11 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Cross-track / cross-area report discovery reads.
     "calm.area.outline",
     "calm.report.links.backlinks",
+    // #1669 — captured sources are the planner's evidence: capturing one
+    // vouches for a plugin call only the planner made, listing them is the
+    // planner's citation index (design §2.2 / §6, v1 planner-only).
+    "calm.source.capture",
+    "calm.source.list",
     // Track state + verdict.
     "calm.track.state",
     "calm.task.verdict",
