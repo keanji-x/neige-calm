@@ -1,6 +1,7 @@
 //! Input action validation and encoding against the live input surface.
 //! Every action is one ordered write request: one barrier, one
 //! acknowledgement, one receipt (no claim about OS-level write atomicity).
+use super::replace_plan::REPLACE_FROM_BYTES_MAX;
 use anyhow::{Result, ensure};
 use calm_terminal_view::{InputSurface, click_bytes, key_bytes};
 use serde_json::Value;
@@ -25,6 +26,54 @@ pub const SEQUENCE_KEYS: [&str; 9] = [
     "Ctrl+U",
 ];
 
+/// What one action writes: its bytes, or (#1677) a `replace` whose bytes
+/// are derived from the live cursor row at the pre-write fences.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Encoded {
+    Bytes(Vec<u8>),
+    Replace { from: String, to: String },
+}
+impl Encoded {
+    /// The bytes of an action that carries them (tests).
+    #[cfg(test)]
+    fn bytes(self) -> Vec<u8> {
+        match self {
+            Self::Bytes(bytes) => bytes,
+            Self::Replace { .. } => panic!("replace carries no bytes before the plan"),
+        }
+    }
+}
+/// A `replace` action (#1677): `from` nonempty printable text of at most
+/// [`REPLACE_FROM_BYTES_MAX`] bytes, `to` printable text (may be empty),
+/// neither with control characters (so no CR or LF), no other fields. The
+/// plan is derived from the live frame later; this is the shape check that
+/// runs before any claim.
+fn replace_arguments(action: &Value, object: &serde_json::Map<String, Value>) -> Result<Encoded> {
+    ensure!(
+        object.len() == 3 && object.contains_key("from") && object.contains_key("to"),
+        "replace action accepts only type/from/to"
+    );
+    let field = |name: &str| {
+        action[name]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("replace {name} must be a string"))
+    };
+    let (from, to) = (field("from")?, field("to")?);
+    ensure!(
+        !from.is_empty()
+            && from.len() <= REPLACE_FROM_BYTES_MAX
+            && !from.chars().any(char::is_control),
+        "replace from must be 1..{REPLACE_FROM_BYTES_MAX} bytes of printable text"
+    );
+    ensure!(
+        to.len() <= ACTION_BYTES_MAX && !to.chars().any(char::is_control),
+        "replace to must be printable text (empty deletes); send Enter as its own action"
+    );
+    Ok(Encoded::Replace {
+        from: from.to_owned(),
+        to: to.to_owned(),
+    })
+}
 /// The `text` field of a text-like action: nonempty, at most 16384 bytes, no
 /// control characters, and no other fields on the action.
 fn printable_text<'a>(
@@ -108,7 +157,8 @@ pub fn sequence_steps(action: &Value) -> Option<usize> {
         .flatten()
 }
 /// The actions `allow_output_below_cursor` may admit (#1666 r1): draft
-/// edits only — `text`, `sequence`, and a `key` from [`SEQUENCE_KEYS`].
+/// edits only — `text`, `sequence`, `replace` (#1677) and a `key` from
+/// [`SEQUENCE_KEYS`].
 /// Claude Code's slash-command menu renders below the input row and
 /// re-sorts while it loads, so an Enter admitted by the tolerance could pick
 /// a different item than the one observed; a submission in a field whose
@@ -117,7 +167,7 @@ pub fn sequence_steps(action: &Value) -> Option<usize> {
 /// other control keys or PageUp/PageDown.
 pub fn edits_the_draft(action: &Value) -> bool {
     match action["type"].as_str() {
-        Some("text" | "sequence") => true,
+        Some("text" | "sequence" | "replace") => true,
         Some("key") => action["key"]
             .as_str()
             .is_some_and(|key| SEQUENCE_KEYS.contains(&key)),
@@ -125,12 +175,13 @@ pub fn edits_the_draft(action: &Value) -> bool {
     }
 }
 /// Reason `allow_output_below_cursor` is refused for other actions.
-pub const BELOW_CURSOR_EDITS_ONLY: &str = "allow_output_below_cursor admits only text, sequence and editing keys; no submit/click/Enter/Tab/Escape/other Ctrl keys";
-pub fn encode(action: &Value, surface: &InputSurface) -> Result<Vec<u8>> {
+pub const BELOW_CURSOR_EDITS_ONLY: &str = "allow_output_below_cursor admits only text, sequence, replace and editing keys; no submit/click/Enter/Tab/Escape/Ctrl";
+pub fn encode(action: &Value, surface: &InputSurface) -> Result<Encoded> {
     let object = action
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("terminal action must be an object"))?;
-    match action["type"].as_str() {
+    let bytes = match action["type"].as_str() {
+        Some("replace") => return replace_arguments(action, object),
         Some("text") => Ok(printable_text(action, object, "text")?.as_bytes().to_vec()),
         Some("submit") => {
             // #1620 — text followed by CR in ONE physical write: one receipt,
@@ -182,7 +233,8 @@ pub fn encode(action: &Value, surface: &InputSurface) -> Result<Vec<u8>> {
             Ok(bytes)
         }
         _ => anyhow::bail!("unknown terminal action"),
-    }
+    };
+    bytes.map(Encoded::Bytes)
 }
 
 #[cfg(test)]
@@ -204,11 +256,15 @@ mod tests {
     fn submit_encodes_text_and_one_cr_and_rejects_repeat() {
         let surface = surface();
         assert_eq!(
-            encode(&json!({"type":"submit","text":"ls -la"}), &surface).unwrap(),
+            encode(&json!({"type":"submit","text":"ls -la"}), &surface)
+                .unwrap()
+                .bytes(),
             b"ls -la\r".to_vec()
         );
         assert_eq!(
-            encode(&json!({"type":"text","text":"ls -la"}), &surface).unwrap(),
+            encode(&json!({"type":"text","text":"ls -la"}), &surface)
+                .unwrap()
+                .bytes(),
             b"ls -la".to_vec(),
             "text alone never submits"
         );
@@ -235,21 +291,26 @@ mod tests {
             {"type":"key","key":"Backspace"},
             {"type":"text","text":"9"}]});
         assert_eq!(
-            encode(&edit, &surface).unwrap(),
+            encode(&edit, &surface).unwrap().bytes(),
             b"7200 + 19\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x7f9".to_vec()
         );
         assert_eq!(sequence_steps(&edit), Some(4));
         assert_eq!(sequence_steps(&json!({"type":"text","text":"x"})), None);
         let clear = json!({"type":"sequence","steps":[{"type":"key","key":"Ctrl+U"},{"type":"text","text":"new draft"}]});
-        assert_eq!(encode(&clear, &surface).unwrap(), b"\x15new draft".to_vec());
+        assert_eq!(
+            encode(&clear, &surface).unwrap().bytes(),
+            b"\x15new draft".to_vec()
+        );
         let home = json!({"type":"sequence","steps":[{"type":"text","text":"world"},{"type":"key","key":"Home"},{"type":"text","text":"hello "}]});
         assert_eq!(
-            encode(&home, &surface).unwrap(),
+            encode(&home, &surface).unwrap().bytes(),
             b"world\x1b[Hhello ".to_vec()
         );
         for key in SEQUENCE_KEYS {
             let steps = json!({"type":"sequence","steps":[{"type":"key","key":key},{"type":"text","text":"x"}]});
-            let bytes = encode(&steps, &surface).unwrap_or_else(|e| panic!("{key}: {e}"));
+            let bytes = encode(&steps, &surface)
+                .unwrap_or_else(|e| panic!("{key}: {e}"))
+                .bytes();
             assert!(
                 !bytes.contains(&b'\r') && !bytes.contains(&b'\n'),
                 "{key}: a sequence never carries CR or LF"
@@ -344,15 +405,77 @@ mod tests {
         let full = steps(
             json!([{"type":"text","text":"x".repeat(8192)},{"type":"text","text":"y".repeat(8192)}]),
         );
-        assert_eq!(encode(&full, &surface).unwrap().len(), 16384);
+        assert_eq!(encode(&full, &surface).unwrap().bytes().len(), 16384);
     }
 
-    /// #1666 r1: the below-cursor tolerance admits draft edits only.
+    /// #1677 `replace`: the shape check runs where every action's shape is
+    /// checked (before any claim) and yields the arguments, not bytes; the
+    /// plan comes from the live frame later.
+    #[test]
+    fn replace_validates_its_shape_and_carries_no_bytes() {
+        let surface = surface();
+        assert_eq!(
+            encode(&json!({"type":"replace","from":"11","to":"19"}), &surface).unwrap(),
+            Encoded::Replace {
+                from: "11".into(),
+                to: "19".into()
+            }
+        );
+        assert_eq!(
+            encode(&json!({"type":"replace","from":"松果","to":""}), &surface).unwrap(),
+            Encoded::Replace {
+                from: "松果".into(),
+                to: String::new()
+            },
+            "an empty to deletes"
+        );
+        let long = "y".repeat(200);
+        assert!(encode(&json!({"type":"replace","from":long,"to":"x"}), &surface).is_ok());
+        for (invalid, why) in [
+            (json!({"type":"replace","from":"","to":"x"}), "empty from"),
+            (
+                json!({"type":"replace","from":"y".repeat(201),"to":"x"}),
+                "201-byte from",
+            ),
+            (
+                json!({"type":"replace","from":"a\rb","to":"x"}),
+                "CR in from",
+            ),
+            (json!({"type":"replace","from":"a","to":"x\n"}), "LF in to"),
+            (json!({"type":"replace","from":"a","to":"\t"}), "tab in to"),
+            (json!({"type":"replace","from":"a"}), "missing to"),
+            (json!({"type":"replace","to":"a"}), "missing from"),
+            (json!({"type":"replace","from":1,"to":"a"}), "numeric from"),
+            (json!({"type":"replace","from":"a","to":null}), "null to"),
+            (
+                json!({"type":"replace","from":"a","to":"b","repeat":2}),
+                "extra field",
+            ),
+            (
+                json!({"type":"replace","from":"a","to":"x".repeat(16385)}),
+                "to past the action bound",
+            ),
+            (
+                json!({"type":"sequence","steps":[{"type":"replace","from":"a","to":"b"},{"type":"text","text":"x"}]}),
+                "replace inside a sequence",
+            ),
+        ] {
+            assert!(encode(&invalid, &surface).is_err(), "{why}: {invalid}");
+        }
+        assert_eq!(
+            sequence_steps(&json!({"type":"replace","from":"a","to":"b"})),
+            None
+        );
+    }
+
+    /// #1666 r1: the below-cursor tolerance admits draft edits only
+    /// (#1677: `replace` included).
     #[test]
     fn edits_the_draft_admits_text_sequence_and_editing_keys_only() {
         for action in [
             json!({"type":"text","text":"abc"}),
             json!({"type":"sequence","steps":[{"type":"text","text":"a"},{"type":"key","key":"Left"}]}),
+            json!({"type":"replace","from":"11","to":"19"}),
             json!({"type":"key","key":"Backspace"}),
             json!({"type":"key","key":"Ctrl+U","repeat":1}),
         ] {
@@ -376,5 +499,6 @@ mod tests {
         ] {
             assert!(!edits_the_draft(&action), "{action}");
         }
+        assert!(BELOW_CURSOR_EDITS_ONLY.contains("text, sequence, replace and editing keys"));
     }
 }

@@ -191,7 +191,9 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
             );
         }
     }
-    // #1620: open claims in one call.
+    // #1620: open claims in one call; #1677: and waits like a readback, with
+    // observe's wait properties (no selectors: an open names no terminal),
+    // under the same byte ceiling.
     let open_schema = &descriptors
         .iter()
         .find(|descriptor| descriptor.name == "calm.terminal.open")
@@ -200,6 +202,33 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
     assert_eq!(
         open_schema["properties"]["claim"],
         json!({"type":"boolean","default":false})
+    );
+    assert_eq!(
+        properties(open_schema),
+        fields(
+            &[
+                &["request_id", "title", "program", "format", "claim"][..],
+                &WAIT[..]
+            ]
+            .concat()
+        )
+    );
+    assert_eq!(required(open_schema), fields(&["request_id"]));
+    let observe_schema = &descriptors
+        .iter()
+        .find(|descriptor| descriptor.name == "calm.terminal.observe")
+        .unwrap()
+        .input_schema;
+    for property in WAIT {
+        assert_eq!(
+            open_schema["properties"][property], observe_schema["properties"][property],
+            "open/{property}: the same wait contract as observe"
+        );
+    }
+    let bytes = open_schema.to_string().len();
+    assert!(
+        bytes < 4000,
+        "open: {bytes} bytes; avoid model schema compaction"
     );
     let input = &descriptors
         .iter()
@@ -226,11 +255,12 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         "observation_id stays typed while optional"
     );
     let actions = input["properties"]["action"]["anyOf"].as_array().unwrap();
-    assert_eq!(actions.len(), 4);
+    assert_eq!(actions.len(), 5);
     // #1620: `submit` shares the text arm (same fields, same limits) as a
     // two-value discriminator instead of a separate arm. #1666: `sequence`
     // is its own arm; its steps are typed as objects here and validated
-    // server-side (text or editing-key actions, 2..=8 of them).
+    // server-side (text or editing-key actions, 2..=8 of them). #1677:
+    // `replace` is its own closed arm (from 1..200 bytes, to may be empty).
     for (action, kind, properties, mandatory) in [
         (
             &actions[0],
@@ -255,6 +285,12 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
             json!("sequence"),
             vec!["type", "steps"],
             vec!["type", "steps"],
+        ),
+        (
+            &actions[4],
+            json!("replace"),
+            vec!["type", "from", "to"],
+            vec!["type", "from", "to"],
         ),
     ] {
         assert_eq!(action["type"], "object");
@@ -290,5 +326,13 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
     assert_eq!(
         actions[3]["properties"]["steps"],
         json!({"type":"array","minItems":2,"maxItems":8,"items":{"type":"object"}})
+    );
+    assert_eq!(
+        actions[4]["properties"]["from"],
+        json!({"type":"string","minLength":1,"maxLength":200})
+    );
+    assert_eq!(
+        actions[4]["properties"]["to"],
+        json!({"type":"string","maxLength":16384})
     );
 }

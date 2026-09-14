@@ -13,7 +13,7 @@ use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::terminal_interaction::{
     BELOW_CURSOR_EDITS_ONLY, InputOptions, ObservationFormat, Target, TerminalInteraction, WaitFor,
-    WaitPlan, edits_the_draft,
+    WaitPlan, edits_the_draft, receipt_summary, summary_line,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -31,7 +31,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
         (
             "calm.terminal.open",
             include_str!("../../../prompts/tools/calm.terminal.open.md").trim_end(),
-            json!({"request_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200},"program":{"type":"string","minLength":1,"maxLength":4096},"format":{"type":"string","enum":["text","image"],"default":"text"},"claim":{"type":"boolean","default":false}}),
+            json!({"request_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200},"program":{"type":"string","minLength":1,"maxLength":4096},"format":{"type":"string","enum":["text","image"],"default":"text"},"claim":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
             vec!["request_id"],
         ),
         (
@@ -54,7 +54,8 @@ pub fn register_into(registry: &mut ToolRegistry) {
                 {"type":"object","required":["type","text"],"additionalProperties":false,"properties":{"type":{"enum":["text","submit"]},"text":{"type":"string","minLength":1,"maxLength":16384}}},
                 {"type":"object","required":["type","key"],"additionalProperties":false,"properties":{"type":{"const":"key"},"key":{"type":"string"},"repeat":{"type":"integer","minimum":1,"maximum":32,"default":1}}},
                 {"type":"object","required":["type","column","row"],"additionalProperties":false,"properties":{"type":{"const":"click"},"column":{"type":"integer","minimum":0},"row":{"type":"integer","minimum":0}}},
-                {"type":"object","required":["type","steps"],"additionalProperties":false,"properties":{"type":{"const":"sequence"},"steps":{"type":"array","minItems":2,"maxItems":8,"items":{"type":"object"}}}}
+                {"type":"object","required":["type","steps"],"additionalProperties":false,"properties":{"type":{"const":"sequence"},"steps":{"type":"array","minItems":2,"maxItems":8,"items":{"type":"object"}}}},
+                {"type":"object","required":["type","from","to"],"additionalProperties":false,"properties":{"type":{"const":"replace"},"from":{"type":"string","minLength":1,"maxLength":200},"to":{"type":"string","maxLength":16384}}}
             ]}}),
             vec!["request_id", "action"],
         ),
@@ -88,6 +89,12 @@ struct Open {
     format: ObservationFormat,
     #[serde(default)]
     claim: bool,
+    wait_ms: Option<u64>,
+    wait_for: Option<WaitFor>,
+    settle_ms: Option<u64>,
+    signal_events: Option<Vec<String>>,
+    repaint_ms: Option<u64>,
+    wait_text: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -190,31 +197,27 @@ fn observation_summary(state: &Value) -> String {
         state["wait"]["outcome"].as_str().unwrap_or("none")
     )
 }
-fn receipt_summary(action: &str, receipt: &Value) -> String {
-    let terminal = receipt["terminal_id"].as_str().unwrap_or("null");
-    let readback = match receipt["observation"]["status"].as_str() {
-        Some(status) => format!(" readback {status}"),
-        None => String::new(),
-    };
-    let facts = if receipt["detached"] == true {
-        format!("detached had_client {}", receipt["had_client"])
-    } else if let Some(outcome) = receipt["outcome"].as_str() {
-        format!("input {outcome}")
-    } else {
-        format!(
-            "{action} control_id {}",
-            if receipt["control_id"].is_string() {
-                "present"
-            } else {
-                "null"
-            }
-        )
-    };
-    format!("terminal {terminal} {facts}{readback}; details in structuredContent")
+/// A detach receipt has no readback and no `summary` (#1677): its one line
+/// names the closed client.
+fn detach_summary(receipt: &Value) -> String {
+    format!(
+        "terminal {} detached had_client {}; details in structuredContent",
+        receipt["terminal_id"].as_str().unwrap_or("null"),
+        receipt["had_client"]
+    )
 }
-fn receipt_result(action: &str, receipt: Value) -> ToolResult {
+/// Every input receipt and every claim/release receipt gains `summary`
+/// (#1677 S3), derived here once the readback and release facts are final;
+/// the text block says the same in words.
+fn receipt_result(action: &str, mut receipt: Value) -> ToolResult {
+    if receipt["detached"] == true {
+        let summary = detach_summary(&receipt);
+        return ToolResult::structured_with_summary(receipt, summary);
+    }
     let summary = receipt_summary(action, &receipt);
-    ToolResult::structured_with_summary(receipt, summary)
+    let line = summary_line(receipt["terminal_id"].as_str().unwrap_or("null"), &summary);
+    receipt["summary"] = summary;
+    ToolResult::structured_with_summary(receipt, line)
 }
 /// An open whose card operation did not succeed: no terminal id exists yet,
 /// so the summary names the operation; the outcome detail stays in
@@ -275,19 +278,20 @@ fn action_observation(
     }
     wait.plan().map(Some)
 }
-/// The observation an open returns. With `format=image` a failed render
-/// falls back to the text observation plus `image: {status: unavailable,
-/// reason}`; only a failed text observation is an error.
+/// An observation an open returns. With `format=image` a failed render
+/// falls back to an immediate text observation plus `image: {status:
+/// unavailable, reason}` (#1620 F6): after a wait the screen shown is still
+/// the post-wait one, but that fallback's `wait` block is the immediate
+/// read's; only a failed text observation is an error.
 async fn observe_for_open(
     service: &TerminalInteraction,
     identity: &ToolCallIdentity,
     terminal_id: &str,
+    wait: WaitPlan,
     format: ObservationFormat,
 ) -> anyhow::Result<(Value, Option<Vec<u8>>)> {
     let target = Target::Terminal(terminal_id.to_owned());
-    let attempt = service
-        .observe(identity, &target, 0, WaitPlan::default(), format)
-        .await;
+    let attempt = service.observe(identity, &target, 0, wait, format).await;
     match attempt {
         Ok(observed) => Ok(observed),
         Err(error) if format == ObservationFormat::Image => {
@@ -385,6 +389,18 @@ async fn call(
                     "invalid terminal request_id or title",
                 ));
             }
+            // #1677 S1 — the wait arguments are observe's, validated before
+            // the create is submitted; they never enter the idempotency hash.
+            let wait = WaitArgs {
+                wait_for: args.wait_for,
+                wait_ms: args.wait_ms,
+                settle_ms: args.settle_ms,
+                signal_events: args.signal_events,
+                repaint_ms: args.repaint_ms,
+                wait_text: args.wait_text,
+            };
+            let waited = wait.any();
+            let wait = wait.plan()?;
             let track_id = TerminalInteraction::authorize(ctx.repo.as_ref(), &identity)
                 .await
                 .map_err(failure)?;
@@ -438,51 +454,78 @@ async fn call(
                 .await
                 .map_err(failure)?
                 .ok_or_else(|| RpcError::internal("created card has no terminal"))?;
+            let target = Target::Terminal(terminal.id.clone());
             // Establish the observation client before the Planner enters a TUI.
             // The created ids survive an image failure: the text observation
-            // is returned with `image: unavailable` instead of an error.
-            let (mut metadata, mut png) =
-                observe_for_open(service, &identity, &terminal.id, args.format)
-                    .await
-                    .map_err(failure)?;
+            // is returned with `image: unavailable` instead of an error. With
+            // a wait (#1677 S1) this immediate read is text only and is the
+            // baseline of the final, waited observation below.
+            let immediate = if waited {
+                ObservationFormat::Text
+            } else {
+                args.format
+            };
+            let (mut metadata, mut png) = observe_for_open(
+                service,
+                &identity,
+                &terminal.id,
+                WaitPlan::default(),
+                immediate,
+            )
+            .await
+            .map_err(failure)?;
+            let mut claim = None;
             if args.claim {
                 // Same claim path as calm.terminal.control (claim-if-unowned);
-                // the open already succeeded whatever the claim does.
+                // the open already succeeded whatever the claim does. Its
+                // readback is immediate: the wait runs after the claim, never
+                // inside its serial guard.
                 match service
-                    .claim_after_open(
-                        &identity,
-                        &Target::Terminal(terminal.id.clone()),
-                        WaitPlan::default(),
-                    )
+                    .claim_after_open(&identity, &target, WaitPlan::default())
                     .await
                 {
                     Ok(receipt) if receipt["observation"]["status"] == "available" => {
-                        let claim = json!({"status":"claimed","control_id":receipt["control_id"]});
-                        metadata = receipt["observation"]["state"].clone();
-                        png = None;
-                        if args.format == ObservationFormat::Image {
-                            let image = service
-                                .observe(
-                                    &identity,
-                                    &Target::Terminal(terminal.id.clone()),
-                                    0,
-                                    WaitPlan::default(),
-                                    args.format,
-                                )
-                                .await;
-                            apply_image_outcome(&mut metadata, &mut png, image);
+                        claim =
+                            Some(json!({"status":"claimed","control_id":receipt["control_id"]}));
+                        if !waited {
+                            metadata = receipt["observation"]["state"].clone();
+                            png = None;
+                            if args.format == ObservationFormat::Image {
+                                let image = service
+                                    .observe(
+                                        &identity,
+                                        &target,
+                                        0,
+                                        WaitPlan::default(),
+                                        args.format,
+                                    )
+                                    .await;
+                                apply_image_outcome(&mut metadata, &mut png, image);
+                            }
                         }
-                        metadata["claim"] = claim;
                     }
                     Ok(receipt) => {
-                        metadata["claim"] = json!({"status":"unavailable","control_id":receipt["control_id"],
-                            "reason":format!("claim readback unavailable: {}", receipt["observation"]["reason"].as_str().unwrap_or("unknown"))});
+                        claim = Some(
+                            json!({"status":"unavailable","control_id":receipt["control_id"],
+                            "reason":format!("claim readback unavailable: {}", receipt["observation"]["reason"].as_str().unwrap_or("unknown"))}),
+                        );
                     }
                     Err(error) => {
-                        metadata["claim"] =
-                            json!({"status":"unavailable","reason":error.to_string()});
+                        claim = Some(json!({"status":"unavailable","reason":error.to_string()}));
                     }
                 }
+            }
+            if waited {
+                // The final observation: the wait (against the immediate read
+                // or the claim readback as baseline) in the requested format.
+                // A failed claim still returns the waited state.
+                (metadata, png) =
+                    observe_for_open(service, &identity, &terminal.id, wait, args.format)
+                        .await
+                        .map_err(failure)?;
+            }
+            if let Some(claim) = claim {
+                metadata["claim"] = claim;
             }
             metadata["card_id"] = json!(card.id);
             metadata["operation_id"] = json!(operation);

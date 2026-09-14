@@ -238,8 +238,9 @@ capture fails the receipt says `observation:{"status":"unavailable","reason"}`.
 Every other refusal — including a revision change combined with a control or
 surface change — stays an RPC error; without the flag the surface fence is
 now checked too, so a resize plus output reports the surface error rather than
-inviting a flagged resend. The summary line reads `input stale_observation
-readback available`.
+inviting a flagged resend. The summary line reads `input stale_observation;
+screen elapsed; role owner` (#1677: the text block is the receipt `summary`
+in words).
 
 ### Release readback economy (rounds 07/08)
 

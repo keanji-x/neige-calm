@@ -360,10 +360,9 @@ async fn below_cursor_tolerance_is_refused_for_everything_but_draft_edits() {
             .await;
         assert_eq!(response["error"]["code"], -32602, "{name}: {response}");
         assert!(
-            response["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("allow_output_below_cursor admits only text, sequence and editing keys"),
+            response["error"]["message"].as_str().unwrap().contains(
+                "allow_output_below_cursor admits only text, sequence, replace and editing keys"
+            ),
             "{name}: {response}"
         );
         let direct = h
@@ -383,8 +382,9 @@ async fn below_cursor_tolerance_is_refused_for_everything_but_draft_edits() {
             .await;
         let message = direct.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(
-            message
-                .contains("allow_output_below_cursor admits only text, sequence and editing keys"),
+            message.contains(
+                "allow_output_below_cursor admits only text, sequence, replace and editing keys"
+            ),
             "{name} (service): {message}"
         );
         assert!(!h.interaction().input_pending(&terminal).await, "{name}");

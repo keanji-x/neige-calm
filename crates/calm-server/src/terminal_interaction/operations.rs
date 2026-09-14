@@ -1,8 +1,9 @@
-use super::actions::{BELOW_CURSOR_EDITS_ONLY, edits_the_draft, encode, sequence_steps};
+use super::actions::{BELOW_CURSOR_EDITS_ONLY, Encoded, edits_the_draft, encode, sequence_steps};
 use super::input_control::ClaimStep;
 use super::receipts::{
     WriteReceipts, attach_claim, control_unavailable_receipt, merge, stale_receipt,
 };
+use super::replace_plan::ReplacePlan;
 use super::screen_diff::{CursorSnapshot, ScreenDiff, row_hashes};
 use super::*;
 
@@ -175,6 +176,7 @@ impl TerminalInteraction {
             input_revision,
             signal_seq,
             tolerated,
+            replace,
         } = match fence {
             Fence::Ready(ready) => ready,
             Fence::ControlLost => {
@@ -223,6 +225,7 @@ impl TerminalInteraction {
             observation,
             drift.as_ref(),
             sequence_steps(&action),
+            replace.as_ref(),
             options.release,
         );
         receipts.attach(claim.as_ref());
@@ -311,7 +314,8 @@ impl TerminalInteraction {
     }
     /// The fences that read the live screen: availability and age again
     /// (the claim may have taken seconds), control ([`control_fence`]), the
-    /// surface, the action against the live surface, the revision.
+    /// surface, the action against the live surface, the revision; then a
+    /// `replace` plan (#1677) against the frame the revision fence admitted.
     fn pre_write_fences(
         &self,
         client: &Client,
@@ -353,32 +357,43 @@ impl TerminalInteraction {
         // before deciding stale vs ready: an invalid action is an RPC
         // error whatever the revision did, so only the exact-revision
         // fence is relaxed by the stale result.
-        let bytes = encode(action, &now)?;
-        let ready = |tolerated| {
-            Fence::Ready(Ready {
-                bytes,
-                input_revision: current,
-                signal_seq,
-                tolerated,
-            })
+        let encoded = encode(action, &now)?;
+        let tolerated = if saved.revision == current || options.allow_output_since_observation {
+            None
+        } else {
+            // Every other fence passed and only the exact revision differs.
+            // The row comparison (#1666 S4) says whether only rows strictly
+            // below an unmoved cursor changed; it admits the write only on
+            // opt-in and is reported on the stale result either way.
+            let diff = ScreenDiff::compare(
+                saved.cursor,
+                &saved.row_hashes,
+                CursorSnapshot::from(&frame.cursor),
+                &row_hashes(&frame),
+            );
+            if !(options.allow_output_below_cursor && diff.only_below_cursor()) {
+                return Ok(Fence::Stale { current, diff });
+            }
+            Some(diff)
         };
-        if saved.revision == current || options.allow_output_since_observation {
-            return Ok(ready(None));
-        }
-        // Every other fence passed and only the exact revision differs. The
-        // row comparison (#1666 S4) says whether only rows strictly below an
-        // unmoved cursor changed; it admits the write only on opt-in and is
-        // reported on the stale result either way.
-        let diff = ScreenDiff::compare(
-            saved.cursor,
-            &saved.row_hashes,
-            CursorSnapshot::from(&frame.cursor),
-            &row_hashes(&frame),
-        );
-        if options.allow_output_below_cursor && diff.only_below_cursor() {
-            return Ok(ready(Some(diff)));
-        }
-        Ok(Fence::Stale { current, diff })
+        // #1677 — a replace looks the draft up on the live frame only once
+        // the revision (or a tolerance) admitted the write, so a stale
+        // observation is reported before any lookup; its refusals are RPC
+        // errors like an invalid action's.
+        let (bytes, replace) = match encoded {
+            Encoded::Bytes(bytes) => (bytes, None),
+            Encoded::Replace { from, to } => {
+                let plan = ReplacePlan::derive(&frame, &from, &to)?;
+                (plan.bytes(&now)?, Some(plan))
+            }
+        };
+        Ok(Fence::Ready(Ready {
+            bytes,
+            input_revision: current,
+            signal_seq,
+            tolerated,
+            replace,
+        }))
     }
 }
 /// Outcome of the pre-write fences: bytes to write with the live revision, or
@@ -432,6 +447,8 @@ struct Ready {
     signal_seq: u64,
     /// The comparison that admitted a moved revision (`allow_output_below_cursor`).
     tolerated: Option<ScreenDiff>,
+    /// The plan a `replace` (#1677) derived from the live cursor row.
+    replace: Option<ReplacePlan>,
 }
 /// Reserve the next input sequence, cache the unknown receipt under the
 /// request key, send one ordered write request and await its acknowledgement

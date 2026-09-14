@@ -156,11 +156,19 @@ async fn changing_readback_options_replays_receipt_without_duplicate_input() {
     readback_args["wait_ms"] = json!(100);
     let repeated = h.call("calm.terminal.input", readback_args.clone()).await;
     let mut repeated_receipt = receipt(&repeated).clone();
-    repeated_receipt
-        .as_object_mut()
-        .unwrap()
-        .remove("observation");
-    assert_eq!(repeated_receipt, *original_receipt);
+    // The readback and its digest (#1677 `summary`) are presentation on top
+    // of the cached physical receipt, which stays byte-identical.
+    assert_eq!(repeated_receipt["summary"]["readback"], "available");
+    assert_eq!(original_receipt["summary"]["readback"], "none");
+    for presentation in ["observation", "summary"] {
+        repeated_receipt
+            .as_object_mut()
+            .unwrap()
+            .remove(presentation);
+    }
+    let mut physical = original_receipt.clone();
+    physical.as_object_mut().unwrap().remove("summary");
+    assert_eq!(repeated_receipt, physical);
     assert!(has_line(observation(&repeated), "COUNT:1:PAYLOAD"));
     readback_args["wait_ms"] = json!(0);
     let again = h.call("calm.terminal.input", readback_args).await;

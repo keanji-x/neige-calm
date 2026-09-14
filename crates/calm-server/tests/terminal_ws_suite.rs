@@ -10,6 +10,12 @@ mod terminal_card_endpoint;
 mod terminal_input_control;
 #[path = "cases/terminal_lifecycle.rs"]
 mod terminal_lifecycle;
+#[path = "cases/terminal_open_wait.rs"]
+mod terminal_open_wait;
+#[path = "cases/terminal_receipt_summary.rs"]
+mod terminal_receipt_summary;
+#[path = "cases/terminal_replace.rs"]
+mod terminal_replace;
 #[path = "cases/terminal_sequence.rs"]
 mod terminal_sequence;
 #[path = "cases/terminal_signals.rs"]

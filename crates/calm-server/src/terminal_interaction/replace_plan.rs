@@ -1,0 +1,343 @@
+//! `replace` (#1677): the server derives the cursor moves, the Backspaces
+//! and the text of a draft edit from the cursor row of the live frame, so the
+//! Planner no longer counts characters (CJK width included) by hand. Pure
+//! functions over a captured `Frame`; no lock, no client.
+//!
+//! The plan assumes the cursor row is the application's line buffer with one
+//! character per non-padding cell, and that the application moves one
+//! character per arrow key and erases one per Backspace (true for Claude
+//! Code, readline and most line editors). The tool guarantees that the bytes
+//! correspond to the plan against the row as captured; nothing more.
+use super::actions::ACTION_BYTES_MAX;
+use anyhow::{Result, ensure};
+use calm_terminal_view::{Frame, InputSurface, key_bytes};
+use serde_json::{Value, json};
+use std::cmp::Ordering;
+
+/// `from` is at most this many bytes.
+pub const REPLACE_FROM_BYTES_MAX: usize = 200;
+
+/// The cursor movement of a plan: `Left` or `Right`, repeated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Moves {
+    pub key: &'static str,
+    pub repeat: usize,
+}
+
+/// One derived edit against the cursor row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplacePlan {
+    /// The cursor row the plan was derived from.
+    pub row: u32,
+    /// The cursor's character index on that row.
+    pub cursor_index: usize,
+    /// Moves that bring the cursor to the end of `from`; `None` when it is
+    /// there already.
+    pub moves: Option<Moves>,
+    /// Characters erased: `from.chars().count()`.
+    pub erased: usize,
+    /// The text inserted in their place (may be empty).
+    pub inserted: String,
+}
+impl ReplacePlan {
+    /// The cursor row's characters (padding cells skipped, blank cells kept),
+    /// the character index at the start of every cell plus one past the last,
+    /// and the cursor's character index when the cursor sits on a cell
+    /// boundary (`None` inside a wide cell or off the row).
+    fn cursor_row(frame: &Frame) -> Result<(Vec<char>, Vec<usize>, Option<usize>)> {
+        let cols = usize::from(frame.cols);
+        let row = frame.cursor.row as usize;
+        ensure!(
+            row < usize::from(frame.rows) && cols > 0,
+            "replace: the cursor row is outside the viewport"
+        );
+        let cells = frame
+            .cells
+            .get(row * cols..(row + 1) * cols)
+            .ok_or_else(|| anyhow::anyhow!("replace: the frame has no cells for the cursor row"))?;
+        let column = frame.cursor.column as usize;
+        let mut chars = Vec::new();
+        let mut boundaries = Vec::new();
+        let mut cursor_index = None;
+        for (index, cell) in cells.iter().enumerate() {
+            // A continuation cell of a wide glyph: width 0, text " ".
+            if cell.width == 0 {
+                continue;
+            }
+            if index == column {
+                cursor_index = Some(chars.len());
+            }
+            boundaries.push(chars.len());
+            chars.extend(cell.text.chars());
+        }
+        boundaries.push(chars.len());
+        Ok((chars, boundaries, cursor_index))
+    }
+    /// Derive the plan for `from` → `to` on the cursor row of `frame`. Every
+    /// refusal is an error: hidden cursor, cursor row outside the viewport,
+    /// cursor inside a wide cell, `from` absent or ambiguous (overlapping
+    /// occurrences count), or a match cutting through a cell's text.
+    pub fn derive(frame: &Frame, from: &str, to: &str) -> Result<Self> {
+        ensure!(frame.cursor.visible, "replace needs a visible cursor");
+        let (chars, boundaries, cursor_index) = Self::cursor_row(frame)?;
+        let cursor_index = cursor_index.ok_or_else(|| {
+            anyhow::anyhow!("replace: the cursor is inside a wide cell or off the row")
+        })?;
+        let needle: Vec<char> = from.chars().collect();
+        let starts: Vec<usize> = if chars.len() < needle.len() {
+            Vec::new()
+        } else {
+            (0..=chars.len() - needle.len())
+                .filter(|&start| chars[start..start + needle.len()] == needle[..])
+                .collect()
+        };
+        ensure!(
+            !starts.is_empty(),
+            "replace: {from:?} is not on the cursor row; edit with a sequence"
+        );
+        ensure!(
+            starts.len() == 1,
+            "replace: {from:?} occurs {} times on the cursor row; edit with a sequence",
+            starts.len()
+        );
+        let end = starts[0] + needle.len();
+        ensure!(
+            boundaries.binary_search(&starts[0]).is_ok() && boundaries.binary_search(&end).is_ok(),
+            "replace: {from:?} cuts through a cell (a combining sequence); edit with a sequence"
+        );
+        let moves = match end.cmp(&cursor_index) {
+            Ordering::Less => Some(Moves {
+                key: "Left",
+                repeat: cursor_index - end,
+            }),
+            Ordering::Greater => Some(Moves {
+                key: "Right",
+                repeat: end - cursor_index,
+            }),
+            Ordering::Equal => None,
+        };
+        Ok(Self {
+            row: frame.cursor.row,
+            cursor_index,
+            moves,
+            erased: needle.len(),
+            inserted: to.to_owned(),
+        })
+    }
+    /// The bytes of the plan in one ordered write: the moves, then one
+    /// Backspace per erased character, then the inserted text, with the same
+    /// key encoding as `sequence` (arrows respect DECCKM).
+    pub fn bytes(&self, surface: &InputSurface) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        if let Some(moves) = self.moves {
+            bytes.extend(key_bytes(moves.key, surface.modes)?.repeat(moves.repeat));
+        }
+        bytes.extend(key_bytes("Backspace", surface.modes)?.repeat(self.erased));
+        bytes.extend(self.inserted.as_bytes());
+        ensure!(
+            bytes.len() <= ACTION_BYTES_MAX,
+            "replace exceeds {ACTION_BYTES_MAX} encoded bytes"
+        );
+        Ok(bytes)
+    }
+    /// The `replace` block of every write receipt.
+    pub fn to_json(&self) -> Value {
+        json!({"row":self.row,"cursor_index":self.cursor_index,
+            "moves":self.moves.map(|moves| json!({"key":moves.key,"repeat":moves.repeat})),
+            "erased":self.erased,"inserted":self.inserted})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calm_terminal_view::TerminalView;
+
+    fn frame(bytes: &[u8]) -> Frame {
+        let mut view = TerminalView::new(20, 4, [220; 3], [20; 3]).unwrap();
+        view.feed(bytes);
+        view.frame(0).unwrap()
+    }
+    fn plan(bytes: &[u8], from: &str, to: &str) -> Result<ReplacePlan> {
+        ReplacePlan::derive(&frame(bytes), from, to)
+    }
+    fn moves(key: &'static str, repeat: usize) -> Option<Moves> {
+        Some(Moves { key, repeat })
+    }
+
+    /// Cursor at the end of the draft: Left moves; at Home: Right moves;
+    /// right after `from`: no moves. Bytes are moves, Backspaces, text.
+    #[test]
+    fn plan_moves_left_right_or_not_at_all_and_encodes_one_write() {
+        let surface = frame(b"").input_surface();
+        let end = plan(b"> 7200 + 11 done", "11", "19").unwrap();
+        assert_eq!(
+            end,
+            ReplacePlan {
+                row: 0,
+                cursor_index: 16,
+                moves: moves("Left", 5),
+                erased: 2,
+                inserted: "19".into()
+            }
+        );
+        assert_eq!(
+            end.bytes(&surface).unwrap(),
+            b"\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x7f\x7f19".to_vec()
+        );
+        let home = plan(b"> 7200 + 11 done\x1b[1G", "11", "19").unwrap();
+        assert_eq!(home.cursor_index, 0);
+        assert_eq!(home.moves, moves("Right", 11));
+        assert_eq!(
+            home.bytes(&surface).unwrap(),
+            [b"\x1b[C".repeat(11), b"\x7f\x7f19".to_vec()].concat()
+        );
+        let exact = plan(b"> 7200 + 11", "11", "19").unwrap();
+        assert_eq!(exact.cursor_index, 11);
+        assert_eq!(exact.moves, None);
+        assert_eq!(exact.bytes(&surface).unwrap(), b"\x7f\x7f19".to_vec());
+        assert_eq!(
+            exact.to_json(),
+            json!({"row":0,"cursor_index":11,"moves":null,"erased":2,"inserted":"19"})
+        );
+        assert_eq!(end.to_json()["moves"], json!({"key":"Left","repeat":5}));
+        // Deleting: an empty `to` writes only the Backspaces.
+        let delete = plan(b"> 7200 + 11", " + 11", "").unwrap();
+        assert_eq!(delete.erased, 5);
+        assert_eq!(delete.inserted, "");
+        assert_eq!(delete.bytes(&surface).unwrap(), b"\x7f".repeat(5));
+        // DECCKM: arrows are encoded like a sequence step would be.
+        let app = frame(b"\x1b[?1h> 7200 + 11 x").input_surface();
+        assert_eq!(
+            plan(b"> 7200 + 11 x", "11", "19")
+                .unwrap()
+                .bytes(&app)
+                .unwrap(),
+            b"\x1bOD\x1bOD\x7f\x7f19".to_vec()
+        );
+        // The cursor row is the one the cursor is on, not the first row.
+        let second = plan(b"first\r\n> 11", "11", "19").unwrap();
+        assert_eq!(second.row, 1);
+        assert_eq!(second.cursor_index, 4);
+        assert_eq!(second.moves, None);
+    }
+
+    /// Wide glyphs: one character per non-padding cell, so the moves count
+    /// characters, not columns (松果 occupies four columns and two
+    /// characters); the cursor may not sit inside a wide cell.
+    #[test]
+    fn wide_cells_count_one_character_and_refuse_a_cursor_inside_them() {
+        let surface = frame(b"").input_surface();
+        // "11 松果" = 7 columns, 5 characters; cursor at the end.
+        let cjk = plan("11 松果".as_bytes(), "11", "19").unwrap();
+        assert_eq!(cjk.cursor_index, 5);
+        assert_eq!(cjk.moves, moves("Left", 3), "3 characters, not 5 columns");
+        let swap = plan("> 松果 apple".as_bytes(), "松果", "苹果").unwrap();
+        assert_eq!(swap.cursor_index, 10);
+        assert_eq!(swap.moves, moves("Left", 6));
+        assert_eq!(swap.erased, 2);
+        assert_eq!(
+            swap.bytes(&surface).unwrap(),
+            [
+                b"\x1b[D".repeat(6),
+                b"\x7f\x7f".to_vec(),
+                "苹果".as_bytes().to_vec()
+            ]
+            .concat()
+        );
+        // Cursor inside the wide glyph 松 (column 3 is its padding cell).
+        let inside = plan("> 松果\x1b[4G".as_bytes(), "果", "子");
+        assert!(
+            inside
+                .unwrap_err()
+                .to_string()
+                .contains("inside a wide cell"),
+        );
+        // Cursor on the boundary before 果 (column 4): Right 1 to its end.
+        let boundary = plan("> 松果\x1b[5G".as_bytes(), "果", "子").unwrap();
+        assert_eq!(boundary.cursor_index, 3);
+        assert_eq!(boundary.moves, moves("Right", 1));
+        // The padding cell itself never enters the row string.
+        let f = frame("> 松".as_bytes());
+        assert_eq!(f.cells[3].width, 0);
+        assert_eq!(f.cells[3].text, " ");
+        assert_eq!(ReplacePlan::cursor_row(&f).unwrap().0.len(), 19);
+    }
+
+    /// Blank cells count (a blank is a character of the buffer); a combining
+    /// sequence stays one cell with several scalars, so a `from` that stops
+    /// inside it is refused while one that covers it is accepted.
+    #[test]
+    fn blank_cells_count_and_combining_sequences_stay_cell_aligned() {
+        let blanks = plan(b"a b", "a b", "ab").unwrap();
+        assert_eq!(blanks.cursor_index, 3);
+        assert_eq!(blanks.erased, 3);
+        // 17 trailing blanks hold 16 overlapping "  ": ambiguous.
+        let blank_pairs = plan(b"a b", "  ", "").unwrap_err();
+        assert!(
+            blank_pairs.to_string().contains("occurs 16 times"),
+            "{blank_pairs}"
+        );
+        // "e" + U+0301 combine into one cell of width 1 and two scalars.
+        let f = frame("caf\u{65}\u{301} au lait".as_bytes());
+        assert_eq!(f.cells[3].text, "e\u{301}");
+        assert_eq!(f.cells[3].width, 1);
+        let (chars, boundaries, cursor) = ReplacePlan::cursor_row(&f).unwrap();
+        assert_eq!(chars.len(), 21);
+        assert_eq!(cursor, Some(13), "cursor column 12 is character 13");
+        assert!(boundaries.contains(&5) && !boundaries.contains(&4));
+        let covered = ReplacePlan::derive(&f, "caf\u{65}\u{301}", "tea").unwrap();
+        assert_eq!(covered.erased, 5, "five scalars erased");
+        assert_eq!(covered.moves, moves("Left", 8));
+        let cut = ReplacePlan::derive(&f, "cafe", "tea").unwrap_err();
+        assert!(cut.to_string().contains("cuts through a cell"), "{cut}");
+    }
+
+    /// Absent, ambiguous (overlapping occurrences included), hidden cursor,
+    /// another row, and the size bound.
+    #[test]
+    fn refusals_absent_ambiguous_hidden_cursor_other_row_and_size() {
+        let absent = plan(b"> 7200 + 11", "12", "19").unwrap_err();
+        assert!(
+            absent.to_string().contains("is not on the cursor row"),
+            "{absent}"
+        );
+        let twice = plan(b"> 11 + 11", "11", "19").unwrap_err();
+        assert!(twice.to_string().contains("occurs 2 times"), "{twice}");
+        let overlapping = plan(b"> aaa", "aa", "b").unwrap_err();
+        assert!(
+            overlapping.to_string().contains("occurs 2 times"),
+            "aaa holds two aa: {overlapping}"
+        );
+        assert!(plan(b"> aaa", "aaa", "b").is_ok());
+        let hidden = plan(b"> 11\x1b[?25l", "11", "19").unwrap_err();
+        assert!(hidden.to_string().contains("visible cursor"), "{hidden}");
+        // `from` is on the row above the cursor row.
+        let above = plan(b"> 11\r\n> 12", "11", "19").unwrap_err();
+        assert!(
+            above.to_string().contains("is not on the cursor row"),
+            "{above}"
+        );
+        let mut off = frame(b"> 11");
+        off.cursor.row = 4;
+        assert!(
+            ReplacePlan::derive(&off, "11", "19")
+                .unwrap_err()
+                .to_string()
+                .contains("outside the viewport")
+        );
+        let mut past = frame(b"> 11");
+        past.cursor.column = 20;
+        assert!(
+            ReplacePlan::derive(&past, "11", "19")
+                .unwrap_err()
+                .to_string()
+                .contains("off the row")
+        );
+        let surface = frame(b"").input_surface();
+        let big = plan(b"> 11", "11", &"x".repeat(ACTION_BYTES_MAX - 1)).unwrap();
+        assert!(big.bytes(&surface).is_err(), "two Backspaces push it over");
+        let fits = plan(b"> 11", "11", &"x".repeat(ACTION_BYTES_MAX - 2)).unwrap();
+        assert_eq!(fits.bytes(&surface).unwrap().len(), ACTION_BYTES_MAX);
+    }
+}

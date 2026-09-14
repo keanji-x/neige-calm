@@ -321,7 +321,8 @@ async fn input_readback_change_wait_starts_from_the_pre_write_screen() {
     assert_eq!(
         summary(&second),
         format!(
-            "terminal {terminal} input written readback available; details in structuredContent"
+            "terminal {terminal} input written; screen changed settled; role owner; \
+             details in structuredContent"
         )
     );
     h.stop(&terminal).await;
@@ -708,9 +709,12 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
     assert_eq!(
         summary(&response),
         format!(
-            "terminal {terminal} input stale_observation readback available; details in structuredContent"
+            "terminal {terminal} input stale_observation; screen elapsed; role owner; \
+             details in structuredContent"
         )
     );
+    assert_eq!(stale["summary"]["action"], "stale_observation");
+    assert_eq!(stale["summary"]["screen"], "elapsed");
     // Nothing was written: no reservation is pending and the screen is as
     // the fresh observation captured it.
     assert!(!h.interaction().input_pending(&terminal).await);
@@ -1133,8 +1137,13 @@ async fn text_results_carry_screen_text_only_in_structured_content() {
     assert_eq!(
         summary(&claimed),
         format!(
-            "terminal {terminal} claim control_id present readback available; details in structuredContent"
+            "terminal {terminal} claim; screen elapsed; role owner; details in structuredContent"
         )
+    );
+    assert_eq!(receipt(&claimed)["summary"]["role"], "owner");
+    assert_eq!(
+        receipt(&claimed)["summary"]["control_id"],
+        receipt(&claimed)["control_id"]
     );
     assert!(has_line(observation(&claimed), "SCREEN_SECRET"));
     let resolved = h
@@ -1154,7 +1163,13 @@ async fn text_results_carry_screen_text_only_in_structured_content() {
         .await;
     assert_eq!(
         summary(&released),
-        format!("terminal {terminal} release control_id null; details in structuredContent")
+        format!("terminal {terminal} release; no readback; details in structuredContent")
+    );
+    assert_eq!(
+        receipt(&released)["summary"],
+        json!({"action":"release","readback":"none","screen":null,"settled":null,"signal":null,
+            "repaint":null,"matched":null,"role":null,"control_id":null,"exited":null,
+            "claim":null,"release":null})
     );
     let image = h
         .call(

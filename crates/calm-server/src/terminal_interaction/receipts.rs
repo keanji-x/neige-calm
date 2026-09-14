@@ -3,6 +3,7 @@
 //! two structured refusals (stale observation, control unavailable). Pure
 //! JSON constructors; the fences and the write live in `operations.rs`.
 use super::input_control::ClaimStep;
+use super::replace_plan::ReplacePlan;
 use super::screen_diff::ScreenDiff;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -17,13 +18,17 @@ pub(super) struct WriteReceipts {
 impl WriteReceipts {
     /// `release` stamps `release: {status: "requested"}` on every receipt,
     /// so the cached unknown receipt already carries the release fact; the
-    /// release step later updates it to released/not_held/unconfirmed.
+    /// release step later updates it to released/not_held/unconfirmed. A
+    /// `replace` plan (#1677) is stamped the same way, so a replay returns
+    /// the plan the write was derived from and never recomputes it.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         terminal: &str,
         request_key: &str,
         observation: Uuid,
         drift: Option<&Value>,
         steps: Option<usize>,
+        replace: Option<&ReplacePlan>,
         release: bool,
     ) -> Self {
         let mut receipts = Self {
@@ -33,6 +38,9 @@ impl WriteReceipts {
         };
         if let Some(steps) = steps {
             receipts.each(|receipt| receipt["steps"] = json!(steps));
+        }
+        if let Some(plan) = replace {
+            receipts.each(|receipt| receipt["replace"] = plan.to_json());
         }
         if release {
             receipts.each(|receipt| receipt["release"] = json!({"status":"requested"}));
@@ -227,7 +235,7 @@ mod tests {
     fn write_receipts_carry_steps_claim_and_release_uniformly() {
         let observation = Uuid::new_v4();
         let control = Uuid::new_v4();
-        let mut receipts = WriteReceipts::new("t1", "r1", observation, None, Some(4), true);
+        let mut receipts = WriteReceipts::new("t1", "r1", observation, None, Some(4), None, true);
         receipts.attach(Some(&ClaimStep::Claimed(control)));
         for receipt in [&receipts.unknown, &receipts.written, &receipts.refused] {
             assert_eq!(receipt["steps"], 4, "{receipt}");
@@ -242,16 +250,38 @@ mod tests {
                 "{receipt}"
             );
         }
-        let mut plain = WriteReceipts::new("t1", "r1", observation, None, None, false);
+        let mut plain = WriteReceipts::new("t1", "r1", observation, None, None, None, false);
         plain.attach(Some(&ClaimStep::Held));
         assert!(plain.written.get("steps").is_none());
+        assert!(plain.written.get("replace").is_none());
         assert!(plain.written.get("release").is_none());
         assert!(plain.unknown.get("release").is_none());
         assert_eq!(plain.written["claim"], json!({"status":"held"}));
         assert!(plain.written.get("control_id").is_none());
-        let mut none = WriteReceipts::new("t1", "r1", observation, None, None, false);
+        let mut none = WriteReceipts::new("t1", "r1", observation, None, None, None, false);
         none.attach(None);
         assert!(none.written.get("claim").is_none());
+        // #1677: the derived plan on every write receipt, unknown included,
+        // so the cached receipt carries it before the write is sent.
+        let plan = ReplacePlan {
+            row: 3,
+            cursor_index: 12,
+            moves: Some(super::super::replace_plan::Moves {
+                key: "Left",
+                repeat: 5,
+            }),
+            erased: 2,
+            inserted: "19".into(),
+        };
+        let replaced = WriteReceipts::new("t1", "r1", observation, None, None, Some(&plan), false);
+        for receipt in [&replaced.unknown, &replaced.written, &replaced.refused] {
+            assert_eq!(
+                receipt["replace"],
+                json!({"row":3,"cursor_index":12,"moves":{"key":"Left","repeat":5},"erased":2,"inserted":"19"}),
+                "{receipt}"
+            );
+            assert!(receipt.get("steps").is_none());
+        }
         let mut stale = stale_receipt("t1", "r1", observation, 3, 5, &diff());
         attach_claim(&mut stale, Some(&ClaimStep::Claimed(control)));
         assert_eq!(stale["claim"]["status"], "claimed");
