@@ -231,6 +231,7 @@ describe('QuietSyncFold in the thread', () => {
       const result = {
         text: details?.querySelector('[data-nc-quiet-sync-label]')?.textContent ?? '',
         outcome: details?.getAttribute('data-nc-quiet-sync-outcome'),
+        hasOutcome: details?.hasAttribute('data-nc-quiet-sync-outcome') ?? false,
         title: details?.querySelector('summary')?.getAttribute('title'),
       };
       cleanup();
@@ -248,7 +249,10 @@ describe('QuietSyncFold in the thread', () => {
     expect(updated.outcome).toBe('updated');
     const running = label([reportEdited('user'), activity('act1', { verb: 'Reading report', state: 'running' })]);
     expect(running.text).toMatch(/^Synced · You edited the report · \d{1,2}:\d{2}(?: [AP]M)?$/);
-    expect(running.outcome).toBe('none');
+    /* No verdict, no attribute: an existence selector on it must not match
+       a sync still running. */
+    expect(running.hasOutcome).toBe(false);
+    expect(running.outcome).toBeNull();
   });
 });
 

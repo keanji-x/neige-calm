@@ -3503,6 +3503,49 @@ fn queue_report_edits_all_carry_diffs(queue: &VecDeque<QueueEntry>) -> bool {
         })
 }
 
+/// #1678 A1 — the turn's type and its one channel to the user, in the
+/// input itself: the rule at the moment the planner decides.
+///
+/// A statement about the BATCH, not about any one edit (#1678 review
+/// round 1): the front end folds a turn away only when every segment is a
+/// report edit (`fe/core/domain/conversation.ts`, the same predicate as
+/// `queue_is_only_report_edits`), so a user message drained together
+/// with an edit opens an ordinary turn — and per-observation text saying
+/// "end silently" there would tell the planner to swallow the user's
+/// request. Hence it is appended once, at the end of the batch, by
+/// [`append_report_edit_batch_channel_line`], and only when
+/// [`queue_report_edits_all_carry_diffs`] holds.
+const REPORT_EDIT_BATCH_CHANNEL_LINE: &str = "This is a background sync turn: \
+    an ordinary reply here is folded away by the front end. \
+    Call calm.user.notify only for a conflict with work still in flight, \
+    data you cannot parse, or a decision only the user can make; \
+    otherwise end the turn silently.\n";
+
+/// Close a batch that is nothing but report edits (each with its diff)
+/// with [`REPORT_EDIT_BATCH_CHANNEL_LINE`], on the last segment so the
+/// line reads after the last diff and travels with the projection row the
+/// fold shows. The caller decides `all_report_edits_with_diffs` from the
+/// same flag that omits the unified patch, so "the patch is omitted" and
+/// "the channel line is present" are one fact about the batch, not two:
+/// a mixed batch (`[User, ReportEdited]`, a task receipt beside an edit)
+/// and a batch holding a pre-#1667 entry (`body_before: None`, which
+/// renders no diff) get neither.
+fn append_report_edit_batch_channel_line(
+    segments: &mut [HarnessInputSegment],
+    all_report_edits_with_diffs: bool,
+) {
+    if !all_report_edits_with_diffs {
+        return;
+    }
+    let Some(last) = segments.last_mut() else {
+        return;
+    };
+    if !last.text.ends_with('\n') {
+        last.text.push('\n');
+    }
+    last.text.push_str(REPORT_EDIT_BATCH_CHANNEL_LINE);
+}
+
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Issue #682 review — dev-forced harnesses run against the replay
     // binary's stub app-server; see `PlannerHarness::pause_issuance_for_dev`.
@@ -4010,6 +4053,11 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
 
     let mut prepared = prepared;
+    // #1678 A1 — the channel statement is the batch's, appended once here
+    // rather than rendered per observation; same flag as `report_patch`
+    // above, so a batch tells the planner "end silently" exactly when the
+    // front end will fold its reply (see the constant's doc).
+    append_report_edit_batch_channel_line(&mut prepared.segments, report_edits_carry_diffs);
     let joined_observation_text = prepared
         .segments
         .iter()
@@ -5222,6 +5270,76 @@ mod tests {
         assert_eq!(view.text.chars().count(), seed.chars().count());
         assert_eq!(view.rev, 0, "a refused fold must not bump rev");
         assert_eq!(queue[0].envelope_id(), Some(1));
+    }
+
+    /// #1678 A1 (review round 1) — the channel line is decided over the
+    /// batch by the predicate that also omits the unified patch, and lands
+    /// once on the last segment. Pure batch: yes; a user message beside an
+    /// edit, or a pre-#1667 entry without its diff: no.
+    #[test]
+    fn report_edit_batch_channel_line_follows_the_omit_predicate() {
+        use super::{
+            REPORT_EDIT_BATCH_CHANNEL_LINE, append_report_edit_batch_channel_line,
+            queue_report_edits_all_carry_diffs,
+        };
+        use crate::harness::queue::input_segments_for_entries;
+        use crate::ids::{CardId, TrackId};
+        use calm_types::event::EditAuthor;
+        use std::collections::VecDeque;
+
+        let edit = |before: Option<&str>| {
+            QueueEntry::system(
+                Observation::ReportEdited {
+                    track_id: TrackId::from("track-1"),
+                    body_sha256: "sha".into(),
+                    body: "# T\n\nnew\n".into(),
+                    author: Some(EditAuthor::User),
+                    body_before: before.map(str::to_string),
+                    doc_rev_after: None,
+                    blocks_after: None,
+                },
+                None,
+            )
+            .expect("a report edit is a system entry")
+        };
+        let card_id = CardId::from("card-1");
+        let render = |queue: VecDeque<QueueEntry>| {
+            let entries = queue.iter().cloned().collect::<Vec<_>>();
+            let mut segments = input_segments_for_entries(&card_id, &entries);
+            append_report_edit_batch_channel_line(
+                &mut segments,
+                queue_report_edits_all_carry_diffs(&queue),
+            );
+            segments
+        };
+
+        let pure = render(VecDeque::from(vec![
+            edit(Some("# T\n\nold\n")),
+            edit(Some("# T\n\nolder\n")),
+        ]));
+        assert!(
+            !pure[0].text.contains(REPORT_EDIT_BATCH_CHANNEL_LINE),
+            "not on an inner segment: {}",
+            pure[0].text
+        );
+        assert_eq!(
+            pure[1].text.matches(REPORT_EDIT_BATCH_CHANNEL_LINE).count(),
+            1
+        );
+        assert!(pure[1].text.ends_with(REPORT_EDIT_BATCH_CHANNEL_LINE));
+
+        let mixed = render(VecDeque::from(vec![
+            QueueEntry::user_message("what changed?".into(), None, Vec::new()),
+            edit(Some("# T\n\nold\n")),
+        ]));
+        assert!(
+            mixed
+                .iter()
+                .all(|s| !s.text.contains(REPORT_EDIT_BATCH_CHANNEL_LINE))
+        );
+
+        let legacy = render(VecDeque::from(vec![edit(None)]));
+        assert!(!legacy[0].text.contains(REPORT_EDIT_BATCH_CHANNEL_LINE));
     }
 }
 

@@ -27,7 +27,9 @@
 // with the verdict the domain computed (`QuietSyncGroup.outcome`): "accepted,
 // no action" or "updated the report". Nothing is appended while the turn is
 // running (the live mark is the state), after a bad ending (the lifted red
-// line says it) or when the planner spoke (the lifted bubble says it).
+// line says it) or when the planner spoke (the lifted bubble says it) — and
+// then `data-nc-quiet-sync-outcome` is absent, not `"none"`, so an existence
+// selector on it matches only a fold that has a verdict.
 //
 // One component for every width. The phone gets the same `<details>`: a
 // native disclosure needs no pointer geometry, and the line is short enough
@@ -88,7 +90,7 @@ export function QuietSyncFold({ group, time, live, children }: QuietSyncFoldProp
       className={styles.fold}
       data-nc-turn="quiet-sync"
       data-nc-quiet-sync-author={group.author ?? 'unknown'}
-      data-nc-quiet-sync-outcome={group.outcome ?? 'none'}
+      data-nc-quiet-sync-outcome={group.outcome ?? undefined}
     >
       <summary className={styles.summary} title={`${line} · ${time}${verdict}`}>
         <span className={styles.disclosure} aria-hidden="true">›</span>
