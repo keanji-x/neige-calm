@@ -585,9 +585,22 @@ async fn commit_report_write_for_identity(
         )
         .await
     {
-        Ok(ReportOpCommit { card: updated, .. }) => {
+        Ok(ReportOpCommit {
+            card: updated,
+            warnings,
+            ..
+        }) => {
             let doc_rev = updated_report_doc_rev(&updated, "track_report")?;
-            Ok(json!({ "updated_at": updated.updated_at, "docRev": doc_rev }))
+            // #1669 §2.3 — `Replace` rewrites the whole document, so the
+            // funnel scanned every prose block; `calm.report.edit` is the
+            // door a Planner uses to slip a `neige://source/…` link into an
+            // existing paragraph, and it gets the same receipt as the
+            // block tools.
+            Ok(json!({
+                "updated_at": updated.updated_at,
+                "docRev": doc_rev,
+                "warnings": warnings,
+            }))
         }
         Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(
             -32403,

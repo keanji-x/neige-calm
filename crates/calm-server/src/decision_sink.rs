@@ -940,7 +940,7 @@ mod tests {
             repo: route_repo,
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
-            sqlite_pool: None,
+            sqlite_pool: repo.sqlite_pool(),
         };
         let identity = ToolCallIdentity {
             card_id: worker_card.id.as_str().to_string(),
@@ -1075,7 +1075,7 @@ mod tests {
             repo: route_repo,
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
-            sqlite_pool: None,
+            sqlite_pool: repo.sqlite_pool(),
         };
         let identity = ToolCallIdentity {
             card_id: planner_card.id.as_str().to_string(),
@@ -1224,7 +1224,7 @@ mod tests {
             repo: route_repo,
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
-            sqlite_pool: None,
+            sqlite_pool: repo.sqlite_pool(),
         };
         let identity = ToolCallIdentity {
             card_id: planner_card.id.as_str().to_string(),

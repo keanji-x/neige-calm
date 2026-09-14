@@ -15,9 +15,6 @@
 pub mod store;
 pub mod warnings;
 
-use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
-
 use crate::error::CalmError;
 
 pub use store::{Detail, NewSource, SourceRow};
@@ -36,87 +33,12 @@ pub const MAX_QUOTES_PER_SOURCE: usize = 32;
 pub const MAX_SOURCES_PER_TRACK: i64 = 128;
 pub const MAX_BODY_BYTES_PER_TRACK: i64 = 16 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-#[schema(as = SourceProvenance)]
-pub enum Provenance {
-    FullText,
-    Summary,
-    WebPage,
-    Manual,
-}
-
-impl Provenance {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::FullText => "full_text",
-            Self::Summary => "summary",
-            Self::WebPage => "web_page",
-            Self::Manual => "manual",
-        }
-    }
-
-    pub fn parse(text: &str) -> Option<Self> {
-        Some(match text {
-            "full_text" => Self::FullText,
-            "summary" => Self::Summary,
-            "web_page" => Self::WebPage,
-            "manual" => Self::Manual,
-            _ => return None,
-        })
-    }
-}
-
-/// Where a body came from. Stored as the `origin` JSON column.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-#[schema(as = SourceOrigin)]
-pub enum Origin {
-    /// The recorded plugin call the body was read off.
-    Plugin {
-        plugin_id: String,
-        tool: String,
-        args_sha256: String,
-        /// Canonicalization version behind `args_sha256` (`v1`: compact
-        /// serde_json text with sorted keys).
-        args_canon: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        content_id: Option<String>,
-    },
-    /// The Planner's own bytes.
-    Manual {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        url: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        content_id: Option<String>,
-    },
-}
-
-impl Origin {
-    pub fn content_id(&self) -> Option<&str> {
-        match self {
-            Self::Plugin { content_id, .. } | Self::Manual { content_id, .. } => {
-                content_id.as_deref()
-            }
-        }
-    }
-
-    pub fn url(&self) -> Option<&str> {
-        match self {
-            Self::Manual { url, .. } => url.as_deref(),
-            Self::Plugin { .. } => None,
-        }
-    }
-}
-
-/// One anchor: `text` is `body[start..end]`, byte offsets.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct Quote {
-    pub id: String,
-    pub text: String,
-    pub start: usize,
-    pub end: usize,
-}
+/// The wire vocabulary lives in calm-types (TS-exported); the store and
+/// the tool use it under the shorter names.
+pub use calm_types::report_sources::{
+    SourceOrigin as Origin, SourceProvenance as Provenance, SourceQuote as Quote,
+    TrackSourceDetail, TrackSourceList, TrackSourceSummary,
+};
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
     crate::plugin_results::sha256_hex(bytes)
@@ -269,41 +191,5 @@ mod tests {
         // … a new one is not.
         let err = append_quotes(&body, &existing, &texts(&["w39 "])).unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(m) if m.contains("at most")));
-    }
-
-    #[test]
-    fn provenance_round_trips() {
-        for p in [
-            Provenance::FullText,
-            Provenance::Summary,
-            Provenance::WebPage,
-            Provenance::Manual,
-        ] {
-            assert_eq!(Provenance::parse(p.as_str()), Some(p));
-            assert_eq!(serde_json::to_value(p).unwrap(), p.as_str());
-        }
-        assert_eq!(Provenance::parse("fulltext"), None);
-    }
-
-    #[test]
-    fn origin_json_is_tagged_by_kind() {
-        let plugin = Origin::Plugin {
-            plugin_id: "p".into(),
-            tool: "t".into(),
-            args_sha256: "ab".into(),
-            args_canon: "v1".into(),
-            content_id: None,
-        };
-        let value = serde_json::to_value(&plugin).unwrap();
-        assert_eq!(value["kind"], "plugin");
-        assert!(value.get("content_id").is_none());
-        assert_eq!(serde_json::from_value::<Origin>(value).unwrap(), plugin);
-        let manual = Origin::Manual {
-            url: Some("https://x".into()),
-            content_id: None,
-        };
-        let value = serde_json::to_value(&manual).unwrap();
-        assert_eq!(value["kind"], "manual");
-        assert_eq!(value["url"], "https://x");
     }
 }

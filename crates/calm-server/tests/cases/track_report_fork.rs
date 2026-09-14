@@ -1531,7 +1531,7 @@ async fn planner_tool_channel(
             None,
         )),
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
-        sqlite_pool: None,
+        sqlite_pool: boot.repo.sqlite_pool(),
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);

@@ -1,11 +1,13 @@
 //! #1669 §2.3 — receipt `warnings`: the `neige://source/` links in the
 //! prose a write touched that this track cannot resolve, on each of the
-//! three agent write paths (`calm.report.commit`, `calm.report.blocks.upsert`,
-//! `calm.report.write_markdown`). The write is never blocked.
+//! five agent write doors (`calm.report.commit`, `calm.report.blocks.upsert`,
+//! `calm.report.write_markdown`, `calm.report.write`, `calm.report.edit`),
+//! malformed citations included. The write is never blocked.
 
 #![cfg(unix)]
 
 use calm_server::mcp_server::tools::source::TOOL_SOURCE_CAPTURE;
+use calm_server::mcp_server::tools::track_report::{TOOL_REPORT_EDIT, TOOL_REPORT_WRITE};
 use calm_server::mcp_server::tools::track_report_blocks::{
     TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE_MARKDOWN,
 };
@@ -208,4 +210,108 @@ async fn summary_only_commit_carries_no_warnings_even_with_dangling_links_in_pla
     .await
     .expect("summary-only commit");
     assert_eq!(receipt["warnings"], json!([]), "{receipt}");
+}
+
+/// Design §5 counterexample: `neige://source/src_dead` is not a valid id
+/// and `#q0` is not a valid anchor; both must be warned about, not
+/// silently dropped by the scanner.
+#[tokio::test]
+async fn malformed_ids_and_anchors_are_warned_about() {
+    let boot = boot().await;
+    let source_id = capture_manual(&boot).await;
+    let rev = doc_rev(&boot).await;
+    let bad_anchor =
+        calm_types::report_source_links::format_source_destination(&source_id, Some("q0"));
+    let receipt = call_tool(
+        &boot,
+        TOOL_REPORT_COMMIT,
+        planner_identity(&boot),
+        json!({
+            "if_doc_rev": rev,
+            "message": "cite badly",
+            "ops": [{
+                "op": "upsert",
+                "kind": "prose",
+                "markdown": format!(
+                    "# Sources\n\n[dead](neige://source/src_dead) [anchor]({bad_anchor})\n"
+                ),
+            }],
+        }),
+    )
+    .await
+    .expect("commit writes despite malformed links");
+    let written = receipt["blocks"].as_array().unwrap().last().unwrap()["id"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        receipt["warnings"],
+        json!([
+            warning(written, "neige://source/src_dead"),
+            warning(written, &bad_anchor),
+        ]),
+        "{receipt}"
+    );
+}
+
+/// `calm.report.write` (whole body) and `calm.report.edit` (string
+/// replace) are the two remaining planner doors into `commit_report_op`;
+/// they carry the same `warnings` as the block tools.
+#[tokio::test]
+async fn report_write_and_edit_carry_warnings_too() {
+    let boot = boot().await;
+    let source_id = capture_manual(&boot).await;
+    let resolved =
+        calm_types::report_source_links::format_source_destination(&source_id, Some("q1"));
+    let rev = doc_rev(&boot).await;
+    let receipt = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        planner_identity(&boot),
+        json!({
+            "body": format!("# One\n\n[ok]({resolved}) and [dead](neige://source/src_deadbeef)\n"),
+            "message": "write",
+            "if_doc_rev": rev,
+        }),
+    )
+    .await
+    .expect("calm.report.write");
+    let warnings = receipt["warnings"].as_array().expect("warnings on write");
+    assert_eq!(warnings.len(), 1, "{receipt}");
+    assert_eq!(warnings[0]["destination"], "neige://source/src_deadbeef");
+    assert_eq!(warnings[0]["kind"], "unresolved_source_link");
+
+    // Repair the dangling link in place: no warnings left.
+    let rev = doc_rev(&boot).await;
+    let receipt = call_tool(
+        &boot,
+        TOOL_REPORT_EDIT,
+        planner_identity(&boot),
+        json!({
+            "old_string": "neige://source/src_deadbeef",
+            "new_string": resolved,
+            "message": "repair",
+            "if_doc_rev": rev,
+        }),
+    )
+    .await
+    .expect("calm.report.edit");
+    assert_eq!(receipt["warnings"], json!([]), "{receipt}");
+    // …and slip a new dangling anchor in through the same door.
+    let rev = doc_rev(&boot).await;
+    let receipt = call_tool(
+        &boot,
+        TOOL_REPORT_EDIT,
+        planner_identity(&boot),
+        json!({
+            "old_string": "[ok](",
+            "new_string": "[gone](neige://source/src_00000000#q1) [ok](",
+            "message": "cite",
+            "if_doc_rev": rev,
+        }),
+    )
+    .await
+    .expect("calm.report.edit");
+    let warnings = receipt["warnings"].as_array().expect("warnings on edit");
+    assert_eq!(warnings.len(), 1, "{receipt}");
+    assert_eq!(warnings[0]["destination"], "neige://source/src_00000000#q1");
 }

@@ -1,8 +1,9 @@
 //! #1669 §2.3 — receipt warnings: `neige://source/…` links in the prose
 //! blocks a write touched that point at a source or anchor this track does
-//! not have. Computed after the persist transaction committed, from the
-//! final snapshot plus one `report_sources` read; the write itself is never
-//! blocked (§7 default 1).
+//! not have — a malformed id or anchor included, since the page will show
+//! those as missing too. Computed after the persist transaction committed,
+//! from the final snapshot plus one `report_sources` read; the write itself
+//! is never blocked (§7 default 1).
 
 use std::collections::{HashMap, HashSet};
 
@@ -43,10 +44,15 @@ pub fn unresolved_links(
             continue;
         };
         for link in report_source_links::scan(markdown) {
-            let resolved = match (index.get(&link.source_id), &link.quote_id) {
+            let anchors = link.source_id.as_ref().and_then(|id| index.get(id));
+            let resolved = match (anchors, link.fragment.as_deref()) {
+                // Malformed or unknown id: unresolved whatever the anchor.
                 (None, _) => false,
                 (Some(_), None) => true,
-                (Some(anchors), Some(quote_id)) => anchors.iter().any(|a| a == quote_id),
+                // A fragment must be a well-formed `q<n>` AND present.
+                (Some(anchors), Some(_)) => link
+                    .quote_id()
+                    .is_some_and(|quote_id| anchors.iter().any(|a| a == quote_id)),
             };
             if resolved {
                 continue;
@@ -127,6 +133,30 @@ mod tests {
                     block_id: "b_0002".into(),
                     destination: "neige://source/src_00000002".into(),
                 },
+            ]
+        );
+    }
+
+    /// Design §5: a malformed id or anchor is a citation the page cannot
+    /// open, so it is warned about like a missing one.
+    #[test]
+    fn malformed_ids_and_anchors_are_unresolved() {
+        let blocks = vec![prose(
+            "b_0001",
+            "[a](neige://source/src_dead) [b](neige://source/src_00000001#q0) \
+             [c](neige://source/src_00000001#b_1f3a) [d](neige://source/src_00000001#) \
+             [e](neige://source/src_00000001#q1)",
+        )];
+        let index = index(&[("src_00000001", &["q1"])]);
+        let warnings = unresolved_links(&blocks, &ids(&["b_0001"]), &index);
+        let destinations: Vec<&str> = warnings.iter().map(|w| w.destination.as_str()).collect();
+        assert_eq!(
+            destinations,
+            [
+                "neige://source/src_dead",
+                "neige://source/src_00000001#q0",
+                "neige://source/src_00000001#b_1f3a",
+                "neige://source/src_00000001#",
             ]
         );
     }

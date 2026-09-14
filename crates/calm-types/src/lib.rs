@@ -20,6 +20,7 @@ pub mod report_contract;
 pub mod report_edit_diff;
 pub mod report_links;
 pub mod report_source_links;
+pub mod report_sources;
 pub mod runtime;
 pub mod task_recovery;
 pub mod track_fs_dto;

@@ -12,14 +12,37 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 pub const SOURCE_LINK_PREFIX: &str = "neige://source/";
 
-/// One resolved `neige://source/…` link, in document order.
+/// One `neige://source/…` link, in document order — well-formed or not.
+/// A malformed citation is still a citation the author wrote (design §5:
+/// `neige://source/src_dead` must be warned about, not silently ignored),
+/// so the scanner keeps every destination under the prefix and lets the
+/// consumer decide what a malformed one means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLinkRef {
-    pub source_id: String,
-    /// `q<n>` when the destination carried a well-formed anchor.
-    pub quote_id: Option<String>,
     /// The destination exactly as pulldown-cmark decoded it.
     pub destination: String,
+    /// `Some` when the `<source_id>` segment is well-formed
+    /// (`src_` + 8 lowercase hex).
+    pub source_id: Option<String>,
+    /// The text after `#`, verbatim, when the destination carries a `#`
+    /// (an empty fragment is `Some("")`). Well-formedness is
+    /// [`Self::quote_id`]'s call.
+    pub fragment: Option<String>,
+}
+
+impl SourceLinkRef {
+    /// The anchor as a `q<n>` id: `Some` only when a fragment is present
+    /// and well-formed.
+    pub fn quote_id(&self) -> Option<&str> {
+        self.fragment
+            .as_deref()
+            .filter(|fragment| is_quote_id(fragment))
+    }
+
+    /// `true` when both the id and the anchor (if any) are well-formed.
+    pub fn is_well_formed(&self) -> bool {
+        self.source_id.is_some() && (self.fragment.is_none() || self.quote_id().is_some())
+    }
 }
 
 /// `src_` + 8 lowercase hex digits.
@@ -41,22 +64,22 @@ pub fn is_quote_id(id: &str) -> bool {
         && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-/// `neige://source/<source_id>[#<quote_id>]` → `(source_id, quote_id)`.
-/// A malformed source id is not a source link at all; a malformed
-/// anchor keeps the source link and drops the anchor (mirrors
-/// `report_links::parse_destination`, whose bad fragment degrades to a
-/// whole-report link).
-pub fn parse_source_destination(destination: &str) -> Option<(String, Option<String>)> {
+/// `neige://source/<source_id>[#<fragment>]` → a [`SourceLinkRef`]; `None`
+/// only when the destination is not under the source prefix at all.
+/// Unlike `report_links::parse_destination` (whose bad fragment degrades
+/// to a whole-report link), nothing here is dropped: a malformed id or
+/// anchor is reported as such.
+pub fn parse_source_destination(destination: &str) -> Option<SourceLinkRef> {
     let path = destination.strip_prefix(SOURCE_LINK_PREFIX)?;
     let (source_id, fragment) = match path.split_once('#') {
-        Some((source_id, fragment)) => (source_id, Some(fragment)),
+        Some((source_id, fragment)) => (source_id, Some(fragment.to_string())),
         None => (path, None),
     };
-    if !is_source_id(source_id) {
-        return None;
-    }
-    let quote_id = fragment.filter(|fragment| is_quote_id(fragment));
-    Some((source_id.to_string(), quote_id.map(str::to_string)))
+    Some(SourceLinkRef {
+        destination: destination.to_string(),
+        source_id: is_source_id(source_id).then(|| source_id.to_string()),
+        fragment,
+    })
 }
 
 pub fn format_source_destination(source_id: &str, quote_id: Option<&str>) -> String {
@@ -68,9 +91,10 @@ pub fn format_source_destination(source_id: &str, quote_id: Option<&str>) -> Str
     destination
 }
 
-/// Every `neige://source/…` link in `markdown`, in document order. Inline,
-/// reference-style and autolinks all count; links inside code spans and
-/// fenced code do not (they are text there).
+/// Every `neige://source/…` link in `markdown`, in document order,
+/// malformed ones included. Inline, reference-style and autolinks all
+/// count; links inside code spans and fenced code do not (they are text
+/// there).
 pub fn scan(markdown: &str) -> Vec<SourceLinkRef> {
     let opts = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
@@ -81,13 +105,7 @@ pub fn scan(markdown: &str) -> Vec<SourceLinkRef> {
     for event in Parser::new_ext(markdown, opts) {
         match event {
             Event::Start(Tag::Link { dest_url, .. }) => {
-                pending = parse_source_destination(&dest_url).map(|(source_id, quote_id)| {
-                    SourceLinkRef {
-                        source_id,
-                        quote_id,
-                        destination: dest_url.to_string(),
-                    }
-                });
+                pending = parse_source_destination(&dest_url);
             }
             Event::End(TagEnd::Link) => {
                 if let Some(link) = pending.take() {
@@ -106,9 +124,9 @@ mod tests {
 
     fn link(source_id: &str, quote_id: Option<&str>) -> SourceLinkRef {
         SourceLinkRef {
-            source_id: source_id.into(),
-            quote_id: quote_id.map(str::to_string),
             destination: format_source_destination(source_id, quote_id),
+            source_id: Some(source_id.into()),
+            fragment: quote_id.map(str::to_string),
         }
     }
 
@@ -142,25 +160,49 @@ mod tests {
         assert!(scan("```md\n[x](neige://source/src_2c9e0a1b#q1)\n```\n").is_empty());
     }
 
+    /// Design §5 counterexample: `neige://source/src_dead` is a citation
+    /// the author wrote and must reach the consumer as a malformed one,
+    /// never vanish. Other schemes are not source links at all.
     #[test]
-    fn malformed_source_ids_are_not_source_links() {
-        assert!(scan("[x](neige://source/src_dead)").is_empty());
-        assert!(scan("[x](neige://source/src_2C9E0A1B)").is_empty());
-        assert!(scan("[x](neige://source/2c9e0a1b)").is_empty());
-        assert!(scan("[x](neige://source/)").is_empty());
+    fn malformed_source_ids_are_kept_and_flagged() {
+        for destination in [
+            "neige://source/src_dead",
+            "neige://source/src_2C9E0A1B",
+            "neige://source/2c9e0a1b",
+            "neige://source/",
+            "neige://source/src_dead#q1",
+        ] {
+            let links = scan(&format!("[x]({destination})"));
+            assert_eq!(links.len(), 1, "{destination}");
+            assert_eq!(links[0].destination, destination);
+            assert_eq!(links[0].source_id, None, "{destination}");
+            assert!(!links[0].is_well_formed(), "{destination}");
+        }
         let track_link = crate::report_links::format_track_destination("w1", Some("b_1f3a"));
         assert!(scan(&format!("[x]({track_link})")).is_empty());
+        assert!(scan("[x](https://example.com/src_2c9e0a1b)").is_empty());
     }
 
     #[test]
-    fn malformed_anchor_keeps_the_source_link_and_drops_the_anchor() {
-        let links =
-            scan("[x](neige://source/src_2c9e0a1b#q0) [y](neige://source/src_2c9e0a1b#b_1f3a)");
-        assert_eq!(links.len(), 2);
-        assert_eq!(links[0].source_id, "src_2c9e0a1b");
-        assert_eq!(links[0].quote_id, None);
+    fn malformed_anchor_keeps_the_fragment_and_is_not_well_formed() {
+        let links = scan(
+            "[x](neige://source/src_2c9e0a1b#q0) [y](neige://source/src_2c9e0a1b#b_1f3a) \
+             [z](neige://source/src_2c9e0a1b#)",
+        );
+        assert_eq!(links.len(), 3);
+        for (link, fragment) in links.iter().zip(["q0", "b_1f3a", ""]) {
+            assert_eq!(link.source_id.as_deref(), Some("src_2c9e0a1b"));
+            assert_eq!(link.fragment.as_deref(), Some(fragment));
+            assert_eq!(link.quote_id(), None);
+            assert!(!link.is_well_formed(), "{link:?}");
+        }
         assert_eq!(links[0].destination, "neige://source/src_2c9e0a1b#q0");
-        assert_eq!(links[1].quote_id, None);
+        let ok = scan("[x](neige://source/src_2c9e0a1b#q7)");
+        assert_eq!(ok[0].quote_id(), Some("q7"));
+        assert!(ok[0].is_well_formed());
+        let bare = scan("[x](neige://source/src_2c9e0a1b)");
+        assert_eq!(bare[0].fragment, None);
+        assert!(bare[0].is_well_formed());
     }
 
     /// The two scanners are disjoint: neither sees the other's scheme.

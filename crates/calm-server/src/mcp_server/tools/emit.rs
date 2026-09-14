@@ -792,7 +792,7 @@ mod tests {
             operation_runtime,
             series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
-            sqlite_pool: None,
+            sqlite_pool: crate::db::Repo::sqlite_pool(repo.as_ref()),
         });
 
         CommitGuardFixture {

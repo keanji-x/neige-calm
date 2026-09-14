@@ -152,7 +152,12 @@ async fn source_capture(
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: caller has no track")))?;
     let obj = require_object(&args, tool)?;
     reject_unknown_keys(obj, CAPTURE_KEYS, tool)?;
-    let has = |key: &str| obj.get(key).is_some_and(|v| !v.is_null());
+    // A key is "present" when it is in the object, whatever its value: a
+    // `manual: null` next to `call` is still two branches named at once,
+    // and `title: null` on the append branch is still a field that would
+    // be dropped. (`call.args: null` alone means "omitted"; the tool
+    // description says so.)
+    let has = |key: &str| obj.contains_key(key);
     match (has("call"), has("manual"), has("source_id")) {
         (true, false, false) => capture_call(&ctx, &track_id, obj, tool).await,
         (false, true, false) => capture_manual(&ctx, &track_id, obj, tool).await,
@@ -433,13 +438,7 @@ async fn insert_source(
                 )));
             }
             let mut row = row;
-            loop {
-                let candidate = mint_source_id();
-                if !store::exists_tx(tx, &track, &candidate).await? {
-                    row.source_id = candidate;
-                    break;
-                }
-            }
+            row.source_id = mint_unique_source_id_tx(tx, &track, mint_source_id).await?;
             store::insert_tx(tx, &track, &row).await?;
             Ok(row.source_id)
         })
@@ -456,9 +455,33 @@ async fn insert_source(
 }
 
 /// `src_` + 8 lowercase hex digits. Not a secret: uniqueness is per track
-/// and the insert loop re-mints on a collision.
+/// and [`mint_unique_source_id_tx`] re-mints on a collision.
 fn mint_source_id() -> String {
     format!("src_{:08x}", rand::random::<u32>())
+}
+
+/// How many mints a capture tries before giving up. 32 random bits against
+/// at most [`MAX_SOURCES_PER_TRACK`] rows never gets near this in practice;
+/// the bound exists so a broken generator cannot spin the transaction
+/// forever.
+const MAX_MINT_ATTEMPTS: usize = 8;
+
+/// A source id no row of `track_id` uses, from up to [`MAX_MINT_ATTEMPTS`]
+/// draws of `mint`; `Internal` when every draw collided.
+async fn mint_unique_source_id_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track_id: &str,
+    mut mint: impl FnMut() -> String,
+) -> Result<String, CalmError> {
+    for _ in 0..MAX_MINT_ATTEMPTS {
+        let candidate = mint();
+        if !store::exists_tx(tx, track_id, &candidate).await? {
+            return Ok(candidate);
+        }
+    }
+    Err(CalmError::Internal(format!(
+        "report_sources: no free source id after {MAX_MINT_ATTEMPTS} attempts"
+    )))
 }
 
 async fn append_anchors(
@@ -468,7 +491,7 @@ async fn append_anchors(
     tool: &str,
 ) -> Result<Value, RpcError> {
     for forbidden in ["title", "provenance", "published_at", "content_id"] {
-        if obj.get(forbidden).is_some_and(|v| !v.is_null()) {
+        if obj.contains_key(forbidden) {
             return Err(RpcError::invalid_params(format!(
                 "{tool}: `{forbidden}` is not accepted with `source_id`"
             )));
@@ -651,4 +674,102 @@ fn bounded(value: &str, max: usize, key: &str, tool: &str) -> Result<(), RpcErro
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod mint_tests {
+    use super::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::db::write_in_tx_typed;
+
+    async fn seed(repo: &SqlxRepo, track_id: &str, source_id: &str) {
+        let (track, id) = (track_id.to_string(), source_id.to_string());
+        write_in_tx_typed(repo, move |tx| {
+            Box::pin(async move {
+                sqlx::query(concat!(
+                    "INSERT INTO report_sources ",
+                    "(track_id, source_id, provenance, origin, title, published_at, ",
+                    " body, body_sha256, captured_at, quotes) ",
+                    "VALUES (?1, ?2, 'manual', '{\"kind\":\"manual\"}', 't', NULL, ",
+                    " 'b', 'h', 1, '[]')"
+                ))
+                .bind(track)
+                .bind(id)
+                .execute(&mut **tx)
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .expect("seed row");
+    }
+
+    async fn repo_with_track() -> (SqlxRepo, String) {
+        let repo = SqlxRepo::open("sqlite::memory:").await.expect("sqlite");
+        let track = {
+            use crate::db::RepoSyncDomainRaw;
+            let area = repo
+                .area_create(crate::model::NewArea {
+                    name: "mint".into(),
+                    color: "#000".into(),
+                    sort: None,
+                })
+                .await
+                .expect("area");
+            repo.track_create(crate::model::NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "mint".into(),
+                sort: None,
+                cwd: String::new(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .expect("track")
+            .id
+            .to_string()
+        };
+        (repo, track)
+    }
+
+    #[tokio::test]
+    async fn mint_skips_a_collision_and_gives_up_after_the_bound() {
+        let (repo, track) = repo_with_track().await;
+        seed(&repo, &track, "src_00000001").await;
+        // One collision, then a free id.
+        let t = track.clone();
+        let minted = write_in_tx_typed(&repo, move |tx| {
+            Box::pin(async move {
+                let mut draws = ["src_00000001", "src_00000002"].into_iter();
+                mint_unique_source_id_tx(tx, &t, || draws.next().expect("draw").to_string()).await
+            })
+        })
+        .await
+        .expect("minted");
+        assert_eq!(minted, "src_00000002");
+        // Every draw collides: bounded, Internal.
+        let t = track.clone();
+        let mut draws = 0usize;
+        let err = write_in_tx_typed(&repo, move |tx| {
+            Box::pin(async move {
+                let result = mint_unique_source_id_tx(tx, &t, || {
+                    draws += 1;
+                    "src_00000001".to_string()
+                })
+                .await;
+                result
+                    .map(|id| (id, draws))
+                    .map_err(|e| CalmError::Internal(format!("{e} after {draws} draws")))
+            })
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, CalmError::Internal(m) if m.contains("no free source id") && m.contains("after 8 draws")),
+            "{err}"
+        );
+    }
 }

@@ -570,6 +570,83 @@ async fn i1_captured_body_sha256_equals_the_proxied_text_blocks() {
 }
 
 // ---------------------------------------------------------------------------
+// I6 on a transport failure — no `CallToolResult` at all still replaces
+// ---------------------------------------------------------------------------
+
+/// After a success, the same call fails *below* the reply level: the stub
+/// answers something that is not a `CallToolResult` (a bare string), so
+/// the kernel's `tools_call` returns `Err` before any `isError` verdict
+/// exists. The Planner sees the RPC error, and the recorded entry for that
+/// key is `Error` — the old body is not capturable any more.
+#[tokio::test]
+async fn i6_a_transport_error_on_the_same_key_replaces_the_success() {
+    let fx = boot().await;
+    let args = json!({ "id": 99 });
+    plugin_result(&fx.planner_call(40, EXPOSED_NAME, args.clone()).await);
+    // Sanity: the success is capturable right now.
+    fx.capture(
+        41,
+        json!({
+            "call": { "tool": EXPOSED_NAME, "args": args.clone() },
+            "provenance": "full_text",
+            "title": "before",
+        }),
+    )
+    .await
+    .expect("capture after success");
+
+    program(
+        &fx.control_dir,
+        &json!({ "mode": "raw", "result": "not a CallToolResult" }).to_string(),
+    );
+    let frame = fx.planner_call(42, EXPOSED_NAME, args.clone()).await;
+    let error = frame
+        .get("error")
+        .expect("an unparseable reply is an RPC error, not a result");
+    assert_eq!(error["code"], -32603, "{frame}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("did not parse as CallToolResult"),
+        "{frame}"
+    );
+
+    let refusal = fx
+        .capture(
+            43,
+            json!({
+                "call": { "tool": EXPOSED_NAME, "args": args },
+                "provenance": "full_text",
+                "title": "after",
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refusal["code"], -32602, "{refusal}");
+    assert!(
+        refusal["message"]
+            .as_str()
+            .unwrap()
+            .contains("returned isError"),
+        "the recorded status is `error`: {refusal}"
+    );
+    // The omitted-args form sees the same (latest) entry.
+    let refusal = fx
+        .capture(
+            44,
+            json!({
+                "call": { "tool": EXPOSED_NAME },
+                "provenance": "full_text",
+                "title": "after",
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refusal["code"], -32602, "{refusal}");
+}
+
+// ---------------------------------------------------------------------------
 // I4 — a worker's call is not recorded for the planner
 // ---------------------------------------------------------------------------
 

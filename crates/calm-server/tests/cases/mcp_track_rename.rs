@@ -219,7 +219,7 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
             None,
         )),
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
-        sqlite_pool: None,
+        sqlite_pool: repo.sqlite_pool(),
     });
 
     let mut registry = ToolRegistry::new();

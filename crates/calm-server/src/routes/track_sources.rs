@@ -8,6 +8,13 @@
 //! Every read is one autocommit statement on the pool (#930: no deferred
 //! read transaction in production code).
 
+use crate::auth::Principal;
+use crate::error::{CalmError, ErrorBody, Result};
+use crate::report_sources::{
+    Detail, SourceRow, TrackSourceDetail, TrackSourceList, TrackSourceSummary, captured_at_text,
+    store,
+};
+use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -15,13 +22,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
-
-use crate::auth::Principal;
-use crate::error::{CalmError, ErrorBody, Result};
-use crate::report_sources::{Detail, Origin, Provenance, SourceRow, captured_at_text, store};
-use crate::state::{AppState, RouteState};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -30,53 +30,6 @@ pub fn router() -> Router<AppState> {
             "/api/tracks/{id}/sources/{source_id}",
             get(get_track_source),
         )
-}
-
-/// One anchor of a source: `text` is a byte-exact substring of the body.
-/// `start`/`end` are UTF-8 byte offsets into `body` — a kernel-side
-/// detail; the page locates the anchor by `text`.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct SourceQuote {
-    pub id: String,
-    pub text: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-/// A captured source without its body.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct TrackSourceSummary {
-    pub source_id: String,
-    pub provenance: Provenance,
-    pub origin: Origin,
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub published_at: Option<String>,
-    /// `origin.content_id`, surfaced for the panel header.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_id: Option<String>,
-    /// `origin.url` (manual sources only).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    pub body_bytes: usize,
-    pub body_sha256: String,
-    /// RFC 3339, UTC.
-    pub captured_at: String,
-    pub quotes: Vec<SourceQuote>,
-}
-
-/// A captured source with its body: the raw text the kernel stored,
-/// verbatim (not Markdown-rendered by the panel).
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct TrackSourceDetail {
-    #[serde(flatten)]
-    pub summary: TrackSourceSummary,
-    pub body: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct TrackSourceList {
-    pub sources: Vec<TrackSourceSummary>,
 }
 
 fn summary_of(row: &SourceRow) -> TrackSourceSummary {
@@ -91,16 +44,7 @@ fn summary_of(row: &SourceRow) -> TrackSourceSummary {
         body_bytes: row.body_bytes,
         body_sha256: row.body_sha256.clone(),
         captured_at: captured_at_text(row.captured_at),
-        quotes: row
-            .quotes
-            .iter()
-            .map(|quote| SourceQuote {
-                id: quote.id.clone(),
-                text: quote.text.clone(),
-                start: quote.start,
-                end: quote.end,
-            })
-            .collect(),
+        quotes: row.quotes.clone(),
     }
 }
 
@@ -162,9 +106,7 @@ pub(crate) async fn get_track_source(
     let row = store::get(&pool, &id, &source_id, Detail::Full)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {id} has no source {source_id}")))?;
-    let detail = TrackSourceDetail {
-        summary: summary_of(&row),
-        body: row.body.clone().unwrap_or_default(),
-    };
+    let detail =
+        TrackSourceDetail::from_summary(summary_of(&row), row.body.clone().unwrap_or_default());
     Ok((StatusCode::OK, Json(detail)).into_response())
 }

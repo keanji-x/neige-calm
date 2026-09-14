@@ -746,7 +746,7 @@ async fn dispatch_plugin_tools_call(
                 }
                 _ => None,
             };
-            let result = match &client {
+            let called = match &client {
                 // The Track rides along only to LOCAL plugins. A remote
                 // `mcp-http` connector is somebody else's service: it has no
                 // per-Track state the kernel vouches for, and sending our
@@ -754,20 +754,32 @@ async fn dispatch_plugin_tools_call(
                 // Track a reader is looking at, for nothing in return.
                 ConnectorClient::Stdio(c) => {
                     c.tools_call(&tool_name, arguments, identity.track_id.as_deref())
-                        .await?
+                        .await
                 }
-                ConnectorClient::Http(c) => c.tools_call(&tool_name, arguments).await?,
+                ConnectorClient::Http(c) => c.tools_call(&tool_name, arguments).await,
                 // #1164 P3 — the pinned local query binary. Same envelope as
                 // the other two: an `Ok` result carries the child's own
                 // `isError` verdict, an `Err` is a kernel-side refusal.
-                ConnectorClient::Cli(c) => c.tools_call(&tool_name, arguments).await?,
+                ConnectorClient::Cli(c) => c.tools_call(&tool_name, arguments).await,
             };
-            // Recording reads `result`; the value handed back to the model
-            // is serialized from the same struct, untouched.
+            // Recording reads the outcome; the value handed back to the
+            // model is serialized from the same struct, untouched, and an
+            // `Err` is propagated unchanged. A call that produced no result
+            // (transport error, unparseable reply, disconnect) still replaces
+            // the key's entry — with `Error` — so the body of the call before
+            // it is not capturable any more (I6 holds for every failure
+            // shape, not only `isError` replies).
             if let Some((track_id, args)) = record_for {
-                ctx.plugin_results
-                    .record(&track_id, &plugin_id, &tool_name, &args, &result);
+                match &called {
+                    Ok(result) => ctx
+                        .plugin_results
+                        .record(&track_id, &plugin_id, &tool_name, &args, result),
+                    Err(_) => ctx
+                        .plugin_results
+                        .record_failure(&track_id, &plugin_id, &tool_name, &args),
+                }
             }
+            let result = called?;
             serde_json::to_value(result)
                 .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")))
         }

@@ -112,7 +112,10 @@ pub fn args_sha256(args: &Value) -> String {
     sha256_hex(canonical_args(args).as_bytes())
 }
 
-/// The status a `CallToolResult` records as, and the text it keeps.
+/// The status a `CallToolResult` records as, and the text it keeps. The
+/// joined length is checked block by block, so an oversized reply is
+/// refused as soon as the running total passes [`MAX_TEXT_BYTES`] — no
+/// temporary larger than the cap is ever built.
 pub fn classify(result: &CallToolResult) -> ResultStatus {
     if result.is_error == Some(true) {
         return ResultStatus::Error;
@@ -126,7 +129,11 @@ pub fn classify(result: &CallToolResult) -> ResultStatus {
         let Some(part) = block.text.as_deref() else {
             continue;
         };
-        if blocks > 0 {
+        let separator = usize::from(blocks > 0);
+        if text.len() + separator + part.len() > MAX_TEXT_BYTES {
+            return ResultStatus::TooLarge;
+        }
+        if separator == 1 {
             text.push('\n');
         }
         text.push_str(part);
@@ -134,9 +141,6 @@ pub fn classify(result: &CallToolResult) -> ResultStatus {
     }
     if blocks == 0 {
         return ResultStatus::NoText;
-    }
-    if text.len() > MAX_TEXT_BYTES {
-        return ResultStatus::TooLarge;
     }
     ResultStatus::Ok { text }
 }
@@ -153,8 +157,13 @@ struct Entry {
     status: ResultStatus,
     args_canonical: Option<String>,
     completed_at: i64,
-    /// Position in the process-wide LRU order.
-    seq: u64,
+    /// Completion order, assigned once at record time and never rewritten:
+    /// breaks `completed_at` ties for "latest". Distinct from `lru_seq`,
+    /// which a lookup moves — "latest completed" must not become "last
+    /// accessed".
+    completed_seq: u64,
+    /// Position in the process-wide LRU order; rewritten on every touch.
+    lru_seq: u64,
     bytes: usize,
 }
 
@@ -174,9 +183,12 @@ impl Entry {
 #[derive(Default)]
 struct Inner {
     tracks: HashMap<String, HashMap<Key, Entry>>,
-    /// `seq → (track_id, key)`, oldest first.
+    /// `lru_seq → (track_id, key)`, least recently used first.
     order: BTreeMap<u64, (String, Key)>,
-    next_seq: u64,
+    /// Feeds `lru_seq` (every insert and touch).
+    next_lru_seq: u64,
+    /// Feeds `completed_seq` (inserts only).
+    next_completed_seq: u64,
     total_bytes: usize,
 }
 
@@ -234,12 +246,34 @@ impl PluginResults {
         args: &Value,
         result: &CallToolResult,
     ) {
+        self.insert(track_id, plugin_id, tool_name, args, |_| classify(result));
+    }
+
+    /// Record a proxy call that produced no `CallToolResult` at all — a
+    /// transport error, a reply that did not parse, a disconnect. The key
+    /// is known before the call, so the entry is replaced with `Error`
+    /// just like an `isError` reply would (I6): a later capture cannot
+    /// pick up the body of the call before it.
+    pub fn record_failure(&self, track_id: &str, plugin_id: &str, tool_name: &str, args: &Value) {
+        self.insert(track_id, plugin_id, tool_name, args, |_| {
+            ResultStatus::Error
+        });
+    }
+
+    fn insert(
+        &self,
+        track_id: &str,
+        plugin_id: &str,
+        tool_name: &str,
+        args: &Value,
+        status_of: impl FnOnce(&str) -> ResultStatus,
+    ) {
         let canonical = canonical_args(args);
         let args_sha256 = sha256_hex(canonical.as_bytes());
         let (status, args_canonical) = if canonical.len() > MAX_ARGS_BYTES {
             (ResultStatus::TooLarge, None)
         } else {
-            (classify(result), Some(canonical))
+            (status_of(&canonical), Some(canonical))
         };
         let key = Key {
             plugin_id: plugin_id.to_string(),
@@ -254,9 +288,13 @@ impl PluginResults {
         let mut inner = self.lock();
         inner.evict_expired(now);
         inner.remove(track_id, &key);
-        let seq = inner.next_seq;
-        inner.next_seq += 1;
-        inner.order.insert(seq, (track_id.to_string(), key.clone()));
+        let lru_seq = inner.next_lru_seq;
+        inner.next_lru_seq += 1;
+        let completed_seq = inner.next_completed_seq;
+        inner.next_completed_seq += 1;
+        inner
+            .order
+            .insert(lru_seq, (track_id.to_string(), key.clone()));
         inner.total_bytes += bytes;
         inner
             .tracks
@@ -268,7 +306,8 @@ impl PluginResults {
                     status,
                     args_canonical,
                     completed_at: now,
-                    seq,
+                    completed_seq,
+                    lru_seq,
                     bytes,
                 },
             );
@@ -306,7 +345,7 @@ impl PluginResults {
             .get(track_id)?
             .iter()
             .filter(|(key, _)| key.plugin_id == plugin_id && key.tool_name == tool_name)
-            .max_by_key(|(_, entry)| (entry.completed_at, entry.seq))
+            .max_by_key(|(_, entry)| (entry.completed_at, entry.completed_seq))
             .map(|(key, _)| key.clone())?;
         inner.touch(track_id, &key)
     }
@@ -340,7 +379,7 @@ impl PluginResults {
             return;
         };
         for entry in entries.values() {
-            inner.order.remove(&entry.seq);
+            inner.order.remove(&entry.lru_seq);
             inner.total_bytes = inner.total_bytes.saturating_sub(entry.bytes);
         }
     }
@@ -370,21 +409,23 @@ impl Inner {
         if entries.is_empty() {
             self.tracks.remove(track_id);
         }
-        self.order.remove(&entry.seq);
+        self.order.remove(&entry.lru_seq);
         self.total_bytes = self.total_bytes.saturating_sub(entry.bytes);
         Some(entry)
     }
 
+    /// LRU touch: only `lru_seq` moves; `completed_seq` stays.
     fn touch(&mut self, track_id: &str, key: &Key) -> Option<Recorded> {
         let entries = self.tracks.get_mut(track_id)?;
         let entry = entries.get_mut(key)?;
-        let old_seq = entry.seq;
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        entry.seq = seq;
+        let old_seq = entry.lru_seq;
+        let lru_seq = self.next_lru_seq;
+        self.next_lru_seq += 1;
+        entry.lru_seq = lru_seq;
         let snapshot = entry.snapshot(key);
         self.order.remove(&old_seq);
-        self.order.insert(seq, (track_id.to_string(), key.clone()));
+        self.order
+            .insert(lru_seq, (track_id.to_string(), key.clone()));
         Some(snapshot)
     }
 
@@ -608,6 +649,65 @@ mod tests {
         assert_eq!(latest.args_canonical.as_deref(), Some(r#"{"id":2}"#));
         assert_eq!(latest.status, ResultStatus::Ok { text: "two".into() });
         assert_eq!(latest.registry_name(), "plugin.p_tool");
+    }
+
+    /// Two calls in the same millisecond, the older one looked up (an LRU
+    /// touch) after the newer one completed: "latest" is still the newer
+    /// call. A single counter serving both orders would answer A.
+    #[test]
+    fn latest_is_completion_order_not_last_access() {
+        let (ring, _) = ring_with_clock();
+        let a = json!({ "id": "a" });
+        let b = json!({ "id": "b" });
+        ring.record("t", "p", "tool", &a, &ok_result(&["A"]));
+        ring.record("t", "p", "tool", &b, &ok_result(&["B"]));
+        assert!(ring.get("t", "p", "tool", &args_sha256(&a)).is_some());
+        let latest = ring.latest("t", "p", "tool").unwrap();
+        assert_eq!(latest.args_canonical.as_deref(), Some(r#"{"id":"b"}"#));
+        // …while the LRU order is what the touches say: A touched last,
+        // so B is the least recently used entry and goes first under the
+        // per-track cap.
+        assert!(ring.get("t", "p", "tool", &args_sha256(&a)).is_some());
+        for i in 0..MAX_ENTRIES_PER_TRACK - 1 {
+            ring.record("t", "p", "tool", &json!({ "fill": i }), &ok_result(&["x"]));
+        }
+        assert!(ring.get("t", "p", "tool", &args_sha256(&a)).is_some());
+        assert!(ring.get("t", "p", "tool", &args_sha256(&b)).is_none());
+    }
+
+    #[test]
+    fn record_failure_replaces_a_success_on_the_same_key() {
+        let (ring, _) = ring_with_clock();
+        let args = json!({ "id": 1 });
+        ring.record("t", "p", "tool", &args, &ok_result(&["body"]));
+        ring.record_failure("t", "p", "tool", &args);
+        let entry = ring.get("t", "p", "tool", &args_sha256(&args)).unwrap();
+        assert_eq!(entry.status, ResultStatus::Error);
+        assert_eq!(entry.args_canonical.as_deref(), Some(r#"{"id":1}"#));
+        assert_eq!(ring.len("t"), 1);
+        assert_eq!(ring.total_bytes(), canonical_args(&args).len());
+        let latest = ring.latest("t", "p", "tool").unwrap();
+        assert_eq!(latest.status, ResultStatus::Error);
+    }
+
+    #[test]
+    fn classify_stops_at_the_cap_without_joining_the_rest() {
+        // Two halves that only exceed the cap once joined with the
+        // separator: the second block is refused before it is appended.
+        let half = "x".repeat(MAX_TEXT_BYTES / 2);
+        let half_less_one = "x".repeat(MAX_TEXT_BYTES / 2 - 1);
+        let exact = ok_result(&[&half, &half_less_one]);
+        assert!(matches!(classify(&exact), ResultStatus::Ok { .. }));
+        assert_eq!(
+            classify(&ok_result(&[&half, &half])),
+            ResultStatus::TooLarge,
+            "the separator byte tips it over"
+        );
+        // Many small blocks past the cap are refused too.
+        let small = "y".repeat(1024);
+        let parts: Vec<&str> =
+            std::iter::repeat_n(small.as_str(), MAX_TEXT_BYTES / 1024 + 1).collect();
+        assert_eq!(classify(&ok_result(&parts)), ResultStatus::TooLarge);
     }
 
     #[test]

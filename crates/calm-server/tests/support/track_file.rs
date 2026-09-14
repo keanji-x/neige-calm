@@ -183,7 +183,7 @@ pub async fn boot() -> Boot {
             None,
         )),
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
-        sqlite_pool: None,
+        sqlite_pool: repo.sqlite_pool(),
     });
 
     let mut registry = ToolRegistry::new();

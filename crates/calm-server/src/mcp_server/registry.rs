@@ -608,6 +608,7 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite"),
         );
+        let sqlite_pool = repo.sqlite_pool();
         let route_repo: Arc<dyn RouteRepo> = repo;
         Arc::new(AppContext {
             terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
@@ -622,7 +623,7 @@ mod tests {
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
-            sqlite_pool: None,
+            sqlite_pool,
         })
     }
 

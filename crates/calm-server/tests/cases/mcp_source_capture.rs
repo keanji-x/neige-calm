@@ -13,6 +13,7 @@ use calm_server::plugin_host::mcp::{CallToolResult, ContentBlock, RpcError};
 use calm_server::plugin_results::{MAX_ARGS_BYTES, MAX_TEXT_BYTES, sha256_hex};
 use calm_server::report_sources::{MAX_BODY_BYTES, MAX_QUOTES_PER_SOURCE, MAX_SOURCES_PER_TRACK};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 use crate::mcp_track_report::{
     Boot, assistant_identity, boot, call_tool, planner_identity, worker_identity,
@@ -166,6 +167,18 @@ async fn capture_resolves_the_sanitized_spelling_and_defaults_to_the_latest_call
     assert_eq!(receipt["matched_call"]["tool"], REGISTRY_NAME);
     assert_eq!(receipt["matched_call"]["args"], json!({ "id": 2 }));
     assert_eq!(receipt["body_sha256"], sha256_hex(b"two"));
+    // `args: null` is the omitted form, not a call with null arguments.
+    let receipt = capture(
+        &boot,
+        json!({
+            "call": { "tool": SANITIZED_NAME, "args": null },
+            "provenance": "summary",
+            "title": "Latest again",
+        }),
+    )
+    .await
+    .expect("capture");
+    assert_eq!(receipt["matched_call"]["args"], json!({ "id": 2 }));
     // Explicit args pick the exact entry, whatever is newest.
     let receipt = capture(
         &boot,
@@ -190,6 +203,66 @@ async fn capture_resolves_the_sanitized_spelling_and_defaults_to_the_latest_call
     .await
     .unwrap_err();
     assert_invalid_params(&err, "no recorded result for this call in this track");
+}
+
+/// Two calls of the same tool complete in the same millisecond (frozen
+/// clock); the older one is captured explicitly first — an LRU touch of A —
+/// and the args-omitted capture must still take B, the later completion.
+#[tokio::test]
+async fn omitted_args_take_the_latest_completion_not_the_last_lookup() {
+    let boot = boot().await;
+    let frozen = Arc::new(calm_server::plugin_results::PluginResults::with_clock(
+        Arc::new(|| 1_700_000_000_000),
+    ));
+    let mut ctx = (*boot.ctx).clone();
+    ctx.plugin_results = frozen.clone();
+    let ctx = Arc::new(ctx);
+    let track = boot.track_id.as_str();
+    frozen.record(
+        track,
+        PLUGIN_ID,
+        TOOL_NAME,
+        &json!({ "id": "a" }),
+        &ok_result(&["A"]),
+    );
+    frozen.record(
+        track,
+        PLUGIN_ID,
+        TOOL_NAME,
+        &json!({ "id": "b" }),
+        &ok_result(&["B"]),
+    );
+    let handler = boot
+        .registry
+        .lookup(TOOL_SOURCE_CAPTURE)
+        .expect("registered");
+    let capture = |args: Value| {
+        let handler = handler.clone();
+        let ctx = ctx.clone();
+        let identity = planner_identity(&boot);
+        async move {
+            handler(ctx, identity, args)
+                .await
+                .map(calm_server::mcp_server::result::ToolResult::into_structured)
+        }
+    };
+    let explicit = capture(json!({
+        "call": { "tool": REGISTRY_NAME, "args": { "id": "a" } },
+        "provenance": "summary",
+        "title": "A",
+    }))
+    .await
+    .expect("explicit capture of A");
+    assert_eq!(explicit["body_sha256"], sha256_hex(b"A"));
+    let latest = capture(json!({
+        "call": { "tool": REGISTRY_NAME },
+        "provenance": "summary",
+        "title": "latest",
+    }))
+    .await
+    .expect("args-omitted capture");
+    assert_eq!(latest["matched_call"]["args"], json!({ "id": "b" }));
+    assert_eq!(latest["body_sha256"], sha256_hex(b"B"));
 }
 
 #[tokio::test]
@@ -458,6 +531,23 @@ async fn capture_field_matrix_refusals() {
         (
             json!({ "source_id": "src_00000001", "call": { "tool": REGISTRY_NAME }, "quotes": ["b"] }),
             "mutually exclusive",
+        ),
+        // A key given as `null` is still given: two branches named at once.
+        (
+            json!({ "call": { "tool": REGISTRY_NAME }, "manual": null, "provenance": "full_text", "title": "x" }),
+            "mutually exclusive",
+        ),
+        (
+            json!({ "source_id": "src_00000001", "quotes": ["b"], "title": null }),
+            "`title` is not accepted with `source_id`",
+        ),
+        (
+            json!({ "source_id": "src_00000001", "quotes": ["b"], "published_at": null }),
+            "`published_at` is not accepted with `source_id`",
+        ),
+        (
+            json!({ "call": null, "provenance": "full_text", "title": "x" }),
+            "`call` must be an object",
         ),
         (
             json!({ "provenance": "manual", "title": "x" }),
