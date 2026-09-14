@@ -544,12 +544,26 @@ pub(crate) fn write_program(control_dir: &Path, program: Value) {
 }
 
 pub(crate) fn read_calls(control_dir: &Path) -> Vec<Value> {
-    std::fs::read_to_string(control_dir.join("calls.jsonl"))
-        .unwrap_or_default()
+    let text = std::fs::read_to_string(control_dir.join("calls.jsonl")).unwrap_or_default();
+    // The stub appends each call as ONE write of `line + '\n'`, so a tail
+    // without its newline is a line still landing: skip it, the next poll
+    // sees it whole. A newline-terminated line that fails to parse is a bug.
+    let complete = text.rfind('\n').map_or("", |end| &text[..=end]);
+    complete
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("call line is JSON"))
         .collect()
+}
+
+#[test]
+fn read_calls_skips_the_half_written_tail() {
+    let dir = TempDir::new().expect("tempdir");
+    let log = dir.path().join("calls.jsonl");
+    std::fs::write(&log, "{\"a\":1}\n{\"b\":").expect("write torn log");
+    assert_eq!(read_calls(dir.path()), vec![json!({ "a": 1 })]);
+    std::fs::write(&log, "{\"a\":1}\n{\"b\":2}\n").expect("write whole log");
+    assert_eq!(read_calls(dir.path()).len(), 2);
 }
 
 /// The A4 seam fixture (`tests/fixtures/market_series_reply.json`).

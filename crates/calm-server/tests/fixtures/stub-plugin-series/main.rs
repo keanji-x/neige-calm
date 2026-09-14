@@ -97,7 +97,9 @@ fn main() {
                 .append(true)
                 .open(dir.join("calls.jsonl"))
             {
-                let _ = writeln!(log, "{params}");
+                // One `write` per line, newline included: the fixture's
+                // `read_calls` treats "ends with '\n'" as "line complete".
+                let _ = log.write_all(format!("{params}\n").as_bytes());
                 let _ = log.flush();
             }
             let mut program: serde_json::Value = std::fs::read_to_string(dir.join("reply.json"))
