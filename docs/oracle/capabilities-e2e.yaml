@@ -4936,7 +4936,7 @@
     remains recovery evidence rather than an acknowledged queue entry.
     The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
     stays `migration: pending` against `web/e2e`.
-  source: fe/web/src/app/router/public.tsx:543-561,703-705,764-771,941-954
+  source: fe/web/src/app/router/public.tsx:544-562,704-706,765-772,942-955
   # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
   # the composer stays open, and whether a second message can be sent. The predicate itself is
   # tabulated a second time at the platform-independent tier
@@ -5214,7 +5214,7 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/router/navigation.ts:40,69-81,159-184,253-284;
-    fe/web/src/app/router/public.tsx:1625-1635,2325-2330,2715-2728;
+    fe/web/src/app/router/public.tsx:1626-1636,2326-2331,2716-2729;
     fe/web/src/features/chat/thread/public.tsx:1838-1840,1931,1992-2011
   # One line per clause of the statement, because no single case covers it: 205 the landing and the
   # caret, 261 that a fresh navigation carries no mark, 298 that returning by Back to the entry whose

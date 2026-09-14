@@ -5481,6 +5481,116 @@
         }
       }
     },
+    "/api/tracks/{id}/report/series/{block_id}": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "get_report_series",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Track id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "block_id",
+            "in": "path",
+            "description": "The `chart.series` block",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rev",
+            "in": "query",
+            "description": "The block `rev` the caller rendered. Required: a request that names\nno rev cannot be told apart from one made against a stale document.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "detail",
+            "in": "query",
+            "description": "Defaults to `full`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReportSeriesDetail"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The block's resolved data, as stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSeriesResolved"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`rev` missing or malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Track, block, or a block that is not `chart.series`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`rev` is not the block's current rev",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSeriesRevConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tracks/{id}/tasks/{key}/attempts": {
       "get": {
         "tags": [
@@ -9107,6 +9217,180 @@
           "updatedAt": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "ReportSeriesDetail": {
+        "type": "string",
+        "description": "`?detail=`: `full` (the default) attaches every series' `points`;\n`summary` leaves the `data` column on disk and answers with the stored\nsummary only.",
+        "enum": [
+          "full",
+          "summary"
+        ]
+      },
+      "ReportSeriesEntry": {
+        "type": "object",
+        "description": "One series inside `ReportSeriesResolved.series` — the stored summary\n(`summary::SeriesSummary`, verbatim) plus `points` on a `full` read.",
+        "required": [
+          "asset",
+          "status"
+        ],
+        "properties": {
+          "asset": {
+            "type": "string"
+          },
+          "change_pct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`(last - first) / first * 100`, two decimals; `null` when `first`\nis zero."
+          },
+          "complete_through": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The latest daily bar the source had published when the row was\nresolved (`YYYY-MM-DD`)."
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first": {
+            "description": "`[YYYY-MM-DD, value]`."
+          },
+          "high": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "last": {
+            "description": "`[YYYY-MM-DD, value]`."
+          },
+          "low": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "n": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "points": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              }
+            },
+            "description": "`full` only: `[[ts_ms, value], …]`, or `[[ts_ms, open, high, low,\nclose, volume], …]` for `view: candles`. `ts_ms` is UTC midnight."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "`ok`, or the plugin's verdict for this asset (`unknown_asset`,\n`unavailable`), in which case only `reason` accompanies it."
+          }
+        }
+      },
+      "ReportSeriesResolved": {
+        "type": "object",
+        "description": "The flattened `resolved` object (D4) — the same shape `calm.report.read`\nattaches to a `chart.series` block, with the block's presentation\nfields (`view` / `field` / `period` / `range`) alongside.",
+        "required": [
+          "status",
+          "view",
+          "field",
+          "period",
+          "range"
+        ],
+        "properties": {
+          "as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`ok`: the cutoff the data runs through (`YYYY-MM-DD`) — the payload's\n`as_of` for a frozen block, yesterday UTC at resolution for a live one."
+          },
+          "field": {
+            "type": "string"
+          },
+          "period": {
+            "type": "string"
+          },
+          "pinned": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`ok`: a frozen block whose source has published past `as_of`; the row\nis immutable from then on."
+          },
+          "range": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`unavailable`: why. `pending`: present when the read could not even\nqueue a job (plugin not installed / not running / tool not exposed)."
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`ok` / `unavailable`: when the row was written, RFC 3339 UTC."
+          },
+          "series": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ReportSeriesEntry"
+            },
+            "description": "`ok`: one entry per requested asset, in request order. Absent on the\nother two statuses."
+          },
+          "status": {
+            "type": "string",
+            "description": "`pending` (no row yet — the read just queued one), `unavailable`\n(the last resolution failed; see `reason`) or `ok`."
+          },
+          "view": {
+            "type": "string"
+          }
+        }
+      },
+      "ReportSeriesRevConflict": {
+        "type": "object",
+        "description": "The 409 body: the block moved on since the caller read the report.",
+        "required": [
+          "current_rev"
+        ],
+        "properties": {
+          "current_rev": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

@@ -58,6 +58,33 @@ describe('invalidation plan contract', () => {
   });
 
   /*
+   * #1628 D5 / A21 — the one key a report edit must NOT reach.
+   *
+   * `['track-report-series', trackId, blockId, rev]` is keyed by block
+   * revision: an edited block arrives with a new `rev` through the `['track',
+   * id]` refetch this plan does order, mounts a new key and fetches; an
+   * unchanged block keeps its key and its cache. The event carries no block
+   * id (only `track_id`), so the only way to reach series data from here is
+   * the whole prefix — every series block of the track, each a `full` read of
+   * up to 1 MiB, refetched because a paragraph changed. Adding the prefix
+   * here is a one-line "improvement" nothing else would catch: `PolicyMap` is
+   * exhaustive over event kinds, never over the keys they name.
+   */
+  it('report edit does not refetch unchanged series blocks', () => {
+    const event = { ev: 'track.report_edited', data: { track_id: 'track-7' } } as Extract<
+      WireEvent,
+      { ev: 'track.report_edited' }
+    >;
+    const plan = invalidationPlanFor(event);
+    const touches = [...plan.invalidate, ...plan.remove]
+      .filter((key) => key[0] === 'track-report-series');
+    expect(touches).toEqual([]);
+    // The document itself is still refreshed — that is the path a changed
+    // block's new `rev` travels on.
+    expect(plan.invalidate).toContainEqual(['track', 'track-7']);
+  });
+
+  /*
    * #1505 S4 review. The failure is invisible from inside this layer and from
    * inside the tab that causes it: the writer invalidates its own
    * `planner-run` by hand, so every single-client test passes while a second

@@ -26,6 +26,9 @@ import {
   type ReportBlock, type TaskVerdict, type TrackBacklinks,
 } from '../../../../core/domain/report.ts';
 import {
+  staleRevBodySchema, trackReportSeriesOperation, type ResolvedSeries, type SeriesDetail,
+} from '../../../../core/domain/report-series.ts';
+import {
   checkConnectorOperation, type ConnectorCheckResult,
   installConnectorOperation, installLocalPathOperation, patchPluginConfigOperation,
   pluginDetailOperation, pluginsOperation, reloadPluginOperation, setPluginEnabledOperation,
@@ -170,6 +173,27 @@ export const queryKeys = Object.freeze({
    * costs nothing when none is.
    */
   trackReportPrefix: () => ['track-report'] as const,
+  /**
+   * #1628 D5 — one `chart.series` block's resolved data, keyed by the block
+   * *revision* it was rendered from.
+   *
+   * `rev` in the key is the whole refresh mechanism, so read this together
+   * with what is deliberately absent: `track.report_edited` invalidates
+   * `['track-report']` and `['track', id]` and does NOT name this prefix
+   * (`core/events/invalidation-plan.ts`; pinned by
+   * `invalidation-plan.contract.test.ts`). The event carries no block id, so a
+   * prefix invalidation would refetch every series block of the track — each a
+   * default `full` read of up to 1 MiB — even when the edit touched prose.
+   * Instead the track detail refetches, a block whose payload changed arrives
+   * with a new `rev`, mounts a new key and fetches; an unchanged block keeps
+   * its key and its cache. A 409 from the route is the same story from the
+   * other end: the key is older than the server's block, and the refetched
+   * document will replace it (`trackReportSeriesQueryOptions`).
+   *
+   * It is not `['track-report', …]`: that prefix IS invalidated by the plan.
+   */
+  trackReportSeries: (trackId: string, blockId: string, rev: number) =>
+    ['track-report-series', trackId, blockId, rev] as const,
   overlaysByKind: (entityKind: 'track' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
   /* Settings › Plugins. Not reached by any event policy — see
@@ -1705,4 +1729,81 @@ export function useSettingsMutation(transport: ApiTransportPort, unauthorized: U
     onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.settings() }); },
   });
   return (patch) => save.mutateAsync(patch);
+}
+
+/**
+ * The query's data: the wire, or the 409 turned into a value.
+ *
+ * `stale-rev` is data and not an error on purpose (#1628 D5, A16b): it means
+ * "the document this block was rendered from is older than the server's",
+ * which the next `['track', id]` refetch resolves by mounting a new key. An
+ * error state would show a failure for a condition that fixes itself, and a
+ * retry would ask the same stale question three more times.
+ */
+export type SeriesRead = ResolvedSeries | Readonly<{ status: 'stale-rev'; current_rev: number }>;
+
+/** Estimate (S4.3): a resolved row does not move for at least this long. */
+const SERIES_STALE_MS = 5 * 60 * 1000;
+/** While the row is `pending`: the kernel's lane usually answers within a
+ *  few seconds of the first read. */
+const SERIES_PENDING_POLL_MS = 3000;
+/** …and after two minutes of that, something is slow (a lane backed up, a
+ *  plugin restarting) and the poll backs off. */
+const SERIES_PENDING_SLOW_POLL_MS = 30_000;
+/** Two minutes, counted in polls at the fast interval rather than in wall
+ *  time: react-query pauses the timer while the tab is hidden, and what is
+ *  being bounded is the number of requests, not the age of the block. */
+const SERIES_PENDING_FAST_POLLS = 120_000 / SERIES_PENDING_POLL_MS;
+
+function staleRevOf(error: unknown): SeriesRead | null {
+  if (!(error instanceof ApiError)) return null;
+  const { failure } = error;
+  if (failure.kind !== 'http' || failure.status !== 409) return null;
+  const body = staleRevBodySchema.safeParse(failure.body);
+  return body.success ? { status: 'stale-rev', current_rev: body.data.current_rev } : null;
+}
+
+/**
+ * The poll, and only while the row is `pending` (S4.3 / G12): row writes emit
+ * no event, so a block that has just been read has to ask again to learn its
+ * data landed. Every other state stops the timer — `ok` and `unavailable`
+ * are rows (a stale one is refreshed server-side and reaches the browser at
+ * the next fetch, past `staleTime`), `stale-rev` waits for the document, and
+ * an error is an error.
+ */
+export function seriesRefetchInterval(
+  query: { state: { data?: SeriesRead; dataUpdateCount: number } },
+): number | false {
+  const { data, dataUpdateCount } = query.state;
+  if (data === undefined || data.status !== 'pending') return false;
+  return dataUpdateCount > SERIES_PENDING_FAST_POLLS ? SERIES_PENDING_SLOW_POLL_MS : SERIES_PENDING_POLL_MS;
+}
+
+/**
+ * One `chart.series` block's resolved data (#1628 D5).
+ *
+ * `detail` defaults to `full`: the figure needs the points. The key carries
+ * `rev` and not `detail` — see `queryKeys.trackReportSeries` for why the key
+ * is shaped the way it is and for what does not invalidate it.
+ */
+export function trackReportSeriesQueryOptions(
+  transport: ApiTransportPort, trackId: string, blockId: string, rev: number,
+  unauthorized: UnauthorizedChannel, detail: SeriesDetail = 'full',
+) {
+  return {
+    queryKey: queryKeys.trackReportSeries(trackId, blockId, rev),
+    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<SeriesRead> => {
+      try {
+        return await runOperation(
+          transport, { ...trackReportSeriesOperation(trackId, blockId, rev, detail), signal }, unauthorized,
+        );
+      } catch (error) {
+        const stale = staleRevOf(error);
+        if (stale === null) throw error;
+        return stale;
+      }
+    },
+    staleTime: SERIES_STALE_MS,
+    refetchInterval: seriesRefetchInterval,
+  };
 }

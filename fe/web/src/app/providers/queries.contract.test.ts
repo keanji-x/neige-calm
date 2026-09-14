@@ -17,6 +17,7 @@ import {
   ApiError, areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
   useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
   useTodayLaunchpadEnsureMutation, useTrackConversationMutations, useTrackRecipeMutations,
+  seriesRefetchInterval, trackReportSeriesQueryOptions, type SeriesRead,
 } from './queries.ts';
 
 function recordingTransport(reply: (request: ApiRequest) => ApiTransportResponse) {
@@ -755,5 +756,58 @@ describe('task-verdict poll interval', () => {
     expect(taskVerdictsRefetchInterval(blocks([declaration('b-1', 'deleted')]))(state({
       data: [{ blockId: '', key: 'deleted', schedulable: true, status: 'running', workerCardId: 'c-9' }],
     }))).toBe(3000);
+  });
+});
+
+/*
+ * #1628 D5 / A16b — one `chart.series` block's data.
+ *
+ * The key carries the block's rev and the query turns a 409 into a value.
+ * Both are what let a report edit refetch only the blocks it changed: an
+ * unchanged block keeps its key, a changed one mounts a new one, and a query
+ * that outran the document waits instead of failing.
+ */
+describe('chart.series query', () => {
+  const pending = { status: 'pending', view: 'line', field: 'close', period: 'day', range: '1Y' };
+  const signal = new AbortController().signal;
+
+  it('keys by track, block and rev, and asks for the full row by default', async () => {
+    const { transport, paths } = recordingTransport(() => ok(pending));
+    const options = trackReportSeriesQueryOptions(transport, 'w1', 'b-1', 4, unauthorized);
+    expect(options.queryKey).toEqual(['track-report-series', 'w1', 'b-1', 4]);
+    expect(options.queryKey[0]).not.toBe(queryKeys.trackReportPrefix()[0]);
+    expect(options.staleTime).toBeGreaterThan(0);
+    await expect(options.queryFn({ signal })).resolves.toEqual(pending);
+    expect(paths).toEqual(['/api/tracks/w1/report/series/b-1?rev=4&detail=full']);
+    await trackReportSeriesQueryOptions(transport, 'w1', 'b-1', 4, unauthorized, 'summary').queryFn({ signal });
+    expect(paths[1]).toBe('/api/tracks/w1/report/series/b-1?rev=4&detail=summary');
+  });
+
+  it('stale rev 409 is a wait, not an error', async () => {
+    const { transport } = recordingTransport(() => ({ status: 409, statusText: 'Conflict', body: { current_rev: 5 } }));
+    const options = trackReportSeriesQueryOptions(transport, 'w1', 'b-1', 4, unauthorized);
+    // Resolves — no throw, so react-query has nothing to retry and no error
+    // state to render; the block reads `stale-rev` and waits for the document.
+    await expect(options.queryFn({ signal })).resolves.toEqual({ status: 'stale-rev', current_rev: 5 });
+    // Every other failure is still a failure.
+    const failing = recordingTransport(() => ({ status: 500, statusText: 'Internal Server Error', body: {} }));
+    await expect(trackReportSeriesQueryOptions(failing.transport, 'w1', 'b-1', 4, unauthorized).queryFn({ signal }))
+      .rejects.toBeInstanceOf(ApiError);
+    const notFound = recordingTransport(() => ({ status: 404, statusText: 'Not Found', body: {} }));
+    await expect(trackReportSeriesQueryOptions(notFound.transport, 'w1', 'b-1', 4, unauthorized).queryFn({ signal }))
+      .rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('polls only while the row is pending, and backs off after two minutes of it', () => {
+    const state = (data: SeriesRead | undefined, dataUpdateCount = 1) => ({ state: { data, dataUpdateCount } });
+    expect(seriesRefetchInterval(state(pending as SeriesRead))).toBe(3000);
+    expect(seriesRefetchInterval(state(pending as SeriesRead, 40))).toBe(3000);
+    expect(seriesRefetchInterval(state(pending as SeriesRead, 41))).toBe(30_000);
+    expect(seriesRefetchInterval(state({ status: 'stale-rev', current_rev: 5 }))).toBe(false);
+    expect(seriesRefetchInterval(state({ ...pending, status: 'unavailable', reason: 'x', resolved_at: 't' } as SeriesRead))).toBe(false);
+    expect(seriesRefetchInterval(state({
+      ...pending, status: 'ok', as_of: '2026-09-11', resolved_at: 't', pinned: true, series: [],
+    } as SeriesRead))).toBe(false);
+    expect(seriesRefetchInterval(state(undefined, 0))).toBe(false);
   });
 });

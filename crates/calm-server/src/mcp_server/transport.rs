@@ -35,7 +35,7 @@
 mod worker_grants;
 pub(crate) use worker_grants::eligible_plugin_tools;
 
-use crate::db::{Repo, RouteRepo, SessionCardIdentity};
+use crate::db::{Repo, SessionCardIdentity};
 use crate::forge_trust::trusted_forge_plugin;
 use crate::mcp_server::framing::{
     Frame, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
@@ -56,7 +56,6 @@ use crate::plugin_host::ConnectorClient;
 use crate::plugin_host::manifest::ToolKind;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
-use calm_truth::track_vcs_repo::SqlxTrackVcsRepo;
 use calm_types::event::{ForgeEventSpec, ForgeMergeSubject};
 use calm_types::worker::WorkerSessionId;
 use serde::{Deserialize, Serialize};
@@ -154,6 +153,30 @@ impl McpServer {
         gate_logs_dir: PathBuf,
         task_budget_default: i64,
     ) -> anyhow::Result<Arc<Self>> {
+        let ctx = AppContext::new(
+            repo,
+            events,
+            write,
+            daemon_token_hash,
+            plugin_host,
+            operation_runtime,
+            gate_logs_dir,
+            task_budget_default,
+        );
+        Self::spawn_with_context(ctx, socket_path, shim_bin, registry).await
+    }
+
+    /// [`Self::spawn`] with a context the caller built and keeps (#1628 S4):
+    /// `AppState::new` hands the same `Arc<AppContext>` to the HTTP layer so
+    /// `GET /api/tracks/{id}/report/series/{block_id}` and `calm.report.read`
+    /// resolve through one `SeriesResolver`. The socket probe-and-bind is
+    /// unchanged from `spawn`.
+    pub async fn spawn_with_context(
+        ctx: Arc<AppContext>,
+        socket_path: PathBuf,
+        shim_bin: PathBuf,
+        registry: Arc<ToolRegistry>,
+    ) -> anyhow::Result<Arc<Self>> {
         if let Some(parent) = socket_path.parent()
             && !parent.exists()
         {
@@ -196,25 +219,6 @@ impl McpServer {
             std::fs::set_permissions(&socket_path, perms)
                 .map_err(|e| anyhow::anyhow!("chmod mcp socket {}: {e}", socket_path.display()))?;
         }
-
-        let track_vcs = repo.sqlite_pool().map(SqlxTrackVcsRepo::shared);
-        let series_resolver = Arc::new(crate::report_series::SeriesResolver::new(
-            repo.sqlite_pool(),
-        ));
-        let route_repo: Arc<dyn RouteRepo> = repo;
-        let ctx = Arc::new(AppContext {
-            terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
-            repo: route_repo,
-            track_vcs,
-            events,
-            write,
-            daemon_token_hash,
-            gate_logs_dir,
-            task_budget_default,
-            plugin_host,
-            operation_runtime,
-            series_resolver,
-        });
 
         let terminal_interaction = ctx.terminal_interaction.clone();
         let socket_for_handle = socket_path.clone();

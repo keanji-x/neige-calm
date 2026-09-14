@@ -289,14 +289,18 @@ export type TaskBlockPayload = z.infer<typeof taskBlockPayloadSchema>;
 /**
  * A block, discriminated by `kind`, with `unsupported` as the closed default.
  *
- * `rev` is read but not exposed: it is the persistence layer's optimistic
- * concurrency counter, and §8.3 puts it on the list of things this surface
- * never shows.
+ * `rev` is the persistence layer's optimistic concurrency counter, and §8.3
+ * puts it on the list of things this surface never *shows*. It is carried on
+ * exactly one kind: a `chart.series` block names its data instead of holding
+ * it, and the request for that data is bound to the block revision it was
+ * rendered from (#1628 D5 — the browser cannot hash the payload on a plain
+ * http LAN, and `rev` already moves on every payload change). It is a query
+ * key, never a rendered value.
  */
 export type ReportBlock =
   | Readonly<{ id: string; kind: 'prose'; payload: ProseBlockPayload }>
   | Readonly<{ id: string; kind: 'chart.candles'; payload: ChartCandlesPayload }>
-  | Readonly<{ id: string; kind: 'chart.series'; payload: ChartSeriesPayload }>
+  | Readonly<{ id: string; kind: 'chart.series'; rev: number; payload: ChartSeriesPayload }>
   | Readonly<{ id: string; kind: 'table'; payload: TableBlockPayload }>
   | Readonly<{ id: string; kind: 'app'; payload: AppBlockPayload }>
   | Readonly<{ id: string; kind: 'task'; payload: TaskBlockPayload }>
@@ -305,6 +309,10 @@ export type ReportBlock =
 const blockWireSchema = z.object({
   id: z.string().min(1),
   kind: z.string(),
+  /* The kernel always writes one (`ReportBlock.rev: u32`); it stays optional
+     on the wire read because only `chart.series` consumes it and every other
+     kind's fixtures are free to leave it out. */
+  rev: z.number().int().nonnegative().optional(),
   payload: z.unknown(),
 });
 
@@ -335,6 +343,13 @@ function toReportBlock(wire: z.infer<typeof blockWireSchema>): ReportBlock {
   if (schema === null) return { id: wire.id, kind: 'unsupported', declaredKind: wire.kind };
   const parsed = schema.safeParse(wire.payload);
   if (!parsed.success) return { id: wire.id, kind: 'unsupported', declaredKind: wire.kind };
+  if (wire.kind === 'chart.series') {
+    // A series block without a revision cannot ask for its data (the request
+    // is bound to `rev`), so it is exactly as undrawable as an unreadable
+    // payload and degrades the same way. The kernel never writes one.
+    if (wire.rev === undefined) return { id: wire.id, kind: 'unsupported', declaredKind: wire.kind };
+    return { id: wire.id, kind: 'chart.series', rev: wire.rev, payload: parsed.data as ChartSeriesPayload };
+  }
   // The discriminant and its payload were validated together one line above;
   // TypeScript cannot carry that pairing through an index into KIND_PAYLOADS.
   return { id: wire.id, kind: wire.kind, payload: parsed.data } as ReportBlock;

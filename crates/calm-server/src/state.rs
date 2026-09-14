@@ -108,6 +108,15 @@ pub struct RouteState {
     pub write: WriteContext,
     pub operation_runtime: Arc<OperationRuntime>,
     pub harness: HarnessRegistry,
+    /// #1628 S4 — the context the kernel's MCP tools run in, shared with the
+    /// HTTP layer so `GET /api/tracks/{id}/report/series/{block_id}` and
+    /// `calm.report.read` hydrate a `chart.series` block through the same
+    /// `SeriesResolver` (one in-flight set, one lane per plugin) and the
+    /// same `report_series::hydrate` step. Production: the `Arc`
+    /// `AppState::new` handed to `McpServer::spawn_with_context`.
+    /// `from_parts`: an equivalent context with no listener behind it; the
+    /// `fixtures`-gated [`AppState::with_mcp_context`] swaps in a test's own.
+    pub mcp_context: Arc<crate::mcp_server::registry::AppContext>,
     /// #1635 S4 — the template roster every route reads: `POST /api/tracks`
     /// admits `template_id` against it, `GET /api/track-templates` lists it,
     /// the area default-template check consults it. `&'static` because the
@@ -273,6 +282,8 @@ pub struct BootState {
     pub card_kind_registry: Arc<CardKindRegistry>,
     pub dispatcher: Arc<Dispatcher>,
     pub mcp_server: Option<Arc<McpServer>>,
+    /// See [`RouteState::mcp_context`].
+    pub mcp_context: Arc<crate::mcp_server::registry::AppContext>,
     pub harness: HarnessRegistry,
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
     pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
@@ -300,6 +311,7 @@ impl BootState {
             write: write.clone(),
             operation_runtime: self.operation_runtime.clone(),
             harness: self.harness.clone(),
+            mcp_context: self.mcp_context.clone(),
             templates: self.templates,
             hook_ingest_cache,
             planner_recovery_locks: crate::per_card_lock::new_per_card_locks(),
@@ -978,6 +990,25 @@ impl AppState {
         let task_budget_default = crate::scheduler::Scheduler::budget_from_env(
             crate::scheduler::DEFAULT_TRACK_TASK_BUDGET,
         );
+        // #1628 S4 — the series route reads through an `AppContext` even
+        // without an MCP listener. The plugin-host cell is filled because the
+        // resolver's route pre-check reads it; the operation-runtime cell is
+        // left empty on purpose — nothing dispatches a tool through this
+        // context, and the runtime built below is replaced by the fixture
+        // builders (`with_operation_runtime`, `rebuild_operation_runtime`),
+        // so a value set here would be the one thing that could go stale.
+        let plugin_host_cell = Arc::new(tokio::sync::OnceCell::new());
+        let _ = plugin_host_cell.set(plugin.clone());
+        let mcp_context = crate::mcp_server::registry::AppContext::new(
+            repo.clone(),
+            events.clone(),
+            write.clone(),
+            None,
+            plugin_host_cell,
+            Arc::new(tokio::sync::OnceCell::new()),
+            TaskVerifyAdapter::default_gate_logs_dir(),
+            task_budget_default,
+        );
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
         // call sites that need to assert on dispatcher behavior reach
         // through `state.dispatcher`; the rest see a passive worker
@@ -1036,6 +1067,7 @@ impl AppState {
             // `from_parts` is the test / replay-lib hatch — no live MCP
             // server. Production goes through `new` below.
             mcp_server: None,
+            mcp_context,
             harness,
             shared_codex_appserver,
             pending_codex_threads,
@@ -1091,6 +1123,18 @@ impl AppState {
     pub fn with_isolated_codex_backend(mut self, backend: Arc<IsolatedCodexBackend>) -> Self {
         self.isolated_codex_backend = Some(backend);
         self.rebuild_operation_runtime();
+        self
+    }
+
+    /// #1628 S4 — route the series read through a test's own `AppContext`
+    /// (its recording `SeriesResolver`, its plugin host), the way production
+    /// shares one context between the MCP listener and the HTTP layer.
+    #[cfg(feature = "fixtures")]
+    pub fn with_mcp_context(
+        mut self,
+        mcp_context: Arc<crate::mcp_server::registry::AppContext>,
+    ) -> Self {
+        self.route.mcp_context = mcp_context;
         self
     }
 
@@ -1424,18 +1468,23 @@ impl AppState {
         // the MCP `plan/<key>/gate.log` view, so a `--data-dir` CLI flag
         // without `CALM_DATA_DIR` cannot split writer and reader.
         let gate_logs_dir = cfg.data_dir_resolved().join("gate-logs");
-        let mcp_server = crate::mcp_server::McpServer::spawn(
+        // #1628 S4 — one context for both readers: the MCP listener below and
+        // `RouteState::mcp_context` hold the same `Arc`.
+        let mcp_context = crate::mcp_server::registry::AppContext::new(
             repo.clone(),
             events.clone(),
             write.clone(),
-            mcp_socket_path,
-            mcp_shim_bin,
-            mcp_registry,
             Some(daemon_mcp_token_hash),
             plugin_host_cell.clone(),
             operation_runtime_cell.clone(),
             gate_logs_dir.clone(),
             task_budget_default,
+        );
+        let mcp_server = crate::mcp_server::McpServer::spawn_with_context(
+            mcp_context.clone(),
+            mcp_socket_path,
+            mcp_shim_bin,
+            mcp_registry,
         )
         .await?;
         if let Err(e) = codex
@@ -1628,6 +1677,7 @@ impl AppState {
             card_kind_registry,
             dispatcher,
             mcp_server: Some(mcp_server),
+            mcp_context,
             harness,
             shared_codex_appserver,
             pending_codex_threads,

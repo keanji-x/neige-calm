@@ -36,6 +36,7 @@ import {
 import {
   parseReportFileLink, reportFilePathRelativeToRoot, type ReportFileLinkTarget,
 } from '../../../../../core/domain/report-file.ts';
+import type { SeriesResolution } from '../../../../../core/domain/report-series.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
@@ -79,6 +80,13 @@ export type ReportDocumentProps = Readonly<{
    * live data, it just does not have it.
    */
   resolveLiveTable?: (source: string) => unknown;
+  /**
+   * Resolves a `chart.series` block, by its id and the revision it was
+   * rendered from, to the app's query of the kernel's resolved data (#1628
+   * D5). Absent ⇒ series blocks say the view carries no such data, for the
+   * same reason live tables do.
+   */
+  resolveSeries?: (blockId: string, rev: number) => SeriesResolution | undefined;
 }>;
 
 /**
@@ -90,7 +98,7 @@ export type ReportDocumentProps = Readonly<{
  */
 export function ReportDocument({
   report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, fileRoot, fileBasePath,
-  resolveLiveTable,
+  resolveLiveTable, resolveSeries,
   arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
   useEffect(() => {
@@ -163,6 +171,7 @@ export function ReportDocument({
                   fileRoot={fileRoot}
                   fileBasePath={fileBasePath}
                   resolveLiveTable={resolveLiveTable}
+                  resolveSeries={resolveSeries}
                 />
               ))}
               {/* §6.1 — a section with zero rows is not rendered. A report that
@@ -286,7 +295,7 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
  * each renderer having to remember to carry one.
  */
 function BlockSlot({
-  block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fileBasePath, resolveLiveTable,
+  block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fileBasePath, resolveLiveTable, resolveSeries,
 }: {
   block: ReportBlock;
   backlinks: number;
@@ -295,6 +304,7 @@ function BlockSlot({
   fileRoot?: string;
   fileBasePath?: string;
   resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
+  resolveSeries?: ReportDocumentProps['resolveSeries'];
 }) {
   return (
     <div className={styles.row}>
@@ -308,7 +318,7 @@ function BlockSlot({
               fileRoot={fileRoot}
               fileBasePath={fileBasePath}
             />
-          : <BlockBody block={block} resolveLiveTable={resolveLiveTable} />}
+          : <BlockBody block={block} resolveLiveTable={resolveLiveTable} resolveSeries={resolveSeries} />}
       </div>
       {backlinks > 0 && (
         // In the trailing gutter, aligned to the block's first line. Inside the
@@ -324,14 +334,16 @@ function BlockSlot({
 
 /** One bad block may not cost the page: an unknown kind, or a known kind whose
  *  payload did not parse, degrades to one line and the document goes on. */
-function BlockBody({ block, task, renderTaskExecution, resolveLiveTable }: {
+function BlockBody({ block, task, renderTaskExecution, resolveLiveTable, resolveSeries }: {
   block: ReportBlock; task?: ReportTaskRow; renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
   resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
+  resolveSeries?: ReportDocumentProps['resolveSeries'];
 }): ReactNode {
   switch (block.kind) {
     case 'table': return <ReportTableBlock payload={block.payload} resolveLive={resolveLiveTable} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
-    case 'chart.series': return <ReportSeriesBlock payload={block.payload} />;
+    case 'chart.series':
+      return <ReportSeriesBlock payload={block.payload} blockId={block.id} rev={block.rev} resolve={resolveSeries} />;
     case 'task': return <ReportTaskBlock payload={block.payload} blockId={block.id} task={task} renderExecution={renderTaskExecution} />;
     case 'app': return <ReportAppBlock payload={block.payload} />;
     case 'unsupported':

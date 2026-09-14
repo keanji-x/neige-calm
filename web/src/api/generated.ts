@@ -1405,6 +1405,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tracks/{id}/report/series/{block_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_report_series"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tracks/{id}/tasks/{key}/attempts": {
         parameters: {
             query?: never;
@@ -3134,6 +3150,95 @@ export interface components {
             rev?: number | null;
             /** Format: int64 */
             updatedAt: number;
+        };
+        /**
+         * @description `?detail=`: `full` (the default) attaches every series' `points`;
+         *     `summary` leaves the `data` column on disk and answers with the stored
+         *     summary only.
+         * @enum {string}
+         */
+        ReportSeriesDetail: "full" | "summary";
+        /**
+         * @description One series inside `ReportSeriesResolved.series` — the stored summary
+         *     (`summary::SeriesSummary`, verbatim) plus `points` on a `full` read.
+         */
+        ReportSeriesEntry: {
+            asset: string;
+            /**
+             * Format: double
+             * @description `(last - first) / first * 100`, two decimals; `null` when `first`
+             *     is zero.
+             */
+            change_pct?: number | null;
+            /**
+             * @description The latest daily bar the source had published when the row was
+             *     resolved (`YYYY-MM-DD`).
+             */
+            complete_through?: string | null;
+            currency?: string | null;
+            /** @description `[YYYY-MM-DD, value]`. */
+            first?: unknown;
+            /** Format: double */
+            high?: number | null;
+            /** @description `[YYYY-MM-DD, value]`. */
+            last?: unknown;
+            /** Format: double */
+            low?: number | null;
+            n?: number | null;
+            /**
+             * @description `full` only: `[[ts_ms, value], …]`, or `[[ts_ms, open, high, low,
+             *     close, volume], …]` for `view: candles`. `ts_ms` is UTC midnight.
+             */
+            points?: number[][] | null;
+            reason?: string | null;
+            /**
+             * @description `ok`, or the plugin's verdict for this asset (`unknown_asset`,
+             *     `unavailable`), in which case only `reason` accompanies it.
+             */
+            status: string;
+        };
+        /**
+         * @description The flattened `resolved` object (D4) — the same shape `calm.report.read`
+         *     attaches to a `chart.series` block, with the block's presentation
+         *     fields (`view` / `field` / `period` / `range`) alongside.
+         */
+        ReportSeriesResolved: {
+            /**
+             * @description `ok`: the cutoff the data runs through (`YYYY-MM-DD`) — the payload's
+             *     `as_of` for a frozen block, yesterday UTC at resolution for a live one.
+             */
+            as_of?: string | null;
+            field: string;
+            period: string;
+            /**
+             * @description `ok`: a frozen block whose source has published past `as_of`; the row
+             *     is immutable from then on.
+             */
+            pinned?: boolean | null;
+            range: string;
+            /**
+             * @description `unavailable`: why. `pending`: present when the read could not even
+             *     queue a job (plugin not installed / not running / tool not exposed).
+             */
+            reason?: string | null;
+            /** @description `ok` / `unavailable`: when the row was written, RFC 3339 UTC. */
+            resolved_at?: string | null;
+            /**
+             * @description `ok`: one entry per requested asset, in request order. Absent on the
+             *     other two statuses.
+             */
+            series?: components["schemas"]["ReportSeriesEntry"][] | null;
+            /**
+             * @description `pending` (no row yet — the read just queued one), `unavailable`
+             *     (the last resolution failed; see `reason`) or `ok`.
+             */
+            status: string;
+            view: string;
+        };
+        /** @description The 409 body: the block moved on since the caller read the report. */
+        ReportSeriesRevConflict: {
+            /** Format: int64 */
+            current_rev: number;
         };
         /**
          * @description Wire shape of `NewCodexCardBody.theme` / `NewTrack.theme`. Matches the
@@ -8644,6 +8749,84 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_report_series: {
+        parameters: {
+            query: {
+                /**
+                 * @description The block `rev` the caller rendered. Required: a request that names
+                 *     no rev cannot be told apart from one made against a stale document.
+                 */
+                rev: number;
+                /** @description Defaults to `full`. */
+                detail?: components["schemas"]["ReportSeriesDetail"];
+            };
+            header?: never;
+            path: {
+                /** @description Track id */
+                id: string;
+                /** @description The `chart.series` block */
+                block_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The block's resolved data, as stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportSeriesResolved"];
+                };
+            };
+            /** @description `rev` missing or malformed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Track, block, or a block that is not `chart.series` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `rev` is not the block's current rev */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportSeriesRevConflict"];
+                };
+            };
+            /** @description Internal error */
             500: {
                 headers: {
                     [name: string]: unknown;

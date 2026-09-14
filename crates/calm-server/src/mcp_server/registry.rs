@@ -18,7 +18,7 @@
 //!     explicitly [`ConnectionIdentity::CardBound`] connection with no
 //!     thread metadata, from the bound card identity.
 
-use crate::db::RouteRepo;
+use crate::db::{Repo, RouteRepo};
 use crate::event::EventBus;
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::mcp_server::framing::RpcError;
@@ -26,7 +26,7 @@ use crate::mcp_server::result::ToolResult;
 use crate::model::CardRole;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
-use calm_truth::track_vcs_repo::TrackVcsRepo;
+use calm_truth::track_vcs_repo::{SqlxTrackVcsRepo, TrackVcsRepo};
 use calm_types::worker::{Principal, WorkerSessionId};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
@@ -238,6 +238,46 @@ pub struct AppContext {
     /// `report_series` rows. Built once at `McpServer::spawn` from the repo's
     /// sqlite pool.
     pub series_resolver: Arc<crate::report_series::SeriesResolver>,
+}
+
+impl AppContext {
+    /// The one production construction (#1628 S4). `AppState::new` builds it
+    /// before `McpServer::spawn_with_context` and keeps the same `Arc` on
+    /// `RouteState::mcp_context`, so the HTTP series route and the MCP
+    /// tools share one `SeriesResolver`: one in-flight set and one lane per
+    /// plugin, whichever reader asks first. The two late-bound cells are
+    /// the caller's — MCP boot precedes plugin-host and operation-runtime
+    /// construction, and `AppState::new` fills them once those exist.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        write: WriteContext,
+        daemon_token_hash: Option<String>,
+        plugin_host: Arc<tokio::sync::OnceCell<Arc<crate::plugin_host::PluginHost>>>,
+        operation_runtime: Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>,
+        gate_logs_dir: std::path::PathBuf,
+        task_budget_default: i64,
+    ) -> Arc<Self> {
+        let track_vcs = repo.sqlite_pool().map(SqlxTrackVcsRepo::shared);
+        let series_resolver = Arc::new(crate::report_series::SeriesResolver::new(
+            repo.sqlite_pool(),
+        ));
+        let route_repo: Arc<dyn RouteRepo> = repo;
+        Arc::new(Self {
+            terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
+            repo: route_repo,
+            track_vcs,
+            events,
+            write,
+            daemon_token_hash,
+            gate_logs_dir,
+            task_budget_default,
+            plugin_host,
+            operation_runtime,
+            series_resolver,
+        })
+    }
 }
 
 /// Boxed future returned by a tool handler. Handlers are async fns;

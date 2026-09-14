@@ -2,10 +2,12 @@
 //! its block index.
 //!
 //! Two block kinds are hydrated: `chart.series` (from the `report_series`
-//! row for the block's current request hash) and a live `table` (from the
-//! plugin-written overlay the block's `source` names). Everything here is a
-//! database read plus, for a `chart.series` block without a fresh row, one
-//! in-memory `enqueue`. Nothing calls a plugin, nothing writes.
+//! row for the block's current request hash — the shared
+//! `report_series::hydrate` step, which the HTTP series route calls too) and
+//! a live `table` (from the plugin-written overlay the block's `source`
+//! names). Everything here is a database read plus, for a `chart.series`
+//! block without a fresh row, one in-memory `enqueue`. Nothing calls a
+//! plugin, nothing writes.
 //!
 //! The optional `resolve` argument is `{ [block_id]: "full" | "none" }`:
 //! `full` adds the points (or the table's rows), `none` skips the block.
@@ -19,9 +21,8 @@ use serde_json::{Value, json};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::AppContext;
 use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_track};
-use crate::report_series::{
-    Detail, Enqueue, Resolved, SeriesRequest, resolved_at_text, row_is_fresh, store,
-};
+use crate::report_series::hydrate::hydrate_chart_series;
+use crate::report_series::{Detail, resolved_at_text};
 use calm_types::report_blocks::kinds::LIVE_SOURCE_PREFIX;
 use calm_types::report_blocks::{KIND_CHART_SERIES, KIND_TABLE};
 use calm_types::track_report::ReportBlock;
@@ -104,7 +105,12 @@ pub(crate) async fn hydrated_block_index(
         }
         if block.kind == KIND_CHART_SERIES {
             let scope = scope.as_ref().unwrap_or(&TrackPluginScope::All);
-            entry["resolved"] = hydrate_chart_series(ctx, track_id, block, mode, scope).await;
+            let detail = match mode {
+                ResolveMode::Full => Detail::Full,
+                ResolveMode::Summary | ResolveMode::None => Detail::Summary,
+            };
+            entry["resolved"] =
+                hydrate_chart_series(ctx, track_id, block, detail, Some(scope)).await;
         } else if is_live_table(block) {
             entry["resolved"] = hydrate_live_table(track_id, block, mode, &overlays);
         }
@@ -115,72 +121,6 @@ pub(crate) async fn hydrated_block_index(
 
 fn is_live_table(block: &ReportBlock) -> bool {
     block.kind == KIND_TABLE && block.payload.get("source").is_some_and(Value::is_string)
-}
-
-async fn hydrate_chart_series(
-    ctx: &Arc<AppContext>,
-    track_id: &str,
-    block: &ReportBlock,
-    mode: ResolveMode,
-    scope: &TrackPluginScope,
-) -> Value {
-    let request = match SeriesRequest::from_payload(&block.payload) {
-        Ok(request) => request,
-        Err(error) => {
-            return Resolved::Pending {
-                reason: Some(format!("payload does not derive a request: {error}")),
-            }
-            .to_json();
-        }
-    };
-    let resolver = &ctx.series_resolver;
-    let detail = match mode {
-        ResolveMode::Full => Detail::Full,
-        ResolveMode::Summary | ResolveMode::None => Detail::Summary,
-    };
-    let row = match resolver.pool() {
-        Some(pool) => {
-            match store::select_row(pool, track_id, &block.id, &request.request_hash, detail).await
-            {
-                Ok(row) => row,
-                Err(error) => {
-                    tracing::warn!(
-                        track_id,
-                        block_id = block.id,
-                        error = %error,
-                        "report_series: row read failed; reporting pending"
-                    );
-                    None
-                }
-            }
-        }
-        None => None,
-    };
-    let now = resolver.now_ms();
-    let fresh = row.as_ref().is_some_and(|row| {
-        row_is_fresh(
-            &row.status,
-            row.summary.as_ref(),
-            row.pinned,
-            row.resolved_at,
-            now,
-        )
-    });
-    let mut resolved = Resolved::from_row(row);
-    if !fresh {
-        let outcome = resolver
-            .enqueue_scoped(ctx, track_id, &block.id, &request, scope)
-            .await;
-        if let (Resolved::Pending { reason }, Enqueue::Miss(miss)) = (&mut resolved, outcome) {
-            *reason = Some(miss);
-        }
-    }
-    let mut out = resolved.to_json();
-    out["view"] = Value::String(request.view.clone());
-    out["field"] = Value::String(request.field.clone());
-    out["period"] = Value::String(request.period.clone());
-    out["range"] = Value::String(request.range.clone());
-    out
 }
 
 /// A live table resolves from the overlay `(plugin_id, kind)` its `source`

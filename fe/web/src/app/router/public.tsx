@@ -52,6 +52,7 @@ import { ReportDocument } from '../../features/report/document/public.tsx';
 import { useIndependentTaskLaunch } from './independent-task.tsx';
 import { useTaskArtifactFiles } from './task-artifact-files.tsx';
 import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
+import { useReportSeriesResolver } from './report-series.ts';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { ReportFileViewer } from '../../features/report/file-viewer/public.tsx';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
@@ -2957,6 +2958,10 @@ function TrackRouteBody({
     (source: string) => liveTableOverlayPayload(track.id, overlays, source),
     [track.id, overlays],
   );
+  /* #1628 D5 — one query per `chart.series` block, keyed by the block's rev;
+     the document reads them back by `(blockId, rev)`. Opening the report is
+     what makes the kernel fetch the data. */
+  const resolveSeries = useReportSeriesResolver(transport, track.id, reportBlocks, unauthorized);
   const conversationNotificationCardIds = useMemo(
     () => new Set(cards
       .filter((card) => card.kind === 'codex'
@@ -3308,6 +3313,7 @@ function TrackRouteBody({
            invalidates this track's detail, so a plugin push re-renders the
            block without the report being rewritten. */
         resolveLiveTable={resolveLiveTable}
+        resolveSeries={resolveSeries}
         taskVerdicts={verdicts}
         taskRows={tasks}
         renderTaskExecution={(task, expanded) => <TaskRecovery
