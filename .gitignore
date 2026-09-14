@@ -4,18 +4,12 @@ plugins/*/target
 plugins/*/bin/
 
 # Node
-web/node_modules
-web/dist
-web/.tmp
 **/*.tsbuildinfo
 
 # Vitest cache
 .vite/
 
 # Playwright
-web/test-results/
-web/playwright-report/
-web/playwright/.cache/
 
 # Local opt-in E2E logs
 e2e-artifacts/

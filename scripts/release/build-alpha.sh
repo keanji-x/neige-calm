@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'HELP'
 Usage: scripts/release/build-alpha.sh --version 0.1.0-alpha.1 --output-dir /abs/output [--target-dir /abs/cargo-target]
-Builds both frontends and all release binaries; writes a tar.gz, SHA256 and BUILD.json.
+Builds the maintained frontend and all release binaries; writes a tar.gz, SHA256 and BUILD.json.
 Requires a clean Git checkout. Does not create a Git tag or publish a release.
 HELP
 }
@@ -68,12 +68,11 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   -p calm-proc-supervisor -p neige-cli \
   --bin calm-server --bin neige-codex-bridge --bin neige-app \
   --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin neige
-(cd web && npm ci --legacy-peer-deps && npm run build)
 (cd fe && npm ci && npm run build)
 "$bin_dir/neige-app" system package \
   --release-dir "$bundle/release" --release-id "$version" \
   --app-bin "$bin_dir/neige-app" \
-  --web-dist "$repo_root/web/dist" --fe-dist "$repo_root/fe/web/dist" \
+  --fe-dist "$repo_root/fe/web/dist" \
   --bin "calm-server=$bin_dir/calm-server" \
   --bin "calm-proc-supervisor=$bin_dir/calm-proc-supervisor" \
   --bin "neige-codex-bridge=$bin_dir/neige-codex-bridge" \

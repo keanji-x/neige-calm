@@ -615,7 +615,7 @@ fn alpha_frontend_config_is_forwarded_to_the_server() {
 }
 
 #[test]
-fn alpha_package_cli_accepts_both_frontends() {
+fn alpha_package_cli_accepts_maintained_frontend_without_legacy() {
     Cli::try_parse_from([
         "neige-app",
         "system",
@@ -624,8 +624,6 @@ fn alpha_package_cli_accepts_both_frontends() {
         "/tmp/alpha-package",
         "--app-bin",
         "/tmp/neige-app",
-        "--web-dist",
-        "/tmp/web/dist",
         "--fe-dist",
         "/tmp/fe/web/dist",
     ])
@@ -633,10 +631,10 @@ fn alpha_package_cli_accepts_both_frontends() {
 }
 
 #[test]
-fn alpha_frontend_cli_override_and_legacy_config_are_explicit() {
+fn alpha_frontend_cli_override_replaces_maintained_default() {
     let mut cfg = AppConfig::starter(PathBuf::from("/tmp/alpha-config"));
     assert!(
-        !calm_server_supervisor_config(&cfg)
+        calm_server_supervisor_config(&cfg)
             .child_envs
             .iter()
             .any(|(key, _)| key == "CALM_FE_DIST")

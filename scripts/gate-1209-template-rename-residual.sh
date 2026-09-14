@@ -176,10 +176,6 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 #        third reader was missed" a green regression.
 4   fe/core/api/schemas.ts
 6   fe/core/api/schemas.contract.test.ts
-4   web/src/api/schemas.ts
-5   web/src/api/schemas.test.ts
-3   web/src/track-fs-viewers/schemas.ts
-8   web/src/track-fs-viewers/schemas.test.ts
 # --- 10. Design + historical records. The #1209 design doc argues about both
 #         spellings by name (and #1268 added dated notes marking the plugin-side
 #         half of that argument as overtaken, rather than deleting it);

@@ -63,6 +63,8 @@ done
 
 # Production Rust can affect both integrated stacks and the API contract, but
 # cannot change either frontend's pure unit/build graph or mutation manifest.
+check_mode openapi true "maintained generator command" fe/package.json
+check_mode openapi true "maintained generator dependencies" fe/package-lock.json
 check_mode openapi true "Rust production API input" crates/calm-server/src/routes/version.rs
 check_mode fe-e2e true "Rust production FE integration input" crates/calm-server/src/routes/version.rs
 check_mode stack true "Rust production stack input" crates/calm-server/src/routes/version.rs
@@ -164,7 +166,7 @@ require_ci_contract() {
   fi
 }
 
-for mode in fe web openapi fe-e2e stack mutation; do
+for mode in fe openapi fe-e2e stack mutation; do
   output_name="${mode//-/_}_changed"
   require_ci_contract \
     "$output_name: \${{ steps.classify.outputs.$output_name }}" \

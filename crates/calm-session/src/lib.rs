@@ -106,7 +106,6 @@ pub enum FrameError {
 /// promote themselves with [`ClientMsg::OwnerClaim`] (hostile takeover —
 /// the daemon never negotiates).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum Role {
     Owner,
     Observer,
@@ -117,7 +116,6 @@ pub enum Role {
 /// later additions (cell-grid diffs, sixel images, ...) don't require a
 /// fresh `FRAME_VERSION` bump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum RenderEncoding {
     Vt,
 }
@@ -128,7 +126,6 @@ pub enum RenderEncoding {
 /// scrollback (whole-chunk granularity in this PR, may tighten to
 /// line-granular when the VT model lands).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum InitialScrollback {
     None,
     All,
@@ -139,7 +136,6 @@ pub enum InitialScrollback {
 /// fields are only consulted by programs that draw inline images (sixel /
 /// kitty graphics); most clients leave them `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct PtySize {
     pub cols: u16,
     pub rows: u16,
@@ -162,7 +158,6 @@ pub struct PtySize {
 /// Each channel is a plain u8 (8-bit per channel); the daemon expands
 /// to xterm's 16-bit `rgb:RRRR/GGGG/BBBB` reply form (`c * 257`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct TerminalTheme {
     pub fg: (u8, u8, u8),
     pub bg: (u8, u8, u8),
@@ -172,7 +167,6 @@ pub struct TerminalTheme {
 /// it materially differs from the daemon-side default and the client wants
 /// pixel-accurate image alignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct CellSize {
     pub width: u16,
     pub height: u16,
@@ -183,7 +177,6 @@ pub struct CellSize {
 /// or must send a fresh snapshot (in which case a
 /// [`HistoryGap`] is included in `ServerHello`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct ResumeFrom {
     pub render_rev: Option<u32>,
     pub pty_seq: Option<u32>,
@@ -193,7 +186,6 @@ pub struct ResumeFrom {
 /// intersection during handshake (e.g. no `Vt` in `render_encodings` →
 /// [`ProtocolErrorCode::UnsupportedEncoding`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct ClientCapabilities {
     pub render_encodings: Vec<RenderEncoding>,
     pub supports_scrollback: bool,
@@ -243,7 +235,6 @@ pub struct ClientCapabilities {
 /// decides the client needs a hard resync (typically because the requested
 /// resume cursor fell off the history window).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct RenderSnapshot {
     pub render_rev: u32,
     pub pty_seq: u32,
@@ -258,7 +249,6 @@ pub struct RenderSnapshot {
 /// detect a gap (its last-known `render_rev` doesn't match) and request a
 /// fresh [`RenderSnapshot`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct RenderPatch {
     pub render_rev: u32,
     pub prev_render_rev: u32,
@@ -272,7 +262,6 @@ pub struct RenderPatch {
 /// `true` in this PR (we always re-send the snapshot rather than a partial
 /// catch-up).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub struct HistoryGap {
     pub requested_render_rev: Option<u32>,
     pub requested_pty_seq: Option<u32>,
@@ -284,7 +273,6 @@ pub struct HistoryGap {
 /// Daemon-side back-pressure policy hint. The first track only encodes the
 /// shape; nothing in this PR ever sends a `Backpressure` frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum BackpressurePolicy {
     LatestOnly,
     SnapshotRequired,
@@ -295,7 +283,6 @@ pub enum BackpressurePolicy {
 /// string so the client can branch on the error class (e.g. show
 /// "upgrade required" for `UnsupportedVersion`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum ProtocolErrorCode {
     UnsupportedVersion,
     NotOwner,
@@ -316,7 +303,6 @@ pub enum ProtocolErrorCode {
 // `web/src/api/terminal-v2-handmirror.ts` has been retired in favor of
 // the generated file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum ClientMsg {
     /// First frame on every connection. Carries the application protocol
     /// version, terminal identity, viewport / cell metrics, optional
@@ -412,7 +398,6 @@ pub enum ClientMsg {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-terminal.ts")]
 pub enum DaemonMsg {
     /// Successful handshake response. Tells the client the daemon's
     /// negotiated protocol version, the session id (rolls on each daemon

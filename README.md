@@ -108,7 +108,7 @@ Start the stack:
 make dev
 ```
 
-`make dev` builds and serves both frontends. Note the printed port, then open the new frontend at `http://localhost:<printed-port>/next/`; the bare root redirects there in Docker dev. The legacy frontend remains available at `http://localhost:<printed-port>/calm/` during the cutover.
+`make dev` builds and serves the maintained frontend. Note the printed port, then open the new frontend at `http://localhost:<printed-port>/next/`; the bare root redirects there in Docker dev. The legacy `/calm/` frontend is retired.
 
 For frontend HMR instead of the built bundle, run the following in another terminal, replacing `<printed-port>`:
 
@@ -194,7 +194,6 @@ That target does not replace Tier 2 stack coverage.
 ```text
 crates/    Rust kernel, persistence, execution, providers, CLI, and process supervision
 fe/        Next-generation frontend and its framework-independent domain core
-web/       Legacy frontend retained temporarily during the cutover
 plugins/   Built-in plugin manifests and implementations
 e2e/       Stack-level and real-agent end-to-end tests
 docs/      Architecture, operations, design records, and executable-oracle documentation

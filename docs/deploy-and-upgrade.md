@@ -24,7 +24,7 @@ plugin sources should not be linked to shared or lower-trust agent worktrees.
 │   ├── rel-XXXX/                              (release package)
 │   │   ├── bin/{calm-server, calm-proc-supervisor, neige-codex-bridge,
 │   │   │        neige-mcp-stdio-shim, neige, neige-app}
-│   │   ├── web/dist/                         (legacy; next/ contains the new FE)
+│   │   ├── web/dist/                         (next/ contains the maintained FE)
 │   │   └── manifest.json                      (schemaVersion=2 v2 manifest)
 │   └── rel-YYYY/
 
@@ -49,7 +49,7 @@ plugin sources should not be linked to shared or lower-trust agent worktrees.
 `127.0.0.1:4050`); `calm-server` (the kernel) listens on the **calm port**
 (`[child] calm_listen`, default `127.0.0.1:4040`). Web UI lives on the
 calm port under `/next/` when `child.fe_dist` is configured; `/` redirects there.
-Legacy `/calm/` remains available when `child.web_dist` is configured. The admin port is loopback-only for state
+Legacy `/calm/` is retired and returns 404. The admin port is loopback-only for state
 changes; never expose it to LAN.
 
 ## 2. First install
@@ -62,7 +62,6 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   NEIGE_BUILD_SHA="$(git rev-parse HEAD)" cargo build --locked --release \
   -p neige-app -p calm-server -p calm-proc-supervisor \
   -p calm-codex-bridge -p neige-mcp-stdio-shim -p neige-cli
-(cd web && npm ci --legacy-peer-deps && npm run build)
 (cd fe && npm ci && npm run build)
 ```
 
@@ -73,7 +72,6 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   --release-dir ~/.local/share/neige-app/releases/rel-1 \
   --release-id rel-1 \
   --app-bin       target/release/neige-app \
-  --web-dist      web/dist \
   --fe-dist       fe/web/dist \
   --bin calm-server=target/release/calm-server \
   --bin calm-proc-supervisor=target/release/calm-proc-supervisor \
@@ -127,7 +125,6 @@ backups         = "~/.local/share/neige-calm/backups"
 [child]
 bin                  = "~/.local/share/neige-app/releases/current-server/bin/calm-server"
 proc_supervisor_bin  = "~/.local/share/neige-app/releases/current-server/bin/calm-proc-supervisor"
-web_dist             = "~/.local/share/neige-app/releases/current-web/web/dist"
 fe_dist              = "~/.local/share/neige-app/releases/current-web/web/dist/next"
 calm_listen          = "127.0.0.1:4040"
 data_dir             = "~/.local/share/neige-calm"

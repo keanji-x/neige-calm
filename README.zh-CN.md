@@ -105,7 +105,7 @@ cp .env.example .env
 make dev
 ```
 
-`make dev` 会同时构建并部署两个前端。记下输出端口，然后打开 `http://localhost:<printed-port>/next/`；Docker 开发环境的根路径也会跳转到这里。切换期间，旧前端仍可通过 `http://localhost:<printed-port>/calm/` 访问。
+`make dev` 会构建并部署新版前端。记下输出端口，然后打开 `http://localhost:<printed-port>/next/`；Docker 开发环境的根路径也会跳转到这里。旧版 `/calm/` 前端已退役。
 
 如果需要前端 HMR，而不是使用构建后的 bundle，请在另一终端执行以下命令，并替换 `<printed-port>`：
 
@@ -187,7 +187,6 @@ make e2e-codex-isolated
 ```text
 crates/    Rust 内核、持久化、执行、Provider、CLI 与进程监管
 fe/        新一代前端及不依赖框架的领域核心
-web/       前端切换期间暂时保留的旧前端
 plugins/   内置插件 manifest 与实现
 e2e/       完整技术栈与真实 Agent 端到端测试
 docs/      架构、运维、设计记录与可执行 Oracle 文档

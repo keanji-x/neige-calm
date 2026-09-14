@@ -1,0 +1,955 @@
+# Historical migration inventory for the retired repository-root web/ application.
+- id: INV-UI-DIALOG-001
+  kind: invariant
+  family: dialog-effect-order
+  statement: >
+    Dialog 的 background-inert effect 必须声明在 focus-restore effect 之前；
+    两者的声明顺序本身就是契约，不得因为"看起来无关"而重排。
+  why: >
+    React 在同一次 render pass 上按【声明顺序】跑 effect cleanup（不是逆序）。
+    顺序反了则 focus restore 先跑，restore 目标（例如与 portal root 同级的
+    AddPanel trigger）此时祖先仍带 inert，浏览器会静默忽略 focus() 调用，焦点
+    掉到 <body>。源码注释："Slice 7 surfaced this"（PR #73 / issue #75）。
+  source: web/src/ui/Dialog/Dialog.tsx:183-193,229-235
+  authoritative_test: web/src/ui/Dialog/Dialog.test.tsx:230
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-DIALOG-003
+  kind: invariant
+  family: dialog-effect-order
+  statement: >
+    Dialog 的 Esc/scroll-lock effect 与 initial-focus/restore effect 必须保持
+    拆分，focus effect 的依赖不得包含 `view`。
+  why: >
+    focus effect 若随 view 变化重跑，用户每次 pushView 都会被抢走焦点。源码注释
+    明确："We split this from the Esc effect so the dependencies stay minimal —
+    re-running this on every `view` change would yank focus around"。
+  source: web/src/ui/Dialog/Dialog.tsx:226-235,281
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ===========================================================================
+# Dialog — focus trap / restore
+# ===========================================================================
+
+- id: INV-UI-DIALOG-004
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    focus trap 必须在每次 Tab keydown 时重新查询 panel 内的 focusables，
+    不得缓存快照。
+  why: >
+    panel 内容会动态变化（child view push 换掉整个 body），缓存的列表会立刻过期；
+    源码注释："Querying focusables fresh on every Tab keypress keeps us correct
+    across dynamic content"，并因此 child view 不需要自带 focus 管理。
+  source: web/src/ui/Dialog/Dialog.tsx:31-34,300-308,331-336
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-DIALOG-005
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    inert 清理必须逐元素精确还原开启前记录的 `prior` 值（hadInert /
+    hadAriaHidden），不得无脑 removeAttribute。
+  why: >
+    背景兄弟节点可能在 Dialog 打开【之前】就已带 inert 或 aria-hidden（嵌套模态、
+    上层框架托管）；无脑移除会把别人的状态擦掉。源码注释："Remember each sibling's
+    prior state so we can restore exactly."
+  source: web/src/ui/Dialog/Dialog.tsx:208-224
+  authoritative_test: web/src/ui/Dialog/Dialog.test.tsx:126
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-DIALOG-006
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    focus restore 前必须用 `document.contains(target)` 守卫，目标已脱离 DOM 时
+    静默 noop，不得抛错也不得回退到 body。
+  why: >
+    previously-focused 元素可能在 Dialog 生命周期内被 re-render 掉；源码注释：
+    "Guard against focusing a detached node — silently noop instead."
+  source: web/src/ui/Dialog/Dialog.tsx:274-279
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-DIALOG-007
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    restore 目标必须在 cleanup 时刻读取 ref 的【当前值】，而不是挂载时的快照；
+    `restoreFocusRef` 优先于捕获的 previouslyFocused。
+  why: >
+    要拿到调用方最新提供的 override；源码为此显式 eslint-disable
+    react-hooks/exhaustive-deps 并注释 "here that's exactly what we rely on"。
+  source: web/src/ui/Dialog/Dialog.tsx:262-279
+  authoritative_test: web/src/ui/Dialog/Dialog.test.tsx:183
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-DIALOG-008
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    初始 focus 必须经 `requestAnimationFrame` 延后一帧，且 effect cleanup 必须
+    `cancelAnimationFrame`。
+  why: >
+    源码注释：panel 虽已进 DOM 但布局未稳，直接 focus 会被浏览器静默拒绝。取消是
+    为了避免 open 快速翻转时残留帧回调抢焦点。
+  source: web/src/ui/Dialog/Dialog.tsx:242-263
+  authoritative_test: web/src/ui/Dialog/Dialog.test.tsx:54
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-DIALOG-009
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    `[tabindex="-1"]` 元素必须被排除出 Tab 循环，但 panel 自身（tabIndex={-1}）
+    必须保留为"无可聚焦子元素"时的兜底聚焦目标。
+  why: >
+    源码注释："`tabIndex={-1}` means 'programmatically focusable, but skipped by
+    Tab' — we want it focusable as a fallback target but not part of the trap
+    cycle"；没有兜底目标时 trap 无处锚定，焦点会漏到背景。
+  source: web/src/ui/Dialog/Dialog.tsx:100-115,254-260,309-314,368
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-DIALOG-010
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    `isFocusable` 故意不做可见性过滤（display/visibility），不得"补上"这个检查。
+  why: >
+    源码注释：真实浏览器里隐藏元素本就难以 :focus-visible，而 jsdom 完全没有布局，
+    加可见性判断会让测试里每个 focusable 都假阴性。selector 本身（排除 disabled 与
+    tabindex=-1）才是主过滤器。
+  source: web/src/ui/Dialog/Dialog.tsx:117-130
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-DIALOG-011
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    `isFocusable` 必须用 `el.closest('[inert]')` 排除处于 inert 子树内的元素，
+    而不仅检查元素自身。
+  why: >
+    inert 是继承性的：祖先带 inert 则后代全部不可 tab；只查自身会把背景元素误判为
+    可聚焦。源码注释："`inert` (on the element or any ancestor) makes it untabbable."
+  source: web/src/ui/Dialog/Dialog.tsx:120-121
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-UI-DIALOG-012
+  kind: capability
+  family: dialog-focus
+  statement: >
+    Tab 从最后一个 focusable 必须回绕到第一个，Shift+Tab 从第一个回绕到最后一个；
+    焦点在 panel 外时任意 Tab 都必须拉回 panel 内。
+  why: >
+    aria-modal dialog 的 WAI-ARIA 强制焦点陷阱；焦点绝不能泄漏到背景 DOM
+    （Dialog.tsx 文件头 Focus contract 第 1 条）。
+  source: web/src/ui/Dialog/Dialog.tsx:300-329
+  authoritative_test: web/src/ui/Dialog/Dialog.test.tsx:74
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-UI-DIALOG-013
+  kind: capability
+  family: dialog-focus
+  statement: >
+    panel 内一个 focusable 都没有时，Tab 必须 preventDefault 并把焦点钉在 panel
+    自身，而不是让焦点逃出去。
+  why: >
+    源码注释："Nothing to cycle through — pin focus on the panel itself."
+    否则空对话框（纯文本）会立刻把 Tab 放回背景，陷阱失效。
+  source: web/src/ui/Dialog/Dialog.tsx:309-314
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-UI-DIALOG-014
+  kind: capability
+  family: dialog-focus
+  statement: >
+    初始焦点优先级必须是：`initialFocusRef` > panel 内第一个 focusable > panel 自身。
+  why: >
+    Dialog.tsx 文件头 Focus contract 第 2 条明确列出三级回退；ConfirmDialog 的
+    Cancel-safe 契约完全建立在 initialFocusRef 优先之上。
+  source: web/src/ui/Dialog/Dialog.tsx:19-23,246-260
+  authoritative_test: web/src/ui/Dialog/Dialog.test.tsx:162
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-UI-DIALOG-015
+  kind: capability
+  family: dialog-focus
+  statement: >
+    关闭时焦点必须回到打开前拥有焦点的元素（通常是 trigger），调用方可用
+    `restoreFocusRef` 覆盖。
+  why: >
+    Dialog.tsx 文件头 Focus contract 第 3 条；键盘用户关闭模态后必须回到出发点，
+    否则焦点丢失需要从页首重新 Tab。
+  source: web/src/ui/Dialog/Dialog.tsx:24-26,236-241,262-280
+  authoritative_test: web/src/ui/Dialog/Dialog.test.tsx:107
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-UI-DIALOG-016
+  kind: capability
+  family: dialog-inert
+  statement: >
+    Dialog 打开期间，`document.body` 下除 portal root 以外的每个直接子元素都必须
+    同时被打上 `inert` 与 `aria-hidden="true"`。
+  why: >
+    Dialog.tsx 文件头 Focus contract 第 4 条：辅助技术不得线性遍历进入底层页面。
+    两个属性都要打：inert 管 tab/交互，aria-hidden 管屏读虚拟光标。
+  source: web/src/ui/Dialog/Dialog.tsx:27-29,204-217
+  authoritative_test: web/src/ui/Dialog/Dialog.test.tsx:126
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-DIALOG-017
+  kind: invariant
+  family: dialog-inert
+  statement: >
+    portal root 必须通过从 panel 向上走到 `document.body` 的直接子节点来推导，
+    不得硬编码"panel 的父节点即 overlay"。
+  why: >
+    源码注释："even if some future refactor adds an extra wrapper" —— 推导式定位
+    让中间再包一层也不会把 overlay 自身错误地 inert 掉（那会把对话框自己废掉）。
+  source: web/src/ui/Dialog/Dialog.tsx:196-207
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# Dialog — 结构 / 生命周期 / 故意不做
+# ===========================================================================
+
+- id: INV-UI-DIALOG-018
+  kind: invariant
+  family: dialog-structure
+  statement: >
+    Dialog 故意【不】使用原生 `<dialog>` 元素。
+  why: >
+    源码首行注释："deliberately not <dialog> because the browser defaults are
+    unstyleable across themes" —— 原生默认样式在明暗主题下无法统一。
+  source: web/src/ui/Dialog/Dialog.tsx:1-4
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-DIALOG-019
+  kind: invariant
+  family: dialog-structure
+  statement: >
+    焦点陷阱与 roving-tabindex 均为手写，故意不引入 headless-UI / focus-trap 类库。
+  why: >
+    issue #56 的架构决定（Dialog.tsx:31-34 与 useRovingTabindex.ts:47-48 各自注明
+    "Hand-rolled rather than pulling a library; see issue #56 architecture note"）。
+  source: web/src/ui/Dialog/Dialog.tsx:31-34
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-DIALOG-020
+  kind: invariant
+  family: dialog-structure
+  statement: >
+    body scroll lock 解除时必须精确还原打开前记录的 `overflow` 值，不得写死
+    清空成 `''`。
+  why: >
+    调用方或上层框架可能本来就设了 overflow；写死清空会破坏页面既有滚动策略。
+    源码用 `prevOverflow` 捕获并在 cleanup 还原。
+  source: web/src/ui/Dialog/Dialog.tsx:174-180
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-DIALOG-021
+  kind: invariant
+  family: dialog-structure
+  statement: >
+    panel 的 `aria-label` 仅在 headerTitle 为 string 时设置；title 为任意
+    ReactNode 时不得强行 stringify。
+  why: >
+    child view 的 title 是 ReactNode（可含图标/按钮），拼接出的字符串会成为噪声
+    可访问名。代码显式做 `typeof headerTitle === 'string' ? … : undefined`。
+  source: web/src/ui/Dialog/Dialog.tsx:369
+  authoritative_test: web/src/ui/Dialog/Dialog.contract.test.tsx:84
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-DIALOG-022
+  kind: invariant
+  family: dialog-structure
+  statement: >
+    panel 上的 `onMouseDown` 必须 stopPropagation，overlay 的关闭判定必须要求
+    `e.target === e.currentTarget`。
+  why: >
+    双保险防止 panel 内的点击冒泡到 overlay 触发误关闭（用户在表单里点一下就把
+    半填的内容关掉）。
+  source: web/src/ui/Dialog/Dialog.tsx:340-351,371
+  authoritative_test: web/src/ui/ConfirmDialog/ConfirmDialog.contract.test.tsx:96
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-DIALOG-023
+  kind: invariant
+  family: dialog-structure
+  statement: >
+    overlay 使用 `role="presentation"`；panel 是唯一带 `role="dialog"
+    aria-modal="true"` 的节点。
+  why: >
+    "One ARIA pattern per primitive"（README Rules）；overlay 若带语义会在 a11y
+    树里多出一层无名容器。
+  source: web/src/ui/Dialog/Dialog.tsx:350,364-373
+  authoritative_test: web/src/ui/Dialog/Dialog.test.tsx:83
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-DIALOG-024
+  kind: invariant
+  family: dialog-structure
+  statement: >
+    panel 上的 `jsx-a11y/no-noninteractive-element-interactions` 抑制是结构性
+    豁免，不是待办；不得当作"技术债"去掉 onMouseDown / onKeyDown。
+  why: >
+    源码注释逐条说明两个 handler 都是 dialog 契约本身（click-through 阻断 +
+    WAI-ARIA 强制的 focus trap），"Neither is a 'fake button' — the disable is
+    structural, not deferred work."
+  source: web/src/ui/Dialog/Dialog.tsx:352-373
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ===========================================================================
+# Dialog — child-view stack（ModalViewContext）
+# ===========================================================================
+
+- id: CAP-UI-DIALOG-025
+  kind: capability
+  family: dialog-childview
+  statement: >
+    后代组件可通过 `useModalView().pushView({title, body, onEscape?})` 接管
+    dialog 的标题栏与 body，并用 `popView()` 返回。
+  why: >
+    源码文件头：内层控件需要"全屏感"子流程时保持【单一 dialog 层】；
+    "popover-in-modal nesting was the structural mistake we're replacing here"。
+  source: web/src/ui/Dialog/Dialog.tsx:6-13,75-98,283-289
+  authoritative_test: web/src/ui/Dialog/Dialog.contract.test.tsx:71
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-DIALOG-026
+  kind: invariant
+  family: dialog-childview
+  statement: >
+    push child view 时外层 `children` 必须保持【挂载】，仅以内联 `display:none`
+    视觉隐藏；不得卸载。
+  why: >
+    外层可能是半填的表单（SchemaForm）；卸载会丢掉用户输入的状态。源码注释："keep
+    their state intact — closing the view returns the user to their half-filled
+    form"。契约测试直接断言 `.modal-body` 的 `style.display === 'none'`。
+  source: web/src/ui/Dialog/Dialog.tsx:387-397
+  authoritative_test: web/src/ui/Dialog/Dialog.contract.test.tsx:104-109
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-DIALOG-027
+  kind: invariant
+  family: dialog-childview
+  statement: >
+    child view 打开期间，overlay 的点击关闭必须被禁用；退出子视图的唯一出口是
+    视图内的 Cancel/Back（或 Esc）。
+  why: >
+    源码注释："Disabled while a child view is up … prevents accidental loss of a
+    half-filled SchemaForm behind it."
+  source: web/src/ui/Dialog/Dialog.tsx:342-349
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-UI-DIALOG-028
+  kind: capability
+  family: dialog-childview
+  statement: >
+    Esc 必须先给 child view 首轮否决权：有 `onEscape` 就调它，没有就 pop 掉视图；
+    没有 child view 时才调 `onClose`。
+  why: >
+    子流程的 Esc 语义是"退出子流程"而不是"关掉整个对话框"，否则用户按一次 Esc 就
+    丢掉整个上下文。源码注释："give it first refusal"。
+  source: web/src/ui/Dialog/Dialog.tsx:160-172,79-81
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-DIALOG-029
+  kind: invariant
+  family: dialog-childview
+  statement: >
+    dialog 关闭时必须清空 pushed view；再次打开必须从普通 children 开始。
+  why: >
+    源码注释："opening again should start from the normal children, not a stale
+    browse view."
+  source: web/src/ui/Dialog/Dialog.tsx:153-157
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-DIALOG-030
+  kind: invariant
+  family: dialog-childview
+  statement: >
+    push child view 时 panel 必须自动切到 wide 变体（等同 `wide` prop）。
+  why: >
+    子视图是"全屏感"的浏览界面（DirectoryBrowser），窄面板放不下；
+    `widePanel = showingView || !!wide`。
+  source: web/src/ui/Dialog/Dialog.tsx:293-298,341,366
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-DIALOG-031
+  kind: invariant
+  family: dialog-childview
+  statement: >
+    `ModalViewContext` / `useModalView()` 定义在 primitive 层（ui/Dialog）却由
+    业务层组件消费（DirectoryPicker、NewTaskForm、Area 页面）；新架构必须显式
+    处理这条跨层依赖，不能在拆分 primitive 时把它留成隐式耦合。
+  why: >
+    这是 primitive 层唯一一条【向上暴露状态机】的出口：README "No business logic"
+    规则禁止 primitive 依赖业务，但业务确实依赖这个 context。实测消费方位于
+    web/src/shared/components/DirectoryPicker.tsx:32,50 与
+    web/src/shared/components/NewTaskForm.tsx:79,246 —— 换实现会同时打断三个调用方。
+  source: web/src/ui/Dialog/Dialog.tsx:84-98
+  authoritative_test: web/src/ui/Dialog/Dialog.contract.test.tsx:38-68
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ===========================================================================
+# Dialog — hideTitleRow (#891)
+# ===========================================================================
+
+- id: CAP-UI-DIALOG-032
+  kind: capability
+  family: dialog-title
+  statement: >
+    `hideTitleRow` 必须只隐藏视觉标题栏（标题文本 + × 按钮），`title` 仍必须
+    流入 panel 的 `aria-label`；对话框永远不得无名。
+  why: >
+    #891 signoff：内容要读成一张完整卡片，但无名 dialog 会直接违反 a11y 契约
+    （getByRole('dialog', {name}) 是全项目的选择器约定）。
+  source: web/src/ui/Dialog/Dialog.tsx:46-55,369,374
+  authoritative_test: web/src/ui/Dialog/Dialog.contract.test.tsx:173
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-DIALOG-033
+  kind: invariant
+  family: dialog-title
+  statement: >
+    `hideTitleRow` 对 pushed child view 无效：子视图必须永远渲染 head
+    （自己的标题 + 关闭按钮）。
+  why: >
+    子流程需要自己的标题和 dismiss 入口；源码条件是
+    `headerTitle && (showingView || !hideTitleRow)`。
+  source: web/src/ui/Dialog/Dialog.tsx:50-54,374
+  authoritative_test: web/src/ui/Dialog/Dialog.contract.test.tsx:191
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-DIALOG-034
+  kind: invariant
+  family: dialog-title
+  statement: >
+    使用 `hideTitleRow` 的调用方必须自备 dismiss 入口；Esc 与 overlay 点击仍然
+    可用，不得因为隐藏 × 而一并禁掉。
+  why: >
+    源码注释："Callers opting in must provide their own dismiss affordance
+    (Esc and overlay-click still work)" —— 否则出现无法关闭的对话框。
+  source: web/src/ui/Dialog/Dialog.tsx:50-52
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# Menu
+# ===========================================================================
+
+- id: INV-UI-MENU-038
+  kind: invariant
+  family: menu-focus
+  statement: >
+    菜单打开时必须把 activeIndex 重置为 0（第一项获得焦点）。
+  why: >
+    源码注释：typeahead buffer 走 ref + idle timer，open/close 周期不需要清；但
+    active index 必须重锚，否则第二次打开会停在上次的位置。
+  source: web/src/ui/Menu/Menu.tsx:152-163
+  authoritative_test: web/src/ui/Menu/Menu.test.tsx:117
+  owner_slice: ui/menu
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-ROVING-047
+  kind: invariant
+  family: roving-keys
+  statement: >
+    ArrowLeft / ArrowRight 故意【不】被处理，事件必须原样透传。
+  why: >
+    源码注释："A vertical menu must not consume horizontal arrows: caret
+    navigation inside any editable descendant relies on them." orientation 硬编码
+    为 vertical 是 YAGNI 的刻意选择。
+  source: web/src/ui/hooks/useRovingTabindex.ts:32-36,265-312
+  authoritative_test: NONE
+  owner_slice: ui/roving
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-UI-ROVING-048
+  kind: capability
+  family: roving-keys
+  statement: >
+    ArrowDown/ArrowUp 移动 active index，`loop`（默认 true）决定边界回绕还是钳制。
+  why: >
+    WAI-ARIA APG roving tabindex 模式；loop=false 是 listbox/toolbar 等场景的需要。
+  source: web/src/ui/hooks/useRovingTabindex.ts:230-242,266-275
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:114
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-UI-ROVING-049
+  kind: capability
+  family: roving-keys
+  statement: >
+    Home 跳到第一项、End 跳到最后一项，且都必须 preventDefault。
+  why: >
+    APG 菜单键盘契约；不 preventDefault 会让页面同时滚动到首/尾。
+  source: web/src/ui/hooks/useRovingTabindex.ts:276-283
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:158
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-UI-ROVING-050
+  kind: capability
+  family: roving-keys
+  statement: >
+    Enter 与 Space 触发 `onActivate(activeIndex)`，Escape 触发 `onEscape()`，
+    三者都必须 preventDefault。
+  why: >
+    Space 不拦会滚页；Escape 不拦可能被外层再处理一次导致双重关闭。
+  source: web/src/ui/hooks/useRovingTabindex.ts:284-303
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:171
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-ROVING-051
+  kind: invariant
+  family: roving-typeahead
+  statement: >
+    Space 在 typeahead buffer 非空时必须进入 buffer 而【不是】激活当前项。
+  why: >
+    源码注释："so 'j a' still matches 'java'"；否则带空格的标签永远无法用
+    typeahead 选中，且用户打字打到一半会误触发激活。Matches WAI-ARIA APG。
+  source: web/src/ui/hooks/useRovingTabindex.ts:145-148,292-303
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:183
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-ROVING-052
+  kind: invariant
+  family: roving-typeahead
+  statement: >
+    单字母 buffer 匹配必须【跳过】当前项（从 startFrom+1 开始扫），多字母 buffer
+    必须【包含】当前项（从 startFrom 开始扫）。
+  why: >
+    源码注释：单字母重复按键要在同首字母项之间循环（APG 行为）；buffer 变长说明
+    "用户还在打字"，此时保持当前匹配项不动才不会跳走。`includeStart =
+    needle.length > 1`。
+  source: web/src/ui/hooks/useRovingTabindex.ts:119-133
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:75,86
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-ROVING-053
+  kind: invariant
+  family: roving-typeahead
+  statement: >
+    typeahead 扫描必须两段式绕回列表头部（模运算取余），不得只扫到列表末尾就放弃。
+  why: >
+    源码注释："so a user typing past the last match still finds an earlier one"。
+  source: web/src/ui/hooks/useRovingTabindex.ts:119-134
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:75-79
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-ROVING-054
+  kind: invariant
+  family: roving-typeahead
+  statement: >
+    typeahead buffer 必须在 ~500ms 空闲后重置，且该窗口在每次击键时重新计时；
+    默认值 500ms 可由 `typeaheadTimeoutMs` 覆盖（供测试收窄）。
+  why: >
+    源码注释："Default 500ms — matches the WAI-ARIA APG reference impl. Tests can
+    shrink this for determinism."
+  source: web/src/ui/hooks/useRovingTabindex.ts:76-79,214-220
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:253
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-ROVING-055
+  kind: invariant
+  family: roving-typeahead
+  statement: >
+    typeahead 匹配一律 trim + 小写后做 startsWith 前缀比较（不是 includes、
+    不是模糊匹配），`getLabel` 必须返回用户可见的标签。
+  why: >
+    APG 参考实现是前缀匹配；`normalizeForTypeahead` 被单独导出为纯函数正是为了
+    锁住这条规则（源码注释 "Pulled out for the unit test"）。
+  source: web/src/ui/hooks/useRovingTabindex.ts:66-74,97-103,132
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:81,98
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-ROVING-056
+  kind: invariant
+  family: roving-typeahead
+  statement: >
+    未提供 `getLabel` 时 typeahead 必须整体禁用：可打印键不得被拦截、不得
+    preventDefault。
+  why: >
+    没有标签就无从匹配；此时吞掉可打印键会破坏组合件内可编辑后代的输入。
+  source: web/src/ui/hooks/useRovingTabindex.ts:246,296,304-311
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:272
+  owner_slice: ui/roving
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-ROVING-057
+  kind: invariant
+  family: roving-typeahead
+  statement: >
+    带 Ctrl / Meta / Alt 修饰的按键以及所有具名键（`e.key.length > 1`）
+    永远不得进入 typeahead buffer。
+  why: >
+    源码注释：过滤 Ctrl+A / Cmd+V 这类组合键与 "Enter"/"Tab" 具名键，否则用户的
+    快捷键会被菜单吞掉。
+  source: web/src/ui/hooks/useRovingTabindex.ts:137-149
+  authoritative_test: NONE
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-ROVING-058
+  kind: invariant
+  family: roving-state
+  statement: >
+    `itemCount` 缩小时必须把越界的 activeIndex 钳到最后一项；`itemCount` 变大时
+    必须保持当前 index 不动。
+  why: >
+    源码注释："New larger lists keep the current index — no surprise jump."
+    动态注册的菜单增删条目时，焦点乱跳会让键盘用户丢失位置。
+  source: web/src/ui/hooks/useRovingTabindex.ts:56-58,177-185
+  authoritative_test: NONE
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-ROVING-059
+  kind: invariant
+  family: roving-state
+  statement: >
+    公开的 `setActiveIndex` 在设为【与当前相同的值】时也必须强制 imperative
+    focus 一次。
+  why: >
+    React 的 setState 在同值时会 bail out，focus effect 不会重跑；Menu 每次打开都
+    setActiveIndex(0)，没有这条强制 focus 就会出现"菜单开了但焦点没进去"。
+    源码注释："covers the 'set to same value' path where React's setState bails
+    out before the effect fires."
+  source: web/src/ui/hooks/useRovingTabindex.ts:195-205
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:117
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-ROVING-060
+  kind: invariant
+  family: roving-state
+  statement: >
+    item 的 ref 回调在"刚挂载且正好是 active index"时必须用 `queueMicrotask`
+    补一次 focus，并在微任务里重新校验 ref 未被替换且 `document.contains(el)`。
+  why: >
+    源码注释：菜单以 initialIndex=0 打开时 focus effect 先于 ref 附着触发；不延后
+    则元素尚未进入布局，Chrome 静默拒绝 focus。重校验是防止 schedule 与 flush
+    之间元素已卸载/替换。
+  source: web/src/ui/hooks/useRovingTabindex.ts:317-336
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:117
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-ROVING-061
+  kind: invariant
+  family: roving-state
+  statement: >
+    active index 上没有已挂载 ref 时 focus 副作用必须静默 noop，不得抛错。
+  why: >
+    源码注释："the hook never crashes on a partially-mounted composite"；
+    调用方要抑制 focus 只需卸载即可。
+  source: web/src/ui/hooks/useRovingTabindex.ts:42-45,187-193
+  authoritative_test: NONE
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-ROVING-062
+  kind: invariant
+  family: roving-state
+  statement: >
+    typeahead 的 reset 定时器必须在 hook 卸载时清除。
+  why: >
+    源码注释："so we don't fire setState (via the typeahead clear path) after the
+    hook owner is gone."
+  source: web/src/ui/hooks/useRovingTabindex.ts:222-228
+  authoritative_test: NONE
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-UI-CONFIRM-070
+  kind: invariant
+  family: confirm-visual
+  statement: >
+    ConfirmDialog 故意【不】自带 focus trap、Esc 处理、新 CSS 类，也不内置
+    spinner / pending 视觉。
+  why: >
+    源码 "What this primitive deliberately does NOT do" 一节逐条列出：前三项从
+    Dialog 继承，pending 视觉留给调用方塞进 `description` 或在旁边组合。
+    重复实现会与 Dialog 的契约打架。
+  source: web/src/ui/ConfirmDialog/ConfirmDialog.tsx:22-28
+  authoritative_test: NONE
+  owner_slice: ui/confirm-dialog
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-UI-LAYER-083
+  kind: invariant
+  family: layer-rules
+  statement: >
+    Menu 的组件测试刻意不复述 `useRovingTabindex` 的键盘语义，每类按键只测一条
+    代表路径以证明 hook 已接线。
+  why: >
+    Menu.test.tsx 文件头："We do NOT duplicate that surface here; instead we verify
+    that Menu wires the hook correctly." 重复覆盖会让 hook 契约有两个真相源。
+  source: web/src/ui/Menu/Menu.test.tsx:1-20
+  authoritative_test: web/src/ui/hooks/useRovingTabindex.test.tsx:1-11
+  owner_slice: styles/layer-rules
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: unit
+  test_tier: browser
+  migration: pending

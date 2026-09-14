@@ -42,7 +42,6 @@ backups = "~/.local/share/neige-app/backups"
 
 [child]
 bin = "~/.local/share/neige-app/releases/current-server/bin/calm-server"
-web_dist = "~/.local/share/neige-app/releases/current-web/web/dist"
 fe_dist = "~/.local/share/neige-app/releases/current-web/web/dist/next"
 calm_listen = "127.0.0.1:4040"
 db_url = ""
@@ -86,10 +85,9 @@ The default child paths are split by component:
 
 `child.fe_dist` (or `system serve --calm-fe-dist`) explicitly selects the new
 frontend directory. With `system package --fe-dist`, that directory is packaged
-as `web/dist/next` within the same hashed Web unit. Omit `fe_dist` for a legacy-only
-package. Existing configs that omit it remain legacy-only; new starter configs
-include it for Alpha packages. When configured, the browser root redirects to
-`/next/`, and `web_dist` continues to serve `/calm/`.
+as `web/dist/next` within the hashed Web unit. Configure `fe_dist` to serve the
+maintained frontend and redirect the browser root to `/next/`. The retired
+`web_dist` setting only logs a warning; `/calm/` is no longer served.
 
 For a first install, use the [Alpha runbook](alpha-release.md) before running
 `system install`: the package and executable symlinks must exist, and owner
@@ -137,10 +135,9 @@ control characters instead of trying to quote them.
 
 ## Enabling the new frontend on an existing source installation
 
-Old config files keep their saved `build_args = ["make", "build"]` and omit
-`child.fe_dist`. They remain explicitly legacy-only: source packaging does not
-require or pick up a stray `fe/web/dist` tree. To opt into both frontends, update
-**both** settings before a source build:
+Source packaging now requires `fe/web/dist`; `make build` builds it. Existing
+installations must set `child.fe_dist` before upgrading to serve the maintained
+frontend. The legacy source application is no longer included:
 
 ```toml
 [child]
@@ -157,7 +154,7 @@ source-upgrade endpoint. `POST /restart` restarts only calm-server and does not
 reload this configuration. CLI source builds read the file on each invocation,
 but the running host still needs a restart to serve the newly enabled frontend.
 
-Custom build commands must also rebuild `fe/web/dist` when `fe_dist` is enabled;
+Custom build commands must rebuild `fe/web/dist`;
 a directory left from a prior build is not evidence of a current frontend. For
 release artifacts use the Alpha build script, which unconditionally performs
 both production builds and records their source revision.

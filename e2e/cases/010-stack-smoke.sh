@@ -48,7 +48,7 @@ process.stdout.write(`${planner.id}\t${report.id}\n`);
 
 stack_smoke_frontends() {
   local origin root_headers root_status root_location
-  local next_index next_deep legacy_index legacy_deep asset_path asset_meta asset_status asset_type
+  local next_index next_deep legacy_status asset_path asset_meta asset_status asset_type
   origin="http://127.0.0.1:$PORT"
 
   root_headers="$(curl -sS -D - -o /dev/null "$origin/")" \
@@ -82,12 +82,11 @@ process.stdout.write(match[1]);
   [[ "$asset_type" != text/html* ]] \
     || fail "new frontend asset $asset_path fell through to the SPA index"
 
-  legacy_index="$(curl -fsS "$origin/calm/")" \
-    || fail "legacy frontend compatibility index was not reachable"
-  legacy_deep="$(curl -fsS "$origin/calm/track/e2e-deep-link")" \
-    || fail "legacy frontend compatibility deep link was not reachable"
-  [[ "$legacy_deep" == "$legacy_index" ]] \
-    || fail "legacy frontend deep link did not use the SPA index fallback"
+  legacy_status="$(curl -sS -o /dev/null -w '%{http_code}' "$origin/calm/")" \
+    || fail "legacy retirement probe failed"
+  [[ "$legacy_status" == "404" ]] \
+    || fail "retired legacy frontend returned HTTP $legacy_status"
+
 }
 
 case_run() {

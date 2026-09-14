@@ -205,15 +205,8 @@ fn mount_frontends(
     fe_dist: Option<&std::path::Path>,
 ) -> axum::Router {
     if let Some(web_dist) = web_dist {
-        let index = web_dist.join("index.html");
-        tracing::info!(
-            web_dist = %web_dist.display(),
-            "serving built web bundle under /calm/"
-        );
-        app = app.nest_service(
-            "/calm",
-            ServeDir::new(web_dist).fallback(ServeFile::new(index)),
-        );
+        tracing::warn!(web_dist = %web_dist.display(),
+            "CALM_WEB_DIST is retired; /calm/ is no longer served. Use CALM_FE_DIST.");
     }
 
     if let Some(fe_dist) = fe_dist {
@@ -230,8 +223,6 @@ fn mount_frontends(
 
     if fe_dist.is_some() {
         app = app.route("/", get(|| async { Redirect::temporary("/next/") }));
-    } else if web_dist.is_some() {
-        app = app.route("/", get(|| async { Redirect::temporary("/calm/") }));
     }
     app
 }
@@ -344,7 +335,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_fe_dist_preserves_real_api_internal_and_legacy_routes() {
+    async fn configured_fe_dist_preserves_api_and_retires_legacy_routes() {
         let web = tempfile::tempdir().unwrap();
         let fe = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
@@ -384,11 +375,11 @@ mod tests {
         assert_eq!(root.headers()[axum::http::header::LOCATION], "/next/");
         assert_eq!(
             response_body(app.clone(), "/calm/track/deep-link").await,
-            (StatusCode::OK, legacy_index.to_vec())
+            (StatusCode::NOT_FOUND, vec![])
         );
         assert_eq!(
             response_body(app.clone(), "/calm/asset.txt").await,
-            (StatusCode::OK, b"legacy-asset-exact\n".to_vec())
+            (StatusCode::NOT_FOUND, vec![])
         );
         assert_eq!(
             response_body(app, "/next/track/deep-link").await,
@@ -533,7 +524,7 @@ mod tests {
     async fn frontend_root_tracks_the_configured_bundle() {
         let assets = tempfile::tempdir().unwrap();
         for (web, fe, destination) in [
-            (Some(assets.path()), None, "/calm/"),
+            (Some(assets.path()), Some(assets.path()), "/next/"),
             (None, Some(assets.path()), "/next/"),
         ] {
             let app = super::mount_frontends(axum::Router::new(), web, fe);
@@ -547,7 +538,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_fe_dist_serves_assets_and_deep_links_alongside_legacy() {
+    async fn configured_fe_dist_serves_assets_and_rejects_stale_legacy_files() {
         let web = tempfile::tempdir().unwrap();
         let fe = tempfile::tempdir().unwrap();
         std::fs::write(web.path().join("index.html"), b"legacy-index\n").unwrap();
@@ -557,7 +548,7 @@ mod tests {
         let app = super::mount_frontends(axum::Router::new(), Some(web.path()), Some(fe.path()));
         assert_eq!(
             response_body(app.clone(), "/calm/track/deep-link").await,
-            (StatusCode::OK, b"legacy-index\n".to_vec())
+            (StatusCode::NOT_FOUND, vec![])
         );
         assert_eq!(
             response_body(app.clone(), "/next/track/deep-link").await,

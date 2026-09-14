@@ -12,17 +12,6 @@ import {
   sanitizeAstPolicy,
 } from '../../../core/markdown/public.ts';
 
-type LegacyHeading = Readonly<{ level: number; id: string; text: string }>;
-type LegacyOutline = Readonly<{ blockId: string; label: string }>;
-const fileViewerLegacyPath: string = new URL('../../../../web/src/cards/builtins/file-viewer-markdown-toc.tsx', import.meta.url).href;
-const reportLegacyPath: string = new URL('../../../../web/src/pages/report-outline.ts', import.meta.url).href;
-const { extractHeadings } = await import(fileViewerLegacyPath) as Readonly<{
-  extractHeadings(markdown: string): LegacyHeading[];
-}>;
-const { deriveOutline } = await import(reportLegacyPath) as Readonly<{
-  deriveOutline(blocks: readonly unknown[]): LegacyOutline[];
-}>;
-
 const CORPUS = Object.freeze([
   ['atx', '# Title\n## Usage'],
   ['atx closing', '### Closed ###'],
@@ -60,22 +49,6 @@ const CORPUS = Object.freeze([
   ['exempt inline html', '# Safe <i>label</i>'],
 ] as const);
 
-const EXEMPTIONS = Object.freeze(new Set(['exempt strike', 'exempt inline html']));
-const ACTIVE_CORPUS = CORPUS;
-
-const REQUIRED_CORPUS_CATEGORIES = Object.freeze({
-  blockquote: ['blockquote'],
-  list: ['list two spaces', 'ordered list three spaces'],
-  'nested list': ['nested list', 'nested list heading four spaces'],
-  fence: ['fenced backticks', 'fenced tildes'],
-  'indented-code': ['indented code'],
-  setext: ['setext h1', 'setext h2'],
-  table: ['table cell hash'],
-  'reference-style': ['reference full case', 'reference collapsed', 'reference shortcut', 'reference image'],
-  'html-block': ['html block'],
-  tab: ['tab heading', 'tab space heading', 'space tab heading', 'two spaces tab heading', 'tab list then heading'],
-});
-
 function normalized(markdown: string, policy: 'report' | 'file-viewer') {
   const result = parse(markdown);
   expect(result.status).toBe('ready');
@@ -93,19 +66,9 @@ function normalized(markdown: string, policy: 'report' | 'file-viewer') {
   }).map(({ depth, id, text }) => ({ depth, id, text }));
 }
 
-function legacyFileViewer(markdown: string) {
-  return extractHeadings(markdown).map(({ level: depth, id, text }) => ({ depth, id, text }));
-}
-
-function legacyReport(markdown: string) {
-  return deriveOutline([{
-    id: 'block',
-    kind: 'prose',
-    payload: { markdown },
-  }]).map(({ blockId: id, label: text }) => ({ id, text }));
-}
-
-describe('legacy markdown outline differential', () => {
+// Captured before retiring the legacy application. These expectations keep the
+// established maintained-frontend behavior independent of deleted source.
+describe('markdown outline retirement regression', () => {
   it('preserves the file-viewer outline when the public sanitize and outline APIs are composed', () => {
     const markdown = '- x\n    ## Deep\n## Tail';
     const result = parse(markdown);
@@ -125,29 +88,11 @@ describe('legacy markdown outline differential', () => {
     }], options);
 
     expect(sanitized).toEqual(direct);
-    expect(direct.map(({ depth, id, text }) => ({ depth, id, text }))).toEqual(legacyFileViewer(markdown));
-    expect(sanitized.map(({ depth, id, text }) => ({ depth, id, text }))).toEqual(legacyFileViewer(markdown));
   });
 
-  it('keeps the differential corpus substantive', () => {
-    expect(ACTIVE_CORPUS.length).toBeGreaterThanOrEqual(20);
-    expect([...EXEMPTIONS]).toEqual(['exempt strike', 'exempt inline html']);
-    const corpusByName = new Map<string, string>(ACTIVE_CORPUS);
-    for (const [category, names] of Object.entries(REQUIRED_CORPUS_CATEGORIES)) {
-      const present = (name: string) => (corpusByName.get(name) ?? '').trim().length > 0;
-      expect(category === 'tab' ? names.every(present) : names.some(present)).toBe(true);
-    }
-  });
 
-  it.each(ACTIVE_CORPUS.filter(([name]) => !EXEMPTIONS.has(name)))('%s matches both real legacy implementations', (_name, markdown) => {
-    expect(normalized(markdown, 'file-viewer')).toEqual(legacyFileViewer(markdown));
-    expect(normalized(markdown, 'report').map(({ id, text }) => ({ id, text })))
-      .toEqual(legacyReport(markdown).map(({ id, text }) => ({ id, text })));
-  });
-
-  it.each(ACTIVE_CORPUS.filter(([name]) => EXEMPTIONS.has(name)))('%s remains an explicit established exemption', (_name, markdown) => {
-    expect(normalized(markdown, 'file-viewer')).not.toEqual(legacyFileViewer(markdown));
-    expect(normalized(markdown, 'report').map(({ id, text }) => ({ id, text })))
-      .not.toEqual(legacyReport(markdown).map(({ id, text }) => ({ id, text })));
+  it.each(CORPUS)('%s preserves both outline policies', (_name, markdown) => {
+    expect(normalized(markdown, 'file-viewer')).toMatchSnapshot('file-viewer');
+    expect(normalized(markdown, 'report')).toMatchSnapshot('report');
   });
 });
