@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { REPORT_READ_TOOLS, USER_NOTIFY_TOOL } from '../keys/mcp-tools.js';
 import {
-  REPORT_EDIT_AUTHORS, foldQuietSyncs, isNotifyTurn, reportEditAuthor,
+  PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_TOOL_PREFIX,
+  REPORT_WRITE_TOOLS, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
+} from '../keys/mcp-tools.js';
+import {
+  REPORT_EDIT_AUTHORS, foldQuietSyncs, isNotifyTurn, isReportWriteTool, reportEditAuthor,
   type QuietSyncGroup, type ReportEditAuthor, type TranscriptBlock,
 } from './conversation-quiet-sync.js';
 import {
@@ -49,11 +52,17 @@ function notify(id: string, text = 'You changed the block I was writing.'): Conv
   return { id, author: 'agent', text, atMs: NOW, origin: 'notify' };
 }
 
-function activity(id: string): ConversationActivity {
+function activity(id: string, overrides: Partial<ConversationActivity> = {}): ConversationActivity {
   return {
     id, author: 'activity', verb: 'Read report', target: null, state: 'done',
-    durationMs: null, detail: null, atMs: NOW,
+    durationMs: null, detail: null, tool: REPORT_READ_TOOLS[0] ?? null, atMs: NOW, ...overrides,
   };
+}
+
+/** A report write that landed, as `buildTranscript` shapes a completed
+ *  `calm.report.commit` row. */
+function wrote(id: string, overrides: Partial<ConversationActivity> = {}): ConversationActivity {
+  return activity(id, { verb: 'Wrote report', tool: REPORT_WRITE_TOOLS[4] ?? null, ...overrides });
 }
 
 function outcome(id: string, status: ConversationTurnOutcome['status'] = 'completed'): ConversationTurnOutcome {
@@ -159,6 +168,92 @@ describe('foldQuietSyncs', () => {
     const blocks = foldQuietSyncs([unmarked, activity('act1'), agent('a1')]);
     expect(blocks.map(ids)).toEqual(['s1', 'act1', 'a1']);
     expect(blocks.every((block) => block.kind === 'entry')).toBe(true);
+  });
+});
+
+/* #1678 A4 — what the sync did, on the group, so the line can say it. */
+describe('foldQuietSyncs outcome', () => {
+  it('is accepted when the turn completed with reads only and nothing said', () => {
+    const blocks = foldQuietSyncs([reportEdited('s1'), activity('act1'), agent('a1'), outcome('o1')]);
+    expect(group(blocks[0]).outcome).toBe('accepted');
+    /* No activity at all is the same verdict: the planner looked and left. */
+    expect(group(foldQuietSyncs([reportEdited('s1'), outcome('o1')])[0]).outcome).toBe('accepted');
+  });
+
+  it('is updated when a report write landed in the turn', () => {
+    const blocks = foldQuietSyncs([reportEdited('s1'), activity('act1'), wrote('w1'), outcome('o1')]);
+    expect(group(blocks[0]).outcome).toBe('updated');
+    /* Every report tool that is not a read counts, move and delete included. */
+    for (const tool of [...REPORT_WRITE_TOOLS, REPORT_MOVE_TOOL, REPORT_DELETE_TOOL]) {
+      const one = foldQuietSyncs([reportEdited('s1'), wrote('w1', { tool }), outcome('o1')]);
+      expect(group(one[0]).outcome, tool).toBe('updated');
+    }
+    /* And a write the planner said something about is still an update. */
+    const spoken = foldQuietSyncs([reportEdited('s1'), wrote('w1'), notify('n1'), outcome('o1')]);
+    expect(group(spoken[0]).outcome).toBe('updated');
+  });
+
+  it('is null while the turn has not completed, after a bad ending, or when the planner spoke', () => {
+    expect(group(foldQuietSyncs([reportEdited('s1'), activity('act1')])[0]).outcome).toBeNull();
+    expect(group(foldQuietSyncs([reportEdited('s1'), wrote('w1')])[0]).outcome).toBeNull();
+    expect(group(foldQuietSyncs([reportEdited('s1'), wrote('w1'), outcome('o1', 'failed')])[0]).outcome).toBeNull();
+    expect(group(foldQuietSyncs([reportEdited('s1'), outcome('o1', 'interrupted')])[0]).outcome).toBeNull();
+    /* A notify without a write: the bubble under the line is the outcome. */
+    expect(group(foldQuietSyncs([reportEdited('s1'), notify('n1'), outcome('o1')])[0]).outcome).toBeNull();
+  });
+
+  it('does not count a refused or still-running write, nor a read, nor a non-report tool', () => {
+    const refused = foldQuietSyncs([reportEdited('s1'), wrote('w1', { state: 'failed' }), outcome('o1')]);
+    expect(group(refused[0]).outcome).toBe('accepted');
+    const running = foldQuietSyncs([reportEdited('s1'), wrote('w1', { state: 'running' }), outcome('o1')]);
+    expect(group(running[0]).outcome).toBe('accepted');
+    const reads = foldQuietSyncs([
+      reportEdited('s1'), ...REPORT_READ_TOOLS.map((tool, index) => activity(`r${index}`, { tool })), outcome('o1'),
+    ]);
+    expect(group(reads[0]).outcome).toBe('accepted');
+    const other = foldQuietSyncs([reportEdited('s1'), activity('t1', { tool: PLAN_LIST_TOOL }), outcome('o1')]);
+    expect(group(other[0]).outcome).toBe('accepted');
+    const shell = foldQuietSyncs([reportEdited('s1'), activity('sh', { verb: 'Ran', tool: null }), outcome('o1')]);
+    expect(group(shell[0]).outcome).toBe('accepted');
+  });
+
+  /* Fail-closed on the name: a report tool nobody has listed is a change. */
+  it('treats any unlisted report tool as a write', () => {
+    expect(isReportWriteTool(`${REPORT_TOOL_PREFIX}blocks.something_new`)).toBe(true);
+    for (const tool of REPORT_READ_TOOLS) expect(isReportWriteTool(tool), tool).toBe(false);
+    for (const tool of REPORT_WRITE_TOOLS) expect(isReportWriteTool(tool), tool).toBe(true);
+    expect(isReportWriteTool(USER_NOTIFY_TOOL)).toBe(false);
+    expect(isReportWriteTool(`${TRACK_TOOL_PREFIX}cat`)).toBe(false);
+    /* The prefix is matched whole: a near miss is not a report tool. */
+    expect(isReportWriteTool(`${REPORT_TOOL_PREFIX.slice(0, -1)}ing.x`)).toBe(false);
+  });
+
+  /* Driven through `buildTranscript` from persisted rows, so the `tool` the
+     verdict reads is the one the row converter writes, not one a fixture set. */
+  it('reads the verdict off persisted rows', () => {
+    type Row = Parameters<typeof buildTranscript>[0][number];
+    const row = (id: number, overrides: Partial<Row>): Row => ({
+      id, worker_session_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
+      turn_id: 'turn', item_uuid: `item-${id}`, item_type: null, method: 'item/completed',
+      params: '{}', created_at_ms: NOW + id, ...overrides,
+    });
+    const wake = row(1, {
+      item_type: 'userMessage',
+      input_segments: [{ presentation: 'system_report_edited', text: DIFF_TEXT, attachments: [] }],
+      params: JSON.stringify({ completedAtMs: NOW + 1, item: { content: [] } }),
+    });
+    const call = (id: number, tool: string): Row => row(id, {
+      item_type: 'mcpToolCall',
+      params: JSON.stringify({ completedAtMs: NOW + id, item: { tool, status: 'completed' } }),
+    });
+    const done = row(9, {
+      item_type: null, method: 'turn/completed',
+      params: JSON.stringify({ id: 'turn', status: 'completed' }),
+    });
+    const read = foldQuietSyncs(buildTranscript([wake, call(2, REPORT_READ_TOOLS[0] ?? ''), done]));
+    expect(group(read[0]).outcome).toBe('accepted');
+    const write = foldQuietSyncs(buildTranscript([wake, call(2, REPORT_READ_TOOLS[0] ?? ''), call(3, REPORT_WRITE_TOOLS[4] ?? ''), done]));
+    expect(group(write[0]).outcome).toBe('updated');
   });
 });
 

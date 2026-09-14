@@ -22,14 +22,22 @@
 // the transcript after the fold, as a normal agent bubble and as the red
 // outcome line — see `foldQuietSyncs`.
 //
+// **What the sync did (#1678 A4).** A closed fold looks the same whether the
+// edit was taken in or missed, so once the turn has completed the line ends
+// with the verdict the domain computed (`QuietSyncGroup.outcome`): "accepted,
+// no action" or "updated the report". Nothing is appended while the turn is
+// running (the live mark is the state), after a bad ending (the lifted red
+// line says it) or when the planner spoke (the lifted bubble says it).
+//
 // One component for every width. The phone gets the same `<details>`: a
 // native disclosure needs no pointer geometry, and the line is short enough
-// to fit a 360px column at `--text-xs` without a second row.
+// to fit a 360px column at `--text-xs` without a second row; the label clips
+// with an ellipsis where the verdict does not fit, and the `title` carries it.
 
 import type { ReactNode } from 'react';
 
 import {
-  REPORT_EDIT_AUTHORS, type QuietSyncGroup, type ReportEditAuthor,
+  REPORT_EDIT_AUTHORS, type QuietSyncGroup, type QuietSyncOutcome, type ReportEditAuthor,
 } from '../../../../../core/domain/conversation-quiet-sync.ts';
 import styles from './quiet-sync.module.css';
 
@@ -52,6 +60,13 @@ export function quietSyncLine(author: ReportEditAuthor | null): string {
   return author !== null && REPORT_EDIT_AUTHORS.includes(author) ? EDITED_BY[author] : EDITED_BY_UNKNOWN;
 }
 
+/** The verdict per outcome, same register as the line; pinned both ways in
+ *  `quiet-sync.test.tsx` like `EDITED_BY`. */
+export const OUTCOME_LINE: Readonly<Record<QuietSyncOutcome, string>> = Object.freeze({
+  accepted: 'accepted, no action',
+  updated: 'updated the report',
+} satisfies Record<QuietSyncOutcome, string>);
+
 export type QuietSyncFoldProps = Readonly<{
   group: QuietSyncGroup;
   /** `HH:MM` of the wake, from the thread's own clock formatter. */
@@ -67,16 +82,18 @@ export type QuietSyncFoldProps = Readonly<{
 
 export function QuietSyncFold({ group, time, live, children }: QuietSyncFoldProps) {
   const line = quietSyncLine(group.author);
+  const verdict = group.outcome === null ? '' : ` · ${OUTCOME_LINE[group.outcome]}`;
   return (
     <details
       className={styles.fold}
       data-nc-turn="quiet-sync"
       data-nc-quiet-sync-author={group.author ?? 'unknown'}
+      data-nc-quiet-sync-outcome={group.outcome ?? 'none'}
     >
-      <summary className={styles.summary} title={`${line} · ${time}`}>
+      <summary className={styles.summary} title={`${line} · ${time}${verdict}`}>
         <span className={styles.disclosure} aria-hidden="true">›</span>
         <span className={styles.label} data-nc-quiet-sync-label="">
-          Synced · {line} · <span className={styles.time}>{time}</span>
+          Synced · {line} · <span className={styles.time}>{time}</span>{verdict}
         </span>
         {live && <span className={styles.live} aria-label="Working" />}
       </summary>

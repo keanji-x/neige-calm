@@ -46,8 +46,18 @@
  * (`author = "user"`), the same spelling the kernel renders for the planner —
  * the front end has no structured author on a system entry, and inventing a
  * second channel for one word was not worth a wire change.
+ *
+ * #1678 A4 — a closed fold looks the same whether the sync took the edit in
+ * or missed it, so a finished group also carries what the turn did to the
+ * report (`outcome`), read off the entries it holds: the completed turn
+ * outcome says it finished, and a `calm.report.*` write that landed says the
+ * report changed. The write test is fail-closed on the tool name
+ * (`isReportWriteTool`): anything under the report prefix that is not a
+ * known read is a change, so a tool this code has never heard of can never
+ * read as "no action".
  */
 
+import { REPORT_READ_TOOLS, REPORT_TOOL_PREFIX } from '../keys/mcp-tools.js';
 import {
   SYSTEM_PRESENTATION_LABELS,
   type ConversationSystemEntry, type ConversationTurn, type ConversationTurnOutcome,
@@ -63,6 +73,13 @@ export const REPORT_EDIT_AUTHORS: readonly ReportEditAuthor[] = Object.freeze([
 ] as const);
 
 /**
+ * What a finished sync did to the report. `updated`: a report write landed
+ * in the turn. `accepted`: the turn completed with no report write and the
+ * planner said nothing — the edit was taken as it is.
+ */
+export type QuietSyncOutcome = 'accepted' | 'updated';
+
+/**
  * One folded background turn: the `system_report_edited` entry that opened
  * it and everything the planner did in response, in transcript order.
  * `entries[0]` is always the system entry.
@@ -74,6 +91,11 @@ export type QuietSyncGroup = Readonly<{
   author: ReportEditAuthor | null;
   atMs: number;
   entries: readonly TranscriptEntry[];
+  /** `null` when there is nothing to add to the line: the turn has not
+   *  completed (the fold carries the live mark), it ended badly (the lifted
+   *  red line says so), or the planner spoke without writing (the lifted
+   *  notify bubble is the outcome). */
+  outcome: QuietSyncOutcome | null;
 }>;
 
 export type TranscriptBlock =
@@ -122,6 +144,33 @@ function closesGroup(entry: TranscriptEntry): boolean {
   return entry.author === 'you' || entry.author === 'system';
 }
 
+/** A `calm.report.*` call that is not one of the reads. Fail-closed on
+ *  purpose: an unknown report tool is a change, never a look. */
+export function isReportWriteTool(tool: string): boolean {
+  return tool.startsWith(REPORT_TOOL_PREFIX) && !REPORT_READ_TOOLS.includes(tool);
+}
+
+/** A report write that landed. A refused one (a 409, drawn as a failed line
+ *  inside the fold) changed nothing, and a running one has not yet. */
+export function isReportWriteActivity(entry: TranscriptEntry): boolean {
+  return entry.author === 'activity' && entry.state === 'done'
+    && entry.tool !== null && isReportWriteTool(entry.tool);
+}
+
+function completedOutcome(entry: TranscriptEntry): boolean {
+  return entry.author === 'turn' && entry.status === 'completed';
+}
+
+/** The line's verdict for one group: what it holds (`grouped`) and what was
+ *  lifted out of it (`lifted`: notify bubbles, bad outcomes). */
+export function quietSyncOutcome(
+  grouped: readonly TranscriptEntry[], lifted: readonly TranscriptEntry[],
+): QuietSyncOutcome | null {
+  if (!grouped.some(completedOutcome)) return null;
+  if (grouped.some(isReportWriteActivity)) return 'updated';
+  return lifted.some(isNotifyTurn) ? null : 'accepted';
+}
+
 export function foldQuietSyncs(entries: readonly TranscriptEntry[]): readonly TranscriptBlock[] {
   const blocks: TranscriptBlock[] = [];
   let index = 0;
@@ -149,6 +198,7 @@ export function foldQuietSyncs(entries: readonly TranscriptEntry[]): readonly Tr
       author: reportEditAuthor(entry.text),
       atMs: entry.atMs,
       entries: grouped,
+      outcome: quietSyncOutcome(grouped, lifted),
     });
     for (const raised of lifted) blocks.push({ kind: 'entry', entry: raised });
     index = next;

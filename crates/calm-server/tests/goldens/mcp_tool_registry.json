@@ -1871,7 +1871,7 @@
   },
   {
     "name": "calm.user.notify",
-    "description_sha256": "20ca83ec238e9c5acb18c6ee1f5a72a28d4c027a7e7fb925da26deab90febcf2",
+    "description_sha256": "b12adf50f53e88e98d860e49a006549d71334f01e9d0cbc6821ea2bf2ccce871",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

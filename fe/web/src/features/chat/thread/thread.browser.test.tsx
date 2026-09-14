@@ -3360,7 +3360,7 @@ describe('the activity line’s row count, as the engine lays it out', () => {
   function activity(overrides: Partial<ConversationActivity>): ConversationActivity {
     return {
       id: 'a1', author: 'activity', verb: 'Ran', target: LONG_TARGET, state: 'done',
-      durationMs: null, detail: null, atMs: 0, ...overrides,
+      durationMs: null, detail: null, tool: null, atMs: 0, ...overrides,
     };
   }
 

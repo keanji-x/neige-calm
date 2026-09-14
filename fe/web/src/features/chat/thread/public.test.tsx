@@ -29,7 +29,7 @@ function turn(overrides: Partial<ConversationTurn> = {}): ConversationTurn {
 function activity(overrides: Partial<ConversationActivity> = {}): ConversationActivity {
   return {
     id: 'a1', author: 'activity', verb: 'Ran', target: 'npm test', state: 'done',
-    durationMs: null, detail: null, atMs: NOW,
+    durationMs: null, detail: null, tool: null, atMs: NOW,
     ...overrides,
   };
 }

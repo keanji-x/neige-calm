@@ -1113,7 +1113,7 @@ describe('transcriptRowToTurnOutcome', () => {
 describe('mergeTranscript', () => {
   const thought = {
     id: 'thought', author: 'activity' as const, verb: 'Thought', target: null,
-    state: 'done' as const, durationMs: null, detail: null, atMs: 1,
+    state: 'done' as const, durationMs: null, detail: null, tool: null, atMs: 1,
   };
   const echo: ConversationTurn = { id: 'echo', author: 'you', text: 'next', atMs: 2 };
 

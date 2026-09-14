@@ -18,6 +18,7 @@ import {
   SYSTEM_PRESENTATION_LABELS,
   type Conversation, type ConversationActivity, type ConversationSystemEntry, type ConversationTurn,
 } from '../../../../../core/domain/conversation.ts';
+import { REPORT_READ_TOOLS } from '../../../../../core/keys/mcp-tools.ts';
 
 afterEach(() => { document.body.replaceChildren(); });
 
@@ -35,7 +36,7 @@ const wake: ConversationSystemEntry = {
 };
 const read: ConversationActivity = {
   id: 'act1', author: 'activity', verb: 'Read report', target: null, state: 'done',
-  durationMs: null, detail: null, atMs: NOW,
+  durationMs: null, detail: null, tool: REPORT_READ_TOOLS[0] ?? null, atMs: NOW,
 };
 const reply: ConversationTurn = { id: 'a1', author: 'agent', text: 'Nothing to reconcile.', atMs: NOW };
 const notify: ConversationTurn = {
