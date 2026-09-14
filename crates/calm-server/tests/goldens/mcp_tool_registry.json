@@ -1376,7 +1376,7 @@
   },
   {
     "name": "calm.terminal.control",
-    "description_sha256": "d24c05bada29caaf79fa2536a1650fa6d35ee37cf0bf7702aeb2e0d3e109d392",
+    "description_sha256": "22128e2b9df6778ee5fcf34cdcc5f803f0031a270e8710bb7a3446c6c14078cf",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1440,6 +1440,16 @@
           "maxItems": 8,
           "minItems": 1,
           "type": "array"
+        },
+        "wait_text_absent": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [
@@ -1458,7 +1468,7 @@
   },
   {
     "name": "calm.terminal.input",
-    "description_sha256": "4a14648e9dceadcccaea057f4245fcc5ede14fd35afd1b6216729fcf849d3d0c",
+    "description_sha256": "d287c2cc95fca94a59b675beb84985e48770641ff68086e9c6ac9c16ec10a089",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1652,6 +1662,16 @@
           "maxItems": 8,
           "minItems": 1,
           "type": "array"
+        },
+        "wait_text_absent": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [
@@ -1671,7 +1691,7 @@
   },
   {
     "name": "calm.terminal.observe",
-    "description_sha256": "dfd9a5f4ae4b5d19bb7158022fc3a5dfee99b117e563a3512581b82dbc663a20",
+    "description_sha256": "c3c8fa01f9ad726891cbe01e153c57fc7aedcb54a5770f8f5748308d5328f484",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1736,6 +1756,16 @@
           "maxItems": 8,
           "minItems": 1,
           "type": "array"
+        },
+        "wait_text_absent": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [],
@@ -1752,7 +1782,7 @@
   },
   {
     "name": "calm.terminal.open",
-    "description_sha256": "ef34f944c2108e3eb68145a0acfdfd43bc98843fa209ffce4d21134988292678",
+    "description_sha256": "0d73bbc82dc9b5c6e923f8dd5dea0b4fa511bea6c1b3acd24c6bb29b36ae5c55",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1816,6 +1846,16 @@
           "type": "integer"
         },
         "wait_text": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
+        },
+        "wait_text_absent": {
           "items": {
             "maxLength": 200,
             "minLength": 1,

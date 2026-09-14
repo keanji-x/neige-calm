@@ -177,7 +177,12 @@ editing key); `summary_present`: non-failed control/input receipts carrying a
 `summary` object. An `open` result is an observation for every wait, signal
 and text tally from this change on (its wait runs as the open's final
 observation), so an open with `wait_for: "change"` or `"text"` counts as that
-wait request with its outcome.
+wait request with its outcome. r16: `text_condition_requests`:
+observation-requesting calls in signal mode whose arguments carry `wait_text`
+or `wait_text_absent` (failed ones included); `signal_condition_outcomes`:
+tally of those calls' returned `wait.repaint.outcome` joined with whether
+every asked condition held (`settled/held`, `unsettled/not_held`, …); a
+missing `repaint` or `conditions` block (older server) adds nothing.
 
 ## Model-free driver checks
 

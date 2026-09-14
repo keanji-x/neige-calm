@@ -366,11 +366,12 @@ class CollectorTests(unittest.TestCase):
                                    "sequence_steps": 0, "input_with_claim": 0, "input_with_release": 0,
                                    "below_cursor_allowed_inputs": 0, "below_cursor_tolerated_inputs": 0,
                                    "open_with_wait": 0, "open_wait_outcomes": {}, "replace_actions": 0,
-                                   "replace_written": 0, "summary_present": 0})
+                                   "replace_written": 0, "summary_present": 0,
+                                   "text_condition_requests": 0, "signal_condition_outcomes": {}})
         self.assertEqual(json.loads(json.dumps(summary)), summary)
         self.assertEqual(ux.SUMMARY_METRIC_KEYS,
                          ux.WAIT_METRIC_KEYS + ux.SIGNAL_METRIC_KEYS + ux.ROUND_TRIP_METRIC_KEYS
-                         + ux.OPEN_REPLACE_SUMMARY_METRIC_KEYS)
+                         + ux.OPEN_REPLACE_SUMMARY_METRIC_KEYS + ux.TEXT_CONDITION_METRIC_KEYS)
 
     # #1666 round-trip counters.
     def test_text_wait_requests_and_outcomes_are_read_from_arguments_and_observations(self):
@@ -601,6 +602,73 @@ class CollectorTests(unittest.TestCase):
         typed["params"]["item"]["arguments"]["action"] = {"type": "text", "text": "19"}
         with self.assertRaises(ux.EvidenceError):
             ux.check_scenario("edit", [typed], None)
+
+    # #1677 r16 text conditions on signal waits.
+    def test_text_condition_requests_and_outcomes_are_read_from_arguments_and_results(self):
+        def signal_state(repaint, conditions):
+            state = row(1)["params"]["item"]["result"]["structuredContent"]
+            wait = {"mode": "signal", "outcome": "signal", "waited_ms": 900, "settled": repaint == "settled",
+                    "signal": {"seq": 7, "event": "stop", "notification_type": None, "message": None,
+                               "received_at_ms": 1780977421069}}
+            if repaint is not None:
+                wait["repaint"] = {"outcome": repaint, "waited_ms": 812}
+            if conditions is not None:
+                wait["conditions"] = conditions
+            state["wait"] = wait
+            return state
+        def readback(identifier, arguments, state):
+            call = row(identifier, "calm.terminal.input")
+            call["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "hi"}, "observe": True,
+                                                         "wait_for": "signal", **arguments})
+            call["params"]["item"]["result"] = {"structuredContent": {
+                "terminal_id": "t1", "request_id": f"r{identifier}", "outcome": "written",
+                "application_result": "unverified", "observation": {"status": "available", "state": state}}}
+            return call
+        absent = {"wait_text_absent": ["esc to interrupt"]}
+        calls = [
+            readback(1, absent, signal_state("settled", {"present": None, "absent": True})),
+            readback(2, absent, signal_state("unsettled", {"present": None, "absent": False})),
+            readback(3, {"wait_text": ["❯"], **absent}, signal_state("settled", {"present": True, "absent": True})),
+            # Present held, absent did not: not held.
+            readback(4, {"wait_text": ["❯"], **absent}, signal_state("unsettled", {"present": True, "absent": False})),
+            # No conditions asked: not a condition request.
+            readback(5, {}, signal_state("already", {"present": None, "absent": None})),
+            # Older server: no conditions block, no outcome.
+            readback(6, absent, signal_state("settled", None)),
+            # Unavailable readback: a request without an outcome.
+            readback(7, absent, {}),
+        ]
+        calls[6]["params"]["item"]["result"]["structuredContent"]["observation"] = {"status": "unavailable", "reason": "gone"}
+        # Refused: a request, no result.
+        refused = row(8)
+        refused["params"]["item"]["arguments"].update({"wait_for": "signal", "wait_text_absent": []})
+        refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {"message": "wait_text must list 1..8 patterns"}
+        calls.append(refused)
+        # Text mode with an absent condition is a text wait, not a signal condition request.
+        text = row(9)
+        text["params"]["item"]["arguments"].update({"wait_for": "text", "wait_text_absent": ["busy"]})
+        text["params"]["item"]["result"]["structuredContent"].update({
+            "wait": {"mode": "text", "outcome": "matched", "waited_ms": 12, "settled": True, "text": None,
+                     "conditions": {"present": None, "absent": True}}})
+        calls.append(text)
+        # An open with a signal wait and conditions counts too.
+        opened = row(10, "calm.terminal.open")
+        opened["params"]["item"]["arguments"] = {"request_id": "o1", "wait_for": "signal", "wait_text_absent": ["busy"]}
+        opened["params"]["item"]["result"]["structuredContent"] = signal_state("settled", {"present": None, "absent": True})
+        calls.append(opened)
+        original = copy.deepcopy(calls)
+        result = ux.metrics(calls)
+        self.assertEqual(result["text_condition_requests"], 8)
+        self.assertEqual(result["signal_condition_outcomes"],
+                         {"settled/held": 3, "unsettled/not_held": 2})
+        self.assertEqual(result["signal_wait_requests"], 9)
+        self.assertEqual(result["text_wait_requests"], 1)
+        self.assertEqual(result["tool_errors"], 1)
+        self.assertEqual(calls, original)
+        # A malformed conditions block is rejected, never guessed.
+        bad = readback(11, absent, signal_state("settled", {"present": "yes", "absent": True}))
+        with self.assertRaises(ux.EvidenceError):
+            ux.metrics([bad])
 
     # #1620 hook-signal counters.
     @staticmethod

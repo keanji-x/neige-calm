@@ -352,6 +352,68 @@ The summary adds no input-schema bytes; the open wait properties and the
 `replace` arm do (open 824 bytes, input 2008 bytes against the strict
 `< 4000` per-tool schema test).
 
+### Text conditions on waits (#1677 r16)
+
+Rounds 15 and 16 on the real Claude Code repeated one friction on the
+rewind scenario: `stop` arrived while the screen still showed the busy
+spinner (`· Noodling…` / `⏸ manual mode on · esc to interrupt`), the repaint
+phase reported `settled` 7 ms after the signal (the last spinner frame had
+been quiet ~143 ms) and the answer painted later, costing one observe. The
+Planner's ask — "完成等待同时核验忙碌提示消失" — is a text condition on the
+wait.
+
+`wait_text_absent` (array, 1..8 literal patterns, the same validation as
+`wait_text`) on observe, input, control and open; `wait_text` is now also
+accepted in signal mode. Both are refused in change and elapsed mode
+(`terminal_interaction/wait_plan.rs`, mode coupling in both directions).
+The conditions (`terminal_interaction/text_conditions.rs`) are: PRESENT —
+some `wait_text` pattern is a substring of some live viewport row — and
+ABSENT — no `wait_text_absent` pattern is on any row; a list without
+patterns is vacuously true and reported as `null`.
+
+* Text mode: at least one of the two lists is required; the same loop
+  (`text_wait.rs`) with the predicate generalised: the wait ends when the
+  conditions hold and the screen has then been quiet for `settle_ms`; a
+  screen on which they stop holding returns the wait to "not held".
+  `wait.text` still names the present match (first pattern in argument
+  order, first row) or is null when only an absence condition was asked;
+  `wait.outcome` is `matched` iff the conditions held on the screen the
+  wait ended on; the new `wait.conditions {present, absent}` says which side
+  held (`true|false|null`).
+* Signal mode: the repaint phase (`terminal_interaction/repaint.rs`, moved
+  out of `wait.rs`) ends with `already` / `settled` only when the screen is
+  quiet for `settle_ms` AND the conditions hold on the current screen,
+  re-tested on every revision wake with one capture per revision (never on
+  a timer or protocol wake); while they do not hold the phase keeps waiting
+  for further revisions until the budget → `unsettled`. `none` stays: no
+  revision at all within `repaint_ms`. Without conditions the phase is
+  exactly #1628's (the paused-clock tests pin it, and no capture is taken).
+  `wait.conditions` is reported in signal mode too (both null without
+  conditions, or when no signal arrived).
+* A wait that tests text needs the live viewport: `scroll_offset` must be 0
+  for `wait_for=text` and for a signal wait with conditions (MCP layer and
+  service).
+
+Recommended Claude prompt readback: `submit` + `observe: true, wait_for:
+"signal", wait_text_absent: ["esc to interrupt"]` — the readback returns
+when the answer is painted and the busy hint is gone (`wait.conditions.absent
+true`); `repaint.outcome unsettled` means the budget ended while the hint was
+still there: observe again. The focused suite drives a fake Claude that
+posts `Stop` while a busy row is painted and replaces it with the answer
+800 ms later: without conditions the readback returns at the spinner
+(#1628), with `wait_text_absent` it returns with the answer.
+
+The second repeated friction is guidance only (input.md, planner.md, no
+fence change): the Planner pressed Enter right after an edit readback and
+Claude Code's status line below the input refreshed in between (`● high ·
+/effort` appended) → `stale_observation` → resend. `allow_output_below_cursor`
+stays edits-only by design (the slash-menu hazard), so the guidance is: when
+submitting a draft that the previous action's readback already showed
+(text/replace/sequence), pass `allow_output_since_observation=true` on that
+Enter/submit; keep the plain fence when a command menu may be open below
+the draft (a draft starting with `/`) or after a long pause; `screen_diff` on
+a stale result still says which flag applies.
+
 ### Collector (#1677)
 
 `open_with_wait` (open calls with any wait argument), `open_wait_outcomes`
@@ -361,4 +423,8 @@ receipts with outcome `written`), `summary_present` (non-failed input/control
 receipts carrying `summary`); the wait accounting no longer excludes open
 results, so an open with `wait_for=change` or `text` counts as a change or
 text wait request with its outcome; the edit scenario's `corrects` rule
-accepts a `replace`.
+accepts a `replace`. r16: `text_condition_requests` (observation-requesting
+calls in signal mode whose arguments carry `wait_text` or
+`wait_text_absent`) and `signal_condition_outcomes` (tally of those calls'
+returned `wait.repaint.outcome` joined with whether every asked condition
+held, e.g. `settled/held`, `unsettled/not_held`).

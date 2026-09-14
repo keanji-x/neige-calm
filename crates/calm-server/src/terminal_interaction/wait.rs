@@ -2,9 +2,13 @@
 //! revisions, hook signals and client protocol events, never on a sleep-poll
 //! loop. Waiting is presentation; it never touches a receipt or the physical
 //! action. The argument contract lives in `wait_plan.rs`, the text loop in
-//! `text_wait.rs` (#1666); this file dispatches and runs the change and
+//! `text_wait.rs` (#1666), the repaint phase of a signal wait in
+//! `repaint.rs` (#1677 r16); this file dispatches and runs the change and
 //! signal loops.
 use super::client::Client;
+use super::repaint::{Repaint, settle_after_signal};
+pub use super::repaint::{RepaintOutcome, RepaintPlan, RepaintReport};
+use super::text_conditions::{ConditionState, TextConditions};
 use super::text_wait::{self, TextMatch, TextWait};
 pub use super::wait_plan::{WaitFor, WaitPlan};
 use crate::terminal_renderer::{SharedModelView, Signal};
@@ -47,47 +51,11 @@ pub struct WaitReport {
     pub repaint: Option<RepaintReport>,
     /// Text mode (#1666): the match the wait ended on, if any.
     pub text: Option<TextMatch>,
+    /// Text and signal modes (#1677 r16): which text conditions held on the
+    /// screen the wait (or the repaint phase) ended on.
+    pub conditions: Option<ConditionState>,
 }
-/// Signal mode (#1628): the screen's behaviour after the signal arrived.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RepaintOutcome {
-    /// A revision had already landed since the baseline and the screen had
-    /// been quiet for `settle_ms` when the signal arrived.
-    Already,
-    /// A revision landed after the signal and the screen then stayed quiet
-    /// for `settle_ms`.
-    Settled,
-    /// No revision landed within `repaint_ms` of the signal (or the budget).
-    None,
-    /// A revision landed after the signal but the budget ended before the
-    /// screen was quiet for `settle_ms`.
-    Unsettled,
-    /// `repaint_ms: 0`: returned at the signal without looking at the screen.
-    Skipped,
-}
-impl RepaintOutcome {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Already => "already",
-            Self::Settled => "settled",
-            Self::None => "none",
-            Self::Unsettled => "unsettled",
-            Self::Skipped => "skipped",
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RepaintReport {
-    pub outcome: RepaintOutcome,
-    /// Time spent after the signal.
-    pub waited: Duration,
-}
-impl RepaintReport {
-    fn to_json(self) -> Value {
-        json!({"outcome":self.outcome.name(),"waited_ms":millis(self.waited)})
-    }
-}
-fn millis(duration: Duration) -> u64 {
+pub(super) fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 impl WaitReport {
@@ -124,6 +92,9 @@ impl WaitReport {
                 .map(TextMatch::to_json)
                 .unwrap_or(Value::Null);
         }
+        if matches!(self.mode, WaitFor::Text | WaitFor::Signal) {
+            report["conditions"] = self.conditions.unwrap_or_default().to_json();
+        }
         report
     }
 }
@@ -156,6 +127,7 @@ pub async fn wait(
         signal_at: None,
         repaint: None,
         text: None,
+        conditions: None,
     };
     if plan.mode == WaitFor::Elapsed {
         if plan.budget_ms > 0 {
@@ -189,6 +161,20 @@ pub async fn wait(
             return report(WaitOutcome::Unchanged, started.elapsed(), false, None);
         }
     };
+    // One capture per revision wake, the view lock dropped before the rows
+    // are tested; the frame's own revision names the tested screen (text
+    // mode, and the signal repaint phase under text conditions).
+    let capture = || {
+        client
+            .entry
+            .handle
+            .model_view
+            .lock()
+            .ok()
+            .and_then(|view| view.capture(0).ok())
+            .map(|(frame, revision)| (frame.text, revision))
+    };
+    let conditions = plan.conditions();
     if plan.mode == WaitFor::Signal {
         let ring = &client.entry.signals;
         let signals = ring.subscribe();
@@ -202,8 +188,19 @@ pub async fn wait(
             exited,
             signal_at,
             repaint,
+            conditions,
         } = wait_for_signal(
-            signals, revisions, events, stopped, find, baseline, started, deadline, repaint,
+            signals,
+            revisions,
+            events,
+            stopped,
+            capture,
+            &conditions,
+            find,
+            baseline,
+            started,
+            deadline,
+            repaint,
         )
         .await;
         let outcome = match (&signal, exited) {
@@ -220,24 +217,15 @@ pub async fn wait(
         let mut report = report(outcome, started.elapsed(), settled, signal);
         report.signal_at = signal_at;
         report.repaint = repaint;
+        report.conditions = Some(conditions);
         return report;
     }
     let settle = Duration::from_millis(plan.settle_ms);
     if plan.mode == WaitFor::Text {
-        // One capture per revision wake, the view lock dropped before the
-        // rows are tested; the frame's own revision names the tested screen.
-        let capture = || {
-            client
-                .entry
-                .handle
-                .model_view
-                .lock()
-                .ok()
-                .and_then(|view| view.capture(0).ok())
-                .map(|(frame, revision)| (frame.text, revision))
-        };
         let TextWait {
             matched,
+            holds,
+            conditions,
             settled,
             exited,
         } = text_wait::wait_for_text(
@@ -245,7 +233,7 @@ pub async fn wait(
             events,
             stopped,
             capture,
-            &plan.wait_text,
+            &conditions,
             started,
             deadline,
             settle,
@@ -253,13 +241,14 @@ pub async fn wait(
         .await;
         let outcome = if exited {
             WaitOutcome::Exited
-        } else if matched.is_some() {
+        } else if holds {
             WaitOutcome::Matched
         } else {
             WaitOutcome::Unmatched
         };
         let mut report = report(outcome, started.elapsed(), settled && !exited, None);
         report.text = matched;
+        report.conditions = Some(conditions);
         return report;
     }
     let Progress {
@@ -287,22 +276,6 @@ fn projection_unavailable(model_view: &SharedModelView) -> bool {
         .unwrap_or(true)
 }
 
-/// Signal mode (#1628): the repaint window after the signal and the quiet
-/// window that ends it. `repaint == 0` skips the phase.
-#[derive(Clone, Copy, Debug)]
-pub struct RepaintPlan {
-    pub repaint: Duration,
-    pub settle: Duration,
-}
-impl RepaintPlan {
-    #[cfg(test)]
-    pub fn skip() -> Self {
-        Self {
-            repaint: Duration::ZERO,
-            settle: Duration::ZERO,
-        }
-    }
-}
 /// The signal loop's verdict.
 #[derive(Debug)]
 pub struct SignalWait {
@@ -313,40 +286,10 @@ pub struct SignalWait {
     pub signal_at: Option<Duration>,
     /// Present exactly when a signal was found.
     pub repaint: Option<RepaintReport>,
+    /// Which text conditions held on the last screen the repaint phase
+    /// tested (#1677 r16; null sides when there were none).
+    pub conditions: ConditionState,
 }
-/// Revision bookkeeping across both phases of a signal wait: whether any
-/// revision landed since the wait's baseline and when the last one did. A
-/// revision already above the baseline when the wait starts counts as a
-/// change at the start (its real time is unknown, so the quiet window is
-/// measured from the start, never earlier).
-struct Repaint {
-    seen: u64,
-    changed: bool,
-    last_change: Instant,
-}
-impl Repaint {
-    fn new(baseline: u64, current: u64, started: Instant) -> Self {
-        Self {
-            seen: current,
-            changed: current != baseline,
-            last_change: started,
-        }
-    }
-    /// Record `current`; true when it is a new revision.
-    fn observe(&mut self, current: u64, now: Instant) -> bool {
-        if current == self.seen {
-            return false;
-        }
-        self.seen = current;
-        self.changed = true;
-        self.last_change = now;
-        true
-    }
-    fn quiet_for(&self, now: Instant) -> Duration {
-        now.saturating_duration_since(self.last_change)
-    }
-}
-
 /// The signal-mode loop (#1620), separated from the client so its timing can
 /// be tested under a paused clock. `signals` is the ring's seq channel,
 /// `revisions` the projection revision channel (a revision itself never ends
@@ -360,13 +303,16 @@ impl Repaint {
 /// branch re-reads `stopped` as well, so an exit that coincides with the
 /// deadline is reported as exited, never as unchanged. Once the signal is
 /// found the wait continues in [`settle_after_signal`] (#1628) unless
-/// `repaint.repaint` is zero.
+/// `repaint.repaint` is zero; `capture` and `conditions` (#1677 r16) are
+/// the text conditions that phase tests, one capture per revision.
 #[allow(clippy::too_many_arguments)]
 async fn wait_for_signal(
     mut signals: watch::Receiver<u64>,
     mut revisions: watch::Receiver<u64>,
     mut events: watch::Receiver<u64>,
     stopped: impl Fn() -> bool,
+    capture: impl Fn() -> Option<(Vec<String>, u64)>,
+    conditions: &TextConditions,
     find: impl Fn() -> Option<Signal>,
     baseline: u64,
     started: Instant,
@@ -379,6 +325,7 @@ async fn wait_for_signal(
         exited,
         signal_at: None,
         repaint: None,
+        conditions: ConditionState::default(),
     };
     // A matching signal wins over every other verdict; otherwise `stopped`
     // is read at the moment the wait ends.
@@ -409,10 +356,12 @@ async fn wait_for_signal(
         }
     };
     let signal_at = Instant::now();
-    let report = settle_after_signal(
+    let (report, conditions) = settle_after_signal(
         revisions,
         events,
         stopped,
+        capture,
+        conditions,
         &mut screen,
         signal_at,
         deadline,
@@ -424,77 +373,7 @@ async fn wait_for_signal(
         exited: false,
         signal_at: Some(signal_at.saturating_duration_since(started)),
         repaint: Some(report),
-    }
-}
-
-/// The repaint phase of a signal wait (#1628). At the signal: a revision
-/// since the baseline that has been quiet for `settle` is `Already`. Else
-/// the loop keys on `screen.changed` (any revision since the wait's
-/// baseline, before or after the signal): while nothing has changed it
-/// waits for the first revision until `repaint` after the signal (or the
-/// budget) → `None`; once a change exists it waits until the screen has
-/// been quiet for `settle` → `Settled`, or the budget → `Unsettled`. So a
-/// revision 50 ms before the signal settles 100 ms after it (settle 150)
-/// rather than idling `repaint`. Exit, disconnect and projection
-/// invalidation (`stopped`, re-read on every wake) end the phase with the
-/// verdict the screen had reached. As in change mode, a timer wake re-reads
-/// the revision before settling.
-async fn settle_after_signal(
-    mut revisions: watch::Receiver<u64>,
-    mut events: watch::Receiver<u64>,
-    stopped: impl Fn() -> bool,
-    screen: &mut Repaint,
-    signal_at: Instant,
-    deadline: Instant,
-    plan: RepaintPlan,
-) -> RepaintReport {
-    let report = |outcome| RepaintReport {
-        outcome,
-        waited: Instant::now().saturating_duration_since(signal_at),
-    };
-    if plan.repaint.is_zero() {
-        return report(RepaintOutcome::Skipped);
-    }
-    screen.observe(*revisions.borrow_and_update(), signal_at);
-    if screen.changed && screen.quiet_for(signal_at) >= plan.settle {
-        return report(RepaintOutcome::Already);
-    }
-    let repaint_deadline = (signal_at + plan.repaint).min(deadline);
-    // A change exists (since the baseline) but never went quiet before the
-    // phase ended → `Unsettled`; no change at all → `None`.
-    let verdict = |changed: bool| {
-        if changed {
-            RepaintOutcome::Unsettled
-        } else {
-            RepaintOutcome::None
-        }
-    };
-    loop {
-        events.borrow_and_update();
-        let now = Instant::now();
-        screen.observe(*revisions.borrow_and_update(), now);
-        if screen.changed && screen.quiet_for(now) >= plan.settle {
-            return report(RepaintOutcome::Settled);
-        }
-        if stopped() {
-            return report(verdict(screen.changed));
-        }
-        let timer = if screen.changed {
-            (screen.last_change + plan.settle).min(deadline)
-        } else {
-            repaint_deadline
-        };
-        if now >= timer {
-            return report(verdict(screen.changed));
-        }
-        let ended = tokio::select! {
-            result = revisions.changed() => result.is_err(),
-            result = events.changed() => result.is_err(),
-            _ = tokio::time::sleep_until(timer) => false,
-        };
-        if ended {
-            return report(verdict(screen.changed));
-        }
+        conditions,
     }
 }
 
@@ -594,6 +473,7 @@ mod tests {
             signal_at: None,
             repaint: None,
             text: None,
+            conditions: None,
         };
         assert_eq!(
             report.to_json(),
@@ -610,6 +490,7 @@ mod tests {
             signal_at: None,
             repaint: None,
             text: None,
+            conditions: None,
         };
         assert_eq!(report.to_json()["baseline_revision"], "7");
         assert_eq!(report.to_json()["outcome"], "changed");
@@ -644,8 +525,17 @@ mod tests {
                 waited: Duration::from_millis(2),
             }),
             text: None,
+            conditions: Some(ConditionState {
+                present: None,
+                absent: Some(true),
+            }),
         };
         assert_eq!(report.to_json()["outcome"], "signal");
+        // #1677 r16: the conditions block in signal mode names both sides.
+        assert_eq!(
+            report.to_json()["conditions"],
+            json!({"present":null,"absent":true})
+        );
         assert_eq!(report.to_json()["signal"], signal.to_json());
         assert_eq!(report.to_json()["baseline_signal_seq"], 3);
         assert_eq!(report.to_json()["signal_at_ms"], 3);
@@ -665,9 +555,15 @@ mod tests {
             signal_at: None,
             repaint: None,
             text: None,
+            conditions: None,
         };
         assert_eq!(report.to_json()["signal_at_ms"], Value::Null);
         assert_eq!(report.to_json()["repaint"], Value::Null);
+        assert_eq!(
+            report.to_json()["conditions"],
+            json!({"present":null,"absent":null}),
+            "no conditions: both sides null"
+        );
         for (outcome, name) in [
             (RepaintOutcome::Already, "already"),
             (RepaintOutcome::Settled, "settled"),
@@ -700,11 +596,16 @@ mod tests {
             signal_at: None,
             repaint: None,
             text: Some(matched.clone()),
+            conditions: Some(ConditionState {
+                present: Some(true),
+                absent: None,
+            }),
         };
         assert_eq!(
             report.to_json(),
             json!({"mode":"text","outcome":"matched","waited_ms":400,"settled":true,"baseline_revision":"7","baseline_signal_seq":3,
-                "text":{"pattern":"❯","row":5,"revision":"9","already":false}})
+                "text":{"pattern":"❯","row":5,"revision":"9","already":false},
+                "conditions":{"present":true,"absent":null}})
         );
         let report = WaitReport {
             outcome: WaitOutcome::Unmatched,
@@ -761,6 +662,8 @@ mod tests {
                 revisions_rx,
                 events_rx,
                 move || flag.load(Ordering::SeqCst),
+                || panic!("no conditions: the repaint phase never captures"),
+                &TextConditions::default(),
                 move || waiter.first_matching(baseline, &stop),
                 0,
                 started,
@@ -865,6 +768,8 @@ mod tests {
                 revisions_rx,
                 events_rx,
                 || false,
+                || None,
+                &TextConditions::default(),
                 move || {
                     flag.load(Ordering::SeqCst).then(|| Signal {
                         seq: 1,
@@ -937,6 +842,8 @@ mod tests {
                 revisions,
                 events_rx,
                 move || projection_unavailable(&stopped_view),
+                || None,
+                &TextConditions::default(),
                 move || waiter.first_matching(0, &stop),
                 0,
                 started,

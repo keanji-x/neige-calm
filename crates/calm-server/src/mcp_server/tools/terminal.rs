@@ -31,25 +31,25 @@ pub fn register_into(registry: &mut ToolRegistry) {
         (
             "calm.terminal.open",
             include_str!("../../../prompts/tools/calm.terminal.open.md").trim_end(),
-            json!({"request_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200},"program":{"type":"string","minLength":1,"maxLength":4096},"format":{"type":"string","enum":["text","image"],"default":"text"},"claim":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
+            json!({"request_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200},"program":{"type":"string","minLength":1,"maxLength":4096},"format":{"type":"string","enum":["text","image"],"default":"text"},"claim":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
             vec!["request_id"],
         ),
         (
             "calm.terminal.observe",
             include_str!("../../../prompts/tools/calm.terminal.observe.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"scroll_offset":{"type":"integer","minimum":0,"maximum":2000},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"format":{"type":"string","enum":["text","image"],"default":"text"}}),
+            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"scroll_offset":{"type":"integer","minimum":0,"maximum":2000},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"format":{"type":"string","enum":["text","image"],"default":"text"}}),
             vec![],
         ),
         (
             "calm.terminal.control",
             include_str!("../../../prompts/tools/calm.terminal.control.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"action":{"type":"string","enum":["claim","release","detach"]},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
+            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"action":{"type":"string","enum":["claim","release","detach"]},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
             vec!["action"],
         ),
         (
             "calm.terminal.input",
             include_str!("../../../prompts/tools/calm.terminal.input.md").trim_end(),
-            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"request_id":{"type":"string","minLength":1,"maxLength":128},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"allow_output_since_observation":{"type":"boolean","default":false},"allow_output_below_cursor":{"type":"boolean","default":false},"claim":{"type":"boolean","default":false},"release":{"type":"boolean","default":false},
+            json!({"terminal_id":{"type":"string"},"task_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"request_id":{"type":"string","minLength":1,"maxLength":128},"observe":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"allow_output_since_observation":{"type":"boolean","default":false},"allow_output_below_cursor":{"type":"boolean","default":false},"claim":{"type":"boolean","default":false},"release":{"type":"boolean","default":false},
             "action":{"anyOf":[
                 {"type":"object","required":["type","text"],"additionalProperties":false,"properties":{"type":{"enum":["text","submit"]},"text":{"type":"string","minLength":1,"maxLength":16384}}},
                 {"type":"object","required":["type","key"],"additionalProperties":false,"properties":{"type":{"const":"key"},"key":{"type":"string"},"repeat":{"type":"integer","minimum":1,"maximum":32,"default":1}}},
@@ -95,6 +95,7 @@ struct Open {
     signal_events: Option<Vec<String>>,
     repaint_ms: Option<u64>,
     wait_text: Option<Vec<String>>,
+    wait_text_absent: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -109,6 +110,7 @@ struct Observe {
     signal_events: Option<Vec<String>>,
     repaint_ms: Option<u64>,
     wait_text: Option<Vec<String>>,
+    wait_text_absent: Option<Vec<String>>,
     #[serde(default)]
     format: ObservationFormat,
 }
@@ -126,6 +128,7 @@ struct Control {
     signal_events: Option<Vec<String>>,
     repaint_ms: Option<u64>,
     wait_text: Option<Vec<String>>,
+    wait_text_absent: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -143,6 +146,7 @@ struct Input {
     signal_events: Option<Vec<String>>,
     repaint_ms: Option<u64>,
     wait_text: Option<Vec<String>>,
+    wait_text_absent: Option<Vec<String>>,
     #[serde(default)]
     allow_output_since_observation: bool,
     #[serde(default)]
@@ -241,6 +245,7 @@ struct WaitArgs {
     signal_events: Option<Vec<String>>,
     repaint_ms: Option<u64>,
     wait_text: Option<Vec<String>>,
+    wait_text_absent: Option<Vec<String>>,
 }
 impl WaitArgs {
     fn any(&self) -> bool {
@@ -250,6 +255,17 @@ impl WaitArgs {
             || self.signal_events.is_some()
             || self.repaint_ms.is_some()
             || self.wait_text.is_some()
+            || self.wait_text_absent.is_some()
+    }
+    /// Whether the wait would test live viewport rows (text mode, or
+    /// signal mode with text conditions): such a wait needs `scroll_offset`
+    /// 0 (the service refuses it again).
+    fn tests_text(&self) -> bool {
+        match self.wait_for {
+            Some(WaitFor::Text) => true,
+            Some(WaitFor::Signal) => self.wait_text.is_some() || self.wait_text_absent.is_some(),
+            _ => false,
+        }
     }
     fn plan(self) -> Result<WaitPlan, RpcError> {
         WaitPlan::new(
@@ -259,6 +275,7 @@ impl WaitArgs {
             self.signal_events,
             self.repaint_ms,
             self.wait_text,
+            self.wait_text_absent,
         )
         .map_err(|error| RpcError::invalid_params(error.to_string()))
     }
@@ -270,7 +287,7 @@ fn action_observation(
 ) -> Result<Option<WaitPlan>, RpcError> {
     if (wait.any() && !observe) || (detach && observe) {
         return Err(RpcError::invalid_params(
-            "wait_ms/wait_for/settle_ms/signal_events/repaint_ms/wait_text require observe=true; detach cannot observe",
+            "wait_ms/wait_for/settle_ms/signal_events/repaint_ms/wait_text/wait_text_absent need observe=true; detach cannot observe",
         ));
     }
     if !observe {
@@ -398,6 +415,7 @@ async fn call(
                 signal_events: args.signal_events,
                 repaint_ms: args.repaint_ms,
                 wait_text: args.wait_text,
+                wait_text_absent: args.wait_text_absent,
             };
             let waited = wait.any();
             let wait = wait.plan()?;
@@ -538,11 +556,6 @@ async fn call(
                     "scroll_offset exceeds history limit",
                 ));
             }
-            if args.wait_for == Some(WaitFor::Text) && args.scroll_offset > 0 {
-                return Err(RpcError::invalid_params(
-                    "wait_for=text observes the live viewport; scroll_offset must be 0",
-                ));
-            }
             let wait = WaitArgs {
                 wait_for: args.wait_for,
                 wait_ms: args.wait_ms,
@@ -550,8 +563,14 @@ async fn call(
                 signal_events: args.signal_events,
                 repaint_ms: args.repaint_ms,
                 wait_text: args.wait_text,
+                wait_text_absent: args.wait_text_absent,
+            };
+            if wait.tests_text() && args.scroll_offset > 0 {
+                return Err(RpcError::invalid_params(
+                    "wait_for=text or text conditions observe the live viewport; scroll_offset must be 0",
+                ));
             }
-            .plan()?;
+            let wait = wait.plan()?;
             let (metadata, png) = service
                 .observe(
                     &identity,
@@ -575,6 +594,7 @@ async fn call(
                     signal_events: args.signal_events,
                     repaint_ms: args.repaint_ms,
                     wait_text: args.wait_text,
+                    wait_text_absent: args.wait_text_absent,
                 },
                 args.action == "detach",
             )?;
@@ -600,6 +620,7 @@ async fn call(
                     signal_events: args.signal_events,
                     repaint_ms: args.repaint_ms,
                     wait_text: args.wait_text,
+                    wait_text_absent: args.wait_text_absent,
                 },
                 false,
             )?;

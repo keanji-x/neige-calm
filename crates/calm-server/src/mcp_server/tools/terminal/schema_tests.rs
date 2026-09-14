@@ -56,13 +56,14 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         ]),
         "every registered targeted Terminal tool must be covered by this sweep"
     );
-    const WAIT: [&str; 6] = [
+    const WAIT: [&str; 7] = [
         "wait_ms",
         "wait_for",
         "settle_ms",
         "signal_events",
         "repaint_ms",
         "wait_text",
+        "wait_text_absent",
     ];
     for (name, common, mandatory) in [
         ("resolve", vec![], vec![]),
@@ -174,6 +175,12 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
             assert_eq!(
                 schema["properties"]["wait_text"],
                 json!({"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}}),
+                "{name}"
+            );
+            // #1677 r16 absent patterns: text and signal modes (refused
+            // elsewhere server-side); the same bounds as wait_text.
+            assert_eq!(
+                schema["properties"]["wait_text_absent"], schema["properties"]["wait_text"],
                 "{name}"
             );
             assert_eq!(

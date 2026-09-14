@@ -230,10 +230,13 @@ ROUND_TRIP_METRIC_KEYS = ("text_wait_requests", "text_wait_outcomes", "sequence_
                           "below_cursor_tolerated_inputs")
 OPEN_REPLACE_SUMMARY_METRIC_KEYS = ("open_with_wait", "open_wait_outcomes", "replace_actions", "replace_written",
                                     "summary_present")
+TEXT_CONDITION_METRIC_KEYS = ("text_condition_requests", "signal_condition_outcomes")
 SUMMARY_METRIC_KEYS = (WAIT_METRIC_KEYS + SIGNAL_METRIC_KEYS + ROUND_TRIP_METRIC_KEYS
-                       + OPEN_REPLACE_SUMMARY_METRIC_KEYS)
-# The observe wait arguments every wait carrier accepts (#1677: open included).
-WAIT_ARGUMENT_KEYS = ("wait_for", "wait_ms", "settle_ms", "signal_events", "repaint_ms", "wait_text")
+                       + OPEN_REPLACE_SUMMARY_METRIC_KEYS + TEXT_CONDITION_METRIC_KEYS)
+# The observe wait arguments every wait carrier accepts (#1677: open included; r16: wait_text_absent).
+WAIT_ARGUMENT_KEYS = ("wait_for", "wait_ms", "settle_ms", "signal_events", "repaint_ms", "wait_text",
+                      "wait_text_absent")
+TEXT_CONDITION_KEYS = ("wait_text", "wait_text_absent")
 
 
 def wait_outcome(state):
@@ -427,6 +430,63 @@ def open_replace_summary_metrics(terminal):
             "open_wait_outcomes": dict(sorted(outcomes.items()))}
 
 
+def condition_state(wait):
+    """Return a signal wait's `wait.conditions` block (#1677 r16), or None when the server sent none.
+
+    A present block must carry `present` and `absent`, each true, false or
+    null (a side that was not asked).
+    """
+    if "conditions" not in wait:
+        return None
+    conditions = require_object(wait["conditions"], "observation wait.conditions")
+    for side in ("present", "absent"):
+        if conditions.get(side) is not None and not isinstance(conditions[side], bool):
+            raise EvidenceError("observation wait.conditions sides must be true, false or null")
+    return conditions
+
+
+def text_condition_metrics(terminal):
+    """#1677 r16 counters, each read from a completed call's own arguments or result.
+
+    `text_condition_requests` counts observation-requesting calls (observe,
+    open, control/input with observe=true) whose arguments say `wait_for:
+    "signal"` and carry `wait_text` or `wait_text_absent` (failed ones
+    included). `signal_condition_outcomes` tallies, over the non-failed ones
+    that returned an observation whose wait ended on a signal with a
+    `conditions` block, the string `<repaint outcome>/<held|not_held>`, held
+    meaning every asked side is true; a missing repaint or conditions block
+    (older server) adds nothing. A held condition is a screen fact, not an
+    application result.
+    """
+    counts = collections.Counter()
+    outcomes = collections.Counter()
+    for call in terminal:
+        if not call.get("completed"):
+            continue
+        args = call.get("arguments", {})
+        conditioned = (requests_observation(call) and args.get("wait_for") == "signal"
+                       and any(key in args for key in TEXT_CONDITION_KEYS))
+        if not conditioned:
+            continue
+        counts["text_condition_requests"] += 1
+        if tool_failed(call):
+            continue
+        state = observed_state(call, metadata(call))
+        if state is None:
+            continue
+        wait = wait_outcome(state)
+        if wait is None:
+            continue
+        repaint = signal_repaint(wait)
+        conditions = condition_state(wait)
+        if repaint is None or conditions is None:
+            continue
+        held = all(conditions[side] is not False for side in ("present", "absent"))
+        outcomes[f"{repaint['outcome']}/{'held' if held else 'not_held'}"] += 1
+    return {"text_condition_requests": counts["text_condition_requests"],
+            "signal_condition_outcomes": dict(sorted(outcomes.items()))}
+
+
 def wait_metrics(terminal):
     """#1618 counters, each read from a completed call's own arguments or result.
 
@@ -527,7 +587,7 @@ def metrics(rows):
             "unmeasured_key_press_requests": unmeasured_requests,
             "observation_refusals": sum(observation_refused(call) for call in terminal),
             **wait_metrics(terminal), **signal_metrics(terminal), **round_trip_metrics(terminal),
-            **open_replace_summary_metrics(terminal),
+            **open_replace_summary_metrics(terminal), **text_condition_metrics(terminal),
             "human_intervention": "not_measured", "token_savings": "not_measured"}
 
 

@@ -22,6 +22,8 @@ mod terminal_sequence;
 mod terminal_signals;
 #[path = "cases/terminal_sweeper.rs"]
 mod terminal_sweeper;
+#[path = "cases/terminal_text_conditions.rs"]
+mod terminal_text_conditions;
 #[path = "cases/terminal_text_wait.rs"]
 mod terminal_text_wait;
 #[path = "cases/terminal_wait_and_drift.rs"]

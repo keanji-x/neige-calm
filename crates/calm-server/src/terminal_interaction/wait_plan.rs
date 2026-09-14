@@ -1,6 +1,7 @@
 //! Validated waiting arguments shared by observe and action readbacks (moved
 //! out of `wait.rs` with #1666 so the loops stay in one file and the
 //! argument contract in another).
+use super::text_conditions::TextConditions;
 use crate::terminal_hooks::{DEFAULT_SIGNAL_EVENTS, TERMINAL_SIGNAL_EVENTS};
 use anyhow::{Result, ensure};
 use serde::Deserialize;
@@ -58,9 +59,15 @@ pub struct WaitPlan {
     /// Signal mode only: how long after the signal to wait for a repaint
     /// (0 returns at the signal as before #1628). 0 in the other modes.
     pub repaint_ms: u64,
-    /// Text mode only (#1666): literal patterns, any of which on any live
-    /// viewport row ends the wait once the screen is quiet. Empty elsewhere.
+    /// Text mode (#1666): literal patterns, any of which on any live
+    /// viewport row ends the wait once the screen is quiet; signal mode
+    /// (#1677 r16): the repaint phase settles only while one is on a row.
+    /// Empty elsewhere.
     pub wait_text: Vec<String>,
+    /// Text and signal modes (#1677 r16): literal patterns none of which may
+    /// be on any live viewport row for the wait to end (text) or the
+    /// repaint phase to settle (signal). Empty elsewhere.
+    pub wait_text_absent: Vec<String>,
 }
 impl WaitPlan {
     /// `wait_ms == None` selects the mode's default budget:
@@ -68,7 +75,9 @@ impl WaitPlan {
     /// signal, [`TEXT_WAIT_MS_DEFAULT`] for text, 0 for elapsed.
     /// `signal_events == None` selects [`DEFAULT_SIGNAL_EVENTS`] in signal
     /// mode; `repaint_ms == None` selects [`REPAINT_MS_DEFAULT`] there.
-    /// `wait_text` is required in text mode and refused elsewhere.
+    /// Text mode requires at least one of `wait_text` / `wait_text_absent`;
+    /// signal mode accepts either; both are refused in change and elapsed
+    /// mode.
     pub fn new(
         wait_for: Option<WaitFor>,
         wait_ms: Option<u64>,
@@ -76,6 +85,7 @@ impl WaitPlan {
         signal_events: Option<Vec<String>>,
         repaint_ms: Option<u64>,
         wait_text: Option<Vec<String>>,
+        wait_text_absent: Option<Vec<String>>,
     ) -> Result<Self> {
         let mode = wait_for.unwrap_or_default();
         let wait_ms = wait_ms.unwrap_or(match mode {
@@ -107,8 +117,12 @@ impl WaitPlan {
             "repaint_ms requires wait_for=signal"
         );
         ensure!(
-            wait_text.is_none() || mode == WaitFor::Text,
-            "wait_text requires wait_for=text"
+            wait_text.is_none() || matches!(mode, WaitFor::Text | WaitFor::Signal),
+            "wait_text requires wait_for=text or wait_for=signal"
+        );
+        ensure!(
+            wait_text_absent.is_none() || matches!(mode, WaitFor::Text | WaitFor::Signal),
+            "wait_text_absent requires wait_for=text or wait_for=signal"
         );
         let signal_events = match mode {
             WaitFor::Signal => {
@@ -132,14 +146,18 @@ impl WaitPlan {
             }
             _ => Vec::new(),
         };
-        let wait_text = match mode {
-            WaitFor::Text => {
-                let patterns =
-                    wait_text.ok_or_else(|| anyhow::anyhow!("wait_for=text requires wait_text"))?;
-                validate_wait_text(&patterns)?;
-                patterns
+        ensure!(
+            mode != WaitFor::Text || wait_text.is_some() || wait_text_absent.is_some(),
+            "wait_for=text requires wait_text or wait_text_absent"
+        );
+        let patterns = |list: Option<Vec<String>>| -> Result<Vec<String>> {
+            match list {
+                Some(patterns) => {
+                    validate_wait_text(&patterns)?;
+                    Ok(patterns)
+                }
+                None => Ok(Vec::new()),
             }
-            _ => Vec::new(),
         };
         Ok(Self {
             mode,
@@ -150,8 +168,27 @@ impl WaitPlan {
                 WaitFor::Signal => repaint_ms.unwrap_or(REPAINT_MS_DEFAULT),
                 _ => 0,
             },
-            wait_text,
+            wait_text: patterns(wait_text)?,
+            wait_text_absent: patterns(wait_text_absent)?,
         })
+    }
+    /// The text conditions of this wait (#1677 r16): empty outside text and
+    /// signal modes.
+    pub fn conditions(&self) -> TextConditions {
+        TextConditions {
+            present: self.wait_text.clone(),
+            absent: self.wait_text_absent.clone(),
+        }
+    }
+    /// Whether the wait tests live viewport rows: text mode, or signal mode
+    /// with text conditions. Such a wait needs the live viewport
+    /// (`scroll_offset` 0).
+    pub fn tests_text(&self) -> bool {
+        match self.mode {
+            WaitFor::Text => true,
+            WaitFor::Signal => !self.wait_text.is_empty() || !self.wait_text_absent.is_empty(),
+            _ => false,
+        }
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
@@ -164,10 +201,23 @@ impl WaitPlan {
             self.mode != WaitFor::Signal || !self.signal_events.is_empty(),
             "signal wait without events"
         );
-        match self.mode {
-            WaitFor::Text => validate_wait_text(&self.wait_text)?,
-            _ => ensure!(self.wait_text.is_empty(), "wait_text outside text mode"),
+        for list in [&self.wait_text, &self.wait_text_absent] {
+            match self.mode {
+                WaitFor::Text | WaitFor::Signal => {
+                    if !list.is_empty() {
+                        validate_wait_text(list)?;
+                    }
+                }
+                _ => ensure!(
+                    list.is_empty(),
+                    "text conditions outside text or signal mode"
+                ),
+            }
         }
+        ensure!(
+            self.mode != WaitFor::Text || !self.conditions().is_empty(),
+            "wait_for=text without text conditions"
+        );
         Ok(())
     }
 }
@@ -196,7 +246,7 @@ mod tests {
     use super::*;
 
     fn plan(wait_for: Option<WaitFor>, wait_ms: Option<u64>) -> WaitPlan {
-        WaitPlan::new(wait_for, wait_ms, None, None, None, None).unwrap()
+        WaitPlan::new(wait_for, wait_ms, None, None, None, None, None).unwrap()
     }
 
     #[test]
@@ -217,16 +267,17 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 None
             )
             .is_err()
         );
-        assert!(WaitPlan::new(None, None, Some(10), None, None, None).is_err());
+        assert!(WaitPlan::new(None, None, Some(10), None, None, None, None).is_err());
         assert!(
-            WaitPlan::new(Some(WaitFor::Change), None, None, None, Some(0), None).is_err(),
+            WaitPlan::new(Some(WaitFor::Change), None, None, None, Some(0), None, None).is_err(),
             "repaint_ms outside signal mode"
         );
-        assert!(WaitPlan::new(None, None, None, None, Some(0), None).is_err());
+        assert!(WaitPlan::new(None, None, None, None, Some(0), None, None).is_err());
         assert_eq!(plan(Some(WaitFor::Change), None).repaint_ms, 0);
     }
 
@@ -241,8 +292,16 @@ mod tests {
         assert_eq!(signal.repaint_ms, REPAINT_MS_DEFAULT);
         assert_eq!(REPAINT_MS_DEFAULT, 1_500);
         assert_eq!(signal.settle_ms, SETTLE_MS_DEFAULT);
-        let tuned =
-            WaitPlan::new(Some(WaitFor::Signal), None, Some(300), None, Some(0), None).unwrap();
+        let tuned = WaitPlan::new(
+            Some(WaitFor::Signal),
+            None,
+            Some(300),
+            None,
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!((tuned.settle_ms, tuned.repaint_ms), (300, 0));
         assert!(
             WaitPlan::new(
@@ -251,6 +310,7 @@ mod tests {
                 None,
                 None,
                 Some(REPAINT_MS_MAX + 1),
+                None,
                 None
             )
             .is_err()
@@ -260,6 +320,7 @@ mod tests {
                 Some(WaitFor::Signal),
                 None,
                 Some(SETTLE_MS_MAX + 1),
+                None,
                 None,
                 None,
                 None
@@ -286,6 +347,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 None
             )
             .is_err()
@@ -297,12 +359,22 @@ mod tests {
                 None,
                 Some(vec!["stop".into()]),
                 None,
+                None,
                 None
             )
             .is_err()
         );
         assert!(
-            WaitPlan::new(Some(WaitFor::Signal), None, None, Some(vec![]), None, None).is_err()
+            WaitPlan::new(
+                Some(WaitFor::Signal),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+                None
+            )
+            .is_err()
         );
         assert!(
             WaitPlan::new(
@@ -310,6 +382,7 @@ mod tests {
                 None,
                 None,
                 Some(vec!["Stop".into()]),
+                None,
                 None,
                 None
             )
@@ -320,6 +393,7 @@ mod tests {
             Some(0),
             None,
             Some(vec!["session_end".into()]),
+            None,
             None,
             None,
         )
@@ -341,6 +415,7 @@ mod tests {
                 None,
                 None,
                 Some(patterns.into_iter().map(str::to_owned).collect()),
+                None,
             )
         };
         let start = text(vec!["trust the files", "❯"]).unwrap();
@@ -359,18 +434,24 @@ mod tests {
             None,
             None,
             Some(vec!["x".into()]),
+            None,
         )
         .unwrap();
         assert_eq!((tuned.budget_ms, tuned.settle_ms), (0, 300));
-        // Mode coupling in both directions.
+        // Mode coupling in both directions (#1677 r16: signal mode accepts
+        // the text conditions too; change and elapsed refuse them).
         assert!(
-            WaitPlan::new(Some(WaitFor::Text), None, None, None, None, None).is_err(),
-            "wait_for=text without wait_text"
+            WaitPlan::new(Some(WaitFor::Text), None, None, None, None, None, None).is_err(),
+            "wait_for=text without text conditions"
         );
-        for mode in [None, Some(WaitFor::Change), Some(WaitFor::Signal)] {
+        for mode in [None, Some(WaitFor::Change)] {
             assert!(
-                WaitPlan::new(mode, None, None, None, None, Some(vec!["x".into()])).is_err(),
-                "wait_text outside text mode: {mode:?}"
+                WaitPlan::new(mode, None, None, None, None, Some(vec!["x".into()]), None).is_err(),
+                "wait_text outside text/signal mode: {mode:?}"
+            );
+            assert!(
+                WaitPlan::new(mode, None, None, None, None, None, Some(vec!["x".into()])).is_err(),
+                "wait_text_absent outside text/signal mode: {mode:?}"
             );
         }
         assert!(
@@ -380,7 +461,8 @@ mod tests {
                 None,
                 Some(vec!["stop".into()]),
                 None,
-                Some(vec!["x".into()])
+                Some(vec!["x".into()]),
+                None
             )
             .is_err(),
             "signal_events in text mode"
@@ -392,7 +474,8 @@ mod tests {
                 None,
                 None,
                 Some(0),
-                Some(vec!["x".into()])
+                Some(vec!["x".into()]),
+                None
             )
             .is_err(),
             "repaint_ms in text mode"
@@ -432,9 +515,149 @@ mod tests {
                 None,
                 None,
                 None,
-                Some(vec!["x".into()])
+                Some(vec!["x".into()]),
+                None
             )
             .is_err()
+        );
+    }
+
+    /// #1677 r16 `wait_text_absent`: the same bounds as `wait_text`, alone
+    /// or with it in text mode, either in signal mode (where the conditions
+    /// gate the repaint settle), refused in change and elapsed mode;
+    /// `conditions()` and `tests_text()` follow.
+    #[test]
+    fn absent_conditions_and_signal_mode_conditions() {
+        let absent = WaitPlan::new(
+            Some(WaitFor::Text),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec!["esc to interrupt".into()]),
+        )
+        .unwrap();
+        assert!(absent.wait_text.is_empty());
+        assert_eq!(absent.wait_text_absent, vec!["esc to interrupt"]);
+        assert_eq!(absent.budget_ms, TEXT_WAIT_MS_DEFAULT);
+        assert!(absent.tests_text());
+        assert_eq!(
+            absent.conditions(),
+            TextConditions {
+                present: vec![],
+                absent: vec!["esc to interrupt".into()]
+            }
+        );
+        absent.validate().unwrap();
+        let both = WaitPlan::new(
+            Some(WaitFor::Text),
+            None,
+            None,
+            None,
+            None,
+            Some(vec!["❯".into()]),
+            Some(vec!["esc to interrupt".into()]),
+        )
+        .unwrap();
+        assert_eq!(both.conditions().present, vec!["❯"]);
+        assert_eq!(both.conditions().absent, vec!["esc to interrupt"]);
+        let signal = WaitPlan::new(
+            Some(WaitFor::Signal),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec!["esc to interrupt".into()]),
+        )
+        .unwrap();
+        assert_eq!(signal.budget_ms, SIGNAL_WAIT_MS_DEFAULT);
+        assert_eq!(signal.repaint_ms, REPAINT_MS_DEFAULT);
+        assert!(signal.tests_text(), "conditions read the live viewport");
+        assert_eq!(signal.conditions().absent, vec!["esc to interrupt"]);
+        signal.validate().unwrap();
+        let plain = plan(Some(WaitFor::Signal), None);
+        assert!(!plain.tests_text() && plain.conditions().is_empty());
+        assert!(!plan(Some(WaitFor::Change), None).tests_text());
+        let with_present = WaitPlan::new(
+            Some(WaitFor::Signal),
+            None,
+            None,
+            None,
+            None,
+            Some(vec!["❯".into()]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(with_present.conditions().present, vec!["❯"]);
+        // Bounds on the absent list, in both modes.
+        for mode in [WaitFor::Text, WaitFor::Signal] {
+            let absent = |patterns: Vec<&str>| {
+                WaitPlan::new(
+                    Some(mode),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(patterns.into_iter().map(str::to_owned).collect()),
+                )
+            };
+            assert!(absent(vec![]).is_err(), "{mode:?}: no pattern");
+            assert!(absent(vec!["x"; 8]).is_ok());
+            assert!(absent(vec!["x"; 9]).is_err(), "{mode:?}: nine patterns");
+            assert!(absent(vec![""]).is_err(), "{mode:?}: empty pattern");
+            let longer = "y".repeat(201);
+            assert!(
+                absent(vec![longer.as_str()]).is_err(),
+                "{mode:?}: 201 bytes"
+            );
+            assert!(absent(vec!["a\tb"]).is_err(), "{mode:?}: tab");
+        }
+        // Hand-built plans: conditions outside their modes, text without any.
+        assert!(
+            WaitPlan {
+                wait_text_absent: vec!["x".into()],
+                ..plan(Some(WaitFor::Change), None)
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            WaitPlan {
+                wait_text_absent: vec!["x".into()],
+                ..plan(None, None)
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            WaitPlan {
+                wait_text: vec![],
+                ..absent.clone()
+            }
+            .validate()
+            .is_ok(),
+            "absent alone satisfies text mode"
+        );
+        assert!(
+            WaitPlan {
+                wait_text_absent: vec![],
+                ..absent
+            }
+            .validate()
+            .is_err(),
+            "text mode without any condition"
+        );
+        assert!(
+            WaitPlan {
+                wait_text_absent: vec!["".into()],
+                ..plan(Some(WaitFor::Signal), None)
+            }
+            .validate()
+            .is_err(),
+            "an empty pattern fails validate too"
         );
     }
 }
