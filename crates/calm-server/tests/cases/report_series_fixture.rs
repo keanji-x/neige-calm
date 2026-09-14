@@ -512,6 +512,17 @@ impl Row {
     }
 }
 
+/// Poll `done` until it holds, panicking past `within`. For waiting on an
+/// event a seam exposes (a failpoint counter, a call count), never as a
+/// stand-in for ordering two tasks by delay.
+pub(crate) async fn wait_until(what: &str, within: Duration, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + within;
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
 pub(crate) async fn rows_for(repo: &dyn Repo, track_id: &str) -> Vec<Row> {
     let pool = repo.sqlite_pool().expect("sqlite pool");
     sqlx::query_as::<_, Row>(concat!(

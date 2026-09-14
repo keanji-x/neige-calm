@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::report_series_fixture::{
     DAY_MS, FORGE_TOOL_SOURCE, FixtureOptions, SOURCE, SeriesFixture, T0_MS, WRITE_TOOL_SOURCE,
-    ok_series, seam_fixture,
+    ok_series, seam_fixture, wait_until,
 };
 
 fn wrote(status: &str, pinned: bool) -> ResolveOutcome {
@@ -118,13 +118,16 @@ async fn frozen_row_is_pinned_by_first_complete_resolution_and_never_overwritten
         ok_series("HK:9988", "2026-09-14", &[("2026-08-11", 70.0), ("2026-09-10", 80.0)]),
     ]});
     // Two independent resolvers so two jobs for ONE key exist at once (the
-    // in-flight set would otherwise coalesce them). The plugin answers the
-    // first request with A after a delay long enough for the second job to
-    // pass admission, then the second with B.
+    // in-flight set would otherwise coalesce them). The order is forced by
+    // events, not by delays: job 1 runs first and is parked by the
+    // `hold_before_write` seam with reply A validated and its row built;
+    // job 2 then runs to completion (admission sees no row, the plugin
+    // answers B, the write pins); job 1 is released last, so its write is
+    // the LATER one whatever the scheduler does.
     let second = SeriesResolver::new_unstarted(fx.boot.repo.sqlite_pool())
         .with_now(std::sync::Arc::new(|| T0_MS));
     fx.program(json!({ "mode": "sequence", "replies": [
-        { "mode": "structured", "structured": reply_a, "delay_ms": 300 },
+        { "mode": "structured", "structured": reply_a },
         { "mode": "structured", "structured": reply_b },
         { "mode": "structured", "structured": reply_c },
     ]}));
@@ -138,21 +141,47 @@ async fn frozen_row_is_pinned_by_first_complete_resolution_and_never_overwritten
     );
     let job_1 = fx.resolver().take_recorded_jobs().pop().unwrap();
     let job_2 = second.take_recorded_jobs().pop().unwrap();
-    let (out_1, out_2) = tokio::join!(fx.resolver().resolve(job_1), second.resolve(job_2));
-    assert_eq!(out_1, wrote("ok", true));
-    assert_eq!(
-        out_2,
-        wrote("ok", true),
-        "both replies satisfy the pin predicate"
-    );
-    assert_eq!(fx.call_count(), 2);
 
+    fx.resolver().failpoints.hold_before_write();
+    let resolver_1 = fx.resolver().clone();
+    let resolving_1 = tokio::spawn(async move { resolver_1.resolve(job_1).await });
+    // Request 1 reached the plugin (so it is the one answered with A) and
+    // job 1 is parked at its write.
+    fx.wait_for_calls(1, Duration::from_secs(5)).await;
+    let failpoints = &fx.resolver().failpoints;
+    wait_until(
+        "job 1 parked before its write",
+        Duration::from_secs(5),
+        || failpoints.write_held() == 1,
+    )
+    .await;
+    assert!(
+        fx.row(&block_id).await.is_none(),
+        "nothing is written while job 1 is parked"
+    );
+
+    let out_2 = second.resolve(job_2).await;
+    assert_eq!(out_2, wrote("ok", true), "job 2 finishes first and pins");
+    assert_eq!(fx.call_count(), 2);
     let pinned = fx.row(&block_id).await.expect("row");
     assert!(pinned.pinned);
     assert_eq!(
         pinned.data_json()["series"][0]["points"][0][1],
-        json!(1.0),
-        "the row holds the FIRST finisher's data (reply A), not the second's"
+        json!(5.0),
+        "the row holds the FIRST finisher's data (job 2, reply B)"
+    );
+
+    fx.resolver().failpoints.release_write();
+    let out_1 = resolving_1.await.expect("job 1 must not panic");
+    assert_eq!(
+        out_1,
+        wrote("ok", true),
+        "reply A satisfies the pin predicate too; the DB, not the outcome, refuses it"
+    );
+    assert_eq!(
+        fx.row(&block_id).await.expect("row"),
+        pinned,
+        "job 1's later write did not overwrite the pinned row (byte-identical)"
     );
 
     // A third resolution with different data: admission drops it (pinned),
@@ -531,21 +560,29 @@ async fn resolve_refuses_non_read_only_tools() {
 async fn late_resolution_after_track_delete_leaves_no_orphan() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
     let block_id = fx.write_series_block(seam_fixture()["block"].clone()).await;
-    fx.program(json!({
-        "mode": "structured", "structured": seam_fixture()["reply"], "delay_ms": 400
-    }));
+    fx.reply_structured(seam_fixture()["reply"].clone());
     assert_eq!(fx.enqueue(&block_id).await, Enqueue::Queued);
     let job = fx.resolver().take_recorded_jobs().pop().unwrap();
+    fx.resolver().failpoints.hold_before_write();
     let resolver = fx.resolver().clone();
     let resolving = tokio::spawn(async move { resolver.resolve(job).await });
-    // The job is past admission and inside the plugin call when the track
-    // goes away.
-    fx.wait_for_calls(1, Duration::from_secs(5)).await;
+    // The job is past admission, has its reply and is parked at the write
+    // when the track goes away: the delete cannot lose a race with the
+    // write, however slow the box is.
+    let failpoints = &fx.resolver().failpoints;
+    wait_until(
+        "the job parked before its write",
+        Duration::from_secs(5),
+        || failpoints.write_held() == 1,
+    )
+    .await;
+    assert_eq!(fx.call_count(), 1);
     fx.boot
         .repo
         .track_delete(fx.track_id())
         .await
         .expect("delete track");
+    fx.resolver().failpoints.release_write();
     let outcome = resolving.await.expect("the task must not panic");
     assert!(
         matches!(outcome, ResolveOutcome::WriteFailed(_)),
