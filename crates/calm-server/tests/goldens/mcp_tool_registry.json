@@ -1045,7 +1045,7 @@
   },
   {
     "name": "calm.task.dispatch",
-    "description_sha256": "9056a831e764cd1e922cc385da3770138c021bd35bd46a70e4beee620797eece",
+    "description_sha256": "25d071a89ec1b1fe33f1bdf4bc312e5fab28085f48db30b5954cacea4f273f78",
     "input_schema": {
       "additionalProperties": false,
       "oneOf": [
@@ -1118,7 +1118,7 @@
           "type": "string"
         },
         "plugin_tools": {
-          "description": "Exact plugin.<id>_<tool> names delegated to the Worker through platform MCP. Omitted means no plugin grants. Frozen for replay and recovery; current Track scope and plugin availability still apply. Ordinary tools only, no ForgeAction tools or wildcards.",
+          "description": "plugin.<id>_<tool> names delegated to the Worker through platform MCP; the Codex-sanitized spelling from your tool list ([^A-Za-z0-9_] shown as _) is accepted and resolved to the registry name. Omitted means no plugin grants. Frozen for replay and recovery; current Track scope and plugin availability still apply. Ordinary tools only, no ForgeAction tools or wildcards.",
           "items": {
             "maxLength": 256,
             "minLength": 1,

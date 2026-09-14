@@ -14,6 +14,7 @@ use calm_types::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
+use std::collections::{BTreeMap, BTreeSet};
 
 // The workspace tag preserves the released flat empty contract JSON.
 // Required candidate fields belong to their variant, never optional backfills.
@@ -39,6 +40,37 @@ pub(crate) enum DispatchArgs {
         plugin_tools: Vec<String>,
         input: CandidateInput,
     },
+}
+
+/// What the current Track may delegate, snapshotted before the report
+/// transaction (#1668). Only `eligible` decides admission; `denied` carries
+/// the refusal text per requested name — keyed by the name as it appears in
+/// `DispatchArgs::plugin_tools` after resolution — so the Forbidden names
+/// the tool and the reason instead of a blanket verdict.
+#[derive(Clone, Debug)]
+pub(crate) struct PluginToolAdmission {
+    pub(crate) eligible: BTreeSet<String>,
+    pub(crate) denied: BTreeMap<String, String>,
+}
+
+impl PluginToolAdmission {
+    /// The Forbidden message for the requested names that are not delegable;
+    /// `None` when every name is. A name missing from `denied` is still
+    /// refused (eligibility decides), just without a specific reason.
+    pub(crate) fn refusal(&self, plugin_tools: &[String]) -> Option<String> {
+        let rejected: Vec<String> = plugin_tools
+            .iter()
+            .filter(|name| !self.eligible.contains(*name))
+            .map(|name| {
+                self.denied
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{name} (not delegable)"))
+            })
+            .collect();
+        (!rejected.is_empty())
+            .then(|| format!("plugin_tools not delegable: {}", rejected.join(", ")))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +110,17 @@ impl DispatchArgs {
                 plugin_tools
             }
         }
+    }
+    /// Replace the requested grants with their resolved registry names
+    /// (#1668). The frozen contract must carry registry names: the Worker
+    /// side matches them exactly.
+    pub(crate) fn with_plugin_tools(mut self, resolved: Vec<String>) -> Self {
+        let (Self::Empty { plugin_tools, .. } | Self::VerifiedCandidate { plugin_tools, .. }) =
+            &mut self;
+        *plugin_tools = resolved;
+        plugin_tools.sort();
+        plugin_tools.dedup();
+        self
     }
     fn execution(&self) -> IsolatedCodexSelection {
         let (workspace, file_delivery) = match self {
@@ -179,6 +222,37 @@ pub(super) async fn authorize_tx(
     )
     .await
     .map_err(|error| CalmError::Forbidden(error.to_string()))
+}
+
+/// The grants an earlier dispatch under this Track-local `name` froze, read
+/// outside the report transaction (#1668); empty when there is no receipt.
+/// `calm.task.dispatch` resolves sanitized spellings against these before
+/// today's delegable set, so a replay after revocation still finds its
+/// receipt instead of resolving to a live collider and conflicting.
+pub(crate) async fn frozen_plugin_tools(
+    repo: &dyn crate::db::RepoEventWrite,
+    track: &TrackId,
+    name: &str,
+) -> Result<Vec<String>> {
+    let (track, name) = (track.as_str().to_string(), name.to_string());
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let saved: Option<String> = sqlx::query_scalar(
+                "SELECT contract_json FROM planner_dispatch_receipts WHERE track_id=?1 AND name=?2",
+            )
+            .bind(&track)
+            .bind(&name)
+            .fetch_optional(&mut **tx)
+            .await?;
+            Ok(match saved {
+                Some(saved) => serde_json::from_str::<DispatchArgs>(&saved)?
+                    .plugin_tools()
+                    .to_vec(),
+                None => Vec::new(),
+            })
+        })
+    })
+    .await
 }
 
 pub(super) async fn lookup_tx(

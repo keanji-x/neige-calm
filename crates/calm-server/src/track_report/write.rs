@@ -419,7 +419,7 @@ enum PersistPurpose {
     Dispatch {
         identity: crate::mcp_server::registry::ToolCallIdentity,
         args: super::dispatch::DispatchArgs,
-        eligible_plugin_tools: std::collections::BTreeSet<String>,
+        plugin_tools: super::dispatch::PluginToolAdmission,
         task_budget_default: i64,
     },
     Repair {
@@ -494,7 +494,7 @@ pub(crate) async fn planner_dispatch(
     identity: crate::mcp_server::registry::ToolCallIdentity,
     target: ReportEditTarget,
     args: super::dispatch::DispatchArgs,
-    eligible_plugin_tools: std::collections::BTreeSet<String>,
+    plugin_tools: super::dispatch::PluginToolAdmission,
     task_budget_default: i64,
     recorder_shadow: Arc<dyn RecorderShadowProbe>,
 ) -> Result<serde_json::Value, CalmError> {
@@ -508,7 +508,7 @@ pub(crate) async fn planner_dispatch(
         PersistPurpose::Dispatch {
             identity,
             args: args.normalize()?,
-            eligible_plugin_tools,
+            plugin_tools,
             task_budget_default,
         },
         None,
@@ -948,9 +948,9 @@ async fn persist(
                         return Err(CalmError::Conflict(DISPATCH_REPLAY.into()));
                     }
                 }
-                if let PersistPurpose::Dispatch { args, eligible_plugin_tools, .. } = &purpose
-                    && args.plugin_tools().iter().any(|name| !eligible_plugin_tools.contains(name)) {
-                    return Err(CalmError::Forbidden("plugin_tools contains an unavailable, out-of-scope or execution-backed tool".into()));
+                if let PersistPurpose::Dispatch { args, plugin_tools, .. } = &purpose
+                    && let Some(refusal) = plugin_tools.refusal(args.plugin_tools()) {
+                    return Err(CalmError::Forbidden(refusal));
                 }
                 // A new Planner declaration preserves the existing Draft promotion.
                 // Receipt replay returned above and cannot promote or resume work.
