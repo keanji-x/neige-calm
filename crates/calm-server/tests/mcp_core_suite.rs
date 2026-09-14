@@ -16,3 +16,5 @@ mod mcp_shim_round_trip;
 mod mcp_thread_identity;
 #[path = "cases/mcp_tools_list_role_filter.rs"]
 mod mcp_tools_list_role_filter;
+#[path = "cases/mcp_user_notify.rs"]
+mod mcp_user_notify;

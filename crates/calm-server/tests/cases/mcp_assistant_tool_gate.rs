@@ -66,6 +66,9 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // #1211 S3 — naming the track is a planner judgement about what the track is;
     // an assistant has no plan of its own to name.
     "calm.track.rename",
+    // #1667 D3 — speaking from a background sync turn is a planner action;
+    // an assistant talks to its user in its own transcript.
+    "calm.user.notify",
     "calm.terminal.open",
     "calm.terminal.resolve",
     "calm.terminal.observe",

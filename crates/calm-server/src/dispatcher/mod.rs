@@ -1644,7 +1644,10 @@ pub(crate) fn harness_observation_from_event(
             attempt: *attempt,
         }),
         Event::TrackReportEdited {
-            body_after, author, ..
+            body_before,
+            body_after,
+            author,
+            ..
         } => Some(HarnessObservation::ReportEdited {
             track_id: track_id.clone(),
             body_sha256: sha256_hex(body_after),
@@ -1653,6 +1656,9 @@ pub(crate) fn harness_observation_from_event(
             // so the turn text names the real author instead of calling
             // every edit a user edit.
             author: Some(*author),
+            // #1667 D1 — the event's pre-edit body, so the turn text can
+            // render what changed instead of ordering a re-read.
+            body_before: Some(body_before.clone()),
         }),
         Event::WorkspaceLeased {
             card_id,

@@ -40,6 +40,9 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         // #1211 S3 — the planner agent's naming write. Added as an entry, not by
         // loosening the assertion: the exact set is the contract.
         "calm.track.rename",
+        // #1667 D3 — the planner's one way to speak from a background sync
+        // turn. Planner-only: an assistant has no background turns.
+        "calm.user.notify",
     ]
 }
 

@@ -2326,5 +2326,32 @@
       "type": "object"
     },
     "visible_to_roles": []
+  },
+  {
+    "name": "calm.user.notify",
+    "description_sha256": "e3b14662ea66c7dbf7f8b689ba213a349cdbc21069c729709ffb8fb42eaf91cb",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "description": "What to say to the user, verbatim. Shown as one ordinary message from you.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
   }
 ]

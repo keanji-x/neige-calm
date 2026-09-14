@@ -46,10 +46,12 @@ import { drawerSeamAround } from '../../../ui/drawer/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 
+import { foldQuietSyncs } from '../../../../../core/domain/conversation-quiet-sync.ts';
 import {
   isLiveConversation, isQueuedConversationTurn, opensAfterGap, opensExchange,
   type Conversation, type ConversationActivity, type SendOutcome, type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
+import { QuietSyncFold } from './quiet-sync.tsx';
 import styles from './thread.module.css';
 
 export type ChatThreadProps = Readonly<{
@@ -72,6 +74,20 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
    *  joining that list. It no longer holds the rail — see `railSeam`. */
   const frameRef = useRef<HTMLDivElement | null>(null);
   const exchanges = useMemo(() => exchangesOf(turns), [turns]);
+  /*
+   * #1667 D3 — the transcript is drawn by block, not by entry: a report-edit
+   * wake and everything the planner did in answer to it is one folded line
+   * (`QuietSyncFold`), everything else is one entry each. The grouping is
+   * the domain's (`foldQuietSyncs`); this component only decides how a group
+   * is painted. The index map is what keeps `opensExchange`, `opensAfterGap`
+   * and the live-mark rule reading the SAME positions they read before:
+   * they are stated over `turns`, and a fold changes nothing about where an
+   * entry stands in the conversation, only about how it is drawn.
+   */
+  const blocks = useMemo(() => foldQuietSyncs(turns), [turns]);
+  const indexOf = useMemo(
+    () => new Map(turns.map((entry, index) => [entry, index] as const)), [turns],
+  );
   /*
    * ── The rail is painted in the drawer's seam, not in the transcript ───────
    *
@@ -436,6 +452,148 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
     };
   }, [railShown, exchangeKey]);
 
+  /* One entry of the transcript, in the position `turns` gives it. Hoisted
+     out of the block loop below so a folded group and a bare entry draw the
+     same thing the same way; `index` is the entry's place in `turns`, which
+     is what the exchange, gap and live-mark rules are stated over. */
+  const renderEntry = (turn: TranscriptEntry): ReactNode => {
+    const index = indexOf.get(turn) ?? -1;
+    const last = index === turns.length - 1;
+    if (turn.author === 'activity') {
+      return <ActivityLine key={turn.id} activity={turn} live={live && last} />;
+    }
+    if (turn.author === 'system') {
+      return (
+        <div key={turn.id}>
+          {opensAfterGap(turns, index) && index > 0 && (
+            <p className={styles.gap}>{clockTime(turn.atMs)}</p>
+          )}
+          <details
+            className={styles.system}
+            data-nc-turn="system"
+          >
+            <summary className={styles.systemSummary} title={turn.text}>
+              <span className={styles.systemDisclosure} aria-hidden="true">›</span>
+              <span className={styles.systemLabel} data-nc-system-label="">
+                · {turn.label} ·
+              </span>
+            </summary>
+            <p className={styles.systemDetail}>{turn.text}</p>
+          </details>
+        </div>
+      );
+    }
+    if (turn.author === 'turn') {
+      /*
+       * #1625 P1 — how the turn ended, and only when it did not end
+       * well. A `completed` outcome is in `turns` as an anchor and
+       * paints nothing at all: the reply above it already says the turn
+       * finished. `interrupted` and `failed` are the two facts the
+       * transcript cannot otherwise show — it just goes quiet either way.
+       *
+       * Astryx's `ChatSystemMessage` is a leaf (no scroll, no measure)
+       * and does not forward `data-*`, so the state hooks sit on this
+       * wrapper. Its content span is `nowrap`, which is right for the
+       * one-word label and wrong for an error sentence, so the message
+       * is its own block below. No label, no time: the "why it stopped"
+       * is the whole content, as the file header argues for every turn.
+       */
+      if (turn.status === 'completed') return null;
+      return (
+        <div
+          key={turn.id}
+          className={styles.outcome}
+          data-nc-turn="outcome"
+          data-nc-turn-outcome={turn.status}
+        >
+          <ChatSystemMessage>{turn.status === 'interrupted' ? 'Stopped' : 'Failed'}</ChatSystemMessage>
+          {turn.status === 'failed' && turn.message !== undefined && turn.message !== '' && (
+            <p className={styles.outcomeDetail} data-nc-turn-outcome-message="">{turn.message}</p>
+          )}
+          {turn.status === 'failed' && (
+            <OutcomeHint code={turn.code} rawStatus={turn.rawStatus} />
+          )}
+        </div>
+      );
+    }
+    const opens = opensExchange(turns, index);
+    return (
+      <div
+        key={turn.id}
+        className={opens ? styles.exchange : undefined}
+        /* The same element the layout already groups by is the element the
+           rail jumps to. There is no second notion of "an exchange starts
+           here" to keep in step with `opensExchange`. */
+        {...(opens ? { 'data-nc-exchange': turn.id } : {})}
+      >
+        {/* A time only where the conversation restarted. */}
+        {opensAfterGap(turns, index) && index > 0 && (
+          <p className={styles.gap}>{clockTime(turn.atMs)}</p>
+        )}
+        {turn.author === 'you' ? (
+          <>
+            {/*
+              * The mark is on the turn and the words are under it, rather
+              * than inside the `<p>`: the paragraph is the message
+              * verbatim, and a caption folded into it would become part
+              * of the message's own text — to a screen reader reading the
+              * paragraph, and to every `getByText` that matches one.
+              */}
+            <p
+              className={styles.said}
+              data-nc-turn="you"
+              {...(isQueuedConversationTurn(turn) ? { 'data-nc-queued': '' } : {})}
+            >{turn.text}</p>
+            {/*
+              * #1505 S6 — the images that went with what was said.
+              *
+              * Rendered here rather than by `features/planner`, which
+              * this module may not import (`features-no-cross-domain`),
+              * and rendered from the url the server built rather than
+              * from a path assembled here.
+              *
+              * `alt=""` and `aria-hidden` on the list: the image is the
+              * message's own content and the transcript has no
+              * description of it to offer, so announcing "image" once
+              * per thumbnail would add noise without adding a fact. The
+              * count is said once, in text, above them.
+              */}
+            {(turn.attachments ?? []).length > 0 && (
+              <ul className={styles.attachments} data-nc-turn-attachments="">
+                {(turn.attachments ?? []).map((attachment) => (
+                  <li key={attachment.id} className={styles.attachment}>
+                    <img src={attachment.url} alt="" />
+                  </li>
+                ))}
+              </ul>
+            )}
+            {isQueuedConversationTurn(turn) && (
+              /*
+               * What separates "the agent is working on this" from "the
+               * agent has not seen this yet", said in words because
+               * nothing else on this surface says it. The live dot below
+               * belongs to the turn already running, and a queued message
+               * sits above it looking exactly like one being answered.
+               *
+               * `role="status"` rather than a bare caption: it appears
+               * without the reader having moved, in response to their own
+               * press, and it is the answer to "did that go anywhere?".
+               */
+              <p className={styles.queuedNote} data-nc-queued-note="" role="status">
+                Queued · sends when this turn ends
+              </p>
+            )}
+          </>
+        ) : (
+          <div className={styles.reply} data-nc-turn="agent">
+            <Reply text={turn.text} />
+            {live && last && <span className={styles.live} aria-label="Working" />}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   if (turns.length === 0) {
     return (
       <div className={styles.empty} data-nc-thread-empty="">
@@ -484,140 +642,18 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
         railSeam,
       )}
       <div className={styles.thread} data-nc-thread="">
-        {turns.map((turn, index) => {
-          const last = index === turns.length - 1;
-          if (turn.author === 'activity') {
-            return <ActivityLine key={turn.id} activity={turn} live={live && last} />;
-          }
-          if (turn.author === 'system') {
-            return (
-              <div key={turn.id}>
-                {opensAfterGap(turns, index) && index > 0 && (
-                  <p className={styles.gap}>{clockTime(turn.atMs)}</p>
-                )}
-                <details
-                  className={styles.system}
-                  data-nc-turn="system"
-                >
-                  <summary className={styles.systemSummary} title={turn.text}>
-                    <span className={styles.systemDisclosure} aria-hidden="true">›</span>
-                    <span className={styles.systemLabel} data-nc-system-label="">
-                      · {turn.label} ·
-                    </span>
-                  </summary>
-                  <p className={styles.systemDetail}>{turn.text}</p>
-                </details>
-              </div>
-            );
-          }
-          if (turn.author === 'turn') {
-            /*
-             * #1625 P1 — how the turn ended, and only when it did not end
-             * well. A `completed` outcome is in `turns` as an anchor and
-             * paints nothing at all: the reply above it already says the turn
-             * finished. `interrupted` and `failed` are the two facts the
-             * transcript cannot otherwise show — it just goes quiet either way.
-             *
-             * Astryx's `ChatSystemMessage` is a leaf (no scroll, no measure)
-             * and does not forward `data-*`, so the state hooks sit on this
-             * wrapper. Its content span is `nowrap`, which is right for the
-             * one-word label and wrong for an error sentence, so the message
-             * is its own block below. No label, no time: the "why it stopped"
-             * is the whole content, as the file header argues for every turn.
-             */
-            if (turn.status === 'completed') return null;
-            return (
-              <div
-                key={turn.id}
-                className={styles.outcome}
-                data-nc-turn="outcome"
-                data-nc-turn-outcome={turn.status}
-              >
-                <ChatSystemMessage>{turn.status === 'interrupted' ? 'Stopped' : 'Failed'}</ChatSystemMessage>
-                {turn.status === 'failed' && turn.message !== undefined && turn.message !== '' && (
-                  <p className={styles.outcomeDetail} data-nc-turn-outcome-message="">{turn.message}</p>
-                )}
-                {turn.status === 'failed' && (
-                  <OutcomeHint code={turn.code} rawStatus={turn.rawStatus} />
-                )}
-              </div>
-            );
-          }
-          const opens = opensExchange(turns, index);
+        {blocks.map((block) => {
+          if (block.kind === 'entry') return renderEntry(block.entry);
+          const holdsLast = block.entries.some((entry) => indexOf.get(entry) === turns.length - 1);
           return (
-            <div
-              key={turn.id}
-              className={opens ? styles.exchange : undefined}
-              /* The same element the layout already groups by is the element the
-                 rail jumps to. There is no second notion of "an exchange starts
-                 here" to keep in step with `opensExchange`. */
-              {...(opens ? { 'data-nc-exchange': turn.id } : {})}
+            <QuietSyncFold
+              key={block.id}
+              group={block}
+              time={clockTime(block.atMs)}
+              live={live && holdsLast}
             >
-              {/* A time only where the conversation restarted. */}
-              {opensAfterGap(turns, index) && index > 0 && (
-                <p className={styles.gap}>{clockTime(turn.atMs)}</p>
-              )}
-              {turn.author === 'you' ? (
-                <>
-                  {/*
-                    * The mark is on the turn and the words are under it, rather
-                    * than inside the `<p>`: the paragraph is the message
-                    * verbatim, and a caption folded into it would become part
-                    * of the message's own text — to a screen reader reading the
-                    * paragraph, and to every `getByText` that matches one.
-                    */}
-                  <p
-                    className={styles.said}
-                    data-nc-turn="you"
-                    {...(isQueuedConversationTurn(turn) ? { 'data-nc-queued': '' } : {})}
-                  >{turn.text}</p>
-                  {/*
-                    * #1505 S6 — the images that went with what was said.
-                    *
-                    * Rendered here rather than by `features/planner`, which
-                    * this module may not import (`features-no-cross-domain`),
-                    * and rendered from the url the server built rather than
-                    * from a path assembled here.
-                    *
-                    * `alt=""` and `aria-hidden` on the list: the image is the
-                    * message's own content and the transcript has no
-                    * description of it to offer, so announcing "image" once
-                    * per thumbnail would add noise without adding a fact. The
-                    * count is said once, in text, above them.
-                    */}
-                  {(turn.attachments ?? []).length > 0 && (
-                    <ul className={styles.attachments} data-nc-turn-attachments="">
-                      {(turn.attachments ?? []).map((attachment) => (
-                        <li key={attachment.id} className={styles.attachment}>
-                          <img src={attachment.url} alt="" />
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {isQueuedConversationTurn(turn) && (
-                    /*
-                     * What separates "the agent is working on this" from "the
-                     * agent has not seen this yet", said in words because
-                     * nothing else on this surface says it. The live dot below
-                     * belongs to the turn already running, and a queued message
-                     * sits above it looking exactly like one being answered.
-                     *
-                     * `role="status"` rather than a bare caption: it appears
-                     * without the reader having moved, in response to their own
-                     * press, and it is the answer to "did that go anywhere?".
-                     */
-                    <p className={styles.queuedNote} data-nc-queued-note="" role="status">
-                      Queued · sends when this turn ends
-                    </p>
-                  )}
-                </>
-              ) : (
-                <div className={styles.reply} data-nc-turn="agent">
-                  <Reply text={turn.text} />
-                  {live && last && <span className={styles.live} aria-label="Working" />}
-                </div>
-              )}
-            </div>
+              {block.entries.map(renderEntry)}
+            </QuietSyncFold>
           );
         })}
         {/* A reply that has not arrived yet still gets a place to arrive in. The
@@ -630,6 +666,7 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
       </div>
     </div>
   );
+
 }
 
 /** What the envelope's scheduler ref holds before the effect has installed one

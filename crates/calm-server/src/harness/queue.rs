@@ -884,6 +884,7 @@ pub fn try_fold_tail(
                         body_sha256,
                         body,
                         author,
+                        body_before,
                     },
                 ..
             },
@@ -894,6 +895,7 @@ pub fn try_fold_tail(
                         body_sha256: new_body_sha256,
                         body: new_body,
                         author: new_author,
+                        body_before: new_body_before,
                     },
                 ..
             },
@@ -904,6 +906,14 @@ pub fn try_fold_tail(
             // the planner is told to treat the surviving body as ground truth,
             // so it must be told who actually wrote that body (#1252 F2).
             *author = *new_author;
+            // #1667 D1 — but the OLDEST `body_before`: the diff the planner
+            // reads must run from the version it last knew to the newest
+            // body, not from the penultimate save. The first entry's value
+            // is kept whenever it has one; only a pre-#1667 first entry
+            // (`None`) adopts the incoming value.
+            if body_before.is_none() {
+                *body_before = new_body_before.clone();
+            }
             true
         }
         _ => false,
@@ -1519,3 +1529,6 @@ mod tests {
         assert_eq!(queue.len(), 3, "a locate never writes");
     }
 }
+
+#[cfg(test)]
+mod report_edit_fold_tests;

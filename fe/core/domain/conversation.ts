@@ -7,7 +7,7 @@ import type {
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
-  TASK_VERDICT_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX,
+  TASK_VERDICT_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
 } from '../keys/mcp-tools.js';
 import { sha256Hex } from './sha256.js';
 
@@ -186,6 +186,15 @@ export type ConversationTurn = Readonly<{
    * which is why nothing branches on which one it is.
    */
   attachments?: readonly PlannerAttachment[];
+  /**
+   * #1667 D3 — set when the agent said this through `calm.user.notify`
+   * rather than as an ordinary reply. Same bubble either way; what differs
+   * is what the quiet-sync fold does with it (`conversation-quiet-sync.ts`):
+   * an ordinary reply inside a report-edit turn is folded away as background
+   * work, a notify is speech meant for the reader and stays outside the
+   * fold. Absent on every other turn.
+   */
+  origin?: 'notify';
 }>;
 
 /** A user turn accepted optimistically, carrying the newest persisted item the
@@ -1177,7 +1186,7 @@ const DIFF_PREFIX = '## Track state changes since your last turn';
 const DIFF_END = '\n\n---\n\n';
 const USER_SAYS = 'User says:\n';
 
-const SYSTEM_PRESENTATION_LABELS: Readonly<
+export const SYSTEM_PRESENTATION_LABELS: Readonly<
 Record<Exclude<HarnessInputPresentation, 'user'>, string>
 > = Object.freeze({
   system: 'System update',
@@ -1208,7 +1217,53 @@ function isUserMessage(itemType: string | null): boolean {
   return itemType === USER_MESSAGE || itemType === USER_MESSAGE_SNAKE_CASE;
 }
 
+/*
+ * #1667 D3 — `calm.user.notify` is speech, not an action. The planner calls
+ * it to reach the reader from a background (report-edit) turn, so the row is
+ * a message: an agent turn whose text is `arguments.text`, verbatim.
+ *
+ * Both `item/started` and `item/completed` mint it, under one id keyed on the
+ * wire item so the completed row overwrites the started row in place
+ * (`buildTranscript`): the text is in `arguments` from the start — every one
+ * of the 213 `item/started` `mcpToolCall` rows in the production database
+ * carries `arguments` — and a sentence meant for the reader should not wait
+ * on the kernel's `{"ok": true}`. A call whose text is empty after trimming
+ * is not a message (the kernel refuses it as invalid params) and falls
+ * through to the ordinary activity line, which will say `Failed`.
+ */
+function userNotifyToTurn(
+  item: Readonly<{
+    id: number; item_uuid: string | null; item_type: string | null; method: string; params: string;
+    created_at_ms: number;
+  }>,
+): ConversationTurn | null {
+  if (item.item_type !== 'mcpToolCall') return null;
+  if (item.method !== 'item/started' && item.method !== 'item/completed') return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(item.params); } catch { return null; }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const envelope = parsed as { completedAtMs?: unknown; item?: unknown };
+  if (typeof envelope.item !== 'object' || envelope.item === null) return null;
+  const payload = envelope.item as { tool?: unknown; arguments?: unknown };
+  if (payload.tool !== USER_NOTIFY_TOOL) return null;
+  const args = payload.arguments;
+  if (typeof args !== 'object' || args === null) return null;
+  const raw = (args as { text?: unknown }).text;
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (text === '') return null;
+  return {
+    id: `notify-${item.item_uuid ?? item.id}`,
+    author: 'agent',
+    text,
+    atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
+      ? envelope.completedAtMs : item.created_at_ms,
+    origin: 'notify',
+  };
+}
+
 export function harnessItemToTurns(item: HarnessItem): readonly ConversationMessage[] {
+  const notify = userNotifyToTurn(item);
+  if (notify !== null) return [notify];
   if (item.method !== 'item/completed' ||
       (!isAgentMessage(item.item_type) && !isUserMessage(item.item_type))) return [];
 

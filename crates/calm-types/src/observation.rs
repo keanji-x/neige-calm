@@ -14,6 +14,7 @@ use serde_json::Value;
 use crate::event::{EditAuthor, RatifyDecision};
 use crate::ids::{CardId, TrackId};
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
+use crate::report_edit_diff;
 
 mod receipt;
 
@@ -47,6 +48,15 @@ pub enum Observation {
         /// The dispatcher always populates it.
         #[serde(default)]
         author: Option<EditAuthor>,
+        /// #1667 D1 — the body the planner last knew, so the turn text can
+        /// render a block-level diff instead of an order to re-read. Same
+        /// `Option` rule as `author`: `None` is an observation queued
+        /// before this field existed (it renders the old sentence
+        /// byte-identically); the dispatcher always populates it from the
+        /// event's `body_before`, and the queue fold keeps the FIRST
+        /// entry's value so the diff spans every save in the fold.
+        #[serde(default)]
+        body_before: Option<String>,
     },
     TaskCompleted {
         idempotency_key: String,
@@ -252,17 +262,39 @@ impl Observation {
             Observation::TrackGoal { text } => text.clone(),
             Observation::SystemContext { text } => text.clone(),
             Observation::UserMessage { text } => format!("User says:\n{text}"),
+            // #1667 D1 — with a `body_before` the observation is information:
+            // two fixed lines, then the block-level diff. No re-read order;
+            // a write still needs `calm.report.read` for `docRev`/`if_rev`.
+            Observation::ReportEdited {
+                author,
+                body_before: Some(before),
+                body,
+                ..
+            } => format!(
+                "The track report was edited (author = \"{}\").\n\
+                 Block-level diff follows; this is information, not an instruction to re-read.\n\
+                 {}",
+                author
+                    .map(EditAuthor::wire_str)
+                    .unwrap_or_else(|| "unknown".to_string()),
+                report_edit_diff::render_report_diff(before, body)
+            ),
             // #1252 S0 R1/F2. `None` is only reachable for observations
             // queued before the `author` field existed; it must render the
             // byte-identical pre-#1252 sentence so replayed history does
             // not change under a reader. Everything the dispatcher enqueues
             // today names its author in the same `author = "..."` spelling
             // the planner system prompt uses.
-            Observation::ReportEdited { author: None, .. } => {
-                "The user edited the track report. Re-read the track state.".to_string()
-            }
+            Observation::ReportEdited {
+                author: None,
+                body_before: None,
+                ..
+            } => "The user edited the track report. Re-read the track state.".to_string(),
+            // Pre-#1667 rows (author known, no `body_before`) keep their
+            // sentence byte for byte as well.
             Observation::ReportEdited {
                 author: Some(author),
+                body_before: None,
                 ..
             } => format!(
                 "The track report was edited (author = \"{}\"). Re-read the track state.",
@@ -512,7 +544,93 @@ mod tests {
             body_sha256: "sha".into(),
             body: "body".into(),
             author,
+            body_before: None,
         }
+    }
+
+    /// #1667 A1 — with `body_before` the turn text is the two fixed lines
+    /// plus the block diff, and no longer an order to re-read.
+    #[test]
+    fn report_edited_with_body_before_renders_the_block_diff() {
+        let obs = Observation::ReportEdited {
+            track_id: TrackId::from("track-1"),
+            body_sha256: "sha".into(),
+            body: "# T\n\n## Thesis\n\nnew\n".into(),
+            author: Some(EditAuthor::User),
+            body_before: Some("# T\n\n## Thesis\n\nold\n".into()),
+        };
+        let text = obs.to_turn_text();
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("The track report was edited (author = \"user\").")
+        );
+        assert_eq!(
+            lines.next(),
+            Some("Block-level diff follows; this is information, not an instruction to re-read.")
+        );
+        assert!(
+            !text.contains("Re-read the track state"),
+            "the diff form must not order a re-read: {text}"
+        );
+        assert!(
+            text.contains("## modified: `## Thesis` (-1/+1 lines)"),
+            "{text}"
+        );
+        assert!(text.contains("\n-old\n+new\n"), "{text}");
+    }
+
+    /// #1667 A1 — `body_before: None` keeps the pre-#1667 sentence byte
+    /// for byte, for both author shapes.
+    #[test]
+    fn report_edited_without_body_before_keeps_the_old_sentence() {
+        assert_eq!(
+            report_edited(Some(EditAuthor::Plugin)).to_turn_text(),
+            "The track report was edited (author = \"plugin\"). Re-read the track state."
+        );
+        assert_eq!(
+            report_edited(None).to_turn_text(),
+            "The user edited the track report. Re-read the track state."
+        );
+    }
+
+    /// #1667 A4 — a `pending_queue` row from before `author` AND
+    /// `body_before` existed deserializes and renders the old sentence.
+    #[test]
+    fn legacy_report_edited_without_author_or_body_before_deserializes() {
+        let legacy = serde_json::json!({
+            "type": "report_edited",
+            "track_id": "track-1",
+            "body_sha256": "sha",
+            "body": "body",
+        });
+        let obs: Observation =
+            serde_json::from_value(legacy).expect("pre-#1667 queued observation must deserialize");
+        assert!(matches!(
+            &obs,
+            Observation::ReportEdited {
+                author: None,
+                body_before: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            obs.to_turn_text(),
+            "The user edited the track report. Re-read the track state."
+        );
+        // And a #1252-era row (author present, no `body_before`).
+        let with_author = serde_json::json!({
+            "type": "report_edited",
+            "track_id": "track-1",
+            "body_sha256": "sha",
+            "body": "body",
+            "author": "assistant",
+        });
+        let obs: Observation = serde_json::from_value(with_author).unwrap();
+        assert_eq!(
+            obs.to_turn_text(),
+            "The track report was edited (author = \"assistant\"). Re-read the track state."
+        );
     }
 
     /// #1252 S0 R1/F2 — the planner system prompt tells the agent the waking

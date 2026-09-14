@@ -45,3 +45,9 @@ export const TRACK_TOOL_PREFIX = 'calm.track.';
  *  user) chose that name; the transcript has to say so too. Keep it out of the
  *  `TRACK_TOOL_PREFIX` read bucket. */
 export const TRACK_RENAME_TOOL = 'calm.track.rename';
+
+/** #1667 D3 — the planner's one way to speak to the reader from a background
+ *  (report-edit) turn. The transcript renders a call to it as an agent turn,
+ *  text verbatim from `arguments.text`, rather than as a "Called" activity
+ *  line, and the quiet-sync fold leaves it outside the fold. */
+export const USER_NOTIFY_TOOL = 'calm.user.notify';

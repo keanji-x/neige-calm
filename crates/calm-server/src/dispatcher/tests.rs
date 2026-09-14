@@ -1046,7 +1046,8 @@ fn harness_observation_from_event_mapping_pin() {
     );
 
     // track.report_edited — body_after verbatim + its sha256 (golden hex
-    // computed externally, NOT via the same sha256_hex helper).
+    // computed externally, NOT via the same sha256_hex helper); #1667 D1
+    // carries `body_before` through verbatim as well.
     assert_eq!(
         harness_observation_from_event(
             &track,
@@ -1069,6 +1070,7 @@ fn harness_observation_from_event_mapping_pin() {
             body_sha256: "09b37878497ec46015d1913ba0dff1cd051ca244859c80f4a3fc14d88a4a9465".into(),
             body: "loop-pin-body".into(),
             author: Some(EditAuthor::User),
+            body_before: Some("old".into()),
         })
     );
 
