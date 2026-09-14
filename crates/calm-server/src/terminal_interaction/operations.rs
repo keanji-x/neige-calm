@@ -579,7 +579,7 @@ fn control_unavailable_receipt(
     json!({"terminal_id":terminal,"request_id":request_key,"outcome":"control_unavailable",
         "application_result":"unverified","observation_id_used":observation,
         "reason":reason,"claim":{"status":status,"reason":reason},
-        "next":"nothing was written; inspect observation.state.role and control_id: when the terminal is free again, observe and resend with claim=true, otherwise wait for the human or ask before a deliberate calm.terminal.control claim"})
+        "next":"nothing was written; read observation.state role/control_id; when free, observe and resend with claim=true"})
 }
 /// Every input receipt, whatever its outcome, carries
 /// `application_result:"unverified"`: an acknowledgement says bytes reached the

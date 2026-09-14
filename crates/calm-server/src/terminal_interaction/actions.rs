@@ -125,7 +125,7 @@ pub fn edits_the_draft(action: &Value) -> bool {
     }
 }
 /// Reason `allow_output_below_cursor` is refused for other actions.
-pub const BELOW_CURSOR_EDITS_ONLY: &str = "allow_output_below_cursor admits only text, sequence and editing keys (Left/Right/Up/Down/Home/End/Backspace/Delete/Ctrl+U); never submit, click, Enter, Tab, Escape or control keys: the layout must be current";
+pub const BELOW_CURSOR_EDITS_ONLY: &str = "allow_output_below_cursor admits only text, sequence and editing keys; not submit, click, Enter, Tab, Escape, Ctrl keys";
 pub fn encode(action: &Value, surface: &InputSurface) -> Result<Vec<u8>> {
     let object = action
         .as_object()
