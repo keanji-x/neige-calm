@@ -225,7 +225,10 @@ SIGNAL_METRIC_KEYS = ("signal_wait_requests", "signal_wait_outcomes", "signal_re
                       "open_with_claim", "hooks_seen_observations", "signals_observed",
                       "unmeasured_signal_observations")
 SIGNAL_METRIC_TALLIES = ("signal_wait_outcomes", "signal_repaint_outcomes")
-SUMMARY_METRIC_KEYS = WAIT_METRIC_KEYS + SIGNAL_METRIC_KEYS
+ROUND_TRIP_METRIC_KEYS = ("text_wait_requests", "text_wait_outcomes", "sequence_actions", "sequence_steps",
+                          "input_with_claim", "input_with_release", "below_cursor_allowed_inputs",
+                          "below_cursor_tolerated_inputs")
+SUMMARY_METRIC_KEYS = WAIT_METRIC_KEYS + SIGNAL_METRIC_KEYS + ROUND_TRIP_METRIC_KEYS
 
 
 def wait_outcome(state):
@@ -323,6 +326,58 @@ def signal_metrics(terminal):
     return {**{key: counts[key] for key in SIGNAL_METRIC_KEYS if key not in SIGNAL_METRIC_TALLIES},
             "signal_wait_outcomes": dict(sorted(outcomes.items())),
             "signal_repaint_outcomes": dict(sorted(repaints.items()))}
+
+
+def round_trip_metrics(terminal):
+    """#1666 round-trip counters, each read from a completed call's own arguments or result.
+
+    A text wait is an observation-requesting call whose arguments say
+    `wait_for: "text"`; its outcome is the returned observation's
+    `wait.outcome` (`matched` is an observation like any other, not
+    application completion). `sequence_actions` counts input requests whose
+    action type is `sequence` (failed ones included) and `sequence_steps`
+    the steps those requests carried (a non-list `steps` adds none).
+    `input_with_claim` / `input_with_release` / `below_cursor_allowed_inputs`
+    count input requests whose arguments say `claim`, `release` or
+    `allow_output_below_cursor` is true; `below_cursor_tolerated_inputs`
+    counts non-failed input receipts whose `observation_drift.tolerance` is
+    `below_cursor` (the server admitted the write through the row
+    comparison). Nothing is inferred from screen text.
+    """
+    counts = collections.Counter()
+    outcomes = collections.Counter()
+    for call in terminal:
+        if not call.get("completed"):
+            continue
+        args, tool = call.get("arguments", {}), call["tool"]
+        text_wait = requests_observation(call) and args.get("wait_for") == "text"
+        if text_wait:
+            counts["text_wait_requests"] += 1
+        if tool == "calm.terminal.input":
+            action = args.get("action")
+            if isinstance(action, dict) and action.get("type") == "sequence":
+                counts["sequence_actions"] += 1
+                if isinstance(action.get("steps"), list):
+                    counts["sequence_steps"] += len(action["steps"])
+            for flag, key in (("claim", "input_with_claim"), ("release", "input_with_release"),
+                              ("allow_output_below_cursor", "below_cursor_allowed_inputs")):
+                if args.get(flag) is True:
+                    counts[key] += 1
+        if tool_failed(call):
+            continue
+        data = metadata(call)
+        if tool == "calm.terminal.input":
+            drift = data.get("observation_drift")
+            if isinstance(drift, dict) and drift.get("tolerance") == "below_cursor":
+                counts["below_cursor_tolerated_inputs"] += 1
+        state = observed_state(call, data) if tool != "calm.terminal.open" else None
+        if state is None:
+            continue
+        wait = wait_outcome(state)
+        if text_wait and wait is not None:
+            outcomes[wait["outcome"]] += 1
+    return {**{key: counts[key] for key in ROUND_TRIP_METRIC_KEYS if key != "text_wait_outcomes"},
+            "text_wait_outcomes": dict(sorted(outcomes.items()))}
 
 
 def wait_metrics(terminal):
@@ -423,7 +478,7 @@ def metrics(rows):
             "requested_key_presses": requested_presses, "additional_repeated_key_presses": extra_presses,
             "unmeasured_key_press_requests": unmeasured_requests,
             "observation_refusals": sum(observation_refused(call) for call in terminal),
-            **wait_metrics(terminal), **signal_metrics(terminal),
+            **wait_metrics(terminal), **signal_metrics(terminal), **round_trip_metrics(terminal),
             "human_intervention": "not_measured", "token_savings": "not_measured"}
 
 
@@ -502,8 +557,13 @@ def check_scenario(name, rows, binding):
     answer = {"short": "3141", "edit": "7219", "rewind": "9123"}[name]
     if not any(re.search(rf"(?<!\d){answer}(?!\d)", view["text"]) for view in observations):
         raise EvidenceError(f"{name}: actual terminal answer absent")
-    if name == "edit" and not any(action.get("type") == "key" and action.get("key")
-                                  in ("Backspace", "Delete", "Ctrl+U") for action in actions):
+    # A correction is an editing key, sent on its own or as a step of a
+    # `sequence` (#1666: one bounded edit in one write).
+    def corrects(action):
+        if action.get("type") == "sequence" and isinstance(action.get("steps"), list):
+            return any(isinstance(step, dict) and corrects(step) for step in action["steps"])
+        return action.get("type") == "key" and action.get("key") in ("Backspace", "Delete", "Ctrl+U")
+    if name == "edit" and not any(corrects(action) for action in actions):
         raise EvidenceError("edit: no actual input correction action")
     # `submit` (#1620: one write with a trailing CR) counts like `text` + Enter.
     if name == "rewind" and not any(action.get("type") in ("text", "submit")

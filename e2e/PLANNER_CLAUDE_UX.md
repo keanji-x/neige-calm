@@ -152,6 +152,19 @@ observations lacking a `signals` block (older server);
 that ended on a signal — a missing block (older server) adds nothing. The goals
 tell the Planner to start Claude with `--settings "$NEIGE_CLAUDE_SETTINGS"`.
 
+#1666 round-trip counters (also in `wait_summary`), read the same way:
+`text_wait_requests`: `observe` calls and `observe: true` readbacks whose
+arguments say `wait_for: "text"`; `text_wait_outcomes`: tally of those calls'
+returned `wait.outcome` (`matched` is an ordinary observation, not application
+completion); `sequence_actions`: input requests whose action type is
+`sequence` (failed ones included) and `sequence_steps`: the steps those
+requests carried (a `sequence` step that is an editing key satisfies the edit
+scenario's correction check like a standalone key); `input_with_claim` /
+`input_with_release` / `below_cursor_allowed_inputs`: input requests whose
+arguments say `claim`, `release` or `allow_output_below_cursor` is true;
+`below_cursor_tolerated_inputs`: non-failed input receipts whose
+`observation_drift.tolerance` is `below_cursor`.
+
 ## Model-free driver checks
 
 These validate only collection/failure handling; they are not a fake passing
