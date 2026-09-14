@@ -320,7 +320,11 @@ mod tests {
         fixture.paint(&["loading"]);
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(300)).await;
+        // Let the waiter observe the elapsed timer before asking: without
+        // the yield the task may simply not have been polled yet.
+        tokio::task::yield_now().await;
         assert!(!task.is_finished(), "a vanished match must not settle");
+        assert_eq!(fixture.captures.load(Ordering::SeqCst), 3);
         fixture.paint(&["READY again"]);
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(150)).await;
