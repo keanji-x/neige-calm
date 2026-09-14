@@ -436,6 +436,31 @@ export type ReportBlock = { id: string, kind: string, rev: number, payload: unkn
 export type ReviewSubject = { phase: string, slice_id: string, pr_number: number | null, };
 
 /**
+ * Where a body came from. Stored verbatim as the row's `origin` column.
+ */
+export type SourceOrigin = { "kind": "plugin", plugin_id: string, tool: string, args_sha256: string, 
+/**
+ * Canonicalization version behind `args_sha256` (`v1`: compact
+ * serde_json text with sorted keys).
+ */
+args_canon: string, content_id?: string, } | { "kind": "manual", url?: string, content_id?: string, };
+
+/**
+ * What the body *is*: the Planner's declaration, page-visible.
+ * `full_text` / `summary` / `web_page` bodies come from a recorded plugin
+ * call (the kernel vouches for the bytes); `manual` bodies are the
+ * Planner's own and are marked as not kernel-verified.
+ */
+export type SourceProvenance = "full_text" | "summary" | "web_page" | "manual";
+
+/**
+ * One anchor of a source: `text` is a byte-exact substring of the body
+ * (`body[start..end]`, UTF-8 byte offsets — a kernel-side detail; the page
+ * locates the anchor by `text`).
+ */
+export type SourceQuote = { id: string, text: string, start: number, end: number, };
+
+/**
  * Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.
  * Blocking reason applies only to the selected current attempt; historical attempts carry null.
  */
@@ -759,6 +784,31 @@ body: string,
  * persist boundary rewrites on every write. v1 rows may omit it.
  */
 blocks?: Array<ReportBlock> | null, };
+
+/**
+ * A captured source with its body: the raw text the kernel stored,
+ * verbatim (the panel does not render it as Markdown).
+ */
+export type TrackSourceDetail = { source_id: string, provenance: SourceProvenance, origin: SourceOrigin, title: string, published_at?: string, content_id?: string, url?: string, body_bytes: number, body_sha256: string, captured_at: string, quotes: Array<SourceQuote>, body: string, };
+
+export type TrackSourceList = { sources: Array<TrackSourceSummary>, };
+
+/**
+ * A captured source without its body.
+ */
+export type TrackSourceSummary = { source_id: string, provenance: SourceProvenance, origin: SourceOrigin, title: string, published_at?: string, 
+/**
+ * `origin.content_id`, surfaced for the panel header.
+ */
+content_id?: string, 
+/**
+ * `origin.url` (manual sources only).
+ */
+url?: string, body_bytes: number, body_sha256: string, 
+/**
+ * RFC 3339, UTC.
+ */
+captured_at: string, quotes: Array<SourceQuote>, };
 
 /**
  * Payload for `Event::TrackUpdated`.

@@ -328,6 +328,7 @@ mod tests {
     }
 
     fn app_context(repo: Arc<SqlxRepo>, host: Option<Arc<PluginHost>>) -> Arc<AppContext> {
+        let sqlite_pool = repo.sqlite_pool();
         let repo_dyn: Arc<dyn crate::db::Repo> = repo;
         let route_repo: Arc<dyn crate::db::RouteRepo> = repo_dyn;
         let plugin_host = Arc::new(tokio::sync::OnceCell::new());
@@ -349,6 +350,8 @@ mod tests {
             plugin_host,
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
+            plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
+            sqlite_pool,
         })
     }
 

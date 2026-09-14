@@ -15,6 +15,12 @@ mod mcp_report_concurrent_sessions;
 mod mcp_report_links;
 #[path = "cases/mcp_report_series_read.rs"]
 mod mcp_report_series_read;
+#[path = "cases/mcp_source_capture.rs"]
+mod mcp_source_capture;
+#[path = "cases/mcp_source_capture_e2e.rs"]
+mod mcp_source_capture_e2e;
+#[path = "cases/mcp_source_warnings.rs"]
+mod mcp_source_warnings;
 #[path = "cases/mcp_track_file.rs"]
 mod mcp_track_file;
 #[path = "cases/mcp_track_rename.rs"]

@@ -238,6 +238,15 @@ pub struct AppContext {
     /// `report_series` rows. Built once at `McpServer::spawn` from the repo's
     /// sqlite pool.
     pub series_resolver: Arc<crate::report_series::SeriesResolver>,
+    /// #1669 §2.1 — the transient ring of Planner plugin results
+    /// `calm.source.capture` reads. Filled by `dispatch_plugin_tools_call`,
+    /// emptied per track by the delete route's post-commit arm.
+    pub plugin_results: Arc<crate::plugin_results::PluginResults>,
+    /// #1669 — the repo's sqlite pool for **read-only** statements from tool
+    /// handlers and the report-write funnel (`report_sources` lookups).
+    /// Writes never go through this: they take the repo's eventized or
+    /// `write_in_tx` doors. `None` only for repos without sqlite (tests).
+    pub sqlite_pool: Option<sqlx::SqlitePool>,
 }
 
 impl AppContext {
@@ -259,9 +268,10 @@ impl AppContext {
         gate_logs_dir: std::path::PathBuf,
         task_budget_default: i64,
     ) -> Arc<Self> {
-        let track_vcs = repo.sqlite_pool().map(SqlxTrackVcsRepo::shared);
+        let sqlite_pool = repo.sqlite_pool();
+        let track_vcs = sqlite_pool.clone().map(SqlxTrackVcsRepo::shared);
         let series_resolver = Arc::new(crate::report_series::SeriesResolver::new(
-            repo.sqlite_pool(),
+            sqlite_pool.clone(),
         ));
         let route_repo: Arc<dyn RouteRepo> = repo;
         Arc::new(Self {
@@ -276,6 +286,8 @@ impl AppContext {
             plugin_host,
             operation_runtime,
             series_resolver,
+            plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
+            sqlite_pool,
         })
     }
 }
@@ -596,6 +608,7 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite"),
         );
+        let sqlite_pool = repo.sqlite_pool();
         let route_repo: Arc<dyn RouteRepo> = repo;
         Arc::new(AppContext {
             terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
@@ -609,6 +622,8 @@ mod tests {
             plugin_host: Arc::new(tokio::sync::OnceCell::new()),
             operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
+            plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
+            sqlite_pool,
         })
     }
 

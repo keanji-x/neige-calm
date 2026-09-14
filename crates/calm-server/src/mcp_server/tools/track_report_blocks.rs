@@ -9,11 +9,19 @@
 //! | Tool | Shape | Notes |
 //! |---|---|---|
 //! | `calm.report.blocks.kinds`  | `{}` | Self-describing kind vocabulary (static). |
-//! | `calm.report.blocks.upsert` | `{ id?, kind, markdown?, payload?, if_rev?, if_doc_rev?, position?, message?, lifecycle? }` | Create (`id` absent + mandatory `if_doc_rev`) or replace (`id` + mandatory `if_rev`). Returns `{ id, rev, updated_at, docRev }`. |
+//! | `calm.report.blocks.upsert` | `{ id?, kind, markdown?, payload?, if_rev?, if_doc_rev?, position?, message?, lifecycle? }` | Create (`id` absent + mandatory `if_doc_rev`) or replace (`id` + mandatory `if_rev`). Returns `{ id, rev, updated_at, docRev, warnings }`. |
 //! | `calm.report.blocks.move`   | `{ id, to_index, if_doc_rev }` | Reorder; rev untouched. A `message`/`lifecycle` key is refused (-32602). |
 //! | `calm.report.blocks.delete` | `{ id, if_rev }` | `if_rev` mandatory. A `message`/`lifecycle` key is refused (-32602). |
-//! | `calm.report.write_markdown`| `{ body, summary?, if_doc_rev, message?, lifecycle? }` | The id-preserving whole-document write: guarded full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. |
-//! | `calm.report.commit`        | `{ if_doc_rev, message, ops?, summary?, lifecycle? }` | Planner-only: one user-intent update — an ordered list of block ops (`upsert`/`move`/`delete`, each in its single-op shape minus `if_doc_rev`) + optional summary + optional lifecycle, under ONE `if_doc_rev`; each existing block id at most once per commit (-32602). Returns `{ updated_at, docRev, blocks: [{ id, kind, rev }], lifecycle }` — `lifecycle` is the transition applied (null when none, incl. a same-state request). |
+//! | `calm.report.write_markdown`| `{ body, summary?, if_doc_rev, message?, lifecycle? }` | The id-preserving whole-document write: guarded full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. Returns `{ updated_at, docRev, warnings }`. |
+//! | `calm.report.commit`        | `{ if_doc_rev, message, ops?, summary?, lifecycle? }` | Planner-only: one user-intent update — an ordered list of block ops (`upsert`/`move`/`delete`, each in its single-op shape minus `if_doc_rev`) + optional summary + optional lifecycle, under ONE `if_doc_rev`; each existing block id at most once per commit (-32602). Returns `{ updated_at, docRev, blocks: [{ id, kind, rev }], lifecycle, warnings }` — `lifecycle` is the transition applied (null when none, incl. a same-state request). |
+//!
+//! `warnings` (#1669 §2.3) is the list of `neige://source/` links in the
+//! prose blocks this write touched that name a source or anchor the track
+//! does not have — `[{ kind: "unresolved_source_link", block_id,
+//! destination }]`, computed after the transaction committed. The write is
+//! never blocked on it; `[]` when every link resolves or no prose was
+//! written. Only these three receipts carry it: `move` and `delete` write
+//! no prose.
 //!
 //! ## Concurrency contract
 //!
@@ -51,7 +59,7 @@
 //! that would touch a task declaration block. A Worker token is still
 //! refused here outright.
 
-use crate::decision_sink::CardDecisionSink;
+use crate::decision_sink::{CardDecisionSink, ReportOpCommit};
 use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -61,7 +69,7 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::lifecycle_args::{parse_optional_write_args, parse_write_args};
 use crate::mcp_server::tools::track_report::{resolve_report_for_caller, updated_report_doc_rev};
 use crate::model::{CardRole, TrackLifecycle};
-use crate::track_report::{BatchBlockOp, BlockOpOutcome, MAX_BATCH_OPS, ReportDocOp};
+use crate::track_report::{BatchBlockOp, MAX_BATCH_OPS, ReportDocOp};
 use calm_types::report_blocks;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -188,13 +196,21 @@ async fn blocks_upsert(
         carried.lifecycle,
     )
     .await?;
-    let (card, block) = outcome;
+    let ReportOpCommit {
+        card,
+        block,
+        warnings,
+    } = outcome;
     let block = block
         .ok_or_else(|| RpcError::internal(format!("{tool}: upsert produced no block outcome")))?;
     let doc_rev = updated_report_doc_rev(&card, tool)?;
-    Ok(
-        json!({ "id": block.id, "rev": block.rev, "updated_at": card.updated_at, "docRev": doc_rev }),
-    )
+    Ok(json!({
+        "id": block.id,
+        "rev": block.rev,
+        "updated_at": card.updated_at,
+        "docRev": doc_rev,
+        "warnings": warnings,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +236,7 @@ async fn blocks_move(
         ))
     })?;
 
-    let (card, block) = commit_block_op(
+    let ReportOpCommit { card, block, .. } = commit_block_op(
         &ctx,
         &identity,
         tool,
@@ -271,7 +287,7 @@ async fn blocks_delete(
         ))
     })?;
 
-    let (card, _none) = commit_block_op(
+    let ReportOpCommit { card, .. } = commit_block_op(
         &ctx,
         &identity,
         tool,
@@ -317,7 +333,7 @@ async fn write_markdown(
         body,
         if_doc_rev,
     };
-    let (card, _none) = match CardDecisionSink::from_app_context(&ctx)
+    let ReportOpCommit { card, warnings, .. } = match CardDecisionSink::from_app_context(&ctx)
         .commit_report_op(
             &identity,
             track,
@@ -333,7 +349,7 @@ async fn write_markdown(
         Err(e) => return Err(map_commit_err(tool, e)),
     };
     let doc_rev = updated_report_doc_rev(&card, tool)?;
-    Ok(json!({ "updated_at": card.updated_at, "docRev": doc_rev }))
+    Ok(json!({ "updated_at": card.updated_at, "docRev": doc_rev, "warnings": warnings }))
 }
 
 // ---------------------------------------------------------------------------
@@ -399,7 +415,7 @@ async fn commit(
     let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
     let track_id = track.id.clone();
     let lifecycle_before = track.lifecycle;
-    let (card, _none) = CardDecisionSink::from_app_context(&ctx)
+    let ReportOpCommit { card, warnings, .. } = CardDecisionSink::from_app_context(&ctx)
         .commit_report_op(
             &identity,
             track,
@@ -461,6 +477,7 @@ async fn commit(
         "docRev": doc_rev,
         "blocks": blocks,
         "lifecycle": lifecycle,
+        "warnings": warnings,
     }))
 }
 
@@ -626,7 +643,7 @@ async fn commit_block_op(
     op: ReportDocOp,
     agent_message: Option<String>,
     lifecycle: Option<TrackLifecycle>,
-) -> Result<(crate::model::Card, Option<BlockOpOutcome>), RpcError> {
+) -> Result<ReportOpCommit, RpcError> {
     let (track, _, report_card, current) = resolve_report_for_caller(ctx, identity).await?;
     CardDecisionSink::from_app_context(ctx)
         .commit_report_op(

@@ -58,7 +58,7 @@ fn eligible_plugin_tools_from(
 /// The spelling Codex shows the model: every char outside `[A-Za-z0-9_]`
 /// becomes `_` (codex-mcp `sanitize_responses_api_tool_name`). The model
 /// only ever sees this form, so `plugin_tools` may arrive spelled this way.
-fn codex_sanitized(name: &str) -> String {
+pub(crate) fn codex_sanitized(name: &str) -> String {
     name.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' {

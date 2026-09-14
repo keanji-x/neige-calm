@@ -5,6 +5,8 @@ mod support;
 mod http_track_file;
 #[path = "cases/plugin_scope.rs"]
 mod plugin_scope;
+#[path = "cases/report_sources_track_lifecycle.rs"]
+mod report_sources_track_lifecycle;
 #[path = "cases/rest_track_report.rs"]
 mod rest_track_report;
 #[path = "cases/templates_privacy.rs"]

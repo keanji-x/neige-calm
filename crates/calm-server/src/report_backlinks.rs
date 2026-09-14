@@ -574,6 +574,47 @@ mod tests {
         );
     }
 
+    /// #1669 I5 — a `neige://source/…` citation is not a track reference:
+    /// it never becomes a backlink, whatever it sits next to.
+    #[tokio::test]
+    async fn source_links_never_produce_backlinks() {
+        let repo = fresh_repo().await;
+        let area = area(&repo, "one").await;
+        let target = track(&repo, area.id.as_str(), "Target").await;
+        let source = track(&repo, area.id.as_str(), "Source").await;
+        report(&repo, target.id.as_str(), target_payload()).await;
+        report(
+            &repo,
+            source.id.as_str(),
+            v1(format!(
+                "[cite](neige://source/src_2c9e0a1b#q1) and [cite2](neige://source/{})\n",
+                target.id
+            )),
+        )
+        .await;
+
+        let found = backlinks_for_track(
+            &repo as &dyn RouteRepo,
+            target.id.as_str(),
+            TEST_TASK_BUDGET_DEFAULT,
+        )
+        .await
+        .unwrap();
+        assert!(found.backlinks.is_empty(), "{:?}", found.backlinks);
+        let mut scanned = Vec::new();
+        assert!(calm_types::report_links::visit_links(
+            "[cite](neige://source/src_2c9e0a1b#q1)",
+            |link| {
+                scanned.push(link);
+                true
+            }
+        ));
+        assert!(
+            scanned.is_empty(),
+            "the track-link scanner sees no source link"
+        );
+    }
+
     #[tokio::test]
     async fn backlink_from_another_area_is_absent() {
         let repo = fresh_repo().await;

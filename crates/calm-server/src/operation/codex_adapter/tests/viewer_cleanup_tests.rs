@@ -197,6 +197,8 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
         operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
         series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
+        plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
+        sqlite_pool: crate::db::Repo::sqlite_pool(harness.repo.as_ref()),
     });
     let event = if expected == crate::model::TaskStatus::Failed {
         Event::TaskFailed {

@@ -721,7 +721,7 @@
   },
   {
     "name": "calm.report.edit",
-    "description_sha256": "0b101835dd6950efe283185373bb93c96ace76064d1bcd7128ae81e5e271e9b9",
+    "description_sha256": "f89a9bef02245a1912ab032ac5c91d4365a267a1eedfe533a5f9118a76070559",
     "input_schema": {
       "properties": {
         "if_doc_rev": {
@@ -824,7 +824,7 @@
   },
   {
     "name": "calm.report.write",
-    "description_sha256": "99bf9404076ad53b8fc25c52bc6295a758241c2ae1c07121444f4873eb0113ae",
+    "description_sha256": "834be3c5e02f2f57fe47755ab9b2c5c8e07815bd9ecb876dbe64db205f394d46",
     "input_schema": {
       "properties": {
         "body": {
@@ -1010,6 +1010,94 @@
       "destructiveHint": false,
       "openWorldHint": false,
       "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.source.capture",
+    "description_sha256": "7ac908294bb4dca3e073b84448f59c4afad05b351c50f01a189d7583c09b6c42",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "call": {
+          "additionalProperties": false,
+          "properties": {
+            "args": {},
+            "tool": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tool"
+          ],
+          "type": "object"
+        },
+        "content_id": {
+          "type": "string"
+        },
+        "manual": {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        "provenance": {
+          "enum": [
+            "full_text",
+            "summary",
+            "web_page",
+            "manual"
+          ],
+          "type": "string"
+        },
+        "published_at": {
+          "type": "string"
+        },
+        "quotes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "visible_to_roles": [
+      "planner"
+    ]
+  },
+  {
+    "name": "calm.source.list",
+    "description_sha256": "b2660cbcd5b9dd88f6513c7130001585c046c0c4e107eb958a52c8f31237ad9b",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
     },
     "visible_to_roles": [
       "planner"

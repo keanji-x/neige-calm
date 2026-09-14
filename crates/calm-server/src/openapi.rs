@@ -122,6 +122,9 @@ use utoipa::OpenApi;
         crate::routes::track_report_blocks::move_block,
         // #1628 S4 — one `chart.series` block's resolved data
         crate::routes::track_report_series::get_report_series,
+        // #1669 S1 — captured sources
+        crate::routes::track_sources::list_track_sources,
+        crate::routes::track_sources::get_track_source,
         crate::routes::tracks::list_track_files,
         crate::routes::tracks::cat_track_file,
         crate::routes::today::ensure_today_launchpad,
@@ -260,6 +263,13 @@ use utoipa::OpenApi;
         crate::routes::track_report_series::ReportSeriesEntry,
         crate::routes::track_report_series::ReportSeriesResolved,
         crate::routes::track_report_series::ReportSeriesRevConflict,
+        // #1669 S1 — `GET /api/tracks/{id}/sources[/{source_id}]` (calm-types, TS-exported)
+        calm_types::report_sources::SourceProvenance,
+        calm_types::report_sources::SourceOrigin,
+        calm_types::report_sources::SourceQuote,
+        calm_types::report_sources::TrackSourceSummary,
+        calm_types::report_sources::TrackSourceDetail,
+        calm_types::report_sources::TrackSourceList,
         TrackDetail,
         Card,
         CardRuntimeView,

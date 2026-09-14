@@ -29,6 +29,11 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "calm.report.write",
         "calm.report.write_markdown",
         "calm.review.round",
+        // #1669 S1 — capturing a plugin result as a citable source and
+        // listing the track's sources; planner-only in v1 (design §7.4), so
+        // neither the worker nor the assistant enumeration gains them.
+        "calm.source.capture",
+        "calm.source.list",
         "calm.task.dispatch",
         "calm.task.repair",
         "calm.task.verdict",
