@@ -2,7 +2,8 @@
 //! into the first observed input of a scenario, `release:true` gives control
 //! back right after the last write. Both helpers assume the caller holds the
 //! connection's serial guard (the public `control()` re-takes it and must
-//! not be called from here).
+//! not be called from here). The release step is shared with `control
+//! release` (#1697): one decision, reported the same way on both carriers.
 use super::*;
 
 /// The claim step of an `input claim:true`, decided before the pre-write
@@ -36,10 +37,37 @@ impl ClaimStep {
     }
 }
 
+/// The release step of `input release:true` and `control release` (#1697).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ReleaseStep {
+    /// This connection held control (mirror and registry agreed) and the
+    /// release is confirmed applied.
+    Released,
+    /// This connection did not hold control when the release ran (a
+    /// takeover, or a lease the mirror still shows while the registry
+    /// names another client).
+    NotHeld,
+    /// The release could not be sent, or its application could not be
+    /// confirmed within the budget: read the readback's `role`.
+    Unconfirmed { reason: String },
+}
+impl ReleaseStep {
+    pub(super) fn to_json(&self) -> Value {
+        match self {
+            Self::Released => json!({"status":"released"}),
+            Self::NotHeld => json!({"status":"not_held"}),
+            Self::Unconfirmed { reason } => json!({"status":"unconfirmed","reason":reason}),
+        }
+    }
+}
+
 /// Reason of an `input claim:true` whose observation was taken as owner
 /// while this connection no longer holds control.
 pub const CONTROL_NO_LONGER_HELD: &str =
     "terminal control held at the observation is no longer held; observe before input";
+/// Reason of a release on an exited terminal that the owner registry did
+/// not confirm within its budget (#1697).
+pub const RELEASE_NOT_CONFIRMED_AFTER_EXIT: &str = "terminal exited; release not confirmed";
 
 impl TerminalInteraction {
     /// The claim step (#1666 S3). Held control needs no claim. An observer
@@ -125,35 +153,84 @@ impl TerminalInteraction {
             }),
         }
     }
-    /// The release step after the write (#1666 S3): `released` when this
-    /// connection held control (cache and registry agree) and the release
-    /// was applied, `not_held` when it did not (a takeover, or a lease the
-    /// cache still shows while the registry names another client),
-    /// `unconfirmed` when the release could not be sent or its delivery
-    /// timed out. Never touches `pending` or the write outcome.
-    pub(super) async fn release_after_input(&self, client: &Client) -> &'static str {
-        let held = client
+    /// The release step (#1666 S3, shared with `control release` since
+    /// #1697): `Released` when this connection held control (mirror and
+    /// registry agree) and the release was applied, `NotHeld` when it did
+    /// not, `Unconfirmed` when the release could not be sent or its
+    /// application was not confirmed in time. Never touches `pending` or
+    /// the write outcome. On a live terminal the confirmation is the
+    /// `OwnerChanged` the mirror applies. On an exited terminal it cannot
+    /// be: the pump stops forwarding after `TerminalExited` (the WS client
+    /// closes there), so the registry — which the pump still updates from
+    /// this connection's frames — is the truth and the mirror a cache the
+    /// pump stopped feeding at exit; the registry is polled (it does not
+    /// wake `changed()`) and the mirror is set from it once it no longer
+    /// names this connection.
+    pub(super) async fn release(&self, client: &Client) -> ReleaseStep {
+        let (held_in_mirror, exited) = client
             .screen
             .lock()
-            .is_ok_and(|state| state.control.is_some())
-            && client
+            .map(|state| (state.control.is_some(), state.exited))
+            .unwrap_or((false, false));
+        let registry_owner = || {
+            client
                 .entry
                 .handle
                 .owner_registry
                 .lock()
-                .is_ok_and(|registry| registry.current_owner() == Some(client.id));
-        if !held {
-            return "not_held";
+                .map(|registry| registry.current_owner())
+        };
+        if !held_in_mirror || registry_owner().ok().flatten() != Some(client.id) {
+            return ReleaseStep::NotHeld;
         }
-        if client.send(ClientMsg::OwnerRelease).await.is_err() {
-            return "unconfirmed";
+        if let Err(error) = client.send(ClientMsg::OwnerRelease).await {
+            return ReleaseStep::Unconfirmed {
+                reason: format!("terminal release not sent: {error}"),
+            };
+        }
+        if exited {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                match registry_owner() {
+                    Ok(owner) if owner != Some(client.id) => {
+                        if let Ok(mut state) = client.screen.lock() {
+                            state.owner = owner;
+                            state.control = None;
+                        }
+                        return ReleaseStep::Released;
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        return ReleaseStep::Unconfirmed {
+                            reason: "terminal owner registry poisoned".into(),
+                        };
+                    }
+                }
+                if Instant::now() >= deadline {
+                    return ReleaseStep::Unconfirmed {
+                        reason: RELEASE_NOT_CONFIRMED_AFTER_EXIT.into(),
+                    };
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
         }
         match client
             .wait(|state| state.control.is_none(), Duration::from_secs(7))
             .await
         {
-            Ok(()) => "released",
-            Err(_) => "unconfirmed",
+            Ok(()) => ReleaseStep::Released,
+            Err(error)
+                if error
+                    .downcast_ref::<tokio::time::error::Elapsed>()
+                    .is_some() =>
+            {
+                ReleaseStep::Unconfirmed {
+                    reason: "terminal release timed out".into(),
+                }
+            }
+            Err(error) => ReleaseStep::Unconfirmed {
+                reason: error.to_string(),
+            },
         }
     }
 }
@@ -177,6 +254,22 @@ mod tests {
             }
             .to_json(),
             json!({"status":"unconfirmed","reason":"terminal claim timed out"})
+        );
+    }
+
+    #[test]
+    fn release_step_json_shapes() {
+        assert_eq!(
+            ReleaseStep::Released.to_json(),
+            json!({"status":"released"})
+        );
+        assert_eq!(ReleaseStep::NotHeld.to_json(), json!({"status":"not_held"}));
+        assert_eq!(
+            ReleaseStep::Unconfirmed {
+                reason: RELEASE_NOT_CONFIRMED_AFTER_EXIT.into()
+            }
+            .to_json(),
+            json!({"status":"unconfirmed","reason":RELEASE_NOT_CONFIRMED_AFTER_EXIT})
         );
     }
 }

@@ -360,11 +360,13 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     assert_eq!(digested["wait"], "elapsed");
     assert_eq!(digested["role"], "observer");
     assert_eq!(digested["control_id"], Value::Null);
+    // #1697: a control release carries its release status like the input path.
+    assert_eq!(digested["release"], "released", "{released}");
     assert_eq!(
         summary(&released),
         format!(
             "terminal {terminal} release; screen unchanged; wait elapsed; role observer; \
-             details in structuredContent"
+             release released; details in structuredContent"
         )
     );
     // Detach has no readback and no summary: its line names the client.

@@ -281,13 +281,13 @@ impl TerminalInteraction {
         // started on, otherwise the observation is refused.
         let resolved =
             Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
-        let (control, exited) = {
+        let (control, exited, exit_code) = {
             let state = client
                 .screen
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
             ensure!(state.available, "terminal observation disconnected");
-            (state.control, state.exited)
+            (state.control, state.exited, state.exit_code)
         };
         let (frame, revision) = client
             .entry
@@ -317,7 +317,7 @@ impl TerminalInteraction {
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
-            "text":frame.text,"exited":exited,"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
+            "text":frame.text,"exited":exited,"exit_code":exit_code,"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
             "previous_observation_revision":previous.map(|prior| prior.revision.to_string()),
             "signals":{"hooks_seen":signals.last_seq > 0,"last_seq":signals.last_seq,
                 "since_previous_observation":signals.signals.iter().map(|signal| signal.to_json()).collect::<Vec<_>>(),
@@ -586,7 +586,7 @@ impl TerminalInteraction {
                 signal_seq,
             })
             .ok();
-        match action {
+        let release = match action {
             "claim" => {
                 let previous = client.screen.lock().unwrap().control;
                 client.send(ClientMsg::OwnerClaim).await?;
@@ -596,19 +596,19 @@ impl TerminalInteraction {
                         Duration::from_secs(7),
                     )
                     .await?;
+                None
             }
-            "release" => {
-                client.send(ClientMsg::OwnerRelease).await?;
-                client
-                    .wait(|state| state.control.is_none(), Duration::from_secs(7))
-                    .await?;
-            }
+            // #1697: the shared release step; an unconfirmed release is a
+            // receipt fact (`release.status`), never the call's error.
+            "release" => Some(self.release(&client).await),
             _ => anyhow::bail!("unknown terminal control action"),
-        }
-        let receipt = {
-            let state = client.screen.lock().unwrap();
-            json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":state.control})
         };
+        let control = client.screen.lock().unwrap().control;
+        let mut receipt =
+            json!({"terminal_id":terminal,"connection_id":client.connection,"control_id":control});
+        if let Some(release) = release {
+            receipt["release"] = release.to_json();
+        }
         // Read before the readback registers its own capture as the latest.
         let previous = *client
             .latest_observation
