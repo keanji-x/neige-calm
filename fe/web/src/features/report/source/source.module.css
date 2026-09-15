@@ -1,0 +1,176 @@
+@layer features {
+  /*
+   * The source panel (#1669 §2.5), inside the right-rail drawer.
+   *
+   * Two registers and nothing else. The head — badge, title, the row's facts
+   * — is the panel's own sans, in the small sizes the series figure's head
+   * already uses for "what this figure says about itself". The body is
+   * evidence, so it is set the way the document sets a block it will not
+   * interpret (`document.module.css`'s `.raw`): code face, code surface,
+   * wrapped rather than scrolled sideways, because a captured article is
+   * prose and a horizontal scrollbar on prose is a defect.
+   *
+   * The quote is a `<mark>` in `--warn-soft`, not `--accent-soft`: the accent
+   * wash is the document's *arrival* flash (a state that fades), and this is
+   * a *place* that stays lit for as long as the panel is open. Tokens only,
+   * no literal colour.
+   */
+  .panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+    min-inline-size: 0;
+    font-family: var(--font-sans);
+    color: var(--text);
+  }
+
+  .head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding-block-end: var(--space-4);
+    border-block-end: 1px solid var(--hairline);
+  }
+
+  /* The badge reads first: whether this is the institution's text, 智堡's
+     summary, a web page, or the planner's own hand is the one fact the
+     owner asked to be unmissable. */
+  .badge {
+    align-self: flex-start;
+    padding: var(--space-1) var(--space-3);
+    border-radius: var(--radius-pill);
+    background: var(--surface-chip);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+  }
+
+  /* `manual` is the one provenance the kernel does not vouch for. */
+  .badge[data-nc-report-source-provenance='manual'] {
+    background: var(--warn-soft);
+    color: var(--warn-text);
+  }
+
+  .title {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: var(--text-lg);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-snug);
+    overflow-wrap: anywhere;
+  }
+
+  .meta {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin: 0;
+  }
+
+  .metaRow {
+    display: flex;
+    gap: var(--space-3);
+    align-items: baseline;
+    min-inline-size: 0;
+  }
+
+  .metaLabel {
+    flex: none;
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  .metaValue {
+    min-inline-size: 0;
+    margin: 0;
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+    overflow-wrap: anywhere;
+  }
+
+  .mono {
+    font-family: var(--font-mono);
+  }
+
+  .state {
+    margin: 0;
+    font-size: var(--text-sm);
+    line-height: var(--leading-base);
+    color: var(--text-3);
+  }
+
+  /* The missing state — the whole panel when the source is missing, a
+     block above the body when only the anchor is. One shape for both, so
+     "this citation did not resolve" reads the same wherever it appears. */
+  .missing {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+
+  .missingTitle {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: var(--text-lg);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-snug);
+  }
+
+  /* An anchor that could not be placed sits above a source that is still
+     shown: the one thing on that surface a reader must not miss, so its
+     heading takes the warn register, and a hairline sets it off from the
+     body it introduces. */
+  .missing[data-nc-report-source-missing='anchor'] {
+    padding-block-end: var(--space-4);
+    border-block-end: 1px solid var(--hairline);
+  }
+
+  .missing[data-nc-report-source-missing='anchor'] .missingTitle {
+    font-size: var(--text-md);
+    color: var(--warn-text);
+  }
+
+  .destination {
+    display: flex;
+    gap: var(--space-3);
+    align-items: baseline;
+    margin: 0;
+    min-inline-size: 0;
+  }
+
+  .destinationCode {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-2);
+    overflow-wrap: anywhere;
+  }
+
+  /* The body: raw text, code face, wrapped. `pre-wrap` keeps the source's own
+     line breaks and lets long lines fold; `anywhere` folds a URL or a run of
+     CJK with no break opportunity rather than pushing the pane sideways. */
+  .body {
+    min-inline-size: 0;
+    padding: var(--space-5);
+    margin: 0;
+    border-radius: var(--radius-sm);
+    background: var(--surface-code);
+    font-family: var(--font-code);
+    font-size: var(--text-sm);
+    line-height: var(--leading-loose);
+    color: var(--text);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    tab-size: 2;
+  }
+
+  .quote {
+    padding-block: var(--space-px);
+    border-radius: var(--radius-sm);
+    background: var(--warn-soft);
+    color: inherit;
+    box-decoration-break: clone;
+  }
+}

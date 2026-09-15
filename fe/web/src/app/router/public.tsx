@@ -53,6 +53,7 @@ import { useIndependentTaskLaunch } from './independent-task.tsx';
 import { useTaskArtifactFiles } from './task-artifact-files.tsx';
 import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
 import { useReportSeriesResolver } from './report-series.ts';
+import { ReportSourceDrawer } from './report-source.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { ReportFileViewer } from '../../features/report/file-viewer/public.tsx';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
@@ -64,6 +65,7 @@ import {
 import {
   parseWorkspaceRelativeFilePath, type ReportFileLinkTarget,
 } from '../../../../core/domain/report-file.ts';
+import type { ReportSourceLinkTarget } from '../../../../core/domain/report-source.ts';
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
@@ -1416,7 +1418,21 @@ function useConversationPanel(
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
       if (!store.working || store.stopping) return;
       const target = event.target;
-      if (!(target instanceof Element) || target.closest('[role="complementary"]') === null) return;
+      if (!(target instanceof Element)) return;
+      const region = target.closest('[role="complementary"]');
+      if (region === null) return;
+      /*
+       * #1669 S2 — the source panel is a second `complementary` card on the
+       * same track, and an Escape that closes it must not reach the planner.
+       * The region is asked whether it *holds* the panel's marker, not the
+       * target whether it is *inside* one: the key usually lands on the card
+       * itself (`tabIndex={-1}`, focused on open), which is above the marker.
+       * Excluded by the panel's marker rather than by asserting the
+       * conversation's, because the conversation drawer has no single
+       * descendant it always carries (the transcript is not mounted while
+       * the first page is loading).
+       */
+      if (region.querySelector('[data-nc-report-source]') !== null) return;
       /*
        * An open `/` menu owns Escape first, and this listener is the only thing
        * that could take it: it is on `document` in the **capture** phase, so it
@@ -3224,6 +3240,26 @@ function TrackRouteBody({
     fileNavigation.openFile(track.id, relativePath);
   };
 
+  /*
+   * A `neige://source/…` citation (#1669 §2.5) opens the source panel in the
+   * right rail. Route-local state, not the URL — `report-source.tsx` says why
+   * — and keyed to this body, so leaving the track drops it.
+   *
+   * **Not on a narrow viewport.** There is no rail to open the drawer in, and
+   * the design's v1 answer is the inline citation the document paints when
+   * it is given no handler (badge + label, not a control). The handler is
+   * withheld rather than made a no-op so the document cannot render a button
+   * that does nothing; the effect closes a panel the viewport shrank under.
+   * Declared as an intentional omission in `docs/oracle/pages-shared.yaml`.
+   */
+  const [sourceTarget, setSourceTarget] = useState<ReportSourceLinkTarget | null>(null);
+  useEffect(() => {
+    if (compactViewport) setSourceTarget(null);
+  }, [compactViewport]);
+  const sourceOpen = sourceTarget !== null && !compactViewport;
+  const openReportSource = (target: ReportSourceLinkTarget) => { setSourceTarget(target); };
+  const closeReportSource = () => { setSourceTarget(null); };
+
   const closeBoard = () => {
     if (requestedFilePath !== null) {
       fileNavigation.closeFile(track.id);
@@ -3326,6 +3362,7 @@ function TrackRouteBody({
         backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
         onOpenLink={openReportLink}
         onOpenFileLink={openReportFile}
+        onOpenSourceLink={compactViewport ? undefined : openReportSource}
         fileRoot={track.cwd}
         arrivalAnchorId={arrivalAnchorId}
         /*
@@ -3416,7 +3453,28 @@ function TrackRouteBody({
         inline, and a fieldless kind never opens the dialog at all — which is
         precisely the path that had no surface of any kind. */}
     {cardDraft === null && <OperationFeedback feedback={cardCreateFeedback} />}
-    {chat.drawer}
+    {/*
+      * Two drawers, one track. The source panel is transient — opened from a
+      * citation, closed when read — and the conversation is not, so the
+      * source card is painted *over* the conversation's rather than replacing
+      * it: closing the source lands the reader back on the chat they were in,
+      * with its scroll, its draft and its focus untouched. Painted over means
+      * the conversation is still in the DOM underneath, so it is `inert` for
+      * the duration — a card you cannot see must not be a card you can Tab
+      * into. The wrapper is a static block, so the drawer's absolute box
+      * still resolves against `.main` the way it did as a direct child, and
+      * `drawerSeamAround` still finds the seam beside its card.
+      */}
+    <div data-nc-conversation-drawer-host="" inert={sourceOpen}>
+      {chat.drawer}
+    </div>
+    <ReportSourceDrawer
+      transport={transport}
+      trackId={track.id}
+      target={sourceOpen ? sourceTarget : null}
+      unauthorized={unauthorized}
+      onClose={closeReportSource}
+    />
     </>
   );
 }

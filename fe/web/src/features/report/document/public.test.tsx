@@ -3,7 +3,9 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
+import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import type { ReportBlock, TrackReport } from '../../../../../core/domain/report.ts';
+import { SOURCE_PANEL_COPY } from '../source/public.tsx';
 import { initialBody, splitInitialBody } from './kernel-initial-body.ts';
 import { ReportDocument } from './public.tsx';
 
@@ -157,6 +159,79 @@ describe('ReportDocument', () => {
       expect(onOpenFileLink.mock.calls.map(([target]) => target)).toEqual([
         { path: 'docs/spec.md' }, { path: 'README.md' },
       ]);
+    });
+
+    /* #1669 — a source citation is the third typed destination. It is a
+       button whenever a panel can open, including when the id or anchor will
+       not parse: the panel is where "来源缺失" is said, so a malformed
+       citation must still be reachable. Never an anchor. */
+    it('routes a source citation through a button and a typed callback, never an anchor', () => {
+      const onOpenSourceLink = vi.fn<(target: ReportSourceLinkTarget) => void>();
+      const { container } = render(
+        <ReportDocument
+          report={flat('据 [Mikko 日志](neige://source/src_2c9e0a1b#q1) 与 [年报](neige://source/src_0badf00d)。')}
+          empty={EMPTY}
+          onOpenSourceLink={onOpenSourceLink}
+        />,
+      );
+      expect(container.querySelectorAll('a').length).toBe(0);
+      expect(container.innerHTML).not.toContain('neige://source');
+      screen.getByRole('button', { name: 'Mikko 日志' }).click();
+      screen.getByRole('button', { name: '年报' }).click();
+      expect(onOpenSourceLink.mock.calls.map(([target]) => target)).toEqual([
+        { destination: 'neige://source/src_2c9e0a1b#q1', sourceId: 'src_2c9e0a1b', quoteId: 'q1' },
+        { destination: 'neige://source/src_0badf00d', sourceId: 'src_0badf00d', quoteId: null },
+      ]);
+      expect(container.querySelectorAll('[data-nc-report-source-link]').length).toBe(2);
+    });
+
+    it('keeps a malformed source citation clickable so the panel can say it is missing', () => {
+      const onOpenSourceLink = vi.fn<(target: ReportSourceLinkTarget) => void>();
+      render(
+        <ReportDocument
+          report={flat('见 [坏链接](neige://source/src_dead#q0)。')}
+          empty={EMPTY}
+          onOpenSourceLink={onOpenSourceLink}
+        />,
+      );
+      screen.getByRole('button', { name: '坏链接' }).click();
+      expect(onOpenSourceLink).toHaveBeenCalledWith({
+        destination: 'neige://source/src_dead#q0', sourceId: null, quoteId: null,
+      });
+    });
+
+    it('does not hand a source citation to the track or file callbacks', () => {
+      const onOpenLink = vi.fn();
+      const onOpenFileLink = vi.fn();
+      const onOpenSourceLink = vi.fn();
+      render(
+        <ReportDocument
+          report={flat('[x](neige://source/src_2c9e0a1b#q1)')}
+          empty={EMPTY}
+          onOpenLink={onOpenLink}
+          onOpenFileLink={onOpenFileLink}
+          onOpenSourceLink={onOpenSourceLink}
+          fileRoot="/repo"
+        />,
+      );
+      screen.getByRole('button', { name: 'x' }).click();
+      expect(onOpenSourceLink).toHaveBeenCalledTimes(1);
+      expect(onOpenLink).not.toHaveBeenCalled();
+      expect(onOpenFileLink).not.toHaveBeenCalled();
+    });
+
+    /* The narrow-viewport surface, and every surface without a track: the
+       citation is a badge and its label, and not a control (#1669 §2.5,
+       declared as an intentional omission in the oracle). */
+    it('renders a source citation as a badge plus label, not a control, when no handler is injected', () => {
+      const { container } = render(
+        <ReportDocument report={flat('据 [Mikko 日志](neige://source/src_2c9e0a1b#q1)。')} empty={EMPTY} />,
+      );
+      expect(container.querySelectorAll('button, a').length).toBe(0);
+      const citation = container.querySelector('[data-nc-report-source-citation]');
+      expect(citation).not.toBeNull();
+      expect(citation?.textContent).toBe(`${SOURCE_PANEL_COPY.citationBadge}Mikko 日志`);
+      expect(container.innerHTML).not.toContain('neige://source');
     });
 
     // Without a handler there is nowhere for the citation to go, and a button

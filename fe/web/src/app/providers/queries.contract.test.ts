@@ -17,7 +17,7 @@ import {
   ApiError, areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
   useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
   useTodayLaunchpadEnsureMutation, useTrackConversationMutations, useTrackRecipeMutations,
-  seriesRefetchInterval, trackReportSeriesQueryOptions, type SeriesRead,
+  seriesRefetchInterval, trackReportSeriesQueryOptions, trackSourceQueryOptions, type SeriesRead,
 } from './queries.ts';
 
 function recordingTransport(reply: (request: ApiRequest) => ApiTransportResponse) {
@@ -809,5 +809,44 @@ describe('chart.series query', () => {
       ...pending, status: 'ok', as_of: '2026-09-11', resolved_at: 't', pinned: true, series: [],
     } as SeriesRead))).toBe(false);
     expect(seriesRefetchInterval(state(undefined, 0))).toBe(false);
+  });
+});
+
+/*
+ * #1669 §2.5 — one captured source, read when its citation is opened.
+ *
+ * The 404 is data: a dangling citation is a state the design admits, and the
+ * panel says "来源缺失" for it rather than retrying a read that cannot change.
+ */
+describe('track source query', () => {
+  const signal = new AbortController().signal;
+  const row = {
+    source_id: 'src_2c9e0a1b', provenance: 'summary',
+    origin: { kind: 'plugin', plugin_id: 'p', tool: 't', args_sha256: 'ab', args_canon: 'v1' },
+    title: 'T', body_bytes: 3, body_sha256: 'cd', captured_at: '2026-09-14T00:00:00Z',
+    quotes: [{ id: 'q1', text: 'abc', start: 0, end: 3 }], body: 'abc',
+  };
+
+  it('keys by track and source id, under its own prefix, and never refetches on focus', async () => {
+    const { transport, paths } = recordingTransport(() => ok(row));
+    const options = trackSourceQueryOptions(transport, 'w1', 'src_2c9e0a1b', unauthorized);
+    expect(options.queryKey).toEqual(['track-source', 'w1', 'src_2c9e0a1b']);
+    expect(options.queryKey).toEqual(queryKeys.trackSource('w1', 'src_2c9e0a1b'));
+    expect(options.queryKey[0]).not.toBe(queryKeys.trackReportPrefix()[0]);
+    expect(options.refetchOnWindowFocus).toBe(false);
+    await expect(options.queryFn({ signal })).resolves.toMatchObject({ status: 'found', source: { body: 'abc', provenance: 'summary' } });
+    expect(paths).toEqual(['/api/tracks/w1/sources/src_2c9e0a1b']);
+  });
+
+  it('a 404 is a missing source, not an error; every other failure still fails', async () => {
+    const notFound = recordingTransport(() => ({ status: 404, statusText: 'Not Found', body: { error: 'source not found', code: 'not_found' } }));
+    await expect(trackSourceQueryOptions(notFound.transport, 'w1', 'src_0badf00d', unauthorized).queryFn({ signal }))
+      .resolves.toEqual({ status: 'missing' });
+    const failing = recordingTransport(() => ({ status: 500, statusText: 'Internal Server Error', body: {} }));
+    await expect(trackSourceQueryOptions(failing.transport, 'w1', 'src_0badf00d', unauthorized).queryFn({ signal }))
+      .rejects.toBeInstanceOf(ApiError);
+    const malformed = recordingTransport(() => ok({ ...row, body: 7 }));
+    await expect(trackSourceQueryOptions(malformed.transport, 'w1', 'src_2c9e0a1b', unauthorized).queryFn({ signal }))
+      .rejects.toBeInstanceOf(ApiError);
   });
 });

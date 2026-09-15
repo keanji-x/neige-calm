@@ -47,3 +47,22 @@
   verification_owner: e2e
   test_tier: browser
   migration: migrated
+- id: INV-REPORTSOURCE-001
+  kind: invariant
+  family: report-source
+  statement: |
+    窄视口下 neige://source 引用不开来源面板：`app/router` 在 `compactViewport` 为真时不注入 `onOpenSourceLink`
+    （传 undefined，并把已开的面板关掉），文档把这条引用画成「来源」徽标 + 标题的行内元素
+    （`data-nc-report-source-citation`），不是可点的控件。桌面才有右栏抽屉。
+  why: >
+    #1669 设计稿 v4 §2.5：mobile/ 是 Tauri 壳包着响应式 fe/web，v1 在窄屏不开面板，链接显示徽标 + 标题；
+    owner 定手机可缺功能但差异必须被声明。渲染成不可点的行内元素而不是无操作的按钮，是为了不出现「点了没反应」的控件；
+    处理函数在 app/router 按视口扣住，而不是在文档里查视口，因为 features 层不问视口（single-viewport-source）。
+  source: fe/web/src/app/router/public.tsx:3255-3259,3365; fe/web/src/features/report/document/public.tsx:622-642
+  authoritative_test: fe/web/src/features/report/document/public.test.tsx:226-235; fe/web/src/app/router/report-source.test.tsx:129-145
+  owner_slice: features/report/source
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated

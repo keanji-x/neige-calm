@@ -37,11 +37,13 @@ import {
   parseReportFileLink, reportFilePathRelativeToRoot, type ReportFileLinkTarget,
 } from '../../../../../core/domain/report-file.ts';
 import type { SeriesResolution } from '../../../../../core/domain/report-series.ts';
+import { parseReportSourceLink, type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
 import { ReportCandlesBlock } from '../candles/public.tsx';
 import { ReportSeriesBlock } from '../series/public.tsx';
+import { SOURCE_PANEL_COPY } from '../source/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
 import { ReportTaskBlock } from '../task/public.tsx';
 import styles from './document.module.css';
@@ -61,6 +63,13 @@ export type ReportDocumentProps = Readonly<{
   onOpenLink?: (target: ReportLinkTarget) => void;
   /** A file link admitted beneath `fileRoot` was activated. */
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
+  /**
+   * A `neige://source/…` citation was activated (#1669). Absent ⇒ citations
+   * render as an inline badge plus their label, not as a control: that is
+   * the narrow-viewport surface (no panel to open) and every surface that
+   * carries no track (Today, a Markdown file) — see `Inline`'s `link` case.
+   */
+  onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   /** Absolute root used to admit relative or already-absolute workspace links. */
   fileRoot?: string;
   /** Workspace-relative directory containing the Markdown currently rendered. */
@@ -97,7 +106,7 @@ export type ReportDocumentProps = Readonly<{
  * than making the document the single place a native link exists.
  */
 export function ReportDocument({
-  report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, fileRoot, fileBasePath,
+  report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath,
   resolveLiveTable, resolveSeries,
   arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
@@ -128,6 +137,7 @@ export function ReportDocument({
                 blockId={null}
                 onOpenLink={onOpenLink}
                 onOpenFileLink={onOpenFileLink}
+                onOpenSourceLink={onOpenSourceLink}
                 fileRoot={fileRoot}
                 fileBasePath={fileBasePath}
               />
@@ -168,6 +178,7 @@ export function ReportDocument({
                   backlinks={backlinkCounts?.get(block.id) ?? 0}
                   onOpenLink={onOpenLink}
                   onOpenFileLink={onOpenFileLink}
+                  onOpenSourceLink={onOpenSourceLink}
                   fileRoot={fileRoot}
                   fileBasePath={fileBasePath}
                   resolveLiveTable={resolveLiveTable}
@@ -295,12 +306,13 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution }:
  * each renderer having to remember to carry one.
  */
 function BlockSlot({
-  block, backlinks, onOpenLink, onOpenFileLink, fileRoot, fileBasePath, resolveLiveTable, resolveSeries,
+  block, backlinks, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, resolveLiveTable, resolveSeries,
 }: {
   block: ReportBlock;
   backlinks: number;
   onOpenLink?: (target: ReportLinkTarget) => void;
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
+  onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   fileRoot?: string;
   fileBasePath?: string;
   resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
@@ -315,6 +327,7 @@ function BlockSlot({
               blockId={block.id}
               onOpenLink={onOpenLink}
               onOpenFileLink={onOpenFileLink}
+              onOpenSourceLink={onOpenSourceLink}
               fileRoot={fileRoot}
               fileBasePath={fileBasePath}
             />
@@ -376,12 +389,13 @@ function BlockBody({ block, task, renderTaskExecution, resolveLiveTable, resolve
  * not parse.
  */
 export function ProseBlock({
-  markdown, blockId, onOpenLink, onOpenFileLink, fileRoot, fileBasePath,
+  markdown, blockId, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath,
 }: {
   markdown: string;
   blockId: string | null;
   onOpenLink?: (target: ReportLinkTarget) => void;
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
+  onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   fileRoot?: string;
   fileBasePath?: string;
 }) {
@@ -443,6 +457,7 @@ export function ProseBlock({
       headingIds={headingIds}
       onOpenLink={onOpenLink}
       onOpenFileLink={onOpenFileLink}
+      onOpenSourceLink={onOpenSourceLink}
       fileRoot={fileRoot}
       fileBasePath={fileBasePath}
     />
@@ -453,6 +468,7 @@ type BlockContext = Readonly<{
   headingIds: ReadonlyMap<number, string>;
   onOpenLink?: (target: ReportLinkTarget) => void;
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
+  onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   fileRoot?: string;
   fileBasePath?: string;
 }>;
@@ -562,7 +578,7 @@ function Inlines({ nodes, ...context }: { nodes: readonly SafeInline[] } & Block
 }
 
 function Inline({ node, ...context }: { node: SafeInline } & BlockContext): ReactNode {
-  const { onOpenLink, onOpenFileLink, fileRoot, fileBasePath } = context;
+  const { onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath } = context;
   switch (node.type) {
     case 'text':
       return node.value;
@@ -577,16 +593,51 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
     case 'break':
       return <br />;
     case 'link': {
-      // The two typed in-app destinations become buttons: a Track citation,
-      // and a local file proven to sit beneath the current workspace root.
-      // Everything else loses its destination. A report is agent-authored, so
-      // a bare `<a href>` here would let untrusted text steer the browser.
+      // The three typed in-app destinations become buttons: a Track citation,
+      // a source citation (#1669), and a local file proven to sit beneath the
+      // current workspace root. Everything else loses its destination. A
+      // report is agent-authored, so a bare `<a href>` here would let
+      // untrusted text steer the browser.
       const target = parseReportLink(node.destination);
       if (target !== null && onOpenLink !== undefined) {
         return (
           <button type="button" className={styles.link} onClick={() => onOpenLink(target)}>
             <Inlines nodes={node.children} {...context} />
           </button>
+        );
+      }
+      /*
+       * A source citation is a control whenever there is a panel to open, and
+       * that includes one whose id or anchor will not parse: the panel says
+       * "来源缺失" and prints the destination, which is how an author sees the
+       * typo (the kernel's receipt warns about the same links). Degrading it
+       * to prose would hide exactly the citation that needs fixing.
+       *
+       * Without a panel — a narrow viewport (#1669 §2.5, declared as an
+       * intentional omission in `docs/oracle/pages-shared.yaml`), Today, a
+       * Markdown file — the citation is a badge and its label, and *not* a
+       * button: a control that does nothing is a broken control, and the
+       * badge still says what the label is.
+       */
+      const sourceTarget = parseReportSourceLink(node.destination);
+      if (sourceTarget !== null) {
+        if (onOpenSourceLink !== undefined) {
+          return (
+            <button
+              type="button"
+              className={styles.link}
+              data-nc-report-source-link=""
+              onClick={() => onOpenSourceLink(sourceTarget)}
+            >
+              <Inlines nodes={node.children} {...context} />
+            </button>
+          );
+        }
+        return (
+          <span className={styles.sourceCitation} data-nc-report-source-citation="">
+            <span className={styles.sourceBadge}>{SOURCE_PANEL_COPY.citationBadge}</span>
+            <Inlines nodes={node.children} {...context} />
+          </span>
         );
       }
       const fileTarget = parseReportFileLink(node.destination);

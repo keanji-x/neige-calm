@@ -28,6 +28,7 @@ import {
 import {
   staleRevBodySchema, trackReportSeriesOperation, type ResolvedSeries, type SeriesDetail,
 } from '../../../../core/domain/report-series.ts';
+import { trackSourceOperation, type TrackSourceDetail } from '../../../../core/domain/report-source.ts';
 import {
   checkConnectorOperation, type ConnectorCheckResult,
   installConnectorOperation, installLocalPathOperation, patchPluginConfigOperation,
@@ -194,6 +195,15 @@ export const queryKeys = Object.freeze({
    */
   trackReportSeries: (trackId: string, blockId: string, rev: number) =>
     ['track-report-series', trackId, blockId, rev] as const,
+  /**
+   * #1669 — one captured source with its body, read when its citation is
+   * opened. Not under `['track-report', …]` and not named by any event
+   * policy: the row is immutable (body, metadata) with append-only anchors,
+   * so nothing a report edit says would make it stale, and a prefix
+   * invalidation would refetch up to 256 KiB per open citation because a
+   * paragraph changed. Freshness is the query's own (`trackSourceQueryOptions`).
+   */
+  trackSource: (trackId: string, sourceId: string) => ['track-source', trackId, sourceId] as const,
   overlaysByKind: (entityKind: 'track' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
   /* Settings › Plugins. Not reached by any event policy — see
@@ -1777,6 +1787,50 @@ export function seriesRefetchInterval(
   const { data, dataUpdateCount } = query.state;
   if (data === undefined || data.status !== 'pending') return false;
   return dataUpdateCount > SERIES_PENDING_FAST_POLLS ? SERIES_PENDING_SLOW_POLL_MS : SERIES_PENDING_POLL_MS;
+}
+
+/**
+ * The read of a source citation: the row, or the 404 turned into a value.
+ *
+ * `missing` is data and not an error on purpose (#1669 §2.5): a dangling
+ * citation is a state the design admits — the kernel does not refuse the
+ * write, recipe-born tracks carry them by definition — and the panel shows
+ * it as "来源缺失". An error state would retry a 404 three times and paint a
+ * failure for a condition retrying cannot change.
+ */
+export type SourceRead =
+  | Readonly<{ status: 'found'; source: TrackSourceDetail }>
+  | Readonly<{ status: 'missing' }>;
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.failure.kind === 'http' && error.failure.status === 404;
+}
+
+/**
+ * One captured source with its body (#1669).
+ *
+ * Default `staleTime`: the body never changes, but the anchors are
+ * append-only and a citation written a moment ago may name one the cached
+ * row predates, so every open re-reads behind the cached copy rather than
+ * showing "锚点未命中" for a quote that exists. No focus refetch — the window
+ * coming back is not new information about an immutable row.
+ */
+export function trackSourceQueryOptions(
+  transport: ApiTransportPort, trackId: string, sourceId: string, unauthorized: UnauthorizedChannel,
+) {
+  return {
+    queryKey: queryKeys.trackSource(trackId, sourceId),
+    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<SourceRead> => {
+      try {
+        const source = await runOperation(transport, { ...trackSourceOperation(trackId, sourceId), signal }, unauthorized);
+        return { status: 'found', source };
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
+        return { status: 'missing' };
+      }
+    },
+    refetchOnWindowFocus: false,
+  };
 }
 
 /**
