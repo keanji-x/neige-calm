@@ -38,6 +38,25 @@ track 的 VCS diff）。不要把秘密写进来。
   · 不要把对话历史 / 长引用 dump 进来 —— 摘要后写要点。表格用
     ```neige-block table``` 块，不要用 Markdown 管道表。
     表格单元格里的来源只放一个 `neige://source/…` 链接，不混文字。
+  · 价格路径与跨资产相对表现用 ```neige-block chart.series``` 块画图，不要把
+    点位手抄成表格：`source` 固定 `neige://plugin/dev-neige-market/market.series`；
+    `series` 写 venue 限定名（如 `US:GLD`、`HK:02840`、`SH:518880`、`CRYPTO:BTC`，
+    1—8 条，不重复）；单序列 `view: line`，跨资产对比 `view: normalized`；
+    `range` 取 `1M` / `3M` / `6M` / `1Y` / `2Y` / `5Y`（默认 `1Y`），`period` 取
+    `day` / `week` / `month`（默认 `day`，`1M` 不能配 `month`）；报告有明确截止日
+    就写 `as_of: <截止日，YYYY-MM-DD>`（它是窗口截止日，不是最后一根 bar 的日期）
+    把图冻结在论证时点，不写则图是活的、跟随最新完整交易日；`caption` 写口径
+    （ETF / 现货 / 期货、计价货币）与代理限制。宏观变量没有原生序列时用交易所
+    价格代理，并在 caption 注明「代理 ≠ 原指标」；存量、流量、调查、情景、概率、
+    口径差异仍用 table，代理不得冒充原指标。已验证可解析的代理如下（ETF ≠ 现货，
+    差异写进 caption）：
+    贵金属 US:GLD / IAU / SLV，港 HK:02840、A 股 SH:518880 为本币计价，含费率与折溢价；
+    能源与商品 US:BNO / USO / UNG / CPER / DBC 是期货 ETF，含展期成本，不等于现货价；
+    利率 US:TLT（20Y+）/ IEF（7—10Y）/ SHY（1—3Y）价格与收益率反向，US:TIP 是实际利率的反向价格代理；
+    汇率 US:UUP / FXY / FXE 是美元指数、日元、欧元的 ETF，不是即期汇率；
+    股票 US:SPY / QQQ / EEM、HK:02800 / 03033、SH:510300 / SZ:159915 是指数 ETF，港/A 股本币计价；
+    信用与波动 US:HYG / VIXY（VIXY 是 VIX 期货 ETF，不是 VIX 本身）；黄金股 US:GDX、能源股 US:XLE；
+    加密 CRYPTO:BTC / ETH 为现货序列，US:BITO 是比特币期货 ETF，两者差异要说明。
   · 篇幅不设上限：写到论证充分为止，不为凑字数扩写。
   · 用中文写。
 
@@ -54,6 +73,8 @@ track 的 VCS diff）。不要把秘密写进来。
     反方观点 → 你的取舍。这是报告的主体。
   · 关键数据 —— 结论依赖的核心数据与估值假设，用 ```neige-block table``` 块：
     指标、当前读数、口径、数据日期、来源。只放结论真正依赖的，不做数据堆砌。
+    凡有连续市场价格代理的论点，至少评估一张冻结时点的 `chart.series`（图说
+    趋势与相对表现，表说读数、日期与口径）。
   · 风险与证伪 —— 什么情况出现会证明结论错了，具体到可观测的指标和阈值；
     以及结论成立但收益不兑现的路径。
   · 催化剂与跟踪 —— 未来会验证或推翻结论的事件与日期，需要持续跟踪的指标
