@@ -4,7 +4,7 @@ use super::receipts::{
     WriteReceipts, attach_claim, control_unavailable_receipt, merge, stale_receipt,
 };
 use super::replace_plan::ReplacePlan;
-use super::screen_diff::{CursorSnapshot, ScreenDiff, row_hashes};
+use super::screen_diff::{CursorSnapshot, ScreenDiff, Tolerance, row_hashes};
 use super::*;
 
 /// Per-request switches of an input: the #1618 drift opt-in, and the #1666
@@ -214,8 +214,8 @@ impl TerminalInteraction {
         let drift = (input_revision != saved.revision).then(|| {
             let mut drift =
                 json!({"observed_revision":saved.revision,"input_revision":input_revision});
-            if let Some(diff) = &tolerated {
-                merge(&mut drift, diff.tolerance_json());
+            if let Some((tolerance, diff)) = &tolerated {
+                merge(&mut drift, diff.tolerance_json(*tolerance));
             }
             drift
         });
@@ -358,23 +358,27 @@ impl TerminalInteraction {
         // error whatever the revision did, so only the exact-revision
         // fence is relaxed by the stale result.
         let encoded = encode(action, &now)?;
-        let tolerated = if saved.revision == current || options.allow_output_since_observation {
+        let tolerated = if saved.revision == current {
             None
         } else {
             // Every other fence passed and only the exact revision differs.
-            // The row comparison (#1666 S4) says whether only rows strictly
-            // below an unmoved cursor changed; it admits the write only on
-            // opt-in and is reported on the stale result either way.
+            // The row comparison (#1666 S4) is reported whatever admits the
+            // write: the wide opt-in admits regardless of it (#1684 lists
+            // what changed), the narrow one only when rows strictly below
+            // an unmoved cursor changed; a stale result carries it too.
             let diff = ScreenDiff::compare(
                 saved.cursor,
                 &saved.row_hashes,
                 CursorSnapshot::from(&frame.cursor),
                 &row_hashes(&frame),
             );
-            if !(options.allow_output_below_cursor && diff.only_below_cursor()) {
+            if options.allow_output_since_observation {
+                Some((Tolerance::OutputSinceObservation, diff))
+            } else if options.allow_output_below_cursor && diff.only_below_cursor() {
+                Some((Tolerance::BelowCursor, diff))
+            } else {
                 return Ok(Fence::Stale { current, diff });
             }
-            Some(diff)
         };
         // #1677 — a replace looks the draft up on the live frame only once
         // the revision (or a tolerance) admitted the write, so a stale
@@ -445,8 +449,8 @@ struct Ready {
     input_revision: u64,
     /// Signal seq read before the write.
     signal_seq: u64,
-    /// The comparison that admitted a moved revision (`allow_output_below_cursor`).
-    tolerated: Option<ScreenDiff>,
+    /// A moved revision: the opt-in that admitted it and the row comparison.
+    tolerated: Option<(Tolerance, ScreenDiff)>,
     /// The plan a `replace` (#1677) derived from the live cursor row.
     replace: Option<ReplacePlan>,
 }
