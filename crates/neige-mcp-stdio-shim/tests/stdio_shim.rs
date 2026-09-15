@@ -1,15 +1,18 @@
 //! PR7a.1 (#136 followup) — integration tests for `neige-mcp-stdio-shim`.
 //!
-//! The shim is a tiny byte-pump: stdin -> UDS write half, UDS read half ->
-//! stdout. These tests boot a stub UDS server, spawn the shim binary
-//! with `NEIGE_MCP_SOCKET` pointed at the stub, then drive bytes in
-//! each direction and assert they land on the other side.
+//! The shim is a line pump: stdin -> UDS, UDS -> stdout, reconnecting
+//! when the kernel goes away (#1699, `reconnect.rs`). These tests boot a
+//! stub UDS server, spawn the shim binary with `NEIGE_MCP_SOCKET` pointed
+//! at the stub, then drive bytes in each direction and assert they land
+//! on the other side.
 //!
 //! Test budget: 5 seconds per case. The shim is line-pumped JSON-RPC in
 //! production but the byte copy is content-agnostic — we exercise both
 //! directions with simple line-delimited payloads.
 
 #![cfg(unix)]
+
+mod common;
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -71,7 +74,7 @@ async fn stdin_to_socket_forwards_bytes() {
     // error, and forwards the line unchanged. We assert exactly that:
     // a non-initialize / non-JSON first frame is byte-pumped verbatim
     // (the inject path is exercised by the unit tests in
-    // `src/main.rs` and the `initialize_first_frame_gets_token_injected`
+    // `src/frames.rs` and the `initialize_first_frame_gets_token_injected`
     // test below).
     let mut child_stdin = child.stdin.take().expect("stdin piped");
     child_stdin
@@ -405,5 +408,63 @@ async fn daemon_token_env_takes_precedence_over_legacy_token() {
 
     drop(child_stdin);
     drop(server_wr);
+    let _ = timeout(TEST_BUDGET, child.wait()).await;
+}
+
+/// #1699 — the kernel restarts underneath a live shim (preserving
+/// upgrade: codex and its threads survive, only calm-server is
+/// replaced). The shim must reconnect on the same path, replay the
+/// cached token-injected `initialize` (same id), swallow that second
+/// handshake response, and then forward the request codex sent.
+#[tokio::test]
+async fn kernel_restart_reconnects_and_replays_initialize() {
+    let (_tmp, socket_path) = common::socket();
+    let listener = common::listen(&socket_path);
+    let mut child = common::spawn_shim(&socket_path);
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
+
+    // First life of the kernel: normal handshake.
+    let mut conn = common::accept(&listener, "first connection").await;
+    common::write_stdin(&mut stdin, &common::initialize_line(1)).await;
+    let init = conn.read_frame("initialize on first connection").await;
+    common::assert_replayed_initialize(&init, 1);
+    conn.reply_ok(&init["id"]).await;
+    let resp = common::read_stdout(&mut stdout, "initialize response").await;
+    assert_eq!(resp["id"], serde_json::json!(1));
+
+    // Kernel goes away: accepted stream and listener both dropped, socket
+    // file removed, then the new kernel binds the same path.
+    drop(conn);
+    drop(listener);
+    let listener = common::rebind(&socket_path);
+
+    // codex sends the next tool call through the (still alive) shim.
+    common::write_stdin(&mut stdin, &common::tools_call_line(2)).await;
+
+    // The new kernel must first see the replayed initialize ...
+    let mut conn = common::accept(&listener, "reconnect after kernel restart").await;
+    let replayed = conn.read_frame("replayed initialize").await;
+    common::assert_replayed_initialize(&replayed, 1);
+    conn.reply_ok(&replayed["id"]).await;
+    // ... and only then the tools/call.
+    let call = conn.read_frame("tools/call after replay").await;
+    assert_eq!(call["method"], "tools/call", "got {call}");
+    assert_eq!(call["id"], serde_json::json!(2));
+    conn.reply_ok(&call["id"]).await;
+
+    // codex sees exactly the tools/call response; the replayed handshake
+    // response was swallowed by the shim.
+    let resp = common::read_stdout(&mut stdout, "tools/call response").await;
+    assert_eq!(
+        resp["id"],
+        serde_json::json!(2),
+        "first stdout frame after reconnect must be the tools/call response, got {resp}"
+    );
+    common::assert_alive(&mut child);
+
+    // Cleanup: close both ends so the shim winds down.
+    drop(stdin);
+    drop(conn);
     let _ = timeout(TEST_BUDGET, child.wait()).await;
 }
