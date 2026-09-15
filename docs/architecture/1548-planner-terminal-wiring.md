@@ -92,6 +92,8 @@ generic no-submit guarantee. Enter, Escape,
 arrows and other supported keys are explicit actions. Application mouse input
 requires reported SGR mouse mode and in-range cell coordinates. Local history
 scrolling uses `observe.scroll_offset`; application paging uses explicit keys.
+History rows are padded to the viewport width: rmux stores an attributed line
+to its written extent and pads only plain lines (#1696).
 
 ## Optional action observation and repeated navigation
 
