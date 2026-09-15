@@ -18,6 +18,7 @@ import { z } from 'zod';
 
 import type { ApiOperation } from '../api/types.js';
 import type { SourceProvenance, TrackSourceDetail } from '../api/generated/wire.js';
+import { parse, sanitizeAstPolicy, type SafeInline } from '../markdown/public.js';
 
 export const SOURCE_LINK_PREFIX = 'neige://source/';
 
@@ -68,6 +69,63 @@ export function parseReportSourceLink(destination: string): ReportSourceLinkTarg
   if (fragment === null) return { destination, sourceId, quoteId: null };
   if (!QUOTE_ID_PATTERN.test(fragment)) return unresolved;
   return { destination, sourceId, quoteId: fragment };
+}
+
+/* ── A table cell that is one citation ───────────────────────────────── */
+
+export type SourceCitationCell = Readonly<{
+  /** The link's label, as plain text (see `parseSourceCitationCell`). */
+  label: string;
+  target: ReportSourceLinkTarget;
+}>;
+
+/**
+ * Read a `table` block's cell as one source citation and nothing else
+ * (#1687): the cell text, given to the same parser the document's prose goes
+ * through, is exactly one paragraph holding exactly one link, and that link's
+ * destination is a `neige://source/…` citation. `null` for every other cell
+ * — a link with prose around it, two links, a link under another scheme, a
+ * parse failure — and the caller shows the text as written.
+ *
+ * The parser, not a pattern, decides what "one link" is, so the cell agrees
+ * with the prose beside it: `[[AP](…)` is a `[` and a link there and is text
+ * here; `[AP [Reuters]](…)` is one link there and one citation here. The
+ * parser's own whitespace rules apply unchanged — a trailing space is
+ * stripped, so `[AP](…) ` is a citation; four leading spaces make an indented
+ * code block, so that cell stays text, exactly as the prose would show it
+ * raw. Raw HTML is dropped before counting, as the prose drops it.
+ *
+ * The label is the plain-text projection of the link's children (`**AP**`
+ * reads `AP`; an image reads its alt). The table cannot reach the document's
+ * inline renderer without a cycle, and a citation label in a cell is a name,
+ * not prose.
+ */
+export function parseSourceCitationCell(text: string): SourceCitationCell | null {
+  const parsed = parse(text);
+  if (parsed.status !== 'ready') return null;
+  const blocks = sanitizeAstPolicy(parsed.value, { rawHtml: 'drop' }).children;
+  const paragraph = blocks.length === 1 ? blocks[0] : undefined;
+  if (paragraph === undefined || paragraph.type !== 'paragraph' || paragraph.children.length !== 1) return null;
+  const link = paragraph.children[0];
+  if (link === undefined || link.type !== 'link') return null;
+  const target = parseReportSourceLink(link.destination);
+  return target === null ? null : { label: inlineLabel(link.children), target };
+}
+
+function inlineLabel(nodes: readonly SafeInline[]): string {
+  return nodes.map((node) => {
+    switch (node.type) {
+      case 'text':
+      case 'inlineCode':
+        return node.value;
+      case 'image':
+        return node.alt;
+      case 'break':
+        return ' ';
+      default:
+        return inlineLabel(node.children);
+    }
+  }).join('');
 }
 
 /* ── The row ─────────────────────────────────────────────────────────── */

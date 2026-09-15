@@ -43,7 +43,7 @@ import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
 import { ReportCandlesBlock } from '../candles/public.tsx';
 import { ReportSeriesBlock } from '../series/public.tsx';
-import { SOURCE_PANEL_COPY } from '../source/public.tsx';
+import { ReportSourceCitation } from '../source/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
 import { ReportTaskBlock } from '../task/public.tsx';
 import styles from './document.module.css';
@@ -68,6 +68,8 @@ export type ReportDocumentProps = Readonly<{
    * render as an inline badge plus their label, not as a control: that is
    * the narrow-viewport surface (no panel to open) and every surface that
    * carries no track (Today, a Markdown file) — see `Inline`'s `link` case.
+   * A `table` block's cell that is exactly one such link is the same
+   * citation, with the same handler (#1687).
    */
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   /** Absolute root used to admit relative or already-absolute workspace links. */
@@ -331,7 +333,8 @@ function BlockSlot({
               fileRoot={fileRoot}
               fileBasePath={fileBasePath}
             />
-          : <BlockBody block={block} resolveLiveTable={resolveLiveTable} resolveSeries={resolveSeries} />}
+          : <BlockBody block={block} onOpenSourceLink={onOpenSourceLink}
+              resolveLiveTable={resolveLiveTable} resolveSeries={resolveSeries} />}
       </div>
       {backlinks > 0 && (
         // In the trailing gutter, aligned to the block's first line. Inside the
@@ -347,13 +350,16 @@ function BlockSlot({
 
 /** One bad block may not cost the page: an unknown kind, or a known kind whose
  *  payload did not parse, degrades to one line and the document goes on. */
-function BlockBody({ block, task, renderTaskExecution, resolveLiveTable, resolveSeries }: {
+function BlockBody({ block, task, renderTaskExecution, onOpenSourceLink, resolveLiveTable, resolveSeries }: {
   block: ReportBlock; task?: ReportTaskRow; renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
+  /** A table cell that is one source citation is the same control the prose paints (#1687). */
+  onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   resolveLiveTable?: ReportDocumentProps['resolveLiveTable'];
   resolveSeries?: ReportDocumentProps['resolveSeries'];
 }): ReactNode {
   switch (block.kind) {
-    case 'table': return <ReportTableBlock payload={block.payload} resolveLive={resolveLiveTable} />;
+    case 'table':
+      return <ReportTableBlock payload={block.payload} resolveLive={resolveLiveTable} onOpenSourceLink={onOpenSourceLink} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
     case 'chart.series':
       return <ReportSeriesBlock payload={block.payload} blockId={block.id} rev={block.rev} resolve={resolveSeries} />;
@@ -611,33 +617,17 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
        * that includes one whose id or anchor will not parse: the panel says
        * "来源缺失" and prints the destination, which is how an author sees the
        * typo (the kernel's receipt warns about the same links). Degrading it
-       * to prose would hide exactly the citation that needs fixing.
-       *
-       * Without a panel — a narrow viewport (#1669 §2.5, declared as an
-       * intentional omission in `docs/oracle/pages-shared.yaml`), Today, a
-       * Markdown file — the citation is a badge and its label, and *not* a
-       * button: a control that does nothing is a broken control, and the
-       * badge still says what the label is.
+       * to prose would hide exactly the citation that needs fixing. Without a
+       * panel it is a badge and its label — `ReportSourceCitation` owns both
+       * forms, and a table cell that is one citation paints the same element
+       * (#1687), so the choice is made in exactly one place.
        */
       const sourceTarget = parseReportSourceLink(node.destination);
       if (sourceTarget !== null) {
-        if (onOpenSourceLink !== undefined) {
-          return (
-            <button
-              type="button"
-              className={styles.link}
-              data-nc-report-source-link=""
-              onClick={() => onOpenSourceLink(sourceTarget)}
-            >
-              <Inlines nodes={node.children} {...context} />
-            </button>
-          );
-        }
         return (
-          <span className={styles.sourceCitation} data-nc-report-source-citation="">
-            <span className={styles.sourceBadge}>{SOURCE_PANEL_COPY.citationBadge}</span>
+          <ReportSourceCitation target={sourceTarget} onOpen={onOpenSourceLink}>
             <Inlines nodes={node.children} {...context} />
-          </span>
+          </ReportSourceCitation>
         );
       }
       const fileTarget = parseReportFileLink(node.destination);

@@ -623,31 +623,6 @@
     font-style: italic;
   }
 
-  /*
-   * A source citation with no panel to open (#1669 §2.5): the narrow
-   * viewport, and the surfaces that carry no track. Inline, in the prose
-   * colour — it is not a control, so it does not take the link colour or the
-   * underline — with a small chip in front that says what the label is. The
-   * chip is the same surface the panel's provenance badge uses; it carries
-   * no provenance because the document has not read the row.
-   */
-  .sourceCitation {
-    display: inline;
-  }
-
-  .sourceBadge {
-    display: inline-block;
-    margin-inline-end: var(--space-2);
-    padding: 0 var(--space-2);
-    border-radius: var(--radius-pill);
-    background: var(--surface-chip);
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
-    color: var(--text-2);
-    vertical-align: baseline;
-  }
-
   /* Mobile owns one reading column. The desktop outline/measure/sidenote grid
      must not keep its fixed document measure and widen the viewport. */
   @media (width < 60rem) {

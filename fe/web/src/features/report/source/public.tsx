@@ -19,7 +19,7 @@
 // series block receives its resolver: `features/**` may not import `app/**`,
 // and the query — its key, its 404-is-a-state rule — is the app's.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import type {
   ReportSourceLinkTarget, SourceResolution, TrackSourceDetail,
@@ -33,6 +33,48 @@ import styles from './source.module.css';
    the app's drawer chrome read their words through here, so `copy.ts` stays
    internal to this directory. */
 export { SOURCE_PANEL_COPY, SOURCE_PROVENANCE_COPY } from './copy.ts';
+
+/**
+ * The citation itself, as the document's prose and the table's cells both
+ * paint it (#1669 §2.5, #1687). One component, because the two surfaces
+ * used to disagree: the table showed the raw `[label](neige://source/…)`
+ * while the prose beside it was clickable.
+ *
+ * With a handler it is a control — a `<button>`, never an `<a href>`
+ * (INV-A11Y-061) — and that includes a citation whose id or anchor will not
+ * parse: the panel is where "来源缺失" is said, so a malformed citation must
+ * still be reachable. Without one — a narrow viewport (declared as an
+ * intentional omission in `docs/oracle/pages-shared.yaml`), Today, a Markdown
+ * file — it is the 「来源」 badge and its label, and *not* a button: a control
+ * that does nothing is a broken control, and the badge still says what the
+ * label is. The badge carries no provenance because nothing on this path has
+ * read the row.
+ */
+export function ReportSourceCitation({ target, onOpen, children }: {
+  target: ReportSourceLinkTarget;
+  onOpen?: (target: ReportSourceLinkTarget) => void;
+  /** The link's label, already rendered. */
+  children: ReactNode;
+}) {
+  if (onOpen !== undefined) {
+    return (
+      <button
+        type="button"
+        className={styles.citationLink}
+        data-nc-report-source-link=""
+        onClick={() => onOpen(target)}
+      >
+        {children}
+      </button>
+    );
+  }
+  return (
+    <span className={styles.citation} data-nc-report-source-citation="">
+      <span className={styles.citationBadge}>{SOURCE_PANEL_COPY.citationBadge}</span>
+      {children}
+    </span>
+  );
+}
 
 export type ReportSourcePanelProps = Readonly<{
   /** The citation that opened the panel. */
