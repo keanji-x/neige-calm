@@ -469,11 +469,12 @@ screen, which `changed_since_previous_observation` reports; the wait then
 returns on a frame boundary, once the projection has been quiet for
 `min(settle_ms, 30 ms)` or at the latest `settle_ms` past the budget, and
 `settled` is true only when it was quiet for the full `settle_ms`, so the
-capture is not torn mid-repaint; a signal landing in that grace is not looked
-for). `wait.outcome` adds `signal` and `wait.signal` carries the matching
-signal (null otherwise). The loop subscribes to the seq channel, the
-projection revision channel and the protocol channel, marks the versions
-seen, inspects the ring before every select and again on timeout, and
+capture that follows lands on a frame boundary whenever one occurs within
+the grace (a mitigation, not an atomic frame guarantee); a signal landing in
+that grace is not looked for). `wait.outcome` adds `signal` and `wait.signal`
+carries the matching signal (null otherwise). The loop subscribes to the seq
+channel, the projection revision channel and the protocol channel, marks the
+versions seen, inspects the ring before every select and again on timeout, and
 re-reads `stopped` on timeout (an exit coinciding with the deadline is
 `exited`, not `no_signal`). Baselines: observe → the previous observation's `last_seq`
 on this connection, else the seq at call start; input readback → the seq read

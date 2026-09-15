@@ -11,7 +11,9 @@ use serde_json::{Value, json};
 /// `release`); an input receipt's `outcome` takes its place. Every field is
 /// nullable: `screen` is the readback's `changed_since_previous_observation`
 /// in words (`changed`/`unchanged` — the screen fact, #1692: a signal wait's
-/// `no_signal` says nothing about the screen), the wait fields are the
+/// `no_signal` says nothing about the screen; null on a connection's first
+/// observation, without a readback, or when the readback carries no such
+/// fact), the wait fields are the
 /// readback's `wait` block (`wait` its outcome; mode-dependent ones are null
 /// outside their mode), `role`/`control_id`/`exited` are the readback
 /// state's (`control_id` is the readback's, explicit null included, never
@@ -29,9 +31,17 @@ pub fn receipt_summary(action: &str, receipt: &Value) -> Value {
         _ => &Value::Null,
     };
     let wait = &state["wait"];
-    let screen = match state["changed_since_previous_observation"] {
-        Value::Bool(true) => json!("changed"),
-        Value::Bool(false) => json!("unchanged"),
+    // #1692: `changed_since_previous_observation` is computed as
+    // `previous.is_some_and(..)`, so a connection's first observation says
+    // `false` although nothing was compared. A fact about nothing is not a
+    // fact: the screen fact exists only against a previous observation.
+    let screen = match (
+        &state["previous_observation_revision"],
+        &state["changed_since_previous_observation"],
+    ) {
+        (Value::Null, _) => Value::Null,
+        (_, Value::Bool(true)) => json!("changed"),
+        (_, Value::Bool(false)) => json!("unchanged"),
         _ => Value::Null,
     };
     json!({"action":action,"readback":readback,
@@ -97,10 +107,13 @@ mod tests {
     use super::*;
 
     /// A readback state; `changed` is `changed_since_previous_observation`
-    /// (a bool on every real readback; `Value::Null` leaves it out).
+    /// (a bool on every real readback; `Value::Null` leaves it out). The
+    /// connection has observed before (`previous_observation_revision` is
+    /// a string, as on every readback after the first).
     fn state(wait: Value, changed: Value, role: &str, control_id: Value) -> Value {
         json!({"observation_id":"o-2","observation_revision":"9","role":role,"control_id":control_id,
-            "exited":false,"text":["$ "],"wait":wait,"changed_since_previous_observation":changed})
+            "exited":false,"text":["$ "],"wait":wait,"changed_since_previous_observation":changed,
+            "previous_observation_revision":"8"})
     }
     fn available(state: Value) -> Value {
         json!({"status":"available","state":state})
@@ -231,6 +244,37 @@ mod tests {
         let summary = receipt_summary("input", &bare);
         assert_eq!(summary["screen"], Value::Null);
         assert_eq!(summary["wait"], "changed");
+    }
+
+    /// A connection's first observation (#1692): the readback reports
+    /// `previous_observation_revision: null` and, computed against nothing,
+    /// `changed_since_previous_observation: false`; the digest says null,
+    /// never `unchanged` — the wait outcome stays its own fact.
+    #[test]
+    fn first_observation_on_a_connection_has_no_screen_fact() {
+        let elapsed = json!({"mode":"elapsed","outcome":"elapsed","waited_ms":0,"settled":false});
+        let mut first = state(elapsed, json!(false), "owner", json!("c-1"));
+        first["previous_observation_revision"] = Value::Null;
+        let claim = json!({"terminal_id":"t1","connection_id":"n1","control_id":"c-1",
+            "observation":available(first)});
+        let summary = receipt_summary("claim", &claim);
+        assert_eq!(
+            summary,
+            all_null_but(
+                json!({"action":"claim","readback":"available","screen":null,"wait":"elapsed",
+                "settled":false,"role":"owner","control_id":"c-1","exited":false})
+            ),
+            "a fact about nothing is not a fact"
+        );
+        assert_eq!(
+            summary_line("t1", &summary),
+            "terminal t1 claim; screen null; wait elapsed; role owner; \
+             details in structuredContent"
+        );
+        // The same readback after a previous observation keeps `unchanged`.
+        let mut later = claim.clone();
+        later["observation"]["state"]["previous_observation_revision"] = json!("9");
+        assert_eq!(receipt_summary("claim", &later)["screen"], "unchanged");
     }
 
     /// Claim and release receipts name the control action; without a

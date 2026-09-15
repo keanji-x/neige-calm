@@ -374,8 +374,10 @@ flat object derived in the MCP layer's `receipt_result`
 (`terminal_interaction/receipt_summary.rs`) once the readback and release
 facts are final — no new facts, no fence reads it: `{"action":
 written|refused|unknown|stale_observation|control_unavailable|claim|release,
-"readback": available|unavailable|none, "screen": changed|unchanged
-(`changed_since_previous_observation` in words), "wait": wait.outcome,
+"readback": available|unavailable|none, "screen": changed|unchanged|null
+(`changed_since_previous_observation` in words; null on a connection's first
+observation, where `previous_observation_revision` is null and nothing was
+compared — #1692), "wait": wait.outcome,
 "settled": wait.settled, "signal": wait.signal.event, "repaint": wait.repaint.outcome,
 "matched": wait.text.pattern, "role": state.role, "control_id":
 state.control_id, "exited": state.exited, "claim": claim.status, "release":
@@ -396,10 +398,11 @@ readback whose budget ran out on a screen that had moved (revision 509 →
 was reused for "no signal within the budget", a fact about the ring, and the
 Planner read it as "Claude did not move". Now the screen fact and the wait
 outcome are two fields (`screen` from `changed_since_previous_observation`,
-`wait` the outcome, `no_signal` for that case), and the budget-end capture is
-taken on a frame boundary: `wait_for=signal` without a signal returns once
-the projection has been quiet for `min(settle_ms, 30 ms)` (one Ink frame is
-a burst of PTY chunks a few ms apart; 30 ms separates frames, also under a
+`wait` the outcome, `no_signal` for that case), and the budget-end capture
+lands on a frame boundary whenever one occurs within the grace (a mitigation,
+not an atomic frame guarantee): `wait_for=signal` without a signal returns
+once the projection has been quiet for `min(settle_ms, 30 ms)` (one Ink frame
+is a burst of PTY chunks a few ms apart; 30 ms separates frames, also under a
 ~100 ms spinner) or at the latest `settle_ms` past the budget, `settled`
 only when quiet for the full `settle_ms` — an idle screen returns at the
 deadline settled, a spinner within a few tens of ms unsettled, a streaming

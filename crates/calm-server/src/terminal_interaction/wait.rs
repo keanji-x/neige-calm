@@ -844,7 +844,7 @@ mod tests {
         // A matching signal that becomes visible to the lookup without any
         // channel wake (only the deadline timer wakes the loop) is still
         // reported: the timeout branch re-reads the ring instead of
-        // returning unchanged.
+        // returning no signal.
         let (signals_tx, signals_rx) = watch::channel(0u64);
         let (revisions_tx, revisions_rx) = watch::channel(0u64);
         let (events_tx, events_rx) = watch::channel(0u64);
@@ -894,7 +894,7 @@ mod tests {
     }
 
     /// An exit that coincides with the deadline is reported as exited: the
-    /// timeout branch re-reads `stopped` instead of returning unchanged.
+    /// timeout branch re-reads `stopped` instead of returning no signal.
     #[tokio::test(start_paused = true)]
     async fn signal_loop_timeout_rechecks_the_stopped_state() {
         use crate::terminal_renderer::SignalRing;
@@ -907,7 +907,7 @@ mod tests {
         tokio::time::advance(Duration::from_millis(300)).await;
         let (verdict, waited) = task.await.unwrap();
         assert!(verdict.signal.is_none());
-        assert!(verdict.exited, "exit at the deadline reported as unchanged");
+        assert!(verdict.exited, "exit at the deadline reported as no_signal");
         assert_eq!(waited, Duration::from_millis(300));
     }
 
@@ -1172,6 +1172,38 @@ mod tests {
                 waited,
                 Duration::from_millis(300),
                 "quiet for {quiet_ms} ms"
+            );
+        }
+    }
+
+    /// #1692 `settle_ms: 0`: the frame gap and the grace are both zero, so
+    /// the budget end returns at the deadline itself and is `settled`
+    /// (quiet for 0 ms holds trivially) — on an idle screen and under the
+    /// streaming output that keeps the default plan in its grace past the
+    /// deadline.
+    #[tokio::test(start_paused = true)]
+    async fn no_signal_with_settle_zero_returns_at_the_deadline_settled() {
+        let plan = RepaintPlan {
+            repaint: Duration::from_millis(1_500),
+            settle: Duration::ZERO,
+        };
+        for streaming in [false, true] {
+            let (fixture, task) = start_signal_repaint(stop_ring(), 0, 300, plan);
+            for _ in 0..30 {
+                tokio::task::yield_now().await;
+                if streaming {
+                    bump(&fixture.revisions);
+                    tokio::task::yield_now().await;
+                }
+                tokio::time::advance(Duration::from_millis(10)).await;
+            }
+            let (verdict, waited) = task.await.unwrap();
+            assert!(verdict.signal.is_none() && !verdict.exited);
+            assert!(verdict.settled, "settle 0 is quiet (streaming {streaming})");
+            assert_eq!(
+                waited,
+                Duration::from_millis(300),
+                "no grace with settle 0 (streaming {streaming})"
             );
         }
     }

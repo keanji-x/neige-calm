@@ -1691,7 +1691,7 @@
   },
   {
     "name": "calm.terminal.observe",
-    "description_sha256": "35a33bd3f20a0cf4c150fc68f864ae778b534d524480b4354092480a8ad4f831",
+    "description_sha256": "257a894301b7b73a71113e978018ede810408e5acf687930420fdbb8b19296d4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
