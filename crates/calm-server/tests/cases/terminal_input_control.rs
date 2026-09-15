@@ -794,7 +794,8 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     let opened = h
         .ok(
             "calm.terminal.open",
-            json!({"program":"sleep 1; exit 3","request_id":"exit-release","claim":true}),
+            // The claim must land before the exit; 3 s is margin for a loaded CI shard (the test waits for the exit anyway).
+            json!({"program":"sleep 3; exit 3","request_id":"exit-release","claim":true}),
         )
         .await;
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
