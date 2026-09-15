@@ -450,7 +450,7 @@ class CollectorTests(unittest.TestCase):
             # Requested but not needed: the revision had not moved.
             input_call(5, {"action": {"type": "text", "text": "x"}, "allow_output_below_cursor": True},
                        {"output_since_observation": False}),
-            # Admitted by the wider flag: its own tolerance in the drift (#1683),
+            # Admitted by the wider flag: its own tolerance in the drift (#1684),
             # which is not a below-cursor admission.
             input_call(6, {"action": {"type": "text", "text": "x"}, "allow_output_below_cursor": True,
                            "allow_output_since_observation": True},

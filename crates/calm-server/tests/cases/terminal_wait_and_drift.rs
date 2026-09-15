@@ -939,7 +939,7 @@ async fn drift_tolerant_input_refuses_mode_change_and_history_views() {
     h.stop(&terminal).await;
 }
 
-/// #1683: a write the wide flag admitted after the revision moved lists what
+/// #1684: a write the wide flag admitted after the revision moved lists what
 /// changed relative to the cursor, exactly as a stale result would have,
 /// plus the changed row indices; the flag still admits regardless of the
 /// comparison. Rows are painted through the render plane as a program

@@ -1,6 +1,6 @@
 //! Row-hash and cursor comparison behind `allow_output_below_cursor` (#1666)
 //! and the changed rows an `allow_output_since_observation` receipt lists
-//! (#1683): an opt-in text-and-presentation drift heuristic, not target
+//! (#1684): an opt-in text-and-presentation drift heuristic, not target
 //! equality. Pure functions over captured frames; no lock, no client.
 use calm_terminal_view::{Cursor, Frame};
 use serde_json::{Value, json};
@@ -57,7 +57,7 @@ pub enum Tolerance {
     /// cursor changed ([`ScreenDiff::only_below_cursor`]).
     BelowCursor,
     /// `allow_output_since_observation`: the same-surface fence admitted
-    /// whatever changed; the receipt reports the comparison (#1683).
+    /// whatever changed; the receipt reports the comparison (#1684).
     OutputSinceObservation,
 }
 
@@ -138,7 +138,7 @@ impl ScreenDiff {
     /// The fields the admitting opt-in adds to `observation_drift`, each
     /// listing at most [`ROWS_LISTED_MAX`] changed row indices. The
     /// below-cursor shape lists `rows_changed_below_cursor` (the only class
-    /// that can be non-empty there); the same-surface shape (#1683) counts
+    /// that can be non-empty there); the same-surface shape (#1684) counts
     /// both classes and the cursor facts of the stale result and lists
     /// `rows_changed` across them, at-or-above first.
     pub fn tolerance_json(&self, tolerance: Tolerance) -> Value {
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(stale.to_json(1, 2)["rows_changed_below_cursor"], 36);
     }
 
-    /// #1683: the same-surface shape reports what the stale result would
+    /// #1684: the same-surface shape reports what the stale result would
     /// have (cursor facts, both classes counted) plus the first sixteen
     /// changed indices across both classes, at-or-above first; `truncated`
     /// is judged on the total, not on one class.

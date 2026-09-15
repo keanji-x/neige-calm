@@ -215,7 +215,6 @@ impl TerminalInteraction {
             let mut drift =
                 json!({"observed_revision":saved.revision,"input_revision":input_revision});
             if let Some((tolerance, diff)) = &tolerated {
-                // MUT-1683-1
                 merge(&mut drift, diff.tolerance_json(*tolerance));
             }
             drift
@@ -364,7 +363,7 @@ impl TerminalInteraction {
         } else {
             // Every other fence passed and only the exact revision differs.
             // The row comparison (#1666 S4) is reported whatever admits the
-            // write: the wide opt-in admits regardless of it (#1683 lists
+            // write: the wide opt-in admits regardless of it (#1684 lists
             // what changed), the narrow one only when rows strictly below
             // an unmoved cursor changed; a stale result carries it too.
             let diff = ScreenDiff::compare(

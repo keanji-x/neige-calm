@@ -294,7 +294,7 @@ mod tests {
             json!({"observed_revision":3,"input_revision":5,"tolerance":"below_cursor",
                 "rows_changed_below_cursor":[2],"rows_changed_total":1,"truncated":false})
         );
-        // #1683: the wide opt-in merges its own shape onto the same revisions.
+        // #1684: the wide opt-in merges its own shape onto the same revisions.
         let mut wide = json!({"observed_revision":3,"input_revision":5});
         merge(
             &mut wide,

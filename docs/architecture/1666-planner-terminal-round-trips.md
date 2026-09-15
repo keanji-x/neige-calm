@@ -201,7 +201,7 @@ opts in per request for input fields whose hint/status line refreshes (Claude
 Code's draft box), never for menus or clicks. The check runs at admission like
 the other fences (documented residual window unchanged).
 
-#1683 (Planner ask, round 17): a write that `allow_output_since_observation`
+#1684 (Planner ask, round 17): a write that `allow_output_since_observation`
 admitted after the revision moved runs the same comparison on the frame the
 fences captured and reports it, so the Planner sees what its wide opt-in let
 through without observing again. `observation_drift` then carries
