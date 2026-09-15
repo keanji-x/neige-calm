@@ -23,6 +23,8 @@ const PLUGIN_ID: &str = "dev.echo";
 const TOOL_NAME: &str = "do.thing";
 const REGISTRY_NAME: &str = "plugin.dev.echo_do.thing";
 const SANITIZED_NAME: &str = "plugin_dev_echo_do_thing";
+/// #1686 — the name the model's tool list actually shows for [`REGISTRY_NAME`].
+const QUALIFIED_NAME: &str = "mcp__calm__plugin_dev_echo_do_thing";
 const COLLIDING_PLUGIN_ID: &str = "dev";
 const COLLIDING_TOOL_NAME: &str = "echo.do.thing";
 
@@ -205,6 +207,75 @@ async fn capture_resolves_the_sanitized_spelling_and_defaults_to_the_latest_call
     assert_invalid_params(&err, "no recorded result for this call in this track");
 }
 
+/// #1686 — the Codex-qualified spelling resolves; a matched tool whose
+/// entry for these args is missing still gets the "no recorded result"
+/// wording, not the unknown-name one.
+#[tokio::test]
+async fn capture_resolves_the_codex_qualified_spelling() {
+    let boot = boot().await;
+    record(
+        &boot,
+        PLUGIN_ID,
+        TOOL_NAME,
+        &json!({ "id": 1 }),
+        &ok_result(&["one"]),
+    );
+    let receipt = capture(
+        &boot,
+        json!({
+            "call": { "tool": QUALIFIED_NAME, "args": { "id": 1 } },
+            "provenance": "summary",
+            "title": "Qualified",
+        }),
+    )
+    .await
+    .expect("capture");
+    assert_eq!(receipt["matched_call"]["tool"], REGISTRY_NAME);
+    assert_eq!(receipt["body_sha256"], sha256_hex(b"one"));
+    let err = capture(
+        &boot,
+        json!({
+            "call": { "tool": QUALIFIED_NAME, "args": { "id": 2 } },
+            "provenance": "summary",
+            "title": "Missing args",
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_invalid_params(&err, "no recorded result for this call in this track");
+    assert!(!err.message.contains("unknown tool name"), "{err}");
+}
+
+/// #1686 — a name matching none of the recorded tools is refused as
+/// unknown, listing the tools that do have a record. A `mcp__` prefix
+/// without a delimited, non-empty server segment is not stripped.
+#[tokio::test]
+async fn capture_refuses_an_unknown_tool_name_listing_the_recorded_tools() {
+    let boot = boot().await;
+    record(&boot, PLUGIN_ID, TOOL_NAME, &json!({}), &ok_result(&["a"]));
+    for probe in [
+        "mcp__plugin_dev_echo_do_thing",
+        "mcp____plugin_dev_echo_do_thing",
+        "plugin.dev.echo_other",
+    ] {
+        let err = capture(
+            &boot,
+            json!({ "call": { "tool": probe }, "provenance": "summary", "title": "x" }),
+        )
+        .await
+        .unwrap_err();
+        assert_invalid_params(&err, "unknown tool name");
+        assert!(err.message.contains(&format!("{probe:?}")), "{err}");
+        assert!(
+            err.message.contains(&format!(
+                "tools with a recorded result in this track: [{REGISTRY_NAME}]"
+            )),
+            "{err}"
+        );
+        assert!(!err.message.contains("no recorded result"), "{err}");
+    }
+}
+
 /// Two calls of the same tool complete in the same millisecond (frozen
 /// clock); the older one is captured explicitly first — an LRU touch of A —
 /// and the args-omitted capture must still take B, the later completion.
@@ -368,7 +439,7 @@ async fn capture_does_not_see_another_tracks_records() {
     )
     .await
     .unwrap_err();
-    assert_invalid_params(&err, "never made, or made by a worker");
+    assert_invalid_params(&err, "tools with a recorded result in this track: []");
 }
 
 // ---------------------------------------------------------------------------
