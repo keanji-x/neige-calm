@@ -6,14 +6,63 @@
 // and `tabular-nums` so digits line up down the column, which is the only
 // reason a table beats a list.
 
+import type { ReactNode } from 'react';
+
+import {
+  parseReportSourceLink, type ReportSourceLinkTarget,
+} from '../../../../../core/domain/report-source.ts';
 import {
   inlineTableBlockPayloadSchema, isLiveTablePayload,
   type InlineTableBlockPayload, type TableBlockPayload,
 } from '../../../../../core/domain/report.ts';
+import { ReportSourceCitation } from '../source/public.tsx';
 import styles from './table.module.css';
 
 function cellText(value: string | number | null | undefined): string {
   return value === null || value === undefined ? '' : String(value);
+}
+
+/**
+ * A cell that is, in its entirety, one Markdown inline link: `[label](dest)`
+ * and nothing else once trimmed. Anchored at both ends on purpose — a link
+ * with prose around it, or two links, is not this shape and stays text.
+ */
+const WHOLE_CELL_LINK = /^\[([^\]]*)\]\(([^\s()]+)\)$/;
+
+/**
+ * The one piece of Markdown a table cell understands (#1687): a cell whose
+ * whole text is a single `[label](neige://source/…)` citation. The template
+ * asks every figure to carry its source and every source to be a
+ * `neige://source/…` link, so the 「来源」 column of a table is where the
+ * two rules meet; the prose beside it already paints these as citations, and
+ * a cell showing the raw link syntax was the one unclickable citation in
+ * the report.
+ *
+ * Deliberately not a Markdown renderer. Cells are strings on the wire and
+ * stay strings; anything else — a link with prose around it, two links, a
+ * link under another scheme, markup — is text, as before. A cell that wants
+ * a citation puts one link in it and nothing else, and the template says
+ * so.
+ */
+function cellSourceCitation(text: string): { label: string; target: ReportSourceLinkTarget } | null {
+  const match = WHOLE_CELL_LINK.exec(text.trim());
+  if (match === null) return null;
+  const target = parseReportSourceLink(match[2] ?? '');
+  return target === null ? null : { label: match[1] ?? '', target };
+}
+
+function Cell({ value, onOpenSourceLink }: {
+  value: string | number | null | undefined;
+  onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
+}): ReactNode {
+  const text = cellText(value);
+  const citation = cellSourceCitation(text);
+  if (citation === null) return text;
+  return (
+    <ReportSourceCitation target={citation.target} onOpen={onOpenSourceLink}>
+      {citation.label}
+    </ReportSourceCitation>
+  );
 }
 
 /**
@@ -28,9 +77,16 @@ function cellText(value: string | number | null | undefined): string {
  * never had one, which is precisely the reading a reader must not be given
  * about a number they came here to check.
  */
-export function ReportTableBlock({ payload, resolveLive }: {
+export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink }: {
   payload: TableBlockPayload;
   resolveLive?: (source: string) => unknown;
+  /**
+   * A cell that is one `neige://source/…` citation was activated (#1687).
+   * The same handler the document gives its prose; absent ⇒ the cell is the
+   * badge-plus-label form, exactly as the prose is on a surface with no
+   * panel.
+   */
+  onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
 }) {
   if (isLiveTablePayload(payload)) {
     if (resolveLive === undefined) {
@@ -50,9 +106,9 @@ export function ReportTableBlock({ payload, resolveLive }: {
     // The live payload's own caption wins when it has one: it is written by
     // whoever produced these exact rows (a timestamp, a "priced in USDT"), and
     // the block's caption is the document author's standing description.
-    return <InlineTable payload={decoded.data} fallbackCaption={payload.caption} />;
+    return <InlineTable payload={decoded.data} fallbackCaption={payload.caption} onOpenSourceLink={onOpenSourceLink} />;
   }
-  return <InlineTable payload={payload} />;
+  return <InlineTable payload={payload} onOpenSourceLink={onOpenSourceLink} />;
 }
 
 function LiveTableNotice({ caption, text }: { caption?: string | null; text: string }) {
@@ -64,9 +120,10 @@ function LiveTableNotice({ caption, text }: { caption?: string | null; text: str
   );
 }
 
-function InlineTable({ payload, fallbackCaption }: {
+function InlineTable({ payload, fallbackCaption, onOpenSourceLink }: {
   payload: InlineTableBlockPayload;
   fallbackCaption?: string | null;
+  onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
 }) {
   const { columns, rows, highlight } = payload;
   const caption = payload.caption ?? fallbackCaption;
@@ -104,7 +161,7 @@ function InlineTable({ payload, fallbackCaption }: {
                     key={column.key}
                     className={column.align === 'right' ? `${styles.cell} ${styles.right}` : styles.cell}
                   >
-                    {cellText(row[column.key])}
+                    <Cell value={row[column.key]} onOpenSourceLink={onOpenSourceLink} />
                   </td>
                 ))}
               </tr>

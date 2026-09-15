@@ -15,6 +15,62 @@
    * a *place* that stays lit for as long as the panel is open. Tokens only,
    * no literal colour.
    */
+  /*
+   * The citation as it sits in a report (`ReportSourceCitation`): the same
+   * element in the document's prose and in a table cell, so it is styled
+   * here, once, and not by either host.
+   *
+   * With a panel to open it is a button, and a button has to be un-buttoned
+   * back into a run of text — inherited type, baseline alignment, and the
+   * underline is the only thing that says it leads anywhere. This is the
+   * document's `.link` recipe for its track and file citations, repeated
+   * rather than shared because a table cell has no `.link` to inherit and
+   * the source feature may not reach into the document's stylesheet.
+   */
+  .citationLink {
+    display: inline;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    color: var(--accent);
+    text-align: start;
+    text-decoration: underline;
+    text-decoration-color: var(--hairline-strong);
+    text-underline-offset: 0.18em;
+    cursor: pointer;
+  }
+
+  .citationLink:hover,
+  .citationLink:focus-visible {
+    text-decoration-color: var(--accent);
+  }
+
+  /*
+   * No panel to open (#1669 §2.5): the narrow viewport, and the surfaces that
+   * carry no track. Inline, in the host's text colour — it is not a control,
+   * so it does not take the link colour or the underline — with a small chip
+   * in front that says what the label is. The chip is the same surface the
+   * panel's provenance badge uses; it carries no provenance because nothing
+   * on this path has read the row.
+   */
+  .citation {
+    display: inline;
+  }
+
+  .citationBadge {
+    display: inline-block;
+    margin-inline-end: var(--space-2);
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-pill);
+    background: var(--surface-chip);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+    vertical-align: baseline;
+  }
+
   .panel {
     display: flex;
     flex-direction: column;

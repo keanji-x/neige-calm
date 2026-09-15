@@ -53,13 +53,16 @@
   statement: |
     窄视口下 neige://source 引用不开来源面板：`app/router` 在 `compactViewport` 为真时不注入 `onOpenSourceLink`
     （传 undefined，并把已开的面板关掉），文档把这条引用画成「来源」徽标 + 标题的行内元素
-    （`data-nc-report-source-citation`），不是可点的控件。桌面才有右栏抽屉。
+    （`data-nc-report-source-citation`），不是可点的控件。表格单元格里整格是一条该引用时走同一个控件
+    （`ReportSourceCitation`）、拿同一个处理函数，因此在窄视口下同样是徽标形态（#1687）。桌面才有右栏抽屉。
   why: >
     #1669 设计稿 v4 §2.5：mobile/ 是 Tauri 壳包着响应式 fe/web，v1 在窄屏不开面板，链接显示徽标 + 标题；
     owner 定手机可缺功能但差异必须被声明。渲染成不可点的行内元素而不是无操作的按钮，是为了不出现「点了没反应」的控件；
     处理函数在 app/router 按视口扣住，而不是在文档里查视口，因为 features 层不问视口（single-viewport-source）。
-  source: fe/web/src/app/router/public.tsx:3255-3259,3365; fe/web/src/features/report/document/public.tsx:622-642
-  authoritative_test: fe/web/src/features/report/document/public.test.tsx:226-235; fe/web/src/app/router/report-source.test.tsx:129-145
+    #1687：表格的「来源」列曾把 `[label](neige://source/…)` 原样显示成链接语法，是同一份报告里唯一不可点的引用；
+    修法是把正文的引用控件抽成一个组件给两条渲染路径共用，而不是让表格自己再判一次视口。
+  source: fe/web/src/app/router/public.tsx:3255-3259,3365; fe/web/src/features/report/source/public.tsx:53-77; fe/web/src/features/report/document/public.tsx:615-631; fe/web/src/features/report/table/public.tsx:54-66
+  authoritative_test: fe/web/src/features/report/document/public.test.tsx:226-235; fe/web/src/features/report/table/public.test.tsx:137-146; fe/web/src/app/router/report-source.test.tsx:129-145
   owner_slice: features/report/source
   intentional_omission: true
   runtime_layer: features

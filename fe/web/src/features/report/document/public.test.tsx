@@ -234,6 +234,36 @@ describe('ReportDocument', () => {
       expect(container.innerHTML).not.toContain('neige://source');
     });
 
+    /* #1687 — a `table` block's cell that is one source citation is the
+       same control, given the same handler the prose gets. This is the wiring
+       between the document and the table renderer, which is the one place
+       the table's own tests cannot see. */
+    it('hands a table cell citation the same source handler as the prose', () => {
+      const onOpenSourceLink = vi.fn<(target: ReportSourceLinkTarget) => void>();
+      const { container } = render(
+        <ReportDocument
+          report={blocked(
+            prose('b-1', '据 [Mikko 日志](neige://source/src_2c9e0a1b#q1)。'),
+            {
+              id: 'b-2', kind: 'table',
+              payload: {
+                columns: [{ key: 'metric', label: '指标' }, { key: 'source', label: '来源' }],
+                rows: [{ metric: '布伦特收盘', source: '[AP](neige://source/src_ddef99cc#q1)' }],
+              },
+            },
+          )}
+          empty={EMPTY}
+          onOpenSourceLink={onOpenSourceLink}
+        />,
+      );
+      expect(container.querySelectorAll('a').length).toBe(0);
+      screen.getByRole('button', { name: 'AP' }).click();
+      expect(onOpenSourceLink).toHaveBeenCalledWith({
+        destination: 'neige://source/src_ddef99cc#q1', sourceId: 'src_ddef99cc', quoteId: 'q1',
+      });
+      expect(container.querySelectorAll('td [data-nc-report-source-link]').length).toBe(1);
+    });
+
     // Without a handler there is nowhere for the citation to go, and a button
     // that does nothing is worse than plain text.
     it('renders a citation as plain text when no handler is injected', () => {
