@@ -321,7 +321,7 @@ async fn input_readback_change_wait_starts_from_the_pre_write_screen() {
     assert_eq!(
         summary(&second),
         format!(
-            "terminal {terminal} input written; screen changed settled; role owner; \
+            "terminal {terminal} input written; screen changed settled; wait changed; role owner; \
              details in structuredContent"
         )
     );
@@ -709,12 +709,14 @@ async fn stale_observation_is_a_structured_result_with_a_fresh_observation() {
     assert_eq!(
         summary(&response),
         format!(
-            "terminal {terminal} input stale_observation; screen elapsed; role owner; \
-             details in structuredContent"
+            "terminal {terminal} input stale_observation; screen changed; wait elapsed; \
+             role owner; details in structuredContent"
         )
     );
     assert_eq!(stale["summary"]["action"], "stale_observation");
-    assert_eq!(stale["summary"]["screen"], "elapsed");
+    // #1692: the screen fact and the wait outcome are two fields.
+    assert_eq!(stale["summary"]["screen"], "changed");
+    assert_eq!(stale["summary"]["wait"], "elapsed");
     // Nothing was written: no reservation is pending and the screen is as
     // the fresh observation captured it.
     assert!(!h.interaction().input_pending(&terminal).await);
@@ -1201,10 +1203,18 @@ async fn text_results_carry_screen_text_only_in_structured_content() {
         );
     }
     let claimed = claim(&h, &terminal).await;
+    // The shell prompt may land between the observes above and this
+    // readback; the summary follows the readback's own screen fact.
+    let screen = match observation(&claimed)["changed_since_previous_observation"] {
+        Value::Bool(true) => "changed",
+        _ => "unchanged",
+    };
+    assert_eq!(receipt(&claimed)["summary"]["screen"], screen);
     assert_eq!(
         summary(&claimed),
         format!(
-            "terminal {terminal} claim; screen elapsed; role owner; details in structuredContent"
+            "terminal {terminal} claim; screen {screen}; wait elapsed; role owner; \
+             details in structuredContent"
         )
     );
     assert_eq!(receipt(&claimed)["summary"]["role"], "owner");
@@ -1234,9 +1244,9 @@ async fn text_results_carry_screen_text_only_in_structured_content() {
     );
     assert_eq!(
         receipt(&released)["summary"],
-        json!({"action":"release","readback":"none","screen":null,"settled":null,"signal":null,
-            "repaint":null,"matched":null,"role":null,"control_id":null,"exited":null,
-            "claim":null,"release":null})
+        json!({"action":"release","readback":"none","screen":null,"wait":null,"settled":null,
+            "signal":null,"repaint":null,"matched":null,"role":null,"control_id":null,
+            "exited":null,"claim":null,"release":null})
     );
     let image = h
         .call(

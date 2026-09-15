@@ -1376,7 +1376,7 @@
   },
   {
     "name": "calm.terminal.control",
-    "description_sha256": "6bee6804ae0ee15123bd46fccc244014c5174ceba4520ab1e67dea7a6f383dcd",
+    "description_sha256": "45ad6ccb6d9d2a9db49ae96cd3d9022b94246c028330ac252680f5123e34e144",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1468,7 +1468,7 @@
   },
   {
     "name": "calm.terminal.input",
-    "description_sha256": "9c5625073f8770d0d0f690977186e675e6b19b3d898198278b0fde86e1fabba2",
+    "description_sha256": "bbaeb35c8e30f823555d858eb63624c6bb8052989cc03c332274678c2b666a7a",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1691,7 +1691,7 @@
   },
   {
     "name": "calm.terminal.observe",
-    "description_sha256": "c20eb1c3d59ec8f9604d9a2eef0cdd74bf4520395eebc3a2daf75ec0e1609e28",
+    "description_sha256": "35a33bd3f20a0cf4c150fc68f864ae778b534d524480b4354092480a8ad4f831",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

@@ -114,9 +114,11 @@ def signal_metrics(terminal):
     A signal wait is an observation-requesting call whose arguments say
     `wait_for: "signal"`; its outcome is the returned observation's
     `wait.outcome` (a `signal` outcome is an observation like any other, not
-    application completion). `submit_actions` and `open_with_claim` describe
-    requests, including failed ones. `hooks_seen_observations` and
-    `signals_observed` are read from each observation's `signals` block;
+    application completion; `no_signal` (#1692) is a budget that ended without
+    one and says nothing about the screen). `submit_actions` and
+    `open_with_claim` describe requests, including failed ones.
+    `hooks_seen_observations` and `signals_observed` are read from each
+    observation's `signals` block;
     observations lacking it (older server) are `unmeasured_signal_observations`.
     `signal_repaint_outcomes` (#1628) tallies `wait.repaint.outcome` of the
     signal waits that ended on a signal; a missing block is tolerated.

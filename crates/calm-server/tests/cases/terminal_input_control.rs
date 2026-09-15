@@ -136,15 +136,15 @@ async fn input_claim_grants_when_free_and_writes_with_the_claim_in_the_receipt()
     assert_eq!(
         summary(&first),
         format!(
-            "terminal {terminal} input written; screen changed settled; role owner; claim claimed; \
-             details in structuredContent"
+            "terminal {terminal} input written; screen changed settled; wait changed; role owner; \
+             claim claimed; details in structuredContent"
         )
     );
     assert_eq!(
         written["summary"],
-        json!({"action":"written","readback":"available","screen":"changed","settled":true,
-            "signal":null,"repaint":null,"matched":null,"role":"owner","control_id":control,
-            "exited":false,"claim":"claimed","release":null}),
+        json!({"action":"written","readback":"available","screen":"changed","wait":"changed",
+            "settled":true,"signal":null,"repaint":null,"matched":null,"role":"owner",
+            "control_id":control,"exited":false,"claim":"claimed","release":null}),
         "{written}"
     );
     // Held: no second claim, the same lease, the ordinary fences.
@@ -235,8 +235,8 @@ async fn input_claim_is_refused_while_a_human_holds_control_and_writes_nothing()
     assert_eq!(
         summary(&refused),
         format!(
-            "terminal {terminal} input control_unavailable; screen elapsed; role observer; \
-             claim unavailable; details in structuredContent"
+            "terminal {terminal} input control_unavailable; screen unchanged; wait elapsed; \
+             role observer; claim unavailable; details in structuredContent"
         )
     );
     assert_eq!(result["summary"]["action"], "control_unavailable");

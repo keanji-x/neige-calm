@@ -458,18 +458,20 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
     // awaited on the screen rather than expected in the signal readback.
     h.observe_text(&terminal, "TURN:1:hello").await;
 
-    // No new signal: the budget elapses with outcome unchanged and no signal.
+    // No new signal: the budget elapses with outcome no_signal (#1692: not
+    // change mode's `unchanged`) and no signal; the idle screen was quiet
+    // for settle_ms at the deadline, so the wait is settled.
     let idle = h
         .ok(
             "calm.terminal.observe",
             json!({"terminal_id":terminal,"wait_for":"signal","wait_ms":400}),
         )
         .await;
-    assert_eq!(idle["wait"]["outcome"], "unchanged", "{idle}");
+    assert_eq!(idle["wait"]["outcome"], "no_signal", "{idle}");
     assert_eq!(idle["wait"]["signal"], Value::Null);
     assert_eq!(idle["wait"]["signal_at_ms"], Value::Null);
     assert_eq!(idle["wait"]["repaint"], Value::Null);
-    assert_eq!(idle["wait"]["settled"], false);
+    assert_eq!(idle["wait"]["settled"], true, "{idle}");
     assert!(idle["wait"]["waited_ms"].as_u64().unwrap() >= 400);
     assert_eq!(idle["signals"]["since_previous_observation"], json!([]));
 
@@ -504,7 +506,7 @@ async fn signal_wait_returns_on_the_matching_event_and_honors_the_filter() {
     .await;
     assert_eq!(receipt(&none)["outcome"], "written", "{none}");
     let none = state(&none);
-    assert_eq!(none["wait"]["outcome"], "unchanged", "{none}");
+    assert_eq!(none["wait"]["outcome"], "no_signal", "{none}");
     assert!(events_of(none).contains(&"stop".to_string()), "{none}");
     h.observe_text(&terminal, "TURN:3:third").await;
     // A permission notification carries its notification_type.

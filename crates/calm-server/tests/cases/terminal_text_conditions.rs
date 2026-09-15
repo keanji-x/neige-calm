@@ -358,7 +358,7 @@ async fn text_condition_validation_on_every_carrier() {
             json!({"terminal_id":terminal,"wait_for":"signal","wait_ms":200,"wait_text":["READY"],"wait_text_absent":["x"]}),
         )
         .await;
-    assert_eq!(signal["wait"]["outcome"], "unchanged", "{signal}");
+    assert_eq!(signal["wait"]["outcome"], "no_signal", "{signal}");
     assert_eq!(
         signal["wait"]["conditions"],
         json!({"present":null,"absent":null}),

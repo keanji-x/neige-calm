@@ -1,6 +1,7 @@
 //! #1677 S3 — `summary` on input and control receipts: a flat digest of
-//! the facts the receipt carries (readback wait, hook signal, repaint,
-//! control state), and the one-line text block saying the same in words,
+//! the facts the receipt carries (readback screen change and wait, hook
+//! signal, repaint, control state), and the one-line text block saying the
+//! same in words,
 //! through the real MCP tools, renderer and PTY.
 use crate::terminal_support::{Harness, human_takeover};
 use serde_json::{Value, json};
@@ -21,11 +22,12 @@ fn observation(response: &Value) -> &Value {
 fn summary(response: &Value) -> &str {
     response["result"]["content"][0]["text"].as_str().unwrap()
 }
-/// The summary every receipt must carry: all twelve keys, `fields` set.
+/// The summary every receipt must carry: all thirteen keys, `fields` set
+/// (#1692: `screen` is the readback's screen fact, `wait` its outcome).
 fn digest(fields: Value) -> Value {
-    let mut summary = json!({"action":null,"readback":null,"screen":null,"settled":null,
-        "signal":null,"repaint":null,"matched":null,"role":null,"control_id":null,
-        "exited":null,"claim":null,"release":null});
+    let mut summary = json!({"action":null,"readback":null,"screen":null,"wait":null,
+        "settled":null,"signal":null,"repaint":null,"matched":null,"role":null,
+        "control_id":null,"exited":null,"claim":null,"release":null});
     for (key, value) in fields.as_object().unwrap() {
         summary[key] = value.clone();
     }
@@ -76,16 +78,17 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     assert_eq!(
         written["summary"],
         digest(
-            json!({"action":"written","readback":"available","screen":"changed","settled":true,
-            "role":"observer","control_id":null,"exited":false,"claim":"claimed","release":"released"})
+            json!({"action":"written","readback":"available","screen":"changed","wait":"changed",
+            "settled":true,"role":"observer","control_id":null,"exited":false,"claim":"claimed",
+            "release":"released"})
         ),
         "the readback's control, not the receipt's lease: {written}"
     );
     assert_eq!(
         summary(&first),
         format!(
-            "terminal {terminal} input written; screen changed settled; role observer; claim claimed; \
-             release released; details in structuredContent"
+            "terminal {terminal} input written; screen changed settled; wait changed; \
+             role observer; claim claimed; release released; details in structuredContent"
         )
     );
     let text = h
@@ -99,7 +102,8 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     assert_eq!(state["wait"]["outcome"], "matched", "{state}");
     let digested = &receipt(&text)["summary"];
     assert_eq!(digested["action"], "written");
-    assert_eq!(digested["screen"], "matched");
+    assert_eq!(digested["screen"], "changed", "the screen fact (#1692)");
+    assert_eq!(digested["wait"], "matched");
     assert_eq!(digested["settled"], state["wait"]["settled"]);
     assert_eq!(digested["matched"], "COUNT:2:two");
     assert_eq!(digested["signal"], Value::Null);
@@ -118,8 +122,8 @@ async fn summary_on_written_receipts_follows_the_readback_not_the_lease() {
     assert_eq!(
         summary(&text),
         format!(
-            "terminal {terminal} input written; screen matched{settled}; matched COUNT:2:two; \
-             role owner; claim claimed; details in structuredContent"
+            "terminal {terminal} input written; screen changed{settled}; wait matched; \
+             matched COUNT:2:two; role owner; claim claimed; details in structuredContent"
         )
     );
     let bare = h
@@ -194,7 +198,8 @@ async fn summary_names_the_hook_signal_and_the_repaint() {
     assert_eq!(state["wait"]["outcome"], "signal", "{state}");
     let repaint = state["wait"]["repaint"]["outcome"].as_str().unwrap();
     let digested = &receipt(&response)["summary"];
-    assert_eq!(digested["screen"], "signal");
+    assert_eq!(digested["screen"], "changed", "the echoed prompt (#1692)");
+    assert_eq!(digested["wait"], "signal");
     assert_eq!(digested["signal"], "stop");
     assert_eq!(digested["repaint"], repaint);
     assert_eq!(digested["matched"], Value::Null);
@@ -207,8 +212,8 @@ async fn summary_names_the_hook_signal_and_the_repaint() {
     assert_eq!(
         summary(&response),
         format!(
-            "terminal {terminal} input written; screen signal{settled}; signal stop, repaint {repaint}; \
-             role owner; details in structuredContent"
+            "terminal {terminal} input written; screen changed{settled}; wait signal; \
+             signal stop, repaint {repaint}; role owner; details in structuredContent"
         )
     );
     h.stop(&terminal).await;
@@ -239,15 +244,17 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     assert_eq!(
         receipt(&refused)["summary"],
         digest(
-            json!({"action":"control_unavailable","readback":"available","screen":"elapsed",
-            "settled":false,"role":"observer","control_id":null,"exited":false,"claim":"unavailable"})
-        )
+            json!({"action":"control_unavailable","readback":"available","screen":"unchanged",
+            "wait":"elapsed","settled":false,"role":"observer","control_id":null,"exited":false,
+            "claim":"unavailable"})
+        ),
+        "nothing painted since READY: {refused}"
     );
     assert_eq!(
         summary(&refused),
         format!(
-            "terminal {terminal} input control_unavailable; screen elapsed; role observer; \
-             claim unavailable; details in structuredContent"
+            "terminal {terminal} input control_unavailable; screen unchanged; wait elapsed; \
+             role observer; claim unavailable; details in structuredContent"
         )
     );
     pump.abort();
@@ -291,7 +298,8 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     let digested = &receipt(&again)["summary"];
     assert_eq!(digested["action"], "claim");
     assert_eq!(digested["readback"], "available");
-    assert_eq!(digested["screen"], "elapsed");
+    assert_eq!(digested["screen"], "unchanged", "{again}");
+    assert_eq!(digested["wait"], "elapsed");
     assert_eq!(digested["role"], "owner");
     assert_eq!(digested["control_id"], receipt(&again)["control_id"]);
     assert_ne!(
@@ -301,7 +309,8 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     assert_eq!(
         summary(&again),
         format!(
-            "terminal {terminal} claim; screen elapsed; role owner; details in structuredContent"
+            "terminal {terminal} claim; screen unchanged; wait elapsed; role owner; \
+             details in structuredContent"
         )
     );
     // Stale: the implicit observation is the claim readback; the screen
@@ -325,15 +334,17 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     assert_eq!(
         receipt(&stale)["summary"],
         digest(
-            json!({"action":"stale_observation","readback":"available","screen":"elapsed",
-            "settled":false,"role":"owner","control_id":receipt(&again)["control_id"],"exited":false})
-        )
+            json!({"action":"stale_observation","readback":"available","screen":"unchanged",
+            "wait":"elapsed","settled":false,"role":"owner","control_id":receipt(&again)["control_id"],
+            "exited":false})
+        ),
+        "the typed readback (this connection's previous observation) already saw the move: {stale}"
     );
     assert_eq!(
         summary(&stale),
         format!(
-            "terminal {terminal} input stale_observation; screen elapsed; role owner; \
-             details in structuredContent"
+            "terminal {terminal} input stale_observation; screen unchanged; wait elapsed; \
+             role owner; details in structuredContent"
         )
     );
     let released = h
@@ -345,12 +356,15 @@ async fn summary_on_refusals_control_receipts_and_unavailable_readbacks() {
     let digested = &receipt(&released)["summary"];
     assert_eq!(digested["action"], "release");
     assert_eq!(digested["readback"], "available");
+    assert_eq!(digested["screen"], "unchanged", "{released}");
+    assert_eq!(digested["wait"], "elapsed");
     assert_eq!(digested["role"], "observer");
     assert_eq!(digested["control_id"], Value::Null);
     assert_eq!(
         summary(&released),
         format!(
-            "terminal {terminal} release; screen elapsed; role observer; details in structuredContent"
+            "terminal {terminal} release; screen unchanged; wait elapsed; role observer; \
+             details in structuredContent"
         )
     );
     // Detach has no readback and no summary: its line names the client.

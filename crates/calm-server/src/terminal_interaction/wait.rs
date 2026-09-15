@@ -23,10 +23,14 @@ use tokio::time::Instant;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WaitOutcome {
     Changed,
+    /// Change mode: the screen still equals the baseline at the budget.
     Unchanged,
     Exited,
     Elapsed,
     Signal,
+    /// Signal mode (#1692): the budget ended without a matching signal — a
+    /// fact about the ring, not about the screen (which may have moved).
+    NoSignal,
     /// Text mode (#1666): a pattern is on the live viewport.
     Matched,
     /// Text mode: no pattern was on the viewport when the budget ended.
@@ -66,6 +70,7 @@ impl WaitReport {
             WaitOutcome::Exited => "exited",
             WaitOutcome::Elapsed => "elapsed",
             WaitOutcome::Signal => "signal",
+            WaitOutcome::NoSignal => "no_signal",
             WaitOutcome::Matched => "matched",
             WaitOutcome::Unmatched => "unmatched",
         };
@@ -105,7 +110,8 @@ impl WaitReport {
 /// from the baseline and stayed quiet for `settle_ms`, or at the budget, or
 /// when the process exited / the client went away. Signal mode returns once a
 /// signal with `seq > signal_baseline` and an event in `plan.signal_events`
-/// exists, or at the budget, or on exit / disconnect. Text mode (#1666)
+/// exists, or on exit / disconnect, or at the budget — then on a frame
+/// boundary, at most `settle_ms` later (#1692). Text mode (#1666)
 /// returns once a `plan.wait_text` pattern is on a live viewport row and the
 /// screen then stayed quiet for `settle_ms`, or at the budget, or on exit.
 pub async fn wait(
@@ -189,6 +195,7 @@ pub async fn wait(
             signal_at,
             repaint,
             conditions,
+            settled,
         } = wait_for_signal(
             signals,
             revisions,
@@ -206,14 +213,17 @@ pub async fn wait(
         let outcome = match (&signal, exited) {
             (Some(_), _) => WaitOutcome::Signal,
             (None, true) => WaitOutcome::Exited,
-            (None, false) => WaitOutcome::Unchanged,
+            (None, false) => WaitOutcome::NoSignal,
         };
-        let settled = repaint.is_some_and(|repaint| {
-            matches!(
+        // With a signal the repaint phase's verdict is the settle fact;
+        // without one it is the frame-boundary phase's (#1692).
+        let settled = match repaint {
+            Some(repaint) => matches!(
                 repaint.outcome,
                 RepaintOutcome::Already | RepaintOutcome::Settled
-            )
-        });
+            ),
+            None => settled,
+        };
         let mut report = report(outcome, started.elapsed(), settled, signal);
         report.signal_at = signal_at;
         report.repaint = repaint;
@@ -289,7 +299,15 @@ pub struct SignalWait {
     /// Which text conditions held on the last screen the repaint phase
     /// tested (#1677 r16; null sides when there were none).
     pub conditions: ConditionState,
+    /// No signal (#1692): whether the screen was quiet for `settle` when the
+    /// frame-boundary phase ended. Meaningless with a signal (the repaint
+    /// verdict says it) and false on exit.
+    pub settled: bool,
 }
+/// One Ink frame is written in a burst of PTY chunks a few ms apart; a gap
+/// of 30 ms separates frames, also during a spinner that repaints every
+/// ~100 ms (#1692).
+const FRAME_GAP: Duration = Duration::from_millis(30);
 /// The signal-mode loop (#1620), separated from the client so its timing can
 /// be tested under a paused clock. `signals` is the ring's seq channel,
 /// `revisions` the projection revision channel (a revision itself never ends
@@ -301,10 +319,13 @@ pub struct SignalWait {
 /// signal that lands between the lookup and the select is never missed and
 /// one that lands as the budget expires is still reported; the timeout
 /// branch re-reads `stopped` as well, so an exit that coincides with the
-/// deadline is reported as exited, never as unchanged. Once the signal is
+/// deadline is reported as exited, never as no signal. Once the signal is
 /// found the wait continues in [`settle_after_signal`] (#1628) unless
 /// `repaint.repaint` is zero; `capture` and `conditions` (#1677 r16) are
-/// the text conditions that phase tests, one capture per revision.
+/// the text conditions that phase tests, one capture per revision. A budget
+/// that ends without a signal continues in [`frame_boundary`] (#1692) so
+/// the capture that follows is not torn; a signal that lands during that
+/// grace is not looked for — the budget is over.
 #[allow(clippy::too_many_arguments)]
 async fn wait_for_signal(
     mut signals: watch::Receiver<u64>,
@@ -320,12 +341,13 @@ async fn wait_for_signal(
     repaint: RepaintPlan,
 ) -> SignalWait {
     let mut screen = Repaint::new(baseline, *revisions.borrow(), started);
-    let none = |exited: bool| SignalWait {
+    let none = |exited: bool, settled: bool| SignalWait {
         signal: None,
         exited,
         signal_at: None,
         repaint: None,
         conditions: ConditionState::default(),
+        settled,
     };
     // A matching signal wins over every other verdict; otherwise `stopped`
     // is read at the moment the wait ends.
@@ -337,22 +359,35 @@ async fn wait_for_signal(
             break signal;
         }
         if stopped() {
-            return none(true);
+            return none(true, false);
         }
-        if Instant::now() >= deadline {
-            return none(false);
-        }
-        let ended = tokio::select! {
-            result = signals.changed() => result.is_err(),
-            result = revisions.changed() => result.is_err(),
-            result = events.changed() => result.is_err(),
-            _ = tokio::time::sleep_until(deadline) => true,
+        let ended = if Instant::now() >= deadline {
+            true
+        } else {
+            tokio::select! {
+                result = signals.changed() => result.is_err(),
+                result = revisions.changed() => result.is_err(),
+                result = events.changed() => result.is_err(),
+                _ = tokio::time::sleep_until(deadline) => true,
+            }
         };
         if ended {
-            match find() {
-                Some(signal) => break signal,
-                None => return none(stopped()),
+            if let Some(signal) = find() {
+                break signal;
             }
+            if stopped() {
+                return none(true, false);
+            }
+            let (exited, settled) = frame_boundary(
+                &mut revisions,
+                &mut events,
+                &stopped,
+                &mut screen,
+                deadline,
+                repaint.settle,
+            )
+            .await;
+            return none(exited, settled);
         }
     };
     let signal_at = Instant::now();
@@ -374,6 +409,58 @@ async fn wait_for_signal(
         signal_at: Some(signal_at.saturating_duration_since(started)),
         repaint: Some(report),
         conditions,
+        settled: false,
+    }
+}
+
+/// The frame-boundary phase of a signal wait whose budget ended without a
+/// signal (#1692). Round 19 captured a torn Ink frame because the timeout
+/// branch returned at the deadline instant, wherever the PTY chunk stream
+/// happened to be; the signal branch and the change and text modes all
+/// settle first, only this branch did not. It returns once the projection
+/// has been quiet for `min(settle, FRAME_GAP)` — a frame boundary, reached
+/// within a few tens of ms even under a spinner — or at `deadline + settle`
+/// at the latest (a streaming log never pauses). `settled` is true only
+/// when the screen was quiet for the full `settle` (an idle screen returns
+/// at the deadline itself). The ring is not inspected here: the budget is
+/// over, a signal landing now is the next wait's. Exit, disconnect,
+/// projection invalidation and a closed channel end the phase at once.
+/// Returns `(exited, settled)`.
+async fn frame_boundary(
+    revisions: &mut watch::Receiver<u64>,
+    events: &mut watch::Receiver<u64>,
+    stopped: &impl Fn() -> bool,
+    screen: &mut Repaint,
+    deadline: Instant,
+    settle: Duration,
+) -> (bool, bool) {
+    let grace_end = deadline + settle;
+    let frame_gap = settle.min(FRAME_GAP);
+    loop {
+        events.borrow_and_update();
+        let now = Instant::now();
+        screen.observe(*revisions.borrow_and_update(), now);
+        if stopped() {
+            return (true, false);
+        }
+        let quiet = screen.quiet_for(now);
+        if quiet >= settle {
+            return (false, true);
+        }
+        if quiet >= frame_gap || now >= grace_end {
+            return (false, false);
+        }
+        // `frame_gap <= settle`, so the frame timer is never later than the
+        // settle timer; the grace end bounds both.
+        let timer = (now + (frame_gap - quiet)).min(grace_end);
+        let ended = tokio::select! {
+            result = revisions.changed() => result.is_err(),
+            result = events.changed() => result.is_err(),
+            _ = tokio::time::sleep_until(timer) => false,
+        };
+        if ended {
+            return (stopped(), false);
+        }
     }
 }
 
@@ -543,10 +630,11 @@ mod tests {
             report.to_json()["repaint"],
             json!({"outcome":"settled","waited_ms":2})
         );
-        // No signal: both fields present and null, like `signal`.
+        // No signal (#1692: its own name, not change mode's `unchanged`):
+        // both fields present and null, like `signal`.
         let report = WaitReport {
             mode: WaitFor::Signal,
-            outcome: WaitOutcome::Unchanged,
+            outcome: WaitOutcome::NoSignal,
             waited: Duration::from_millis(5),
             settled: false,
             baseline: 7,
@@ -557,6 +645,7 @@ mod tests {
             text: None,
             conditions: None,
         };
+        assert_eq!(report.to_json()["outcome"], "no_signal");
         assert_eq!(report.to_json()["signal_at_ms"], Value::Null);
         assert_eq!(report.to_json()["repaint"], Value::Null);
         assert_eq!(
@@ -1052,6 +1141,117 @@ mod tests {
         );
         assert_eq!(verdict.repaint, repaint(RepaintOutcome::Unsettled, 50));
         assert_eq!(waited, Duration::from_millis(50));
+    }
+
+    /// #1692 no signal on a quiet screen: the loop returns at the deadline
+    /// itself, `settled` when the screen was quiet for `settle` by then (the
+    /// whole budget on an idle screen, or exactly `settle` after a
+    /// revision); quiet for 1 ms less is a frame boundary (past the 30 ms
+    /// frame gap), returned at once but not settled.
+    #[tokio::test(start_paused = true)]
+    async fn no_signal_on_a_quiet_screen_returns_at_the_deadline() {
+        let (_fixture, task) = start_signal_repaint(stop_ring(), 0, 300, REPAINT);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(299)).await;
+        assert!(!task.is_finished(), "ended before the budget");
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let (verdict, waited) = task.await.unwrap();
+        assert!(verdict.signal.is_none() && !verdict.exited);
+        assert!(verdict.settled, "idle for the whole budget: settled");
+        assert_eq!(waited, Duration::from_millis(300), "idle: at the deadline");
+        for (quiet_ms, settled) in [(150, true), (149, false)] {
+            let (fixture, task) = start_signal_repaint(stop_ring(), 0, 300, REPAINT);
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_millis(300 - quiet_ms)).await;
+            bump(&fixture.revisions);
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_millis(quiet_ms)).await;
+            let (verdict, waited) = task.await.unwrap();
+            assert_eq!(verdict.settled, settled, "quiet for {quiet_ms} ms");
+            assert_eq!(
+                waited,
+                Duration::from_millis(300),
+                "quiet for {quiet_ms} ms"
+            );
+        }
+    }
+
+    /// #1692 spinner: a revision every 100 ms, the last one 10 ms before
+    /// the deadline. The loop waits for the frame gap (30 ms quiet) and
+    /// returns 20 ms after the deadline, not settled.
+    #[tokio::test(start_paused = true)]
+    async fn no_signal_under_a_spinner_returns_on_the_next_frame_boundary() {
+        let (fixture, task) = start_signal_repaint(stop_ring(), 0, 300, REPAINT);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(90)).await;
+        bump(&fixture.revisions);
+        tokio::task::yield_now().await;
+        for _ in 0..2 {
+            tokio::time::advance(Duration::from_millis(100)).await;
+            bump(&fixture.revisions);
+            tokio::task::yield_now().await;
+        }
+        // Now 290, the third repaint; the deadline (300) passes 10 ms later.
+        tokio::time::advance(Duration::from_millis(10)).await;
+        assert!(!task.is_finished(), "returned at the deadline mid-frame");
+        tokio::time::advance(Duration::from_millis(19)).await;
+        assert!(!task.is_finished(), "returned before the frame gap");
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let (verdict, waited) = task.await.unwrap();
+        assert!(verdict.signal.is_none() && !verdict.exited);
+        assert!(!verdict.settled, "20 ms past the deadline is not settled");
+        assert_eq!(
+            waited,
+            Duration::from_millis(320),
+            "the frame boundary, not the deadline"
+        );
+    }
+
+    /// #1692 streaming: a revision every 10 ms never leaves a frame gap, so
+    /// the loop gives up at `deadline + settle`, not settled. A signal that
+    /// lands during that grace is not looked for: the budget is over.
+    #[tokio::test(start_paused = true)]
+    async fn no_signal_under_streaming_output_returns_at_the_grace_end() {
+        let ring = stop_ring();
+        let (fixture, task) = start_signal_repaint(ring.clone(), 0, 300, REPAINT);
+        for step in 0..45 {
+            tokio::task::yield_now().await;
+            bump(&fixture.revisions);
+            tokio::task::yield_now().await;
+            if step == 35 {
+                ring.push("a", incoming("stop"), 0);
+            }
+            tokio::time::advance(Duration::from_millis(10)).await;
+        }
+        tokio::task::yield_now().await;
+        let (verdict, waited) = task.await.unwrap();
+        assert!(
+            verdict.signal.is_none(),
+            "a signal during the grace is not looked for"
+        );
+        assert!(!verdict.exited);
+        assert!(!verdict.settled, "still streaming at the grace end");
+        assert_eq!(waited, Duration::from_millis(450), "deadline + settle");
+    }
+
+    /// #1692: an exit during the grace ends it at once as exited.
+    #[tokio::test(start_paused = true)]
+    async fn an_exit_during_the_frame_boundary_grace_is_exited() {
+        let (fixture, task) = start_signal_repaint(stop_ring(), 0, 300, REPAINT);
+        for _ in 0..33 {
+            tokio::task::yield_now().await;
+            bump(&fixture.revisions);
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_millis(10)).await;
+        }
+        assert!(!task.is_finished(), "streaming: still in the grace");
+        fixture.stopped.store(true, Ordering::SeqCst);
+        bump(&fixture.events);
+        tokio::task::yield_now().await;
+        let (verdict, waited) = task.await.unwrap();
+        assert!(verdict.signal.is_none() && verdict.exited);
+        assert!(!verdict.settled);
+        assert_eq!(waited, Duration::from_millis(330));
     }
 
     struct Fixture {

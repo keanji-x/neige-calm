@@ -156,7 +156,7 @@ call start. The wait selects over `ModelView`'s `watch<u64>` revision channel
 watch; there is no sleep-poll loop. Every observation, in either mode, carries:
 
 ```json
-"wait":{"mode":"change","outcome":"changed|unchanged|exited|elapsed","waited_ms":812,"settled":true,"baseline_revision":"41"},
+"wait":{"mode":"change","outcome":"changed|unchanged|exited|elapsed|signal|no_signal|matched|unmatched","waited_ms":812,"settled":true,"baseline_revision":"41"},
 "changed_since_previous_observation":true,
 "previous_observation_revision":"41"
 ```
@@ -240,8 +240,9 @@ Every other refusal — including a revision change combined with a control or
 surface change — stays an RPC error; without the flag the surface fence is
 now checked too, so a resize plus output reports the surface error rather than
 inviting a flagged resend. The summary line reads `input stale_observation;
-screen elapsed; role owner` (#1677: the text block is the receipt `summary`
-in words).
+screen changed; wait elapsed; role owner` (#1677: the text block is the
+receipt `summary` in words; #1692: `screen` is the screen fact, `wait` the
+wait outcome).
 
 ### Release readback economy (rounds 07/08)
 
@@ -463,12 +464,18 @@ repaint settle below, #1628), on process exit,
 disconnect or projection invalidation (the attach stream failing — the same
 `stopped()` / `projection_unavailable` treatment as change mode, so the wait
 and the connection's input serial are never parked to the budget), or at the
-budget (`outcome: unchanged`). `wait.outcome` adds `signal` and `wait.signal`
-carries the matching signal (null otherwise). The loop subscribes to the seq
-channel, the projection revision channel and the protocol channel, marks the
-versions seen, inspects the ring before every select and again on timeout,
-and re-reads `stopped` on timeout (an exit coinciding with the deadline is
-`exited`, not `unchanged`). Baselines: observe → the previous observation's `last_seq`
+budget (`outcome: no_signal` — #1692: a fact about the ring, never about the
+screen, which `changed_since_previous_observation` reports; the wait then
+returns on a frame boundary, once the projection has been quiet for
+`min(settle_ms, 30 ms)` or at the latest `settle_ms` past the budget, and
+`settled` is true only when it was quiet for the full `settle_ms`, so the
+capture is not torn mid-repaint; a signal landing in that grace is not looked
+for). `wait.outcome` adds `signal` and `wait.signal` carries the matching
+signal (null otherwise). The loop subscribes to the seq channel, the
+projection revision channel and the protocol channel, marks the versions
+seen, inspects the ring before every select and again on timeout, and
+re-reads `stopped` on timeout (an exit coinciding with the deadline is
+`exited`, not `no_signal`). Baselines: observe → the previous observation's `last_seq`
 on this connection, else the seq at call start; input readback → the seq read
 immediately before the physical write (so a hook caused by the write is
 reported); control readback → the seq at call start; a readback of a cached
