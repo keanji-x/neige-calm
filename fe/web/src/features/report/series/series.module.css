@@ -68,13 +68,14 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .pinned {
+  /* A frozen block the source has published past: pinned, immutable now. */
+  .frozen {
     color: var(--text-2);
   }
 
   /* A frozen block the source has not yet published past: the one thing on
      this figure a reader must not miss, so it takes the warn register. */
-  .unpinned {
+  .pending {
     color: var(--warn-text);
   }
 

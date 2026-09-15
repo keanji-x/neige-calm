@@ -151,21 +151,42 @@ describe('ReportSeriesBlock', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it('marks a frozen block that is not pinned with the earliest complete_through', () => {
+  // The status line (#1693): three facts, three sentences, and never the
+  // phrase "not pinned" — a frozen block whose last day has not arrived was
+  // read as "the author did not freeze this".
+  it('frozen and pinned: says frozen-at and pinned, once', () => {
+    const { container } = draw(ok([okEntry('US:NVDA', [1, 2])], { pinned: true, as_of: '2026-09-11' }), { as_of: '2026-09-11' });
+    expect(container.textContent).toContain('frozen at 2026-09-11 · pinned');
+    expect(container.textContent).not.toContain('pin pending');
+    expect(container.textContent).not.toContain('not pinned');
+    // The sentence carries `as_of`; the separate "as of" span would say it twice.
+    expect(container.textContent).not.toContain('as of 2026-09-11');
+  });
+
+  it('frozen with an incomplete last day: says frozen-at and complete-through, never "not pinned"', () => {
     const { container } = draw(ok([
       okEntry('US:NVDA', [1, 2], { complete_through: '2026-09-11' }),
       okEntry('HK:9988', [1, 2], { complete_through: '2026-09-09' }),
     ], { pinned: false, as_of: '2026-09-12' }), { as_of: '2026-09-12' });
-    expect(container.textContent).toContain('not pinned — source data through 2026-09-09');
-    cleanup();
-    const pinned = draw(ok([okEntry('US:NVDA', [1, 2])], { pinned: true }), { as_of: '2026-09-11' });
-    expect(pinned.container.textContent).toContain('pinned');
-    expect(pinned.container.textContent).not.toContain('not pinned');
-    cleanup();
-    // A live block is never pinned and does not say so; it says when it was resolved.
-    const live = draw(ok([okEntry('US:NVDA', [1, 2])], { pinned: false }));
-    expect(live.container.textContent).not.toContain('not pinned');
-    expect(live.container.textContent).toContain('live · resolved 2026-09-12T08:00:00Z');
+    expect(container.textContent).toContain('frozen at 2026-09-12 · complete through 2026-09-09 · pin pending');
+    expect(container.textContent).not.toContain('not pinned');
+    expect(container.textContent).not.toContain('as of 2026-09-12');
+  });
+
+  it('live: says complete-through and resolved-at, and keeps the kernel\'s as_of', () => {
+    const { container } = draw(ok([okEntry('US:NVDA', [1, 2])], { pinned: false }));
+    expect(container.textContent).toContain('live · complete through 2026-09-11 · resolved 2026-09-12T08:00:00Z');
+    expect(container.textContent).toContain('as of 2026-09-11');
+    expect(container.textContent).not.toContain('frozen');
+    expect(container.textContent).not.toContain('pinned');
+  });
+
+  it('frozen with no resolved asset: complete-through is unknown', () => {
+    const { container } = draw(ok([
+      { asset: 'US:NVDA', status: 'unknown_asset', reason: 'no such listing' },
+    ], { pinned: false, as_of: '2026-09-12' }), { as_of: '2026-09-12', series: ['US:NVDA'] });
+    expect(container.textContent).toContain('frozen at 2026-09-12 · complete through unknown · pin pending');
+    expect(container.textContent).not.toContain('not pinned');
   });
 
   it('says so when the surface carries no resolver', () => {

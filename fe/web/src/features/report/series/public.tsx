@@ -30,6 +30,7 @@ import {
 import {
   CandlesFigure, PAD_X, PRICE_H, VIEW_W, formatDate, movingAverage, type CandleRow,
 } from '../candles/figure.tsx';
+import { SERIES_STATUS_COPY } from './copy.ts';
 import styles from './series.module.css';
 
 /** The identity class for a series index: `.s1` … `.s8` in the stylesheet. */
@@ -99,7 +100,7 @@ function SeriesNotice({ caption, text }: { caption?: string | null; text: string
 function SeriesFigure({ payload, resolved }: { payload: ChartSeriesPayload; resolved: OkResolvedSeries }) {
   const frozen = payload.as_of != null;
   const currencies = seriesCurrencies(resolved.series);
-  const through = minCompleteThrough(resolved.series);
+  const through = minCompleteThrough(resolved.series) ?? SERIES_STATUS_COPY.throughUnknown;
   const overlays = payload.overlays ?? [];
   return (
     <figure className={styles.figure}>
@@ -108,14 +109,14 @@ function SeriesFigure({ payload, resolved }: { payload: ChartSeriesPayload; reso
         <span className={styles.meta}>{resolved.range} {resolved.period} {resolved.view}</span>
         <span className={styles.meta}>{resolved.field}</span>
         {currencies.length > 0 && <span className={styles.meta}>{currencies.join(' / ')}</span>}
-        <span className={styles.meta}>as of {resolved.as_of}</span>
+        {/* Live: `as_of` is the kernel's (yesterday UTC), printed on its own.
+            Frozen: the status line carries it, so it is not printed twice. */}
+        {!frozen && <span className={styles.meta}>as of {resolved.as_of}</span>}
         {frozen
-          ? (resolved.pinned
-            ? <span className={styles.pinned}>pinned</span>
-            : <span className={styles.unpinned}>
-                {`not pinned — source data through ${through ?? 'unknown'}`}
-              </span>)
-          : <span className={styles.meta}>live · resolved {resolved.resolved_at}</span>}
+          ? (resolved.pinned === true
+            ? <span className={styles.frozen}>{SERIES_STATUS_COPY.pinned(resolved.as_of)}</span>
+            : <span className={styles.pending}>{SERIES_STATUS_COPY.pending(resolved.as_of, through)}</span>)
+          : <span className={styles.meta}>{SERIES_STATUS_COPY.live(through, resolved.resolved_at)}</span>}
       </figcaption>
 
       {resolved.view === 'candles'
