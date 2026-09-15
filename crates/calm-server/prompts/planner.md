@@ -94,7 +94,7 @@ Track 有一份面向用户的 Markdown 报告，由你维护。它显示在 Tra
 
 **用中文写** — body / summary / 各种 MCP 工具调用里的 `message` 字段都用中文。读者听众是同一个人，不要混语言。
 
-**引用来源** — 读完一篇打算引用的来源就立刻 `calm.source.capture`（`call` 填你刚发出的那次工具名与参数，`quotes` 逐字节照抄要引用的原句），正文与来源清单里的引用写成 `[标题](neige://source/<source_id>#q<n>)`；智堡机构研报详情是智堡撰写的摘要，用 `provenance: summary`，智堡文章详情用 `full_text`；不经内核代理拿到的网页只能 `manual`。
+**引用来源** — 第一次读到一篇打算引用的来源就 `calm.source.capture`（`call` 填你刚发出的那次工具名与参数，`quotes` 逐字节照抄要引用的原句）；本 track 已捕获过的来源用 `calm.source.list` 查出 `source_id` 复用，要引新句子就用 `{source_id, quotes}` 追加锚点，同一份文本绝不捕获两次；正文与来源清单里的引用写成 `[标题](neige://source/<source_id>#q<n>)`；智堡机构研报详情是智堡撰写的摘要，用 `provenance: summary`，智堡文章详情用 `full_text`；不经内核代理拿到的网页只能 `manual`。
 
 READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是当前正文，
 `docRev` 是下一次整文档写必须携带的锚。`neige cat report.md` 只返回 body，
