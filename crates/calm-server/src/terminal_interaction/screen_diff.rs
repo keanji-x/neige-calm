@@ -1,6 +1,7 @@
-//! Row-hash and cursor comparison behind `allow_output_below_cursor` (#1666):
-//! an opt-in text-and-presentation drift heuristic, not target equality. Pure
-//! functions over captured frames; no lock, no client.
+//! Row-hash and cursor comparison behind `allow_output_below_cursor` (#1666)
+//! and the changed rows an `allow_output_since_observation` receipt lists
+//! (#1683): an opt-in text-and-presentation drift heuristic, not target
+//! equality. Pure functions over captured frames; no lock, no client.
 use calm_terminal_view::{Cursor, Frame};
 use serde_json::{Value, json};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -48,6 +49,18 @@ pub fn row_hashes(frame: &Frame) -> Vec<u64> {
 /// receipt lists at most this many.
 pub const ROWS_LISTED_MAX: usize = 16;
 
+/// The opt-in that admitted a moved revision; each reports its own
+/// `observation_drift` fields ([`ScreenDiff::tolerance_json`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tolerance {
+    /// `allow_output_below_cursor`: only rows strictly below an unmoved
+    /// cursor changed ([`ScreenDiff::only_below_cursor`]).
+    BelowCursor,
+    /// `allow_output_since_observation`: the same-surface fence admitted
+    /// whatever changed; the receipt reports the comparison (#1683).
+    OutputSinceObservation,
+}
+
 /// What differs between the observed screen and the live one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenDiff {
@@ -56,7 +69,10 @@ pub struct ScreenDiff {
     /// The live cursor row is within `0..rows` of the live frame.
     pub cursor_in_range: bool,
     pub row_count_changed: bool,
-    pub rows_changed_at_or_above_cursor: usize,
+    /// Changed row indices, ascending, in each class relative to the live
+    /// cursor row; every index of the first is smaller than every index of
+    /// the second.
+    pub rows_changed_at_or_above_cursor: Vec<usize>,
     pub rows_changed_below_cursor: Vec<usize>,
     pub rows_changed_total: usize,
 }
@@ -73,14 +89,14 @@ impl ScreenDiff {
     ) -> Self {
         let rows = saved_rows.len().max(live_rows.len());
         let cursor_row = live.row as usize;
-        let mut at_or_above = 0;
+        let mut at_or_above = Vec::new();
         let mut below = Vec::new();
         for index in 0..rows {
             if saved_rows.get(index) == live_rows.get(index) {
                 continue;
             }
             if index <= cursor_row {
-                at_or_above += 1;
+                at_or_above.push(index);
             } else {
                 below.push(index);
             }
@@ -90,8 +106,8 @@ impl ScreenDiff {
             cursor_visible: live.visible,
             cursor_in_range: cursor_row < live_rows.len(),
             row_count_changed: saved_rows.len() != live_rows.len(),
+            rows_changed_total: at_or_above.len() + below.len(),
             rows_changed_at_or_above_cursor: at_or_above,
-            rows_changed_total: at_or_above + below.len(),
             rows_changed_below_cursor: below,
         }
     }
@@ -108,7 +124,7 @@ impl ScreenDiff {
         !self.cursor_moved
             && self.cursor_in_range
             && !self.row_count_changed
-            && self.rows_changed_at_or_above_cursor == 0
+            && self.rows_changed_at_or_above_cursor.is_empty()
     }
     /// The `screen_diff` block of a stale result: counts only, so the Planner
     /// sees at once whether `allow_output_below_cursor` would admit a resend.
@@ -116,21 +132,45 @@ impl ScreenDiff {
         json!({"compared":{"observed_revision":observed_revision,"current_revision":current_revision},
             "cursor":{"moved":self.cursor_moved,"visible":self.cursor_visible},
             "rows_changed_total":self.rows_changed_total,
-            "rows_changed_at_or_above_cursor":self.rows_changed_at_or_above_cursor,
+            "rows_changed_at_or_above_cursor":self.rows_changed_at_or_above_cursor.len(),
             "rows_changed_below_cursor":self.rows_changed_below_cursor.len()})
     }
-    /// The fields the tolerance adds to `observation_drift` when it admitted
-    /// the write: the first [`ROWS_LISTED_MAX`] changed row indices.
-    pub fn tolerance_json(&self) -> Value {
-        let listed: Vec<usize> = self
-            .rows_changed_below_cursor
-            .iter()
-            .copied()
-            .take(ROWS_LISTED_MAX)
-            .collect();
-        json!({"tolerance":"below_cursor","rows_changed_below_cursor":listed,
-            "rows_changed_total":self.rows_changed_total,
-            "truncated":self.rows_changed_below_cursor.len() > ROWS_LISTED_MAX})
+    /// The fields the admitting opt-in adds to `observation_drift`, each
+    /// listing at most [`ROWS_LISTED_MAX`] changed row indices. The
+    /// below-cursor shape lists `rows_changed_below_cursor` (the only class
+    /// that can be non-empty there); the same-surface shape (#1683) counts
+    /// both classes and the cursor facts of the stale result and lists
+    /// `rows_changed` across them, at-or-above first.
+    pub fn tolerance_json(&self, tolerance: Tolerance) -> Value {
+        match tolerance {
+            Tolerance::BelowCursor => {
+                let listed: Vec<usize> = self
+                    .rows_changed_below_cursor
+                    .iter()
+                    .copied()
+                    .take(ROWS_LISTED_MAX)
+                    .collect();
+                json!({"tolerance":"below_cursor","rows_changed_below_cursor":listed,
+                    "rows_changed_total":self.rows_changed_total,
+                    "truncated":self.rows_changed_below_cursor.len() > ROWS_LISTED_MAX})
+            }
+            Tolerance::OutputSinceObservation => {
+                let listed: Vec<usize> = self
+                    .rows_changed_at_or_above_cursor
+                    .iter()
+                    .chain(&self.rows_changed_below_cursor)
+                    .copied()
+                    .take(ROWS_LISTED_MAX)
+                    .collect();
+                json!({"tolerance":"output_since_observation",
+                    "cursor":{"moved":self.cursor_moved,"visible":self.cursor_visible},
+                    "rows_changed_total":self.rows_changed_total,
+                    "rows_changed_at_or_above_cursor":self.rows_changed_at_or_above_cursor.len(),
+                    "rows_changed_below_cursor":self.rows_changed_below_cursor.len(),
+                    "rows_changed":listed,
+                    "truncated":self.rows_changed_total > ROWS_LISTED_MAX})
+            }
+        }
     }
 }
 
@@ -192,7 +232,7 @@ mod tests {
         assert!(hint.only_below_cursor(), "{hint:?}");
         assert_eq!(hint.rows_changed_below_cursor, vec![3]);
         assert_eq!(hint.rows_changed_total, 1);
-        assert_eq!(hint.rows_changed_at_or_above_cursor, 0);
+        assert!(hint.rows_changed_at_or_above_cursor.is_empty());
         // Nothing changed at all (the revision moved without a diff).
         let same = diff(at, &saved);
         assert!(same.only_below_cursor());
@@ -200,16 +240,16 @@ mod tests {
         // The cursor row itself changed: at or above.
         let cursor_row = diff(at, &[1, 9, 3, 4, 5]);
         assert!(!cursor_row.only_below_cursor());
-        assert_eq!(cursor_row.rows_changed_at_or_above_cursor, 1);
+        assert_eq!(cursor_row.rows_changed_at_or_above_cursor, vec![1]);
         assert!(cursor_row.rows_changed_below_cursor.is_empty());
         // A row above the cursor changed.
         let above = diff(at, &[9, 2, 3, 4, 5]);
         assert!(!above.only_below_cursor());
-        assert_eq!(above.rows_changed_at_or_above_cursor, 1);
-        // Both sides: counts land in their classes.
+        assert_eq!(above.rows_changed_at_or_above_cursor, vec![0]);
+        // Both sides: indices land in their classes.
         let both = diff(at, &[9, 2, 3, 9, 9]);
         assert!(!both.only_below_cursor());
-        assert_eq!(both.rows_changed_at_or_above_cursor, 1);
+        assert_eq!(both.rows_changed_at_or_above_cursor, vec![0]);
         assert_eq!(both.rows_changed_below_cursor, vec![3, 4]);
         assert_eq!(both.rows_changed_total, 3);
         // Cursor moved (column) or out of range: refused even with
@@ -256,7 +296,7 @@ mod tests {
                 "cursor":{"moved":false,"visible":true},
                 "rows_changed_total":37,"rows_changed_at_or_above_cursor":0,"rows_changed_below_cursor":37})
         );
-        let tolerance = diff.tolerance_json();
+        let tolerance = diff.tolerance_json(Tolerance::BelowCursor);
         assert_eq!(tolerance["tolerance"], "below_cursor");
         assert_eq!(
             tolerance["rows_changed_below_cursor"],
@@ -271,7 +311,7 @@ mod tests {
             &[&saved[..5], &[99, 98][..], &saved[7..]].concat(),
         );
         assert_eq!(
-            few.tolerance_json(),
+            few.tolerance_json(Tolerance::BelowCursor),
             json!({"tolerance":"below_cursor","rows_changed_below_cursor":[5,6],"rows_changed_total":2,"truncated":false})
         );
         let stale = ScreenDiff::compare(at, &saved, cursor(3, 1, false), &live);
@@ -281,5 +321,73 @@ mod tests {
         );
         assert_eq!(stale.to_json(1, 2)["rows_changed_at_or_above_cursor"], 1);
         assert_eq!(stale.to_json(1, 2)["rows_changed_below_cursor"], 36);
+    }
+
+    /// #1683: the same-surface shape reports what the stale result would
+    /// have (cursor facts, both classes counted) plus the first sixteen
+    /// changed indices across both classes, at-or-above first; `truncated`
+    /// is judged on the total, not on one class.
+    #[test]
+    fn output_since_observation_json_counts_both_classes_and_lists_across_them() {
+        let saved: Vec<u64> = (0..40).collect();
+        let at = cursor(2, 0, true);
+        // Rows 0 (above) and 5 (below) changed, cursor unmoved: two classes,
+        // one index each, listed in row order.
+        let mut live = saved.clone();
+        live[0] += 100;
+        live[5] += 100;
+        let two = ScreenDiff::compare(at, &saved, at, &live);
+        assert!(!two.only_below_cursor());
+        assert_eq!(
+            two.tolerance_json(Tolerance::OutputSinceObservation),
+            json!({"tolerance":"output_since_observation",
+                "cursor":{"moved":false,"visible":true},
+                "rows_changed_total":2,"rows_changed_at_or_above_cursor":1,"rows_changed_below_cursor":1,
+                "rows_changed":[0,5],"truncated":false})
+        );
+        // Every row changed and the cursor moved (hidden): the list is the
+        // first sixteen indices, which here are all at or above the live
+        // cursor on row 20, and the total says the rest.
+        let all: Vec<u64> = saved.iter().map(|row| row + 100).collect();
+        let moved = ScreenDiff::compare(at, &saved, cursor(20, 3, false), &all);
+        let json = moved.tolerance_json(Tolerance::OutputSinceObservation);
+        assert_eq!(json["tolerance"], "output_since_observation");
+        assert_eq!(json["cursor"], json!({"moved":true,"visible":false}));
+        assert_eq!(json["rows_changed_total"], 40);
+        assert_eq!(json["rows_changed_at_or_above_cursor"], 21);
+        assert_eq!(json["rows_changed_below_cursor"], 19);
+        assert_eq!(json["rows_changed"], json!((0..16).collect::<Vec<usize>>()));
+        assert_eq!(json["truncated"], true);
+        // Ten above and ten below: the list crosses the cursor row and the
+        // total (20) is what truncates it, not either class (10 each).
+        let mut split = saved.clone();
+        for index in (0..10).chain(30..40) {
+            split[index] += 100;
+        }
+        let crossing = ScreenDiff::compare(at, &saved, cursor(15, 0, true), &split);
+        let json = crossing.tolerance_json(Tolerance::OutputSinceObservation);
+        assert_eq!(json["rows_changed_at_or_above_cursor"], 10);
+        assert_eq!(json["rows_changed_below_cursor"], 10);
+        assert_eq!(
+            json["rows_changed"],
+            json!((0..10).chain(30..36).collect::<Vec<usize>>())
+        );
+        assert_eq!(json["truncated"], true);
+        // Nothing changed (the revision moved without a diff): empty list,
+        // zero counts, not truncated.
+        let same = ScreenDiff::compare(at, &saved, at, &saved);
+        assert_eq!(
+            same.tolerance_json(Tolerance::OutputSinceObservation),
+            json!({"tolerance":"output_since_observation",
+                "cursor":{"moved":false,"visible":true},
+                "rows_changed_total":0,"rows_changed_at_or_above_cursor":0,"rows_changed_below_cursor":0,
+                "rows_changed":[],"truncated":false})
+        );
+        // The below-cursor shape is untouched by the second one: the same
+        // diff renders the #1666 fields only.
+        assert_eq!(
+            two.tolerance_json(Tolerance::BelowCursor),
+            json!({"tolerance":"below_cursor","rows_changed_below_cursor":[5],"rows_changed_total":2,"truncated":false})
+        );
     }
 }

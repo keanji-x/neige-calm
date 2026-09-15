@@ -185,7 +185,8 @@ true the fence becomes: same binding and connection, observation younger than
 unknown write, `scroll_offset == 0`, and the observation's input surface (cols,
 rows, modes, alternate) equal to the live frame's; bytes are encoded against the
 live surface. The receipt reports `output_since_observation` and, when true,
-`observation_drift: {observed_revision, input_revision}` (numbers). A resize, an
+`observation_drift: {observed_revision, input_revision}` (numbers; since #1683
+also the changed rows, see the #1666 doc's drift section). A resize, an
 input-mode change (for example application cursor keys) or an alternate-screen
 switch in either direction is refused with a surface-changed error even with
 the flag. The alternate screen is compared as the projection's `alternate`

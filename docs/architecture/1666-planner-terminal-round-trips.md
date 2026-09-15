@@ -201,6 +201,22 @@ opts in per request for input fields whose hint/status line refreshes (Claude
 Code's draft box), never for menus or clicks. The check runs at admission like
 the other fences (documented residual window unchanged).
 
+#1683 (Planner ask, round 17): a write that `allow_output_since_observation`
+admitted after the revision moved runs the same comparison on the frame the
+fences captured and reports it, so the Planner sees what its wide opt-in let
+through without observing again. `observation_drift` then carries
+`tolerance: "output_since_observation"`, `cursor: {moved, visible}`,
+`rows_changed_total`, `rows_changed_at_or_above_cursor` and
+`rows_changed_below_cursor` (both counts, as on a stale result),
+`rows_changed: [indices]` (the first 16 across both classes, at-or-above
+first) and `truncated` (judged on the total). The below-cursor shape above is
+unchanged (its `rows_changed_below_cursor` stays the index list); when both
+flags are set the wide one admits and its shape is reported. No fence moved:
+the wide flag admits whatever the comparison says, and an input on the exact
+revision still carries no `observation_drift` at all. Every write receipt of
+the request, the cached unknown one included, carries the same rows, so a
+replay returns them without recomputing.
+
 ### Measured one-write edits with Claude Code 2.1.259 (2026-09-13)
 
 Real `claude` in a PTY (`pexpect` + `pyte`, 80×24), each edit sent as one

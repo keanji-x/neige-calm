@@ -141,7 +141,7 @@ fn acknowledged_receipt(
 
 #[cfg(test)]
 mod tests {
-    use super::super::screen_diff::CursorSnapshot;
+    use super::super::screen_diff::{CursorSnapshot, Tolerance};
     use super::*;
 
     fn diff() -> ScreenDiff {
@@ -288,11 +288,24 @@ mod tests {
         assert_eq!(stale["claim"]["status"], "claimed");
         assert_eq!(stale["control_id"], json!(control));
         let mut drift = json!({"observed_revision":3,"input_revision":5});
-        merge(&mut drift, diff().tolerance_json());
+        merge(&mut drift, diff().tolerance_json(Tolerance::BelowCursor));
         assert_eq!(
             drift,
             json!({"observed_revision":3,"input_revision":5,"tolerance":"below_cursor",
                 "rows_changed_below_cursor":[2],"rows_changed_total":1,"truncated":false})
+        );
+        // #1683: the wide opt-in merges its own shape onto the same revisions.
+        let mut wide = json!({"observed_revision":3,"input_revision":5});
+        merge(
+            &mut wide,
+            diff().tolerance_json(Tolerance::OutputSinceObservation),
+        );
+        assert_eq!(
+            wide,
+            json!({"observed_revision":3,"input_revision":5,"tolerance":"output_since_observation",
+                "cursor":{"moved":false,"visible":true},"rows_changed_total":1,
+                "rows_changed_at_or_above_cursor":0,"rows_changed_below_cursor":1,
+                "rows_changed":[2],"truncated":false})
         );
     }
 }

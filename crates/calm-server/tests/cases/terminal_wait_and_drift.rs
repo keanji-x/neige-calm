@@ -939,6 +939,73 @@ async fn drift_tolerant_input_refuses_mode_change_and_history_views() {
     h.stop(&terminal).await;
 }
 
+/// #1683: a write the wide flag admitted after the revision moved lists what
+/// changed relative to the cursor, exactly as a stale result would have,
+/// plus the changed row indices; the flag still admits regardless of the
+/// comparison. Rows are painted through the render plane as a program
+/// would. An input on the exact revision carries no drift at all.
+#[tokio::test]
+async fn output_since_observation_receipt_lists_the_changed_rows() {
+    let h = Harness::start().await;
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"printf 'Title line\\nType here: '; cat >/dev/null","request_id":"rows","claim":true}),
+        )
+        .await;
+    assert_eq!(opened["claim"]["status"], "claimed", "{opened}");
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    let view = h.observe_text(&terminal, "Type here:").await;
+    assert_eq!(view["cursor"]["row"], 1, "{view}");
+    // The title (row 0, above the cursor) and a hint (row 3, below it) are
+    // repainted with the cursor saved and restored around the write.
+    let entry = h.state.terminal_renderer.get(&terminal).unwrap();
+    entry
+        .handle
+        .render_plane
+        .lock()
+        .unwrap()
+        .on_pty_chunk(b"\x1b7\x1b[1;1HOther title\x1b[4;1Hhint\x1b8".to_vec());
+    wait_past(&h, &terminal, revision(&view)).await;
+    let admitted = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":view["observation_id"],"request_id":"type","action":{"type":"text","text":"abc"},"allow_output_since_observation":true,"observe":true,"wait_for":"change","wait_ms":2000})).await;
+    let written = receipt(&admitted);
+    assert_eq!(written["outcome"], "written", "{written}");
+    assert_eq!(written["output_since_observation"], true);
+    let drift = &written["observation_drift"];
+    assert_eq!(
+        drift["observed_revision"].as_u64().unwrap(),
+        revision(&view)
+    );
+    assert!(drift["input_revision"].as_u64().unwrap() > revision(&view));
+    assert_eq!(drift["tolerance"], "output_since_observation", "{drift}");
+    assert_eq!(drift["cursor"], json!({"moved":false,"visible":true}));
+    assert_eq!(drift["rows_changed_total"], 2, "{drift}");
+    assert_eq!(drift["rows_changed_at_or_above_cursor"], 1, "{drift}");
+    assert_eq!(drift["rows_changed_below_cursor"], 1, "{drift}");
+    assert_eq!(drift["rows_changed"], json!([0, 3]), "{drift}");
+    assert_eq!(drift["truncated"], false);
+    let after = observation(&admitted).clone();
+    let text = after["text"].as_array().unwrap();
+    assert_eq!(text[0].as_str().unwrap().trim_end(), "Other title");
+    assert_eq!(text[1].as_str().unwrap().trim_end(), "Type here: abc");
+    // The readback is the latest observation and nothing painted since: the
+    // exact-revision path admits with the flag set and reports no drift,
+    // so there is no tolerance key either.
+    let exact = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"more","action":{"type":"text","text":"d"},"allow_output_since_observation":true})).await;
+    let plain = receipt(&exact);
+    assert_eq!(plain["outcome"], "written", "{plain}");
+    assert_eq!(plain["observation_id_used"], after["observation_id"]);
+    assert_eq!(plain["output_since_observation"], false);
+    assert!(plain.get("observation_drift").is_none(), "{plain}");
+    // A replay returns the cached receipt with the same drift rows.
+    let replay = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":view["observation_id"],"request_id":"type","action":{"type":"text","text":"abc"},"allow_output_since_observation":true})).await;
+    assert_eq!(
+        receipt(&replay)["observation_drift"]["rows_changed"],
+        json!([0, 3])
+    );
+    h.stop(&terminal).await;
+}
+
 /// A change wait stops when the projection is invalidated through the
 /// production route rather than idling to its budget. The supervisor output
 /// stream is severed the way a lost attach connection severs it (the attach

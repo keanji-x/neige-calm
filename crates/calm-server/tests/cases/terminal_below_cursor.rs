@@ -389,12 +389,13 @@ async fn changes_at_or_above_the_cursor_and_cursor_changes_stay_stale() {
         .await;
     assert_eq!(receipt(&both)["outcome"], "written", "{both}");
     assert_eq!(receipt(&both)["output_since_observation"], true);
-    assert!(
-        receipt(&both)["observation_drift"]
-            .get("tolerance")
-            .is_none(),
-        "the same-surface fence admitted it, not the row comparison: {both}"
-    );
+    // The same-surface fence admitted it, not the row comparison, and the
+    // receipt says so (#1683) while still listing the row above.
+    let drift = &receipt(&both)["observation_drift"];
+    assert_eq!(drift["tolerance"], "output_since_observation", "{both}");
+    assert_eq!(drift["rows_changed_at_or_above_cursor"], 1, "{drift}");
+    assert_eq!(drift["rows_changed_below_cursor"], 0, "{drift}");
+    assert_eq!(drift["rows_changed"], json!([0]), "{drift}");
     assert!(
         rows(observation(&both))[1].starts_with("Type here: abc"),
         "{both}"
