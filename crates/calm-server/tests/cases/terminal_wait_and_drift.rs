@@ -1240,13 +1240,16 @@ async fn text_results_carry_screen_text_only_in_structured_content() {
         .await;
     assert_eq!(
         summary(&released),
-        format!("terminal {terminal} release; no readback; details in structuredContent")
+        format!(
+            "terminal {terminal} release; no readback; release released; \
+             details in structuredContent"
+        )
     );
     assert_eq!(
         receipt(&released)["summary"],
         json!({"action":"release","readback":"none","screen":null,"wait":null,"settled":null,
             "signal":null,"repaint":null,"matched":null,"role":null,"control_id":null,
-            "exited":null,"claim":null,"release":null})
+            "exited":null,"claim":null,"release":"released"})
     );
     let image = h
         .call(

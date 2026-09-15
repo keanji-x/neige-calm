@@ -238,8 +238,7 @@ impl TerminalInteraction {
         //    call cancelled here leaves `requested` in the cached receipt and
         //    a replay never releases.
         if options.release {
-            let status = self.release_after_input(&client).await;
-            result["release"] = json!({"status":status});
+            result["release"] = self.release(&client).await.to_json();
             cache(&client, &key, &fingerprint, &result).await;
         }
         // 6. Readback against the pre-write baseline.

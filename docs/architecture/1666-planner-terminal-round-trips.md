@@ -145,7 +145,8 @@ registry — before the release was sent and held none after it; a takeover
 applied in between is reported as released too, since the outcome for the
 caller is the same), `"not_held"` (the cache or the owner registry said this
 connection did not hold control when the release ran, e.g. after a takeover)
-or `"unconfirmed"` (send failure or 7 s timeout) → readback with the
+or `"unconfirmed"` (send failure or 7 s timeout; on an exited terminal the
+registry-confirmed step of #1697 below, with its `reason`) → readback with the
 pre-write baseline. A release never clears `pending`, never rewrites the write
 outcome, and the readback shows the state after the release (`role: observer`
 when released; after `unconfirmed` or `requested` the role may still be owner:
@@ -155,8 +156,32 @@ extended). A call cancelled between the write and the release update leaves
 readback whose `role` says whether control is still held, and never releases.
 `claim`, `release`, `allow_output_below_cursor` and
 `allow_output_since_observation` enter the request fingerprint; a replayed
-`request_id` never claims, releases or writes again. `control(action=claim|
-release)` is unchanged. Helpers live in `terminal_interaction/input_control.rs`.
+`request_id` never claims, releases or writes again. `control(action=claim)`
+is unchanged; `control(action=release)` runs the same release step since
+#1697. Helpers live in `terminal_interaction/input_control.rs`.
+
+#### Release on an exited terminal (#1697)
+
+Round 20: `control release` on a terminal whose program had exited failed
+after 7 s with tokio's `deadline has elapsed`. The client pump's downstream
+task stops forwarding after `TerminalExited` (the WS client closes there), so
+the `OwnerChanged(None)` the release produces never reaches this connection's
+mirror (`ScreenState`), while the pump still applied the `OwnerRelease` to
+the owner registry. Now one step (`ReleaseStep` in `input_control.rs`)
+serves `input release:true` and `control release`: `not_held` when the
+mirror shows no lease or the registry does not name this connection;
+`OwnerRelease` sent (a send failure is `unconfirmed` with the reason); when
+the mirror says `exited`, the registry — the truth; the mirror is a cache
+the pump stopped feeding at exit — is polled every 20 ms for up to 1 s until
+it no longer names this connection, the mirror's `owner`/`control` are set
+from it and the status is `released` (otherwise `unconfirmed`, reason
+`terminal exited; release not confirmed`); on a live terminal the mirror's
+`OwnerChanged` is awaited for 7 s as before. The control receipt carries `release: {status,
+reason?}` like the input path (so `summary.release` fills for control
+releases too) and the call no longer fails on an unconfirmed release; the
+readback still runs. A `claim` on an exited terminal is the binding refusal
+(`controllable: false`), not a wait. Observations also carry `exit_code`
+from the `TerminalExited` frame (null until the exit or when unknown).
 
 ### `allow_output_below_cursor` — status-line refreshes are not stale
 
@@ -384,7 +409,8 @@ state.control_id, "exited": state.exited, "claim": claim.status, "release":
 release.status}`. Every field is nullable; mode-dependent wait fields are null
 outside their mode; `control_id` is the readback's (explicit null included),
 never the receipt's own lease — after `release:true` the receipt still names
-the granted lease while the summary says `null`. `application_result:
+the granted lease while the summary says `null`; `release` fills for a
+control release too since #1697. `application_result:
 "unverified"` stays where it is: the summary is a digest of evidence, not a
 verdict and not proof of a current screen change. The text block
 (`content[0].text`) says the same in words — `terminal <id> input written;

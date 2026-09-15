@@ -779,3 +779,89 @@ async fn input_release_after_a_takeover_reports_not_held() {
     pump.abort();
     h.stop(&terminal).await;
 }
+
+/// #1697 — a release on a terminal whose program has exited. The pump stops
+/// forwarding after `TerminalExited` (the WS client closes there), so the
+/// connection's mirror never sees the `OwnerChanged(None)` the release
+/// produces: the call used to fail after 7 s with tokio's `deadline has
+/// elapsed` while the registry had long dropped the lease. The release is
+/// now confirmed through the owner registry, the receipt says `released`,
+/// the readback is an observer's and the observation carries `exit_code`.
+/// A claim on the exited terminal is the binding refusal, not a 7 s wait.
+#[tokio::test]
+async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
+    let h = Harness::start().await;
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"sleep 1; exit 3","request_id":"exit-release","claim":true}),
+        )
+        .await;
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    assert_eq!(opened["role"], "owner", "{opened}");
+    assert_eq!(opened["exit_code"], Value::Null, "{opened}");
+    // Wait until this connection's mirror saw the exit (a change wait can
+    // return `exited` off the entry's exit state a moment before the frame
+    // is applied) and the worker session is no longer controllable.
+    let start = std::time::Instant::now();
+    let exited = loop {
+        let view = h
+            .ok(
+                "calm.terminal.observe",
+                json!({"terminal_id":terminal,"wait_for":"change","wait_ms":5000}),
+            )
+            .await;
+        if view["exited"] == true && view["controllable"] == false {
+            break view;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "never exited: {view}"
+        );
+    };
+    assert_eq!(exited["wait"]["outcome"], "exited", "{exited}");
+    assert_eq!(exited["role"], "owner", "{exited}");
+    assert!(
+        registry_owner(&h, &terminal).is_some(),
+        "the lease survives the exit"
+    );
+    let started = std::time::Instant::now();
+    let response = h
+        .call(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"release","observe":true}),
+        )
+        .await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "release took {elapsed:?}: {response}"
+    );
+    let released = receipt(&response);
+    assert_eq!(
+        released["release"],
+        json!({"status":"released"}),
+        "{released}"
+    );
+    assert_eq!(released["control_id"], Value::Null, "{released}");
+    assert_eq!(released["summary"]["release"], "released", "{released}");
+    let state = observation(&response);
+    assert_eq!(state["role"], "observer", "{state}");
+    assert_eq!(state["control_id"], Value::Null, "{state}");
+    assert_eq!(state["exited"], true, "{state}");
+    assert_eq!(state["exit_code"], 3, "{state}");
+    assert_eq!(exited["exit_code"], 3, "known before the release: {exited}");
+    assert_eq!(registry_owner(&h, &terminal), None);
+    // The claim arm on an exited terminal: the binding check refuses it.
+    let claim = h
+        .call(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"claim"}),
+        )
+        .await;
+    assert!(
+        error_text(&claim).contains("terminal control refused"),
+        "{claim}"
+    );
+    h.stop(&terminal).await;
+}

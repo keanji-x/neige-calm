@@ -164,7 +164,9 @@ watch; there is no sleep-poll loop. Every observation, in either mode, carries:
 `elapsed` mode reports `outcome:"elapsed"`, `settled:false`, `waited_ms` equal to
 the budget. `unchanged`/settled screens are not completion evidence; the prompt
 says so. `changed_since_previous_observation` is false when the connection had
-no previous observation.
+no previous observation. `exited` is this connection's mirror of the
+`TerminalExited` frame and `exit_code` (#1697) the program's status from that
+frame: null before the exit and when the runtime does not know the code.
 
 Baseline transparency (rounds 07/08): `wait.baseline_revision` is the revision
 the wait compared against, as a string like `observation_revision`; it is

@@ -35,6 +35,9 @@ pub struct ScreenState {
     pub control: Option<Uuid>,
     pub available: bool,
     pub exited: bool,
+    /// The program's exit status from `TerminalExited` (#1697): `None`
+    /// before the exit and when the runtime does not know the code.
+    pub exit_code: Option<i32>,
     pub ack: u64,
     pub refused: u64,
     pub pending: Option<u64>,
@@ -86,7 +89,10 @@ impl ScreenState {
                 self.last_protocol_error = Some(message);
             }
 
-            DaemonMsg::TerminalExited { .. } => self.exited = true,
+            DaemonMsg::TerminalExited { code, .. } => {
+                self.exited = true;
+                self.exit_code = code;
+            }
             _ => {}
         }
         Ok(())
@@ -210,6 +216,7 @@ impl Client {
             control: None,
             available: true,
             exited: false,
+            exit_code: None,
             ack: 0,
             refused: 0,
             pending: None,
@@ -338,6 +345,7 @@ mod tests {
             control: Some(Uuid::new_v4()),
             available: true,
             exited: false,
+            exit_code: None,
             ack: 2,
             refused: 0,
             pending,
