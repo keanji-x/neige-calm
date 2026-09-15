@@ -6,9 +6,9 @@
 //! at the stub, then drive bytes in each direction and assert they land
 //! on the other side.
 //!
-//! Test budget: 5 seconds per case. The shim is line-pumped JSON-RPC in
-//! production but the byte copy is content-agnostic — we exercise both
-//! directions with simple line-delimited payloads.
+//! Test budget: 5 seconds per case. The pump classifies every line but
+//! forwards non-JSON lines unchanged (`Frame::Other`), so both
+//! directions are exercised with simple line-delimited payloads.
 
 #![cfg(unix)]
 
@@ -90,11 +90,11 @@ async fn stdin_to_socket_forwards_bytes() {
         .expect("read line ok");
     assert_eq!(received, "hello-from-stdin\n");
 
-    // Cleanup. The shim now waits for BOTH directions to drain (the
-    // PR #221 fix) before exiting — so closing stdin alone isn't
-    // enough. Drop the server-side write half too so the shim's
-    // `sock_to_stdout` sees EOF on its read half. With both ends
-    // closed the shim exits and we reap it.
+    // Cleanup. On stdin EOF the pump half-closes the socket and keeps
+    // reading it until the kernel hangs up (pump.rs, the stdin-EOF arm
+    // of `drive`), so closing stdin alone isn't enough. Drop the
+    // server-side write half too so the shim reads EOF on the socket;
+    // with both ends closed the shim exits and we reap it.
     drop(child_stdin);
     drop(server_wr);
     let _ = timeout(TEST_BUDGET, child.wait()).await;
@@ -111,11 +111,10 @@ async fn socket_to_stdout_forwards_bytes() {
         .env_remove("NEIGE_MCP_DAEMON_TOKEN")
         .env("NEIGE_MCP_TOKEN", "test-byte-pump-token")
         // `Stdio::null()` for stdin is the natural "no inbound bytes
-        // from codex" shape for this direction-isolated test. With
-        // the PR #221 fix, the shim's `join!` waits for the socket
-        // direction even after the stdin direction EOFs immediately
-        // on null — so we no longer race the post-accept socket
-        // write into a half-closed shim.
+        // from codex" shape for this direction-isolated test. The pump
+        // keeps reading the socket after stdin EOF (it only half-closes
+        // its write side), so the post-accept socket write does not
+        // race a shim that is already gone.
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -149,29 +148,28 @@ async fn socket_to_stdout_forwards_bytes() {
         .expect("read_line ok");
     assert_eq!(line, "hello-from-socket\n");
 
-    // Drop the server-side write half so the shim sees EOF on the
-    // socket; combined with the `Stdio::null()` stdin (also EOF), the
-    // shim exits and `child.wait()` returns.
+    // Drop the server-side write half so the shim reads EOF on the
+    // socket; stdin (`Stdio::null()`) is already at EOF, so this is the
+    // clean order and the shim exits 0 without reconnecting.
     drop(server_wr);
     let _ = timeout(TEST_BUDGET, child.wait()).await;
 }
 
 /// Regression test for the PR #221 race fix.
 ///
-/// Before the fix, the shim's `tokio::select!` would exit as soon as
-/// EITHER direction completed. With `Stdio::null()` on stdin, the
-/// `stdin_to_sock` half resolved within microseconds of spawn (null
-/// EOF → 0-byte copy → shutdown). The shim would then drop the socket
-/// owner futures, closing the connection — and any kernel write
-/// arriving after that point would EPIPE.
+/// Before that fix, the shim exited as soon as EITHER direction
+/// completed. With `Stdio::null()` on stdin, the stdin direction
+/// resolved within microseconds of spawn, the shim closed the
+/// connection, and any kernel write arriving after that point would
+/// EPIPE. Today's pump (#1699) treats stdin EOF as a half-close: it
+/// shuts down its socket write side and keeps reading the socket until
+/// the kernel hangs up.
 ///
 /// This test simulates the production race directly: spawn the shim
-/// with `Stdio::null()` stdin (so `stdin_to_sock` resolves immediately),
-/// wait long enough for the buggy version to have exited, THEN write
-/// a frame on the socket and assert it lands on the shim's stdout.
-/// Under the buggy `select!` shape this fails with EPIPE on the
-/// socket write or EOF on the stdout read; under the fixed `join!`
-/// shape it passes deterministically.
+/// with `Stdio::null()` stdin, wait long enough for the buggy version
+/// to have exited, THEN write a frame on the socket and assert it
+/// lands on the shim's stdout. Under the buggy shape this fails with
+/// EPIPE on the socket write or EOF on the stdout read.
 #[tokio::test]
 async fn shim_stays_alive_after_stdin_eof_until_socket_closes() {
     let tmp = calm_test_sockets::socket_dir("shim");
@@ -225,9 +223,9 @@ async fn shim_stays_alive_after_stdin_eof_until_socket_closes() {
         "shim must forward socket frames that arrive after stdin EOF"
     );
 
-    // Cleanup. Closing the socket write half lets the shim's
-    // `sock_to_stdout` see EOF; combined with the already-EOF'd
-    // stdin, the shim exits.
+    // Cleanup. Closing the socket write half lets the shim read EOF on
+    // the socket; with stdin already at EOF that is the clean order and
+    // the shim exits.
     drop(server_wr);
     let _ = timeout(TEST_BUDGET, child.wait()).await;
 }

@@ -1,8 +1,10 @@
 //! Line-level JSON-RPC frame handling for the shim: classification by
-//! `id` / `method` presence (mirrors the kernel's
-//! `mcp_server/framing.rs::parse_frame`), the `initialize` token
-//! injector (issue #236 followup), and the error the pump synthesizes
-//! for a request whose outcome the kernel restart made unknown (#1699).
+//! presence of `id` / `method` (looser than the kernel's
+//! `mcp_server/framing.rs::parse_frame`, which also rejects
+//! non-u64/non-string ids and responses without `result`/`error`), the
+//! `initialize` token injector (issue #236 followup), and the error the
+//! pump synthesizes for a request whose outcome the kernel restart made
+//! unknown (#1699).
 //!
 //! Apart from the token injection into `initialize`, frames are
 //! forwarded verbatim; classification decides what the pump remembers

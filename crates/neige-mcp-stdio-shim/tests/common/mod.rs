@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+use std::net::Shutdown;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -11,7 +12,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::time::timeout;
 
 pub const SHIM_BIN: &str = env!("CARGO_BIN_EXE_neige-mcp-stdio-shim");
@@ -158,6 +159,11 @@ pub fn initialize_line(id: i64) -> String {
     )
 }
 
+/// A request with `id` and `method` and empty params (not an `initialize`).
+pub fn request_line(id: i64, method: &str) -> String {
+    format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"{method}\",\"params\":{{}}}}\n")
+}
+
 /// A `tools/call` request with `id`.
 pub fn tools_call_line(id: i64) -> String {
     format!(
@@ -187,11 +193,66 @@ pub fn assert_alive(child: &mut Child) {
 
 /// Wait for the child to exit within the budget and return its exit code.
 pub async fn wait_exit_code(child: &mut Child, what: &str) -> i32 {
-    let status = timeout(TEST_BUDGET, child.wait())
+    wait_exit_code_within(child, TEST_BUDGET, what).await
+}
+
+/// Wait for the child to exit within `within` and return its exit code.
+pub async fn wait_exit_code_within(child: &mut Child, within: Duration, what: &str) -> i32 {
+    let status = timeout(within, child.wait())
         .await
-        .unwrap_or_else(|_| panic!("shim exited ({what}) within budget"))
+        .unwrap_or_else(|_| panic!("shim exited ({what}) within {within:?}"))
         .expect("wait ok");
     status
         .code()
         .unwrap_or_else(|| panic!("shim killed by signal: {status:?}"))
+}
+
+/// Read the shim's next stderr line (one per state change).
+pub async fn read_stderr_line(reader: &mut BufReader<ChildStderr>) -> String {
+    let mut line = String::new();
+    let n = timeout(TEST_BUDGET, reader.read_line(&mut line))
+        .await
+        .expect("stderr line within budget")
+        .expect("stderr read ok");
+    assert!(n > 0, "shim closed stderr");
+    line
+}
+
+/// The stub reads the handshake on a raw stream, answers it, then shuts
+/// down its READ side only. The shim's next socket write fails with
+/// EPIPE while its read side sees no EOF — the D5-a shape, where zero
+/// bytes reached the kernel. Returns the stream so the caller decides
+/// when the shim finally sees EOF.
+pub async fn handshake_then_shut_read(
+    listener: &UnixListener,
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+) -> std::os::unix::net::UnixStream {
+    let (mut stream, _addr) = timeout(TEST_BUDGET, listener.accept())
+        .await
+        .expect("shim connected within budget")
+        .expect("accept ok");
+    write_stdin(stdin, &initialize_line(1)).await;
+    let mut line = String::new();
+    {
+        let mut reader = BufReader::new(&mut stream);
+        timeout(TEST_BUDGET, reader.read_line(&mut line))
+            .await
+            .expect("stub read initialize within budget")
+            .expect("stub read ok");
+    }
+    let init: serde_json::Value = serde_json::from_str(line.trim_end()).expect("initialize JSON");
+    assert_replayed_initialize(&init, 1);
+    stream
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n")
+        .await
+        .expect("stub reply ok");
+    let resp = read_stdout(stdout, "initialize response").await;
+    assert_eq!(resp["id"], serde_json::json!(1));
+
+    let std_stream = stream.into_std().expect("into_std");
+    std_stream
+        .shutdown(Shutdown::Read)
+        .expect("shutdown read side");
+    std_stream
 }

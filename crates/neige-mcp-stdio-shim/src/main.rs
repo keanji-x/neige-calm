@@ -8,7 +8,7 @@
 //! `NEIGE_MCP_DAEMON_TOKEN` + `NEIGE_MCP_SOCKET` in the env (set by
 //! `planner_card::build_codex_env_map`), the shim opens the socket, injects
 //! the token into the `initialize` frame, then ferries line-delimited
-//! frames in both directions (`pump.rs`).
+//! frames in both directions (`pump.rs`; reconnect timing in `budget.rs`).
 //!
 //! ## Lifecycle
 //!
@@ -50,10 +50,12 @@
 //! ## Exit codes
 //!
 //! 0 clean; 2 env missing; 3 first connection failed within
-//! [`pump::INITIAL_CONNECT_BUDGET`]; 4 the kernel rejected a
-//! (replayed) `initialize`; 5 a reconnect exceeded
-//! [`pump::RECONNECT_BUDGET`].
+//! [`budget::INITIAL_CONNECT_BUDGET`]; 4 the kernel rejected a
+//! (replayed) `initialize`; 5 an outage outlived its budget
+//! ([`budget::RECONNECT_BUDGET`], or [`budget::INITIAL_CONNECT_BUDGET`]
+//! while codex has no `initialize` response yet).
 
+mod budget;
 mod frames;
 mod pump;
 
@@ -112,10 +114,11 @@ async fn main() -> ExitCode {
         pump::Exit::InitializeRejected => 4,
         pump::Exit::BudgetExhausted => 5,
     };
-    // Exits 4 and 5 happen with codex alive and a blocking stdin read
-    // parked on a runtime worker thread; dropping the runtime would wait
-    // for that read, so leave without unwinding. Every stdout write was
-    // flushed by the pump before it returned.
+    // Exits 3, 4 and 5 happen with codex alive and stdin still open; a
+    // blocking stdin read may be parked on a runtime worker thread, and
+    // dropping the runtime would wait for it, so leave without
+    // unwinding. Every stdout write was flushed by the pump before it
+    // returned.
     std::process::exit(code)
 }
 

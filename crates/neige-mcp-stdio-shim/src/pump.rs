@@ -8,85 +8,27 @@
 //! response, and resumes. Requests that were written but unanswered at
 //! the moment of the hang-up get a synthesized `-32000` error right
 //! then (the kernel may have executed them; see
-//! [`frames::lost_error_frame`]); a frame whose socket write failed was
-//! never queued and is re-sent after the handshake. The kernel side of
-//! this contract is `calm-server/src/mcp_server/transport.rs`
-//! (`handle_connection`): one identity per connection, bound by
-//! `initialize`; serial request/response; notifications dropped; the
-//! kernel never sends requests.
+//! [`frames::lost_error_frame`]); a request whose socket write failed
+//! was never queued and is re-sent after the handshake (notifications
+//! and other frames are not). Socket writes are driven one `write` at a
+//! time from inside the same `select!`, so the socket keeps being read
+//! while a large request is in flight: the kernel is serial and would
+//! otherwise block writing a response while we block writing a request.
+//! The kernel side of this contract is
+//! `calm-server/src/mcp_server/transport.rs` (`handle_connection`): one
+//! identity per connection, bound by `initialize`; serial
+//! request/response; notifications dropped; the kernel never sends
+//! requests.
 
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader, Stdin, Stdout};
 use tokio::net::UnixStream;
-use tokio::net::unix::OwnedWriteHalf;
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
+use crate::budget::{INITIAL_CONNECT_BUDGET, RECONNECT_BUDGET, ReconnectBudget};
 use crate::frames::{self, Frame, RPC_INTERNAL_ERROR, classify, lost_error_frame};
-
-/// First delay between reconnect attempts; doubles each time.
-pub(crate) const RECONNECT_BACKOFF_INITIAL: Duration = Duration::from_millis(100);
-/// Ceiling for the doubling, so a kernel that is back is noticed
-/// within 5 s.
-pub(crate) const RECONNECT_BACKOFF_CAP: Duration = Duration::from_secs(5);
-/// Total time one outage may take before the shim gives up (exit 5).
-/// Well below codex's default 120 s `tools/call` timeout, so the shim
-/// fails a call before codex abandons it and a kernel that comes back
-/// later does not run it.
-pub(crate) const RECONNECT_BUDGET: Duration = Duration::from_secs(30);
-/// Total time the first connection may take (exit 3). Below codex's
-/// default 30 s MCP startup timeout, so codex sees our exit rather than
-/// its own timeout.
-pub(crate) const INITIAL_CONNECT_BUDGET: Duration = Duration::from_secs(15);
-
-/// Deadline + backoff for one outage. Pure: every method takes `now`.
-#[derive(Debug)]
-pub(crate) struct ReconnectBudget {
-    total: Duration,
-    start: Instant,
-    backoff: Duration,
-    attempts: u32,
-}
-
-impl ReconnectBudget {
-    pub(crate) fn new(now: Instant, total: Duration) -> Self {
-        Self {
-            total,
-            start: now,
-            backoff: RECONNECT_BACKOFF_INITIAL,
-            attempts: 0,
-        }
-    }
-
-    /// Start a fresh outage: deadline, backoff and attempt count all reset.
-    pub(crate) fn reset(&mut self, now: Instant) {
-        *self = Self::new(now, self.total);
-    }
-
-    /// The delay to sleep before the next attempt, or `None` once the
-    /// deadline has passed. Never sleeps past the deadline.
-    pub(crate) fn next_delay(&mut self, now: Instant) -> Option<Duration> {
-        let elapsed = now.saturating_duration_since(self.start);
-        if elapsed >= self.total {
-            return None;
-        }
-        let delay = self.backoff.min(self.total - elapsed);
-        self.backoff = (self.backoff * 2).min(RECONNECT_BACKOFF_CAP);
-        Some(delay)
-    }
-
-    pub(crate) fn record_attempt(&mut self) {
-        self.attempts += 1;
-    }
-
-    pub(crate) fn attempts(&self) -> u32 {
-        self.attempts
-    }
-
-    pub(crate) fn elapsed(&self, now: Instant) -> Duration {
-        now.saturating_duration_since(self.start)
-    }
-}
 
 /// How the pump ended; `main` maps these to exit codes.
 pub(crate) enum Exit {
@@ -116,10 +58,50 @@ enum Ended {
     Clean,
     /// Socket EOF/error, or a socket write failure, with stdin open.
     Lost,
+    /// An `initialize` (original or replayed) answered -32603. The
+    /// kernel drops the connection after any handshake error, so this
+    /// is an outage too; it runs under the same budget as `Lost` but
+    /// nothing was lost, so the stderr line says what happened instead.
+    InitializeRetry,
     /// A handshake response with a non-retryable error.
     Rejected,
     /// stdin closed while waiting for a replayed handshake response.
     StdinClosed,
+    /// The outage deadline passed while a replayed handshake was pending.
+    BudgetExhausted,
+}
+
+/// A frame being written to the socket, one `write` per `select!` turn.
+struct PendingWrite {
+    kind: WriteKind,
+    bytes: Vec<u8>,
+    off: usize,
+}
+
+/// What to record when a pending write completes or fails.
+enum WriteKind {
+    /// A request from codex: its id joins `outstanding` on completion;
+    /// on failure the frame becomes `held`.
+    Request(serde_json::Value),
+    /// The held request being re-sent after a handshake; same
+    /// bookkeeping as `Request`.
+    Held(serde_json::Value),
+    /// The cached `initialize`, original or replayed: the cache is the
+    /// record, so nothing is recorded either way.
+    Initialize,
+    /// A notification, response or unclassifiable line: forwarded once,
+    /// never re-sent.
+    Passthrough,
+}
+
+impl PendingWrite {
+    fn new(kind: WriteKind, bytes: Vec<u8>) -> Self {
+        Self {
+            kind,
+            bytes,
+            off: 0,
+        }
+    }
 }
 
 /// Result of probing stdin during a reconnect wait.
@@ -147,15 +129,23 @@ struct Pump {
     /// ids of requests written to the kernel and not yet answered, in
     /// send order.
     outstanding: Vec<serde_json::Value>,
-    /// A request line whose socket write failed, re-sent after the next
-    /// handshake. A write to a dead peer fails before the first byte,
-    /// and a frame cut short by the failure has no newline, so the
-    /// kernel's `read_line` framer never dispatches it either way.
+    /// A request whose socket write failed or was still in flight when
+    /// the connection ended, re-sent after the next handshake. A write
+    /// to a dead peer fails before the first byte, and a frame cut
+    /// short has no newline, so the kernel's `read_line` framer never
+    /// dispatches it either way.
     held: Option<(serde_json::Value, Vec<u8>)>,
     /// Set from the moment a connection is lost until a handshake on a
     /// new one is accepted; the -32603 retry path keeps it set so one
     /// budget covers the whole outage.
     reconnecting: bool,
+    /// The socket write in flight, if any. stdin is not read while it
+    /// is set (backpressure); the socket is.
+    pending: Option<PendingWrite>,
+    /// The most recent thing that went wrong in the current outage (a
+    /// connect error, a -32603 answer, an unanswered replay), for the
+    /// exit-3 and exit-5 lines.
+    last_error: String,
 }
 
 /// Run the shim against `socket_path` until one of the [`Exit`] shapes.
@@ -171,21 +161,29 @@ pub(crate) async fn run(socket_path: String, token: String) -> Exit {
         outstanding: Vec::new(),
         held: None,
         reconnecting: false,
+        pending: None,
+        last_error: "no connect attempt made".to_string(),
     };
 
     let mut budget = ReconnectBudget::new(Instant::now(), INITIAL_CONNECT_BUDGET);
     let mut stream = match pump.connect_loop(&mut budget, true).await {
         Ok(s) => s,
-        Err(ConnectEnd::StdinClosed) => return Exit::Clean,
-        Err(ConnectEnd::Exhausted(err)) => {
-            stderr_line(&format!("connect {}: {err}", pump.socket_path));
+        Err(ConnectEnd::StdinClosed) => {
+            stderr_line("stdin closed before the first connection; exiting");
+            return Exit::Clean;
+        }
+        Err(ConnectEnd::Exhausted) => {
+            stderr_line(&format!(
+                "connect {}: {}",
+                pump.socket_path, pump.last_error
+            ));
             return Exit::InitialConnectFailed;
         }
     };
-    let mut budget = ReconnectBudget::new(Instant::now(), RECONNECT_BUDGET);
 
     loop {
-        match pump.pump_connection(stream, &budget).await {
+        let ended = pump.pump_connection(stream, &budget).await;
+        match ended {
             Ended::Clean => return Exit::Clean,
             Ended::StdinClosed => {
                 pump.fail_all().await;
@@ -196,15 +194,21 @@ pub(crate) async fn run(socket_path: String, token: String) -> Exit {
                 pump.fail_all().await;
                 return Exit::InitializeRejected;
             }
-            Ended::Lost => {
-                if !pump.reconnecting {
-                    pump.reconnecting = true;
-                    budget.reset(Instant::now());
-                    let failed = pump.outstanding.len();
-                    pump.fail_outstanding().await;
+            Ended::BudgetExhausted => return pump.budget_exhausted(&budget).await,
+            Ended::Lost | Ended::InitializeRetry => {
+                let failed = pump.outstanding.len();
+                pump.fail_outstanding().await;
+                if matches!(ended, Ended::InitializeRetry) {
+                    pump.last_error = "initialize answered -32603".to_string();
+                    stderr_line("initialize answered -32603; retrying under the outage budget");
+                } else if !pump.reconnecting {
                     stderr_line(&format!(
                         "connection to kernel lost ({failed} unanswered requests failed); reconnecting"
                     ));
+                }
+                if !pump.reconnecting {
+                    pump.reconnecting = true;
+                    budget.reset(Instant::now(), pump.outage_budget());
                 }
             }
         }
@@ -215,22 +219,15 @@ pub(crate) async fn run(socket_path: String, token: String) -> Exit {
                 stderr_line("stdin closed while reconnecting; exiting");
                 return Exit::Clean;
             }
-            Err(ConnectEnd::Exhausted(err)) => {
-                pump.fail_all().await;
-                stderr_line(&format!(
-                    "reconnect budget exhausted after {} attempts in {} ms; last error: {err}",
-                    budget.attempts(),
-                    budget.elapsed(Instant::now()).as_millis()
-                ));
-                return Exit::BudgetExhausted;
-            }
+            Err(ConnectEnd::Exhausted) => return pump.budget_exhausted(&budget).await,
         };
     }
 }
 
 enum ConnectEnd {
     StdinClosed,
-    Exhausted(io::Error),
+    /// The budget ran out; `Pump::last_error` says what failed last.
+    Exhausted,
 }
 
 impl Pump {
@@ -245,18 +242,17 @@ impl Pump {
     ) -> Result<UnixStream, ConnectEnd> {
         let mut poll_stdin = !self.stdin_eof;
         let mut try_now = attempt_first;
-        let mut last_error = io::Error::other("no connect attempt made");
         loop {
             if try_now {
                 budget.record_attempt();
                 match UnixStream::connect(&self.socket_path).await {
                     Ok(stream) => return Ok(stream),
-                    Err(e) => last_error = e,
+                    Err(e) => self.last_error = e.to_string(),
                 }
             }
             try_now = true;
             let Some(delay) = budget.next_delay(Instant::now()) else {
-                return Err(ConnectEnd::Exhausted(last_error));
+                return Err(ConnectEnd::Exhausted);
             };
             let until = tokio::time::Instant::now() + delay;
             loop {
@@ -279,38 +275,62 @@ impl Pump {
     /// Drive one connection until it ends. While `reconnecting`, the
     /// cached `initialize` is written first and nothing is forwarded
     /// until its response arrives (the kernel answers pre-handshake
-    /// requests with -32002 and drops the connection).
+    /// requests with -32002 and drops the connection). Whatever write
+    /// was in flight when the connection ended is held or dropped by
+    /// [`Pump::hold_pending`].
     async fn pump_connection(&mut self, stream: UnixStream, budget: &ReconnectBudget) -> Ended {
-        let (rd, mut wr) = stream.into_split();
-        let mut sock = BufReader::new(rd);
-        let mut sock_acc = Vec::new();
-
+        let (rd, wr) = stream.into_split();
         let mut awaiting_handshake = false;
         if self.reconnecting {
             if let Some(init) = &self.init {
-                if write_frame(&mut wr, init.frame.as_bytes()).await.is_err() {
-                    return Ended::Lost;
-                }
+                self.pending = Some(PendingWrite::new(
+                    WriteKind::Initialize,
+                    init.frame.clone().into_bytes(),
+                ));
                 awaiting_handshake = true;
             } else {
                 // Nothing cached (first frame was not an initialize):
                 // resume forwarding directly.
                 self.reconnected(budget);
-                if let Some(ended) = self.send_held(&mut wr).await {
-                    return ended;
-                }
             }
         }
+        let ended = self
+            .drive(BufReader::new(rd), wr, awaiting_handshake, budget)
+            .await;
+        self.hold_pending();
+        ended
+    }
+
+    /// The connected `select!`. The socket read branch is always active;
+    /// the write branch while a frame is pending; stdin while nothing is
+    /// pending (a line read, or only an EOF probe while the handshake is
+    /// pending, D2); the deadline while the handshake is pending.
+    async fn drive(
+        &mut self,
+        mut sock: BufReader<OwnedReadHalf>,
+        mut wr: OwnedWriteHalf,
+        mut awaiting_handshake: bool,
+        budget: &ReconnectBudget,
+    ) -> Ended {
+        let mut sock_acc = Vec::new();
+        let deadline = tokio::time::Instant::from_std(budget.deadline());
         let mut poll_stdin = true;
 
         loop {
-            // While the handshake is pending stdin is only probed for
-            // EOF (D2); otherwise it is read line by line.
-            let stdin_active = !self.stdin_eof && (!awaiting_handshake || poll_stdin);
+            if self.pending.is_none()
+                && !awaiting_handshake
+                && let Some((id, bytes)) = self.held.take()
+            {
+                self.pending = Some(PendingWrite::new(WriteKind::Held(id), bytes));
+            }
+            let stdin_active =
+                !self.stdin_eof && self.pending.is_none() && (!awaiting_handshake || poll_stdin);
             let event = tokio::select! {
                 line = next_line(&mut sock, &mut sock_acc) => Event::Socket(line),
+                n = write_step(&mut wr, &self.pending), if self.pending.is_some() => Event::Written(n),
                 ev = stdin_step(&mut self.stdin, &mut self.stdin_acc, awaiting_handshake),
                     if stdin_active => ev,
+                _ = tokio::time::sleep_until(deadline), if awaiting_handshake => Event::Deadline,
             };
             match event {
                 Event::Socket(Ok(Some(line))) => {
@@ -321,11 +341,8 @@ impl Pump {
                                 Replay::Accepted => {
                                     awaiting_handshake = false;
                                     self.reconnected(budget);
-                                    if let Some(ended) = self.send_held(&mut wr).await {
-                                        return ended;
-                                    }
                                 }
-                                Replay::Retry => return Ended::Lost,
+                                Replay::Retry => return Ended::InitializeRetry,
                                 Replay::Rejected => return Ended::Rejected,
                             }
                         } else {
@@ -344,11 +361,13 @@ impl Pump {
                         Ended::Lost
                     };
                 }
-                Event::Stdin(Ok(Some(line))) => {
-                    if let Some(ended) = self.on_stdin_line(line, &mut wr).await {
-                        return ended;
-                    }
-                }
+                Event::Written(Ok(n)) if n > 0 => match self.advance_pending(n) {
+                    Some(WriteKind::Request(id) | WriteKind::Held(id)) => self.outstanding.push(id),
+                    Some(WriteKind::Initialize | WriteKind::Passthrough) | None => {}
+                },
+                // `Ok(0)` or an error: the peer is gone.
+                Event::Written(_) => return Ended::Lost,
+                Event::Stdin(Ok(Some(line))) => self.on_stdin_line(line),
                 Event::Stdin(Ok(None)) | Event::Stdin(Err(_)) => {
                     // codex closed our stdin: half-close so the kernel
                     // reads EOF and drops the connection, then keep
@@ -361,7 +380,37 @@ impl Pump {
                     return Ended::StdinClosed;
                 }
                 Event::Probe(Probe::Data) => poll_stdin = false,
+                Event::Deadline => {
+                    self.last_error = "replayed initialize unanswered".to_string();
+                    return Ended::BudgetExhausted;
+                }
             }
+        }
+    }
+
+    /// `n` more bytes of the pending frame are on the wire; returns the
+    /// kind once the whole frame is.
+    fn advance_pending(&mut self, n: usize) -> Option<WriteKind> {
+        let p = self
+            .pending
+            .as_mut()
+            .expect("a write completed, so a frame was pending");
+        p.off += n;
+        if p.off < p.bytes.len() {
+            return None;
+        }
+        self.pending.take().map(|p| p.kind)
+    }
+
+    /// The connection is over. A request still pending has not had its
+    /// trailing newline written, so the kernel's `read_line` never
+    /// dispatched it: it is held for re-sending. Anything else pending
+    /// is dropped.
+    fn hold_pending(&mut self) {
+        if let Some(p) = self.pending.take()
+            && let WriteKind::Request(id) | WriteKind::Held(id) = p.kind
+        {
+            self.held = Some((id, p.bytes));
         }
     }
 
@@ -419,7 +468,7 @@ impl Pump {
                 // a fresh connection, anything else ends the shim.
                 match error_code {
                     None => init.acked = true,
-                    Some(RPC_INTERNAL_ERROR) => return Some(Ended::Lost),
+                    Some(RPC_INTERNAL_ERROR) => return Some(Ended::InitializeRetry),
                     Some(code) => {
                         init.acked = true;
                         self.write_stdout(&line).await;
@@ -437,58 +486,30 @@ impl Pump {
         None
     }
 
-    /// A line from codex: inject + cache an `initialize`, remember the
-    /// id of any other request, write it through.
-    async fn on_stdin_line(&mut self, line: Vec<u8>, wr: &mut OwnedWriteHalf) -> Option<Ended> {
-        match classify(&line) {
+    /// A line from codex becomes the pending socket write: an
+    /// `initialize` is token-injected and cached first, any other
+    /// request is remembered by id once written.
+    fn on_stdin_line(&mut self, line: Vec<u8>) {
+        let (kind, bytes) = match classify(&line) {
             Frame::Request { id, method } if method == "initialize" => {
-                let text = match String::from_utf8(line) {
-                    Ok(text) => text,
-                    Err(e) => {
-                        return write_frame(wr, e.as_bytes())
-                            .await
-                            .is_err()
-                            .then_some(Ended::Lost);
-                    }
-                };
+                let text = String::from_utf8(line)
+                    .expect("classify() parsed this line as JSON, so it is UTF-8");
                 let injected = frames::maybe_inject_token(&text, &self.token);
                 self.init = Some(CachedInitialize {
                     frame: injected.clone(),
                     id,
                     acked: false,
                 });
-                // On failure the cached frame is what the reconnect
-                // path re-sends, so nothing is held separately.
-                write_frame(wr, injected.as_bytes())
-                    .await
-                    .is_err()
-                    .then_some(Ended::Lost)
+                (WriteKind::Initialize, injected.into_bytes())
             }
-            Frame::Request { id, .. } => {
-                if write_frame(wr, &line).await.is_err() {
-                    self.held = Some((id, line));
-                    return Some(Ended::Lost);
-                }
-                self.outstanding.push(id);
-                None
-            }
+            Frame::Request { id, .. } => (WriteKind::Request(id), line),
             // Notifications are dropped by the kernel and anything
             // unclassifiable has no id to answer: neither is re-sent.
             Frame::Notification | Frame::Response { .. } | Frame::Other => {
-                write_frame(wr, &line).await.is_err().then_some(Ended::Lost)
+                (WriteKind::Passthrough, line)
             }
-        }
-    }
-
-    /// Re-send the held request after a handshake, if there is one.
-    async fn send_held(&mut self, wr: &mut OwnedWriteHalf) -> Option<Ended> {
-        let (id, line) = self.held.take()?;
-        if write_frame(wr, &line).await.is_err() {
-            self.held = Some((id, line));
-            return Some(Ended::Lost);
-        }
-        self.outstanding.push(id);
-        None
+        };
+        self.pending = Some(PendingWrite::new(kind, bytes));
     }
 
     /// D5-b: every request the kernel owed an answer to gets the
@@ -500,7 +521,9 @@ impl Pump {
     }
 
     /// Terminal exits: outstanding, then an unacknowledged initialize,
-    /// then the held frame — nothing codex is waiting on is left silent.
+    /// then the held frame. Lines still unread in the stdin pipe get
+    /// nothing; the process exit closes stdout and codex fails them as
+    /// transport-closed itself.
     async fn fail_all(&mut self) {
         self.fail_outstanding().await;
         if let Some(init) = self.init.as_mut()
@@ -533,12 +556,38 @@ impl Pump {
             budget.elapsed(Instant::now()).as_millis()
         ));
     }
+
+    /// The total for an outage starting now. Until codex has a response
+    /// to its `initialize` it is inside its MCP startup timeout, which
+    /// [`INITIAL_CONNECT_BUDGET`] is sized for; afterwards it is inside a
+    /// `tools/call` timeout, which [`RECONNECT_BUDGET`] is sized for.
+    fn outage_budget(&self) -> Duration {
+        if self.init.as_ref().is_some_and(|init| init.acked) {
+            RECONNECT_BUDGET
+        } else {
+            INITIAL_CONNECT_BUDGET
+        }
+    }
+
+    /// Exit 5: fail everything owed, one stderr line with the last error.
+    async fn budget_exhausted(&mut self, budget: &ReconnectBudget) -> Exit {
+        self.fail_all().await;
+        stderr_line(&format!(
+            "reconnect budget exhausted after {} attempts in {} ms; last error: {}",
+            budget.attempts(),
+            budget.elapsed(Instant::now()).as_millis(),
+            self.last_error
+        ));
+        Exit::BudgetExhausted
+    }
 }
 
 enum Event {
     Socket(io::Result<Option<Vec<u8>>>),
+    Written(io::Result<usize>),
     Stdin(io::Result<Option<Vec<u8>>>),
     Probe(Probe),
+    Deadline,
 }
 
 /// The stdin side of the connected `select!`: a probe while a replayed
@@ -554,7 +603,8 @@ async fn stdin_step(stdin: &mut BufReader<Stdin>, acc: &mut Vec<u8>, probe_only:
 /// Read one `\n`-terminated line (trailer kept) into `acc`, returning
 /// it complete, or `None` at EOF. Each step is one cancellation-safe
 /// `fill_buf`; consumed bytes move into `acc` before the next await, so
-/// dropping this future inside `select!` loses nothing.
+/// dropping this future inside `select!` loses nothing. An unterminated
+/// last line at EOF is dropped; codex terminates every frame.
 async fn next_line<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     acc: &mut Vec<u8>,
@@ -591,68 +641,17 @@ async fn stdin_probe(stdin: &mut BufReader<Stdin>) -> Probe {
     }
 }
 
-async fn write_frame(wr: &mut OwnedWriteHalf, bytes: &[u8]) -> io::Result<()> {
-    wr.write_all(bytes).await?;
-    wr.flush().await
+/// One `write` of what is left of the pending frame. tokio's `write` is
+/// cancel-safe: when another `select!` branch wins first, nothing was
+/// written. No `flush`: on a `UnixStream` it is a no-op.
+async fn write_step(wr: &mut OwnedWriteHalf, pending: &Option<PendingWrite>) -> io::Result<usize> {
+    let p = pending
+        .as_ref()
+        .expect("the write branch is only enabled with a frame pending");
+    wr.write(&p.bytes[p.off..]).await
 }
 
 /// One line per state change; codex copies our stderr into its log.
 fn stderr_line(msg: &str) {
     let _ = writeln!(io::stderr(), "neige-mcp-stdio-shim: {msg}");
-}
-
-#[cfg(test)]
-mod budget_tests {
-    //! #1699 D3 — the pure budget/backoff type.
-
-    use std::time::{Duration, Instant};
-
-    use super::{RECONNECT_BACKOFF_CAP, RECONNECT_BUDGET, ReconnectBudget};
-
-    #[test]
-    fn backoff_doubles_from_100ms_to_the_5s_cap() {
-        let t0 = Instant::now();
-        let mut budget = ReconnectBudget::new(t0, RECONNECT_BUDGET);
-        let delays: Vec<u64> = (0..8)
-            .map(|_| budget.next_delay(t0).expect("inside budget").as_millis() as u64)
-            .collect();
-        assert_eq!(delays, [100, 200, 400, 800, 1600, 3200, 5000, 5000]);
-        assert_eq!(RECONNECT_BACKOFF_CAP, Duration::from_secs(5));
-    }
-
-    #[test]
-    fn gives_up_once_the_deadline_is_reached() {
-        let t0 = Instant::now();
-        let mut budget = ReconnectBudget::new(t0, RECONNECT_BUDGET);
-        assert!(budget.next_delay(t0 + Duration::from_secs(29)).is_some());
-        assert_eq!(budget.next_delay(t0 + RECONNECT_BUDGET), None);
-        assert_eq!(budget.next_delay(t0 + Duration::from_secs(40)), None);
-    }
-
-    #[test]
-    fn delay_is_clipped_to_the_time_left() {
-        let t0 = Instant::now();
-        let mut budget = ReconnectBudget::new(t0, RECONNECT_BUDGET);
-        let near_end = t0 + RECONNECT_BUDGET - Duration::from_millis(30);
-        assert_eq!(budget.next_delay(near_end), Some(Duration::from_millis(30)));
-    }
-
-    #[test]
-    fn reset_restarts_deadline_backoff_and_attempts() {
-        let t0 = Instant::now();
-        let mut budget = ReconnectBudget::new(t0, RECONNECT_BUDGET);
-        for _ in 0..4 {
-            budget.record_attempt();
-            budget.next_delay(t0);
-        }
-        assert_eq!(budget.attempts(), 4);
-        let t1 = t0 + Duration::from_secs(25);
-        budget.reset(t1);
-        assert_eq!(budget.attempts(), 0);
-        assert_eq!(budget.elapsed(t1), Duration::ZERO);
-        assert_eq!(budget.next_delay(t1), Some(Duration::from_millis(100)));
-        // The deadline moved with the reset: 29 s after t1 is still inside.
-        assert!(budget.next_delay(t1 + Duration::from_secs(29)).is_some());
-        assert_eq!(budget.next_delay(t1 + RECONNECT_BUDGET), None);
-    }
 }

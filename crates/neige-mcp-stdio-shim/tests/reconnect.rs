@@ -4,71 +4,20 @@
 //! (`kernel_restart_reconnects_and_replays_initialize`).
 //!
 //! Every stub is driven explicitly and every wait is bounded by
-//! `common::TEST_BUDGET`; there is no sleep-and-hope except the one
-//! deliberate 500 ms delay in the late-bind test.
+//! `common::TEST_BUDGET`; the one deliberate sleep is the 500 ms delay
+//! in the late-bind test. The tests that run a budget down for real are
+//! in `budget.rs`.
 
 #![cfg(unix)]
 
 mod common;
 
-use std::net::Shutdown;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
+use tokio::io::BufReader;
 use tokio::time::timeout;
 
-use common::{TEST_BUDGET, TOKEN};
-
-/// Read the shim's next stderr line (one per state change).
-async fn read_stderr_line(reader: &mut BufReader<tokio::process::ChildStderr>) -> String {
-    let mut line = String::new();
-    let n = timeout(TEST_BUDGET, reader.read_line(&mut line))
-        .await
-        .expect("stderr line within budget")
-        .expect("stderr read ok");
-    assert!(n > 0, "shim closed stderr");
-    line
-}
-
-/// The stub reads the handshake on a raw stream, answers it, then shuts
-/// down its READ side only. The shim's next socket write fails with
-/// EPIPE while its read side sees no EOF — the D5-a shape, where zero
-/// bytes reached the kernel. Returns the stream so the caller decides
-/// when the shim finally sees EOF.
-async fn handshake_then_shut_read(
-    listener: &UnixListener,
-    stdin: &mut tokio::process::ChildStdin,
-    stdout: &mut BufReader<tokio::process::ChildStdout>,
-) -> std::os::unix::net::UnixStream {
-    let (mut stream, _addr) = timeout(TEST_BUDGET, listener.accept())
-        .await
-        .expect("shim connected within budget")
-        .expect("accept ok");
-    common::write_stdin(stdin, &common::initialize_line(1)).await;
-    let mut line = String::new();
-    {
-        let mut reader = BufReader::new(&mut stream);
-        timeout(TEST_BUDGET, reader.read_line(&mut line))
-            .await
-            .expect("stub read initialize within budget")
-            .expect("stub read ok");
-    }
-    let init: serde_json::Value = serde_json::from_str(line.trim_end()).expect("initialize JSON");
-    common::assert_replayed_initialize(&init, 1);
-    stream
-        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n")
-        .await
-        .expect("stub reply ok");
-    let resp = common::read_stdout(stdout, "initialize response").await;
-    assert_eq!(resp["id"], serde_json::json!(1));
-
-    let std_stream = stream.into_std().expect("into_std");
-    std_stream
-        .shutdown(Shutdown::Read)
-        .expect("shutdown read side");
-    std_stream
-}
+use common::{TEST_BUDGET, TOKEN, handshake_then_shut_read, read_stderr_line};
 
 /// D5-a: a request whose socket write failed was never queued at the
 /// kernel; it is re-sent on the new connection after the replayed
@@ -216,12 +165,6 @@ async fn replayed_initialize_rejected_fails_requests_and_exits_4() {
         _ = listener.accept() => panic!("shim reconnected after a terminal initialize rejection"),
     };
     assert_eq!(code, 4);
-    assert!(
-        timeout(Duration::from_secs(1), listener.accept())
-            .await
-            .is_err(),
-        "no connect attempt may arrive after exit"
-    );
     drop(stdin);
 }
 
@@ -255,6 +198,11 @@ async fn replayed_initialize_internal_error_retries_then_resumes() {
     conn.reply_error(&replayed["id"], -32603, "repo lookup failed")
         .await;
     drop(conn);
+    let retrying = read_stderr_line(&mut stderr).await;
+    assert!(
+        retrying.contains("initialize answered -32603; retrying under the outage budget"),
+        "the -32603 answer is reported as what it is, not as a loss: {retrying:?}"
+    );
 
     // Third connection: accepted, and pumping resumes.
     let mut conn = common::accept(&listener, "third connection").await;
@@ -375,6 +323,223 @@ async fn listener_bound_after_spawn_still_gets_connected() {
     conn.reply_ok(&init["id"]).await;
     let resp = common::read_stdout(&mut stdout, "initialize response").await;
     assert_eq!(resp["id"], serde_json::json!(1));
+
+    drop(stdin);
+    drop(conn);
+    let _ = timeout(TEST_BUDGET, child.wait()).await;
+}
+
+/// D1 without a cache: the first frame was not an `initialize`, so
+/// there is nothing to replay. After a reconnect the shim resumes
+/// forwarding directly and the new connection's first frame is codex's
+/// next request.
+#[tokio::test]
+async fn reconnect_without_a_cached_initialize_forwards_directly() {
+    let (_tmp, socket_path) = common::socket();
+    let listener = common::listen(&socket_path);
+    let mut child = common::spawn_shim(&socket_path);
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+
+    let mut conn = common::accept(&listener, "first connection").await;
+    common::write_stdin(&mut stdin, &common::request_line(1, "tools/list")).await;
+    let first = conn.read_frame("tools/list").await;
+    assert_eq!(first["method"], "tools/list", "got {first}");
+    assert!(
+        first["params"].get("_meta").is_none(),
+        "only an initialize gets the token: {first}"
+    );
+    conn.reply_ok(&first["id"]).await;
+    let resp = common::read_stdout(&mut stdout, "tools/list response").await;
+    assert_eq!(resp["id"], serde_json::json!(1));
+
+    drop(conn);
+    let lost = read_stderr_line(&mut stderr).await;
+    assert!(
+        lost.contains("connection to kernel lost (0 unanswered requests failed)"),
+        "{lost:?}"
+    );
+
+    common::write_stdin(&mut stdin, &common::tools_call_line(2)).await;
+    let mut conn = common::accept(&listener, "reconnect").await;
+    let reconnected = read_stderr_line(&mut stderr).await;
+    assert!(
+        reconnected.contains("reconnected after 1 attempts"),
+        "{reconnected:?}"
+    );
+    let call = conn.read_frame("first frame on the new connection").await;
+    assert_eq!(
+        call["method"], "tools/call",
+        "nothing to replay, the request itself comes first: {call}"
+    );
+    assert_eq!(call["id"], serde_json::json!(2));
+    conn.reply_ok(&call["id"]).await;
+    let resp = common::read_stdout(&mut stdout, "tools/call response").await;
+    assert_eq!(resp["id"], serde_json::json!(2));
+    common::assert_alive(&mut child);
+
+    drop(stdin);
+    drop(conn);
+    let _ = timeout(TEST_BUDGET, child.wait()).await;
+}
+
+/// D1, initialize in flight: the first connection dies after the kernel
+/// read the `initialize` but before it answered. The handshake has no
+/// side effects, so it is replayed on the new connection, and because
+/// codex never saw a response the replayed one is forwarded.
+#[tokio::test]
+async fn initialize_in_flight_at_the_loss_is_replayed_and_its_response_forwarded() {
+    let (_tmp, socket_path) = common::socket();
+    let listener = common::listen(&socket_path);
+    let mut child = common::spawn_shim(&socket_path);
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+
+    let mut conn = common::accept(&listener, "first connection").await;
+    common::write_stdin(&mut stdin, &common::initialize_line(1)).await;
+    let init = conn.read_frame("initialize").await;
+    common::assert_replayed_initialize(&init, 1);
+    // Read, never answered: kernel gone.
+    drop(conn);
+    drop(listener);
+    let lost = read_stderr_line(&mut stderr).await;
+    assert!(
+        lost.contains("connection to kernel lost (0 unanswered requests failed)"),
+        "the initialize is not an outstanding request: {lost:?}"
+    );
+
+    let listener = common::rebind(&socket_path);
+    let mut conn = common::accept(&listener, "reconnect").await;
+    let replayed = conn.read_frame("replayed initialize").await;
+    common::assert_replayed_initialize(&replayed, 1);
+    conn.reply_ok(&replayed["id"]).await;
+    let reconnected = read_stderr_line(&mut stderr).await;
+    assert!(reconnected.contains("reconnected after"), "{reconnected:?}");
+    let resp = common::read_stdout(&mut stdout, "forwarded initialize response").await;
+    assert_eq!(resp["id"], serde_json::json!(1), "got {resp}");
+    assert!(resp.get("result").is_some(), "the kernel's answer: {resp}");
+
+    common::write_stdin(&mut stdin, &common::tools_call_line(2)).await;
+    let call = conn.read_frame("tools/call after the replay").await;
+    assert_eq!(call["id"], serde_json::json!(2));
+    conn.reply_ok(&call["id"]).await;
+    let resp = common::read_stdout(&mut stdout, "tools/call response").await;
+    assert_eq!(resp["id"], serde_json::json!(2));
+    common::assert_alive(&mut child);
+
+    drop(stdin);
+    drop(conn);
+    let _ = timeout(TEST_BUDGET, child.wait()).await;
+}
+
+/// D4 on the original handshake: -32603 to the first `initialize` is
+/// retried on a fresh connection (the kernel drops the one it answered
+/// on), and codex sees exactly one initialize response, the accepted
+/// one.
+#[tokio::test]
+async fn original_initialize_internal_error_is_retried_on_a_fresh_connection() {
+    let (_tmp, socket_path) = common::socket();
+    let listener = common::listen(&socket_path);
+    let mut child = common::spawn_shim(&socket_path);
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+
+    let mut conn = common::accept(&listener, "first connection").await;
+    common::write_stdin(&mut stdin, &common::initialize_line(1)).await;
+    let init = conn.read_frame("initialize").await;
+    common::assert_replayed_initialize(&init, 1);
+    conn.reply_error(&init["id"], -32603, "repo lookup failed")
+        .await;
+    // `handle_connection` drops the connection after any initialize error.
+    drop(conn);
+    let retrying = read_stderr_line(&mut stderr).await;
+    assert!(
+        retrying.contains("initialize answered -32603; retrying under the outage budget"),
+        "{retrying:?}"
+    );
+
+    let mut conn = common::accept(&listener, "second connection").await;
+    let replayed = conn.read_frame("initialize on the fresh connection").await;
+    common::assert_replayed_initialize(&replayed, 1);
+    conn.reply_ok(&replayed["id"]).await;
+    let reconnected = read_stderr_line(&mut stderr).await;
+    assert!(
+        reconnected.contains("reconnected after 1 attempts"),
+        "{reconnected:?}"
+    );
+    let resp = common::read_stdout(&mut stdout, "the one initialize response").await;
+    assert_eq!(resp["id"], serde_json::json!(1), "got {resp}");
+    assert!(
+        resp.get("result").is_some() && resp.get("error").is_none(),
+        "codex must see the accepted handshake, not the -32603: {resp}"
+    );
+
+    // The next stdout frame is the tools/call response: no second
+    // initialize response in between.
+    common::write_stdin(&mut stdin, &common::tools_call_line(2)).await;
+    let call = conn.read_frame("tools/call").await;
+    assert_eq!(call["id"], serde_json::json!(2));
+    conn.reply_ok(&call["id"]).await;
+    let resp = common::read_stdout(&mut stdout, "tools/call response").await;
+    assert_eq!(resp["id"], serde_json::json!(2), "got {resp}");
+    common::assert_alive(&mut child);
+
+    drop(stdin);
+    drop(conn);
+    let _ = timeout(TEST_BUDGET, child.wait()).await;
+}
+
+/// D4: the kernel hangs up again while the replayed handshake is
+/// pending. That is not a rejection; the shim reconnects once more
+/// under the same budget (attempt 2 of the one outage, no second "lost"
+/// line) and resumes when the next replay is accepted.
+#[tokio::test]
+async fn hangup_during_replay_handshake_reconnects_under_the_same_budget() {
+    let (_tmp, socket_path) = common::socket();
+    let listener = common::listen(&socket_path);
+    let mut child = common::spawn_shim(&socket_path);
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
+
+    let mut conn = common::accept(&listener, "first connection").await;
+    common::write_stdin(&mut stdin, &common::initialize_line(1)).await;
+    let init = conn.read_frame("initialize").await;
+    conn.reply_ok(&init["id"]).await;
+    let resp = common::read_stdout(&mut stdout, "initialize response").await;
+    assert_eq!(resp["id"], serde_json::json!(1));
+    drop(conn);
+    let lost = read_stderr_line(&mut stderr).await;
+    assert!(lost.contains("connection to kernel lost"), "{lost:?}");
+
+    // Second connection: the replay is read, then the kernel hangs up
+    // without answering.
+    let mut conn = common::accept(&listener, "second connection").await;
+    let replayed = conn.read_frame("replayed initialize (1st)").await;
+    common::assert_replayed_initialize(&replayed, 1);
+    drop(conn);
+
+    // Third connection: accepted.
+    let mut conn = common::accept(&listener, "third connection").await;
+    let replayed = conn.read_frame("replayed initialize (2nd)").await;
+    common::assert_replayed_initialize(&replayed, 1);
+    conn.reply_ok(&replayed["id"]).await;
+    let next = read_stderr_line(&mut stderr).await;
+    assert!(
+        next.contains("reconnected after 2 attempts"),
+        "one outage, two attempts, and no second lost line: {next:?}"
+    );
+
+    common::write_stdin(&mut stdin, &common::tools_call_line(2)).await;
+    let call = conn.read_frame("tools/call after resume").await;
+    assert_eq!(call["id"], serde_json::json!(2));
+    conn.reply_ok(&call["id"]).await;
+    let resp = common::read_stdout(&mut stdout, "tools/call response").await;
+    assert_eq!(resp["id"], serde_json::json!(2));
+    common::assert_alive(&mut child);
 
     drop(stdin);
     drop(conn);
