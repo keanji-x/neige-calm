@@ -53,7 +53,9 @@ pub fn receipt_summary(action: &str, receipt: &Value) -> Value {
 }
 
 /// The one-line text block saying the same in words, so a client that shows
-/// only text gets the digest too.
+/// only text gets the digest too. A null `screen` (a connection's first
+/// observation, #1692) has no segment: `settled` qualifies the screen
+/// segment, so it is not rendered either.
 pub fn summary_line(terminal: &str, summary: &Value) -> String {
     let word = |value: &Value| match value {
         Value::String(text) => text.clone(),
@@ -66,12 +68,14 @@ pub fn summary_line(terminal: &str, summary: &Value) -> String {
     }];
     match summary["readback"].as_str() {
         Some("available") => {
-            let settled = if summary["settled"] == true {
-                " settled"
-            } else {
-                ""
-            };
-            parts.push(format!("screen {}{settled}", word(&summary["screen"])));
+            if !summary["screen"].is_null() {
+                let settled = if summary["settled"] == true {
+                    " settled"
+                } else {
+                    ""
+                };
+                parts.push(format!("screen {}{settled}", word(&summary["screen"])));
+            }
             parts.push(format!("wait {}", word(&summary["wait"])));
             if !summary["signal"].is_null() {
                 let repaint = match &summary["repaint"] {
@@ -249,7 +253,8 @@ mod tests {
     /// A connection's first observation (#1692): the readback reports
     /// `previous_observation_revision: null` and, computed against nothing,
     /// `changed_since_previous_observation: false`; the digest says null,
-    /// never `unchanged` — the wait outcome stays its own fact.
+    /// never `unchanged` — the wait outcome stays its own fact — and the
+    /// line has no screen segment (nor `settled`, which qualifies it).
     #[test]
     fn first_observation_on_a_connection_has_no_screen_fact() {
         let elapsed = json!({"mode":"elapsed","outcome":"elapsed","waited_ms":0,"settled":false});
@@ -268,7 +273,16 @@ mod tests {
         );
         assert_eq!(
             summary_line("t1", &summary),
-            "terminal t1 claim; screen null; wait elapsed; role owner; \
+            "terminal t1 claim; wait elapsed; role owner; \
+             details in structuredContent"
+        );
+        // `settled` qualifies the screen segment: without one it is not
+        // rendered on its own.
+        let mut settled = summary.clone();
+        settled["settled"] = json!(true);
+        assert_eq!(
+            summary_line("t1", &settled),
+            "terminal t1 claim; wait elapsed; role owner; \
              details in structuredContent"
         );
         // The same readback after a previous observation keeps `unchanged`.

@@ -324,8 +324,9 @@ const FRAME_GAP: Duration = Duration::from_millis(30);
 /// `repaint.repaint` is zero; `capture` and `conditions` (#1677 r16) are
 /// the text conditions that phase tests, one capture per revision. A budget
 /// that ends without a signal continues in [`frame_boundary`] (#1692) so
-/// the capture that follows is not torn; a signal that lands during that
-/// grace is not looked for — the budget is over.
+/// the capture that follows lands on a frame boundary whenever one occurs
+/// within the grace; a signal that lands during that grace is not looked
+/// for — the budget is over.
 #[allow(clippy::too_many_arguments)]
 async fn wait_for_signal(
     mut signals: watch::Receiver<u64>,
