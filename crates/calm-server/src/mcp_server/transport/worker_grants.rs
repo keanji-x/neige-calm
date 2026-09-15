@@ -55,9 +55,12 @@ fn eligible_plugin_tools_from(
     Ok(names)
 }
 
-/// The spelling Codex shows the model: every char outside `[A-Za-z0-9_]`
-/// becomes `_` (codex-mcp `sanitize_responses_api_tool_name`). The model
-/// only ever sees this form, so `plugin_tools` may arrive spelled this way.
+/// Codex's sanitizing of a tool name: every char outside `[A-Za-z0-9_]`
+/// becomes `_` (codex-mcp `sanitize_responses_api_tool_name`). What the
+/// model's tool list shows is `mcp__<server>__` + this form (#1686), and
+/// callers pass either; [`model_tool_key`] reduces both. KNOWN GAP: a name
+/// over codex-rs's 128-char cap is truncated and hash-suffixed there and
+/// cannot be reduced; this registry's ~70-char names do not reach it.
 pub(crate) fn codex_sanitized(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -68,6 +71,31 @@ pub(crate) fn codex_sanitized(name: &str) -> String {
             }
         })
         .collect()
+}
+
+/// codex-mcp `LEGACY_MCP_TOOL_NAME_PREFIX` and `MCP_TOOL_NAME_DELIMITER`:
+/// the model reads `mcp__<server>__<sanitized tool>` in its tool list.
+const CODEX_MCP_PREFIX: &str = "mcp__";
+const CODEX_MCP_DELIMITER: &str = "__";
+
+/// #1686 — the one key every spelling of a registry tool reduces to:
+/// `mcp__<server>__` is stripped when `<server>` is non-empty and
+/// delimited, then the rest is [`codex_sanitized`]. A registry name starts
+/// with `plugin.`, never `mcp__`, so stripping cannot mis-read one; a
+/// `mcp__` with no second `__`, or an empty server segment, is not a
+/// qualifier and is sanitized as written.
+pub(crate) fn model_tool_key(name: &str) -> String {
+    codex_sanitized(strip_codex_qualifier(name))
+}
+
+fn strip_codex_qualifier(name: &str) -> &str {
+    match name
+        .strip_prefix(CODEX_MCP_PREFIX)
+        .and_then(|rest| rest.split_once(CODEX_MCP_DELIMITER))
+    {
+        Some((server, tool)) if !server.is_empty() => tool,
+        _ => name,
+    }
 }
 
 /// #1668 — resolve the Planner's requested `plugin_tools` to registry names
@@ -82,9 +110,9 @@ pub(crate) fn codex_sanitized(name: &str) -> String {
 ///
 /// Rules per requested name:
 /// * a frozen name or a Track-visible registry name stays as written;
-/// * otherwise Codex-sanitized equality, first against `frozen`, then
-///   against the delegable set — one hit resolves, several are ambiguous
-///   (`-32602`);
+/// * otherwise [`model_tool_key`] equality (the `mcp__<server>__` qualifier
+///   stripped, then Codex-sanitized), first against `frozen`, then against
+///   the delegable set — one hit resolves, several are ambiguous (`-32602`);
 /// * with no such hit, one sanitized hit among visible-but-ineligible tools
 ///   resolves too, so the refusal names the real tool and its reason;
 /// * anything else stays as written (a leading `plugin_` rewritten to
@@ -125,6 +153,54 @@ pub(crate) async fn resolve_dispatch_plugin_tools(
 /// installed, or not a plugin tool at all.
 const UNKNOWN_TOOL: &str = "unknown tool";
 
+/// The plugin ids `scope` allows, whatever their running state.
+fn in_scope_plugin_ids(
+    registry: &crate::plugin_host::PluginRegistry,
+    scope: &TrackPluginScope,
+) -> BTreeSet<String> {
+    registry
+        .list()
+        .into_iter()
+        .map(|m| m.id)
+        .filter(|id| scope.allows(id))
+        .collect()
+}
+
+/// The Track-VISIBLE universe: every tool of every plugin `scope` allows,
+/// whatever its running state or kind — never the whole registry (#891).
+fn visible_plugin_tools_from(
+    registry: &crate::plugin_host::PluginRegistry,
+    in_scope: &BTreeSet<String>,
+    scope: &TrackPluginScope,
+) -> BTreeSet<String> {
+    plugin_tool_descriptors_from(registry.list(), in_scope, scope)
+        .into_iter()
+        .map(|d| d.name)
+        .collect()
+}
+
+/// #1686 — does `requested`, in any of its spellings, name a tool this
+/// Track can see? `calm.source.capture` asks this when no recorded tool
+/// matches, to tell a known tool with no live record (re-call it) from a
+/// name nothing exposes (respell it). Same universe as dispatch: a tool
+/// outside the Track's scope is unknown here too, and no plugin host
+/// means no plugin tools.
+pub(crate) async fn names_track_visible_plugin_tool(
+    ctx: &Arc<AppContext>,
+    track_id: Option<&str>,
+    requested: &str,
+) -> bool {
+    let Some(host) = ctx.plugin_host.get().cloned() else {
+        return false;
+    };
+    let scope = plugin_scope_for_track(ctx, track_id).await;
+    let registry = host.registry();
+    let visible =
+        visible_plugin_tools_from(registry, &in_scope_plugin_ids(registry, &scope), &scope);
+    let key = model_tool_key(requested);
+    visible.iter().any(|name| model_tool_key(name) == key)
+}
+
 fn resolve_dispatch_plugin_tools_from(
     registry: &crate::plugin_host::PluginRegistry,
     running: &BTreeSet<String>,
@@ -133,16 +209,8 @@ fn resolve_dispatch_plugin_tools_from(
     requested: &[String],
 ) -> Result<(Vec<String>, PluginToolAdmission), RpcError> {
     let eligible = eligible_plugin_tools_from(registry, running, scope)?;
-    let in_scope: BTreeSet<String> = registry
-        .list()
-        .into_iter()
-        .map(|m| m.id)
-        .filter(|id| scope.allows(id))
-        .collect();
-    let visible: BTreeSet<String> = plugin_tool_descriptors_from(registry.list(), &in_scope, scope)
-        .into_iter()
-        .map(|d| d.name)
-        .collect();
+    let in_scope = in_scope_plugin_ids(registry, scope);
+    let visible = visible_plugin_tools_from(registry, &in_scope, scope);
     let reason = |name: &str| -> Result<String, RpcError> {
         if !visible.contains(name) {
             return Ok(UNKNOWN_TOOL.into());
@@ -162,17 +230,17 @@ fn resolve_dispatch_plugin_tools_from(
     };
     let sanitized_hits = |pool: &[String], key: &str| -> Vec<String> {
         pool.iter()
-            .filter(|candidate| codex_sanitized(candidate) == key)
+            .filter(|candidate| model_tool_key(candidate) == key)
             .cloned()
             .collect()
     };
     let eligible_list: Vec<String> = eligible.iter().cloned().collect();
     let visible_list: Vec<String> = visible.iter().cloned().collect();
     // A verbatim Codex spelling has no `plugin.` prefix; give an unresolved
-    // one the registry shape so `validate_plugin_tools` lets the named
-    // refusal below reach the Planner instead of a generic shape error.
+    // one (qualifier stripped) the registry shape so `validate_plugin_tools`
+    // lets the named refusal below reach the Planner, not a shape error.
     let kept = |name: &str| -> String {
-        match name.strip_prefix("plugin_") {
+        match strip_codex_qualifier(name).strip_prefix("plugin_") {
             Some(rest) => format!("plugin.{rest}"),
             None => name.to_string(),
         }
@@ -187,7 +255,7 @@ fn resolve_dispatch_plugin_tools_from(
             resolved.push(name.clone());
             continue;
         }
-        let key = codex_sanitized(name);
+        let key = model_tool_key(name);
         let mut hits = sanitized_hits(frozen, &key);
         if hits.is_empty() {
             hits = sanitized_hits(&eligible_list, &key);
@@ -349,6 +417,15 @@ mod dispatch_resolution_tests {
     }
 
     #[test]
+    fn model_tool_key_strips_only_a_delimited_non_empty_server_segment() {
+        assert_eq!(model_tool_key("mcp__calm__plugin_a_b"), "plugin_a_b");
+        assert_eq!(model_tool_key("mcp__calm__plugin.a-b_c"), "plugin_a_b_c");
+        assert_eq!(model_tool_key("mcp__plugin_a_b"), "mcp__plugin_a_b");
+        assert_eq!(model_tool_key("mcp____plugin_a_b"), "mcp____plugin_a_b");
+        assert_eq!(model_tool_key(TRUSTED), codex_sanitized(TRUSTED));
+    }
+
+    #[test]
     fn sanitized_spellings_resolve_to_the_unique_eligible_registry_name() {
         let (resolved, admission) = resolve(
             ALL,
@@ -364,6 +441,35 @@ mod dispatch_resolution_tests {
         assert_eq!(resolved, vec![DOTTED.to_string(), TRUSTED.to_string()]);
         assert!(admission.denied.is_empty(), "{admission:?}");
         assert!(admission.refusal(&resolved).is_none());
+    }
+
+    /// #1686 — the model's tool list shows `mcp__<server>__` + the
+    /// sanitized name; that spelling resolves like the bare one. A `mcp__`
+    /// prefix without a delimited, non-empty server segment is no
+    /// qualifier: it stays as written and is refused as unknown.
+    #[test]
+    fn codex_qualified_spellings_resolve_to_the_unique_eligible_registry_name() {
+        let (resolved, admission) = resolve(
+            ALL,
+            TrackPluginScope::All,
+            &[],
+            &["mcp__calm__plugin_dev_neige_git_forge_wf_tool", DOTTED],
+        )
+        .unwrap();
+        assert_eq!(resolved, vec![DOTTED.to_string(), TRUSTED.to_string()]);
+        assert!(admission.refusal(&resolved).is_none(), "{admission:?}");
+        for probe in [
+            "mcp__plugin_dev_neige_git_forge_wf_tool",
+            "mcp____plugin_dev_neige_git_forge_wf_tool",
+        ] {
+            let (resolved, admission) = resolve(ALL, TrackPluginScope::All, &[], &[probe]).unwrap();
+            assert_eq!(resolved, vec![probe.to_string()], "{probe}");
+            assert_eq!(
+                admission.refusal(&resolved).expect("refused"),
+                format!("plugin_tools not delegable: {probe} ({UNKNOWN_TOOL})"),
+                "{probe}"
+            );
+        }
     }
 
     #[test]
@@ -483,12 +589,15 @@ mod dispatch_resolution_tests {
             FORGE_ACTION,
             "plugin.dev_neige_git_forge_wf_tool",
             "plugin_dev_neige_git_forge_wf_tool",
+            "mcp__calm__plugin_dev_neige_git_forge_wf_tool",
             "plugin.zzz_nope",
             "plugin_zzz_nope",
+            "mcp__calm__plugin_zzz_nope",
         ];
         for probe in probes {
             let (resolved, admission) = resolve(ALL, scope.clone(), &[], &[probe]).unwrap();
-            let expected = match probe.strip_prefix("plugin_") {
+            let bare = probe.strip_prefix("mcp__calm__").unwrap_or(probe);
+            let expected = match bare.strip_prefix("plugin_") {
                 Some(rest) => format!("plugin.{rest}"),
                 None => probe.to_string(),
             };

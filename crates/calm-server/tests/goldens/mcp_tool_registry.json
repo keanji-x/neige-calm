@@ -1017,7 +1017,7 @@
   },
   {
     "name": "calm.source.capture",
-    "description_sha256": "7ac908294bb4dca3e073b84448f59c4afad05b351c50f01a189d7583c09b6c42",
+    "description_sha256": "7f1ea063a1a0497cf20f1929c2ce95f91c8ab141991707a782418f8c28293703",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1133,7 +1133,7 @@
   },
   {
     "name": "calm.task.dispatch",
-    "description_sha256": "25d071a89ec1b1fe33f1bdf4bc312e5fab28085f48db30b5954cacea4f273f78",
+    "description_sha256": "dea6e5fa779709c7113c2141f0fa501050089b47a700c8c1ad329e723140f0d8",
     "input_schema": {
       "additionalProperties": false,
       "oneOf": [
