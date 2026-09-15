@@ -720,10 +720,10 @@ class CollectorTests(unittest.TestCase):
                  signal_call(4, {"outcome": "settled", "waited_ms": 512}),
                  signal_call(5, ...),   # pre-#1628 server: no block, tolerated
                  signal_call(6, None)]  # null: no signal-shaped repaint verdict
-        # A budget-ended signal wait carries no repaint block and no tally.
+        # A budget-ended signal wait (#1692: `no_signal`) carries no repaint block and no tally.
         budget = row(7)
         budget["params"]["item"]["arguments"]["wait_for"] = "signal"
-        budget["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state("elapsed")
+        budget["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state("no_signal")
         # A change wait never contributes, whatever its result carries.
         change = row(8)
         change["params"]["item"]["arguments"]["wait_for"] = "change"
@@ -732,7 +732,7 @@ class CollectorTests(unittest.TestCase):
         change["params"]["item"]["result"]["structuredContent"] = state
         result = ux.metrics(calls + [budget, change])
         self.assertEqual(result["signal_repaint_outcomes"], {"already": 1, "none": 1, "settled": 2})
-        self.assertEqual(result["signal_wait_outcomes"], {"elapsed": 1, "signal": 6})
+        self.assertEqual(result["signal_wait_outcomes"], {"no_signal": 1, "signal": 6})
         self.assertIn("signal_repaint_outcomes", ux.SIGNAL_METRIC_KEYS)
         for repaint in ([], "settled", {"outcome": "settled"}, {"outcome": 1, "waited_ms": 1},
                         {"outcome": "settled", "waited_ms": "1"}):
@@ -745,7 +745,7 @@ class CollectorTests(unittest.TestCase):
         signalled["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state()
         budget = row(2)
         budget["params"]["item"]["arguments"].update({"wait_for": "signal", "wait_ms": 5000})
-        budget["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state("elapsed")
+        budget["params"]["item"]["result"]["structuredContent"] = self.signal_wait_state("no_signal")
         readback = row(3, "calm.terminal.input")
         readback["params"]["item"]["arguments"].update({"action": {"type": "submit", "text": "3100 + 41"},
                                                          "observe": True, "wait_for": "signal"})
@@ -768,7 +768,7 @@ class CollectorTests(unittest.TestCase):
         original = copy.deepcopy(calls)
         result = ux.metrics(calls)
         self.assertEqual(result["signal_wait_requests"], 4)
-        self.assertEqual(result["signal_wait_outcomes"], {"elapsed": 1, "signal": 2})
+        self.assertEqual(result["signal_wait_outcomes"], {"no_signal": 1, "signal": 2})
         self.assertEqual(result["change_wait_requests"], 1)
         self.assertEqual(result["change_wait_outcomes"], {"changed": 1})
         self.assertEqual(result["submit_actions"], 1)

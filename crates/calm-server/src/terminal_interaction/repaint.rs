@@ -100,7 +100,7 @@ impl Repaint {
         self.last_change = now;
         true
     }
-    fn quiet_for(&self, now: Instant) -> Duration {
+    pub(super) fn quiet_for(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.last_change)
     }
 }
