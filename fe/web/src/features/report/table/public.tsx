@@ -9,7 +9,7 @@
 import type { ReactNode } from 'react';
 
 import {
-  parseReportSourceLink, type ReportSourceLinkTarget,
+  parseSourceCitationCell, type ReportSourceLinkTarget,
 } from '../../../../../core/domain/report-source.ts';
 import {
   inlineTableBlockPayloadSchema, isLiveTablePayload,
@@ -23,16 +23,10 @@ function cellText(value: string | number | null | undefined): string {
 }
 
 /**
- * A cell that is, in its entirety, one Markdown inline link: `[label](dest)`
- * and nothing else once trimmed. Anchored at both ends on purpose — a link
- * with prose around it, or two links, is not this shape and stays text.
- */
-const WHOLE_CELL_LINK = /^\[([^\]]*)\]\(([^\s()]+)\)$/;
-
-/**
  * The one piece of Markdown a table cell understands (#1687): a cell whose
- * whole text is a single `[label](neige://source/…)` citation. The template
- * asks every figure to carry its source and every source to be a
+ * whole text is a single `[label](neige://source/…)` citation, as
+ * `parseSourceCitationCell` reads it with the prose's own parser. The
+ * template asks every figure to carry its source and every source to be a
  * `neige://source/…` link, so the 「来源」 column of a table is where the
  * two rules meet; the prose beside it already paints these as citations, and
  * a cell showing the raw link syntax was the one unclickable citation in
@@ -44,19 +38,12 @@ const WHOLE_CELL_LINK = /^\[([^\]]*)\]\(([^\s()]+)\)$/;
  * a citation puts one link in it and nothing else, and the template says
  * so.
  */
-function cellSourceCitation(text: string): { label: string; target: ReportSourceLinkTarget } | null {
-  const match = WHOLE_CELL_LINK.exec(text.trim());
-  if (match === null) return null;
-  const target = parseReportSourceLink(match[2] ?? '');
-  return target === null ? null : { label: match[1] ?? '', target };
-}
-
 function Cell({ value, onOpenSourceLink }: {
   value: string | number | null | undefined;
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
 }): ReactNode {
   const text = cellText(value);
-  const citation = cellSourceCitation(text);
+  const citation = parseSourceCitationCell(text);
   if (citation === null) return text;
   return (
     <ReportSourceCitation target={citation.target} onOpen={onOpenSourceLink}>

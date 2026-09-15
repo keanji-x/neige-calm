@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { parseReportLink } from './report.js';
 import { parseReportFileLink } from './report-file.js';
 import {
-  parseReportSourceLink, sourceHighlight, trackSourceDetailSchema, trackSourceOperation,
+  parseReportSourceLink, parseSourceCitationCell, sourceHighlight, trackSourceDetailSchema, trackSourceOperation,
 } from './report-source.js';
 
 describe('parseReportSourceLink', () => {
@@ -60,6 +60,60 @@ describe('parseReportSourceLink', () => {
     // …and the other two parsers do not claim a source link either (I5).
     expect(parseReportLink('neige://source/src_2c9e0a1b#q1')).toBeNull();
     expect(parseReportFileLink('neige://source/src_2c9e0a1b#q1')).toBeNull();
+  });
+});
+
+/* #1687 — a table cell is one citation iff the prose's own parser reads it
+   as exactly one paragraph holding exactly one link under the source scheme.
+   The parser, not a pattern, so the cell and the prose beside it agree. */
+describe('parseSourceCitationCell', () => {
+  const TARGET = { destination: 'neige://source/src_ddef99cc#q1', sourceId: 'src_ddef99cc', quoteId: 'q1' };
+
+  it('reads a cell that is exactly one source link', () => {
+    expect(parseSourceCitationCell('[AP](neige://source/src_ddef99cc#q1)')).toEqual({ label: 'AP', target: TARGET });
+    expect(parseSourceCitationCell('[智堡所载UBS摘要](neige://source/src_04d04fc3)')).toEqual({
+      label: '智堡所载UBS摘要',
+      target: { destination: 'neige://source/src_04d04fc3', sourceId: 'src_04d04fc3', quoteId: null },
+    });
+  });
+
+  it('follows Markdown on brackets: a stray `[` is text beside a link, balanced ones are one label', () => {
+    expect(parseSourceCitationCell('[[AP](neige://source/src_ddef99cc#q1)')).toBeNull();
+    expect(parseSourceCitationCell('[AP [Reuters]](neige://source/src_ddef99cc#q1)'))
+      .toEqual({ label: 'AP [Reuters]', target: TARGET });
+  });
+
+  it('applies the parser\'s own whitespace rules: trailing and light leading space vanish, an indent is code', () => {
+    expect(parseSourceCitationCell('[AP](neige://source/src_ddef99cc#q1) ')).toEqual({ label: 'AP', target: TARGET });
+    expect(parseSourceCitationCell('  [AP](neige://source/src_ddef99cc#q1)\n')).toEqual({ label: 'AP', target: TARGET });
+    expect(parseSourceCitationCell('    [AP](neige://source/src_ddef99cc#q1)')).toBeNull();
+  });
+
+  it('is null for a link with prose around it, two links, or two paragraphs', () => {
+    expect(parseSourceCitationCell('见 [AP](neige://source/src_ddef99cc#q1) 收盘')).toBeNull();
+    expect(parseSourceCitationCell('[AP](neige://source/src_ddef99cc#q1) 收盘')).toBeNull();
+    expect(parseSourceCitationCell('[AP](neige://source/src_ddef99cc#q1) [UBS](neige://source/src_04d04fc3#q2)')).toBeNull();
+    expect(parseSourceCitationCell('[AP](neige://source/src_ddef99cc#q1)\n\nmore')).toBeNull();
+  });
+
+  it('is null for a link under any other scheme, for markup, and for an empty cell', () => {
+    expect(parseSourceCitationCell('[x](neige://report/b_1#s1)')).toBeNull();
+    expect(parseSourceCitationCell('[x](https://example.com/a)')).toBeNull();
+    expect(parseSourceCitationCell('<a href="https://example.com">x</a>')).toBeNull();
+    expect(parseSourceCitationCell('')).toBeNull();
+    expect(parseSourceCitationCell('28.4')).toBeNull();
+  });
+
+  it('drops raw HTML before counting, as the prose does, and keeps a malformed id as a citation', () => {
+    expect(parseSourceCitationCell('[AP](neige://source/src_ddef99cc#q1)<b>')).toEqual({ label: 'AP', target: TARGET });
+    expect(parseSourceCitationCell('[坏链接](neige://source/src_zz)')).toEqual({
+      label: '坏链接', target: { destination: 'neige://source/src_zz', sourceId: null, quoteId: null },
+    });
+  });
+
+  it('projects the label to plain text', () => {
+    expect(parseSourceCitationCell('[**AP** `x` ![alt](i.png)](neige://source/src_ddef99cc#q1)'))
+      .toEqual({ label: 'AP x alt', target: TARGET });
   });
 });
 

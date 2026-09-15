@@ -158,6 +158,15 @@ describe('ReportTableBlock — a cell that is one source citation', () => {
     expect(container.querySelector('td:nth-child(2)')?.textContent).toBe('见 [AP](neige://source/src_ddef99cc#q1) 收盘');
   });
 
+  it('keeps a citation with prose after it as the text it was', () => {
+    const onOpenSourceLink = vi.fn();
+    const { container } = render(
+      <ReportTableBlock payload={table('[AP](neige://source/src_ddef99cc#q1) 收盘')} onOpenSourceLink={onOpenSourceLink} />,
+    );
+    expect(container.querySelectorAll('button, a').length).toBe(0);
+    expect(container.querySelector('td:nth-child(2)')?.textContent).toBe('[AP](neige://source/src_ddef99cc#q1) 收盘');
+  });
+
   it('keeps two citations in one cell as text', () => {
     const onOpenSourceLink = vi.fn();
     const text = '[AP](neige://source/src_ddef99cc#q1) [UBS](neige://source/src_04d04fc3#q2)';
@@ -195,6 +204,38 @@ describe('ReportTableBlock — a cell that is one source citation', () => {
     expect(onOpenSourceLink).toHaveBeenCalledWith({
       destination: 'neige://source/src_zz', sourceId: null, quoteId: null,
     });
+  });
+
+  /* The parser, not a pattern, says what one link is — so the cell agrees
+     with the prose beside it on the two shapes a pattern gets wrong. */
+  it('keeps a stray opening bracket before the link as text, as Markdown does', () => {
+    const onOpenSourceLink = vi.fn();
+    const text = '[[AP](neige://source/src_ddef99cc#q1)';
+    const { container } = render(
+      <ReportTableBlock payload={table(text)} onOpenSourceLink={onOpenSourceLink} />,
+    );
+    expect(container.querySelectorAll('button, a').length).toBe(0);
+    expect(container.querySelector('td:nth-child(2)')?.textContent).toBe(text);
+  });
+
+  it('reads balanced brackets inside the label as one citation, as Markdown does', () => {
+    const onOpenSourceLink = vi.fn<(target: ReportSourceLinkTarget) => void>();
+    render(
+      <ReportTableBlock payload={table('[AP [Reuters]](neige://source/src_ddef99cc#q1)')} onOpenSourceLink={onOpenSourceLink} />,
+    );
+    screen.getByRole('button', { name: 'AP [Reuters]' }).click();
+    expect(onOpenSourceLink).toHaveBeenCalledWith({
+      destination: 'neige://source/src_ddef99cc#q1', sourceId: 'src_ddef99cc', quoteId: 'q1',
+    });
+  });
+
+  // A trailing space is the parser's to strip, as it strips it in the prose.
+  it('is still one citation with a trailing space', () => {
+    const onOpenSourceLink = vi.fn();
+    render(
+      <ReportTableBlock payload={table('[AP](neige://source/src_ddef99cc#q1) ')} onOpenSourceLink={onOpenSourceLink} />,
+    );
+    expect(screen.getByRole('button', { name: 'AP' })).toBeTruthy();
   });
 
   it('tolerates whitespace around the link, and nothing else', () => {

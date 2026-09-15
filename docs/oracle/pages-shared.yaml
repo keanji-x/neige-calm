@@ -61,7 +61,7 @@
     处理函数在 app/router 按视口扣住，而不是在文档里查视口，因为 features 层不问视口（single-viewport-source）。
     #1687：表格的「来源」列曾把 `[label](neige://source/…)` 原样显示成链接语法，是同一份报告里唯一不可点的引用；
     修法是把正文的引用控件抽成一个组件给两条渲染路径共用，而不是让表格自己再判一次视口。
-  source: fe/web/src/app/router/public.tsx:3255-3259,3365; fe/web/src/features/report/source/public.tsx:53-77; fe/web/src/features/report/document/public.tsx:615-631; fe/web/src/features/report/table/public.tsx:54-66
+  source: fe/web/src/app/router/public.tsx:3255-3259,3365; fe/web/src/features/report/source/public.tsx:53-77; fe/web/src/features/report/document/public.tsx:615-631; fe/web/src/features/report/table/public.tsx:41-53
   authoritative_test: fe/web/src/features/report/document/public.test.tsx:226-235; fe/web/src/features/report/table/public.test.tsx:137-146; fe/web/src/app/router/report-source.test.tsx:129-145
   owner_slice: features/report/source
   intentional_omission: true
