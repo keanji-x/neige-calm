@@ -676,7 +676,7 @@ async fn i4_a_workers_call_leaves_nothing_for_the_planner_to_capture() {
         error["message"]
             .as_str()
             .unwrap()
-            .contains("tools with a recorded result in this track: []"),
+            .contains("never made, or made by a worker"),
         "{error}"
     );
     // The worker cannot capture either (require_role, not the allowlist).

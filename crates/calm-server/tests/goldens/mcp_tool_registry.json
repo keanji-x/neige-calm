@@ -1017,7 +1017,7 @@
   },
   {
     "name": "calm.source.capture",
-    "description_sha256": "01694dfdf66526f953d28c3a1aed543564513a1fe1e3f5660590cfe549bba435",
+    "description_sha256": "7f1ea063a1a0497cf20f1929c2ce95f91c8ab141991707a782418f8c28293703",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

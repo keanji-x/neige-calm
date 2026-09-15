@@ -30,7 +30,9 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations, require_role, role_gated_write_annotations,
 };
-use crate::mcp_server::transport::worker_grants::model_tool_key;
+use crate::mcp_server::transport::worker_grants::{
+    model_tool_key, names_track_visible_plugin_tool,
+};
 use crate::model::CardRole;
 use crate::plugin_results::{ARGS_CANON_VERSION, Recorded, ResultStatus, args_sha256};
 use crate::report_sources::{
@@ -43,20 +45,22 @@ use calm_types::report_source_links::is_source_id;
 pub const TOOL_SOURCE_CAPTURE: &str = "calm.source.capture";
 pub const TOOL_SOURCE_LIST: &str = "calm.source.list";
 
-/// Wording shared by every "nothing recorded" refusal for a tool that IS
-/// among the recorded ones, so the Planner reads the same list of causes
-/// whatever the lookup that missed.
+/// Wording shared by every "nothing recorded" refusal for a tool the Track
+/// can see, so the Planner reads the same list of causes whatever the
+/// lookup that missed.
 const NO_RECORD: &str = "no recorded result for this call in this track \
                          (expired, evicted, never made, or made by a worker)";
 
-/// #1686 — a `call.tool` that names none of the recorded tools is a
-/// different fact from a missing entry, and says so; the list that follows
-/// is bounded by the ring (≤ 64 entries per track).
+/// #1686 — a `call.tool` no visible plugin exposes is a different fact
+/// from a known tool with no entry, and says so.
 const UNKNOWN_TOOL_NAME: &str = concat!(
     "unknown tool name: accepted spellings are the registry name (plugin.<id>_<tool>), ",
     "its sanitized form (plugin_<id>_<tool>) or the Codex-qualified form ",
-    "(mcp__<server>__plugin_<id>_<tool>); tools with a recorded result in this track: "
+    "(mcp__<server>__plugin_<id>_<tool>)"
 );
+
+/// Appended to both refusals above; bounded by the ring (≤ 64 per track).
+const RECORDED_TOOLS: &str = "tools with a recorded result in this track";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(capture_descriptor(), wrap(source_capture));
@@ -260,7 +264,8 @@ async fn capture_call(
         Some(args) => Some(args.clone()),
     };
 
-    let (plugin_id, tool_name) = resolve_recorded_tool(ctx, track_id, &requested_tool, tool)?;
+    let (plugin_id, tool_name) =
+        resolve_recorded_tool(ctx, track_id, &requested_tool, tool).await?;
     let recorded = match &call_args {
         Some(args) => ctx
             .plugin_results
@@ -299,8 +304,10 @@ async fn capture_call(
 /// are only the tools with a live entry in this track (the resolver's
 /// universe, §2.2): an exact registry name wins; otherwise the
 /// [`model_tool_key`] (qualifier stripped, Codex-sanitized) must match
-/// exactly one of them. No match names the recorded tools (#1686).
-fn resolve_recorded_tool(
+/// exactly one of them. No match lists the recorded tools and says which
+/// fact it is (#1686): a tool the Track can see with no entry
+/// (`NO_RECORD`), or a name nothing visible exposes (`UNKNOWN_TOOL_NAME`).
+async fn resolve_recorded_tool(
     ctx: &Arc<AppContext>,
     track_id: &str,
     requested: &str,
@@ -329,8 +336,13 @@ fn resolve_recorded_tool(
                 })
                 .collect();
             names.sort();
+            let fact = if names_track_visible_plugin_tool(ctx, Some(track_id), requested).await {
+                NO_RECORD
+            } else {
+                UNKNOWN_TOOL_NAME
+            };
             Err(RpcError::invalid_params(format!(
-                "{tool}: `call.tool` {requested:?}: {UNKNOWN_TOOL_NAME}[{}]",
+                "{tool}: `call.tool` {requested:?}: {fact}; {RECORDED_TOOLS}: [{}]",
                 names.join(", ")
             )))
         }

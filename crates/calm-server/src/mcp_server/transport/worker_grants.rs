@@ -153,6 +153,54 @@ pub(crate) async fn resolve_dispatch_plugin_tools(
 /// installed, or not a plugin tool at all.
 const UNKNOWN_TOOL: &str = "unknown tool";
 
+/// The plugin ids `scope` allows, whatever their running state.
+fn in_scope_plugin_ids(
+    registry: &crate::plugin_host::PluginRegistry,
+    scope: &TrackPluginScope,
+) -> BTreeSet<String> {
+    registry
+        .list()
+        .into_iter()
+        .map(|m| m.id)
+        .filter(|id| scope.allows(id))
+        .collect()
+}
+
+/// The Track-VISIBLE universe: every tool of every plugin `scope` allows,
+/// whatever its running state or kind — never the whole registry (#891).
+fn visible_plugin_tools_from(
+    registry: &crate::plugin_host::PluginRegistry,
+    in_scope: &BTreeSet<String>,
+    scope: &TrackPluginScope,
+) -> BTreeSet<String> {
+    plugin_tool_descriptors_from(registry.list(), in_scope, scope)
+        .into_iter()
+        .map(|d| d.name)
+        .collect()
+}
+
+/// #1686 — does `requested`, in any of its spellings, name a tool this
+/// Track can see? `calm.source.capture` asks this when no recorded tool
+/// matches, to tell a known tool with no live record (re-call it) from a
+/// name nothing exposes (respell it). Same universe as dispatch: a tool
+/// outside the Track's scope is unknown here too, and no plugin host
+/// means no plugin tools.
+pub(crate) async fn names_track_visible_plugin_tool(
+    ctx: &Arc<AppContext>,
+    track_id: Option<&str>,
+    requested: &str,
+) -> bool {
+    let Some(host) = ctx.plugin_host.get().cloned() else {
+        return false;
+    };
+    let scope = plugin_scope_for_track(ctx, track_id).await;
+    let registry = host.registry();
+    let visible =
+        visible_plugin_tools_from(registry, &in_scope_plugin_ids(registry, &scope), &scope);
+    let key = model_tool_key(requested);
+    visible.iter().any(|name| model_tool_key(name) == key)
+}
+
 fn resolve_dispatch_plugin_tools_from(
     registry: &crate::plugin_host::PluginRegistry,
     running: &BTreeSet<String>,
@@ -161,16 +209,8 @@ fn resolve_dispatch_plugin_tools_from(
     requested: &[String],
 ) -> Result<(Vec<String>, PluginToolAdmission), RpcError> {
     let eligible = eligible_plugin_tools_from(registry, running, scope)?;
-    let in_scope: BTreeSet<String> = registry
-        .list()
-        .into_iter()
-        .map(|m| m.id)
-        .filter(|id| scope.allows(id))
-        .collect();
-    let visible: BTreeSet<String> = plugin_tool_descriptors_from(registry.list(), &in_scope, scope)
-        .into_iter()
-        .map(|d| d.name)
-        .collect();
+    let in_scope = in_scope_plugin_ids(registry, scope);
+    let visible = visible_plugin_tools_from(registry, &in_scope, scope);
     let reason = |name: &str| -> Result<String, RpcError> {
         if !visible.contains(name) {
             return Ok(UNKNOWN_TOOL.into());

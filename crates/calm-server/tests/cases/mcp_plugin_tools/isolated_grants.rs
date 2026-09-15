@@ -179,6 +179,66 @@ async fn isolated_plugin_dispatch_accepts_codex_sanitized_spelling_and_freezes_r
     );
 }
 
+/// #1686 — the model's tool list shows `mcp__calm__` + the sanitized
+/// spelling; through `calm.task.dispatch` that name resolves to the
+/// registry name, which is what the receipt and the frozen grant carry,
+/// and the registry spelling replays the same receipt.
+#[tokio::test]
+async fn isolated_plugin_dispatch_accepts_codex_qualified_spelling_and_freezes_registry_name() {
+    let fx = boot_fixture().await;
+    let real = fx.trusted_exposed_name.clone();
+    let qualified = format!("mcp__calm__{}", codex_spelling(&real));
+    let (token, thread) = planner_on_unbound_track(&fx).await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &token).await;
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            2,
+            "calm.task.dispatch",
+            &thread,
+            dispatch_args("Research", json!([qualified])),
+        ),
+    )
+    .await;
+    let first = recv_frame(&mut rd).await;
+    assert!(first.get("error").is_none(), "{first}");
+    let out = &first["result"]["structuredContent"];
+    assert_eq!(
+        out["requested_executor_environment"]["plugin_tools"],
+        json!([real]),
+        "{first}"
+    );
+    let task = fx
+        .repo
+        .tasks_by_track(&fx.track_id)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let context: Value = serde_json::from_str(&task.context_json).unwrap();
+    assert_eq!(
+        context["neige_execution"]["plugin_tools"],
+        json!([real]),
+        "frozen grant must be the registry name"
+    );
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            3,
+            "calm.task.dispatch",
+            &thread,
+            dispatch_args("Research", json!([real])),
+        ),
+    )
+    .await;
+    let replay = recv_frame(&mut rd).await;
+    assert_eq!(
+        &replay["result"]["structuredContent"]["receipt"], &out["receipt"],
+        "{replay}"
+    );
+}
+
 #[tokio::test]
 async fn isolated_plugin_dispatch_rejects_ambiguous_sanitized_spelling_listing_candidates() {
     let fx = boot_fixture().await;

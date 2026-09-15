@@ -10,6 +10,7 @@
 use calm_server::mcp_server::tools::source::{TOOL_SOURCE_CAPTURE, TOOL_SOURCE_LIST};
 use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATE;
 use calm_server::plugin_host::mcp::{CallToolResult, ContentBlock, RpcError};
+use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry};
 use calm_server::plugin_results::{MAX_ARGS_BYTES, MAX_TEXT_BYTES, sha256_hex};
 use calm_server::report_sources::{MAX_BODY_BYTES, MAX_QUOTES_PER_SOURCE, MAX_SOURCES_PER_TRACK};
 use serde_json::{Value, json};
@@ -49,6 +50,46 @@ fn record(boot: &Boot, plugin_id: &str, tool: &str, args: &Value, result: &CallT
     boot.ctx
         .plugin_results
         .record(boot.track_id.as_str(), plugin_id, tool, args, result);
+}
+
+/// #1686 — a plugin host whose registry exposes [`REGISTRY_NAME`], a
+/// second `dev.echo` tool and the colliding plugin, running nothing: the
+/// track-visible universe the refusal consults to tell a registered tool
+/// with no record (b) from a name no visible plugin exposes (a).
+const OTHER_TOOL_NAME: &str = "other.thing";
+const OTHER_REGISTRY_NAME: &str = "plugin.dev.echo_other.thing";
+
+fn install_registry(boot: &Boot) {
+    let manifest = |id: &str, tools: &[&str]| {
+        let tools: Vec<Value> = tools.iter().map(|t| json!({ "name": t })).collect();
+        Manifest::parse(
+            &json!({
+                "manifest_version": 1, "id": id, "version": "0.1.0", "min_kernel_version": "0.0.1",
+                "display_name": id, "entrypoint": { "command": "bin/stub" },
+                "exposes_tools": tools, "permissions": {}
+            })
+            .to_string(),
+        )
+        .expect("fixture manifest parses")
+    };
+    let registry = PluginRegistry::from_manifests([
+        (manifest(PLUGIN_ID, &[TOOL_NAME, OTHER_TOOL_NAME]), None),
+        (manifest(COLLIDING_PLUGIN_ID, &[COLLIDING_TOOL_NAME]), None),
+    ]);
+    let plugins = std::env::temp_dir().join("neige-test-source-capture-plugins");
+    let host = PluginHost::new_full(
+        Arc::new(registry),
+        boot.repo.clone(),
+        plugins.clone(),
+        plugins.join("data"),
+        Vec::new(),
+        boot.ctx.events.clone(),
+        boot.ctx.write.clone(),
+    );
+    assert!(
+        boot.ctx.plugin_host.set(Arc::new(host)).is_ok(),
+        "plugin host installed once"
+    );
 }
 
 async fn capture(boot: &Boot, args: Value) -> Result<Value, RpcError> {
@@ -246,17 +287,20 @@ async fn capture_resolves_the_codex_qualified_spelling() {
     assert!(!err.message.contains("unknown tool name"), "{err}");
 }
 
-/// #1686 — a name matching none of the recorded tools is refused as
-/// unknown, listing the tools that do have a record. A `mcp__` prefix
-/// without a delimited, non-empty server segment is not stripped.
+/// #1686 (a) — a name no visible plugin exposes, in any spelling, is
+/// refused as unknown, listing the tools that do have a record: a
+/// registry-shaped name that is not registered, and a `mcp__` prefix
+/// without a delimited, non-empty server segment (not stripped).
 #[tokio::test]
 async fn capture_refuses_an_unknown_tool_name_listing_the_recorded_tools() {
     let boot = boot().await;
+    install_registry(&boot);
     record(&boot, PLUGIN_ID, TOOL_NAME, &json!({}), &ok_result(&["a"]));
     for probe in [
         "mcp__plugin_dev_echo_do_thing",
         "mcp____plugin_dev_echo_do_thing",
         "plugin.dev.echo_other",
+        "mcp__calm__plugin_dev_echo_other",
     ] {
         let err = capture(
             &boot,
@@ -273,6 +317,38 @@ async fn capture_refuses_an_unknown_tool_name_listing_the_recorded_tools() {
             "{err}"
         );
         assert!(!err.message.contains("no recorded result"), "{err}");
+    }
+}
+
+/// #1686 (b) — a tool a visible plugin exposes but nobody in this track
+/// called keeps the "no recorded result" sentence (re-call, do not
+/// respell), plus the recorded list; every spelling of it.
+#[tokio::test]
+async fn capture_names_a_known_tool_without_a_record_as_no_record() {
+    let boot = boot().await;
+    install_registry(&boot);
+    record(
+        &boot,
+        PLUGIN_ID,
+        OTHER_TOOL_NAME,
+        &json!({}),
+        &ok_result(&["other"]),
+    );
+    for probe in [REGISTRY_NAME, SANITIZED_NAME, QUALIFIED_NAME] {
+        let err = capture(
+            &boot,
+            json!({ "call": { "tool": probe }, "provenance": "summary", "title": "x" }),
+        )
+        .await
+        .unwrap_err();
+        assert_invalid_params(&err, "never made, or made by a worker");
+        assert!(
+            err.message.contains(&format!(
+                "tools with a recorded result in this track: [{OTHER_REGISTRY_NAME}]"
+            )),
+            "{err}"
+        );
+        assert!(!err.message.contains("unknown tool name"), "{err}");
     }
 }
 
@@ -422,6 +498,7 @@ async fn capture_refuses_error_no_text_and_too_large_records() {
 #[tokio::test]
 async fn capture_does_not_see_another_tracks_records() {
     let boot = boot().await;
+    install_registry(&boot);
     boot.ctx.plugin_results.record(
         "some-other-track",
         PLUGIN_ID,
@@ -439,7 +516,12 @@ async fn capture_does_not_see_another_tracks_records() {
     )
     .await
     .unwrap_err();
-    assert_invalid_params(&err, "tools with a recorded result in this track: []");
+    assert_invalid_params(&err, "never made, or made by a worker");
+    assert!(
+        err.message
+            .contains("tools with a recorded result in this track: []"),
+        "{err}"
+    );
 }
 
 // ---------------------------------------------------------------------------
