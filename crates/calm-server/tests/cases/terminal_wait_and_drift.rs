@@ -885,6 +885,61 @@ async fn release_readback_keeps_text_after_a_history_view_of_the_same_revision()
     h.stop(&terminal).await;
 }
 
+/// Forty coloured lines then a marker. Each carries an SGR, so rmux stores
+/// them to their written extent (#1696); `SCROLLBACK` above is plain text,
+/// which rmux pads itself.
+const COLOURED_SCROLLBACK: &str = concat!(
+    "i=0; while [ $i -lt 40 ]; do printf \"\\033[31mline $i\\033[0m\\n\"; i=$((i+1)); done; ",
+    "printf 'READY\\n'; cat >/dev/null"
+);
+
+/// #1696: a history view of coloured output (every Claude Code line) failed
+/// the whole call with `missing terminal cell`; the missing cells are blank.
+#[tokio::test]
+async fn history_view_of_coloured_output_pads_short_lines() {
+    let h = Harness::start().await;
+    let terminal = open(&h, COLOURED_SCROLLBACK, "coloured-history").await;
+    let live = h.observe_text(&terminal, "READY").await;
+    let history_rows = live["history_rows"].as_u64().unwrap() as usize;
+    let rows = live["rows"].as_u64().unwrap() as usize;
+    assert!(history_rows >= 1, "{live}");
+    for offset in [1, 4, history_rows] {
+        let history = h
+            .ok(
+                "calm.terminal.observe",
+                json!({"terminal_id":terminal,"scroll_offset":offset}),
+            )
+            .await;
+        assert_eq!(history["scroll_offset"], offset, "{history}");
+        let text = history["text"].as_array().unwrap();
+        assert_eq!(text.len(), rows, "{history}");
+        // Line k sits at absolute row k; the viewport's top row is
+        // `history_rows - offset`.
+        assert_eq!(
+            text[0].as_str().unwrap().trim_end(),
+            format!("line {}", history_rows - offset),
+            "offset {offset}: {history}"
+        );
+    }
+    let image = h
+        .call(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"scroll_offset":4,"format":"image"}),
+        )
+        .await;
+    assert!(image.get("error").is_none(), "{image}");
+    assert_eq!(image["result"]["structuredContent"]["scroll_offset"], 4);
+    assert!(
+        image["result"]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "image"),
+        "{image}"
+    );
+    h.stop(&terminal).await;
+}
+
 /// Drift-tolerant input negative table. With `allow_output_since_observation`
 /// set, (a) an input-mode change (DECCKM) since the observation is refused by
 /// the surface fence and (b) an observation taken as a history view is

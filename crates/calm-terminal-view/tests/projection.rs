@@ -36,6 +36,41 @@ fn history_scroll_is_read_only_and_alternate_screen_restores() {
     view.feed(b"\x1b[?1049l");
     assert_eq!(view.frame(0).unwrap().text, live.text);
 }
+/// #1696: rmux stores an attributed line (any SGR, so every Claude Code
+/// line) to its written extent and pads only plain lines, so a history view
+/// must pad the missing cells itself instead of failing the whole frame.
+#[test]
+fn history_view_pads_attributed_lines_stored_to_their_written_extent() {
+    let mut view = TerminalView::new(20, 3, [220, 220, 220], [15, 20, 24]).unwrap();
+    for i in 0..6 {
+        view.feed(format!("\x1b[31mred{i}\x1b[0m\r\n").as_bytes());
+    }
+    let live = view.frame(0).unwrap();
+    assert_eq!(live.history_rows, 4);
+    assert_eq!(live.text, ["red4", "red5", ""]);
+    // The live viewport is always full width; its blank cells are the
+    // reference for what a padded history cell must look like.
+    let blank = &live.cells[live.cells.len() - 1];
+    assert_eq!(blank.text, " ");
+    for offset in 1..=live.history_rows {
+        let frame = view
+            .frame(offset)
+            .unwrap_or_else(|error| panic!("offset {offset}: {error}"));
+        assert_eq!(frame.scroll_offset, offset);
+        assert_eq!(frame.cells.len(), 20 * 3);
+        let expected: Vec<String> = (0..3)
+            .map(|row| format!("red{}", 4 - offset + row))
+            .collect();
+        assert_eq!(frame.text, expected, "offset {offset}");
+        let padded = &frame.cells[4];
+        assert_eq!(padded.text, blank.text, "offset {offset}");
+        assert_eq!(padded.width, blank.width, "offset {offset}");
+        assert_eq!(padded.attributes, blank.attributes, "offset {offset}");
+        assert_eq!(padded.foreground, blank.foreground, "offset {offset}");
+        assert_eq!(padded.background, blank.background, "offset {offset}");
+        assert_ne!(frame.cells[0].foreground, blank.foreground);
+    }
+}
 #[test]
 fn raster_escapes_terminal_markup_and_emits_bounded_png() {
     let mut view = TerminalView::new(80, 24, [220, 220, 220], [15, 20, 24]).unwrap();

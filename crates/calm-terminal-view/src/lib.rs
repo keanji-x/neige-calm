@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 use anyhow::{Result, ensure};
-use rmux_core::{TerminalScreen, input::mode};
+use rmux_core::{COLOUR_DEFAULT, TerminalScreen, input::mode};
 use rmux_proto::TerminalSize;
 use serde::Serialize;
 
@@ -20,6 +20,19 @@ pub struct Cell {
     pub attributes: u16,
     pub foreground: i32,
     pub background: i32,
+}
+
+impl Cell {
+    /// What rmux renders for a cell nothing was written to (#1696).
+    fn blank() -> Self {
+        Self {
+            text: " ".into(),
+            width: 1,
+            attributes: 0,
+            foreground: COLOUR_DEFAULT,
+            background: COLOUR_DEFAULT,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -133,24 +146,32 @@ impl TerminalView {
                 .ok_or_else(|| anyhow::anyhow!("missing terminal row"))?;
             let mut plain = String::new();
             for column in 0..usize::from(size.cols) {
-                let cell = line
-                    .cell(column as u32)
-                    .ok_or_else(|| anyhow::anyhow!("missing terminal cell"))?;
-                bytes = bytes.saturating_add(cell.text().len());
+                // #1696: rmux stores an attributed line (any SGR) to its
+                // written extent and pads only plain lines, so a history row
+                // can be narrower than the viewport. Its missing cells are
+                // blank cells, not a failed frame.
+                let (cell, padding) = match line.cell(column as u32) {
+                    Some(cell) => (
+                        Cell {
+                            text: cell.text().into(),
+                            width: cell.width(),
+                            attributes: cell.attr(),
+                            foreground: cell.fg(),
+                            background: cell.bg(),
+                        },
+                        cell.is_padding(),
+                    ),
+                    None => (Cell::blank(), false),
+                };
+                bytes = bytes.saturating_add(cell.text.len());
                 ensure!(
                     bytes <= MAX_FRAME_TEXT,
                     "terminal frame text exceeds capture limit"
                 );
-                if !cell.is_padding() {
-                    plain.push_str(cell.text());
+                if !padding {
+                    plain.push_str(&cell.text);
                 }
-                cells.push(Cell {
-                    text: cell.text().into(),
-                    width: cell.width(),
-                    attributes: cell.attr(),
-                    foreground: cell.fg(),
-                    background: cell.bg(),
-                });
+                cells.push(cell);
             }
             text.push(plain.trim_end().to_owned());
         }
