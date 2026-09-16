@@ -432,20 +432,61 @@ file next to `hooks` (nothing else: no `defaultMode`, `bypassPermissions`,
 `Card.payload.claude_permissions` in the same transaction, persisted in the
 operation's `tx_output.data` (the input `spawn_side_effect` rewrites the file
 from on recovery, never the card or the request) and echoed by the open as
-`claude_permissions` with `permissions allow N ask M deny K` in its summary
-line. No scope declared: the file, the card payload, the result and the hash
-are exactly what they were before S1.
+`claude_permissions` (beside `claude_permissions_source` since S2, both from
+the card) with `permissions allow N ask M deny K source <source>` in its
+summary line. No scope declared: the file, the card payload, the result and the hash
+are exactly what they were before S1, unless the tree carries a policy.
+
+Track policy (#1704 S2): a user may set `tracks.claude_permissions_policy`
+(`PATCH /api/tracks/:id` `claude_permissions_policy: {edit?, bash?, deny?} |
+null`, user-only, validated by `terminal_permissions::validate_scope_named`
+under its own field name, so a policy never admits what a declaration could
+not) on a track-tree ROOT only: a child row is always `null`, a child PATCH is
+409 (`track_update_tx`, the writer every entry shares), and every CEILING read
+resolves the root (`track_claude_permissions_ceiling_read` walks
+`TRACK_ROOT_DEPTH_SQL`, fails closed on an unresolved root or an undecodable
+value) — `GET /api/tracks/:id`, the lists and `track.updated` return the raw
+column, so a child shows `null` there. `terminal_permissions::policy::
+apply_policy` produces the ONE scope rendered, per row: no policy and no
+declaration renders nothing (S1 byte-identical); no policy and a declaration
+renders the declaration (`claude_permissions_source: declared`); a policy and
+no declaration renders the policy (`track_policy`); a policy and a declaration
+within it renders the merge — a list the declaration omits is inherited from
+the policy, a list it gives must stay within the policy's (every `edit` glob
+contained in a policy glob: equal, or under a `dir/**`, or the policy says
+`**`; every `bash` prefix covered by a policy prefix at a token boundary and by
+no policy `deny`), and `deny` is the policy's followed by the declaration's,
+deduplicated (`declared_within_policy`); a declaration not within the policy is
+refused by name (`claude_permissions.bash[3] 'pip download' exceeds the Track
+policy (bash: git, python3 -m unittest)`, the ceiling list cut after six
+entries). Inherited lists are the policy's own and given lists are within it,
+so the merge never widens; the floor stays `ask`. The `calm.terminal.open`
+handler probes the idempotency key first and pre-checks only a FRESH
+`request_id` against the root-resolved ceiling (`invalid_params`, no
+operation row); `prepare_tx` re-reads the ceiling inside its write transaction
+(the verdict: a policy narrowed between the two reads fails the operation
+from Pending as `bad_request`, surfaced to the Planner as `outcome:
+unavailable`, no card, no file), renders the merge against the OPENING
+track's cwd (a managed child re-anchors relative `edit` globs to its own
+directory) and stamps the block with its source. The policy never enters the
+hash; the ceiling is checked on a request_id's first arrival only, so a replay
+with the same arguments returns the existing terminal whatever the policy is
+now (a different declared scope is S1's payload conflict). Only Planner opens
+read the policy: REST terminal cards and task terminals never do.
 
 Server-owned payload keys, one table: `calm.terminal.open` is the only writer
 that mints `Card.payload.terminal_signals: true`
-(`card_with_terminal_create_tx(planner_hooks = true)`) and
-`Card.payload.claude_permissions` (`card_stamp_claude_permissions_tx`); the
+(`card_with_terminal_create_tx(planner_hooks = true)`),
+`Card.payload.claude_permissions` and, since S2, the third key
+`Card.payload.claude_permissions_source` (`card_stamp_claude_permissions_tx`;
+`declared`, `track_policy` or `declared_within_policy`; a card carrying the
+block and no source predates S2 and reads as `declared`); the
 hook ingest route keys on the marker, never on the terminal row or the
-patchable `kind`. Both keys (`validation::SERVER_OWNED_TERMINAL_PAYLOAD_KEYS`)
+patchable `kind`. The three keys (`validation::SERVER_OWNED_TERMINAL_PAYLOAD_KEYS`)
 are therefore server-owned at every public write boundary: `POST
 /api/tracks/:id/cards` (direct and `via_tool_call` `structuredContent`), `PATCH
 /api/cards/:id`, and the plugin callbacks `neige.card.create` /
-`neige.card.update` refuse a payload that contains either key — any value, any
+`neige.card.update` refuse a payload that contains any of them — any value, any
 kind — as `bad_request` naming the key as server-owned (HTTP 400 on REST,
 JSON-RPC `invalid_params` on the plugin callbacks;
 `validation::reject_client_supplied_server_owned_keys`). Stored payloads keep
@@ -457,12 +498,14 @@ key never gains it through a public update (REST PATCH, plugin update); the
 kernel's own stamp at creation goes through `card_update_tx` inside the create
 transaction. Sticky means the kernel-minted shape only
 (`validation::server_owned_value_is_sticky`): `terminal_signals` when `true`,
-`claude_permissions` when it is an object.
+`claude_permissions` when it is an object, `claude_permissions_source` when it
+is one of the three source spellings.
 
 Idempotency: the open's `stable_payload_hash` covers the request as sent plus
 `planner_hooks`, plus the trimmed `claude_permissions` scope when declared; the
 generated keys never enter it (they are derived after hashing, from the
-allocated card id), so a replayed `request_id` returns the existing terminal,
+allocated card id) and neither does the Track policy (S2), so a replayed
+`request_id` with the same arguments returns the existing terminal,
 and a different scope (or none) on a replayed `request_id` is the runtime's
 payload conflict (`-32403`, `already used with different payload`: no card,
 no terminal, the old terminal is not returned). The settings file is deleted by the shared terminal reap
