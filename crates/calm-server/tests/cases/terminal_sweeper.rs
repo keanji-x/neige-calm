@@ -426,6 +426,50 @@ async fn orphan_sweep_reaps_terminal_after_runtime_completion() {
     );
 }
 
+/// #1701 — a Terminal-card terminal whose program exited normally is not
+/// residue: the attach reader recorded the exit on the row and completed the
+/// ephemeral session, and the card that owns the row still exists. Before the
+/// fix the row matched the orphan query the moment the session completed and
+/// the next sweep past the grace deleted it, so the Track's Terminal card
+/// pointed at nothing and `observe`/`control` on it failed. The row (final
+/// screen, scrollback, `exit_code`) now follows its card. The negative twin —
+/// the same seed with the session completed but NO recorded exit is still
+/// reaped — is `cleanup_safe_when_daemon_already_dead` and
+/// `sweep_emits_terminal_deleted_with_kernel_actor` below.
+#[tokio::test]
+async fn orphan_sweep_keeps_exited_terminal_card_terminal() {
+    let (state, concrete) = fresh_state().await;
+    let mut sub = state.events.subscribe();
+    let (card_id, terminal_id) = seed_linked_pair(&state, &concrete).await;
+
+    // The attach reader's exit arm: exit persisted on the row, then the
+    // ephemeral terminal session completed `Exited`.
+    state
+        .repo
+        .terminal_set_exit_with_output(&terminal_id, Some(3), false, "done\n", false)
+        .await
+        .unwrap();
+    complete_terminal_runtime_for_card(&state, &card_id).await;
+    age_all_terminals_past_grace(&concrete).await;
+    while sub.try_recv().is_ok() {}
+
+    terminal_sweeper::sweep(&state).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let row = state.repo.terminal_get(&terminal_id).await.unwrap();
+    assert!(
+        row.is_some(),
+        "an exited Terminal-card terminal must follow its card, not be reaped as an orphan"
+    );
+    assert_eq!(row.unwrap().exit_code, Some(3));
+    while let Ok(env) = sub.try_recv() {
+        assert!(
+            !matches!(&env.event, Event::TerminalDeleted { id, .. } if *id == terminal_id),
+            "sweep must not emit terminal.deleted for an exited Terminal-card terminal"
+        );
+    }
+}
+
 #[tokio::test]
 async fn migrated_shared_planner_terminal_survives_sweep() {
     let (state, concrete) = fresh_state().await;

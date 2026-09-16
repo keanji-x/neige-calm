@@ -6,7 +6,7 @@ use super::session_projection::{
     runtimes_active_for_kind_from_pool,
 };
 use super::*;
-use crate::db::RepoRead;
+use crate::db::{RepoOutOfDomain, RepoRead};
 use crate::model::new_id;
 use crate::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjectionRepoError,
@@ -274,6 +274,112 @@ async fn terminals_orphaned_reaps_terminal_when_card_has_no_active_session() {
     assert!(
         orphans.iter().any(|terminal| terminal.id == terminal_id),
         "terminal without active worker_session.card_id should be orphaned, got: {orphans:?}"
+    );
+}
+
+/// #1701 (a) — a `terminal`-kind card whose session exited AND whose row
+/// records the exit (`exit_code` or `signal_killed`) follows its card: the
+/// exit is a recorded fact, not crash residue, so the sweeper leaves the row.
+#[tokio::test]
+async fn terminals_orphaned_keeps_exited_terminal_card_with_recorded_exit() {
+    let repo = fresh_repo().await;
+    let (by_code, by_code_terminal) = seed_terminal_runtime(&repo, "orphan-exit-code").await;
+    let (by_signal, by_signal_terminal) = seed_terminal_runtime(&repo, "orphan-signal").await;
+
+    let mut tx = repo.pool().begin().await.expect("begin #1701 seed tx");
+    session_complete_tx(&mut tx, &by_code.id, WorkerSessionState::Exited)
+        .await
+        .expect("complete terminal session (exit code)");
+    session_complete_tx(&mut tx, &by_signal.id, WorkerSessionState::Failed)
+        .await
+        .expect("complete terminal session (signal)");
+    tx.commit().await.expect("commit #1701 seed tx");
+    repo.terminal_set_exit(&by_code_terminal, Some(3), false)
+        .await
+        .expect("record exit code");
+    repo.terminal_set_exit(&by_signal_terminal, None, true)
+        .await
+        .expect("record signal kill");
+    age_terminal_past_grace(&repo, &by_code_terminal).await;
+    age_terminal_past_grace(&repo, &by_signal_terminal).await;
+
+    let orphans = repo
+        .terminals_orphaned(60)
+        .await
+        .expect("scan orphaned terminals");
+    assert!(
+        !orphans
+            .iter()
+            .any(|terminal| terminal.id == by_code_terminal || terminal.id == by_signal_terminal),
+        "an exited terminal-kind card terminal with a recorded exit is not an orphan, got: {orphans:?}"
+    );
+}
+
+/// #1701 (b) — the same terminal-kind card whose session exited WITHOUT a
+/// recorded exit on the row is still residue (crashed writer, partial write).
+#[tokio::test]
+async fn terminals_orphaned_reaps_exited_terminal_card_without_recorded_exit() {
+    let repo = fresh_repo().await;
+    let (runtime, terminal_id) = seed_terminal_runtime(&repo, "orphan-no-exit").await;
+
+    let mut tx = repo
+        .pool()
+        .begin()
+        .await
+        .expect("begin #1701 no-exit seed tx");
+    session_complete_tx(&mut tx, &runtime.id, WorkerSessionState::Exited)
+        .await
+        .expect("complete terminal session");
+    tx.commit().await.expect("commit #1701 no-exit seed tx");
+    age_terminal_past_grace(&repo, &terminal_id).await;
+
+    let orphans = repo
+        .terminals_orphaned(60)
+        .await
+        .expect("scan orphaned terminals");
+    assert!(
+        orphans.iter().any(|terminal| terminal.id == terminal_id),
+        "terminal-kind card terminal without a recorded exit must stay orphaned, got: {orphans:?}"
+    );
+}
+
+/// #1701 (c) — the exception is scoped to `cards.kind = 'terminal'`: a codex
+/// card's terminal with a recorded exit and no active session is reaped as
+/// today (memory hygiene for many tasks; a separate decision).
+#[tokio::test]
+async fn terminals_orphaned_reaps_exited_non_terminal_card_with_recorded_exit() {
+    let repo = fresh_repo().await;
+    let label = "orphan-codex-exit";
+    let (card_id, terminal_id, initial_session) = seed_codex_terminal_card(&repo, label).await;
+
+    let mut tx = repo
+        .pool()
+        .begin()
+        .await
+        .expect("begin #1701 codex seed tx");
+    session_complete_tx(&mut tx, &initial_session, WorkerSessionState::Exited)
+        .await
+        .expect("complete initial codex session");
+    tx.commit().await.expect("commit #1701 codex seed tx");
+    repo.terminal_set_exit(&terminal_id, Some(0), false)
+        .await
+        .expect("record exit code");
+    age_terminal_past_grace(&repo, &terminal_id).await;
+
+    let card_kind: String = sqlx::query_scalar("SELECT kind FROM cards WHERE id = ?1")
+        .bind(&card_id)
+        .fetch_one(repo.pool())
+        .await
+        .expect("read card kind");
+    assert_eq!(card_kind, "codex");
+
+    let orphans = repo
+        .terminals_orphaned(60)
+        .await
+        .expect("scan orphaned terminals");
+    assert!(
+        orphans.iter().any(|terminal| terminal.id == terminal_id),
+        "a non-terminal-kind card terminal with a recorded exit must stay orphaned, got: {orphans:?}"
     );
 }
 

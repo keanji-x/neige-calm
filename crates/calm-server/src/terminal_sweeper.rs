@@ -25,6 +25,18 @@
 //!      [`crate::db::RepoRead::terminals_orphaned`]); the 60-second grace
 //!      absorbs terminal/session creation races.
 //!
+//!      **Exited Terminal-card terminals are not residue (#1701).** A
+//!      Terminal card (`cards.kind = 'terminal'`; human "New terminal" or
+//!      Planner `calm.terminal.open`) owns an ephemeral worker session that
+//!      completes when the PTY exits, so from that moment its row has no
+//!      active session — yet the attach reader already recorded the exit
+//!      (`exit_code` / `signal_killed`, `pty_output`) and the card still
+//!      exists. Reaping it left the card pointing at nothing and made
+//!      `observe` / `control release` on it fail. Such a row follows its
+//!      card: layer 1 removes it with the card, and this sweeper skips it.
+//!      A terminal without a recorded exit (crash, partial write) and the
+//!      terminals of other card kinds (task/worker) keep the rule above.
+//!
 //! ## What the sweeper is *not*
 //!
 //! Pre-#197, the sweeper was documented as the cleanup path for the
