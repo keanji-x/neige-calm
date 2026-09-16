@@ -470,9 +470,13 @@ unavailable`, no card, no file), renders the merge against the OPENING
 track's cwd (a managed child re-anchors relative `edit` globs to its own
 directory) and stamps the block with its source. The policy never enters the
 hash; the ceiling is checked on a request_id's first arrival only, so a replay
-with the same arguments returns the existing terminal whatever the policy is
-now (a different declared scope is S1's payload conflict). Only Planner opens
-read the policy: REST terminal cards and task terminals never do.
+with the same arguments replays the existing operation — the terminal, or the
+Failed row's `unavailable` result — whatever the policy is now (a different
+declared scope is S1's payload conflict). Only Planner opens read the policy:
+REST terminal cards and task terminals never do. On the wire a client must OMIT
+a list rather than send `null`: the OpenAPI document renders the three lists
+nullable (utoipa's `Option` rule), but `parse_scope_named` refuses a `null`
+list on both the tool argument and the PATCH body.
 
 Server-owned payload keys, one table: `calm.terminal.open` is the only writer
 that mints `Card.payload.terminal_signals: true`

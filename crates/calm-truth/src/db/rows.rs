@@ -144,8 +144,10 @@ pub struct TrackRow {
     /// #1704 S2 — migration 0109. The tree root's Claude Code permission
     /// policy as stored (a child row is NULL; ceiling reads resolve the root
     /// separately). Nullable JSON TEXT through the same `#[sqlx(json)]`
-    /// machinery as `template_input`; a stored value that is not a scope
-    /// object fails the decode (an error, never "no policy").
+    /// machinery as `template_input`; a value the scope derive cannot decode
+    /// fails the read (an error, never "no policy") — the derive is lenient
+    /// about unknown keys and, like any serde struct, accepts a positional
+    /// array.
     #[sqlx(json(nullable))]
     pub claude_permissions_policy: Option<ClaudePermissionsScope>,
 }

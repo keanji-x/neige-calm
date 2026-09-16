@@ -385,7 +385,11 @@ pub async fn track_update_tx(
     // rule is enforced HERE for the same reason as `tree_task_budget` below:
     // this in-tx helper is the single writer every entry point shares. Every
     // ceiling read resolves the tree root, so a value on a child row would be
-    // a second, unreachable source of truth.
+    // a second, unreachable source of truth. The column is written ONLY when
+    // the patch names it (a targeted UPDATE, the `tree_task_budget` shape),
+    // never re-serialized from the row read above: the row decode is lenient
+    // about unknown keys, so a title patch by an older binary would otherwise
+    // strip what a newer one stored.
     if let Some(policy) = p.claude_permissions_policy {
         let parent: Option<(String,)> = sqlx::query_as(
             "SELECT parent_track_id FROM tracks WHERE id = ?1 AND parent_track_id IS NOT NULL",
@@ -400,20 +404,20 @@ pub async fn track_update_tx(
                 w.id.as_str()
             )));
         }
+        let stored = policy.as_ref().map(serde_json::to_string).transpose()?;
+        sqlx::query("UPDATE tracks SET claude_permissions_policy = ?1 WHERE id = ?2")
+            .bind(stored)
+            .bind(w.id.as_str())
+            .execute(&mut **tx)
+            .await?;
         w.claude_permissions_policy = policy;
     }
     w.updated_at = now_ms();
-    let claude_permissions_policy = w
-        .claude_permissions_policy
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
 
     sqlx::query(
         r#"UPDATE tracks
            SET title = ?1, sort = ?2, archived_at = ?3, pinned_at = ?4,
-               lifecycle = ?5, terminal_at = ?6, updated_at = ?7,
-               claude_permissions_policy = ?9
+               lifecycle = ?5, terminal_at = ?6, updated_at = ?7
            WHERE id = ?8"#,
     )
     .bind(&w.title)
@@ -424,7 +428,6 @@ pub async fn track_update_tx(
     .bind(w.terminal_at)
     .bind(w.updated_at)
     .bind(w.id.as_str())
-    .bind(claude_permissions_policy)
     .execute(&mut **tx)
     .await?;
 

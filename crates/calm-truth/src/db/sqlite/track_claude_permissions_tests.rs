@@ -324,8 +324,10 @@ async fn ceiling_read_resolves_the_tree_root() {
 
 /// The stored value is decoded by the lenient derive: a key this binary does
 /// not know (a row written by a newer one) still decodes, on the row reader
-/// and on the ceiling read alike; a value that is not a scope object fails
-/// both, never reading as "no policy".
+/// and on the ceiling read alike; a value the scope derive cannot decode
+/// fails both, never reading as "no policy" (the derive is lenient about
+/// unknown keys and, like any serde struct, accepts a positional array, so
+/// the undecodable probe is an array of strings).
 #[tokio::test]
 async fn stored_policy_tolerates_unknown_keys_and_refuses_non_objects() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -363,5 +365,55 @@ async fn stored_policy_tolerates_unknown_keys_and_refuses_non_objects() {
     assert!(
         error.to_string().contains("does not decode as a scope"),
         "{error}"
+    );
+}
+
+/// A patch that does not name the policy leaves the stored TEXT byte-for-byte:
+/// the writer never re-serializes the column from its lenient row decode, so
+/// a title patch by an older binary keeps a key only a newer one knows. A
+/// patch that names the policy replaces the whole value.
+#[tokio::test]
+async fn a_patch_without_the_policy_keeps_unknown_keys_of_the_stored_value() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let area = seed_area(&repo).await;
+    let root = seed_track(&repo, &area, "root").await;
+    let stored = r#"{"edit":["**"],"future_key":1}"#;
+    sqlx::query("UPDATE tracks SET claude_permissions_policy=?1 WHERE id=?2")
+        .bind(stored)
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let after_title = track_update_tx(
+        &mut tx,
+        &root,
+        TrackPatch {
+            title: Some("renamed".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(after_title.title, "renamed");
+    let raw = column(&repo, &root).await.unwrap();
+    assert_eq!(raw, stored, "the raw column text is untouched");
+    assert!(raw.contains("future_key"));
+
+    patch(&repo, &root, Some(Some(policy()))).await.unwrap();
+    let raw = column(&repo, &root).await.unwrap();
+    assert!(
+        !raw.contains("future_key"),
+        "a policy patch replaces it: {raw}"
+    );
+    assert_eq!(
+        repo.track_get(&root)
+            .await
+            .unwrap()
+            .unwrap()
+            .claude_permissions_policy,
+        Some(policy())
     );
 }
