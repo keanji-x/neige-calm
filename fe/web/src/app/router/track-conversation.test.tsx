@@ -2159,12 +2159,13 @@ it('shows a closed Planner working and preserves unread completion until its his
   await screen.findByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
   expect(indicator()).toBe('working');
   status = 'idle'; activityAt = 60;
-  await act(async () => {
+  await act(() => {
     const plan = invalidationPlanFor({ ev: 'harness.phase.changed', data: {
       worker_session_id: 'planner-live', card_id: 'card-planner', track_id: 'w1',
       old_phase: 'turn_running', new_phase: 'turn_completed',
     } });
     applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+    return Promise.resolve();
   });
   await waitFor(() => expect(indicator()).toBe('unread'));
   fireEvent.click(row());
@@ -2173,12 +2174,13 @@ it('shows a closed Planner working and preserves unread completion until its his
   fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
   expect(indicator()).toBeUndefined();
   activityAt = 70;
-  await act(async () => {
+  await act(() => {
     const plan = invalidationPlanFor({ ev: 'harness.phase.changed', data: {
       worker_session_id: 'planner-live', card_id: 'card-planner', track_id: 'w1',
       old_phase: 'turn_running', new_phase: 'turn_completed',
     } });
     applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+    return Promise.resolve();
   });
   await waitFor(() => expect(indicator()).toBe('unread'));
 });
