@@ -15,6 +15,8 @@ use crate::terminal_interaction::{
     BELOW_CURSOR_EDITS_ONLY, InputOptions, ObservationFormat, Target, TerminalInteraction, WaitFor,
     WaitPlan, edits_the_draft, receipt_summary, summary_line,
 };
+use crate::terminal_permissions::{ClaudePermissionsScope, parse_scope, validate_scope};
+use crate::validation::TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -31,7 +33,9 @@ pub fn register_into(registry: &mut ToolRegistry) {
         (
             "calm.terminal.open",
             include_str!("../../../prompts/tools/calm.terminal.open.md").trim_end(),
-            json!({"request_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200},"program":{"type":"string","minLength":1,"maxLength":4096},"format":{"type":"string","enum":["text","image"],"default":"text"},"claim":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000}}),
+            json!({"request_id":{"type":"string","minLength":1,"maxLength":128},"title":{"type":"string","maxLength":200},"program":{"type":"string","minLength":1,"maxLength":4096},"format":{"type":"string","enum":["text","image"],"default":"text"},"claim":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},
+            // #1704 S1 — the declared scope; the caps mirror `terminal_permissions`.
+            "claude_permissions":{"type":"object","additionalProperties":false,"properties":{"edit":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","minLength":1,"maxLength":200}},"bash":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":200}},"deny":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":200}}}}}),
             vec!["request_id"],
         ),
         (
@@ -96,6 +100,20 @@ struct Open {
     repaint_ms: Option<u64>,
     wait_text: Option<Vec<String>>,
     wait_text_absent: Option<Vec<String>>,
+    /// #1704 S1 — the permission rules the Planner declares; its shape is checked
+    /// by `parse_scope` (so a JSON `null` or array is refused by name rather
+    /// than read as absent), validated before the create is submitted and
+    /// part of the idempotency hash.
+    #[serde(default, deserialize_with = "present_value")]
+    claude_permissions: Option<Value>,
+}
+/// `Option<Value>` that keeps a JSON `null` as `Some(Null)` (serde's default
+/// reads `null` as `None`), so `claude_permissions: null` reaches
+/// `parse_scope` and is refused as "must be an object".
+fn present_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -188,8 +206,27 @@ fn observation_summary(state: &Value) -> String {
         Value::Null => "null".into(),
         other => other.to_string(),
     };
+    // #1704 S1 — an open that declared a scope echoes the effective block;
+    // its rule counts join the line (observe never carries the block).
+    let permissions = match state[TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY].as_object() {
+        Some(block) => {
+            let rules = |list: &str| {
+                block
+                    .get(list)
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len)
+            };
+            format!(
+                " permissions allow {} ask {} deny {}",
+                rules("allow"),
+                rules("ask"),
+                rules("deny")
+            )
+        }
+        None => String::new(),
+    };
     format!(
-        "terminal {} observation {} revision {} {} {}x{} cursor {},{} wait {}; full state in structuredContent",
+        "terminal {} observation {} revision {} {} {}x{} cursor {},{} wait {}{permissions}; full state in structuredContent",
         text("terminal_id"),
         text("observation_id"),
         text("observation_revision"),
@@ -351,9 +388,14 @@ fn apply_image_outcome(
 /// env (`TERMINAL_HOOK_ENV_KEYS`) is derived by the adapter from the card id
 /// it allocates and never enters this view, so a replayed request_id hashes
 /// identically; the stored request and terminal row keep the complete env.
+/// #1704 S1 — the trimmed `claude_permissions` scope joins the view ONLY when
+/// declared, so every non-scoped open (and every pre-S1 stored hash) hashes
+/// as before, and a replay with a different scope is the runtime's payload
+/// conflict.
 fn open_payload_hash(
     identity: &ToolCallIdentity,
     request: &TerminalCreateRequestPayload,
+    claude_permissions: Option<&ClaudePermissionsScope>,
 ) -> Result<String, RpcError> {
     let mut view = serde_json::to_value(request).map_err(failure)?;
     if let Some(env) = view.get_mut("env").and_then(Value::as_object_mut) {
@@ -361,10 +403,12 @@ fn open_payload_hash(
             env.remove(key);
         }
     }
-    stable_payload_hash(
-        &json!({"actor":identity.to_actor_id(),"request":view,"planner_hooks":true}),
-    )
-    .map_err(failure)
+    let mut view = json!({"actor":identity.to_actor_id(),"request":view,"planner_hooks":true});
+    if let Some(scope) = claude_permissions {
+        view[TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY] =
+            serde_json::to_value(scope).map_err(failure)?;
+    }
+    stable_payload_hash(&view).map_err(failure)
 }
 async fn call(
     name: &str,
@@ -419,6 +463,15 @@ async fn call(
             };
             let waited = wait.any();
             let wait = wait.plan()?;
+            // #1704 S1 — the declared scope is parsed and validated here,
+            // before the create is submitted; the trimmed scope enters the
+            // hash.
+            let claude_permissions = args
+                .claude_permissions
+                .as_ref()
+                .map(|value| parse_scope(value).and_then(|scope| validate_scope(&scope)))
+                .transpose()
+                .map_err(RpcError::invalid_params)?;
             let track_id = TerminalInteraction::authorize(ctx.repo.as_ref(), &identity)
                 .await
                 .map_err(failure)?;
@@ -437,12 +490,13 @@ async fn call(
                     "planner-terminal:{}:{}",
                     identity.session_id, args.request_id
                 )),
-                payload_hash: open_payload_hash(&identity, &request)?,
+                payload_hash: open_payload_hash(&identity, &request, claude_permissions.as_ref())?,
             };
             let payload = serde_json::to_value(TerminalCreateOperationPayload {
                 actor: identity.to_actor_id(),
                 worker_session_id: Some(new_id()),
                 planner_hooks: true,
+                claude_permissions,
                 request,
             })
             .map_err(failure)?;
@@ -546,6 +600,11 @@ async fn call(
                 metadata["claim"] = claim;
             }
             metadata["card_id"] = json!(card.id);
+            // #1704 S1 — the effective block is echoed from the stamped card
+            // (the source of truth), so a replay echoes the same block.
+            if let Some(block) = card.payload.get(TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY) {
+                metadata[TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY] = block.clone();
+            }
             metadata["operation_id"] = json!(operation);
             observation_result(metadata, png)
         }
@@ -699,6 +758,30 @@ mod summary_tests {
         );
         assert_eq!(metadata, rendered);
         assert_eq!(png, Some(vec![9]));
+    }
+
+    /// #1704 S1 — the rule counts join the open's summary line only when the
+    /// state carries the echoed block, before the structuredContent pointer.
+    #[test]
+    fn open_summary_names_the_permission_counts_only_when_the_block_is_echoed() {
+        let mut state = json!({"terminal_id":"t-1","observation_id":"o-1","observation_revision":3,
+            "role":"owner","cols":80,"rows":24,"cursor":{"row":1,"column":2},
+            "wait":{"outcome":"elapsed"}});
+        let plain = observation_summary(&state);
+        assert_eq!(
+            plain,
+            "terminal t-1 observation o-1 revision 3 owner 80x24 cursor 1,2 wait elapsed; \
+             full state in structuredContent"
+        );
+        state["claude_permissions"] = json!({"allow":["Edit(//w/**)","Bash(git status *)"],
+            "ask":["Bash(git push *)"],"deny":[]});
+        assert_eq!(
+            observation_summary(&state),
+            "terminal t-1 observation o-1 revision 3 owner 80x24 cursor 1,2 wait elapsed \
+             permissions allow 2 ask 1 deny 0; full state in structuredContent"
+        );
+        state["claude_permissions"] = json!(null);
+        assert_eq!(observation_summary(&state), plain);
     }
 
     #[test]

@@ -28,6 +28,7 @@ use calm_server::routes::tracks::{
     TrackLifecyclePatchRaceHook, install_track_lifecycle_patch_race_hook_for_test,
 };
 use calm_server::state::{AppState, DaemonClient};
+use calm_server::validation::SERVER_OWNED_TERMINAL_PAYLOAD_KEYS;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -294,47 +295,61 @@ async fn patch_terminal_card_with_bad_payload_returns_400() {
     assert_eq!(body["code"], "bad_request");
 }
 
-/// #1620 — `terminal_signals` is the hook-routing provenance the kernel
-/// stamps on Planner-opened terminals; no client may write it, for any kind
-/// (the hook route reads the marker from the payload, not the kind).
+/// The client-supplied values a server-owned key is refused with, whatever
+/// they are (#1620 `terminal_signals`, #1704 `claude_permissions`): the
+/// minted shape, a wrong-typed one, an empty object and null.
+fn server_owned_probe_values() -> [Value; 4] {
+    [json!(true), json!(false), json!({}), Value::Null]
+}
+
+/// #1620 / #1704 — `terminal_signals` (hook-routing provenance) and
+/// `claude_permissions` (the effective permissions block) are stamped by the
+/// kernel on Planner-opened terminals; no client may write either, for any
+/// kind and with any value (the hook route reads the marker from the
+/// payload, not the kind). Driven by the table every boundary consults.
 #[tokio::test]
-async fn post_card_with_terminal_signals_is_rejected_for_every_kind() {
+async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
     let (state, track_id, repo) = boot_with_repo().await;
-    for (kind, payload) in [
-        (
-            "terminal",
-            json!({ "schemaVersion": 1, "terminal_signals": true }),
-        ),
-        (
-            "codex",
-            json!({ "schemaVersion": 1, "terminal_signals": true }),
-        ),
-        (
-            "claude",
-            json!({ "schemaVersion": 1, "terminal_signals": true }),
-        ),
-        // Value-agnostic: `false` is refused too.
-        (
-            "terminal",
-            json!({ "schemaVersion": 1, "terminal_signals": false }),
-        ),
-        // Kind-agnostic: opaque kinds do not get to smuggle it either.
-        ("ui://example/view", json!({ "terminal_signals": true })),
-    ] {
-        let resp = post_card(
-            app(state.clone()),
-            &track_id,
-            json!({ "kind": kind, "payload": payload }),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "kind={kind}");
-        let body = body_to_json(resp).await;
-        assert_eq!(body["code"], "bad_request", "kind={kind}");
-        let error = body["error"].as_str().unwrap();
-        assert!(
-            error.contains("terminal_signals") && error.contains("server-owned"),
-            "kind={kind}: {body:?}"
-        );
+    assert_eq!(
+        SERVER_OWNED_TERMINAL_PAYLOAD_KEYS,
+        ["terminal_signals", "claude_permissions"]
+    );
+    for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+        for (kind, value) in [
+            ("terminal", json!(true)),
+            ("codex", json!(true)),
+            ("claude", json!(true)),
+            // Kind-agnostic: opaque kinds do not get to smuggle it either.
+            ("ui://example/view", json!(true)),
+        ]
+        .into_iter()
+        .chain(
+            // Value-agnostic: false, an empty object and null are refused too.
+            server_owned_probe_values()
+                .into_iter()
+                .map(|value| ("terminal", value)),
+        ) {
+            let mut payload = json!({ "schemaVersion": 1 });
+            payload[key] = value;
+            let resp = post_card(
+                app(state.clone()),
+                &track_id,
+                json!({ "kind": kind, "payload": payload }),
+            )
+            .await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "kind={kind} key={key} payload={payload}"
+            );
+            let body = body_to_json(resp).await;
+            assert_eq!(body["code"], "bad_request", "kind={kind} key={key}");
+            let error = body["error"].as_str().unwrap();
+            assert!(
+                error.contains(key) && error.contains("server-owned"),
+                "kind={kind} key={key}: {body:?}"
+            );
+        }
     }
     assert!(
         repo.cards_by_track(&track_id).await.unwrap().is_empty(),
@@ -343,7 +358,7 @@ async fn post_card_with_terminal_signals_is_rejected_for_every_kind() {
 }
 
 #[tokio::test]
-async fn patch_card_with_terminal_signals_is_rejected() {
+async fn patch_card_with_a_server_owned_key_is_rejected() {
     let (state, track_id, repo) = boot_with_repo().await;
     let seeded = repo
         .card_create(NewCard {
@@ -355,23 +370,34 @@ async fn patch_card_with_terminal_signals_is_rejected() {
         })
         .await
         .unwrap();
-    let resp = patch_card(
-        app(state),
-        seeded.id.as_str(),
-        json!({ "payload": { "schemaVersion": 1, "terminal_id": "t1", "terminal_signals": true } }),
-    )
-    .await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_to_json(resp).await;
-    assert_eq!(body["code"], "bad_request");
-    assert!(
-        body["error"].as_str().unwrap().contains("server-owned"),
-        "{body:?}"
-    );
+    for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+        for value in server_owned_probe_values() {
+            let mut payload = json!({ "schemaVersion": 1, "terminal_id": "t1" });
+            payload[key] = value;
+            let resp = patch_card(
+                app(state.clone()),
+                seeded.id.as_str(),
+                json!({ "payload": payload }),
+            )
+            .await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "key={key} payload={payload}"
+            );
+            let body = body_to_json(resp).await;
+            assert_eq!(body["code"], "bad_request", "key={key}");
+            let error = body["error"].as_str().unwrap();
+            assert!(
+                error.contains(key) && error.contains("server-owned"),
+                "key={key}: {body:?}"
+            );
+        }
+    }
     let stored = repo.card_get(seeded.id.as_str()).await.unwrap().unwrap();
     assert_eq!(
         stored.payload, seeded.payload,
-        "the rejected PATCH wrote nothing"
+        "the rejected PATCHes wrote nothing"
     );
 }
 

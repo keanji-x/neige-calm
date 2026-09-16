@@ -410,26 +410,62 @@ the Planner starts Claude with `claude --settings "$NEIGE_CLAUDE_SETTINGS"`.
 Human-created terminals (`POST /api/tracks/:id/terminal-cards`) keep
 `planner_hooks: false` and get exactly the env they asked for.
 
-Provenance marker ownership: `calm.terminal.open` is the only writer that mints
-`Card.payload.terminal_signals: true` (`card_with_terminal_create_tx(planner_hooks
-= true)`); the hook ingest route keys on that payload key, never on the terminal
-row or the patchable `kind`. The key is therefore server-owned at every public
-write boundary: `POST /api/tracks/:id/cards` (direct and `via_tool_call`
-`structuredContent`), `PATCH /api/cards/:id`, and the plugin callbacks
-`neige.card.create` / `neige.card.update` refuse a payload that contains the key
-— any value, any kind — as `bad_request` naming the key as server-owned (HTTP
-400 on REST, JSON-RPC `invalid_params` on the plugin callbacks;
-`validation::reject_client_supplied_terminal_signals`). Stored payloads keep the
-key and the terminal validator still accepts it on read-back. PATCH rule: the
-payload column is replaced wholesale, so `card_update_tx` re-stamps
-`terminal_signals: true` onto any replacement payload of a card whose stored
-payload carries the marker (a non-object replacement is refused with 400); a
-card without the marker never gains it on update.
+Declared scope (#1704 S1): the open's optional `claude_permissions` argument
+(`edit` globs relative to the terminal cwd, `bash` command prefixes, `deny`
+prefixes; validated by `terminal_permissions::validate_scope`, refused as
+`invalid_params` naming the entry) is rendered by the adapter against the
+resolved cwd in `prepare_tx` (`terminal_permissions::render_claude_permissions`)
+into exactly Claude Code's `permissions` block: `Edit(//<cwd>/<glob>)` and
+`Bash(<prefix> *)` under `allow`, `Bash(<prefix> *)` under `deny`, and — always,
+when a scope is declared — the floor under `ask`: `git push`, `git reset
+--hard`, `rm -rf`, `curl`, `wget`, `pip install`, `npm install` and
+`Edit(//<cwd>/.git/**)`. The floor is `ask`, never `deny`: Claude Code
+evaluates deny, then ask, then allow over the merged rule set, so an `ask`
+rule prompts even when an `allow` also matches, and the dialog reaches the
+Planner as a `permission_request` signal; a Planner `deny` on the same rule
+still wins. Every rule matches its usual spelling only (`git -C . push`,
+`rm -fr` and `pip3 install` are not caught by the floor), and an action no
+rule matches keeps Claude Code's usual permission behaviour — the kernel
+emits rules, not outcomes. The rendered block is the one value written into the settings
+file next to `hooks` (nothing else: no `defaultMode`, `bypassPermissions`,
+`additionalDirectories` or `Read` rule), stamped on the card as
+`Card.payload.claude_permissions` in the same transaction, persisted in the
+operation's `tx_output.data` (the input `spawn_side_effect` rewrites the file
+from on recovery, never the card or the request) and echoed by the open as
+`claude_permissions` with `permissions allow N ask M deny K` in its summary
+line. No scope declared: the file, the card payload, the result and the hash
+are exactly what they were before S1.
+
+Server-owned payload keys, one table: `calm.terminal.open` is the only writer
+that mints `Card.payload.terminal_signals: true`
+(`card_with_terminal_create_tx(planner_hooks = true)`) and
+`Card.payload.claude_permissions` (`card_stamp_claude_permissions_tx`); the
+hook ingest route keys on the marker, never on the terminal row or the
+patchable `kind`. Both keys (`validation::SERVER_OWNED_TERMINAL_PAYLOAD_KEYS`)
+are therefore server-owned at every public write boundary: `POST
+/api/tracks/:id/cards` (direct and `via_tool_call` `structuredContent`), `PATCH
+/api/cards/:id`, and the plugin callbacks `neige.card.create` /
+`neige.card.update` refuse a payload that contains either key — any value, any
+kind — as `bad_request` naming the key as server-owned (HTTP 400 on REST,
+JSON-RPC `invalid_params` on the plugin callbacks;
+`validation::reject_client_supplied_server_owned_keys`). Stored payloads keep
+the keys and the terminal validator still accepts them on read-back. PATCH
+rule: the payload column is replaced wholesale, so `card_update_tx` re-inserts
+every stored server-owned key onto any replacement payload of a card that
+carries it (a non-object replacement is refused with 400); a card without a
+key never gains it through a public update (REST PATCH, plugin update); the
+kernel's own stamp at creation goes through `card_update_tx` inside the create
+transaction. Sticky means the kernel-minted shape only
+(`validation::server_owned_value_is_sticky`): `terminal_signals` when `true`,
+`claude_permissions` when it is an object.
 
 Idempotency: the open's `stable_payload_hash` covers the request as sent plus
-`planner_hooks`; the generated keys never enter it (they are derived after
-hashing, from the allocated card id), so a replayed `request_id` returns the
-existing terminal. The settings file is deleted by the shared terminal reap
+`planner_hooks`, plus the trimmed `claude_permissions` scope when declared; the
+generated keys never enter it (they are derived after hashing, from the
+allocated card id), so a replayed `request_id` returns the existing terminal,
+and a different scope (or none) on a replayed `request_id` is the runtime's
+payload conflict (`-32403`, `already used with different payload`: no card,
+no terminal, the old terminal is not returned). The settings file is deleted by the shared terminal reap
 (`reap_terminal_artifacts_with_renderer`: card delete, sweeper, create
 compensation) and, for track and area deletion (which quiesce terminals
 through `quiesce_terminal_artifacts_for_deletion` and never reach the reap

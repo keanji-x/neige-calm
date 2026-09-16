@@ -1782,13 +1782,48 @@
   },
   {
     "name": "calm.terminal.open",
-    "description_sha256": "3dc9fc477d1bd18c69be186f6724e4be19708c4041f32642182f6679d32533ca",
+    "description_sha256": "fcb4f6add84ccd2837d6cf26ff6e4c481fcfa89e5bae2241d21a00e75e32135e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
         "claim": {
           "default": false,
           "type": "boolean"
+        },
+        "claude_permissions": {
+          "additionalProperties": false,
+          "properties": {
+            "bash": {
+              "items": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 32,
+              "minItems": 1,
+              "type": "array"
+            },
+            "deny": {
+              "items": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 32,
+              "type": "array"
+            },
+            "edit": {
+              "items": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 16,
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "type": "object"
         },
         "format": {
           "default": "text",

@@ -240,6 +240,45 @@ async fn open_writes_hook_settings_injects_env_and_replays_idempotently() {
         "exactly the seven issue events"
     );
     assert!(settings.get("mcpServers").is_none());
+    // #1704 S1 — no scope declared: the hooks-only file, no `permissions`
+    // key; no `claude_permissions` on the card, in the result or in the
+    // stored operation output.
+    assert!(
+        settings.get("permissions").is_none(),
+        "no scope, no permissions block: {settings}"
+    );
+    assert_eq!(
+        settings.as_object().unwrap().keys().collect::<Vec<_>>(),
+        vec!["hooks"]
+    );
+    assert!(opened.get("claude_permissions").is_none(), "{opened}");
+    let card = h.state.repo.card_get(&card_id).await.unwrap().unwrap();
+    assert!(
+        card.payload.get("claude_permissions").is_none(),
+        "{}",
+        card.payload
+    );
+    let operation = h
+        .state
+        .operation_runtime
+        .find_by_kind_and_idempotency(
+            "terminal-create",
+            &format!("planner-terminal:{}:hooks-open", h.session_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        operation.payload.get("claude_permissions").is_none(),
+        "{}",
+        operation.payload
+    );
+    let tx_output = operation.tx_output.unwrap();
+    assert!(
+        tx_output.data.get("claude_permissions").is_none(),
+        "{}",
+        tx_output.data
+    );
     let command = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
@@ -302,6 +341,10 @@ async fn open_writes_hook_settings_injects_env_and_replays_idempotently() {
         .to_bytes();
     let card: Value = serde_json::from_slice(&bytes).unwrap();
     let rest_card_id = card["id"].as_str().unwrap().to_owned();
+    assert!(
+        card["payload"].get("claude_permissions").is_none(),
+        "{card}"
+    );
     let rest_term = h
         .state
         .repo
@@ -1159,6 +1202,296 @@ async fn open_with_claim_reports_takeover_on_replay_instead_of_reclaiming() {
     h.stop(&terminal).await;
 }
 
+/// The round-19 ledger scope (#1704 S1) as the Planner declares it.
+fn round19_scope() -> Value {
+    json!({
+        "edit": ["**"],
+        "bash": ["python3 -m unittest", "git status", "git diff", "git log",
+                 "git show", "git add", "git commit"],
+        "deny": ["git push"]
+    })
+}
+/// The effective block the kernel renders for [`round19_scope`] in `cwd`.
+fn round19_block(cwd: &str) -> Value {
+    let root = cwd.trim_matches('/');
+    json!({
+        "allow": [
+            format!("Edit(//{root}/**)"), "Bash(python3 -m unittest *)",
+            "Bash(git status *)", "Bash(git diff *)", "Bash(git log *)",
+            "Bash(git show *)", "Bash(git add *)", "Bash(git commit *)"
+        ],
+        "ask": [
+            "Bash(git push *)", "Bash(git reset --hard *)", "Bash(rm -rf *)",
+            "Bash(curl *)", "Bash(wget *)", "Bash(pip install *)",
+            "Bash(npm install *)", format!("Edit(//{root}/.git/**)")
+        ],
+        "deny": ["Bash(git push *)"]
+    })
+}
+
+/// #1704 S1 — an open that declares a scope writes the effective block into
+/// the settings file the child reads, stamps it on the card (server-owned,
+/// sticky), echoes it in the result and its summary line, persists it in the
+/// operation output (the recovery input) and carries it in the CardAdded
+/// event; a replay with the same scope returns the same terminal, any other
+/// scope (or none) is the runtime's payload conflict.
+#[tokio::test]
+async fn open_with_scope_writes_permissions_stamps_the_card_and_echoes_the_block() {
+    use tower::ServiceExt;
+    let h = Harness::start().await;
+    let mut bus = h.state.events.subscribe();
+    let open = |scope: Option<Value>| {
+        let mut args =
+            json!({"program":fake_claude_program(&h),"request_id":"scoped","claim":true});
+        if let Some(scope) = scope {
+            args["claude_permissions"] = scope;
+        }
+        h.call("calm.terminal.open", args)
+    };
+    // An invalid scope is `invalid_params` naming the entry, before any
+    // create is submitted: no card, no terminal, no operation row.
+    for (scope, reason) in [
+        (
+            json!({"bash":["git status","git push"]}),
+            "claude_permissions.bash[1] 'git push': floor command",
+        ),
+        (
+            json!({"allow":["Bash(git status *)"]}),
+            "claude_permissions: unknown key 'allow'",
+        ),
+        (json!({}), "claude_permissions declares nothing"),
+        // Shape (#1704 r1): a JSON array or null is not read as a scope.
+        (
+            json!([["**"], null, []]),
+            "claude_permissions: must be an object",
+        ),
+        (json!(null), "claude_permissions: must be an object"),
+        (
+            json!({"edit":["**"],"deny":null}),
+            "claude_permissions.deny: must be an array of strings",
+        ),
+    ] {
+        let response = open(Some(scope.clone())).await;
+        assert_eq!(response["error"]["code"], -32602, "{scope}: {response}");
+        let message = response["error"]["message"].as_str().unwrap();
+        assert!(message.contains(reason), "{scope}: {message}");
+    }
+    assert!(
+        h.state
+            .repo
+            .cards_by_track(&h.track)
+            .await
+            .unwrap()
+            .iter()
+            .all(|c| c.kind != "terminal"),
+        "a refused scope creates nothing"
+    );
+    assert!(
+        h.state
+            .operation_runtime
+            .find_by_kind_and_idempotency(
+                "terminal-create",
+                &format!("planner-terminal:{}:scoped", h.session_id),
+            )
+            .await
+            .unwrap()
+            .is_none(),
+        "a refused scope submits nothing"
+    );
+
+    let response = open(Some(round19_scope())).await;
+    let opened = receipt(&response).clone();
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    let card_id = opened["card_id"].as_str().unwrap().to_owned();
+    assert_eq!(opened["claim"]["status"], "claimed", "{opened}");
+    let ready = h.observe_text(&terminal, "READY").await;
+    assert!(has_line(&ready, &format!("READY {card_id}")), "{ready}");
+    let term = h.state.repo.terminal_get(&terminal).await.unwrap().unwrap();
+    assert!(term.cwd.starts_with('/'), "{}", term.cwd);
+    let expected = round19_block(&term.cwd);
+
+    // The file the child read through `--settings`: the seven hook events
+    // plus exactly the effective block, nothing else.
+    let settings_path =
+        std::path::PathBuf::from(term.env["NEIGE_CLAUDE_SETTINGS"].as_str().unwrap());
+    let text = std::fs::read_to_string(&settings_path).unwrap();
+    println!("ROUND19_SETTINGS_JSON={text}");
+    let settings: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(settings["permissions"], expected, "{text}");
+    assert_eq!(
+        settings.as_object().unwrap().keys().collect::<Vec<_>>(),
+        vec!["hooks", "permissions"]
+    );
+    assert_eq!(
+        settings["hooks"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        EXPECTED_EVENTS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<BTreeSet<_>>()
+    );
+    assert_eq!(
+        settings["permissions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        vec!["allow", "ask", "deny"]
+    );
+    assert!(
+        !text.contains("Read(") && !text.contains("defaultMode") && !text.contains("bypass"),
+        "{text}"
+    );
+
+    // The card, the result, its summary line and the persisted operation.
+    let card = h.state.repo.card_get(&card_id).await.unwrap().unwrap();
+    assert_eq!(
+        card.payload["claude_permissions"], expected,
+        "{}",
+        card.payload
+    );
+    assert_eq!(card.payload["terminal_signals"], true);
+    assert_eq!(card.payload["schemaVersion"], 1);
+    assert_eq!(opened["claude_permissions"], expected, "{opened}");
+    let summary = response["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        summary.ends_with(
+            " wait elapsed permissions allow 8 ask 8 deny 1; full state in structuredContent"
+        ),
+        "{summary}"
+    );
+    let operation = h
+        .state
+        .operation_runtime
+        .find_by_kind_and_idempotency(
+            "terminal-create",
+            &format!("planner-terminal:{}:scoped", h.session_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        operation.payload["claude_permissions"],
+        round19_scope(),
+        "the trimmed scope is stored in the operation payload"
+    );
+    assert_eq!(
+        operation.tx_output.as_ref().unwrap().data["claude_permissions"],
+        expected,
+        "the recovery input of the spawn side effect"
+    );
+    assert_eq!(
+        operation.tx_output.unwrap().result["payload"]["claude_permissions"],
+        expected,
+        "the saved result is the stamped card"
+    );
+
+    // The persisted CardAdded event carries the stamped payload.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut added = None;
+    while added.is_none() {
+        let envelope = tokio::time::timeout_at(deadline, bus.recv())
+            .await
+            .expect("CardAdded within the deadline")
+            .expect("event bus open");
+        if let Event::CardAdded(card) = envelope.event
+            && card.id.as_str() == card_id
+        {
+            added = Some(card);
+        }
+    }
+    assert_eq!(
+        added.unwrap().payload["claude_permissions"],
+        expected,
+        "CardAdded carries the stamped payload"
+    );
+
+    // Server-owned at the PATCH boundary; sticky across a replacement.
+    let patch = |body: String| {
+        axum::http::Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/cards/{card_id}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body))
+            .unwrap()
+    };
+    let response = h
+        .app
+        .clone()
+        .oneshot(patch(
+            json!({"payload":{"schemaVersion":1,"claude_permissions":expected}}).to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    let response = h
+        .app
+        .clone()
+        .oneshot(patch(
+            r#"{"payload":{"schemaVersion":1,"terminal_id":"x"}}"#.to_owned(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let card = h.state.repo.card_get(&card_id).await.unwrap().unwrap();
+    assert_eq!(card.payload["terminal_id"], "x");
+    assert_eq!(
+        card.payload["claude_permissions"], expected,
+        "{}",
+        card.payload
+    );
+    assert_eq!(card.payload["terminal_signals"], true, "{}", card.payload);
+
+    // Replay with the same scope: the same terminal, one card, the same echo.
+    let replayed = receipt(&open(Some(round19_scope())).await).clone();
+    assert_eq!(replayed["terminal_id"], terminal);
+    assert_eq!(replayed["card_id"], card_id);
+    assert_eq!(replayed["claude_permissions"], expected, "{replayed}");
+    let terminal_cards = || async {
+        h.state
+            .repo
+            .cards_by_track(&h.track)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|c| c.kind == "terminal")
+            .count()
+    };
+    assert_eq!(terminal_cards().await, 1);
+
+    // Replay with a different scope, or without one: the runtime's payload
+    // conflict, no card, no terminal, the old terminal is not returned.
+    for scope in [
+        Some(json!({"deny":["git push","git reset"]})),
+        Some(
+            json!({"edit":["**"],"bash":["python3 -m unittest","git status","git diff","git log",
+            "git show","git add","git commit"]}),
+        ),
+        None,
+    ] {
+        let response = open(scope.clone()).await;
+        assert_eq!(response["error"]["code"], -32403, "{scope:?}: {response}");
+        let message = response["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("already used with different payload")
+                && message.contains(&format!("planner-terminal:{}:scoped", h.session_id)),
+            "{scope:?}: {message}"
+        );
+        assert!(response.get("result").is_none(), "{response}");
+        assert_eq!(terminal_cards().await, 1, "{scope:?}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).unwrap(),
+        text,
+        "the settings file is untouched by the replays"
+    );
+    h.stop(&terminal).await;
+}
+
 #[tokio::test]
 async fn hook_settings_file_is_removed_when_the_card_is_deleted() {
     use tower::ServiceExt;
@@ -1193,6 +1526,45 @@ async fn hook_settings_file_is_removed_when_the_card_is_deleted() {
     );
     assert!(sibling.exists());
     assert!(h.state.terminal_renderer.get(&terminal).is_none());
+
+    // #1704 S1 — a scoped open: the same file (with the block), the same reap.
+    let scoped = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":fake_claude_program(&h),"request_id":"hooks-delete-scoped","claim":true,
+                "claude_permissions":round19_scope()}),
+        )
+        .await;
+    let scoped_terminal = scoped["terminal_id"].as_str().unwrap().to_owned();
+    let scoped_card_id = scoped["card_id"].as_str().unwrap().to_owned();
+    h.observe_text(&scoped_terminal, "READY").await;
+    let scoped_path = h
+        .state
+        .codex
+        .terminal_hook_settings_dir
+        .join(format!("{scoped_card_id}.json"));
+    let scoped_settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(&scoped_path).unwrap()).unwrap();
+    assert!(
+        scoped_settings["permissions"].is_object(),
+        "{scoped_settings}"
+    );
+    let response = h
+        .app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/cards/{scoped_card_id}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
+    assert!(!scoped_path.exists(), "the scoped file goes with its card");
+    assert!(sibling.exists());
+    assert!(h.state.terminal_renderer.get(&scoped_terminal).is_none());
     h.stop(&terminal).await;
 }
 

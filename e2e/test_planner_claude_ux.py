@@ -360,8 +360,9 @@ class CollectorTests(unittest.TestCase):
                                    "drift_observed_inputs": 0, "implicit_observation_inputs": 0,
                                    "signal_wait_requests": 0, "signal_wait_outcomes": {},
                                    "signal_repaint_outcomes": {}, "submit_actions": 0,
-                                   "open_with_claim": 0, "hooks_seen_observations": 0, "signals_observed": 0,
-                                   "unmeasured_signal_observations": 1,
+                                   "open_with_claim": 0, "open_with_permissions": 0,
+                                   "hooks_seen_observations": 0, "signals_observed": 0,
+                                   "signal_events_observed": {}, "unmeasured_signal_observations": 1,
                                    "text_wait_requests": 0, "text_wait_outcomes": {}, "sequence_actions": 0,
                                    "sequence_steps": 0, "input_with_claim": 0, "input_with_release": 0,
                                    "below_cursor_allowed_inputs": 0, "below_cursor_tolerated_inputs": 0,
@@ -824,8 +825,29 @@ class CollectorTests(unittest.TestCase):
         calls.append(unavailable)
         result = ux.metrics(calls)
         self.assertEqual(result["open_with_claim"], 2)
+        self.assertEqual(result["open_with_permissions"], 0)
         self.assertEqual(result["terminal_tool_calls"], 5)
         self.assertEqual(result["tool_errors"], 0)
+
+    # #1704: an open request that carries `claude_permissions`, whatever its
+    # value or outcome, is counted from its own arguments.
+    def test_open_with_permissions_counts_requests_carrying_the_argument(self):
+        calls = []
+        scope = {"edit": ["**"], "bash": ["python3 -m unittest"], "deny": ["git push"]}
+        for identifier, arguments in enumerate(({"claude_permissions": scope}, {"claim": True},
+                                                {"claude_permissions": {}}, {}), start=1):
+            opened = row(identifier, "calm.terminal.open")
+            opened["params"]["item"]["arguments"] = {"request_id": f"r{identifier}", **arguments}
+            calls.append(opened)
+        refused = row(5, "calm.terminal.open")
+        refused["params"]["item"]["arguments"] = {"request_id": "r5", "claude_permissions": {"allow": ["x"]}}
+        refused["params"]["item"]["result"] = {"isError": True, "content": [{"type": "text", "text": "invalid params"}]}
+        calls.append(refused)
+        result = ux.metrics(calls)
+        self.assertEqual(result["open_with_permissions"], 3)
+        self.assertEqual(result["open_with_claim"], 1)
+        self.assertEqual(result["terminal_tool_calls"], 5)
+        self.assertEqual(result["tool_errors"], 1)
 
     def test_hooks_seen_and_signals_observed_are_read_from_observation_signals(self):
         seen = row(1)
@@ -855,17 +877,24 @@ class CollectorTests(unittest.TestCase):
         result = ux.metrics(calls)
         self.assertEqual(result["hooks_seen_observations"], 3)
         self.assertEqual(result["signals_observed"], 5)  # 3 + 0 + 1 + 1 events over 4 measured observations
+        # #1704: the same entries tallied by event; the total is signals_observed.
+        self.assertEqual(result["signal_events_observed"],
+                         {"Notification": 1, "PreToolUse": 1, "Stop": 2, "UserPromptSubmit": 1})
+        self.assertEqual(sum(result["signal_events_observed"].values()), result["signals_observed"])
         self.assertEqual(result["unmeasured_signal_observations"], 1)
         self.assertEqual(result["signal_wait_requests"], 0)
         self.assertEqual(calls, original)
         self.assertEqual(ux.metrics([older])["hooks_seen_observations"], 0)
         self.assertEqual(ux.metrics([older])["signals_observed"], 0)
+        self.assertEqual(ux.metrics([older])["signal_events_observed"], {})
 
     def test_malformed_signals_block_is_rejected(self):
         for signals in ([], "seen", {"hooks_seen": True}, {"hooks_seen": "yes", "last_seq": 1, "since_previous_observation": []},
                         {"hooks_seen": True, "last_seq": "1", "since_previous_observation": []},
                         {"hooks_seen": True, "last_seq": 1, "since_previous_observation": {}},
-                        {"hooks_seen": True, "last_seq": 1, "since_previous_observation": ["Stop"]}):
+                        {"hooks_seen": True, "last_seq": 1, "since_previous_observation": ["Stop"]},
+                        {"hooks_seen": True, "last_seq": 1, "since_previous_observation": [{"seq": 1}]},
+                        {"hooks_seen": True, "last_seq": 1, "since_previous_observation": [{"event": 7}]}):
             observed = row(1)
             observed["params"]["item"]["result"]["structuredContent"]["signals"] = signals
             with self.subTest(signals=signals), self.assertRaisesRegex(ux.EvidenceError, "signals"):

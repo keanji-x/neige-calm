@@ -44,9 +44,9 @@ WAIT_METRIC_KEYS = ("change_wait_requests", "change_wait_outcomes", "unsettled_c
                     "elapsed_wait_requests", "unmeasured_wait_observations", "drift_allowed_inputs",
                     "drift_observed_inputs", "implicit_observation_inputs")
 SIGNAL_METRIC_KEYS = ("signal_wait_requests", "signal_wait_outcomes", "signal_repaint_outcomes", "submit_actions",
-                      "open_with_claim", "hooks_seen_observations", "signals_observed",
-                      "unmeasured_signal_observations")
-SIGNAL_METRIC_TALLIES = ("signal_wait_outcomes", "signal_repaint_outcomes")
+                      "open_with_claim", "open_with_permissions", "hooks_seen_observations", "signals_observed",
+                      "signal_events_observed", "unmeasured_signal_observations")
+SIGNAL_METRIC_TALLIES = ("signal_wait_outcomes", "signal_repaint_outcomes", "signal_events_observed")
 ROUND_TRIP_METRIC_KEYS = ("text_wait_requests", "text_wait_outcomes", "sequence_actions", "sequence_steps",
                           "input_with_claim", "input_with_release", "below_cursor_allowed_inputs",
                           "below_cursor_tolerated_inputs")
@@ -97,6 +97,8 @@ def observation_signals(state):
     if (not isinstance(signals.get("hooks_seen"), bool) or type(signals.get("last_seq")) is not int
             or not isinstance(events, list) or not all(isinstance(event, dict) for event in events)):
         raise EvidenceError("observation signals must carry hooks_seen, last_seq and an event list")
+    if not all(isinstance(event.get("event"), str) for event in events):
+        raise EvidenceError("observation signals events must each carry a string event")
     return signals
 
 
@@ -118,14 +120,18 @@ def signal_metrics(terminal):
     one and says nothing about the screen). `submit_actions` and
     `open_with_claim` describe requests, including failed ones.
     `hooks_seen_observations` and `signals_observed` are read from each
-    observation's `signals` block;
+    observation's `signals` block, `signal_events_observed` (#1704) tallies
+    its entries' `event` (so `signals_observed` is that tally's total);
     observations lacking it (older server) are `unmeasured_signal_observations`.
     `signal_repaint_outcomes` (#1628) tallies `wait.repaint.outcome` of the
     signal waits that ended on a signal; a missing block is tolerated.
+    `open_with_permissions` (#1704) counts open requests whose arguments carry
+    `claude_permissions`, failed ones included.
     """
     counts = collections.Counter()
     outcomes = collections.Counter()
     repaints = collections.Counter()
+    events = collections.Counter()
     for call in terminal:
         if not call.get("completed"):
             continue
@@ -135,6 +141,8 @@ def signal_metrics(terminal):
             counts["submit_actions"] += 1
         if tool == "calm.terminal.open" and args.get("claim") is True:
             counts["open_with_claim"] += 1
+        if tool == "calm.terminal.open" and "claude_permissions" in args:
+            counts["open_with_permissions"] += 1
         signal_wait = requests_observation(call) and args.get("wait_for") == "signal"
         if signal_wait:
             counts["signal_wait_requests"] += 1
@@ -156,9 +164,12 @@ def signal_metrics(terminal):
         if signals["hooks_seen"] is True:
             counts["hooks_seen_observations"] += 1
         counts["signals_observed"] += len(signals["since_previous_observation"])
+        for event in signals["since_previous_observation"]:
+            events[event["event"]] += 1
     return {**{key: counts[key] for key in SIGNAL_METRIC_KEYS if key not in SIGNAL_METRIC_TALLIES},
             "signal_wait_outcomes": dict(sorted(outcomes.items())),
-            "signal_repaint_outcomes": dict(sorted(repaints.items()))}
+            "signal_repaint_outcomes": dict(sorted(repaints.items())),
+            "signal_events_observed": dict(sorted(events.items()))}
 
 
 def round_trip_metrics(terminal):

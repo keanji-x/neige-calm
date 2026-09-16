@@ -40,7 +40,7 @@ use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_lifecycle::apply_requested_transition_in_tx;
-use crate::validation::reject_client_supplied_terminal_signals;
+use crate::validation::reject_client_supplied_server_owned_keys;
 
 use axum::{
     Json, Router,
@@ -451,9 +451,11 @@ pub(crate) async fn create_card(
             .into_response()
     })?;
     let payload = body.payload.unwrap_or(Value::Null);
-    // #1620 — hook-routing provenance is kernel-stamped, never accepted from
-    // a client (any kind): see `validation::reject_client_supplied_terminal_signals`.
-    reject_client_supplied_terminal_signals(&payload)
+    // #1620 / #1704 — the server-owned payload keys (hook-routing provenance,
+    // the effective permissions block) are kernel-stamped, never accepted
+    // from a client (any kind): see
+    // `validation::reject_client_supplied_server_owned_keys`.
+    reject_client_supplied_server_owned_keys(&payload)
         .map_err(|e| CalmError::from(e).into_response())?;
     // D4: reject malformed payloads for kernel-owned kinds. Plugin-defined
     // (`ui://*`) kinds remain opaque per the architectural invariant.
@@ -627,9 +629,9 @@ async fn create_via_tool_call(
     //    on this); `payload` defaults to JSON null when the tool omits
     //    `structuredContent`.
     let payload = creation.structured_content.unwrap_or(Value::Null);
-    // #1620 — a plugin's `structuredContent` is client input for this
-    // purpose: the provenance marker is never accepted from it.
-    reject_client_supplied_terminal_signals(&payload)
+    // #1620 / #1704 — a plugin's `structuredContent` is client input for
+    // this purpose: the server-owned keys are never accepted from it.
+    reject_client_supplied_server_owned_keys(&payload)
         .map_err(|e| CalmError::from(e).into_response())?;
     // D4: validate even on the tool-call path. In practice `ui://*` kinds
     // are opaque so this is a no-op for plugin-defined views — but if a
@@ -743,12 +745,13 @@ pub(crate) async fn update_card(
     // will land in the DB. The kind is either the patch's new kind (when the
     // patch retargets) or the existing card's kind.
     //
-    // #1620 — the payload may not carry the hook-routing provenance marker
-    // (server-owned, any kind → 400). Dropping it by omission is impossible:
-    // `card_update_tx` re-stamps the marker onto any replacement payload of
-    // a card that already carries it (and refuses a non-object replacement).
+    // #1620 / #1704 — the payload may not carry a server-owned key (the
+    // hook-routing provenance marker, the effective permissions block; any
+    // kind → 400). Dropping one by omission is impossible: `card_update_tx`
+    // re-stamps every stored server-owned key onto any replacement payload
+    // (and refuses a non-object replacement).
     if let Some(payload) = p.payload.as_ref() {
-        reject_client_supplied_terminal_signals(payload)?;
+        reject_client_supplied_server_owned_keys(payload)?;
         let kind = p.kind.as_deref().unwrap_or(existing.kind.as_str());
         s.card_kind_registry().validate_payload(kind, payload)?;
     }
