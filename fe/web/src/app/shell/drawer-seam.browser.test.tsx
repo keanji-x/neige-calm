@@ -282,8 +282,8 @@ describe('the drawer against a real rendering engine', () => {
     expect(getComputedStyle(outline).display).not.toBe('none');
     await waitFor(() => expect(getComputedStyle(heading, '::before').opacity).toBe('0'));
     await page.getByRole('button', { name: 'Section' }).hover();
-    await waitFor(() => expect(document.querySelector('[data-nc-outline-preview]')).not.toBeNull());
-    const preview = document.querySelector<HTMLElement>('[data-nc-outline-preview]')!;
+    await waitFor(() => expect(document.querySelector('[data-nc-rail-preview]')).not.toBeNull());
+    const preview = document.querySelector<HTMLElement>('[data-nc-rail-preview]')!;
     const main = document.querySelector('main')!;
     expect(preview.getBoundingClientRect().left).toBeGreaterThanOrEqual(main.getBoundingClientRect().left);
   });

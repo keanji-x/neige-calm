@@ -1092,7 +1092,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     await page.viewport(1400, 900);
     render(<RailPane turns={railTurns(2)} />);
     await frame();
-    expect(dots()).toHaveLength(0);
+    expect(dots()).toHaveLength(2);
     const bare = replies()[0].getBoundingClientRect().left;
     /* The transcript starts on the card's own inset and nothing else. */
     expect(Math.round(bare)).toBe(Math.round(pane().getBoundingClientRect().left + 8));

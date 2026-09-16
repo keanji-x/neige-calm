@@ -369,10 +369,10 @@ describe('the rendered mobile Tasks page projects its view model faithfully', ()
     const { container } = renderPage({ tasks: TASKS, panel: 'tasks' });
     const badges = Array.from(mobilePanel(container).querySelectorAll('[data-nc-badge]'));
     expect(badges.map((badge) => badge.textContent))
-      .toEqual(['Withdrawn', 'Unreadable', 'Not ready']);
-    expect(badges[0].className).toContain('mobileRowStruck');
+      .toEqual(['Unreadable', 'Not ready', 'Withdrawn']);
+    expect(badges[2].className).toContain('mobileRowStruck');
     expect(badges[1].className).not.toContain('mobileRowStruck');
-    expect(badges[2].className).not.toContain('mobileRowStruck');
+    expect(badges[0].className).not.toContain('mobileRowStruck');
   });
 
   /* D8 on the real page, over the two rows it is about: the ready row prints no

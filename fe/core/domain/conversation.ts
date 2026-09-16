@@ -1074,13 +1074,16 @@ export function trackConversationsOperation(trackId: string): ApiOperation<Conve
  * new key per attempt and could create a second conversation after a timeout.
  */
 export function createTrackConversationOperation(
-  trackId: string, text: string, idempotencyKey: string,
+  trackId: string, text: string, idempotencyKey: string, selection: ModelSelection,
 ): ApiOperation<Conversation> {
   return {
     method: 'POST',
     path: `/api/tracks/${encodeURIComponent(trackId)}/conversations`,
     headers: { 'Idempotency-Key': idempotencyKey },
-    body: { text },
+    body: { text,
+      ...(selection.model === null ? {} : { model: selection.model }),
+      ...(selection.reasoning_effort === null ? {} : { reasoning_effort: selection.reasoning_effort }),
+    },
     responseSchema: trackConversationSummarySchema.transform(toTrackConversation),
   };
 }

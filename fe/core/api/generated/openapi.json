@@ -8632,6 +8632,19 @@
           "text"
         ],
         "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Explicit choice for the first turn; omitted/null follows the installation default."
+          },
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "text": {
             "type": "string",
             "description": "The first message. Validated exactly like `POST /api/cards/{id}/planner/input`\n(non-blank after trim, at most 32768 chars) and validated *before*\nanything is minted, so a rejected message leaves no card behind."
@@ -11640,6 +11653,7 @@
         "description": "Response shape for `GET /api/version`. camelCase on the wire so it lines\nup with the rest of the TypeScript-facing surface.",
         "required": [
           "areaCreateIdempotency",
+          "conversationCreateModel",
           "kernelVersion",
           "apiVersion",
           "syncEventVersion",
@@ -11664,6 +11678,10 @@
               "string",
               "null"
             ]
+          },
+          "conversationCreateModel": {
+            "type": "boolean",
+            "description": "First-message model selection is part of atomic conversation creation."
           },
           "dbInstanceId": {
             "type": "string",

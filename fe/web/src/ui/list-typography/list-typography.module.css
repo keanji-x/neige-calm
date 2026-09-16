@@ -1,0 +1,50 @@
+@layer ui {
+  /* Both navigation surfaces use these roles. Layout belongs to their hosts. */
+  .primary,
+  .group,
+  .section,
+  .secondary,
+  .count {
+    font-family: var(--font-sans);
+    line-height: var(--leading-snug);
+    letter-spacing: var(--tracking-normal);
+  }
+  .primary,
+  .group {
+    font-size: var(--text-base);
+  }
+  .primary {
+    font-weight: var(--weight-normal);
+    color: var(--text);
+  }
+  .group {
+    font-weight: var(--weight-medium);
+    color: var(--text-2);
+  }
+  .section,
+  .secondary,
+  .count {
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+  .section {
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--tracking-wider);
+    text-transform: uppercase;
+  }
+  .secondary,
+  .count {
+    font-weight: var(--weight-normal);
+  }
+  .count {
+    font-variant-numeric: tabular-nums;
+    text-align: end;
+  }
+  .medium {
+    font-weight: var(--weight-medium);
+  }
+  .selected {
+    font-weight: var(--weight-semibold);
+    color: var(--text);
+  }
+}

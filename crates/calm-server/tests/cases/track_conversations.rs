@@ -601,6 +601,8 @@ async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
                     title: None,
                     sort: None,
                     idempotency_key: key,
+                    model: None,
+                    reasoning_effort: None,
                 }),
                 opening_briefing: None,
                 first_message: None,
@@ -969,4 +971,112 @@ async fn the_endpoint_refuses_unknown_tracks_chat_tracks_and_a_missing_key() {
         .unwrap();
     let (status, body) = b.create_conversation(&track_id, "idem-chat", "hi").await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+}
+
+#[tokio::test]
+async fn first_conversation_message_commits_model_selection_and_binds_it_to_retry() {
+    let b = boot().await;
+    let track_id = b.create_track("first-message-model").await;
+    let uri = format!("/api/tracks/{track_id}/conversations");
+    let body =
+        json!({"text": "First message", "model": "chosen-model", "reasoning_effort": "high"});
+    let (status, created) = b
+        .request("POST", &uri, Some("selected-first"), Some(body.clone()))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let card_id = created["id"].as_str().unwrap();
+    let card = b.repo.card_get(card_id).await.unwrap().unwrap();
+    assert_eq!(card.payload["model"], "chosen-model");
+    assert_eq!(card.payload["reasoning_effort"], "high");
+    assert_eq!(card.payload["model_ever_set"], true);
+    assert_eq!(card.payload["reasoning_effort_ever_set"], true);
+    let (status, retried) = b
+        .request("POST", &uri, Some("selected-first"), Some(body))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{retried}");
+    assert_eq!(retried["id"], created["id"]);
+    let (status, rejected) = b.request("POST", &uri, Some("selected-first"),
+        Some(json!({"text": "First message", "model": "different-model", "reasoning_effort": "high"}))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{rejected}");
+    b.shutdown_harnesses().await;
+}
+
+#[tokio::test]
+async fn changing_only_the_first_message_model_cannot_reuse_its_create_key() {
+    let b = boot().await;
+    let track_id = b.create_track("model-request-identity").await;
+    let uri = format!("/api/tracks/{track_id}/conversations");
+    let (status, body) = b
+        .request(
+            "POST",
+            &uri,
+            Some("bound-model"),
+            Some(json!({"text": "hello", "model": "model-a"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = b
+        .request(
+            "POST",
+            &uri,
+            Some("bound-model"),
+            Some(json!({"text": "hello", "model": "model-b"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    b.shutdown_harnesses().await;
+}
+
+#[test]
+fn default_conversation_seed_keeps_legacy_operation_payload_bytes() {
+    use calm_server::operation::planner_harness_start_adapter::LazyMintCardSeed;
+    let legacy = json!({"title":null,"sort":null,"idempotency_key":"before-upgrade"});
+    let seed: LazyMintCardSeed = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(seed).unwrap(), legacy);
+}
+
+#[tokio::test]
+async fn blank_first_message_model_is_rejected_before_minting() {
+    let b = boot().await;
+    let track_id = b.create_track("blank-model").await;
+    let (status, body) = b
+        .request(
+            "POST",
+            &format!("/api/tracks/{track_id}/conversations"),
+            Some("blank-model"),
+            Some(json!({"text":"hello", "model":"   "})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, rows) = b.list_conversations(&track_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rows, json!([]));
+    b.shutdown_harnesses().await;
+}
+
+#[tokio::test]
+async fn an_agent_cannot_choose_the_first_conversation_model() {
+    let b = boot().await;
+    let track_id = b.create_track("human-model-choice").await;
+    let response = b
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{track_id}/conversations"))
+                .header("content-type", "application/json")
+                .header("idempotency-key", "agent-model-choice")
+                .header("X-Calm-Actor", "ai:some-agent")
+                .body(Body::from(
+                    json!({"text":"hello", "model":"chosen-by-agent"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let (_, rows) = b.list_conversations(&track_id).await;
+    assert_eq!(rows, json!([]));
+    b.shutdown_harnesses().await;
 }

@@ -37,6 +37,8 @@
 // because its status sits *beside* the generated control rather than inside it —
 // see `statusWord`.
 
+import { inventorySections, panelRowGroup, type InventoryGroupKey } from '../../../../../core/view/panel-groups.ts';
+import { InventoryGroups } from './inventory-groups.tsx';
 import type { ReactNode } from 'react';
 
 import { FIELD, MARKER, paintModule } from '../../../../../core/view/panel.ts';
@@ -57,6 +59,7 @@ import styles from './page.module.css';
  */
 type PendingLeaf = Readonly<{
   slot: 'row' | 'empty';
+  group: (moduleKey: RowModuleView['key']) => InventoryGroupKey;
   paint: (moduleKey: RowModuleView['key']) => ReactNode;
 }>;
 
@@ -286,6 +289,7 @@ function cardRow(row: PanelRow): ReactNode {
       ? []
       : [<span key="kind" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>]),
     ...row.badges.map(cardBadge),
+    ...(row.status === null ? [] : [statusWord(row.status, true)]),
   ];
   return (
     <MobileListItem
@@ -329,6 +333,7 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
        reported far from its cause is the thing the throw exists to prevent. */
     row: (row) => ({
       slot: 'row',
+      group: (key) => panelRowGroup(row, key),
       paint: (moduleKey) => {
         if (moduleKey === 'cards') return cardRow(row);
         if (moduleKey === 'tasks') return taskRow(row, deps);
@@ -339,10 +344,13 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
 
     empty: (text) => ({
       slot: 'empty',
+      group: () => 'other',
       paint: () => <MobileListEmpty key="empty" fieldMarker={FIELD.empty}>{text}</MobileListEmpty>,
     }),
 
-    module: (parts) => ({
+    module: (parts) => {
+      const leaves = parts.children.map(leaf => ({ leaf, node: finish(leaf, parts.key) }));
+      return {
       slot: 'module',
       node: (
         <MobileListPage
@@ -353,10 +361,21 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
           moduleMarker={parts.key}
           titleFieldMarker={FIELD.moduleTitle}
         >
-          <MobileList>{parts.children.map((leaf) => finish(leaf, parts.key))}</MobileList>
+          {parts.children.some(leaf => leaf.slot !== 'row')
+            ? <MobileList>{parts.children.map(leaf => finish(leaf, parts.key))}</MobileList>
+            : <InventoryGroups
+              groups={inventorySections(leaves, ({ leaf }) => {
+                if (leaf.slot === 'module') throw new Error('Nested inventory module');
+                return leaf.group(parts.key);
+              })}
+              noun={parts.key === 'cards' ? 'card' : 'task'}
+              renderRows={rows => <MobileList>{rows.map(row => row.node)}</MobileList>}
+            />}
+
         </MobileListPage>
       ),
-    }),
+    };
+    },
   };
 }
 

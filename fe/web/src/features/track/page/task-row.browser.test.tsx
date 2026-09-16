@@ -45,6 +45,8 @@ function renderTasks(
       />
     </div>,
   );
+  // These cases inspect row hit targets after the reader discloses their group.
+  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-task-inventory] details:not([open]) > summary')) summary.click();
   return document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
 }
 
@@ -185,9 +187,9 @@ describe('a compact desktop TASKS row', () => {
       { ...assigned, blockId: 'b-failed', key: 'failed-task', status: 'failed', statusDetail: 'command exited 1' },
     ]);
     const statuses = [...document.querySelectorAll<HTMLElement>('[data-nc-task-status-text]')];
-    expect(statuses.map((status) => status.innerText)).toEqual(['running', 'pending', 'done', 'failed']);
+    expect(statuses.map((status) => status.innerText)).toEqual(['running', 'pending', 'failed', 'done']);
     expect(statuses.map((status) => status.title)).toEqual([
-      'running', 'pending — waiting for input', 'done', 'failed — command exited 1',
+      'running', 'pending — waiting for input', 'failed — command exited 1', 'done',
     ]);
     expect(document.querySelectorAll('[role="img"][data-nc-status]')).toHaveLength(0);
   });

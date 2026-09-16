@@ -127,3 +127,22 @@ describe('§2.2 relative time', () => {
     expect(relativeTime(NOW - 40 * 86_400_000, NOW)).toMatch(/^[A-Z][a-z]{2} \d+$/);
   });
 });
+
+describe('navigation activity markers', () => {
+  it('shows nothing for an idle read track and a blue unread marker for new activity', () => {
+    const view = render(<TrackRow track={track({ lifecycle: 'done' })} variant="rail" onOpen={vi.fn()} />);
+    expect(view.container.querySelector('[data-nc-activity]')).toBeNull();
+    view.rerender(<TrackRow track={track({ lifecycle: 'done' })} variant="rail" unread onOpen={vi.fn()} />);
+    expect(view.container.querySelector('[data-nc-activity="unread"]')).toBeTruthy();
+    const row = screen.getByRole('button', { name: /^Track Open track/ });
+    expect(document.getElementById(row.getAttribute('aria-describedby')!)?.textContent).toBe('Unread updates');
+  });
+
+  it('gives needs-input precedence over working and unread', () => {
+    const view = render(<TrackRow track={track()} unread onOpen={vi.fn()} />);
+    expect(view.container.querySelector('[data-nc-activity="working"]')).toBeTruthy();
+    view.rerender(<TrackRow track={track({ anyCardNeedsInput: true })} unread onOpen={vi.fn()} />);
+    expect(view.container.querySelector('[data-nc-activity="attention"]')).toBeTruthy();
+    expect(view.container.querySelector('[data-nc-activity="working"]')).toBeNull();
+  });
+});

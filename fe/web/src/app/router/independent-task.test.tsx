@@ -14,11 +14,20 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
+const clients: QueryClient[] = [];
+
 beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
   vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(async () => {
+  cleanup();
+  for (const client of clients) { await client.cancelQueries(); client.clear(); }
+  clients.length = 0;
+  // Flush already queued query notifications before this file's DOM is disposed.
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  vi.restoreAllMocks();
+});
 
 function setup(mode: 'success' | 'lost' | 'lost-committed' | 'lost-hidden' | 'conflict' | 'unavailable' = 'success', lifecycle: TrackLifecycle = 'draft') {
   const requests: ApiRequest[] = [];
@@ -84,6 +93,7 @@ function setup(mode: 'success' | 'lost' | 'lost-committed' | 'lost-hidden' | 'co
     return ok([]);
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  clients.push(client);
   const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: vi.fn() });
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
@@ -96,7 +106,8 @@ function setup(mode: 'success' | 'lost' | 'lost-committed' | 'lost-hidden' | 'co
 }
 
 async function enterGoal(goal = 'Explain the moon.') {
-  await userEvent.click(await screen.findByRole('button', { name: 'Run independent task' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Track actions for Independent work' }));
+  await userEvent.click(await screen.findByRole('menuitem', { name: 'Run independent task' }));
   await userEvent.type(screen.getByRole('textbox', { name: 'Goal' }), goal);
 }
 
@@ -149,7 +160,8 @@ it('retains the exact uncertain request across navigation and a changed report r
   fixture.view.unmount();
   fixture.reportCard.payload.docRev = 99;
   fixture.mount();
-  await userEvent.click(await screen.findByRole('button', { name: 'Run independent task' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Track actions for Independent work' }));
+  await userEvent.click(await screen.findByRole('menuitem', { name: 'Run independent task' }));
   await userEvent.click(screen.getByRole('button', { name: 'Check task status' }));
   await screen.findByText(/No matching task is visible yet/);
   expect(fixture.requests.filter((r) => r.method === 'POST')).toHaveLength(1);
@@ -198,9 +210,11 @@ it('shows completed null, accepted failure and exact-attempt read errors distinc
 
 it.each(['blocked', 'done', 'canceled', 'failed'] as const)('disables new task entry on a %s Track', async (lifecycle) => {
   const fixture = setup('success', lifecycle);
-  const entry = await screen.findByRole<HTMLButtonElement>('button', { name: 'Run independent task' });
-  expect(entry.disabled).toBe(true);
-  expect(entry.parentElement?.title).toContain(lifecycle === 'blocked' ? 'blocked' : 'ended');
+  await userEvent.click(await screen.findByRole('button', { name: 'Track actions for Independent work' }));
+  const entry = await screen.findByRole('menuitem', { name: 'Run independent task' });
+  expect(entry.getAttribute('aria-disabled')).toBe('true');
+  fireEvent.click(entry);
+  expect(screen.queryByRole('textbox', { name: 'Goal' })).toBeNull();
   expect(fixture.requests.filter((request) => request.method === 'POST')).toHaveLength(0);
 });
 

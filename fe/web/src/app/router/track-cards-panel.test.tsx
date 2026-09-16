@@ -7,7 +7,7 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -384,7 +384,11 @@ describe('track route CARDS panel', () => {
 });
 
 describe('track route TASKS panel', () => {
-  const taskRow = (name: RegExp) => screen.findByRole('button', { name });
+  const taskRow = async (name: RegExp) => {
+    const inventory = await tasks();
+    for (const summary of inventory.querySelectorAll<HTMLElement>('details:not([open]) > summary')) fireEvent.click(summary);
+    return within(inventory).findByRole('button', { name });
+  };
   /** Scoped to the TASKS module: `terminal` and `codex` are also the words the
    *  CARDS module prints in its own quiet rank one module above. */
   async function tasks(): Promise<HTMLElement> {
@@ -450,6 +454,7 @@ describe('track route TASKS panel', () => {
    */
   it('reveals the block from the row even when the task has an openable card', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
+    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
     const row = await taskRow(/^has-adapter/);
     expect(row.getAttribute('title')).toBeNull();
     await userEvent.click(row);
@@ -461,8 +466,8 @@ describe('track route TASKS panel', () => {
      kind can go, not whether the kernel's verdict is reported. */
   it('reports the run on both rows, whichever card the work landed on', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
-    expect((await taskRow(/^has-adapter$/)).getAttribute('aria-description')).toBe('running');
-    expect((await taskRow(/^no-adapter$/)).getAttribute('aria-description')).toBe('running');
+    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
+    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-unknown"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
   });
 
   it('carries execution diagnostics through the real route into the report reference', async () => {
@@ -470,8 +475,8 @@ describe('track route TASKS panel', () => {
       blockId: 'b-term', key: 'has-adapter', schedulable: true,
       status: 'failed', statusDetail: 'gate-red', workerCardId: 'card-term',
     }] });
+    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('failed — gate-red'));
     const row = await taskRow(/^has-adapter$/);
-    await waitFor(() => expect(row.getAttribute('aria-description')).toBe('failed — gate-red'));
     await userEvent.click(row);
     const block = document.querySelector('#b-term [data-nc-task-state]');
     expect(block?.getAttribute('data-nc-task-state')).toBe('failed');
@@ -557,8 +562,7 @@ describe('track route TASKS panel convergence', () => {
     setup(TASK_CARDS, { taskDiagnostics: () => verdicts });
     // Pre-stamp: the row knows it was dispatched and its kind is inert — the
     // verdict carries no `workerCardId` yet, so there is nothing to open.
-    expect((await screen.findByRole('button', { name: 'has-adapter' })).getAttribute('aria-description'))
-      .toBe('dispatched');
+    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('dispatched'));
     expect(screen.queryByRole('button', { name: 'terminal' })).toBeNull();
 
     verdicts = running;
@@ -568,14 +572,12 @@ describe('track route TASKS panel convergence', () => {
     // silent stamp lands, which is the whole reason this poll exists.
     const converged = await waitFor(() => screen.getByRole('button', { name: 'terminal' }));
     expect(converged.getAttribute('title')).toBe('Open the worker card for has-adapter');
-    expect((await screen.findByRole('button', { name: 'has-adapter' })).getAttribute('aria-description'))
-      .toBe('running');
+    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
   });
 
   it('stops polling once every task is terminal, so a settled track costs nothing', async () => {
     const { reportReads } = setup(TASK_CARDS, { taskDiagnostics: () => done });
-    expect((await screen.findByRole('button', { name: 'has-adapter' })).getAttribute('aria-description'))
-      .toBe('done');
+    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('done'));
     const afterFirstRead = reportReads();
     await vi.advanceTimersByTimeAsync(30_000);
     expect(reportReads()).toBe(afterFirstRead);

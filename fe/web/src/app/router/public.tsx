@@ -88,7 +88,7 @@ import { PanelAction, PanelEmpty } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
   ApiError, OfflineSubmissionError, apiFailureCodeOf, harnessItemsQueryOptions,
-  modelCatalogQueryOptions,
+  modelCatalogQueryOptions, serverVersionOperation, runOperation,
   prefetchAreaList, plannerRunQueryOptions, todayLaunchpadQueryOptions,
   usePlannerMutations, useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
   useTrackConversationMutations, useTrackMutations, useTrackRecipeMutations, useTrackRecipes,
@@ -102,7 +102,7 @@ import {
   RecipesPage, type RecipeDraft, type RecipeWriteOutcome,
 } from '../../features/report/recipe/public.tsx';
 import { useTheme } from '../theme/public.tsx';
-import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, type UiPreferences } from '../providers/ui-preferences.tsx';
+import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, useUiPreferences, useReadReceipt, type UiPreferences } from '../providers/ui-preferences.tsx';
 import { TrackSelector } from '../shell/track-selector.tsx';
 import { AppShell, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost, useMobileTrackChoices } from '../shell/public.tsx';
 import {
@@ -1117,7 +1117,7 @@ type ConversationPanelSource = Readonly<{
     scopeOf: (conversationId: string) => PlannerConversationScope | null;
     /** The id the card minted under this key will have, derived before the POST. */
     derivedCardId: (idempotencyKey: string) => string;
-    create: (text: string, idempotencyKey: string) => Promise<Conversation>;
+    create: (text: string, idempotencyKey: string, selection: ModelSelection) => Promise<Conversation>;
     refresh: () => Promise<readonly Conversation[]>;
   }>;
 
@@ -1301,6 +1301,12 @@ function useConversationPanel(
   const [resendConfirmation, setResendConfirmation] = useState<string | null>(null);
   const [composerDraft, setComposerDraft] = useState('');
   const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
+  const draftCatalog = useQuery({ ...modelCatalogQueryOptions(transport, null, unauthorized),
+    enabled: openTarget?.kind === 'draft' });
+  const draftCapabilities = useQuery({ queryKey: ['server-version'],
+    queryFn: () => runOperation(transport, serverVersionOperation(), unauthorized),
+    enabled: openTarget?.kind === 'draft', retry: false });
+  const supportsDraftModel = draftCapabilities.data?.conversationCreateModel === true;
   useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
   const scope: PlannerConversationScope | null = openRowId !== null
     ? source.scopeOf(openRowId)
@@ -1322,6 +1328,9 @@ function useConversationPanel(
   const registry = useConversationRegistry();
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
+  const preferences = useUiPreferences();
+  useReadReceipt('conversation', open?.id ?? null, open?.updatedAt ?? 0,
+    store.historyReady && !store.historyLoading && store.historyError === null);
 
   /*
    * The provider keeps independent drafts for other Tracks, but only this
@@ -1497,6 +1506,7 @@ function useConversationPanel(
      */
     registry.startDraft({
       scopeId: source.scopeId,
+      model: FOLLOW_INSTALLATION_DEFAULT,
       key: mintIdempotencyKey(),
       text: null, sentText: null, creating: false, error: null, remedy: null,
     });
@@ -1587,6 +1597,10 @@ function useConversationPanel(
    * that one never reaches. Returning `void` keeps this stage on the registry.
    */
   const refuseOfflineDraft = (attempt: ConversationDraft, text: string): boolean => {
+    if ((attempt.model.model !== null || attempt.model.reasoning_effort !== null) && !supportsDraftModel) {
+      amendDraft(attempt, { text, error: 'This server does not support choosing the first message’s model yet.', remedy: 'retry' });
+      return true;
+    }
     if (onlineManager.isOnline()) return false;
     amendDraft(attempt, { text, error: new OfflineSubmissionError().message, remedy: 'retry' });
     return true;
@@ -1652,7 +1666,7 @@ function useConversationPanel(
         previouslySentText = attempt.sentText;
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
-        adopt(attempt, await create(text, attempt.key));
+        adopt(attempt, await create(text, attempt.key, attempt.model));
       } catch (error: unknown) {
         if (error instanceof OfflineSubmissionError) {
           // Marking a request optimistically must not invent dispatch when the
@@ -1760,7 +1774,7 @@ function useConversationPanel(
         previouslySentText = attempt.sentText;
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
-        adopt(attempt, await create(text, attempt.key));
+        adopt(attempt, await create(text, attempt.key, attempt.model));
       } catch (error: unknown) {
         if (error instanceof OfflineSubmissionError) {
           // Marking a request optimistically must not invent dispatch when the
@@ -1805,6 +1819,7 @@ function useConversationPanel(
     list: (
       <ChatList
         conversations={store.conversations}
+        unreadIds={new Set(store.conversations.filter(row => preferences.isUnread('conversation', row.id, row.updatedAt)).map(row => row.id))}
         activeId={open?.id ?? null}
         showTrack={options?.showTrack ?? true}
         onOpen={(conversation) => {
@@ -1859,7 +1874,11 @@ function useConversationPanel(
                 means there: throw this unsent draft away and begin another.
                 Same callback, so the two cannot disagree about that. */}
             <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={startAnother}
-              draft={{ text: composerDraft, onChange: setComposerDraft }} />
+              draft={{ text: composerDraft, onChange: setComposerDraft }}
+              footerActions={<ModelPill catalog={draftCatalog.data ?? null} selection={draft.model}
+                onChange={model => withDraft(draft, current => current.creating || current.sentText !== null
+                  ? current : { ...current, model })}
+                isDisabled={creating || draft.sentText !== null || !supportsDraftModel} />} />
           </>
         ) : open === null ? undefined : (
           <>
@@ -2694,6 +2713,7 @@ function TrackRouteBody({
   recentFiles: RecentFileHistory;
 }) {
   useTrackViewState(track.id);
+  useReadReceipt('track', track.id, track.updatedAt);
   const trackMutations = useTrackMutations(transport, unauthorized);
   const conversationMutations = useTrackConversationMutations(transport, track.id, unauthorized);
   const openMobileSection = useOpenMobileSection();

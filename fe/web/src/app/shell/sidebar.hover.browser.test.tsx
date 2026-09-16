@@ -138,17 +138,17 @@ it('keeps the clickable Area quieter and uses the same cadence as its Track rows
   expect(areaRect.top).toBeCloseTo(areaTopBeforeEmptyCollapse, 3);
   expect(areaRect.height).toBe(firstRect.height);
   expect(firstRect.top - areaRect.top).toBeCloseTo(secondRect.top - firstRect.top, 3);
-  expect(nextRect.top - secondRect.top).toBeCloseTo(secondRect.top - firstRect.top, 3);
+  expect(nextRect.top - secondRect.bottom).toBeCloseTo(0, 3);
   for (const theme of ['light', 'dark']) {
     document.documentElement.dataset.theme = theme;
     const railBackground = getComputedStyle(areaRow.closest('nav')!).backgroundColor;
     const areaContrast = contrastRatio(getComputedStyle(areaName).color, railBackground);
-    const canonicalMutedContrast = contrastRatio(
-      getComputedStyle(areaRow.querySelector<HTMLElement>('[aria-hidden="true"]')!).color,
+    const primaryTextContrast = contrastRatio(
+      getComputedStyle(first.querySelector<HTMLElement>('[title="First"]')!).color,
       railBackground,
     );
     expect(areaContrast).toBeGreaterThanOrEqual(4.5);
-    expect(areaContrast).toBeLessThan(canonicalMutedContrast);
+    expect(areaContrast).toBeLessThan(primaryTextContrast);
   }
   document.documentElement.dataset.theme = 'light';
   const restColor = getComputedStyle(areaName).color;

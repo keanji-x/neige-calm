@@ -497,8 +497,8 @@
   .cards {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
-    margin-inline: calc(var(--space-2) * -1);
+    gap: 0;
+    margin-inline: 0;
   }
 
   .cardRow {
@@ -507,7 +507,7 @@
     justify-content: space-between;
     gap: var(--space-2);
     inline-size: 100%;
-    min-block-size: var(--row-h-sm);
+    min-block-size: var(--row-h);
     padding-inline: var(--space-2);
     border-radius: var(--radius-sm);
     color: inherit;
@@ -586,10 +586,6 @@
   .cardKind {
     min-inline-size: 0;
     overflow: hidden;
-    font-size: var(--text-base);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-tight);
-    color: var(--text);
     white-space: nowrap;
     text-overflow: ellipsis;
   }
@@ -620,9 +616,8 @@
    */
   .cards,
   .tasks {
-    max-block-size: calc(var(--row-h-sm) * 8 + var(--space-1) * 7);
-    overflow-y: auto;
-    overscroll-behavior: contain;
+    /* The disclosed group owns the scrollport, including its inset. */
+    margin-inline: 0;
   }
 
   /*
@@ -635,8 +630,8 @@
   .tasks {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
-    margin-inline: calc(var(--space-2) * -1);
+    gap: 0;
+    margin-inline: 0;
   }
 
   /*
@@ -663,7 +658,7 @@
      */
     gap: var(--space-4);
     inline-size: 100%;
-    min-block-size: var(--row-h-sm);
+    min-block-size: var(--row-h);
     padding-inline: var(--space-2);
     border-radius: var(--radius-sm);
   }
@@ -716,15 +711,10 @@
     inset: 0;
   }
 
-  /* Mono, because the key is the literal the kernel and other reports address
-     this task by (§2.2) — the same font the block itself gives it. */
+  /* Names share the primary text size and left edge of card rows. */
   .taskKey {
     min-inline-size: 0;
     overflow: hidden;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    line-height: var(--leading-tight);
-    color: var(--text);
     white-space: nowrap;
     text-overflow: ellipsis;
   }
@@ -742,22 +732,16 @@
   .taskNote,
   .taskWithdrawn {
     flex: none;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-none);
-    color: var(--text-3);
   }
 
   .taskStatusText {
+    inline-size: 7ch;
+    text-align: end;
     /* Paint above the reveal button's full-row hit sheet so the status word
        owns its detailed native tooltip; it remains inside that button, so a
        click still reveals the task. */
     position: relative;
     flex: none;
-    color: var(--text-3);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-none);
     white-space: nowrap;
   }
 
@@ -766,13 +750,11 @@
      quiet and single-line; every row below still carries the full status and
      server-provided reason. */
   .taskSummary {
+    margin-inline-end: var(--control-h-sm);
+    font-variant-numeric: tabular-nums;
     max-inline-size: 75%;
     min-inline-size: 0;
     overflow: hidden;
-    color: var(--text-3);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-none);
     white-space: nowrap;
     text-overflow: ellipsis;
     text-align: end;
@@ -798,14 +780,12 @@
    */
   .taskKind,
   .taskKindButton {
+    inline-size: 7ch;
+    text-align: end;
     flex: none;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-none);
-    color: var(--text-3);
   }
 
-  /* Full row height, so the target is a 24px band and not an 11px line of type
+  /* Full row height, so the target is a 28px band and not an 11px line of type
      — the word is small because it is quiet, which is a typographic decision
      and must not also be a pointing one. */
   .taskKindButton {
@@ -842,13 +822,15 @@
      (#1149 titles every worker card after its task key, so the kind would
      otherwise vanish from exactly the rows that need it). Same quiet rank as
      `kernel-owned`: it is a fact about the row, not the row's subject. */
+  .cardStatus {
+    inline-size: 7ch;
+    flex: none;
+    text-align: end;
+  }
+
   .cardKindTag,
   .kernelOwned {
     flex: none;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-none);
-    color: var(--text-3);
   }
 
   /* The inline empty state: one line of hint-toned text in a dashed row-height

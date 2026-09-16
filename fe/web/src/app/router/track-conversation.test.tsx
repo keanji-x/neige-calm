@@ -331,7 +331,7 @@ describe('track conversations', () => {
       : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Review Planner notification' }));
     expect(await screen.findByRole('complementary', { name: 'Planner chat' })).toBeTruthy();
-    expect(screen.getByRole('combobox', { name: 'Message' })).toBe(document.activeElement);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Message' })).toBe(document.activeElement));
     expect(screen.getByRole('region', { name: 'Notifications' })
       .getAttribute('data-nc-notification-mode')).toBe('compact');
     expect(screen.getByRole('region', { name: 'Notifications' }).querySelector('strong')).toBeNull();
@@ -363,7 +363,7 @@ describe('track conversations', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Review Assistant notification' }));
     expect(await screen.findByRole('complementary', { name: 'Assistant' })).toBeTruthy();
-    expect(screen.getByRole('combobox', { name: 'Message' })).toBe(document.activeElement);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Message' })).toBe(document.activeElement));
     expect(window.location.search).not.toContain('card=');
   });
 
@@ -1993,7 +1993,9 @@ it('restores conversation selection across a fresh router without persisting its
   first.client.clear();
   setup(undefined, storage);
   expect(await screen.findByRole('complementary', { name: 'Assistant' })).toBeTruthy();
-  expect([...values.values()]).toEqual([JSON.stringify(ASSISTANT_CARD.id)]);
+  const saved = [...values.values()].map(value => JSON.parse(value) as string);
+  expect(saved).toContain(ASSISTANT_CARD.id);
+  expect(saved.every(value => value === ASSISTANT_CARD.id || /^\d+$/.test(value))).toBe(true);
 });
 
 it('does not fetch a stored conversation absent from the current Track rows', async () => {
@@ -2005,4 +2007,120 @@ it('does not fetch a stored conversation absent from the current Track rows', as
   await screen.findByRole('button', { name: 'Conversation Assistant' });
   expect(screen.queryByRole('button', { name: 'Close conversation' })).toBeNull();
   expect(requests.some((request) => request.path.includes('foreign-or-deleted-card'))).toBe(false);
+});
+
+it('selects a model before the first conversation message and sends it atomically', async () => {
+  const { requests } = setup(request => {
+    if (request.path === '/api/version') return ok({ webCompatVersion: 28, minWebCompatVersion: 28,
+      syncEventVersion: 20, dbInstanceId: 'test', conversationCreateModel: true });
+    if (request.path === '/api/models') return ok({
+      models: [{ id: 'preset-fast', model: 'gpt-5', display_name: 'GPT-5', description: '', is_default: false,
+        supported_reasoning_efforts: [{ reasoning_effort: 'low', description: 'Faster' }, { reasoning_effort: 'high', description: 'Thinks longer' }], default_reasoning_effort: 'high' }],
+      default: { model: 'gpt-5', reasoning_effort: 'high' }, default_source: 'config_read', source: 'live', fetched_at_ms: 1,
+    });
+    if (request.method === 'POST' && request.path === CONVERSATIONS) return created(derivedRow('w1', request));
+    return undefined;
+  });
+  await openDraft();
+  fireEvent.click(await screen.findByRole('button', { name: /^Model:/ }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: /^GPT-5/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Reasoning effort:/ }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: /^high/ }));
+  expect(creates(requests, CONVERSATIONS)).toHaveLength(0);
+  await write('Use this model from the start');
+  await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
+  expect(creates(requests, CONVERSATIONS)[0].body).toEqual({ text: 'Use this model from the start', model: 'gpt-5', reasoning_effort: 'high' });
+  expect(requests.filter(request => request.method === 'PUT' && request.path.endsWith('/planner/model'))).toEqual([]);
+});
+
+it('keeps first-message selection disabled on an older server that would ignore it', async () => {
+  setup(request => request.path === '/api/version'
+    ? ok({ webCompatVersion: 28, minWebCompatVersion: 28, syncEventVersion: 20, dbInstanceId: 'old' })
+    : undefined);
+  await openDraft();
+  const model = await screen.findByRole('button', { name: /^Model:/ });
+  expect(model.hasAttribute('disabled') || model.getAttribute('aria-disabled') === 'true').toBe(true);
+  fireEvent.click(model);
+  expect(screen.queryByRole('menuitem', { name: /^Default/ })).toBeNull();
+});
+
+it('uses a spinner while a closed conversation runs, a blue unread dot on completion, and no dot after reading', async () => {
+  let rows = [assistantRow()];
+  const { client } = setup(request => request.method === 'GET' && request.path === CONVERSATIONS ? ok(rows) : undefined);
+  const indicator = () => screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ }).closest('li')?.querySelector('[data-nc-activity]');
+  await screen.findByRole('button', { name: /^Conversation Assistant(?:,|$)/ });
+  expect(indicator()?.getAttribute('data-nc-activity')).toBe('unread');
+  fireEvent.click(screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ }));
+  await waitFor(() => expect(indicator()).toBeNull());
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  rows = [{ ...assistantRow(), state: 'turn_pending', updatedAt: 40 }];
+  await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
+  await waitFor(() => expect(screen.getByRole('button', { name: /^Conversation Assistant/ }).closest('li')
+    ?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity')).toBe('working'));
+  rows = [{ ...assistantRow(), state: 'idle', updatedAt: 50 }];
+  await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
+  await waitFor(() => expect(indicator()?.getAttribute('data-nc-activity')).toBe('unread'));
+  fireEvent.click(screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ }));
+  await waitFor(() => expect(indicator()).toBeNull());
+});
+
+it('keeps the first-message model fixed when a menu opened before sending is selected late', async () => {
+  let settle!: (response: ApiTransportResponse) => void;
+  const pending = new Promise<ApiTransportResponse>(resolve => { settle = resolve; });
+  const { requests } = setup(request => {
+    if (request.path === '/api/version') return ok({ webCompatVersion: 28, minWebCompatVersion: 28,
+      syncEventVersion: 20, dbInstanceId: 'test', conversationCreateModel: true });
+    if (request.path === '/api/models') return ok({
+      models: [{ id: 'preset', model: 'chosen-model', display_name: 'Chosen model', description: '', is_default: false,
+        supported_reasoning_efforts: [], default_reasoning_effort: 'low' }],
+      default: { model: 'default-model', reasoning_effort: null }, default_source: 'config_read', source: 'live', fetched_at_ms: 1,
+    });
+    if (request.method === 'POST' && request.path === CONVERSATIONS) return pending;
+    return undefined;
+  });
+  await openDraft();
+  const modelPicker = await screen.findByRole('button', { name: /^Model:/ });
+  await waitFor(() => expect(modelPicker.hasAttribute('disabled') || modelPicker.getAttribute('aria-disabled') === 'true').toBe(false));
+  fireEvent.click(modelPicker);
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Chosen model' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Model: Chosen model' }));
+  await write('Keep my choice');
+  await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
+  try {
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Default/, hidden: true }));
+    expect(screen.getByRole('button', { name: /^Model:/ }).getAttribute('aria-label')).toBe('Model: Chosen model');
+  } finally {
+    await act(async () => { settle(failure(500, 'internal', 'Try again')); await pending; });
+  }
+});
+
+it('keeps new replies unread while reopening cached history is still loading', async () => {
+  let rows = [assistantRow()];
+  let holdHistory = false;
+  let release!: (response: ApiTransportResponse) => void;
+  const pending = new Promise<ApiTransportResponse>(resolve => { release = resolve; });
+  const { client, requests } = setup(request => {
+    if (request.method === 'GET' && request.path === CONVERSATIONS) return ok(rows);
+    if (holdHistory && request.path.includes(HISTORY_PATH)) return pending;
+    return undefined;
+  });
+  const row = () => screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ });
+  const unread = () => row().closest('li')?.querySelector('[data-nc-activity="unread"]');
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await waitFor(() => expect(unread()).toBeNull());
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  rows = [{ ...assistantRow(), updatedAt: 50 }];
+  await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
+  await waitFor(() => expect(unread()).toBeTruthy());
+  const previousReads = requests.filter(request => request.path.includes(HISTORY_PATH)).length;
+  holdHistory = true;
+  await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
+  fireEvent.click(row());
+  try {
+    await waitFor(() => expect(requests.filter(request => request.path.includes(HISTORY_PATH)).length).toBeGreaterThan(previousReads));
+    expect(unread()).toBeTruthy();
+  } finally {
+    await act(async () => { release(ok([])); await pending; });
+  }
+  await waitFor(() => expect(unread()).toBeNull());
 });

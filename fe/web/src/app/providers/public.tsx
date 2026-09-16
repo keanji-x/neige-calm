@@ -31,7 +31,7 @@ import styles from './preflight-status.module.css';
  * restored entry as sent; the curtain is what stops it.
  */
 export const WEB_COMPAT_VERSION = 28;
-export type ServerVersionInfo = Readonly<{ webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
+export type ServerVersionInfo = Readonly<{ conversationCreateModel?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;
   reload(): void;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
 import { createUiPreferences } from './ui-preferences.tsx';
 
 function memoryStorage() {
@@ -73,4 +74,34 @@ describe('browser display preferences', () => {
     expect(restored.areaExpanded('area-a')).toBe(false);
     expect(restored.areaExpanded('area-b')).toBe(false);
   });
+});
+
+describe('local read receipts', () => {
+  it('keeps read receipts across reloads, accepts only newer acknowledgements, and isolates databases', () => {
+    const storage = memoryStorage();
+    storage.values.set(DB_INSTANCE_ID_KEY, 'db-a');
+    const preferences = createUiPreferences(storage);
+    expect(preferences.isUnread('track', 'a', 100)).toBe(true);
+    preferences.markRead('track', 'a', 100);
+    preferences.markRead('track', 'a', 90);
+    expect(preferences.isUnread('track', 'a', 100)).toBe(false);
+    expect(preferences.isUnread('track', 'a', 101)).toBe(true);
+    const restored = createUiPreferences(storage);
+    expect(restored.isUnread('track', 'a', 100)).toBe(false);
+    expect(restored.isUnread('conversation', 'a', 100)).toBe(true);
+    storage.values.set(DB_INSTANCE_ID_KEY, 'db-b');
+    expect(restored.isUnread('track', 'a', 100)).toBe(true);
+  });
+});
+
+it('does not overwrite a newer acknowledgement from another tab', () => {
+  const storage = memoryStorage();
+  storage.values.set(DB_INSTANCE_ID_KEY, 'same-db');
+  const first = createUiPreferences(storage);
+  const second = createUiPreferences(storage);
+  first.markRead('conversation', 'a', 10);
+  expect(second.isUnread('conversation', 'a', 15)).toBe(true);
+  first.markRead('conversation', 'a', 20);
+  second.markRead('conversation', 'a', 15);
+  expect(createUiPreferences(storage).isUnread('conversation', 'a', 20)).toBe(false);
 });

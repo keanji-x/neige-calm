@@ -556,6 +556,8 @@ pub(crate) async fn write_today_summary(
             track_id.clone(),
             NewTrackConversationBody {
                 text: TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
+                model: None,
+                reasoning_effort: None,
             },
             OpeningBriefing::CallerSuppliesItsOwn,
         )

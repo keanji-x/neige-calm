@@ -58,9 +58,10 @@
 // `noUnusedParameters`, so the track is left out until S2 introduces the outline
 // and gives it work to do.
 
+import { groupPanelRows } from './panel-groups.js';
 import { boundedStatusDetail, type ReportTaskRow } from '../domain/report.js';
 import type { CardWire } from '../domain/track.js';
-import type { PanelRow, RowAction, RowBadge, RowModuleView, TrackPageView } from './panel.js';
+import type { PanelRow, RowAction, RowBadge, RowModuleView, RowStatus, TrackPageView } from './panel.js';
 
 /**
  * What the status carrier says: the status, then the kernel's reason when one
@@ -134,7 +135,7 @@ export function taskStatusPhrase(status: string, detail: string | null): string 
  * second `title ?? card.kind`: a re-computation is one more copy that can
  * drift from the name actually printed.
  */
-function cardRow(card: CardWire): PanelRow {
+function cardRow(card: CardWire, taskStatus: RowStatus | null): PanelRow {
   const title = card.title;
   const name = title ?? card.kind;
   const actions: RowAction[] = [
@@ -155,7 +156,8 @@ function cardRow(card: CardWire): PanelRow {
     kind: title !== null ? card.kind : null,
     badges: card.deletable ? [] : [{ id: 'kernel-owned', text: 'kernel-owned', struck: false }],
     /* A card row reports no run. */
-    status: null,
+    status: taskStatus ?? (card.runtime === undefined ? null
+      : { token: card.runtime.status, phrase: card.runtime.status }),
     actions,
   };
 }
@@ -258,16 +260,26 @@ export function deriveTrackPageView(input: Readonly<{
   cards: readonly CardWire[];
   tasks: readonly ReportTaskRow[];
 }>): TrackPageView {
+  const taskRows = groupPanelRows(input.tasks.map(taskRow), 'tasks').flatMap(group => group.rows);
+  // A worker process can stay alive after its task ends. Its task's current
+  // execution is the work status; the session is only a fallback for standalone cards.
+  const taskStatusByCard = new Map<string, RowStatus>();
+  for (const row of taskRows) {
+    if (row.status === null) continue;
+    for (const action of row.actions) {
+      if (action.kind === 'open-card' && !taskStatusByCard.has(action.cardId)) taskStatusByCard.set(action.cardId, row.status);
+    }
+  }
   const cards: RowModuleView = {
     key: 'cards',
     title: 'Cards',
-    rows: input.cards.map(cardRow),
+    rows: groupPanelRows(input.cards.map(card => cardRow(card, taskStatusByCard.get(card.id) ?? null)), 'cards').flatMap(group => group.rows),
     empty: 'No cards yet.',
   };
   const tasks: RowModuleView = {
     key: 'tasks',
     title: 'Tasks',
-    rows: input.tasks.map(taskRow),
+    rows: taskRows,
     empty: 'No tasks declared yet.',
   };
   return { rowModules: [cards, tasks] };

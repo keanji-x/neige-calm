@@ -79,7 +79,7 @@ describe('interactive writes never queue an offline submission', () => {
     ['card create', ({ track }) => track.createCard('w1', { kind: 'note', title: 'Offline note', payload: {} })],
     ['recipe create', ({ recipe }) => recipe.create({ title: 'Offline recipe', body: '' })],
     ['recipe save', ({ recipe }) => recipe.save('recipe-1', { title: 'Offline recipe', body: '', if_revision: 1 })],
-    ['conversation create', ({ conversation }) => conversation.create('Offline message', 'offline-key')],
+    ['conversation create', ({ conversation }) => conversation.create('Offline message', 'offline-key', { model: null, reasoning_effort: null })],
     ['Today ensure', ({ today }) => today.ensure()],
   ];
   it.each(cases)('rejects %s before dispatch and does not replay it on reconnect', async (_name, submit) => {

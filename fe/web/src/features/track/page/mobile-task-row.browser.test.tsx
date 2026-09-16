@@ -82,8 +82,9 @@ describe('a withdrawn declaration on the mobile Tasks page', () => {
 
     const panel = document.querySelector('[data-nc-mobile-panel]');
     expect(panel, 'the mobile panel must be on the page').not.toBeNull();
+    for (const summary of panel!.querySelectorAll<HTMLElement>('details:not([open]) > summary')) summary.click();
     const badges = Array.from(panel!.querySelectorAll('[data-nc-badge="declaration"]'));
-    expect(badges.map((badge) => badge.textContent)).toEqual(['Withdrawn', 'Unreadable']);
+    expect(badges.map((badge) => badge.textContent)).toEqual(['Unreadable', 'Withdrawn']);
 
     /* Premise: these words are laid out. A mobile panel the media query left
        collapsed would give every reading below a computed style off a box
@@ -92,7 +93,7 @@ describe('a withdrawn declaration on the mobile Tasks page', () => {
       expect(badge.getBoundingClientRect().width).toBeGreaterThan(0);
     }
 
-    expect(getComputedStyle(badges[0]).textDecorationLine).toBe('line-through');
-    expect(getComputedStyle(badges[1]).textDecorationLine).toBe('none');
+    expect(getComputedStyle(badges[1]).textDecorationLine).toBe('line-through');
+    expect(getComputedStyle(badges[0]).textDecorationLine).toBe('none');
   });
 });

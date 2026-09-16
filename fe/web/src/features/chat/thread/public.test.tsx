@@ -8,9 +8,11 @@ import {
   type Conversation, type ConversationActivity, type ConversationSystemEntry,
   type ConversationTurn, type ConversationTurnOutcome, type SendOutcome,
 } from '../../../../../core/domain/conversation.ts';
-import { ChatComposer, ChatThread, EXCHANGE_RAIL_MIN } from './public.tsx';
+import { ChatComposer, ChatThread } from './public.tsx';
 
 afterEach(cleanup);
+
+const RAIL_FIXTURE_EXCHANGES = 5;
 
 const NOW = 1_760_000_000_000;
 
@@ -747,46 +749,17 @@ function boxAt(element: Element, top: number): void {
 }
 
 describe('ChatThread’s exchange rail', () => {
-  /*
-   * Under the threshold the rail is chrome: four exchanges are about one pane,
-   * and the reader who wants the second one can see where it is.
-   *
-   * **Rendered inside a drawer, which this case now has to be to mean
-   * anything.** The rail needs a seam, so a fixture with no drawer produces no
-   * rail whatever the count is — and this assertion would then pass on a
-   * component with the threshold deleted. The one-above case below is what
-   * proves the fixture *can* produce a rail; the two are a pair and neither
-   * binds alone.
-   */
-  it('does not render at all below the threshold', () => {
+  it('has no navigation target before the first exchange', () => {
     const { outer, pane } = drawerPane();
-    const { container } = render(
-      <ChatThread conversation={conversation()} turns={exchangeTurns(EXCHANGE_RAIL_MIN - 1)} />,
-      { container: pane },
-    );
+    render(<ChatThread conversation={conversation()} turns={[]} />, { container: pane });
     expect(screen.queryByRole('group', { name: 'Jump to an exchange' })).toBeNull();
-    /* And nothing else went missing with it: the transcript is all there. */
-    expect(container.querySelectorAll('[data-nc-turn]')).toHaveLength(
-      (EXCHANGE_RAIL_MIN - 1) * 2,
-    );
     outer.remove();
   });
 
-  /*
-   * The other half of the pair above, and the case that keeps the whole rail
-   * section honest: at exactly the threshold, in the same fixture, the rail is
-   * there. Without this the "does not render" case is satisfied by a rail that
-   * never renders at all.
-   */
-  it('renders at exactly the threshold, in the drawer’s seam', () => {
+  it('shows the first exchange immediately in the drawer seam', () => {
     const { outer, pane, seam } = drawerPane();
-    render(
-      <ChatThread conversation={conversation()} turns={exchangeTurns(EXCHANGE_RAIL_MIN)} />,
-      { container: pane },
-    );
-    expect(railDots()).toHaveLength(EXCHANGE_RAIL_MIN);
-    /* And it is in the seam, not in the transcript — the portal, asserted by
-       containment rather than by geometry, which is this tier's whole reach. */
+    render(<ChatThread conversation={conversation()} turns={exchangeTurns(1)} />, { container: pane });
+    expect(railDots()).toHaveLength(1);
     expect(seam.contains(railDots()[0])).toBe(true);
     expect(pane.querySelector('[data-nc-rail-track]')).toBeNull();
     outer.remove();
@@ -797,10 +770,10 @@ describe('ChatThread’s exchange rail', () => {
      answer: the rail's whole geometry is the drawer's seam. */
   it('renders no rail outside a drawer, and the transcript regardless', () => {
     const { container } = render(
-      <ChatThread conversation={conversation()} turns={exchangeTurns(EXCHANGE_RAIL_MIN + 3)} />,
+      <ChatThread conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES + 3)} />,
     );
     expect(screen.queryByRole('group', { name: 'Jump to an exchange' })).toBeNull();
-    expect(container.querySelectorAll('[data-nc-exchange]')).toHaveLength(EXCHANGE_RAIL_MIN + 3);
+    expect(container.querySelectorAll('[data-nc-exchange]')).toHaveLength(RAIL_FIXTURE_EXCHANGES + 3);
   });
 
   /*
@@ -812,11 +785,11 @@ describe('ChatThread’s exchange rail', () => {
   it('renders exactly one dot per exchange from the threshold up', () => {
     const { outer, pane } = drawerPane();
     const { container } = render(
-      <ChatThread conversation={conversation()} turns={exchangeTurns(EXCHANGE_RAIL_MIN + 3)} />,
+      <ChatThread conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES + 3)} />,
       { container: pane },
     );
     const markers = container.querySelectorAll('[data-nc-exchange]');
-    expect(markers).toHaveLength(EXCHANGE_RAIL_MIN + 3);
+    expect(markers).toHaveLength(RAIL_FIXTURE_EXCHANGES + 3);
     expect(railDots()).toHaveLength(markers.length);
     outer.remove();
   });
@@ -839,7 +812,7 @@ describe('ChatThread’s exchange rail', () => {
    * `data-nc-exchange` on a row the stylesheet gives no `.exchange` to.
    */
   it('opens one exchange, not two, when you speak twice in a row', () => {
-    const turns = exchangeTurns(EXCHANGE_RAIL_MIN);
+    const turns = exchangeTurns(RAIL_FIXTURE_EXCHANGES);
     turns.splice(1, 0, turn({
       id: 'you-0b', author: 'you', text: 'And also this.', atMs: NOW + 500,
     }));
@@ -852,12 +825,12 @@ describe('ChatThread’s exchange rail', () => {
        the `.exchange` grouping are still the same one element. */
     expect([...container.querySelectorAll('[data-nc-exchange]')]
       .map((marker) => marker.getAttribute('data-nc-exchange')))
-      .toEqual(Array.from({ length: EXCHANGE_RAIL_MIN }, (_unused, i) => `you-${i}`));
-    expect(railDots()).toHaveLength(EXCHANGE_RAIL_MIN);
+      .toEqual(Array.from({ length: RAIL_FIXTURE_EXCHANGES }, (_unused, i) => `you-${i}`));
+    expect(railDots()).toHaveLength(RAIL_FIXTURE_EXCHANGES);
     /* And the second line is still in the transcript — this is a claim about
        segmentation, not about dropping a turn. */
     expect(container.querySelectorAll('[data-nc-turn]'))
-      .toHaveLength(EXCHANGE_RAIL_MIN * 2 + 1);
+      .toHaveLength(RAIL_FIXTURE_EXCHANGES * 2 + 1);
     outer.remove();
   });
 
@@ -878,12 +851,12 @@ describe('ChatThread’s exchange rail', () => {
   it('names each dot with its ordinal and its prompt, and paints no text', () => {
     const { outer, pane } = drawerPane();
     render(
-      <ChatThread conversation={conversation()} turns={exchangeTurns(EXCHANGE_RAIL_MIN)} />,
+      <ChatThread conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
       { container: pane },
     );
     const dots = railDots();
     expect(dots.map((dot) => dot.getAttribute('aria-label'))).toEqual(
-      Array.from({ length: EXCHANGE_RAIL_MIN },
+      Array.from({ length: RAIL_FIXTURE_EXCHANGES },
         (_unused, index) => `Jump to exchange ${index + 1}: Ask ${index}`),
     );
     expect(dots.some((dot) => dot.hasAttribute('title'))).toBe(false);
@@ -893,12 +866,12 @@ describe('ChatThread’s exchange rail', () => {
 
   /* Same prompt, different button: the names still differ. */
   it('tells identically worded prompts apart', () => {
-    const turns = exchangeTurns(EXCHANGE_RAIL_MIN).map((entry) =>
+    const turns = exchangeTurns(RAIL_FIXTURE_EXCHANGES).map((entry) =>
       entry.author === 'you' ? { ...entry, text: 'Continue' } : entry);
     const { outer, pane } = drawerPane();
     render(<ChatThread conversation={conversation()} turns={turns} />, { container: pane });
     const names = railDots().map((dot) => dot.getAttribute('aria-label'));
-    expect(new Set(names).size).toBe(EXCHANGE_RAIL_MIN);
+    expect(new Set(names).size).toBe(RAIL_FIXTURE_EXCHANGES);
     outer.remove();
   });
 
@@ -912,7 +885,7 @@ describe('ChatThread’s exchange rail', () => {
   it('holds one tab stop and moves it with the arrows', async () => {
     const { outer, pane } = drawerPane();
     render(
-      <ChatThread conversation={conversation()} turns={exchangeTurns(EXCHANGE_RAIL_MIN)} />,
+      <ChatThread conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
       { container: pane },
     );
     const stops = () => railDots().map((dot) => dot.getAttribute('tabindex'));
@@ -924,10 +897,10 @@ describe('ChatThread’s exchange rail', () => {
     expect(stops()).toEqual(['-1', '-1', '0', '-1', '-1']);
 
     await userEvent.keyboard('{End}');
-    expect(document.activeElement).toBe(railDots()[EXCHANGE_RAIL_MIN - 1]);
+    expect(document.activeElement).toBe(railDots()[RAIL_FIXTURE_EXCHANGES - 1]);
     /* And the ends hold rather than wrap: Down at the last dot stays there. */
     await userEvent.keyboard('{ArrowDown}');
-    expect(document.activeElement).toBe(railDots()[EXCHANGE_RAIL_MIN - 1]);
+    expect(document.activeElement).toBe(railDots()[RAIL_FIXTURE_EXCHANGES - 1]);
 
     await userEvent.keyboard('{Home}');
     expect(document.activeElement).toBe(railDots()[0]);
@@ -946,7 +919,7 @@ describe('ChatThread’s exchange rail', () => {
   it('scrolls the drawer pane to the pressed exchange, and nothing above it', async () => {
     const { outer, pane, setOuterScroll, setPaneScroll } = drawerPane();
     render(
-      <ChatThread conversation={conversation()} turns={exchangeTurns(EXCHANGE_RAIL_MIN)} />,
+      <ChatThread conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
       { container: pane },
     );
     /* The follow-the-newest-turn effect has already written once; the press is
@@ -969,7 +942,7 @@ describe('ChatThread’s exchange rail', () => {
   it('marks the pressed dot as the current one', async () => {
     const { outer, pane } = drawerPane();
     render(
-      <ChatThread conversation={conversation()} turns={exchangeTurns(EXCHANGE_RAIL_MIN)} />,
+      <ChatThread conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
       { container: pane },
     );
     await userEvent.click(railDots()[3]);
@@ -993,7 +966,7 @@ describe('ChatThread’s exchange rail', () => {
   it('does nothing at all when the marker is gone', async () => {
     const { outer, pane, setOuterScroll, setPaneScroll } = drawerPane();
     render(
-      <ChatThread conversation={conversation()} turns={exchangeTurns(EXCHANGE_RAIL_MIN)} />,
+      <ChatThread conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
       { container: pane },
     );
     setPaneScroll.mockClear();
@@ -1045,7 +1018,7 @@ describe('ChatThread’s exchange rail', () => {
     try {
       const { outer, pane } = drawerPane();
       render(
-        <ChatThread conversation={conversation()} turns={exchangeTurns(EXCHANGE_RAIL_MIN)} />,
+        <ChatThread conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES)} />,
         { container: pane },
       );
       const preview = () => document.querySelector('[data-nc-rail-preview]');

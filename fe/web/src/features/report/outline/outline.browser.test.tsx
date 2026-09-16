@@ -41,32 +41,32 @@ it('centres a dense first-level rail beside the report edge and magnifies the ai
     </div>,
   );
   const rail = document.querySelector<HTMLElement>('nav[aria-label="Outline"]')!;
-  const list = rail.querySelector<HTMLElement>('ol')!;
+  const list = rail.querySelector<HTMLElement>('[data-nc-rail-track]')!;
   const edge = document.querySelector<HTMLElement>('[data-testid="report-edge"]')!;
   const rows = [...document.querySelectorAll<HTMLElement>('nav[aria-label="Outline"] button')];
   expect(rows).toHaveLength(2);
   expect(edge.getBoundingClientRect().left - rail.getBoundingClientRect().right).toBeCloseTo(4, 0);
   expect(list.getBoundingClientRect().top + list.getBoundingClientRect().height / 2)
     .toBeCloseTo(window.innerHeight / 2, 0);
-  expect(rows[0]?.getBoundingClientRect().height).toBeCloseTo(24, 0);
+  expect(rows[0]?.getBoundingClientRect().height).toBeCloseTo(12, 0);
   expect(rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().bottom).toBeCloseTo(0, 0);
   const heading = document.querySelector<HTMLElement>('h2')!;
   expect(getComputedStyle(heading, '::before').opacity).toBe('0');
 
   const first = rows[0];
-  const dot = first.querySelector<HTMLElement>('span:first-child')!;
-  const restingDot = dot.getBoundingClientRect().width;
+  const dot = first;
+  const restingDot = Number.parseFloat(getComputedStyle(dot, '::before').width);
   expect(restingDot).toBeCloseTo(4, 0);
-  expect(document.querySelector('[data-nc-outline-preview]')).toBeNull();
+  expect(document.querySelector('[data-nc-rail-preview]')).toBeNull();
   await page.getByRole('button', { name: 'First section' }).hover();
   await waitFor(() => {
-    expect(document.querySelector('[data-nc-outline-preview]')).not.toBeNull();
-    expect(dot.getBoundingClientRect().width).toBeCloseTo(8, 0);
+    expect(document.querySelector('[data-nc-rail-preview]')).not.toBeNull();
+    expect(Number.parseFloat(getComputedStyle(dot, '::before').width)).toBeCloseTo(8, 0);
   });
-  const preview = document.querySelector<HTMLElement>('[data-nc-outline-preview]')!;
+  const preview = document.querySelector<HTMLElement>('[data-nc-rail-preview]')!;
   expect(getComputedStyle(heading, '::before').opacity).toBe('0');
   expect(first.getBoundingClientRect().height).toBeCloseTo(28, 0);
-  expect(dot.getBoundingClientRect().width).toBeCloseTo(8, 0);
+  expect(Number.parseFloat(getComputedStyle(dot, '::before').width)).toBeCloseTo(8, 0);
   expect(rows[1].getBoundingClientRect().top + rows[1].getBoundingClientRect().height / 2
     - (first.getBoundingClientRect().top + first.getBoundingClientRect().height / 2)).toBeGreaterThanOrEqual(24);
   expect(preview.getBoundingClientRect().right).toBeLessThanOrEqual(rail.getBoundingClientRect().left - 3);
@@ -75,19 +75,19 @@ it('centres a dense first-level rail beside the report edge and magnifies the ai
 it('uses the same quiet, non-text contrast ink as the Conversation rail', async () => {
   await page.viewport(1400, 900);
   render(<ReportOutline items={ITEMS} />);
-  const dot = document.querySelector<HTMLElement>('nav[aria-label="Outline"] button span:first-child')!;
+  const dot = document.querySelector<HTMLElement>('nav[aria-label="Outline"] button')!;
   const expected = document.createElement('span');
   expected.style.background = 'oklch(58% 0.01 250)';
   const rejected = document.createElement('span');
   rejected.style.background = 'var(--text-4)';
   document.body.append(expected, rejected);
-  expect(getComputedStyle(dot).backgroundColor).toBe(getComputedStyle(expected).backgroundColor);
-  expect(getComputedStyle(dot).backgroundColor).not.toBe(getComputedStyle(rejected).backgroundColor);
+  expect(getComputedStyle(dot, '::before').backgroundColor).toBe(getComputedStyle(expected).backgroundColor);
+  expect(getComputedStyle(dot, '::before').backgroundColor).not.toBe(getComputedStyle(rejected).backgroundColor);
 
   document.documentElement.dataset.theme = 'dark';
   expected.style.background = 'oklch(56% 0.012 245)';
   await waitFor(() => {
-    expect(getComputedStyle(dot).backgroundColor).toBe(getComputedStyle(expected).backgroundColor);
+    expect(getComputedStyle(dot, '::before').backgroundColor).toBe(getComputedStyle(expected).backgroundColor);
   });
 });
 
@@ -102,7 +102,7 @@ it('keeps a long outline viewport-bounded and scrolls the roving end into view',
       <ReportOutline items={MANY_ITEMS} />
     </div>,
   );
-  const track = document.querySelector<HTMLElement>('[data-nc-outline-track]')!;
+  const track = document.querySelector<HTMLElement>('[data-nc-rail-track]')!;
   const rows = [...document.querySelectorAll<HTMLElement>('nav[aria-label="Outline"] button')];
   expect(track.getBoundingClientRect().height).toBeLessThanOrEqual(320);
   expect(rows[0].getBoundingClientRect().top).toBeGreaterThanOrEqual(track.getBoundingClientRect().top);

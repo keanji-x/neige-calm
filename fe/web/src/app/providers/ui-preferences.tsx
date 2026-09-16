@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 
-import { createStorageKey } from '../../../../core/keys/storage.ts';
+import { createStorageKey, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
 import { useState } from '../../ui/state/public.ts';
 
 type Preference = boolean | string | null;
@@ -37,7 +37,30 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     revision += 1;
     for (const listener of listeners) listener();
   };
+  const receiptKey = (kind: 'track' | 'conversation', id: string) => {
+    let database = 'local';
+    try { database = storage?.getItem(DB_INSTANCE_ID_KEY) ?? database; } catch { /* memory-only receipts */ }
+    return `read:${database}:${kind}:${id}`;
+  };
+  const receipt = (key: string): number => {
+    const stampOf = (value: unknown) => {
+      const stamp = typeof value === 'string' ? Number(value) : 0;
+      return Number.isFinite(stamp) && stamp > 0 ? stamp : 0;
+    };
+    const cached = stampOf(read(key));
+    try {
+      // Re-read before acknowledging: another tab may already have seen a newer update.
+      return Math.max(cached, stampOf(JSON.parse(storage?.getItem(createStorageKey('ui', 'v1', encodeURIComponent(key))) ?? 'null')));
+    } catch { return cached; }
+  };
   return Object.freeze({
+    isUnread(kind: 'track' | 'conversation', id: string, updatedAt: number): boolean {
+      return updatedAt > receipt(receiptKey(kind, id));
+    },
+    markRead(kind: 'track' | 'conversation', id: string, updatedAt: number): void {
+      const key = receiptKey(kind, id);
+      if (Number.isFinite(updatedAt) && updatedAt > receipt(key)) write(key, String(updatedAt), true);
+    },
     // Only layout changes are live: conversation selection is restored on route
     // entry and owned by React while open, so saving it must not move focus.
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
@@ -96,4 +119,18 @@ export function useConversationViewTarget(scopeId: string) {
     preferences.setConversation(currentScopeId, target?.kind === 'row' ? target.id : null);
   }, [preferences, currentScopeId, target]);
   return [current.target, setTarget] as const;
+}
+
+/** A background tab never acknowledges work the reader has not seen. */
+export function useReadReceipt(kind: 'track' | 'conversation', id: string | null, updatedAt: number, enabled = true) {
+  const preferences = useUiPreferences();
+  useEffect(() => {
+    if (id === null || !enabled) return;
+    const markVisible = () => {
+      if (document.visibilityState === 'visible') preferences.markRead(kind, id, updatedAt);
+    };
+    markVisible();
+    document.addEventListener('visibilitychange', markVisible);
+    return () => document.removeEventListener('visibilitychange', markVisible);
+  }, [preferences, kind, id, updatedAt, enabled]);
 }

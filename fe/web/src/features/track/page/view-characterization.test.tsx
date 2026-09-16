@@ -208,8 +208,8 @@ const TASKS: readonly ReportTaskRow[] = [
  *  requires a static selector, and a dynamic one would fail closed anyway. */
 function renderedRows(container: Element, key: RowModuleView['key']): readonly Element[] {
   return key === 'cards'
-    ? [...container.querySelectorAll('[data-nc-card-inventory] > li')]
-    : [...container.querySelectorAll('[data-nc-task-inventory] > li')];
+    ? [...container.querySelectorAll('[data-nc-card-inventory] li')]
+    : [...container.querySelectorAll('[data-nc-task-inventory] li')];
 }
 
 /** What a reader sees, and nothing a renderer says *about* it: `textContent`

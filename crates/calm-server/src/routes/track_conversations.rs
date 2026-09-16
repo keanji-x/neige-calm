@@ -70,6 +70,11 @@ pub struct NewTrackConversationBody {
     /// (non-blank after trim, at most 32768 chars) and validated *before*
     /// anything is minted, so a rejected message leaves no card behind.
     pub text: String,
+    /// Explicit choice for the first turn; omitted/null follows the installation default.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[utoipa::path(
@@ -183,6 +188,26 @@ pub(crate) async fn create_track_conversation_inner(
     })?;
     // Validate the message before minting anything: an empty first message
     // must not leave a conversation behind.
+    if body.model.is_some() || body.reasoning_effort.is_some() {
+        super::track_report_blocks::require_rest_user_actor_for(
+            &actor,
+            "conversation model selection",
+            "The person starting the conversation chooses its model.",
+        )?;
+        for (field, value) in [
+            ("model", &body.model),
+            ("reasoning_effort", &body.reasoning_effort),
+        ] {
+            if value
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                return Err(CalmError::BadRequest(format!(
+                    "{field} must be non-blank or null"
+                )));
+            }
+        }
+    }
     let text = body.text;
     validate_first_message(&text)?;
 
@@ -227,6 +252,8 @@ pub(crate) async fn create_track_conversation_inner(
             // than the derived id is the whole point: a derived id sent along
             // with itself would prove nothing.
             idempotency_key: Some(idempotency_key.clone()),
+            model: body.model,
+            reasoning_effort: body.reasoning_effort,
         }),
         // #1343's ruling, carried into the transaction that acts on it. The
         // caller decides; `prepare_tx` renders. `None` is not spelled out for

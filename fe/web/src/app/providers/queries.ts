@@ -444,7 +444,7 @@ export type ConversationMutations = Readonly<{
    * the attempt: pressing send again after a timeout must reuse it, or the
    * retry mints a second conversation.
    */
-  create: (text: string, idempotencyKey: string) => Promise<Conversation>;
+  create: (text: string, idempotencyKey: string, selection: ModelSelection) => Promise<Conversation>;
   /** Re-read the list and hand back what it now holds. */
   refresh: () => Promise<Conversation[]>;
 }>;
@@ -475,8 +475,8 @@ export function useTrackConversationMutations(
   const client = useQueryClient();
   const create = useMutation({
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: ({ text, idempotencyKey }: { text: string; idempotencyKey: string }) =>
-      runInteractiveWrite(transport, createTrackConversationOperation(trackId, text, idempotencyKey), unauthorized),
+    mutationFn: ({ text, idempotencyKey, selection }: { text: string; idempotencyKey: string; selection: ModelSelection }) =>
+      runInteractiveWrite(transport, createTrackConversationOperation(trackId, text, idempotencyKey, selection), unauthorized),
     onSuccess: (row) => {
       /* Written through as well as invalidated: the drawer switches to this row
          in the same tick and a list that does not hold it yet renders with no
@@ -495,7 +495,7 @@ export function useTrackConversationMutations(
     },
   });
   return {
-    create: (text, idempotencyKey) => create.mutateAsync({ text, idempotencyKey }),
+    create: (text, idempotencyKey, selection) => create.mutateAsync({ text, idempotencyKey, selection }),
     refresh: () => client.fetchQuery({
       ...trackConversationsQueryOptions(transport, trackId, unauthorized),
       staleTime: 0,
@@ -504,6 +504,7 @@ export function useTrackConversationMutations(
 }
 
 const serverVersionSchema = z.object({
+  conversationCreateModel: z.boolean().optional(),
   webCompatVersion: z.number(),
   minWebCompatVersion: z.number(),
   syncEventVersion: z.number(),

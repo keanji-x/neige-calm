@@ -30,7 +30,7 @@ describe('ReportOutline', () => {
     render(<ReportOutline items={ITEMS} />);
     // No section numbers here: they are marginalia on the sections themselves,
     // in this same margin, and 130px cannot afford to print them twice.
-    expect(screen.getAllByRole('button').map((row) => row.textContent)).toEqual([
+    expect(screen.getAllByRole('button').map((row) => row.getAttribute('aria-label'))).toEqual([
       'Valuation conclusion',
       'How the rate is taken',
     ]);

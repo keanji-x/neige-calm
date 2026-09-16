@@ -2,7 +2,7 @@ import {
   createContext, useCallback, useContext, useMemo, useRef, type ReactNode,
 } from 'react';
 
-import type { Conversation, OptimisticConversationTurn, TranscriptEntry } from '../../../../core/domain/conversation.ts';
+import type { ModelSelection, Conversation, OptimisticConversationTurn, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import { useReducer, useState } from '../../ui/state/public.ts';
 
 /**
@@ -16,6 +16,8 @@ import { useReducer, useState } from '../../ui/state/public.ts';
 export type ConversationDraft = Readonly<{
   /** The Track this draft belongs to. */
   scopeId: string;
+  /** Chosen before sending and locked while delivery is unconfirmed. */
+  model: ModelSelection;
   /** Identifies the draft to the server; minted once, never once per send. */
   key: string;
   /** The words the drawer is holding after its composer clears on send. */
