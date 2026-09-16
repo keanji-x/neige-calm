@@ -450,7 +450,11 @@ the keys and the terminal validator still accepts them on read-back. PATCH
 rule: the payload column is replaced wholesale, so `card_update_tx` re-inserts
 every stored server-owned key onto any replacement payload of a card that
 carries it (a non-object replacement is refused with 400); a card without a
-key never gains it on update.
+key never gains it through a public update (REST PATCH, plugin update); the
+kernel's own stamp at creation goes through `card_update_tx` inside the create
+transaction. Sticky means the kernel-minted shape only
+(`validation::server_owned_value_is_sticky`): `terminal_signals` when `true`,
+`claude_permissions` when it is an object.
 
 Idempotency: the open's `stable_payload_hash` covers the request as sent plus
 `planner_hooks`, plus the trimmed `claude_permissions` scope when declared; the
