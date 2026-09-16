@@ -373,16 +373,18 @@ export function TrackPage({
   const previousPanel = useRef<MobilePanelKind | null>(null);
 
   useEffect(() => {
-    if (!mobilePanelOpen) return;
+    if (!mobilePanelOpen || mobilePanelObscured) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
+      // A dialog or workspace sheet owns Escape until its foreground layer closes.
+      if (document.querySelector('[data-nc-escape-layer]') !== null) return;
       // Through the URL, not a local flag: Escape and the hardware Back
       // button must end in the same place (#1191 §2.4).
       onClosePanel?.();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [mobilePanelOpen, onClosePanel]);
+  }, [mobilePanelOpen, mobilePanelObscured, onClosePanel]);
 
   /*
    * ── The focus contract (#1191 §2.5) ─────────────────────────────────────

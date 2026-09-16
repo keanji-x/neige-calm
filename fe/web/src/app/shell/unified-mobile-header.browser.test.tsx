@@ -107,6 +107,25 @@ it('removes abandoned title containers when switching Tracks', async () => {
   await page.viewport(1280, 720);
 });
 
+it('uses Escape to close Planner before its Conversations page', async () => {
+  await page.viewport(390, 844);
+  const router = setup('/track/w1');
+  await page.getByRole('button', { name: 'Track actions', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Conversations', exact: true }).click();
+  await page.getByRole('button', { name: /Design review/ }).click();
+  await page.getByRole('heading', { name: 'Design review', exact: true }).findElement();
+  await userEvent.keyboard('{Escape}');
+  await settlePaint();
+  expect(router.state.location.search.panel).toBe('conversations');
+  await expect.element(page.getByRole('heading', { name: 'Conversations', exact: true })).toBeVisible();
+  expect(document.querySelector('[data-nc-drawer]')).toBeNull();
+  await expect.poll(() => document.activeElement).toBe(await page.getByRole('button', { name: /Design review/ }).findElement());
+  await userEvent.keyboard('{Escape}');
+  await settlePaint();
+  expect(router.state.location.search.panel).toBeUndefined();
+  await page.viewport(1280, 720);
+});
+
 async function editTrack(): Promise<void> {
   // Also cover keyboard reopening; pointer close/reopen has Astryx's short
   // light-dismiss click fence, exercised by the initial pointer entry above.

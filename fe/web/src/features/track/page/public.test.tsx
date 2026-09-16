@@ -6,10 +6,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { useState } from '../../../ui/state/public.ts';
+import { Dialog } from '../../../ui/dialog/public.tsx';
 import { TrackPage, type TrackInputNotification, type TrackPageProps } from './public.tsx';
 import { card, renderPage, track } from './test-fixtures.tsx';
 
 afterEach(cleanup);
+
+it('leaves Escape to a dialog above an open panel', async () => {
+  const closePanel = vi.fn();
+  const closeDialog = vi.fn();
+  renderPage({ panel: 'cards', onClosePanel: closePanel });
+  render(<Dialog open title="Confirm action" onClose={closeDialog}><p>Review this action.</p></Dialog>);
+  await userEvent.keyboard('{Escape}');
+  expect(closeDialog).toHaveBeenCalledOnce();
+  expect(closePanel).not.toHaveBeenCalled();
+});
 
 async function openCards(): Promise<void> {
   await userEvent.click(screen.getByRole('button', { name: 'Track actions' }));
