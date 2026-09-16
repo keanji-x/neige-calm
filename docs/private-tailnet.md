@@ -13,6 +13,13 @@ provider = "private-tailnet"
 hostname = "neige"
 ```
 
+If private state cannot be read, a future state schema is encountered, or a
+private socket cannot be initialized, the local kernel and terminal supervisor
+still start. Settings reports the remote subsystem as unavailable with a
+specific error. Unknown desired state is preserved; it is never silently changed
+to disabled/enabled. Fix the private-state problem and restart the host. Explicit
+conflicting provider declarations remain configuration errors.
+
 Remote access is initially disabled. In Settings → Network → Mobile connection,
 choose Enable, then Start sign-in to authorize this computer's node. The login
 link is only displayed for the current operation for two minutes; this is a UI

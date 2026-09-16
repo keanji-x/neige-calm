@@ -18,6 +18,7 @@ pub(crate) struct AppConfig {
     pub upgrade: UpgradeConfig,
     pub source: SourceConfig,
     pub tailnet: Option<crate::tailnet::config::TailnetConfig>,
+    pub tailnet_unavailable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +204,7 @@ impl AppConfig {
         let current_web = release_root.join("current-web");
         let previous_server = release_root.join("previous-server");
         Self {
+            tailnet_unavailable: false,
             tailnet: Some(crate::tailnet::config::TailnetConfig::defaults(
                 &current_server,
                 &expand_tilde("~/.local/share/neige-calm"),

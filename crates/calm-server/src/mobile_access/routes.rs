@@ -64,7 +64,7 @@ fn no_store(value: impl IntoResponse) -> Response {
     response
 }
 
-#[utoipa::path(get, path = "/api/mobile/access", tag = "mobile", responses((status = 200, body = MobileStatus), (status = 401, body = ErrorBody)))]
+#[utoipa::path(get, path = "/api/mobile/access", tag = "mobile", responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody), (status = 401, body = ErrorBody), (status = 403, body = ErrorBody)))]
 pub async fn status(State(auth): State<AuthState>, principal: Principal) -> Result<Response> {
     owner(&auth, &principal)?;
     Ok(no_store(Json(auth.mobile.status().await?)))

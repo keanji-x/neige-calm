@@ -325,7 +325,9 @@ impl From<&AppConfig> for SupervisorConfig {
 fn calm_server_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
     let control_sock = cfg.proc_supervisor_sock();
     let mut child_args = cfg.child.extra_args.clone();
-    if let Some(tailnet) = &cfg.tailnet {
+    if cfg.tailnet_unavailable {
+        child_args.push("--private-tailnet-unavailable".into());
+    } else if let Some(tailnet) = &cfg.tailnet {
         child_args.extend([
             "--private-tailnet-config".into(),
             tailnet.ingress_config().display().to_string(),
@@ -1107,8 +1109,21 @@ async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
         .with_context(|| format!("bind admin API on {admin_listen}"))?;
 
     let tailnet = if let Some(config) = &cfg.tailnet {
-        config.validate(&cfg.child.extra_args)?;
-        Some(tailnet::TailnetManager::start(config.clone())?)
+        // Conflicting declared providers remain a configuration error. The
+        // optional subsystem's files, state version and sockets cannot stop
+        // local kernel/proc startup, nor may unreadable intent become disabled.
+        config.validate_provider_conflicts(&cfg.child.extra_args)?;
+        match config
+            .validate(&cfg.child.extra_args)
+            .and_then(|()| tailnet::TailnetManager::start(config.clone()))
+        {
+            Ok(manager) => Some(manager),
+            Err(error) => {
+                tracing::warn!(%error,"private Tailnet initialization failed; local Neige remains available");
+                cfg.tailnet_unavailable = true;
+                None
+            }
+        }
     } else {
         None
     };

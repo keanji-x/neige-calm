@@ -166,6 +166,11 @@ pub struct Config {
     #[arg(long, conflicts_with = "mobile_access_config")]
     pub private_tailnet_config: Option<PathBuf>,
 
+    /// App-owned remote subsystem failed before the kernel started. This
+    /// diagnostic does not guess or replace the stored remote-access intent.
+    #[arg(long, conflicts_with_all = ["private_tailnet_config", "mobile_access_config"])]
+    pub private_tailnet_unavailable: bool,
+
     /// Initial delay before restarting the shared codex app-server after a crash.
     #[arg(
         long,

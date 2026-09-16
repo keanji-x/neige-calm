@@ -128,6 +128,9 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let auth_state = AuthState::new(auth_config);
+    if cfg.private_tailnet_unavailable {
+        auth_state.mobile.mark_unavailable();
+    }
 
     let mut _private_ingress = None;
     let _mobile_router = if let Some(path) = &cfg.mobile_access_config {
@@ -174,6 +177,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(router)
             }
             Err(error) => {
+                auth_state.mobile.mark_unavailable();
                 tracing::warn!(%error,"private Tailnet ingress unavailable; local Neige remains available");
                 None
             }

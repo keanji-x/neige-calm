@@ -10,6 +10,7 @@ use crate::auth::SessionStore;
 use crate::error::{CalmError, Result};
 use axum::Router;
 use pairing::PairingState;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Clone)]
@@ -21,6 +22,7 @@ struct Inner {
     pairings: Arc<Mutex<PairingState>>,
     control: tokio::sync::Mutex<funnel::Controller>,
     sessions: SessionStore,
+    unavailable: AtomicBool,
     private: tokio::sync::Mutex<Option<private_tailnet::Controller>>,
 }
 
@@ -37,6 +39,7 @@ impl MobileAccess {
                 pairings: Arc::new(Mutex::new(PairingState::default())),
                 control: tokio::sync::Mutex::new(funnel::Controller::default()),
                 sessions,
+                unavailable: AtomicBool::new(false),
                 private: tokio::sync::Mutex::new(None),
             }),
         }
@@ -82,6 +85,10 @@ impl MobileAccess {
         self.inner.control.lock().await.stop().await
     }
 
+    pub fn mark_unavailable(&self) {
+        self.inner.unavailable.store(true, Ordering::Release);
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, PairingState>> {
         self.inner
             .pairings
@@ -90,6 +97,9 @@ impl MobileAccess {
     }
 
     pub async fn status(&self) -> Result<MobileStatus> {
+        if self.inner.unavailable.load(Ordering::Acquire) {
+            return Err(CalmError::BadRequest("Private remote access could not initialize. Local Neige is still available. Check the private state and socket permissions, then restart Neige; the stored enabled state was left untouched.".into()));
+        }
         let tailnet = if let Some(private) = self.inner.private.lock().await.as_ref() {
             Some(private.status().await?)
         } else {
@@ -150,6 +160,55 @@ impl MobileAccess {
 mod tests {
     use super::*;
     use crate::auth::{AuthConfig, AuthState};
+
+    #[tokio::test]
+    async fn mobile_access_unavailable_returns_explicit_settings_error() {
+        use axum::{
+            body::Body,
+            http::{Request, StatusCode, header},
+        };
+        use tower::ServiceExt;
+        let auth = AuthState::new(AuthConfig {
+            username: Some("owner".into()),
+            password: Some("fixture".into()),
+            dev_autologin: false,
+            display_name: "Owner".into(),
+        });
+        auth.mobile.mark_unavailable();
+        let session = auth
+            .sessions
+            .create(crate::auth::SessionAuthority::PasswordLogin);
+        let router = routes::management_router()
+            .layer(axum::middleware::from_fn_with_state(
+                auth.clone(),
+                crate::auth::require_session,
+            ))
+            .with_state(auth);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/mobile/access")
+                    .header(
+                        header::COOKIE,
+                        format!("{}={session}", crate::auth::SESSION_COOKIE),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let text = std::str::from_utf8(&body).unwrap();
+        assert!(text.contains("Private remote access could not initialize"));
+        assert!(text.contains("Local Neige is still available"));
+        assert!(
+            !text.contains("desiredEnabled"),
+            "unknown intent must not become a fabricated disabled status"
+        );
+    }
 
     #[tokio::test]
     async fn mobile_access_releases_configuration_when_routers_are_dropped() {

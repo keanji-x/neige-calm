@@ -52,11 +52,15 @@ impl TailnetConfig {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
             "Invalid Tailnet hostname"
         );
+        self.validate_provider_conflicts(child_args)
+    }
+    pub fn validate_provider_conflicts(&self, child_args: &[String]) -> anyhow::Result<()> {
         anyhow::ensure!(
             !child_args.iter().any(|a| a == "--mobile-access-config"
                 || a.starts_with("--mobile-access-config=")
                 || a == "--private-tailnet-config"
-                || a.starts_with("--private-tailnet-config=")),
+                || a.starts_with("--private-tailnet-config=")
+                || a == "--private-tailnet-unavailable"),
             "Select exactly one mobile ingress provider; private-tailnet conflicts with child mobile configuration"
         );
         Ok(())
