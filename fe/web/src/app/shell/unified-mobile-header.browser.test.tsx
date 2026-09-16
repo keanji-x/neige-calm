@@ -116,13 +116,13 @@ it('uses Escape to close Planner before its Conversations page', async () => {
   await page.getByRole('heading', { name: 'Design review', exact: true }).findElement();
   await userEvent.keyboard('{Escape}');
   await settlePaint();
-  expect(router.state.location.search.panel).toBe('conversations');
+  expect(router.state.location.search).toHaveProperty('panel', 'conversations');
   await expect.element(page.getByRole('heading', { name: 'Conversations', exact: true })).toBeVisible();
   expect(document.querySelector('[data-nc-drawer]')).toBeNull();
   await expect.poll(() => document.activeElement).toBe(await page.getByRole('button', { name: /Design review/ }).findElement());
   await userEvent.keyboard('{Escape}');
   await settlePaint();
-  expect(router.state.location.search.panel).toBeUndefined();
+  expect(router.state.location.search).not.toHaveProperty('panel');
   await page.viewport(1280, 720);
 });
 
