@@ -735,14 +735,10 @@
   }
 
   .taskStatusText {
-    inline-size: 7ch;
-    text-align: end;
     /* Paint above the reveal button's full-row hit sheet so the status word
        owns its detailed native tooltip; it remains inside that button, so a
        click still reveals the task. */
     position: relative;
-    flex: none;
-    white-space: nowrap;
   }
 
   /* A compact roll-up belongs in the Tasks head, where a long-running Track
@@ -822,10 +818,14 @@
      (#1149 titles every worker card after its task key, so the kind would
      otherwise vanish from exactly the rows that need it). Same quiet rank as
      `kernel-owned`: it is a fact about the row, not the row's subject. */
-  .cardStatus {
+  .cardStatus,
+  .taskStatusText {
     inline-size: 7ch;
     flex: none;
     text-align: end;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   .cardKindTag,

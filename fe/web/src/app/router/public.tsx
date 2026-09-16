@@ -1329,7 +1329,10 @@ function useConversationPanel(
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
   const preferences = useUiPreferences();
-  useReadReceipt('conversation', open?.id ?? null, open?.updatedAt ?? 0,
+  // The transcript projection can be older than server activity or include a
+  // local optimistic timestamp. Both unread checks and receipts use server rows.
+  const openActivity = rows.find(row => row.id === open?.id);
+  useReadReceipt('conversation', openActivity?.id ?? null, openActivity?.updatedAt ?? 0,
     store.historyReady && !store.historyLoading && store.historyError === null);
 
   /*
@@ -1819,7 +1822,7 @@ function useConversationPanel(
     list: (
       <ChatList
         conversations={store.conversations}
-        unreadIds={new Set(store.conversations.filter(row => preferences.isUnread('conversation', row.id, row.updatedAt)).map(row => row.id))}
+        unreadIds={new Set(rows.filter(row => preferences.isUnread('conversation', row.id, row.updatedAt)).map(row => row.id))}
         activeId={open?.id ?? null}
         showTrack={options?.showTrack ?? true}
         onOpen={(conversation) => {

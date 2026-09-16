@@ -62,6 +62,18 @@ describe('ReportOutline', () => {
     expect(document.activeElement).toBe(rows[1]);
   });
 
+  it('shows the focused chapter for keyboard navigation and dismisses it on leaving', async () => {
+    render(<><ReportOutline items={ITEMS} /><button type="button">After outline</button></>);
+    const preview = () => document.querySelector('[data-nc-rail-preview]')?.textContent;
+    await userEvent.tab();
+    expect(preview()).toBe('Valuation conclusion');
+    await userEvent.keyboard('{ArrowDown}');
+    expect(preview()).toBe('How the rate is taken');
+    await userEvent.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'After outline' }));
+    expect(preview()).toBeUndefined();
+  });
+
   // INV-A11Y-061 covers the whole report subtree, and an index of a document is
   // the most tempting place in the app to reach for `<a href="#...">`.
   it('emits no native link', () => {

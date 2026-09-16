@@ -6,6 +6,9 @@ They also own placement and determining the active item; this primitive imports
 no domain types and reads no application data.
 
 The shared behavior includes a pointer-centered magnification spread, bounded
-scrolling, a delayed hover preview, one roving tab stop, arrow/Home/End keys and
+scrolling, delayed hover and immediate keyboard-focus previews, one roving tab stop, arrow/Home/End keys and
 larger touch targets. State and observers belong to each mounted instance.
-The host must provide a bounded block size and a narrow inline size.
+The host must provide a bounded block size and a narrow inline size. It sets
+`--nc-rail-preview-max-inline-size` through an ancestor or the optional `className`
+to limit previews to its available margin. The primitive does not assume a
+conversation layout when it is used by a report.

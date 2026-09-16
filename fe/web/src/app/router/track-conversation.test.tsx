@@ -2101,7 +2101,8 @@ it('keeps new replies unread while reopening cached history is still loading', a
   const pending = new Promise<ApiTransportResponse>(resolve => { release = resolve; });
   const { client, requests } = setup(request => {
     if (request.method === 'GET' && request.path === CONVERSATIONS) return ok(rows);
-    if (holdHistory && request.path.includes(HISTORY_PATH)) return pending;
+    if (request.path.includes(HISTORY_PATH)) return holdHistory ? pending
+      : ok([harnessMessage(20, 'agentMessage', { type: 'agentMessage', text: 'Previously read answer.' })]);
     return undefined;
   });
   const row = () => screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ });
@@ -2120,7 +2121,22 @@ it('keeps new replies unread while reopening cached history is still loading', a
     await waitFor(() => expect(requests.filter(request => request.path.includes(HISTORY_PATH)).length).toBeGreaterThan(previousReads));
     expect(unread()).toBeTruthy();
   } finally {
-    await act(async () => { release(ok([])); await pending; });
+    await act(async () => { release(ok([harnessMessage(45, 'agentMessage', { type: 'agentMessage', text: 'New completed answer.' })])); await pending; });
   }
+  await waitFor(() => expect(unread()).toBeNull());
+});
+
+it('keeps a nonempty conversation read after closing when activity is newer than the last reply', async () => {
+  setup(request => {
+    if (request.path === CONVERSATIONS) return ok([assistantRow({ title: 'Review receipt', updatedAt: 50 })]);
+    if (request.path.includes(HISTORY_PATH)) return ok([harnessMessage(20, 'agentMessage', { type: 'agentMessage', text: 'Read this completed answer.' })]);
+    return undefined;
+  });
+  const row = () => screen.getByRole('button', { name: /^Conversation Review receipt(?:,|$)/ });
+  const unread = () => row().closest('li')?.querySelector('[data-nc-activity="unread"]');
+  fireEvent.click(await screen.findByRole('button', { name: /^Conversation Review receipt(?:,|$)/ }));
+  await screen.findByText('Read this completed answer.');
+  await waitFor(() => expect(unread()).toBeNull());
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
   await waitFor(() => expect(unread()).toBeNull());
 });

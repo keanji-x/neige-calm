@@ -77,6 +77,20 @@ describe('browser display preferences', () => {
 });
 
 describe('local read receipts', () => {
+  it('keeps unscoped receipts in memory without transferring them into a discovered database', () => {
+    const storage = memoryStorage();
+    const preferences = createUiPreferences(storage);
+    preferences.markRead('track', 'previously-visible', 100);
+    expect(preferences.isUnread('track', 'previously-visible', 100)).toBe(false);
+    expect(storage.values.size).toBe(0);
+    preferences.setReadScope('db-a');
+    expect(preferences.isUnread('track', 'previously-visible', 100)).toBe(true);
+    preferences.markRead('track', 'currently-visible', 100);
+    expect(preferences.isUnread('track', 'currently-visible', 100)).toBe(false);
+    preferences.setReadScope('db-b');
+    expect(preferences.isUnread('track', 'currently-visible', 100)).toBe(true);
+  });
+
   it('keeps read receipts across reloads, accepts only newer acknowledgements, and isolates databases', () => {
     const storage = memoryStorage();
     storage.values.set(DB_INSTANCE_ID_KEY, 'db-a');
@@ -90,6 +104,7 @@ describe('local read receipts', () => {
     expect(restored.isUnread('track', 'a', 100)).toBe(false);
     expect(restored.isUnread('conversation', 'a', 100)).toBe(true);
     storage.values.set(DB_INSTANCE_ID_KEY, 'db-b');
+    restored.setReadScope('db-b');
     expect(restored.isUnread('track', 'a', 100)).toBe(true);
   });
 });

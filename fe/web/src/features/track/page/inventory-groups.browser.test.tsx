@@ -14,6 +14,26 @@ const task = (blockId: string, status: string, kind: NonNullable<ReportTaskRow['
   kind, workerCardId: `card-${blockId}`, pendingReason: null,
 });
 
+it('clips long status tokens before the worker-type column while keeping their full explanation', async () => {
+  await page.viewport(1200, 900);
+  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}),
+    deriveTrackPageView({ cards: [card({ id: 'pending-card', title: 'Long card title', kind: 'codex',
+      runtime: { worker_session_id: 'one', kind: 'codex', status: 'running' } })],
+      tasks: [{ ...task('Long task title', 'awaiting_projection', 'codex'), workerCardId: 'pending-card' }] }))}</PanelCard></div>);
+  for (const summary of document.querySelectorAll<HTMLElement>('details:not([open]) > summary')) summary.click();
+  const statuses = document.querySelectorAll<HTMLElement>('[data-nc-status]');
+  expect(statuses).toHaveLength(2);
+  for (const status of statuses) {
+    const style = getComputedStyle(status);
+    expect(status.scrollWidth).toBeGreaterThan(status.clientWidth);
+    expect(style.overflowX).toBe('hidden');
+    expect(style.textOverflow).toBe('ellipsis');
+    expect(status.title).not.toBe('');
+    const kind = status.closest('[data-nc-row]')!.querySelector('[data-nc-field="kind"]')!;
+    expect(status.getBoundingClientRect().right).toBeLessThanOrEqual(kind.getBoundingClientRect().left);
+  }
+});
+
 it('aligns module titles, status groups and row names, with stable secondary columns', async () => {
   await page.viewport(1200, 900);
   const view = deriveTrackPageView({

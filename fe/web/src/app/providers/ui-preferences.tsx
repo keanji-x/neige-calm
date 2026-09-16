@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useSyncExternalStore, type ReactNode } from 'react';
 
 import { createStorageKey, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
 import { useState } from '../../ui/state/public.ts';
@@ -13,6 +13,12 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
   const memory = new Map<string, Preference>();
   const listeners = new Set<() => void>();
   let revision = 0;
+  let database: string | null = null;
+  try { database = storage?.getItem(DB_INSTANCE_ID_KEY) ?? null; } catch { /* memory-only receipts */ }
+  const notify = () => {
+    revision += 1;
+    for (const listener of listeners) listener();
+  };
   const read = (key: string): Preference => {
     if (memory.has(key)) return memory.get(key) ?? null;
     let value: Preference = null;
@@ -25,28 +31,24 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     memory.set(key, value);
     return value;
   };
-  const write = (key: string, value: Preference, notifyLayout: boolean) => {
-    if (read(key) === value) return;
+  const write = (key: string, value: Preference, notifyLayout: boolean, persist = true) => {
+    if ((persist ? read(key) : memory.get(key)) === value) return;
     memory.set(key, value);
     try {
-      storage?.setItem(createStorageKey('ui', 'v1', encodeURIComponent(key)), JSON.stringify(value));
+      if (persist) storage?.setItem(createStorageKey('ui', 'v1', encodeURIComponent(key)), JSON.stringify(value));
     } catch {
       // The current app instance still remembers the choice when storage fails.
     }
     if (!notifyLayout) return;
-    revision += 1;
-    for (const listener of listeners) listener();
+    notify();
   };
-  const receiptKey = (kind: 'track' | 'conversation', id: string) => {
-    let database = 'local';
-    try { database = storage?.getItem(DB_INSTANCE_ID_KEY) ?? database; } catch { /* memory-only receipts */ }
-    return `read:${database}:${kind}:${id}`;
-  };
+  const receiptKey = (kind: 'track' | 'conversation', id: string) => `read:${database ?? 'local'}:${kind}:${id}`;
   const receipt = (key: string): number => {
     const stampOf = (value: unknown) => {
       const stamp = typeof value === 'string' ? Number(value) : 0;
       return Number.isFinite(stamp) && stamp > 0 ? stamp : 0;
     };
+    if (database === null) return stampOf(memory.get(key));
     const cached = stampOf(read(key));
     try {
       // Re-read before acknowledging: another tab may already have seen a newer update.
@@ -54,12 +56,18 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     } catch { return cached; }
   };
   return Object.freeze({
+    readScope: () => database,
+    setReadScope(id: string | null): void {
+      if (database === id) return;
+      database = id;
+      notify();
+    },
     isUnread(kind: 'track' | 'conversation', id: string, updatedAt: number): boolean {
       return updatedAt > receipt(receiptKey(kind, id));
     },
     markRead(kind: 'track' | 'conversation', id: string, updatedAt: number): void {
       const key = receiptKey(kind, id);
-      if (Number.isFinite(updatedAt) && updatedAt > receipt(key)) write(key, String(updatedAt), true);
+      if (Number.isFinite(updatedAt) && updatedAt > receipt(key)) write(key, String(updatedAt), true, database !== null);
     },
     // Only layout changes are live: conversation selection is restored on route
     // entry and owned by React while open, so saving it must not move focus.
@@ -84,8 +92,19 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
 }
 
 const UiPreferencesContext = createContext<UiPreferences | null>(null);
+// Undefined means a standalone preferences host. Null means the compatibility
+// gate has not yet confirmed which backend owns the visible data.
+const ReadReceiptScopeContext = createContext<string | null | undefined>(undefined);
+
+export function ReadReceiptScopeProvider({ id, children }: { id: string | null; children: ReactNode }) {
+  return <ReadReceiptScopeContext.Provider value={id}>{children}</ReadReceiptScopeContext.Provider>;
+}
 
 export function UiPreferencesProvider({ preferences, children }: { preferences: UiPreferences; children: ReactNode }) {
+  const instanceId = useContext(ReadReceiptScopeContext);
+  useLayoutEffect(() => {
+    if (instanceId !== undefined) preferences.setReadScope(instanceId);
+  }, [instanceId, preferences]);
   return <UiPreferencesContext.Provider value={preferences}>{children}</UiPreferencesContext.Provider>;
 }
 
@@ -124,6 +143,7 @@ export function useConversationViewTarget(scopeId: string) {
 /** A background tab never acknowledges work the reader has not seen. */
 export function useReadReceipt(kind: 'track' | 'conversation', id: string | null, updatedAt: number, enabled = true) {
   const preferences = useUiPreferences();
+  const scope = preferences.readScope();
   useEffect(() => {
     if (id === null || !enabled) return;
     const markVisible = () => {
@@ -132,5 +152,5 @@ export function useReadReceipt(kind: 'track' | 'conversation', id: string | null
     markVisible();
     document.addEventListener('visibilitychange', markVisible);
     return () => document.removeEventListener('visibilitychange', markVisible);
-  }, [preferences, kind, id, updatedAt, enabled]);
+  }, [preferences, scope, kind, id, updatedAt, enabled]);
 }

@@ -614,6 +614,7 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
           the transcript's to give, so there is nothing to switch. */}
       {railShown && railSeam !== null && createPortal(
         <EdgeNavigator
+          className={styles.edgeNavigation}
           label="Jump to an exchange"
           items={exchanges.map((item, index) => ({ ...item,
             label: `Jump to exchange ${index + 1}${railLabel(item.text) === '' ? '' : `: ${railLabel(item.text)}`}`,

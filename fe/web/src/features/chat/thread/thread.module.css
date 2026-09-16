@@ -1,4 +1,10 @@
 @layer features {
+  .edgeNavigation {
+    --nc-rail-preview-max-inline-size: calc(
+      min(var(--conversation-span, 22rem), 100cqi - var(--space-10) * 2) - var(--space-6)
+    );
+  }
+
   /*
    * ── Two voices, and only one of them is yours ────────────────────────────
    *

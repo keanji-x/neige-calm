@@ -6,6 +6,7 @@ import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { BundledConnectionNotice } from '../auth/bundled-connection.tsx';
+import { ReadReceiptScopeProvider } from './ui-preferences.tsx';
 import styles from './preflight-status.module.css';
 
 /**
@@ -90,7 +91,8 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge,
   if (__NC_BUNDLED__ && query.data && query.data.webCompatVersion < WEB_COMPAT_VERSION) return <BundledConnectionNotice kind="server-update" />;
   if (__NC_BUNDLED__ && query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <BundledConnectionNotice kind="app-update" />;
   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;
-  return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}
+  return <ReadReceiptScopeProvider id={verdict === 'same' ? id! : null}>
+    {verdict === 'same' && renderEventBridge?.(query.data!)}{children}
     {query.data === undefined && (query.isError || query.fetchStatus === 'paused') && (
       <div className={styles.status} role="status">
         <span>{query.fetchStatus === 'paused' ? 'Offline · Live updates paused'
@@ -100,7 +102,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge,
           disabled={query.isFetching} onClick={() => { void query.refetch(); }}>Retry</button>
       </div>
     )}
-  </>;
+  </ReadReceiptScopeProvider>;
 }
 
 export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {

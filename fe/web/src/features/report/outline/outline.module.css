@@ -1,5 +1,7 @@
 @layer features {
   .rail {
+    --nc-rail-preview-max-inline-size: max(1px, calc(var(--document-start) - var(--control-h) - var(--space-2) - var(--space-3)));
+
     position: absolute;
     inset-block: 0;
     inset-inline-start: max(0px, calc(var(--document-start) - var(--control-h) - var(--space-2)));

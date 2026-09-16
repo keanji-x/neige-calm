@@ -16,11 +16,12 @@ function railPreviewText(text: string): string {
 
 /** Dense at rest, with a pointer-centered spread, bounded scrolling and one tab stop.
  * The host owns placement, active-section detection and navigation. */
-export function EdgeNavigator({ items, activeId, onSelect, label }: Readonly<{
+export function EdgeNavigator({ items, activeId, onSelect, label, className }: Readonly<{
   items: readonly NavigationItem[];
   activeId: string | null;
   onSelect: (id: string) => void;
   label: string;
+  className?: string;
 }>) {
   const railRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
@@ -180,6 +181,11 @@ export function EdgeNavigator({ items, activeId, onSelect, label }: Readonly<{
     }
     setPreviewed(null);
   };
+  const showPreview = (id: string) => {
+    if (previewDelay.current !== null) clearTimeout(previewDelay.current);
+    previewDelay.current = null;
+    setPreviewed(id);
+  };
   const previewOnRest = (id: string) => {
     if (previewDelay.current !== null) clearTimeout(previewDelay.current);
     if (previewRef.current !== null) {
@@ -204,11 +210,15 @@ export function EdgeNavigator({ items, activeId, onSelect, label }: Readonly<{
   };
   return (
     <div
-      className={styles.rail}
+      className={`${styles.rail}${className === undefined ? '' : ` ${className}`}`}
       role="group"
       aria-label={label}
       ref={railRef}
-      onPointerLeave={dropPreview}
+      onPointerLeave={() => {
+        const focused = dotRefs.current.findIndex(dot => dot === document.activeElement && dot?.matches(':focus-visible'));
+        if (focused >= 0) showPreview(items[focused].id);
+        else dropPreview();
+      }}
     >
       <div className={styles.railTrack} data-nc-rail-track="" ref={trackRef}>
         {items.map((item, index) => {
@@ -231,7 +241,8 @@ export function EdgeNavigator({ items, activeId, onSelect, label }: Readonly<{
                 if (event.pointerType === 'touch') return;
                 previewOnRest(item.id);
               }}
-              onFocus={() => { setRoved(item.id); }}
+              onFocus={() => { setRoved(item.id); showPreview(item.id); }}
+              onBlur={dropPreview}
               onKeyDown={(event) => {
                 const move = ARROW_MOVES[event.key];
                 if (move === undefined) return;
