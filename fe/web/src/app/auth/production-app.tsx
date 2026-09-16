@@ -107,7 +107,9 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
   createRoot(root).render(<ProductionApp transport={transport} unauthorized={unauthorized} client={client}
     runtime={runtime} cursorStore={events.store} router={router} recovery={recovery}
     renderLogin={() => __NC_BUNDLED__
-      ? <BundledLoginPage login={async (username, password) => {
+      ? <BundledLoginPage message={recovery?.access.read().detail}
+        verifyPairing={recovery?.blocked() ? () => { void recovery.verifyNewSession(); } : undefined}
+        login={async (username, password) => {
         const result = await loginWithTransport(probe, username, password);
         return result === null ? null : await recovery!.verifyNewSession(result.sessionId);
       }} reload={() => { /* verified session mounts directly */ }} />

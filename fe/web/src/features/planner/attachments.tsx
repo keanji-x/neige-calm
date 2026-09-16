@@ -52,7 +52,8 @@ import styles from './attachments.module.css';
  * session probe) and a feature module is neither. The store hands this down;
  * what arrives here is the answer or a throw.
  */
-export type UploadAttachment = (bytes: Uint8Array, contentType: string)
+// The command owner captures its permit before asynchronous local file reading.
+export type UploadAttachment = (readBytes: () => Promise<Uint8Array>, contentType: string)
 => Promise<UploadAttachmentResponse>;
 
 /**
@@ -139,8 +140,7 @@ export function usePlannerAttachments(
     setError(null);
     const startedAt = generation.current;
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const uploaded = await upload(bytes, file.type);
+      const uploaded = await upload(async () => new Uint8Array(await file.arrayBuffer()), file.type);
       /*
        * #1505 S6 review — an upload that lands after the reader moved on
        * belongs to the card it was started for, not to whichever card is open

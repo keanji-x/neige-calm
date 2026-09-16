@@ -23,14 +23,15 @@ import java.util.concurrent.atomic.AtomicReference
 @InvokeArg class SaveConnectionArgs { lateinit var mode: String; lateinit var ipOrigin: String; var tailscaleEnabled: Boolean by kotlin.properties.Delegates.notNull() }
 
 @TauriPlugin
-class BundledFrontendPlugin(private val host: Activity) : Plugin(host) {
+class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
   private var view: WebView? = null
   private var client: BundledWebViewClient? = null
+  private var wryClient: RustWebViewClient? = null
   private val selectedOrigin = AtomicReference<BundledOrigin?>(null)
-  private val network = Executors.newFixedThreadPool(2)
+  private var network = Executors.newFixedThreadPool(2)
   private val profiles by lazy { ConnectionProfiles(host.applicationContext) }
   @Volatile private var generation = 0
-  private val deadlines = Executors.newSingleThreadScheduledExecutor()
+  private var deadlines = Executors.newSingleThreadScheduledExecutor()
   private class Pending(val invoke: Invoke) {
     val cancellation = ConnectionAttempt.Cancellation()
     val settled = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -44,10 +45,34 @@ class BundledFrontendPlugin(private val host: Activity) : Plugin(host) {
   private var candidate: ConnectionRoute? = null
   private var checkedAt = 0L
 
-  override fun load(webView: WebView) { view = webView }
+  companion object {
+    // Tauri keeps plugin instances for the process, but Wry replaces the Activity
+    // and WebView on recreation. This is a native ownership handoff, not a bridge.
+    private var active = java.lang.ref.WeakReference<BundledFrontendPlugin>(null)
+    internal fun attachActivity(activity: MainActivity, webView: WebView) {
+      active.get()?.attach(activity, webView)
+    }
+  }
+  init { active = java.lang.ref.WeakReference(this) }
+  private fun attach(activity: Activity, webView: WebView) {
+    if (host === activity && view === webView) return
+    generation++; cancelPending(); selectedOrigin.set(null)
+    host = activity; view = webView; client = null; wryClient = null; candidate = null; resumeConsumed = false
+    if (network.isShutdown) network = Executors.newFixedThreadPool(2)
+    if (deadlines.isShutdown) deadlines = Executors.newSingleThreadScheduledExecutor()
+  }
+  override fun load(webView: WebView) { attach(host, webView) }
   override fun onPause() { generation++; cancelPending() }
-  override fun onResume() { if (selectedOrigin.get() != null) boundGeneration = generation }
+  override fun onResume() {
+    val active = selectedOrigin.get()
+    val webView = view
+    if (active != null && webView != null) {
+      observe(webView, active, generation)
+      boundGeneration = generation
+    }
+  }
   override fun onDestroy(activity: androidx.appcompat.app.AppCompatActivity) {
+    if (activity !== host) return
     generation++; cancelPending(); selectedOrigin.set(null); view = null
     network.shutdownNow(); deadlines.shutdownNow()
   }
@@ -99,8 +124,10 @@ class BundledFrontendPlugin(private val host: Activity) : Plugin(host) {
   @Command fun connectionSettings(invoke: Invoke) = host.runOnUiThread {
     try {
       launcher()
-      val result = settingsJson(profiles.read())
-      if (!resumeConsumed) resume.read(profiles)?.let { entry ->
+      val read = runCatching { profiles.read() }
+      val result = settingsJson(read.getOrElse { ConnectionSettings("tailscale", "", false) })
+      if (read.isFailure) result.put("configurationError", "已保存的连接配置无效，请重新填写并保存。")
+      if (read.isSuccess && !resumeConsumed) resume.read(profiles)?.let { entry ->
         result.put("resumeEntry", JSObject().also { it.put("origin", entry.origin); it.put("route", entry.route) })
       }
       invoke.resolve(result)
@@ -216,23 +243,36 @@ class BundledFrontendPlugin(private val host: Activity) : Plugin(host) {
     }
   }
 
+  private fun observe(webView: WebView, origin: BundledOrigin, ownerGeneration: Int) {
+    val installed = WebViewCompat.getWebViewClient(webView)
+    val original = if (client == null) {
+      check(installed is RustWebViewClient) { "网页组件初始化尚未完成，请重试" }
+      wryClient = installed
+      installed
+    } else {
+      check(installed === client) { "网页组件已改变，请重新打开 App" }
+      checkNotNull(wryClient)
+    }
+    lateinit var observer: BundledWebViewClient
+    observer = BundledWebViewClient(original, BundledFrontendAssets(host.assets, selectedOrigin)) visited@{ url ->
+      // Sign ownership when installing the observer. Reading the current epoch
+      // inside a retired callback would accidentally authorize that old view.
+      if (view !== webView || client !== observer || ownerGeneration != generation || boundGeneration != ownerGeneration || selectedOrigin.get() != origin) return@visited
+      resume.remember(profiles, origin, url)
+      if (runCatching { URI(url).host == "tauri.localhost" }.getOrDefault(false)) {
+        selectedOrigin.set(null); generation++; cancelPending()
+      }
+    }
+    client = observer
+    webView.webViewClient = observer
+  }
+
   private fun install(route: ConnectionRoute, invoke: Invoke, attempt: Int, job: Pending) {
     val webView = launcher()
     check(BundledWebViewSupport.available(host) && WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) { "请更新 Android System WebView 后重试" }
     val origin = if (route.mode == "ip") ConnectionProfiles.parseDirect(route.origin)
       else BundledOrigin.parse(route.origin) { NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted(it) }
-    val installed = WebViewCompat.getWebViewClient(webView)
-    if (client == null) {
-      check(installed is RustWebViewClient) { "网页组件初始化尚未完成，请重试" }
-      client = BundledWebViewClient(installed, BundledFrontendAssets(host.assets, selectedOrigin)) { url ->
-        val active = selectedOrigin.get()
-        if (active != null && boundGeneration == generation) resume.remember(profiles, active, url)
-        if (runCatching { URI(url).host == "tauri.localhost" }.getOrDefault(false) && active != null) {
-          selectedOrigin.set(null); generation++; cancelPending()
-        }
-      }
-      webView.webViewClient = client!!
-    } else { check(installed === client) { "网页组件已改变，请重新打开 App" } }
+    observe(webView, origin, attempt)
     val executor = java.util.concurrent.Executor { host.runOnUiThread(it) }
     val done = Runnable { finish(job) {
       try {

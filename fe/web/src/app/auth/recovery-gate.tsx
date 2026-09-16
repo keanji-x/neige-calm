@@ -37,9 +37,7 @@ export function RecoveryGate({ children, transport, unauthorized, client, runtim
   const eventsAllowed = privateVisible && ['connected', 'syncing'].includes(state.phase);
   return <QueryClientProvider client={client}><ThemeProvider storage={runtime.storage}>
     {privateVisible ? <div key={session.scopeRevision} className={styles.workspace}>{children}</div>
-      : state.phase === 'login' ? <>{renderLogin()}
-        {session.blocked() && <section aria-label="验证新会话"><p>{state.detail}</p><button type="button" onClick={() => { void session.verifyNewSession(); }}>验证本次配对</button></section>}
-      </> : state.phase === 'update' ? <main><h1>{state.detail}</h1><a href="http://tauri.localhost/">返回连接页</a></main>
+      : state.phase === 'login' ? renderLogin() : state.phase === 'update' ? <main><h1>{state.detail}</h1><a href="http://tauri.localhost/">返回连接页</a></main>
         : <RecoveryPresentation />}
     {eventsAllowed && renderEventBridge?.(session.version!)}
     <RecoveryStatus state={state} retry={session.retry} />

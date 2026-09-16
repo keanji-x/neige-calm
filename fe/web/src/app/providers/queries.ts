@@ -437,8 +437,11 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     /* #1505 S6 — no `refreshAfter`: an upload changes nothing any query holds.
        The attachment becomes part of the card's state only when a message
        names it, and that is the send above, which does refresh. */
-    uploadAttachment: (bytes: Uint8Array, contentType: string) =>
-      runOperation(transport, uploadPlannerAttachmentOperation(cardId, bytes, contentType), unauthorized),
+    uploadAttachment: async (readBytes: () => Promise<Uint8Array>, contentType: string) => {
+      const admitted = admitTransport(transport);
+      const bytes = await readBytes();
+      return runOperation(admitted, uploadPlannerAttachmentOperation(cardId, bytes, contentType), unauthorized);
+    },
     /* No `reset` — see the note where `resetPlannerOperation` used to be in
        `core/domain/conversation.ts`. The endpoint is still served; nothing in
        the browser calls it. */
@@ -1419,11 +1422,20 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
      write is in flight (`isLoading={pendingIds.has(...)}`, and astryx's Switch
      drops the change), so no route through this pane produces two. */
   const [boundary, setBoundary] = useState<ReadonlySet<string>>(() => new Set());
+  const acquirePending = (id: string) => {
+    setPending((current) => new Map(current).set(id, (current.get(id) ?? 0) + 1));
+    return () => setPending((current) => {
+      const next = new Map(current);
+      const left = (current.get(id) ?? 1) - 1;
+      if (left <= 0) next.delete(id); else next.set(id, left);
+      return next;
+    });
+  };
   const write = useRecoveryMutation(transport, {
+    acquireLocal: ({ id }) => acquirePending(id),
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }, transport: ApiTransportPort) =>
       runOperation(transport, setPluginEnabledOperation(id, enabled), unauthorized),
     onMutate: ({ id }) => {
-      setPending((current) => new Map(current).set(id, (current.get(id) ?? 0) + 1));
       setErrors((current) => {
         if (!current.has(id)) return current;
         const next = new Map(current);
@@ -1448,13 +1460,7 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
       setErrors((current) => new Map(current)
         .set(id, error instanceof Error ? error.message : 'Could not change this plugin.'));
     },
-    onSettled: (_data, _error, { id }) => {
-      setPending((current) => {
-        const next = new Map(current);
-        const left = (current.get(id) ?? 1) - 1;
-        if (left <= 0) next.delete(id); else next.set(id, left);
-        return next;
-      });
+    onSettled: () => {
       void client.invalidateQueries({ queryKey: queryKeys.plugins() });
     },
   });
@@ -1469,9 +1475,9 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
    * is about a plugin that is still there.
    */
   const remove = useRecoveryMutation(transport, {
+    acquireLocal: acquirePending,
     mutationFn: (id: string, transport: ApiTransportPort) => runOperation(transport, uninstallPluginOperation(id), unauthorized),
     onMutate: (id) => {
-      setPending((current) => new Map(current).set(id, (current.get(id) ?? 0) + 1));
       setErrors((current) => {
         if (!current.has(id)) return current;
         const next = new Map(current);
@@ -1483,13 +1489,7 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
       setErrors((current) => new Map(current)
         .set(id, error instanceof Error ? error.message : 'Could not remove this plugin.'));
     },
-    onSettled: (_data, _error, id) => {
-      setPending((current) => {
-        const next = new Map(current);
-        const left = (current.get(id) ?? 1) - 1;
-        if (left <= 0) next.delete(id); else next.set(id, left);
-        return next;
-      });
+    onSettled: () => {
       void client.invalidateQueries({ queryKey: queryKeys.plugins() });
     },
   });

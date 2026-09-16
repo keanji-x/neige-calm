@@ -101,8 +101,8 @@ describe('planner attachments', () => {
     await pick(png());
 
     expect(upload).toHaveBeenCalledTimes(1);
-    const [bytes, contentType] = upload.mock.calls[0] ?? [];
-    expect(bytes).toBeInstanceOf(Uint8Array);
+    const [readBytes, contentType] = upload.mock.calls[0] ?? [];
+    expect(await readBytes()).toBeInstanceOf(Uint8Array);
     expect(contentType).toBe('image/png');
 
     /*

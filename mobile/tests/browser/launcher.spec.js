@@ -144,3 +144,18 @@ test('cold resume opens the saved route without a reachability attempt or fallba
   await expect(page).toHaveURL(`${direct}/next/track/last-track?panel=cards`);
   expect(await page.evaluate(() => window.nativeCalls)).not.toContain('plugin:bundled-frontend|attempt_connection');
 });
+
+test('invalid saved configuration exposes an editable setup instead of an automatic connection loop', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.settings = { mode: 'tailscale', ipOrigin: '', tailscaleEnabled: false,
+      configurationError: '已保存的连接配置无效，请重新填写并保存。' };
+  });
+  await page.goto('/');
+  await expect(page.locator('#error')).toContainText('连接配置无效');
+  await expect(page.getByRole('combobox')).toBeEnabled();
+  expect(await page.evaluate(() => window.nativeCalls)).not.toContain('plugin:bundled-frontend|attempt_connection');
+  await page.getByRole('combobox').selectOption('ip');
+  await expect(page.getByLabel('服务器地址')).toBeEnabled();
+  await page.getByLabel('服务器地址').fill(direct);
+  await expect(page.getByRole('button', { name: '保存并连接 IP' })).toBeEnabled();
+});

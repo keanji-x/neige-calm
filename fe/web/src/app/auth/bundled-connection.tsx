@@ -21,9 +21,13 @@ export function BundledConnectionNotice({ kind, children }: Readonly<{ kind: Not
 }
 
 /** Manual login remains available for servers that also expose owner login. */
-export function BundledLoginPage({ login, reload }: LoginPageProps) {
+export function BundledLoginPage({ login, reload, verifyPairing, message }: LoginPageProps & Readonly<{
+  verifyPairing?: () => void; message?: string;
+}>) {
   const [manual, setManual] = useState(false);
   return manual ? <LoginPage login={login} reload={reload} onBackToPairing={() => { setManual(false); }} /> : <BundledConnectionNotice kind="pairing">
+    {message && <p role="alert">{message}</p>}
+    {verifyPairing && <button type="button" onClick={verifyPairing}>验证本次配对</button>}
     <button type="button" onClick={() => { setManual(true); }}>使用账号登录</button>
   </BundledConnectionNotice>;
 }

@@ -8,7 +8,7 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { IDB_DB_NAME, SYNC_CURSOR_KEY } from '../../../../core/keys/storage.ts';
 import { createBrowserCursorStore } from '../events/browser-cursor-store.ts';
 import { SessionGate } from './session-gate.tsx';
-import type { ProviderRuntime } from '../providers/public.tsx';
+import { WEB_COMPAT_VERSION, type ProviderRuntime } from '../providers/public.tsx';
 import { ProductionApp } from './production-app.tsx';
 import { createAppRouter } from '../router/public.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
@@ -50,12 +50,13 @@ describe('session gate contracts', () => {
     const paths: string[] = [];
     const transport: ApiTransportPort = { send: request => { paths.push(request.path); return Promise.resolve({ status: 200, statusText: 'OK', body: identity }); } };
     const client = new QueryClient(); const unauthorized = createUnauthorizedChannel({ enqueue: task => task() });
-    const runtime: ProviderRuntime = { fetchVersion: vi.fn(() => Promise.resolve({ webCompatVersion: 28, minWebCompatVersion: 28, syncEventVersion: 3, dbInstanceId: 'db' })),
+    const fetchVersion = vi.fn(() => Promise.resolve({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 3, dbInstanceId: 'db' }));
+    const runtime: ProviderRuntime = { fetchVersion,
       reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: IDB_DB_NAME, storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } };
     const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
     render(<ProductionApp transport={transport} client={client} unauthorized={unauthorized} runtime={runtime}
       cursorStore={{ clear: vi.fn() }} router={router} renderLogin={() => <b>login</b>} renderError={() => <b>retry</b>} />);
-    await waitFor(() => expect(runtime.fetchVersion).toHaveBeenCalledOnce());
+    await waitFor(() => expect(fetchVersion).toHaveBeenCalledOnce());
     expect(paths).toEqual(['/api/auth/whoami']); expect(screen.getByRole('heading', { name: 'Track' })).toBeTruthy();
   });
 

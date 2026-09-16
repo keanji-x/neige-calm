@@ -34,6 +34,10 @@ class MainActivity : TauriActivity() {
   // Wry registers its callback later, so its built-in handler must stay disabled.
   override val handleBackNavigation: Boolean = false
 
+  override fun onWebViewCreate(webView: WebView) {
+    super.onWebViewCreate(webView)
+    BundledFrontendPlugin.attachActivity(this, webView)
+  }
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
