@@ -888,6 +888,39 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     assert_observation_times(state, before_exit, true);
     assert_eq!(state["exited_at_ms"], exited["exited_at_ms"], "{state}");
     assert_eq!(registry_owner(&h, &terminal), None);
+    // #1709 r1 — a connection attached after the exit (detach, then observe
+    // more than 2 s after the first post-exit observation) receives only
+    // the replayed `TerminalExited`, and still reports the renderer's exit
+    // instant, never its own attach instant.
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    let detached = h
+        .call(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"detach"}),
+        )
+        .await;
+    assert_eq!(receipt(&detached)["had_client"], true, "{detached}");
+    let start = std::time::Instant::now();
+    let fresh = loop {
+        let view = h
+            .ok("calm.terminal.observe", json!({"terminal_id":terminal}))
+            .await;
+        assert_ne!(view["connection_id"], exited["connection_id"], "{view}");
+        if view["exited"] == true {
+            break view;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the replayed exit never reached the fresh connection: {view}"
+        );
+    };
+    assert_eq!(fresh["exit_code"], 3, "{fresh}");
+    let fresh_observed = assert_observation_times(&fresh, before_exit, true);
+    assert_eq!(fresh["exited_at_ms"], exited["exited_at_ms"], "{fresh}");
+    assert!(
+        fresh["exited_at_ms"].as_i64().unwrap() < fresh_observed - 2000,
+        "the exit instant must predate the fresh attach by the sleep: {fresh}"
+    );
     // The claim arm on an exited terminal: the binding check refuses it.
     let claim = h
         .call(

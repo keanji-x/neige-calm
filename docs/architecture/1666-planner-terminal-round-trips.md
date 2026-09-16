@@ -184,7 +184,11 @@ readback still runs. A `claim` on an exited terminal is the binding refusal
 from the `TerminalExited` frame (null until the exit or when unknown).
 #1709: and two wall-clock facts, ms since the epoch — `observed_at_ms` (the
 capture instant, taken before the frame is read) and `exited_at_ms` (when
-this connection recorded `TerminalExited`; null while the program runs).
+the renderer recorded the exit: `TerminalExitInfo::exited_at`, written once
+in `attach_reader.rs` before the exit is broadcast and shared by every
+connection — one attached later only sees the replayed `TerminalExited`
+and still reports that instant, never its own attach time; null while the
+program runs, read only once this connection's mirror says exited).
 
 #### An exited terminal survives the orphan sweeper (#1701)
 

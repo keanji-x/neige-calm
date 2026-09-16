@@ -301,18 +301,29 @@ impl TerminalInteraction {
         // started on, otherwise the observation is refused.
         let resolved =
             Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
-        let (control, exited, exit_code, exited_at) = {
+        let (control, exited, exit_code) = {
             let state = client
                 .screen
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
             ensure!(state.available, "terminal observation disconnected");
-            (
-                state.control,
-                state.exited,
-                state.exit_code,
-                state.exited_at,
-            )
+            (state.control, state.exited, state.exit_code)
+        };
+        // #1709 — the exit instant is the renderer's once-only record
+        // (`RendererEntry::exit`, written before the exit is broadcast), the
+        // same for every connection, including one attached after the exit
+        // that only saw the replayed `TerminalExited`; read only once this
+        // connection's mirror says exited, so `exited`, `exit_code` and
+        // `exited_at_ms` are one consistent triple.
+        let exited_at = match exited {
+            true => client
+                .entry
+                .exit
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal exit state poisoned"))?
+                .as_ref()
+                .map(|info| info.exited_at),
+            false => None,
         };
         // #1709 — the capture instant, taken before the frame is read (and
         // before rendering): the wall-clock time `observation_revision`

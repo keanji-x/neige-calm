@@ -1064,6 +1064,21 @@ async fn scroll_to_text_positions_the_matching_history_row_first() {
         error_text(&refused).contains("return to live viewport before input"),
         "{refused}"
     );
+    // The positive half: a `not_found` search returned the live viewport
+    // (scroll_offset 0), so that observation IS an input baseline — named
+    // explicitly, and as the connection's latest.
+    let not_found = h
+        .ok(
+            "calm.terminal.observe",
+            json!({"terminal_id":terminal,"scroll_to_text":"no such marker"}),
+        )
+        .await;
+    assert_eq!(not_found["scroll_to"]["status"], "not_found", "{not_found}");
+    assert_eq!(not_found["scroll_offset"], 0, "{not_found}");
+    let written = h.call("calm.terminal.input", json!({"terminal_id":terminal,"observation_id":not_found["observation_id"],"request_id":"after-not-found","action":{"type":"key","key":"Escape"}})).await;
+    assert_eq!(receipt(&written)["outcome"], "written", "{written}");
+    let written = h.call("calm.terminal.input", json!({"terminal_id":terminal,"request_id":"after-not-found-implicit","action":{"type":"key","key":"Escape"},"allow_output_since_observation":true})).await;
+    assert_eq!(receipt(&written)["outcome"], "written", "{written}");
 
     // Invalid params through the transport, before any service call.
     for (name, args, expected) in [

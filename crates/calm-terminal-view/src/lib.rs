@@ -4,7 +4,7 @@
 use anyhow::{Result, ensure};
 use rmux_core::{COLOUR_DEFAULT, ScreenLineView, TerminalScreen, input::mode};
 use rmux_proto::TerminalSize;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 mod raster;
 pub use raster::Rasterizer;
@@ -69,8 +69,10 @@ pub struct InputSurface {
     pub alternate: bool,
     pub scroll_offset: usize,
 }
-/// Which matching row `TerminalView::find_text` returns (#1710).
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+/// Which matching row `TerminalView::find_text` returns (#1710). Serialised
+/// as `latest` / `earliest` (the wire vocabulary); the MCP layer maps the
+/// argument string itself.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Occurrence {
     /// The bottom-most matching row (the most recent output).
