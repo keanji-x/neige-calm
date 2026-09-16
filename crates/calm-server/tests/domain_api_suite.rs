@@ -62,6 +62,8 @@ mod today_launchpad;
 
 #[path = "cases/today_summary.rs"]
 mod today_summary;
+#[path = "cases/track_claude_permissions_policy.rs"]
+mod track_claude_permissions_policy;
 #[path = "cases/track_conversations.rs"]
 mod track_conversations;
 #[path = "cases/track_delete_thread_cache.rs"]

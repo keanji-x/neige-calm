@@ -252,10 +252,19 @@ async fn open_writes_hook_settings_injects_env_and_replays_idempotently() {
         vec!["hooks"]
     );
     assert!(opened.get("claude_permissions").is_none(), "{opened}");
+    assert!(
+        opened.get("claude_permissions_source").is_none(),
+        "{opened}"
+    );
     let card = h.state.repo.card_get(&card_id).await.unwrap().unwrap();
     assert!(
         card.payload.get("claude_permissions").is_none(),
         "{}",
+        card.payload
+    );
+    assert!(
+        card.payload.get("claude_permissions_source").is_none(),
+        "no scope, no policy: no source key either (#1704 S2): {}",
         card.payload
     );
     let operation = h
@@ -1358,9 +1367,14 @@ async fn open_with_scope_writes_permissions_stamps_the_card_and_echoes_the_block
     assert_eq!(card.payload["schemaVersion"], 1);
     assert_eq!(opened["claude_permissions"], expected, "{opened}");
     let summary = response["result"]["content"][0]["text"].as_str().unwrap();
+    // #1704 S2 — no Track policy: the block's source is `declared`, on the
+    // card, in the result and in the summary line.
+    assert_eq!(card.payload["claude_permissions_source"], "declared");
+    assert_eq!(opened["claude_permissions_source"], "declared", "{opened}");
     assert!(
         summary.ends_with(
-            " wait elapsed permissions allow 8 ask 8 deny 1; full state in structuredContent"
+            " wait elapsed permissions allow 8 ask 8 deny 1 source declared; \
+             full state in structuredContent"
         ),
         "{summary}"
     );

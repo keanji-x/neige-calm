@@ -258,10 +258,15 @@ impl Harness {
         .unwrap()
     }
     pub async fn call(&self, name: &str, args: Value) -> Value {
+        self.call_with_token(&self.token, name, args).await
+    }
+    /// `call` as another Planner (#1704 S2 — a child track's Planner card
+    /// minted by `planner_token`).
+    pub async fn call_with_token(&self, token: &str, name: &str, args: Value) -> Value {
         let stream = UnixStream::connect(&self.socket).await.unwrap();
         let (read, mut write) = stream.into_split();
         let mut read = BufReader::new(read);
-        let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"terminal-test","version":"1"},"_meta":{"dev.neige/auth":{"token":self.token}}}});
+        let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"terminal-test","version":"1"},"_meta":{"dev.neige/auth":{"token":token}}}});
         write
             .write_all(format!("{init}\n").as_bytes())
             .await
@@ -281,6 +286,34 @@ impl Harness {
             .unwrap()
             .unwrap();
         serde_json::from_str(&line).unwrap()
+    }
+    /// #1704 S2 — mint a Planner card (and its MCP token) on `track_id`,
+    /// the way `start` does for the harness track.
+    pub async fn planner_token(&self, track_id: &str, cwd: &str) -> (String, String) {
+        let mut tx = self.sql.pool().begin().await.unwrap();
+        let (card_id, session_id) = (new_id(), new_id());
+        let (_, _, token) = card_with_codex_create_tx(
+            &mut tx,
+            card_id.clone(),
+            &session_id,
+            None,
+            track_id.to_string().into(),
+            None,
+            None,
+            cwd.to_string(),
+            json!({}),
+            None,
+            None,
+            None,
+            CardRole::Planner,
+            false,
+            &self.state.card_role_cache,
+            calm_server::routes::theme::RequestTheme::default_dark(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        (token.expect("planner MCP token"), session_id)
     }
     pub async fn ok(&self, name: &str, args: Value) -> Value {
         let response = self.call(name, args).await;
