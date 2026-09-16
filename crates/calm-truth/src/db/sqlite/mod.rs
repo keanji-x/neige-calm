@@ -66,6 +66,11 @@ mod session_mirror;
 mod session_projection;
 mod session_repo_impl;
 mod session_row;
+mod session_system_error_recovery;
+pub use session_system_error_recovery::{
+    session_resume_system_error_tx, session_set_failed_harness_snapshot_tx,
+    session_system_error_recovery_matches, session_system_error_recovery_matches_tx,
+};
 mod task;
 mod task_attempt;
 #[cfg(test)]
@@ -84,8 +89,9 @@ pub use area::{
     area_delete_tx, area_folder_create_tx, area_folders_list_all_tx, area_update_tx,
 };
 pub use card::{
-    card_body_crdt_get_tx, card_create_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
-    card_update_with_crdt_tx, terminal_create_tx, terminal_delete_tx, terminal_get_by_card_tx,
+    CardExecutionShape, card_body_crdt_get_tx, card_create_tx, card_create_with_id_tx,
+    card_delete_tx, card_execution_shape_tx, card_update_tx, card_update_with_crdt_tx,
+    terminal_create_tx, terminal_delete_tx, terminal_get_by_card_tx,
 };
 pub use card_composite::{
     card_mcp_token_set_tx, card_stamp_claude_permissions_tx, card_with_claude_create_tx,

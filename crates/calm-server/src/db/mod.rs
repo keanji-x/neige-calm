@@ -739,6 +739,15 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
         params: &str,
         input_segments: Option<&str>,
     ) -> Result<i64>;
+    async fn harness_turn_outcome_put(
+        &self,
+        worker_session_id: &str,
+        card_id: &str,
+        track_id: &str,
+        thread_id: &str,
+        turn_id: &str,
+        params: &str,
+    ) -> Result<i64>;
     /// #1625 P2 — see `calm_truth::db::RepoOutOfDomain` for the projection
     /// key these three share.
     async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
@@ -880,6 +889,27 @@ where
             method,
             params,
             input_segments,
+        )
+        .await
+        .map_err(Into::into)
+    }
+    async fn harness_turn_outcome_put(
+        &self,
+        worker_session_id: &str,
+        card_id: &str,
+        track_id: &str,
+        thread_id: &str,
+        turn_id: &str,
+        params: &str,
+    ) -> Result<i64> {
+        calm_truth::db::RepoOutOfDomain::harness_turn_outcome_put(
+            self,
+            worker_session_id,
+            card_id,
+            track_id,
+            thread_id,
+            turn_id,
+            params,
         )
         .await
         .map_err(Into::into)

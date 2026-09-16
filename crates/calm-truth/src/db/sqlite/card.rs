@@ -746,3 +746,29 @@ pub async fn terminal_create_tx(
         created_at: now,
     })
 }
+
+/// Persisted card identity used when deciding runtime capabilities in a write
+/// transaction. Policy stays with the caller; this read owns only table shape.
+pub struct CardExecutionShape {
+    pub kind: String,
+    pub role: CardRole,
+    pub payload: serde_json::Value,
+}
+
+pub async fn card_execution_shape_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+) -> Result<CardExecutionShape> {
+    let row: Option<(String, String, String)> =
+        sqlx::query_as("SELECT kind,role,payload FROM cards WHERE id=?1")
+            .bind(card_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let (kind, role, payload) =
+        row.ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    Ok(CardExecutionShape {
+        kind,
+        role: CardRole::try_from(role).map_err(CalmError::Internal)?,
+        payload: serde_json::from_str(&payload)?,
+    })
+}

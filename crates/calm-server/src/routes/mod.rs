@@ -128,3 +128,5 @@ pub fn public_router() -> Router<AppState> {
 async fn openapi_spec() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
+
+mod planner_recovery;

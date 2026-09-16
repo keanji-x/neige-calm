@@ -2,6 +2,7 @@ pub(crate) mod catch_up;
 pub mod config;
 pub mod lock;
 pub mod observation;
+pub mod profile;
 pub mod queue;
 mod recovery_briefing;
 pub mod registry;
@@ -10,6 +11,7 @@ pub mod run_loop;
 pub mod snapshot;
 pub mod state;
 pub mod token_usage;
+pub(crate) mod turn_outcome;
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;

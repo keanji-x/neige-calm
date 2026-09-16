@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
+use calm_types::harness::HARNESS_SYSTEM_ERROR_REASON;
 use serde_json::Value;
 #[cfg(feature = "fixtures")]
 use std::collections::HashMap;
@@ -138,6 +139,47 @@ async fn wait_at_planner_harness_drain_race_hook(worker_session_id: &str) {
     }
     #[cfg(not(feature = "fixtures"))]
     let _ = worker_session_id;
+}
+
+/// Pause one ordinary delivery after its replay watermark advances, before its
+/// queue entry exists. Recovery must let the run loop finish both changes.
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct PlannerHarnessObservationRaceHook {
+    pub entered: Arc<Notify>,
+    pub release: Arc<Notify>,
+}
+
+#[cfg(feature = "fixtures")]
+fn planner_harness_observation_race_hooks()
+-> &'static StdMutex<HashMap<String, PlannerHarnessObservationRaceHook>> {
+    static HOOKS: OnceLock<StdMutex<HashMap<String, PlannerHarnessObservationRaceHook>>> =
+        OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_planner_harness_observation_race_hook_for_test(
+    worker_session_id: &str,
+    hook: PlannerHarnessObservationRaceHook,
+) {
+    planner_harness_observation_race_hooks()
+        .lock()
+        .expect("planner harness observation hook mutex")
+        .insert(worker_session_id.to_owned(), hook);
+}
+
+#[cfg(feature = "fixtures")]
+async fn wait_at_planner_harness_observation_race_hook(worker_session_id: &str) {
+    let hook = planner_harness_observation_race_hooks()
+        .lock()
+        .expect("planner harness observation hook mutex")
+        .remove(worker_session_id);
+    if let Some(hook) = hook {
+        hook.entered.notify_one();
+        hook.release.notified().await;
+    }
 }
 
 const OBSERVATION_BUFFER: usize = 256;
@@ -396,6 +438,11 @@ pub struct HarnessObservationDelivery {
 }
 
 enum HarnessObservationCommand {
+    /// Recovery must snapshot on the loop that owns both queue and watermark,
+    /// after earlier deliveries/notifications settle and before stopping it.
+    QuiesceSystemError {
+        done: oneshot::Sender<Result<()>>,
+    },
     Delivery(HarnessObservationDelivery),
     Durable {
         deliveries: Vec<HarnessObservationDelivery>,
@@ -827,6 +874,30 @@ impl PlannerHarness {
 
     pub async fn interrupt(&self, reason: String) -> Result<()> {
         issue_interrupt(&self.inner, reason).await
+    }
+
+    /// Stop only this failed loop, without interrupting or sealing its provider
+    /// thread. Recovery probes that exact thread before granting authority again.
+    pub(crate) async fn quiesce_system_error_for_recovery(&self) -> Result<()> {
+        let _durable = self.inner.durable_observation.lock().await;
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        match &self.inner.observations {
+            ObservationIngress::Running(sender) => {
+                let (done, answer) = oneshot::channel();
+                sender
+                    .try_send(HarnessObservationCommand::QuiesceSystemError { done })
+                    .map_err(map_observation_send_error)?;
+                answer.await.map_err(|_| {
+                    CalmError::Conflict(
+                        "conversation stopped before recovery quiescence completed".into(),
+                    )
+                })?
+            }
+            #[cfg(feature = "fixtures")]
+            ObservationIngress::Unstarted(_) => quiesce_system_error(&self.inner).await,
+        }
     }
 
     pub async fn shutdown(&self) -> Result<()> {
@@ -1374,6 +1445,12 @@ async fn run_loop(
             command = observations.recv() => {
                 let Some(command) = command else { break };
                 match command {
+                    HarnessObservationCommand::QuiesceSystemError {done} => {
+                        let result=quiesce_system_error(&inner).await;
+                        let stop=result.is_ok();
+                        let _=done.send(result);
+                        if stop { break; }
+                    }
                     HarnessObservationCommand::Delivery(delivery) => {
                         let _accepted = on_observation(&inner, delivery.entry).await;
                         if let Err(e) = persist_snapshot(&inner).await {
@@ -1450,6 +1527,27 @@ async fn run_loop(
             }
         }
     }
+}
+
+/// Called only by the run loop (or the unstarted fixture). Ordinary delivery,
+/// queue mutation, notification processing and ticks cannot interleave here.
+async fn quiesce_system_error(inner: &Arc<Inner>) -> Result<()> {
+    if !matches!(&*inner.state.lock().await, HarnessState::Wedged {reason,..} if reason==HARNESS_SYSTEM_ERROR_REASON)
+    {
+        return Err(CalmError::Conflict(
+            "conversation changed before recovery".into(),
+        ));
+    }
+    if !inner.steered_into_running_turn.lock().await.is_empty() {
+        return Err(CalmError::ServiceUnavailable(
+            "Waiting for the failed turn to settle its messages before recovery; retry shortly."
+                .into(),
+        ));
+    }
+    persist_failed_system_error_snapshot(inner).await?;
+    *inner.observations_closed.lock().expect("observation gate") = true;
+    inner.shutting_down.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 /// #1505 PR2 — the whole of what `HarnessObservationCommand::Mutate` is allowed
@@ -1828,10 +1926,13 @@ async fn handle_steer(
 /// occur (a steer names the running turn, and the arm accepts completions
 /// for the running turn only); they are swept all the same rather than left
 /// to wait for a completion that will never come, and the mismatch is logged.
-async fn restore_steered_entries_codex_dropped(inner: &Arc<Inner>, turn_id: &str) {
+async fn restore_steered_entries_codex_dropped(
+    inner: &Arc<Inner>,
+    turn_id: &str,
+) -> Vec<QueueEntryId> {
     let steered = std::mem::take(&mut *inner.steered_into_running_turn.lock().await);
     if steered.is_empty() {
-        return;
+        return Vec::new();
     }
     let mut restored = Vec::new();
     for steered in steered {
@@ -1902,7 +2003,7 @@ async fn restore_steered_entries_codex_dropped(inner: &Arc<Inner>, turn_id: &str
         restored.push(steered.entry);
     }
     if restored.is_empty() {
-        return;
+        return Vec::new();
     }
     let ids = restored
         .iter()
@@ -1919,6 +2020,10 @@ async fn restore_steered_entries_codex_dropped(inner: &Arc<Inner>, turn_id: &str
         entry.bump_rev_for_restore();
     }
     rebuffer_head(inner, restored).await;
+    ids
+}
+
+async fn announce_restored_entries(inner: &Arc<Inner>, ids: Vec<QueueEntryId>) {
     for entry_id in ids {
         if let Err(error) = emit_queue_changed(
             inner,
@@ -1977,6 +2082,8 @@ async fn on_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome
         let mut watermark = inner.push_watermark.lock().await;
         *watermark = (*watermark).max(envelope_id);
     }
+    #[cfg(feature = "fixtures")]
+    wait_at_planner_harness_observation_race_hook(&inner.worker_session_id).await;
     if suppress_duplicate_hook_stop(inner, &entry).await {
         return EnqueueOutcome::Rejected;
     }
@@ -2222,9 +2329,10 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             if status.get("type").and_then(Value::as_str) == Some("systemError") {
                 *inner.state.lock().await = HarnessState::Wedged {
                     since: Instant::now(),
-                    reason: "system_error".into(),
+                    reason: HARNESS_SYSTEM_ERROR_REASON.into(),
                 };
                 *inner.issued_turn_id.lock().await = None;
+                *inner.interrupt_deadline.lock().await = None;
             } else if status.get("type").and_then(Value::as_str) == Some("idle") {
                 let mut state = inner.state.lock().await;
                 if matches!(*state, HarnessState::Resumed { .. }) {
@@ -2309,14 +2417,41 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     last_turn_id: target_turn_id,
                 };
                 *inner.interrupt_deadline.lock().await = None;
-                persist_turn_outcome(inner, &turn_id, &turn).await;
+                let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
                 // The Stop path is the one that drops steered input (see
                 // `SteeredEntry`); the sweep runs before the phase persist so
                 // the phase event carries the restored queue.
-                restore_steered_entries_codex_dropped(inner, &turn_id).await;
-                return persist_snapshot_stamping_issued_head(inner).await;
+                let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
+                persist_snapshot_stamping_issued_head(inner).await?;
+                announce_restored_entries(inner, restored).await;
+                return Ok(());
             }
             let state = inner.state.lock().await.clone();
+            // Codex sends systemError BEFORE the failed turn/completed. Keep
+            // the exact outcome even though the harness is now blocked. Only
+            // the explicit ID of our last turn qualifies; stale completions
+            // and missing IDs cannot settle another turn or unpause issuance.
+            if matches!(&state, HarnessState::Wedged { reason, .. } if reason == HARNESS_SYSTEM_ERROR_REASON)
+                && turn.get("id").and_then(Value::as_str) == fallback_turn_id.as_deref()
+                && fallback_turn_id.is_some()
+            {
+                let item = persist_turn_outcome(inner, &turn_id, &turn).await;
+                let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
+                persist_failed_system_error_snapshot(inner).await?;
+                announce_restored_entries(inner, restored).await;
+                if let Some(item_id) = item {
+                    emit_item_added(
+                        inner,
+                        item_id,
+                        None,
+                        None,
+                        Some(turn_id),
+                        "turn/completed".into(),
+                    )
+                    .await?;
+                }
+                return Ok(());
+            }
             let active = state.active_turn_id();
             if !matches!(state, HarnessState::TurnRunning { .. })
                 || active.as_deref() != Some(turn_id.as_str())
@@ -2334,12 +2469,14 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 last_turn_id: turn_id.clone(),
             };
             *inner.interrupt_deadline.lock().await = None;
-            persist_turn_outcome(inner, &turn_id, &turn).await;
+            let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
             // A turn can end without a model request after the steer on
             // this branch too (a model error, `max_turn_duration` when the
             // interrupt was issued elsewhere); same sweep, same order.
-            restore_steered_entries_codex_dropped(inner, &turn_id).await;
-            return persist_snapshot_stamping_issued_head(inner).await;
+            let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
+            persist_snapshot_stamping_issued_head(inner).await?;
+            announce_restored_entries(inner, restored).await;
+            return Ok(());
         }
         // #1625 P1: the turn-outcome row is written only from `TurnCompleted`
         // above — codex 0.153.4 has no `turn/aborted` notification; an
@@ -2379,8 +2516,10 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 last_turn_id: target_turn_id,
             };
             *inner.interrupt_deadline.lock().await = None;
-            restore_steered_entries_codex_dropped(inner, &aborted_turn_id).await;
-            return persist_snapshot_stamping_issued_head(inner).await;
+            let restored = restore_steered_entries_codex_dropped(inner, &aborted_turn_id).await;
+            persist_snapshot_stamping_issued_head(inner).await?;
+            announce_restored_entries(inner, restored).await;
+            return Ok(());
         }
         Notification::Item { method, params } if should_persist_item_method(&method) => {
             let Some(item) = params.get("item") else {
@@ -4848,7 +4987,7 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
 /// FSM has already moved to `TurnCompleted` and the snapshot commit that
 /// follows is what unblocks the next turn; a missing outcome line must not
 /// stall the harness.
-async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) {
+async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -> Option<i64> {
     // Same guard as the `turn/plan/updated` arm: the transcript table's
     // `thread_id` column is NOT NULL, and `Notification::TurnCompleted.thread_id` is
     // `unwrap_or_default()` upstream, so the harness's own thread is the only
@@ -4860,44 +4999,53 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) {
             turn_id,
             "planner harness skipping turn/completed row: no thread is known yet"
         );
-        return;
+        return None;
     };
-    let mut outcome = turn.clone();
-    if let Some(object) = outcome.as_object_mut() {
-        object.remove("items");
-        object.remove("itemsView");
-    }
-    let params_json = match serde_json::to_string(&outcome) {
-        Ok(json) => json,
-        Err(error) => {
-            tracing::warn!(error = %error, turn_id, "planner harness could not serialize turn outcome");
-            return;
-        }
-    };
-    if let Err(error) = inner
-        .repo
-        .harness_item_insert(
-            &inner.worker_session_id,
-            inner.card_id.as_str(),
-            inner.track_id.as_str(),
-            &thread_id,
-            Some(turn_id),
-            // A turn is not an item: no `item_uuid`, no `item_type`.
-            None,
-            None,
-            "turn/completed",
-            &params_json,
-            None,
-        )
-        .await
+    match crate::harness::turn_outcome::record(
+        inner.repo.as_ref(),
+        &inner.worker_session_id,
+        inner.card_id.as_str(),
+        inner.track_id.as_str(),
+        &thread_id,
+        turn_id,
+        turn,
+    )
+    .await
     {
-        tracing::warn!(
-            worker_session_id = %inner.worker_session_id,
-            card_id = %inner.card_id,
-            turn_id,
-            error = %error,
-            "planner harness could not persist turn outcome row"
-        );
+        Ok(id) => Some(id),
+        Err(error) => {
+            tracing::warn!(
+                worker_session_id = %inner.worker_session_id,
+                card_id = %inner.card_id,
+                turn_id,
+                error = %error,
+                "planner harness could not persist turn outcome row"
+            );
+            None
+        }
+    }
+}
+
+async fn persist_failed_system_error_snapshot(inner: &Arc<Inner>) -> Result<()> {
+    let snapshot = serde_json::to_value(snapshot_for(inner).await)?;
+    let card = inner.card_id.to_string();
+    let id = inner.worker_session_id.clone();
+    let written =
+        write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                Ok(crate::db::sqlite::session_set_failed_harness_snapshot_tx(
+                    tx, &card, &id, &snapshot,
+                )
+                .await?)
+            })
+        })
+        .await?;
+    if written {
+        Ok(())
+    } else {
+        Err(CalmError::Conflict(
+            "failed conversation changed while settling its input".into(),
+        ))
     }
 }
 

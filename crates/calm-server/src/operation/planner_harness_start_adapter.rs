@@ -226,21 +226,9 @@ pub(crate) struct BoundTemplate {
     pub(crate) input: Option<serde_json::Value>,
 }
 
-/// The serialized names below are FROZEN, and deliberately out of step with the
-/// Rust variant names — see [`PlannerHarnessStartOperationPayload`] for why.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HarnessProfile {
-    #[default]
-    #[serde(rename = "spec")]
-    Planner,
-    PlainChat,
-    /// #1189 — a track-scoped assistant conversation. Minted lazily like a
-    /// plain chat, but it is an MCP-authenticated `CardRole::Assistant` card on
-    /// an ordinary track: it reads and writes that track's report through the
-    /// block channel and has no lifecycle / plan / review / admin authority.
-    Assistant,
-}
+// Preserve the public operation-payload vocabulary while the capability policy
+// has one owner shared with runtime recovery.
+pub use crate::harness::profile::HarnessProfile;
 
 /// Whether a conversation create prepends #1343's activity briefing.
 ///
@@ -473,7 +461,9 @@ fn session_kind_for(profile: HarnessProfile) -> WorkerSessionKind {
 /// a future caller that skips `validate` cannot mint a planner card either.
 fn minted_card_shape(profile: HarnessProfile) -> Result<(CardRole, &'static str)> {
     match profile {
-        HarnessProfile::PlainChat => Ok((CardRole::Worker, "plain_chat")),
+        HarnessProfile::PlainChat => {
+            Ok((CardRole::Worker, crate::harness::profile::PLAIN_CHAT_MARKER))
+        }
         HarnessProfile::Assistant => Ok((CardRole::Assistant, ASSISTANT_HARNESS_PROFILE_MARKER)),
         HarnessProfile::Planner => Err(CalmError::BadRequest(
             "the planner profile does not mint its own card".into(),
@@ -484,7 +474,7 @@ fn minted_card_shape(profile: HarnessProfile) -> Result<(CardRole, &'static str)
 /// The persisted `payload.harness_profile` value of a track assistant card.
 /// Read by `plain_chat::card_is_track_assistant` and by the track conversation
 /// list predicate; those three places are the whole contract.
-pub(crate) const ASSISTANT_HARNESS_PROFILE_MARKER: &str = "assistant";
+pub(crate) const ASSISTANT_HARNESS_PROFILE_MARKER: &str = crate::harness::profile::ASSISTANT_MARKER;
 
 pub(crate) fn render_planner_developer_instructions(
     track_id: &str,
@@ -1465,13 +1455,13 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 // persisted role. So the §3.1 whitelist rides on
                 // `minted_card_shape`'s role, and a third `ThreadConfig`
                 // variant would carry nothing the kernel actually reads.
-                config: match profile {
-                    HarnessProfile::Planner | HarnessProfile::Assistant => ThreadConfig::McpShell {
-                        role: card_role,
+                config: match profile.mcp_role() {
+                    Some(role) => ThreadConfig::McpShell {
+                        role,
                         socket_path: PathBuf::from(&socket_path),
                         raw_token: raw,
                     },
-                    HarnessProfile::PlainChat => ThreadConfig::NoMcp,
+                    None => ThreadConfig::NoMcp,
                 },
             };
             if runtime_deferred {

@@ -388,6 +388,14 @@ async fn serve_conn(
                 )
                 .await?;
             }
+            "thread/read" => {
+                send_result(
+                    &mut write,
+                    &id,
+                    ReadFixtures::result_or(&reads.sock.with_extension("thread-read"), json!({})),
+                )
+                .await?;
+            }
             "thread/start" | "thread/resume" => {
                 if method == "thread/resume" {
                     let requested = req
@@ -395,6 +403,16 @@ async fn serve_conn(
                         .and_then(Value::as_str)
                         .unwrap_or_default();
                     reads.park_first_resume(requested).await;
+                    let scripted = reads.sock.with_extension("thread-resume");
+                    if scripted.exists() {
+                        send_result(
+                            &mut write,
+                            &id,
+                            ReadFixtures::result_or(&scripted, json!({})),
+                        )
+                        .await?;
+                        continue;
+                    }
                 }
                 send_result(
                     &mut write,

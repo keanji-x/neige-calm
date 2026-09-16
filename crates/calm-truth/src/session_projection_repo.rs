@@ -100,6 +100,13 @@ pub trait WorkerSessionProjectionRepo {
         card_id: &CardId,
     ) -> Result<Option<WorkerSessionProjection>>;
 
+    /// Same persisted eligibility as the explicit failed-conversation restore.
+    async fn session_projection_system_error_recovery_matches(
+        &self,
+        runtime: &WorkerSessionProjection,
+        thread_id: &str,
+    ) -> Result<bool>;
+
     async fn session_projection_projectable_for_cards(
         &self,
         card_ids: &[CardId],

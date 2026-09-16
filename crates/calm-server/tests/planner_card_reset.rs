@@ -379,6 +379,24 @@ async fn post_empty(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, body)
 }
 
+/// Exercise the same transcript read the conversation UI uses.
+async fn conversation_rows(boot: &Boot, card: &Card) -> Vec<Value> {
+    let response = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/cards/{}/harness/items", card.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
 async fn post_json(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
     let resp = app
         .oneshot(
@@ -2933,3 +2951,6 @@ async fn planner_reset_seeds_no_track_goal() {
     assert_no_seeded_goal(&payloads, "planner reset");
     assert_harness_queue_empty(&boot, planner_card.id.as_str(), "planner reset").await;
 }
+
+#[path = "cases/planner_preserving_recovery.rs"]
+mod planner_preserving_recovery;
