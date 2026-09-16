@@ -19,6 +19,7 @@ export function createBrowserEventComposition(options: Readonly<{
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
   transport: ApiTransportPort;
   unauthorizedChannel?: Pick<UnauthorizedChannel, 'notify'>;
+  probeUnauthorized?: UnauthorizedProbe;
 }>): EventComposition {
   const unauthorized = options.unauthorizedChannel ?? createUnauthorizedChannel(
     { enqueue: (task) => queueMicrotask(task) },
@@ -28,6 +29,7 @@ export function createBrowserEventComposition(options: Readonly<{
     storage: options.storage,
     transport: options.transport,
     onUnauthorized: () => unauthorized.notify(),
+    probeUnauthorized: options.probeUnauthorized,
   });
 }
 

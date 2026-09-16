@@ -17,3 +17,15 @@ func TestProxyRejectsOtherTargetsBeforeDial(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyFailsClosedBeforeTailnetStartupCompletes(t *testing.T) {
+	e := &engine{}
+	request := httptest.NewRequest(http.MethodConnect, "http://"+targetHost, nil)
+	request.Host = targetHost
+	request.URL.Host = targetHost
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("got %d before node readiness", response.Code)
+	}
+}

@@ -123,6 +123,13 @@ async function initialize() {
     mode.value = config.mode;
     ip.value = config.ipOrigin;
     idle();
+    if (config.resumeEntry) {
+      const { origin, route } = config.resumeEntry;
+      await bindServer(origin);
+      if (attempt !== generation) return;
+      location.replace(`${origin}${route}`);
+      return;
+    }
     await connect();
   } catch (cause) { if (attempt === generation) { error.textContent = message(cause); idle(); } }
 }

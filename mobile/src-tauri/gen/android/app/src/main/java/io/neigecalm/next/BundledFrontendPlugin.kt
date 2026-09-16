@@ -38,11 +38,19 @@ class BundledFrontendPlugin(private val host: Activity) : Plugin(host) {
     var timeout: java.util.concurrent.Future<*>? = null
   }
   private var pending: Pending? = null
+  private val resume by lazy { ResumeEntry(host.applicationContext) }
+  private var boundGeneration = -1
   private var resumeConsumed = false
   private var candidate: ConnectionRoute? = null
   private var checkedAt = 0L
 
   override fun load(webView: WebView) { view = webView }
+  override fun onPause() { generation++; cancelPending() }
+  override fun onResume() { if (selectedOrigin.get() != null) boundGeneration = generation }
+  override fun onDestroy(activity: androidx.appcompat.app.AppCompatActivity) {
+    generation++; cancelPending(); selectedOrigin.set(null); view = null
+    network.shutdownNow(); deadlines.shutdownNow()
+  }
 
   private fun cancelPending() {
     pending?.let {
@@ -89,7 +97,14 @@ class BundledFrontendPlugin(private val host: Activity) : Plugin(host) {
   }
 
   @Command fun connectionSettings(invoke: Invoke) = host.runOnUiThread {
-    try { launcher(); invoke.resolve(settingsJson(profiles.read())) }
+    try {
+      launcher()
+      val result = settingsJson(profiles.read())
+      if (!resumeConsumed) resume.read(profiles)?.let { entry ->
+        result.put("resumeEntry", JSObject().also { it.put("origin", entry.origin); it.put("route", entry.route) })
+      }
+      invoke.resolve(result)
+    }
     catch (error: Exception) { invoke.reject(error.message ?: "读取配置失败") }
   }
 
@@ -100,7 +115,7 @@ class BundledFrontendPlugin(private val host: Activity) : Plugin(host) {
       try {
         launcher()
         val saved = profiles.save(args.mode, args.ipOrigin, args.tailscaleEnabled)
-        generation++; cancelPending(); candidate = null
+        generation++; cancelPending(); candidate = null; selectedOrigin.set(null)
         invoke.resolve(settingsJson(saved))
       } catch (error: Exception) { invoke.reject(error.message ?: "保存配置失败") }
     }
@@ -180,10 +195,16 @@ class BundledFrontendPlugin(private val host: Activity) : Plugin(host) {
           ?: allowed.firstOrNull { it.origin == args.origin }
           ?: throw IllegalArgumentException("请先配置这个服务器地址")
         val attempt = generation
+        val localResume = !resumeConsumed && resume.read(profiles)?.origin == route.origin
         val fresh = candidate == route && android.os.SystemClock.elapsedRealtime() - checkedAt < 10000
         val job = startPending(invoke)
         job.future = network.submit {
-          val checked = runCatching { job.cancellation.check(); if (!fresh) checkRoute(route, job.cancellation) }
+          val checked = runCatching {
+            job.cancellation.check()
+            if (!fresh && !localResume) checkRoute(route, job.cancellation)
+            // Binding the loopback proxy does not wait for DNS or Tailnet readiness.
+            if (route.mode == "tailscale") P2PConnection.prepare(host.applicationContext)
+          }
           host.runOnUiThread {
             if (!job.settled.get()) try {
               checked.getOrThrow(); launcher(); check(attempt == generation) { "配置已更改，已取消旧连接" }
@@ -203,18 +224,27 @@ class BundledFrontendPlugin(private val host: Activity) : Plugin(host) {
     val installed = WebViewCompat.getWebViewClient(webView)
     if (client == null) {
       check(installed is RustWebViewClient) { "网页组件初始化尚未完成，请重试" }
-      client = BundledWebViewClient(installed, BundledFrontendAssets(host.assets, selectedOrigin))
+      client = BundledWebViewClient(installed, BundledFrontendAssets(host.assets, selectedOrigin)) { url ->
+        val active = selectedOrigin.get()
+        if (active != null && boundGeneration == generation) resume.remember(profiles, active, url)
+        if (runCatching { URI(url).host == "tauri.localhost" }.getOrDefault(false) && active != null) {
+          selectedOrigin.set(null); generation++; cancelPending()
+        }
+      }
       webView.webViewClient = client!!
     } else { check(installed === client) { "网页组件已改变，请重新打开 App" } }
     val executor = java.util.concurrent.Executor { host.runOnUiThread(it) }
     val done = Runnable { finish(job) {
       try {
         launcher(); check(attempt == generation) { "配置已更改，已取消旧连接" }
-        selectedOrigin.set(origin); resumeConsumed = true
+        selectedOrigin.set(origin); boundGeneration = attempt; resumeConsumed = true
+        resume.remember(profiles, origin, origin.value + (resume.read(profiles)?.route ?: "/next/"))
+        if (route.mode == "tailscale") P2PConnection.wake(host.applicationContext)
         RememberedSession.persist(origin.value)
         invoke.resolve(JSObject().also { it.put("origin", origin.value) })
       } catch (error: Throwable) { invoke.reject(error.message ?: "无法打开工作区") }
     } }
+    check(attempt == generation && !job.settled.get()) { "旧连接已取消" }
     val proxy = if (route.mode == "ip") P2PConnection.checked(NativeP2P.direct(route.origin)).getString("proxy")
       else { NativeP2P.stopDirect(); NativeP2P.proxy() }
     check(proxy.startsWith("http://127.0.0.1:")) { "连接尚未准备好" }

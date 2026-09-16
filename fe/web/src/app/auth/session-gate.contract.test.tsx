@@ -13,7 +13,7 @@ import { ProductionApp } from './production-app.tsx';
 import { createAppRouter } from '../router/public.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.history.replaceState({}, '', '/'); });
 const identity = { userId: 'u', displayName: 'Owner', role: 'admin', sessionId: 's' };
 
 function cleanupRuntime() {
@@ -23,6 +23,42 @@ function cleanupRuntime() {
 const noopCursorStore = { clear: () => undefined };
 
 describe('session gate contracts', () => {
+  it('cold bundled deep link paints its saved page structure before whoami or version can respond', () => {
+    vi.stubGlobal('__NC_BUNDLED__', true);
+    window.history.replaceState({}, '', '/next/track/previous-track');
+    const paths: string[] = [];
+    const transport: ApiTransportPort = { send: (request) => {
+      paths.push(request.path); return new Promise(() => {});
+    } };
+    const client = new QueryClient();
+    const fetchVersion = vi.fn();
+    const runtime: ProviderRuntime = { fetchVersion, reload: vi.fn(), deleteDatabase: vi.fn(),
+      idbDatabaseName: IDB_DB_NAME, storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } };
+    const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
+    const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+    render(<ProductionApp transport={transport} client={client} unauthorized={unauthorized} runtime={runtime}
+      cursorStore={{ clear: vi.fn() }} router={router} renderLogin={() => <b>login</b>} renderError={() => <b>retry</b>} />);
+    expect(screen.getByRole('navigation', { name: '恢复页面导航' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Track' })).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toContain('正在恢复连接');
+    expect(paths).toEqual(['/api/auth/whoami']);
+    expect(fetchVersion).not.toHaveBeenCalled();
+  });
+  it('bundled assembly without recovery admission never mounts business routes after successful identity and version', async () => {
+    vi.stubGlobal('__NC_BUNDLED__', true);
+    window.history.replaceState({}, '', '/next/track/previous-track');
+    const paths: string[] = [];
+    const transport: ApiTransportPort = { send: request => { paths.push(request.path); return Promise.resolve({ status: 200, statusText: 'OK', body: identity }); } };
+    const client = new QueryClient(); const unauthorized = createUnauthorizedChannel({ enqueue: task => task() });
+    const runtime: ProviderRuntime = { fetchVersion: vi.fn(() => Promise.resolve({ webCompatVersion: 28, minWebCompatVersion: 28, syncEventVersion: 3, dbInstanceId: 'db' })),
+      reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: IDB_DB_NAME, storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } };
+    const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+    render(<ProductionApp transport={transport} client={client} unauthorized={unauthorized} runtime={runtime}
+      cursorStore={{ clear: vi.fn() }} router={router} renderLogin={() => <b>login</b>} renderError={() => <b>retry</b>} />);
+    await waitFor(() => expect(runtime.fetchVersion).toHaveBeenCalledOnce());
+    expect(paths).toEqual(['/api/auth/whoami']); expect(screen.getByRole('heading', { name: 'Track' })).toBeTruthy();
+  });
+
   it('does not mount the real AppProviders ServerCompatGate before an unauthenticated verdict', async () => {
     const paths: string[] = [];
     const transport: ApiTransportPort = { send: (request) => { paths.push(request.path); return Promise.resolve({ status: 401, statusText: 'Unauthorized', body: {} }); } };

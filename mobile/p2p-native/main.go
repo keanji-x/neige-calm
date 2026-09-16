@@ -31,15 +31,20 @@ const targetURL = "https://" + targetHost
 
 var instance struct {
 	sync.Mutex
-	engine     *engine
-	startError error
+	engine *engine
 }
 
 type engine struct {
-	node    *tsnet.Server
-	proxy   net.Listener
-	started time.Time
-	client  *http.Client
+	mu       sync.Mutex
+	dir      string
+	hostname string
+	starting bool
+	ready    bool
+	startErr error
+	node     *tsnet.Server
+	proxy    net.Listener
+	started  time.Time
+	client   *http.Client
 }
 
 func encoded(value any) string { b, _ := json.Marshal(value); return string(b) }
@@ -48,9 +53,6 @@ func current() (*engine, error) {
 	instance.Lock()
 	defer instance.Unlock()
 	if instance.engine == nil {
-		if instance.startError != nil {
-			return nil, instance.startError
-		}
 		return nil, fmt.Errorf("连接尚未启动")
 	}
 	return instance.engine, nil
@@ -60,6 +62,7 @@ func start(dir string) string {
 	instance.Lock()
 	defer instance.Unlock()
 	if instance.engine != nil {
+		instance.engine.startNode()
 		return encoded(map[string]any{"ok": true})
 	}
 	if !filepath.IsAbs(dir) {
@@ -92,29 +95,70 @@ func start(dir string) string {
 	if err != nil {
 		return failure(err)
 	}
-	node := &tsnet.Server{Dir: dir, Hostname: string(name), Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {}}
-	if err = node.Start(); err != nil {
-		instance.startError = fmt.Errorf("连接启动失败：%w", err)
-		return failure(instance.startError)
-	}
+	// Local assets may navigate as soon as this closed proxy is bound. No
+	// DNS, control-plane login, or peer dial is performed on the JNI caller.
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
-		node.Close()
 		return failure(err)
 	}
-	e := &engine{node: node, proxy: listener, started: time.Now()}
+	e := &engine{dir: dir, hostname: string(name), proxy: listener, started: time.Now()}
 	e.client = &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{DialContext: e.dial, ForceAttemptHTTP2: true}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	instance.engine = e
 	server := &http.Server{Handler: e, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 8192}
 	go server.Serve(listener)
+	e.startNode()
 	return encoded(map[string]any{"ok": true})
+}
+
+// A failed tsnet.Start must release the partially created writer before retry.
+// This flight is independent of JNI status/proxy calls and can never block the
+// Java command worker or installation of the exact-origin loopback fence.
+func (e *engine) startNode() {
+	e.mu.Lock()
+	if e.ready || e.starting {
+		e.mu.Unlock()
+		return
+	}
+	e.starting = true
+	e.startErr = nil
+	node := &tsnet.Server{Dir: e.dir, Hostname: e.hostname, Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {}}
+	e.mu.Unlock()
+	go func() {
+		err := node.Start()
+		if err != nil {
+			node.Close()
+		}
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		e.starting = false
+		e.startErr = err
+		if err == nil {
+			e.node = node
+			e.ready = true
+		}
+	}()
+}
+func (e *engine) readyNode() (*tsnet.Server, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.startErr != nil {
+		return nil, e.startErr
+	}
+	if !e.ready || e.node == nil {
+		return nil, fmt.Errorf("连接正在恢复")
+	}
+	return e.node, nil
 }
 
 func (e *engine) dial(ctx context.Context, network, address string) (net.Conn, error) {
 	if network != "tcp" || address != targetHost {
 		return nil, fmt.Errorf("只允许连接已指定的工作区")
 	}
-	return e.node.Dial(ctx, "tcp", targetAddress)
+	node, err := e.readyNode()
+	if err != nil {
+		return nil, err
+	}
+	return node.Dial(ctx, "tcp", targetAddress)
 }
 
 func status() string {
@@ -122,7 +166,17 @@ func status() string {
 	if err != nil {
 		return failure(err)
 	}
-	lc, err := e.node.LocalClient()
+	node, err := e.readyNode()
+	if err != nil {
+		e.mu.Lock()
+		starting := e.starting
+		e.mu.Unlock()
+		if starting {
+			return encoded(map[string]any{"ok": true, "state": "Starting"})
+		}
+		return failure(err)
+	}
+	lc, err := node.LocalClient()
 	if err != nil {
 		return failure(err)
 	}
@@ -143,7 +197,11 @@ func login() string {
 	if err != nil {
 		return failure(err)
 	}
-	lc, err := e.node.LocalClient()
+	node, err := e.readyNode()
+	if err != nil {
+		return failure(err)
+	}
+	lc, err := node.LocalClient()
 	if err != nil {
 		return failure(err)
 	}
@@ -243,7 +301,11 @@ func probe() string {
 		return failure(err)
 	}
 	result := map[string]any{"ok": true, "requestMs": time.Since(begin).Milliseconds(), "bytes": len(body), "webCompatVersion": version["webCompatVersion"], "path": "unknown"}
-	lc, err := e.node.LocalClient()
+	node, err := e.readyNode()
+	if err != nil {
+		return failure(err)
+	}
+	lc, err := node.LocalClient()
 	if err != nil {
 		return failure(err)
 	}
@@ -286,8 +348,6 @@ func (e *engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err = buffer.Flush(); err != nil {
 		return
 	}
-	local.SetDeadline(time.Now().Add(30 * time.Minute))
-	upstream.SetDeadline(time.Now().Add(30 * time.Minute))
 	done := make(chan struct{})
 	go func() { io.Copy(upstream, buffer); upstream.Close(); local.Close(); close(done) }()
 	io.Copy(local, upstream)

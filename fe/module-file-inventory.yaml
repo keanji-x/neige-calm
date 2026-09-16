@@ -130,3 +130,4 @@
 - { path: fe/web/src/ui/activity-indicator, type: directory, owner: ui/activity-indicator, readonly: false, basis: "Domain-free attention, working and unread visual indicators" }
 
 - { path: fe/web/src/ui/list-typography, type: directory, owner: ui/list-typography, readonly: false, basis: "User-requested common typography for sidebar and context lists" }
+- { path: fe/web/src/systems/recovery, type: directory, owner: systems/recovery, readonly: false, basis: "#1712 browser recovery lifecycle, cancellation, and transport capabilities" }

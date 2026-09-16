@@ -15,12 +15,31 @@ internal data class ConnectionSettings(val mode: String, val ipOrigin: String, v
 internal class ConnectionProfiles(context: Context) {
   private val legacyTailIdentity = java.io.File(context.noBackupFilesDir, "p2p-node").isDirectory
   private val preferences = context.getSharedPreferences("connection-profiles", Context.MODE_PRIVATE)
-  fun read() = ConnectionSettings(preferences.getString("mode", "tailscale")!!,
+  init {
+    if (!preferences.contains("schema-version")) check(preferences.edit().putInt("schema-version", 1)
+      .putString("profile-id", java.util.UUID.randomUUID().toString()).putLong("config-revision", 1).commit()) { "无法保存连接配置" }
+  }
+  fun profileId(): String = requireNotNull(preferences.getString("profile-id", null))
+  fun revision(): Long = preferences.getLong("config-revision", 0).also { require(it > 0) }
+  fun read(): ConnectionSettings {
+    require(preferences.getInt("schema-version", 0) == 1) { "连接配置版本无效，请重新配置" }
+    val result = readSettings()
+    require(result.mode in listOf("ip", "tailscale"))
+    if (result.ipOrigin.isNotEmpty()) require(parseDirect(result.ipOrigin).value == result.ipOrigin)
+    profileId(); revision()
+    return result
+  }
+  private fun readSettings() = ConnectionSettings(preferences.getString("mode", "tailscale")!!,
     preferences.getString("ip-origin", "")!!, preferences.getBoolean("tailscale-enabled", legacyTailIdentity))
   fun save(mode: String, ipOrigin: String, tailscaleEnabled: Boolean): ConnectionSettings {
     require(mode in listOf("ip", "tailscale")) { "请选择 IP 或 Tailscale" }
     val origin = if (ipOrigin.isBlank()) "" else parseDirect(ipOrigin.trim()).value
-    check(preferences.edit().putString("mode", mode).putString("ip-origin", origin)
+    val old = runCatching { read() }.getOrNull()
+    val changed = old != ConnectionSettings(mode, origin, tailscaleEnabled)
+    check(preferences.edit().putInt("schema-version", 1)
+      .putString("profile-id", preferences.getString("profile-id", null) ?: java.util.UUID.randomUUID().toString())
+      .putLong("config-revision", preferences.getLong("config-revision", 0) + if (changed) 1 else 0)
+      .putString("mode", mode).putString("ip-origin", origin)
       .putBoolean("tailscale-enabled", tailscaleEnabled).commit()) { "保存连接配置失败，请重试" }
     return ConnectionSettings(mode, origin, tailscaleEnabled)
   }

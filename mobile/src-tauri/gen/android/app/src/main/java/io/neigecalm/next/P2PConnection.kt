@@ -7,29 +7,56 @@ import java.util.concurrent.Executors
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
-/** One userspace node per app process; node identity survives in noBackupFilesDir. */
+/** One node and bounded recovery flight per process; never deletes node identity. */
 internal object P2PConnection {
   const val ORIGIN = "https://pivot-neige.tail328551.ts.net:10000"
-  private val worker = Executors.newSingleThreadExecutor()
-  private var started = false
-  private var failure: Throwable? = null
+  private val worker = Executors.newSingleThreadScheduledExecutor()
+  private var task: java.util.concurrent.ScheduledFuture<*>? = null
+  private var epoch = 0
+  private var retry = 0
+  private var foreground = true
+  private var inFlight = false
+  private var pendingWake = false
 
-  @Synchronized fun start(context: Context) {
-    if (started) return
-    started = true
+  /** Native start binds loopback first and starts tsnet asynchronously. Safe off the UI thread. */
+  fun prepare(context: Context) {
+    checked(NativeP2P.configure(AndroidNetworkSnapshot.read()))
+    checked(NativeP2P.start(File(context.applicationContext.noBackupFilesDir, "p2p-node").absolutePath))
+  }
+  fun start(context: Context) = wake(context)
+  @Synchronized fun wake(context: Context) {
+    foreground = true
+    if (inFlight) { pendingWake = true; return }
+    task?.cancel(false); task = null
+    val generation = ++epoch
     val app = context.applicationContext
-    worker.execute {
-      runCatching {
-        checked(NativeP2P.configure(AndroidNetworkSnapshot.read()))
-        checked(NativeP2P.start(File(app.noBackupFilesDir, "p2p-node").absolutePath))
-      }.onFailure { failure = it }
-    }
+    schedule(app, generation, 0)
   }
-
+  @Synchronized fun pause() { foreground = false; epoch++; task?.cancel(false); task = null; pendingWake = false }
+  @Synchronized private fun schedule(context: Context, generation: Int, delay: Long) {
+    if (!foreground || generation != epoch) return
+    task = worker.schedule(work@{
+      synchronized(this) {
+        if (!foreground || generation != epoch) return@work
+        inFlight = true; task = null
+      }
+      val result = runCatching { prepare(context); checked(NativeP2P.status()).getString("state") }
+      synchronized(this) {
+        inFlight = false
+        if (!foreground) return@synchronized
+        if (generation != epoch || pendingWake) {
+          pendingWake = false; schedule(context, epoch, 0); return@synchronized
+        }
+        if (result.getOrNull() == "Running") { retry = 0; return@synchronized }
+        if (result.getOrNull() in listOf("NeedsLogin", "NeedsMachineAuth")) return@synchronized
+        val wait = (minOf(30000L, 500L shl minOf(retry++, 6)) * (0.75 + Math.random() * 0.5)).toLong()
+        schedule(context, generation, wait)
+      }
+    }, delay, TimeUnit.MILLISECONDS)
+  }
   fun execute(operation: () -> JSONObject, done: (Result<JSONObject>) -> Unit) {
-    worker.execute { done(runCatching { failure?.let { throw it }; checked(NativeP2P.configure(AndroidNetworkSnapshot.read())); operation() }) }
+    worker.execute { done(runCatching { checked(NativeP2P.configure(AndroidNetworkSnapshot.read())); operation() }) }
   }
-
   fun awaitReadyAndReachable(cancellation: ConnectionAttempt.Cancellation) {
     val result = CompletableFuture<Result<JSONObject>>()
     execute({
@@ -40,13 +67,11 @@ internal object P2PConnection {
         cancellation.check(); Thread.sleep(100); state = checked(NativeP2P.status())
       }
       check(state.getString("state") == "Running") { "Tailscale 尚未登录或未连接" }
-      cancellation.check()
-      checked(NativeP2P.check())
+      cancellation.check(); checked(NativeP2P.check())
     }) { result.complete(it) }
     try { result.get(7, TimeUnit.SECONDS).getOrThrow() }
     finally { if (!result.isDone) { cancellation.cancel(); result.cancel(false) } }
   }
-
   fun checked(raw: String): JSONObject = JSONObject(raw).also {
     check(it.optBoolean("ok")) { it.optString("error", "连接暂时不可用") }
   }

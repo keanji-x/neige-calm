@@ -130,3 +130,17 @@ test('fallback without a workspace session offers Tailscale pairing', async ({ p
   await expect(page.getByRole('button', { name: '扫码授权' })).toBeEnabled();
   expect(await page.evaluate(() => window.settings.ipOrigin)).toBe(direct);
 });
+
+test('cold resume opens the saved route without a reachability attempt or fallback origin', async ({ page }) => {
+  await page.addInitScript((server) => {
+    window.settings = { mode: 'ip', ipOrigin: server, tailscaleEnabled: true,
+      resumeEntry: { origin: server, route: '/next/track/last-track?panel=cards' } };
+    const invoke = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = (command, args) => command.endsWith('|attempt_connection')
+      ? new Promise(() => {}) : invoke(command, args);
+  }, direct);
+  await page.route(`${direct}/next/track/last-track?panel=cards`, route => route.fulfill({ body: '<h1>Local saved Track</h1>' }));
+  await page.goto('/');
+  await expect(page).toHaveURL(`${direct}/next/track/last-track?panel=cards`);
+  expect(await page.evaluate(() => window.nativeCalls)).not.toContain('plugin:bundled-frontend|attempt_connection');
+});

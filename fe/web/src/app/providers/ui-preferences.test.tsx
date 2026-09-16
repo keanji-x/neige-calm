@@ -120,3 +120,14 @@ it('does not overwrite a newer acknowledgement from another tab', () => {
   second.markRead('conversation', 'a', 15);
   expect(createUiPreferences(storage).isUnread('conversation', 'a', 20)).toBe(false);
 });
+
+it('isolates remembered conversation selection by verified recovery scope', () => {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  const preferences = createUiPreferences(storage);
+  preferences.setRecoveryScope('origin/owner/db-a'); preferences.setConversation('track', 'conversation-a');
+  preferences.setRecoveryScope('origin/owner/db-b'); expect(preferences.conversation('track')).toBeNull();
+  preferences.setConversation('track', 'conversation-b');
+  const resumed = createUiPreferences(storage); resumed.setRecoveryScope('origin/owner/db-b');
+  expect(resumed.conversation('track')).toBe('conversation-b');
+});

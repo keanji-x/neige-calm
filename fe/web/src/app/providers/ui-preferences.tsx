@@ -19,11 +19,15 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     revision += 1;
     for (const listener of listeners) listener();
   };
+  let recoveryScope: string | null = null;
+  const storageKey = (key: string) => recoveryScope === null
+    ? createStorageKey('ui', 'v1', encodeURIComponent(key))
+    : createStorageKey('ui', 'recovery', encodeURIComponent(recoveryScope), encodeURIComponent(key));
   const read = (key: string): Preference => {
     if (memory.has(key)) return memory.get(key) ?? null;
     let value: Preference = null;
     try {
-      const parsed: unknown = JSON.parse(storage?.getItem(createStorageKey('ui', 'v1', encodeURIComponent(key))) ?? 'null');
+      const parsed: unknown = JSON.parse(storage?.getItem(storageKey(key)) ?? 'null');
       if (typeof parsed === 'boolean' || (typeof parsed === 'string' && parsed.length > 0)) value = parsed;
     } catch {
       // Malformed or unavailable storage leaves the default display usable.
@@ -35,7 +39,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     if ((persist ? read(key) : memory.get(key)) === value) return;
     memory.set(key, value);
     try {
-      if (persist) storage?.setItem(createStorageKey('ui', 'v1', encodeURIComponent(key)), JSON.stringify(value));
+      if (persist) storage?.setItem(storageKey(key), JSON.stringify(value));
     } catch {
       // The current app instance still remembers the choice when storage fails.
     }
@@ -52,7 +56,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     const cached = stampOf(read(key));
     try {
       // Re-read before acknowledging: another tab may already have seen a newer update.
-      return Math.max(cached, stampOf(JSON.parse(storage?.getItem(createStorageKey('ui', 'v1', encodeURIComponent(key))) ?? 'null')));
+      return Math.max(cached, stampOf(JSON.parse(storage?.getItem(storageKey(key)) ?? 'null')));
     } catch { return cached; }
   };
   return Object.freeze({
@@ -68,6 +72,10 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     markRead(kind: 'track' | 'conversation', id: string, updatedAt: number): void {
       const key = receiptKey(kind, id);
       if (Number.isFinite(updatedAt) && updatedAt > receipt(key)) write(key, String(updatedAt), true, database !== null);
+    },
+    setRecoveryScope(scope: string): void {
+      if (recoveryScope === scope) return;
+      recoveryScope = scope; memory.clear(); notify();
     },
     // Only layout changes are live: conversation selection is restored on route
     // entry and owned by React while open, so saving it must not move focus.

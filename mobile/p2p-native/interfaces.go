@@ -49,7 +49,9 @@ func configureInterfaces(raw string) string {
 	running := instance.engine
 	instance.Unlock()
 	if running != nil {
-		running.node.Sys().NetMon.Get().Poll()
+		if node, err := running.readyNode(); err == nil {
+			node.Sys().NetMon.Get().Poll()
+		}
 	}
 	return encoded(map[string]any{"ok": true})
 }

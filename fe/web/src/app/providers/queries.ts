@@ -8,9 +8,10 @@
 // and callbacks as props — `features/**` must not import `app/**`.
 
 import {
-  onlineManager, useMutation, useQueries, useQuery, useQueryClient, type QueryClient,
+  onlineManager, useQueries, useQuery, useQueryClient, type QueryClient,
 } from '@tanstack/react-query';
 import { useRef } from 'react';
+import { admitTransport, useRecoveryMutation } from './recovery-mutation.ts';
 import { z } from 'zod';
 
 import { performApiRequest } from '../../../../core/api/client.ts';
@@ -134,7 +135,9 @@ export async function runOperation<T>(
   operation: ApiOperation<T>,
   unauthorized: UnauthorizedChannel | undefined,
 ): Promise<T> {
+  const checkpoint = transport.recovery?.checkpoint();
   const result = await performApiRequest(transport, operation, unauthorized);
+  checkpoint?.();
   if (result.status === 'failed') throw new ApiError(result.error);
   return result.value;
 }
@@ -341,8 +344,14 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   if (setModelRef.current === null || setModelRef.current.cardId !== cardId) {
     setModelRef.current = {
       cardId,
-      write: createSerialWriter((selection: ModelSelection) =>
-        runOperation(transport, setPlannerModelOperation(cardId, selection), unauthorized)),
+      write: (() => {
+        const serial = createSerialWriter((intent: { selection: ModelSelection; transport: ApiTransportPort }) =>
+          runOperation(intent.transport, setPlannerModelOperation(cardId, intent.selection), unauthorized));
+        return (selection: ModelSelection) => {
+          try { return serial({ selection, transport: admitTransport(transport) }); }
+          catch (error) { return Promise.reject(error instanceof Error ? error : new Error('连接尚未恢复')); }
+        };
+      })(),
     };
   }
   const setModelWrite = setModelRef.current.write;
@@ -473,9 +482,9 @@ export function useTrackConversationMutations(
   transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel,
 ): ConversationMutations {
   const client = useQueryClient();
-  const create = useMutation({
+  const create = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: ({ text, idempotencyKey, selection }: { text: string; idempotencyKey: string; selection: ModelSelection }) =>
+    mutationFn: ({ text, idempotencyKey, selection }: { text: string; idempotencyKey: string; selection: ModelSelection }, transport: ApiTransportPort) =>
       runInteractiveWrite(transport, createTrackConversationOperation(trackId, text, idempotencyKey, selection), unauthorized),
     onSuccess: (row) => {
       /* Written through as well as invalidated: the drawer switches to this row
@@ -726,9 +735,9 @@ export function useTodayLaunchpadEnsureMutation(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
 ): TodayLaunchpadEnsureMutation {
   const client = useQueryClient();
-  const mutation = useMutation({
+  const mutation = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: (): Promise<TodayLaunchpadEnsureWire> =>
+    mutationFn: (_variables: void, transport: ApiTransportPort): Promise<TodayLaunchpadEnsureWire> =>
       runInteractiveWrite(transport, todayLaunchpadEnsureOperation(), unauthorized),
     onSettled: () => {
       void client.invalidateQueries({ queryKey: queryKeys.todayLaunchpad() });
@@ -777,8 +786,8 @@ export function useTodayReportResetMutation(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
 ): TodayReportResetMutation {
   const client = useQueryClient();
-  const mutation = useMutation({
-    mutationFn: (): Promise<TodayReportResetWire> =>
+  const mutation = useRecoveryMutation(transport, {
+    mutationFn: (_variables: void, transport: ApiTransportPort): Promise<TodayReportResetWire> =>
       runOperation(transport, todayReportResetOperation(), unauthorized),
     onSuccess: (reset) => {
       void client.invalidateQueries({ queryKey: queryKeys.todayLaunchpad() });
@@ -910,16 +919,16 @@ export function useTrackRecipeMutations(
 ): TrackRecipeMutations {
   const client = useQueryClient();
   const invalidate = () => { void client.invalidateQueries({ queryKey: queryKeys.trackRecipes() }); };
-  const create = useMutation({
+  const create = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: (body: { title: string; body: string }) => runInteractiveWrite(
+    mutationFn: (body: { title: string; body: string }, transport: ApiTransportPort) => runInteractiveWrite(
       transport, createTrackRecipeOperation(body), unauthorized,
     ),
     onSuccess: invalidate,
   });
-  const save = useMutation({
+  const save = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: (variables: { recipeId: string; body: { title: string; body: string; if_revision: number } }) =>
+    mutationFn: (variables: { recipeId: string; body: { title: string; body: string; if_revision: number } }, transport: ApiTransportPort) =>
       runInteractiveWrite(transport, updateTrackRecipeOperation(variables.recipeId, variables.body), unauthorized),
     /* Invalidate but do **not** write the response through to the cache here.
        The response is also the editor's next rendered state, and it reaches
@@ -936,8 +945,8 @@ export function useTrackRecipeMutations(
        list's row; on a 409 it is what makes that instruction true. */
     onSettled: invalidate,
   });
-  const remove = useMutation({
-    mutationFn: (recipeId: string) => runOperation(transport, deleteTrackRecipeOperation(recipeId), unauthorized),
+  const remove = useRecoveryMutation(transport, {
+    mutationFn: (recipeId: string, transport: ApiTransportPort) => runOperation(transport, deleteTrackRecipeOperation(recipeId), unauthorized),
     /* `onSettled`, not `onSuccess`: a delete that failed because the row was
        already gone leaves the list holding a row that does not exist, and
        refetching is how the reader finds out. */
@@ -1040,9 +1049,9 @@ export type AreaMutations = Readonly<{
 
 export function useAreaMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): AreaMutations {
   const client = useQueryClient();
-  const create = useMutation({
+  const create = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: async ({ body, idempotencyKey }: { body: NewAreaBody; idempotencyKey: string }) => {
+    mutationFn: async ({ body, idempotencyKey }: { body: NewAreaBody; idempotencyKey: string }, transport: ApiTransportPort) => {
       if (!onlineManager.isOnline()) throw new OfflineSubmissionError();
       try {
         const capability = await runOperation(transport, areaCreationCapabilityOperation(), unauthorized);
@@ -1070,9 +1079,9 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
     // the retained creation key independently makes the next POST safe.
     onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),
   });
-  const update = useMutation({
+  const update = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }) =>
+    mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }, transport: ApiTransportPort) =>
       runInteractiveWrite(transport, updateAreaOperation(areaId, body), unauthorized),
     onSuccess: (wire) => {
       const updated = toArea(wire);
@@ -1091,8 +1100,8 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
     // defaults authoritative.
     onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),
   });
-  const remove = useMutation({
-    mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }) =>
+  const remove = useRecoveryMutation(transport, {
+    mutationFn: ({ areaId, signal }: { areaId: string; signal?: AbortSignal }, transport: ApiTransportPort) =>
       runOperation(transport, { ...deleteAreaOperation(areaId), signal }, unauthorized),
     onSuccess: (_result, { areaId }) => {
       // The area is gone; its track list can never resolve again, so drop it
@@ -1137,9 +1146,9 @@ export type TrackMutations = Readonly<{
 
 export function useTrackMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackMutations {
   const client = useQueryClient();
-  const create = useMutation({
+  const create = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: (variables: TrackCreateVariables) => runInteractiveWrite(
+    mutationFn: (variables: TrackCreateVariables, transport: ApiTransportPort) => runInteractiveWrite(
       transport,
       'idempotencyKey' in variables
         ? createTrackOperation(variables.body, variables.idempotencyKey)
@@ -1155,8 +1164,8 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
       }
     },
   });
-  const patch = useMutation({
-    mutationFn: ({ trackId, body }: { trackId: string; areaId: string; body: TrackPatchBody }) =>
+  const patch = useRecoveryMutation(transport, {
+    mutationFn: ({ trackId, body }: { trackId: string; areaId: string; body: TrackPatchBody }, transport: ApiTransportPort) =>
       runOperation(transport, updateTrackOperation(trackId, body), unauthorized),
     onSuccess: (track, variables) => {
       // The PATCH response is the row the server committed. Write it through
@@ -1180,8 +1189,8 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
       void client.invalidateQueries({ queryKey: queryKeys.trackDetail(variables.trackId) });
     },
   });
-  const remove = useMutation({
-    mutationFn: ({ trackId, signal }: { trackId: string; areaId: string; signal?: AbortSignal }) =>
+  const remove = useRecoveryMutation(transport, {
+    mutationFn: ({ trackId, signal }: { trackId: string; areaId: string; signal?: AbortSignal }, transport: ApiTransportPort) =>
       runOperation(transport, { ...deleteTrackOperation(trackId), signal }, unauthorized),
     onSuccess: (_result, variables) => {
       client.removeQueries({ queryKey: queryKeys.trackDetail(variables.trackId) });
@@ -1207,21 +1216,21 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     });
     void client.invalidateQueries({ queryKey: queryKeys.trackDetail(card.track_id) });
   };
-  const createTerminal = useMutation({
+  const createTerminal = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: ({ trackId, body }: { trackId: string; body: NewTerminalCardBody }) =>
+    mutationFn: ({ trackId, body }: { trackId: string; body: NewTerminalCardBody }, transport: ApiTransportPort) =>
       runInteractiveWrite(transport, createTerminalCardOperation(trackId, body), unauthorized),
     onSuccess: addCardToDetail,
   });
-  const createCodex = useMutation({
+  const createCodex = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: ({ trackId, body }: { trackId: string; body: NewCodexCardBody }) =>
+    mutationFn: ({ trackId, body }: { trackId: string; body: NewCodexCardBody }, transport: ApiTransportPort) =>
       runInteractiveWrite(transport, createCodexCardOperation(trackId, body), unauthorized),
     onSuccess: addCardToDetail,
   });
-  const createCard = useMutation({
+  const createCard = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: ({ trackId, body }: { trackId: string; body: NewCardBody }) =>
+    mutationFn: ({ trackId, body }: { trackId: string; body: NewCardBody }, transport: ApiTransportPort) =>
       runInteractiveWrite(transport, createCardOperation(trackId, body), unauthorized),
     onSuccess: addCardToDetail,
   });
@@ -1234,8 +1243,8 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
    * `onSettled`, not `onSuccess`, for the invalidation — an aborted wait says
    * nothing about whether the server committed.
    */
-  const removeCard = useMutation({
-    mutationFn: ({ cardId, signal }: { trackId: string; cardId: string; signal?: AbortSignal }) =>
+  const removeCard = useRecoveryMutation(transport, {
+    mutationFn: ({ cardId, signal }: { trackId: string; cardId: string; signal?: AbortSignal }, transport: ApiTransportPort) =>
       runOperation(transport, { ...deleteCardOperation(cardId), signal }, unauthorized),
     onSuccess: (_result, { trackId, cardId }) => {
       client.setQueryData(queryKeys.trackDetail(trackId), (previous: TrackDetailWire | undefined) => {
@@ -1410,8 +1419,8 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
      write is in flight (`isLoading={pendingIds.has(...)}`, and astryx's Switch
      drops the change), so no route through this pane produces two. */
   const [boundary, setBoundary] = useState<ReadonlySet<string>>(() => new Set());
-  const write = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+  const write = useRecoveryMutation(transport, {
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }, transport: ApiTransportPort) =>
       runOperation(transport, setPluginEnabledOperation(id, enabled), unauthorized),
     onMutate: ({ id }) => {
       setPending((current) => new Map(current).set(id, (current.get(id) ?? 0) + 1));
@@ -1459,8 +1468,8 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
    * gone — and because a removal must not set the effect-boundary line, which
    * is about a plugin that is still there.
    */
-  const remove = useMutation({
-    mutationFn: (id: string) => runOperation(transport, uninstallPluginOperation(id), unauthorized),
+  const remove = useRecoveryMutation(transport, {
+    mutationFn: (id: string, transport: ApiTransportPort) => runOperation(transport, uninstallPluginOperation(id), unauthorized),
     onMutate: (id) => {
       setPending((current) => new Map(current).set(id, (current.get(id) ?? 0) + 1));
       setErrors((current) => {
@@ -1631,12 +1640,13 @@ export function usePluginConfigMutations(
   ]);
 
   const write = async (
+    intent: ApiTransportPort,
     id: string,
     patch: Readonly<Record<string, PluginConfigValue | null>>,
     options: Readonly<{ reset: boolean }>,
   ): Promise<PluginConfigSaveResult> => {
     try {
-      await runOperation(transport, patchPluginConfigOperation(id, patch, options), unauthorized);
+      await runOperation(intent, patchPluginConfigOperation(id, patch, options), unauthorized);
       return { ok: true };
     } catch (error) {
       return { ok: false, failure: pluginFailureOf(error) };
@@ -1645,17 +1655,22 @@ export function usePluginConfigMutations(
 
   return {
     save: async (id, patch, options) => {
-      const result = await write(id, patch, options);
-      await refresh(id);
-      return result;
+      try {
+        const result = await write(admitTransport(transport), id, patch, options);
+        await refresh(id);
+        return result;
+      } catch (error) { return { ok: false, failure: pluginFailureOf(error) }; }
     },
     applyRestart: async (id, patch, options) => {
+      let intent: ApiTransportPort;
+      try { intent = admitTransport(transport); }
+      catch (error) { return { saved: false, failure: pluginFailureOf(error) }; }
       /* An empty patch with no reset asked for is not a write: Apply & restart
          is also how an operator makes an *earlier* Save take effect, and
          PATCHing `{}` to do it would take the lifecycle lock for nothing and
          could 409 the restart it exists to perform. */
       if (Object.keys(patch).length > 0 || options.reset) {
-        const saved = await write(id, patch, options);
+        const saved = await write(intent, id, patch, options);
         if (!saved.ok) {
           await refresh(id);
           return { saved: false, failure: saved.failure };
@@ -1681,7 +1696,7 @@ export function usePluginConfigMutations(
        */
       const readBack = async (fallback: PluginRestartFacts): Promise<PluginRestartFacts> => {
         try {
-          const after = await runOperation(transport, pluginDetailOperation(id), unauthorized);
+          const after = await runOperation(intent, pluginDetailOperation(id), unauthorized);
           return { ...fallback, state: after.state, lastError: after.last_error };
         } catch {
           return fallback;
@@ -1689,7 +1704,7 @@ export function usePluginConfigMutations(
       };
 
       try {
-        const detail = await runOperation(transport, reloadPluginOperation(id), unauthorized);
+        const detail = await runOperation(intent, reloadPluginOperation(id), unauthorized);
         const restart = await readBack({
           failure: null,
           state: detail.state,
@@ -1722,9 +1737,9 @@ export function usePluginConfigMutations(
 
 export function useSettingsMutation(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): (patch: SettingsPatch) => Promise<SettingsBag> {
   const client = useQueryClient();
-  const save = useMutation({
+  const save = useRecoveryMutation(transport, {
     ...INTERACTIVE_WRITE_OPTIONS,
-    mutationFn: (patch: SettingsPatch) => runInteractiveWrite(transport, putSettingsOperation(patch), unauthorized),
+    mutationFn: (patch: SettingsPatch, transport: ApiTransportPort) => runInteractiveWrite(transport, putSettingsOperation(patch), unauthorized),
     /*
      * Invalidate; do **not** write the response through.
      *

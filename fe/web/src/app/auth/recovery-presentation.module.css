@@ -1,0 +1,14 @@
+@layer features {
+  .frame { min-block-size: 100dvh; background: var(--bg); color: var(--text); }
+  .menu { display: grid; place-items: center; min-inline-size: var(--rail-w-collapsed); min-block-size: var(--rail-w-collapsed); color: var(--text-2); }
+  .main { max-inline-size: 60rem; padding: var(--space-8); margin-inline: auto; }
+  .placeholder { min-block-size: 16rem; padding-block: var(--space-8); color: var(--text-3); font-size: var(--text-sm); }
+  .line { block-size: var(--space-3); margin-block: var(--space-6); max-inline-size: 36rem; background: var(--hairline); border-radius: var(--radius-sm); }
+  .status { position: fixed; inset-block-start: calc(env(safe-area-inset-top) + var(--rail-w-collapsed) + var(--space-3) * 2 + var(--space-2)); inset-inline-end: var(--space-4); z-index: var(--z-overlay); color: var(--text-2); background: var(--paper); border: 1px solid var(--hairline); border-radius: var(--radius-md); max-inline-size: calc(100vw - var(--space-8)); font-size: var(--text-xs); }
+  .status summary { padding: var(--space-3) var(--space-4); cursor: pointer; list-style: none; }
+  .status summary::marker { content: ''; }
+  .status[data-nc-recovery-status='connected'] summary { color: var(--text); }
+  .details { padding: var(--space-4); max-inline-size: 20rem; }
+  .details a { display: block; margin-block: var(--space-3); }
+  .workspace { display: contents; }
+}

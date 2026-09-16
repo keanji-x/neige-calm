@@ -4,6 +4,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { useState } from '../../ui/state/public.ts';
+import type { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { dlog } from './debug.ts';
 import { makeUuid } from './uuid.ts';
@@ -71,6 +72,7 @@ export interface ExitChange {
 }
 
 interface XtermViewProps {
+  recovery?: RecoveryAccess | null;
   /** `Terminal.id` from the kernel. */
   terminalId: string;
   theme?: 'light' | 'dark';
@@ -189,6 +191,7 @@ interface ExitInfo {
  */
 export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function XtermView({
   terminalId,
+  recovery = null,
   theme = 'light',
   onRoleChange,
   onExitChange,
@@ -555,7 +558,15 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     }
     lastFailedMountSizeRef.current = null;
 
+    let automaticAllowed = true;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryDelay = 500;
+    const permitted = () => recovery !== null ? recovery.read().phase === 'connected' : !__NC_BUNDLED__;
     const connect = () => {
+      if (!permitted()) return () => {};
+      const generation = recovery?.read().generation;
+      let live = true;
+      const current = () => live && permitted() && generation === recovery?.read().generation;
       setStatus('connecting');
       setCloseInfo(null);
       setProtocolError(null);
@@ -567,6 +578,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         location.host
       }/api/terminals/${encodeURIComponent(terminalId)}`;
       const ws = new WebSocket(wsUrl);
+      const handshakeTimer = __NC_BUNDLED__ ? setTimeout(() => { if (current()) ws.close(); }, 15_000) : null;
 
       // #177 — queue frames produced before the WS finishes its handshake.
       // The theme-effect (sibling below) can fire between `new WebSocket(…)`
@@ -577,9 +589,10 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       // zombie-message risk.
       const pendingFrames: ClientMsg[] = [];
       const send = (msg: ClientMsg) => {
+        if (!current()) { pendingFrames.length = 0; return; }
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify(msg));
-        } else if (ws.readyState === WebSocket.CONNECTING) {
+        } else if (ws.readyState === WebSocket.CONNECTING && typeof msg === 'object' && 'TerminalThemeUpdate' in msg) {
           pendingFrames.push(msg);
         }
       };
@@ -635,6 +648,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       // redundant and harmful.
 
       ws.onopen = () => {
+        if (!current()) { ws.close(); return; }
         setStatus('handshaking');
         send({
           ClientHello: {
@@ -680,26 +694,30 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         // OPEN inside `onopen`).
         while (pendingFrames.length > 0) {
           const queued = pendingFrames.shift()!;
-          ws.send(JSON.stringify(queued));
+          send(queued);
         }
       };
 
       ws.onmessage = (e) => {
+        if (!current()) return;
         let msg: DaemonMsg;
         try {
           msg = JSON.parse(typeof e.data === 'string' ? e.data : '') as DaemonMsg;
         } catch {
           return;
         }
+        if ('ProtocolError' in msg || 'TerminalExited' in msg) automaticAllowed = false;
         // Dispatch over the externally-tagged enum. Each branch narrows the
         // payload via TypeScript's discriminated-union rules; this is why
         // `DaemonMsg` is sourced from `generated-terminal.ts`.
         if ('ServerHello' in msg) {
+          if (handshakeTimer !== null) clearTimeout(handshakeTimer);
           const sh = msg.ServerHello;
           onRoleChangeRef.current?.(sh.client_role);
           setStatus('connected');
           awaitingOwner = false;
           connectionReady = true;
+          retryDelay = 500;
           term.options.disableStdin = false;
           // A full replay replaces the retained view; do not append it twice.
           term.reset();
@@ -725,7 +743,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
             term.write('\r\n'.repeat(term.rows));
           }
           term.write(Uint8Array.from(sh.snapshot.data), () => {
-            term.scrollToBottom();
+            if (current() && termRef.current === term) term.scrollToBottom();
           });
           // A pure expansion cannot clip the authoritative recovery model, so
           // it is safe to apply after the snapshot write is queued. This keeps
@@ -784,7 +802,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
             term.write('\r\n'.repeat(term.rows));
           }
           term.write(Uint8Array.from(s.data), () => {
-            term.scrollToBottom();
+            if (current() && termRef.current === term) term.scrollToBottom();
           });
           renderRev = s.render_rev;
           ptySeq = s.pty_seq;
@@ -910,6 +928,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       };
 
       ws.onclose = (e) => {
+        if (handshakeTimer !== null) clearTimeout(handshakeTimer);
         const wasAwaitingOwner = awaitingOwner;
         awaitingOwner = false;
         connectionReady = false;
@@ -931,6 +950,11 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         });
         const isChildExitClose =
           e.code === 1000 && e.reason === 'child-exited';
+        if (isChildExitClose || ![1001, 1006, 1011].includes(e.code)) automaticAllowed = false;
+        if (__NC_BUNDLED__ && automaticAllowed && current() && retryTimer === null) {
+          retryTimer = setTimeout(() => { retryTimer = null; if (automaticAllowed && permitted()) reconnect(); }, retryDelay * (0.75 + Math.random() * 0.5));
+          retryDelay = Math.min(8000, retryDelay * 2);
+        }
         // Don't clobber a more-specific terminal state (`exited`,
         // `protocol-error`) — those carry richer information than the
         // generic close code. A `child-exited` close promotes us to
@@ -1080,6 +1104,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       void ptySeq;
 
       return () => {
+        live = false;
+        if (handshakeTimer !== null) clearTimeout(handshakeTimer);
         if (flushResizeRef.current === onResize) flushResizeRef.current = null;
         ro.disconnect();
         if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
@@ -1128,19 +1154,31 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     };
     let disconnect = connect();
     const reconnect = () => {
-      disconnect();
-      disconnect = connect();
+      if (!permitted()) return;
+      disconnect(); disconnect = connect();
     };
+    let wasPermitted = permitted();
+    const unsubscribeRecovery = recovery?.subscribe(() => {
+      const now = permitted();
+      if (!now) {
+        if (retryTimer !== null) clearTimeout(retryTimer);
+        retryTimer = null; disconnect(); disconnect = () => {};
+        term.options.disableStdin = true; setStatus('closed');
+      } else if (!wasPermitted && automaticAllowed) reconnect();
+      wasPermitted = now;
+    });
     reconnectRef.current = reconnect;
     return () => {
       if (reconnectRef.current === reconnect) reconnectRef.current = null;
+      unsubscribeRecovery?.();
+      if (retryTimer !== null) clearTimeout(retryTimer);
       disconnect();
       term.dispose();
       removeTestDumpHook();
       if (termRef.current === term) termRef.current = null;
     };
     // Theme changes and connection status must never tear down the buffer.
-  }, [terminalId, layoutRetryKey]);
+  }, [terminalId, layoutRetryKey, recovery]);
 
   return (
     <div ref={rootRef} className="xterm-view" data-nc-terminal-id={terminalId}>

@@ -9,6 +9,26 @@ import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AlertDialog
 
 class MainActivity : TauriActivity() {
+  private var networks: android.net.ConnectivityManager? = null
+  private val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+    override fun onAvailable(network: android.net.Network) = refreshNetwork()
+    override fun onLost(network: android.net.Network) = refreshNetwork()
+    override fun onCapabilitiesChanged(network: android.net.Network, capabilities: android.net.NetworkCapabilities) = refreshNetwork()
+  }
+  private fun refreshNetwork() {
+    if (runCatching { ConnectionProfiles(applicationContext).read().tailscaleEnabled }.getOrDefault(false)) P2PConnection.wake(applicationContext)
+  }
+  override fun onResume() {
+    super.onResume()
+    networks = getSystemService(android.net.ConnectivityManager::class.java)
+    runCatching { networks?.registerDefaultNetworkCallback(networkCallback) }
+    refreshNetwork()
+  }
+  override fun onPause() {
+    runCatching { networks?.unregisterNetworkCallback(networkCallback) }
+    networks = null; P2PConnection.pause()
+    super.onPause()
+  }
   private var connectionBack: OnBackPressedCallback? = null
   // MainActivity owns history and the workspace-to-configuration transition.
   // Wry registers its callback later, so its built-in handler must stay disabled.
