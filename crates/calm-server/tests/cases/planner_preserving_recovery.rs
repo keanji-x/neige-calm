@@ -57,11 +57,7 @@ async fn human_send_recovers_failed_conversation_without_reset_after_restart() {
     let boot = boot_fake_running().await;
     boot.state.shared_codex_appserver.fail_turn_start_for_test();
     let (card, runtime, thread, entry) = failed_conversation(&boot).await;
-    let before = boot
-        .repo
-        .harness_item_list_by_card(card.id.as_str(), 0, 100, false)
-        .await
-        .unwrap();
+    let before = conversation_rows(&boot, &card).await;
     let (status, body) = post_json(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
@@ -80,16 +76,12 @@ async fn human_send_recovers_failed_conversation_without_reset_after_restart() {
         snapshot.pending_entries().contains(&entry),
         "queued identity and contents survive"
     );
-    let after = boot
-        .repo
-        .harness_item_list_by_card(card.id.as_str(), 0, 100, false)
-        .await
-        .unwrap();
+    let after = conversation_rows(&boot, &card).await;
     for item in before {
         assert!(
-            after
-                .iter()
-                .any(|retained| retained.id == item.id && retained.params == item.params)
+            after.iter().any(
+                |retained| retained["id"] == item["id"] && retained["params"] == item["params"]
+            )
         );
     }
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM worker_sessions WHERE card_id = ?")
@@ -155,13 +147,14 @@ async fn system_error_completion_keeps_original_error_without_automatic_retry() 
     });
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let items = boot
-            .repo
-            .harness_item_list_by_card(card.id.as_str(), 0, 100, false)
-            .await
-            .unwrap();
-        if let Some(item) = items.iter().find(|item| item.method == "turn/completed") {
-            assert!(item.params.contains("Usage limit exceeded"));
+        let items = conversation_rows(&boot, &card).await;
+        if let Some(item) = items.iter().find(|item| item["method"] == "turn/completed") {
+            assert!(
+                item["params"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Usage limit exceeded")
+            );
             break;
         }
         assert!(
@@ -172,8 +165,14 @@ async fn system_error_completion_keeps_original_error_without_automatic_retry() 
     }
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let count:i64=sqlx::query_scalar("SELECT count(*) FROM events WHERE scope_card=? AND kind='harness.item.added' AND json_extract(payload,'$.method')='turn/completed'")
-            .bind(card.id.as_str()).fetch_one(boot.repo.pool()).await.unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM events WHERE scope_card=? AND kind='harness.item.added' AND \
+            json_extract(payload,'$.method')='turn/completed'",
+        )
+        .bind(card.id.as_str())
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
         if count == 1 {
             break;
         }
@@ -315,10 +314,13 @@ async fn recovery_refuses_every_retired_or_untrusted_carrier() {
         "UPDATE worker_sessions SET state='superseded' WHERE id=?",
         "UPDATE worker_sessions SET completed_at_ms=1 WHERE id=?",
         "UPDATE worker_sessions SET queue_harvested_at_ms=1 WHERE id=?",
-        "UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.wedged_reason','interrupt_timeout') WHERE id=?",
+        "UPDATE worker_sessions SET \
+            handle_state_json=json_set(handle_state_json,'$.wedged_reason','interrupt_timeout') WHERE id=?",
         "UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.schema_version',999) WHERE id=?",
-        "UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.last_thread_id','different-thread') WHERE id=?",
-        "UPDATE worker_sessions SET thread_id=NULL,handle_state_json=json_remove(handle_state_json,'$.last_thread_id') WHERE id=?",
+        "UPDATE worker_sessions SET \
+            handle_state_json=json_set(handle_state_json,'$.last_thread_id','different-thread') WHERE id=?",
+        "UPDATE worker_sessions SET \
+            thread_id=NULL,handle_state_json=json_remove(handle_state_json,'$.last_thread_id') WHERE id=?",
         "UPDATE tracks SET lifecycle='done' WHERE id=(SELECT track_id FROM worker_sessions WHERE id=?)",
         "UPDATE cards SET session_id=NULL WHERE session_id=?",
     ] {
@@ -687,22 +689,18 @@ async fn recovery_backfills_the_matching_error_when_quiescence_precedes_completi
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let rows = boot
-        .repo
-        .harness_item_list_by_card(card.id.as_str(), 0, 100, false)
-        .await
-        .unwrap();
+    let rows = conversation_rows(&boot, &card).await;
     let outcomes = rows
         .iter()
-        .filter(|r| r.method == "turn/completed")
+        .filter(|r| r["method"] == "turn/completed")
         .collect::<Vec<_>>();
     assert_eq!(outcomes.len(), 1);
-    let outcome: Value = serde_json::from_str(&outcomes[0].params).unwrap();
+    let outcome: Value = serde_json::from_str(outcomes[0]["params"].as_str().unwrap()).unwrap();
     assert_eq!(outcome["id"], "failed-turn");
     assert_eq!(outcome["error"]["message"], "Usage limit exceeded");
     assert!(outcome.get("items").is_none());
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM events WHERE scope_card=? AND kind='harness.item.added' AND json_extract(payload,'$.item_db_id')=?")
-        .bind(card.id.as_str()).bind(outcomes[0].id).fetch_one(boot.repo.pool()).await.unwrap();
+        .bind(card.id.as_str()).bind(outcomes[0]["id"].as_i64().unwrap()).fetch_one(boot.repo.pool()).await.unwrap();
     assert_eq!(
         count, 1,
         "recovered original error must refresh the open browser"

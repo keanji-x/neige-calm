@@ -3993,7 +3993,8 @@ impl SharedCodexAppServer {
                             // Decide inside the same transaction as the token
                             // choice: a systemError can arrive during replay.
                             let failed: bool = sqlx::query_scalar(
-                                "SELECT EXISTS(SELECT 1 FROM cards c JOIN worker_sessions ws ON ws.id=c.session_id WHERE c.id=?1 AND ws.state='failed' AND json_extract(ws.handle_state_json,'$.mode')=?2)"
+                                "SELECT EXISTS(SELECT 1 FROM cards c JOIN worker_sessions ws ON ws.id=c.session_id WHERE c.id=?1 \
+                                    AND ws.state='failed' AND json_extract(ws.handle_state_json,'$.mode')=?2)"
                             ).bind(&card_id).bind(calm_types::harness::HARNESS_MODE).fetch_one(&mut **tx).await?;
                             return Ok(if failed { ColdResumeAuthorization::Skip } else { ColdResumeAuthorization::NoMcp });
                         };

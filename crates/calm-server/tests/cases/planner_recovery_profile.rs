@@ -133,7 +133,7 @@ async fn duplicate_failed_completions_have_one_persisted_outcome() {
     let harness = PlannerHarness::run(PlannerHarnessParams {
         worker_session_id: runtime,
         card_id: card.id.clone(),
-        track_id: card.track_id,
+        track_id: card.track_id.clone(),
         thread_id: Some(thread.clone()),
         repo: boot.repo.clone(),
         events: boot.state.events.clone(),
@@ -155,17 +155,15 @@ async fn duplicate_failed_completions_have_one_persisted_outcome() {
     });
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let rows = boot
-            .repo
-            .harness_item_list_by_card(card.id.as_str(), 0, 100, false)
-            .await
-            .unwrap();
+        let rows = conversation_rows(&boot, &card).await;
         if rows
             .iter()
-            .any(|r| r.item_uuid.as_deref() == Some("completion-barrier"))
+            .any(|r| r["item_uuid"].as_str() == Some("completion-barrier"))
         {
             assert_eq!(
-                rows.iter().filter(|r| r.method == "turn/completed").count(),
+                rows.iter()
+                    .filter(|r| r["method"] == "turn/completed")
+                    .count(),
                 1,
                 "duplicate provider notification must not duplicate the visible error"
             );

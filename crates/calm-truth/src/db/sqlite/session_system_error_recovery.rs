@@ -15,11 +15,11 @@ use crate::model::now_ms;
 pub async fn session_system_error_recovery_matches_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
-    runtime_id: &str,
+    worker_session_id: &str,
     thread_id: &str,
     snapshot: &Value,
 ) -> Result<bool> {
-    matches(tx.as_mut(), card_id, runtime_id, thread_id, snapshot).await
+    matches(tx.as_mut(), card_id, worker_session_id, thread_id, snapshot).await
 }
 
 /// Read-side eligibility uses the very same predicate as final restoration.
@@ -27,17 +27,17 @@ pub async fn session_system_error_recovery_matches_tx(
 pub async fn session_system_error_recovery_matches(
     pool: &SqlitePool,
     card_id: &str,
-    runtime_id: &str,
+    worker_session_id: &str,
     thread_id: &str,
     snapshot: &Value,
 ) -> Result<bool> {
-    matches(pool, card_id, runtime_id, thread_id, snapshot).await
+    matches(pool, card_id, worker_session_id, thread_id, snapshot).await
 }
 
 async fn matches<'e>(
     executor: impl Executor<'e, Database = Sqlite>,
     card_id: &str,
-    runtime_id: &str,
+    worker_session_id: &str,
     thread_id: &str,
     snapshot: &Value,
 ) -> Result<bool> {
@@ -61,7 +61,7 @@ async fn matches<'e>(
              AND COALESCE(NULLIF(trim(ws.thread_id), ''), json_extract(ws.handle_state_json, '$.last_thread_id')) = ?3
              AND (json_extract(ws.handle_state_json, '$.last_thread_id') IS NULL
                   OR json_extract(ws.handle_state_json, '$.last_thread_id') = ?3)"#,
-    ).bind(card_id).bind(runtime_id).bind(thread_id).bind(HARNESS_MODE).bind(HARNESS_SNAPSHOT_SCHEMA_VERSION).bind(serde_json::to_string(&HarnessPhaseTag::Wedged)?).bind(HARNESS_SYSTEM_ERROR_REASON).fetch_optional(executor).await?;
+    ).bind(card_id).bind(worker_session_id).bind(thread_id).bind(HARNESS_MODE).bind(HARNESS_SNAPSHOT_SCHEMA_VERSION).bind(serde_json::to_string(&HarnessPhaseTag::Wedged)?).bind(HARNESS_SYSTEM_ERROR_REASON).fetch_optional(executor).await?;
     Ok(raw
         .map(|raw| serde_json::from_str::<Value>(&raw))
         .transpose()?
@@ -74,12 +74,18 @@ async fn matches<'e>(
 pub async fn session_resume_system_error_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
-    runtime_id: &str,
+    worker_session_id: &str,
     thread_id: &str,
     snapshot: &Value,
 ) -> Result<bool> {
-    if !session_system_error_recovery_matches_tx(tx, card_id, runtime_id, thread_id, snapshot)
-        .await?
+    if !session_system_error_recovery_matches_tx(
+        tx,
+        card_id,
+        worker_session_id,
+        thread_id,
+        snapshot,
+    )
+    .await?
     {
         return Ok(false);
     }
@@ -87,7 +93,7 @@ pub async fn session_resume_system_error_tx(
         r#"UPDATE worker_sessions SET state = 'idle', thread_id = ?2,
              handle_state_json = json_set(handle_state_json, '$.phase', 'idle', '$.wedged_reason', NULL),
              updated_at_ms = ?3 WHERE id = ?1 AND state = 'failed'"#,
-    ).bind(runtime_id).bind(thread_id).bind(now_ms()).execute(&mut **tx).await?;
+    ).bind(worker_session_id).bind(thread_id).bind(now_ms()).execute(&mut **tx).await?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -96,7 +102,7 @@ pub async fn session_resume_system_error_tx(
 pub async fn session_set_failed_harness_snapshot_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
-    runtime_id: &str,
+    worker_session_id: &str,
     snapshot: &Value,
 ) -> Result<bool> {
     let result = sqlx::query(
@@ -109,7 +115,7 @@ pub async fn session_set_failed_harness_snapshot_tx(
           AND json_extract(handle_state_json,'$.wedged_reason')=?7"#,
     )
     .bind(card_id)
-    .bind(runtime_id)
+    .bind(worker_session_id)
     .bind(serde_json::to_string(snapshot)?)
     .bind(now_ms())
     .bind(HARNESS_MODE)

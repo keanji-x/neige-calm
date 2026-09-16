@@ -512,6 +512,26 @@
 #   execution concept. That is a design question, not a rename, and #1316
 #   explicitly refuses to smuggle it into a mechanical slice.
 #
+#   A raise of exactly +3, taken once by #1718, for existing transcript
+#   contracts used by lossless conversation recovery. Closed per-file ledger:
+#
+#     crates/calm-server/src/harness/run_loop.rs                    14 -> 13
+#     crates/calm-server/src/routes/planner_recovery.rs              0 ->  1
+#     crates/calm-server/tests/cases/planner_preserving_recovery.rs  0 ->  1
+#     crates/calm-truth/src/db/sqlite/out_of_domain.rs               13 -> 15
+#                                                          net    281 -> 284
+#
+#   The four additions are the existing Event::HarnessItemAdded constructor
+#   announcing a recovered outcome, one existing repo.harness_item_insert call
+#   seeding retained history through production storage, and two references to
+#   the frozen table name harness_items in the idempotent outcome SELECT/INSERT.
+#   The old run-loop insertion call is removed in favor of the common outcome
+#   writer. Test reads use the actual conversation REST surface; no new local
+#   identifier or prose uses the retired noun. Renaming these four contracts
+#   requires the separate event/API/table retirement, not a recovery patch.
+#   This ledger does not admit any future occurrence; subsequent raises require
+#   their own closed enumeration. The commit lists each added source line.
+#
 # WHAT A TEXT COUNT CANNOT SEE — #1445, AND WHY THE ANSWER IS A RAISE
 #
 #   This gate counts TEXT. It therefore cannot see a retiring word that is

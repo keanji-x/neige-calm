@@ -88,7 +88,10 @@ fn repo_relative(path: &Path) -> String {
 /// own copy of the predicate stays green while the real one rots, which is a
 /// gate that only ever proves itself.
 fn line_writes_handle_state(trimmed: &str) -> bool {
-    (trimmed.contains("handle_state_json =") && !trimmed.starts_with("let "))
+    let assigns_column = trimmed
+        .match_indices("handle_state_json")
+        .any(|(start, name)| trimmed[start + name.len()..].trim_start().starts_with('='));
+    (assigns_column && !trimmed.starts_with("let "))
         || trimmed.contains("INSERT INTO worker_sessions")
 }
 
@@ -143,8 +146,8 @@ fn writers_in_files(files: Vec<PathBuf>) -> BTreeSet<String> {
 /// `row` — takes the queue it writes from the runtime's own row (directly, or
 /// from a snapshot this transaction just read from it).
 /// `carried` — writes a queue that did not come from the row. Each one needs a
-/// written argument for why it cannot resurrect a transferred queue; there is
-/// one today and its argument is next to it.
+/// written argument for why it cannot resurrect a transferred queue; each
+/// argument is next to its entry.
 /// `not-a-queue` — writes the column without touching `pending_queue`.
 const FROZEN_WRITERS: &[(&str, &str)] = &[
     // Insert/refresh primitives. They write whatever their caller assembled,
@@ -187,6 +190,21 @@ const FROZEN_WRITERS: &[(&str, &str)] = &[
     (
         "crates/calm-truth/src/db/sqlite/session_row.rs::session_insert_tx",
         "row",
+    ),
+    // Recovery changes only phase/reason in the existing JSON document after
+    // exact ownership and snapshot comparison; it never replaces the queue.
+    (
+        "crates/calm-truth/src/db/sqlite/session_system_error_recovery.rs::session_resume_system_error_tx",
+        "not-a-queue",
+    ),
+    // This queue is owned by the live loop, not read back from the database.
+    // A failed completion or the loop's quiesce command flushes it only while
+    // this is the card's current, uncompleted, unharvested failed session.
+    // The owner-loop barrier prevents an advanced replay watermark from being
+    // paired with an earlier queue; the row guards exclude transferred input.
+    (
+        "crates/calm-truth/src/db/sqlite/session_system_error_recovery.rs::session_set_failed_harness_snapshot_tx",
+        "carried",
     ),
     // The scheduler edits one unrelated key with `json_set` / `json_remove`.
     (
@@ -255,6 +273,11 @@ pub(crate) fn a_synchronous_writer_behind_another_prefix(tx: &mut Tx) -> Result<
     Ok(())
 }
 
+pub async fn a_compact_writer(tx: &mut Tx) -> Result<()> {
+    sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2").execute(tx).await?;
+    Ok(())
+}
+
 pub async fn a_writer_hiding_in_a_multi_column_set(tx: &mut Tx) -> Result<()> {
     sqlx::query(
         r"UPDATE worker_sessions
@@ -276,6 +299,10 @@ pub async fn a_writer_hiding_in_a_multi_column_set(tx: &mut Tx) -> Result<()> {
         .map(|entry| entry.rsplit("::").next().unwrap_or(entry).to_owned())
         .collect();
     assert!(
+        names.contains("a_compact_writer"),
+        "spacing must not hide an unclassified writer: {names:#?}"
+    );
+    assert!(
         names.contains("a_writer_hiding_behind_a_visibility_prefix"),
         "the scanner must see a writer behind a visibility prefix — dropping one prefix from \
          its list is exactly how the two mirror writers would vanish: {names:#?}"
@@ -290,4 +317,21 @@ pub async fn a_writer_hiding_in_a_multi_column_set(tx: &mut Tx) -> Result<()> {
          scanner's list does not hide the writer, it files it under the PREVIOUS function's \
          name, which then matches the frozen inventory and keeps the gate green: {names:#?}"
     );
+}
+
+#[test]
+fn writer_inventory_recognizes_compact_assignments() {
+    for statement in [
+        "UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2",
+        "UPDATE worker_sessions SET state=?1,handle_state_json\t=\t?2 WHERE id=?3",
+    ] {
+        assert!(
+            line_writes_handle_state(statement),
+            "writer hidden by spacing: {statement}"
+        );
+    }
+    assert!(!line_writes_handle_state("let handle_state_json = value;"));
+    assert!(!line_writes_handle_state(
+        "SELECT handle_state_json FROM worker_sessions"
+    ));
 }

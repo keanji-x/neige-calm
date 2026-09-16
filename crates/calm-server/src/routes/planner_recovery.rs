@@ -8,7 +8,8 @@ use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState
 use crate::state::{CodexShellState, RouteState, WorkerState};
 use calm_types::harness::HARNESS_SYSTEM_ERROR_REASON;
 
-pub(super) const RECOVERY_NOTICE: &str = "Conversation paused after a Codex error. Resolve the error shown in the conversation, then send a message to resume. Your history and queued messages are retained.";
+pub(super) const RECOVERY_NOTICE: &str = "Conversation paused after a Codex error. Resolve the error shown in the conversation, then send \
+    a message to resume. Your history and queued messages are retained.";
 
 pub(super) async fn candidate(
     s: &RouteState,
