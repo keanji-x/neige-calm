@@ -262,6 +262,7 @@ pub(super) struct Inner {
     /// that was true when only the first case existed, and stopped being true
     /// when the third was added without this sentence being revisited.
     issuance_block: Mutex<Option<String>>,
+    notification_processing: Mutex<()>,
     /// When the current run of consecutive refusals began, or `None` when the
     /// last attempt succeeded. Feeds
     /// [`HarnessConfig::transient_silence_budget`].
@@ -829,6 +830,42 @@ impl PlannerHarness {
         issue_interrupt(&self.inner, reason).await
     }
 
+    /// Stop only this failed loop, without interrupting or sealing its provider
+    /// thread. Recovery probes that exact thread before granting authority again.
+    pub(crate) async fn quiesce_system_error_for_recovery(&self) -> Result<()> {
+        let _durable = self.inner.durable_observation.lock().await;
+        let _issuance = self.inner.issuance.lock().await;
+        let _notification = self.inner.notification_processing.lock().await;
+        if !matches!(&*self.inner.state.lock().await, HarnessState::Wedged { reason, .. } if reason == "system_error")
+        {
+            return Err(CalmError::Conflict(
+                "conversation changed before recovery".into(),
+            ));
+        }
+        if !self.inner.steered_into_running_turn.lock().await.is_empty() {
+            return Err(CalmError::ServiceUnavailable(
+                "Waiting for the failed turn to settle its messages before recovery; retry shortly.".into()));
+        }
+        persist_failed_system_error_snapshot(&self.inner).await?;
+        *self
+            .inner
+            .observations_closed
+            .lock()
+            .expect("observation gate") = true;
+        self.inner.shutting_down.store(true, Ordering::SeqCst);
+        let _ = self.inner.shutdown.send(());
+        if let Some(abort) = self
+            .inner
+            .abort_handle
+            .lock()
+            .expect("harness abort handle")
+            .take()
+        {
+            abort.abort();
+        }
+        Ok(())
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         self.shutdown_inner(false, false).await
     }
@@ -1253,6 +1290,7 @@ fn inner_from_params(
         interrupt_deadline: Mutex::new(None),
         issuance_retry_after: Mutex::new(None),
         issuance_block: Mutex::new(None),
+        notification_processing: Mutex::new(()),
         refusing_since: Mutex::new(None),
         #[cfg(feature = "fixtures")]
         refused_issuances: AtomicU64::new(0),
@@ -1828,10 +1866,13 @@ async fn handle_steer(
 /// occur (a steer names the running turn, and the arm accepts completions
 /// for the running turn only); they are swept all the same rather than left
 /// to wait for a completion that will never come, and the mismatch is logged.
-async fn restore_steered_entries_codex_dropped(inner: &Arc<Inner>, turn_id: &str) {
+async fn restore_steered_entries_codex_dropped(
+    inner: &Arc<Inner>,
+    turn_id: &str,
+) -> Vec<QueueEntryId> {
     let steered = std::mem::take(&mut *inner.steered_into_running_turn.lock().await);
     if steered.is_empty() {
-        return;
+        return Vec::new();
     }
     let mut restored = Vec::new();
     for steered in steered {
@@ -1902,7 +1943,7 @@ async fn restore_steered_entries_codex_dropped(inner: &Arc<Inner>, turn_id: &str
         restored.push(steered.entry);
     }
     if restored.is_empty() {
-        return;
+        return Vec::new();
     }
     let ids = restored
         .iter()
@@ -1919,6 +1960,10 @@ async fn restore_steered_entries_codex_dropped(inner: &Arc<Inner>, turn_id: &str
         entry.bump_rev_for_restore();
     }
     rebuffer_head(inner, restored).await;
+    ids
+}
+
+async fn announce_restored_entries(inner: &Arc<Inner>, ids: Vec<QueueEntryId>) {
     for entry_id in ids {
         if let Err(error) = emit_queue_changed(
             inner,
@@ -2189,6 +2234,7 @@ async fn suppress_duplicate_hook_stop(inner: &Arc<Inner>, entry: &QueueEntry) ->
 }
 
 async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> {
+    let _notification = inner.notification_processing.lock().await;
     let current_thread = inner.thread_id.read().await.clone();
     if notif.thread_id() != current_thread.as_deref() {
         return Ok(());
@@ -2225,6 +2271,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     reason: "system_error".into(),
                 };
                 *inner.issued_turn_id.lock().await = None;
+                *inner.interrupt_deadline.lock().await = None;
             } else if status.get("type").and_then(Value::as_str) == Some("idle") {
                 let mut state = inner.state.lock().await;
                 if matches!(*state, HarnessState::Resumed { .. }) {
@@ -2309,14 +2356,41 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     last_turn_id: target_turn_id,
                 };
                 *inner.interrupt_deadline.lock().await = None;
-                persist_turn_outcome(inner, &turn_id, &turn).await;
+                let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
                 // The Stop path is the one that drops steered input (see
                 // `SteeredEntry`); the sweep runs before the phase persist so
                 // the phase event carries the restored queue.
-                restore_steered_entries_codex_dropped(inner, &turn_id).await;
-                return persist_snapshot_stamping_issued_head(inner).await;
+                let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
+                persist_snapshot_stamping_issued_head(inner).await?;
+                announce_restored_entries(inner, restored).await;
+                return Ok(());
             }
             let state = inner.state.lock().await.clone();
+            // Codex sends systemError BEFORE the failed turn/completed. Keep
+            // the exact outcome even though the harness is now blocked. Only
+            // the explicit ID of our last turn qualifies; stale completions
+            // and missing IDs cannot settle another turn or unpause issuance.
+            if matches!(&state, HarnessState::Wedged { reason, .. } if reason == "system_error")
+                && turn.get("id").and_then(Value::as_str) == fallback_turn_id.as_deref()
+                && fallback_turn_id.is_some()
+            {
+                let item = persist_turn_outcome(inner, &turn_id, &turn).await;
+                let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
+                persist_failed_system_error_snapshot(inner).await?;
+                announce_restored_entries(inner, restored).await;
+                if let Some(item_id) = item {
+                    emit_item_added(
+                        inner,
+                        item_id,
+                        None,
+                        None,
+                        Some(turn_id),
+                        "turn/completed".into(),
+                    )
+                    .await?;
+                }
+                return Ok(());
+            }
             let active = state.active_turn_id();
             if !matches!(state, HarnessState::TurnRunning { .. })
                 || active.as_deref() != Some(turn_id.as_str())
@@ -2334,12 +2408,14 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 last_turn_id: turn_id.clone(),
             };
             *inner.interrupt_deadline.lock().await = None;
-            persist_turn_outcome(inner, &turn_id, &turn).await;
+            let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
             // A turn can end without a model request after the steer on
             // this branch too (a model error, `max_turn_duration` when the
             // interrupt was issued elsewhere); same sweep, same order.
-            restore_steered_entries_codex_dropped(inner, &turn_id).await;
-            return persist_snapshot_stamping_issued_head(inner).await;
+            let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
+            persist_snapshot_stamping_issued_head(inner).await?;
+            announce_restored_entries(inner, restored).await;
+            return Ok(());
         }
         // #1625 P1: the turn-outcome row is written only from `TurnCompleted`
         // above — codex 0.153.4 has no `turn/aborted` notification; an
@@ -2379,8 +2455,10 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                 last_turn_id: target_turn_id,
             };
             *inner.interrupt_deadline.lock().await = None;
-            restore_steered_entries_codex_dropped(inner, &aborted_turn_id).await;
-            return persist_snapshot_stamping_issued_head(inner).await;
+            let restored = restore_steered_entries_codex_dropped(inner, &aborted_turn_id).await;
+            persist_snapshot_stamping_issued_head(inner).await?;
+            announce_restored_entries(inner, restored).await;
+            return Ok(());
         }
         Notification::Item { method, params } if should_persist_item_method(&method) => {
             let Some(item) = params.get("item") else {
@@ -4848,7 +4926,7 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
 /// FSM has already moved to `TurnCompleted` and the snapshot commit that
 /// follows is what unblocks the next turn; a missing outcome line must not
 /// stall the harness.
-async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) {
+async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -> Option<i64> {
     // Same guard as the `turn/plan/updated` arm: the transcript table's
     // `thread_id` column is NOT NULL, and `Notification::TurnCompleted.thread_id` is
     // `unwrap_or_default()` upstream, so the harness's own thread is the only
@@ -4860,7 +4938,7 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) {
             turn_id,
             "planner harness skipping turn/completed row: no thread is known yet"
         );
-        return;
+        return None;
     };
     let mut outcome = turn.clone();
     if let Some(object) = outcome.as_object_mut() {
@@ -4871,10 +4949,10 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) {
         Ok(json) => json,
         Err(error) => {
             tracing::warn!(error = %error, turn_id, "planner harness could not serialize turn outcome");
-            return;
+            return None;
         }
     };
-    if let Err(error) = inner
+    match inner
         .repo
         .harness_item_insert(
             &inner.worker_session_id,
@@ -4891,13 +4969,40 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) {
         )
         .await
     {
-        tracing::warn!(
-            worker_session_id = %inner.worker_session_id,
-            card_id = %inner.card_id,
-            turn_id,
-            error = %error,
-            "planner harness could not persist turn outcome row"
-        );
+        Ok(id) => Some(id),
+        Err(error) => {
+            tracing::warn!(
+                worker_session_id = %inner.worker_session_id,
+                card_id = %inner.card_id,
+                turn_id,
+                error = %error,
+                "planner harness could not persist turn outcome row"
+            );
+            None
+        }
+    }
+}
+
+async fn persist_failed_system_error_snapshot(inner: &Arc<Inner>) -> Result<()> {
+    let snapshot = serde_json::to_value(snapshot_for(inner).await)?;
+    let card = inner.card_id.to_string();
+    let id = inner.worker_session_id.clone();
+    let written =
+        write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                Ok(crate::db::sqlite::session_set_failed_harness_snapshot_tx(
+                    tx, &card, &id, &snapshot,
+                )
+                .await?)
+            })
+        })
+        .await?;
+    if written {
+        Ok(())
+    } else {
+        Err(CalmError::Conflict(
+            "failed conversation changed while settling its input".into(),
+        ))
     }
 }
 

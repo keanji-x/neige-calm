@@ -66,6 +66,11 @@ mod session_mirror;
 mod session_projection;
 mod session_repo_impl;
 mod session_row;
+mod session_system_error_recovery;
+pub use session_system_error_recovery::{
+    session_resume_system_error_tx, session_set_failed_harness_snapshot_tx,
+    session_system_error_recovery_matches_tx,
+};
 mod task;
 mod task_attempt;
 #[cfg(test)]

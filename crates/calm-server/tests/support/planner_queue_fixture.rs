@@ -267,6 +267,7 @@ async fn boot_inner(
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let daemon_handle = Arc::clone(&daemon);
+    let state = state.with_shared_codex_appserver(daemon.clone());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
         worker_session_id: worker_session_id.clone(),

@@ -1221,7 +1221,7 @@ pub(crate) async fn send_planner_input(
     // `/planner/reset` can't supersede the just-recovered runtime between
     // recovery and the observe/audit below.
     let (runtime, harness, _recovery_guard) =
-        ensure_live_planner_harness(&s, &w, &cs, &card.id).await?;
+        ensure_live_planner_harness(&s, &w, &cs, &card.id, actor.as_str() == "user").await?;
     let track = s
         .repo
         .track_get(card.track_id.as_str())
@@ -1595,7 +1595,7 @@ pub(crate) async fn get_planner_run(
         // not the place to raise it, and "supported" would be the wrong guess.
         None => false,
     };
-    let dormant = GetPlannerRunResponse {
+    let mut dormant = GetPlannerRunResponse {
         card_id: card.id.clone(),
         worker_session_id: None,
         phase: None,
@@ -1614,6 +1614,16 @@ pub(crate) async fn get_planner_run(
         .session_projection_active_for_card(&card.id.to_string())
         .await?
     else {
+        if let Some(runtime) = s
+            .repo
+            .session_projection_projectable_for_card(&card.id.to_string())
+            .await?
+            && let Some(snapshot) = super::planner_recovery::snapshot(&runtime)
+        {
+            dormant.blocked_reason = Some(super::planner_recovery::RECOVERY_NOTICE.into());
+            (dormant.pending, dormant.pending_overflow) =
+                page_pending_entries(&card.id, &snapshot.pending_entries());
+        }
         return Ok(Json(dormant));
     };
     let Some(harness) = s.harness.get(&runtime.id) else {
@@ -1653,7 +1663,12 @@ pub(crate) async fn get_planner_run(
 /// recovery uses (snapshot load, catch-up event replay, run, registry
 /// insert). Spawning does no Codex RPC, so recovery is cheap.
 ///
-/// No active runtime row, or an active row that is unrecoverable
+/// A human send can also recover a current `failed / wedged / system_error`
+/// carrier through `planner_recovery`: it resumes the exact provider thread
+/// and restores the existing row, retaining history and pending message IDs.
+/// Machine-authored sends cannot exercise that exception.
+///
+/// No eligible runtime row, or an active row that is unrecoverable
 /// (no thread anywhere — neither `runtime.thread_id` nor the snapshot's
 /// `last_thread_id` — from a half-failed start, or a corrupt snapshot)
 /// → typed 409 [`CalmError::PlannerHarnessDormant`] so the client can steer
@@ -1683,6 +1698,7 @@ async fn ensure_live_planner_harness(
     w: &WorkerState,
     cs: &CodexShellState,
     card_id: &CardId,
+    human_send: bool,
 ) -> Result<(
     WorkerSessionProjection,
     crate::harness::PlannerHarness,
@@ -1693,12 +1709,12 @@ async fn ensure_live_planner_harness(
             "no recoverable planner harness session for card {card_id}; reset to start a session",
         ))
     };
-    let runtime = s
-        .repo
-        .session_projection_active_for_card(&card_id.to_string())
+    let runtime = super::planner_recovery::candidate(s, card_id, human_send)
         .await?
         .ok_or_else(dormant)?;
-    if let Some(harness) = s.harness.get(&runtime.id) {
+    if runtime.status != WorkerSessionState::Failed
+        && let Some(harness) = s.harness.get(&runtime.id)
+    {
         return Ok((runtime, harness, None));
     }
 
@@ -1706,11 +1722,14 @@ async fn ensure_live_planner_harness(
     // Re-fetch under the lock and use only this row: `/planner/reset` may have
     // superseded the pre-lock runtime, and a racing Send may have already
     // recovered the harness.
-    let runtime = s
-        .repo
-        .session_projection_active_for_card(&card_id.to_string())
+    let runtime = super::planner_recovery::candidate(s, card_id, human_send)
         .await?
         .ok_or_else(dormant)?;
+    let runtime = if runtime.status == WorkerSessionState::Failed {
+        super::planner_recovery::recover(s, w, cs, runtime).await?
+    } else {
+        runtime
+    };
     if let Some(harness) = s.harness.get(&runtime.id) {
         return Ok((runtime, harness, Some(guard)));
     }

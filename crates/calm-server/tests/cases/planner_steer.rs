@@ -1220,3 +1220,113 @@ async fn a_turn_completing_during_the_steer_leaves_the_entry_queued_exactly_once
         "one row for the sentence — the drain's, keyed by the same id: {rows:?}"
     );
 }
+
+#[tokio::test]
+async fn a_system_error_retains_a_dropped_steer_in_the_failed_snapshot() {
+    const TEXT: &str = "retain this steer across recovery";
+    let boot = boot_with_a_running_turn().await;
+    let entry_id = queue_one(&boot, TEXT).await;
+    let (status, body) = steer(&boot, &entry_id, 0).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    boot.daemon
+        .emit_notification_for_test(Notification::ThreadStatusChanged {
+            thread_id: SEED_THREAD_ID.into(),
+            status: json!({"type":"systemError"}),
+        });
+    end_turn(&boot, FIRST_TURN, "failed");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let row = boot
+            .repo
+            .session_projection_by_id(&boot.worker_session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let snapshot = HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap());
+        if row.status == calm_server::session_projection_repo::WorkerSessionState::Failed
+            && snapshot
+                .pending_entries()
+                .iter()
+                .any(|e| e.id().is_some_and(|id| id.as_str() == entry_id))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "dropped steer must be durable in failed snapshot"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        boot.daemon.turn_start_count_for_test(),
+        1,
+        "no automatic quota retry"
+    );
+    boot.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn immediate_recovery_waits_for_the_failed_turn_to_settle_accepted_steers() {
+    let boot = boot_with_a_running_turn().await;
+    let entry_id = queue_one(&boot, "not yet reconciled").await;
+    assert_eq!(steer(&boot, &entry_id, 0).await.0, StatusCode::OK);
+    boot.daemon
+        .emit_notification_for_test(Notification::ThreadStatusChanged {
+            thread_id: SEED_THREAD_ID.into(),
+            status: json!({"type":"systemError"}),
+        });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if boot
+            .repo
+            .session_projection_by_id(&boot.worker_session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+            == calm_server::session_projection_repo::WorkerSessionState::Failed
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let (status, body) = post_input(
+        boot.app.clone(),
+        boot.planner_card.id.as_str(),
+        "resume now",
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("settle its messages")
+    );
+    assert!(boot.daemon.resumed_threads_for_test().is_empty());
+    end_turn(&boot, FIRST_TURN, "failed");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let row = boot
+            .repo
+            .session_projection_by_id(&boot.worker_session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let snapshot = HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap());
+        if snapshot
+            .pending_entries()
+            .iter()
+            .any(|e| e.id().is_some_and(|id| id.as_str() == entry_id))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "refused immediate recovery must keep the settling loop alive"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    boot.harness.shutdown().await.unwrap();
+}

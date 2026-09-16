@@ -4,6 +4,8 @@
 //! server. It deliberately does not route any card traffic to this daemon yet;
 //! later PRs switch callers over through the public methods here.
 
+mod preserving_recovery;
+
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::os::unix::io::AsRawFd;
@@ -153,6 +155,14 @@ pub struct SharedDaemonStatus {
     pub pending_count: usize,
     pub restart_count: u64,
     pub last_error: Option<String>,
+}
+
+// A cold load must distinguish an explicitly suspended harness from legacy
+// threads that have no runtime. Never load a failed harness without its token.
+enum ColdResumeAuthorization {
+    Skip,
+    NoMcp,
+    Token(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -807,6 +817,8 @@ pub struct FakeSharedCodexAppServer {
     next_thread: AtomicU64,
     next_turn: AtomicU64,
     fail_next_thread_start: AtomicBool,
+    fail_thread_resume: AtomicBool,
+    resumed_threads: std::sync::Mutex<Vec<(String, bool)>>,
     /// Sticky, unlike `fail_next_thread_start`: the condition it stands in for
     /// (codex refusing every turn) is one whose RETRY behaviour is under test,
     /// and a one-shot failure would be indistinguishable from a success on the
@@ -873,6 +885,8 @@ impl FakeSharedCodexAppServer {
             next_thread: AtomicU64::new(1),
             next_turn: AtomicU64::new(1),
             fail_next_thread_start: AtomicBool::new(false),
+            fail_thread_resume: AtomicBool::new(false),
+            resumed_threads: std::sync::Mutex::new(Vec::new()),
             fail_turn_start: AtomicBool::new(false),
             reject_turn_start: AtomicBool::new(false),
             config_read: std::sync::Mutex::new(None),
@@ -3985,34 +3999,38 @@ impl SharedCodexAppServer {
                         let Some(runtime) =
                             session_projection_active_for_card_tx(tx, &card_id).await?
                         else {
-                            return Ok(None);
+                            // Decide inside the same transaction as the token
+                            // choice: a systemError can arrive during replay.
+                            let failed: bool = sqlx::query_scalar(
+                                "SELECT EXISTS(SELECT 1 FROM cards c JOIN worker_sessions ws ON ws.id=c.session_id WHERE c.id=?1 AND ws.state='failed' AND json_extract(ws.handle_state_json,'$.mode')='harness')"
+                            ).bind(&card_id).fetch_one(&mut **tx).await?;
+                            return Ok(if failed { ColdResumeAuthorization::Skip } else { ColdResumeAuthorization::NoMcp });
                         };
                         if runtime.thread_id.as_deref() != Some(thread_id.as_str()) {
-                            return Ok(None);
+                            return Ok(ColdResumeAuthorization::NoMcp);
                         }
                         mint_and_persist_card_token(tx, &card_id, &runtime.id)
                             .await
-                            .map(Some)
+                            .map(ColdResumeAuthorization::Token)
                     })
                 }
             })
             .await
             {
-                Ok(Some(raw_token)) => raw_token,
-                Ok(None) => {
+                Ok(ColdResumeAuthorization::Token(raw_token)) => raw_token,
+                Ok(ColdResumeAuthorization::Skip) => continue,
+                Ok(ColdResumeAuthorization::NoMcp) => {
                     Self::resume_thread_typed(&client, &thread_id, &card_id, ThreadConfig::NoMcp)
                         .await;
                     continue;
                 }
                 Err(e) => {
-                    Self::resume_thread_typed(&client, &thread_id, &card_id, ThreadConfig::NoMcp)
-                        .await;
                     tracing::warn!(
                         target = "shared_codex_daemon::resume",
                         %thread_id,
                         %card_id,
                         error = %e,
-                        "shared codex thread token refresh failed; resumed without config"
+                        "shared codex thread token refresh failed; leaving the thread unloaded"
                     );
                     continue;
                 }

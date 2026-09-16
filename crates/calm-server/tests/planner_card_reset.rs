@@ -2933,3 +2933,6 @@ async fn planner_reset_seeds_no_track_goal() {
     assert_no_seeded_goal(&payloads, "planner reset");
     assert_harness_queue_empty(&boot, planner_card.id.as_str(), "planner reset").await;
 }
+
+#[path = "cases/planner_preserving_recovery.rs"]
+mod planner_preserving_recovery;
