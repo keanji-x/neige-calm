@@ -1,6 +1,6 @@
 # 扫码完成手机入网与 Neige 配对
 
-状态：设计 v3，按 root 源级反例改为同文档配对，待两路重新独立评审；未实现，未使用账户凭证进行实网验收。
+状态：设计 v3 已获两路独立 APPROVE（2026-09-16）；未实现，未使用账户凭证进行实网验收。
 关联：[issue #1712](https://github.com/keanji-x/neige-calm/issues/1712)。
 基线：`5f2ff75c6` 的[主设计 v2](1712-tailnet-mobile-recovery.md)，以及 `b4ed59c6f` 的 `mobile/p2p-native/target.go`。
 新增硬要求：电脑 owner 发起“添加手机”后，手机启动扫码，一次正常流程完成 Tailnet 设备授权与 Neige 配对；不打开 Tailscale 登录页，不再点配对确认或验证按钮。
@@ -181,4 +181,4 @@ v1 的[独立评审 A](../_1712-scan-design-review-subagent-v1.md)与[独立评�
 v2 试图补文档许可和按响应推进的 native 请求闸；root 源级复核发现 `mobile/p2p-native/main.go` 的 CONNECT 仅以 `io.Copy` 转发端到端 TLS，无法观察 claim/redeem/receipt/whoami 路径或响应；Android `WebResourceRequest` 也不提供 POST body。该方案不可按现有边界实施，已撤回，不增加 MITM、cookie 代理或通用 bridge。
 v3 选择唯一最小替代：v2 配对与 gate 同处一个 APK 本地文档，只有一次单向 scan context 注入；FE 负责同代际协议排序，native 只负责真实的目标、连接和文档生命周期。删去跨文档导航、receipt API 与 sessionStorage nonce，以新 session 指纹和 whoami 保留原 cookie 绑定目的。
 同时将 pending 清理点前移至交付前，明确 profile 提交只证明目标、取消不回滚服务器/cookie、进程死亡需重新明确配对；不扩大持久认证、离线正文或原生 IPC。v1 审批及已接受的 issuer/key TTL/管理员来源/QR 权限与非原子合同保留。
-官方公开 OpenAPI 的秒数参数事实与云端 300 秒行为仍分开记录，未作账户操作或声称实测成功。两路 fresh review 待对 v3 全文执行，旧评审归档不代表 v3 已批准。
+官方公开 OpenAPI 的秒数参数事实与云端 300 秒行为仍分开记录，未作账户操作或声称实测成功。v3 已经两路 fresh 全文复核批准：[A](../_1712-scan-design-review-subagent-v3.md)、[B](../_1712-scan-design-review-codex-v3.md)。复核内容 SHA-256 为 `423f91ff5fc3f0bc67f821cc2978405a3c79c46c018e92bd853bea16dd3abfc3`；批准后仅补状态及归档说明，未改合同。
