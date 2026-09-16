@@ -504,6 +504,11 @@ pub struct CardRuntimeView {
     pub worker_session_id: String,
     pub kind: WorkerSessionKind,
     pub status: WorkerSessionState,
+    // Authoritative session activity. Older serialized card snapshots omit it;
+    // current projections always populate it from the worker session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub updated_at_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub provider: Option<AgentProvider>,
@@ -523,6 +528,9 @@ pub struct CardRuntimeView {
     #[ts(optional)]
     pub thread_status: Option<String>,
 }
+
+#[cfg(test)]
+mod runtime_view_tests;
 
 /// One row of `GET /api/tracks/{track_id}/conversations` (#1189 §4.1).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, TS)]

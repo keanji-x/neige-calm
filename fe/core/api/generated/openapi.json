@@ -7211,6 +7211,13 @@
               "null"
             ]
           },
+          "updated_at_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
           "worker_session_id": {
             "type": "string"
           }

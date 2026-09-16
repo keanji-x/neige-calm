@@ -16,12 +16,13 @@ function railPreviewText(text: string): string {
 
 /** Dense at rest, with a pointer-centered spread, bounded scrolling and one tab stop.
  * The host owns placement, active-section detection and navigation. */
-export function EdgeNavigator({ items, activeId, onSelect, label, className }: Readonly<{
+export function EdgeNavigator({ items, activeId, onSelect, label, className, previewSide = 'before' }: Readonly<{
   items: readonly NavigationItem[];
   activeId: string | null;
   onSelect: (id: string) => void;
   label: string;
   className?: string;
+  previewSide?: 'before' | 'after';
 }>) {
   const railRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
@@ -259,7 +260,7 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className }: R
       </div>
       {previewText !== '' && (
         <div
-          className={styles.railPreview}
+          className={`${styles.railPreview} ${previewSide === 'after' ? styles.previewAfter : ''}`}
           data-nc-rail-preview=""
           aria-hidden="true"
           ref={previewRef}

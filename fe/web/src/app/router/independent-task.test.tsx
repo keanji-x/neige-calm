@@ -108,7 +108,7 @@ function setup(mode: 'success' | 'lost' | 'lost-committed' | 'lost-hidden' | 'co
 async function enterGoal(goal = 'Explain the moon.') {
   await userEvent.click(await screen.findByRole('button', { name: 'Track actions for Independent work' }));
   await userEvent.click(await screen.findByRole('menuitem', { name: 'Run independent task' }));
-  await userEvent.type(screen.getByRole('textbox', { name: 'Goal' }), goal);
+  await userEvent.type(await screen.findByRole('textbox', { name: 'Goal' }), goal);
 }
 
 it('starts once on synchronous double submit and reveals actual status and accepted JSON on refresh', async () => {

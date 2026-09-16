@@ -2784,34 +2784,18 @@ function TrackRouteBody({
   const conversationsQuery = useQuery(trackConversationsQueryOptions(transport, track.id, unauthorized));
   const assistantRows = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
   const trackTitle = trackDisplayTitle(track.title);
-  /*
-   * The track's opening conversation, derived from the planner card rather than
-   * listed — it is the one row on this route the server does not send.
-   *
-   * `updatedAt` comes from the card's own `updated_at`. That is the same
-   * *quantity* the listed rows carry — epoch milliseconds off the same clock —
-   * which is what the one ordering `ChatList` applies (`byRecency`) needs. It
-   * is **not** the same column: a listed row reads
-   * `COALESCE(worker_sessions.updated_at_ms, cards.updated_at)`, so it usually
-   * reports its session's last activity while this row reports when the card
-   * itself was last written. Both are "when something last happened to this
-   * conversation" to within the accuracy this list claims, and neither moves
-   * per turn — the drawer's own reading is the one that does, and the registry
-   * keeps the later of the two (`useConversationStore`, the batch remember).
-   *
-   * `state` is null: no endpoint reports this card's session state to this
-   * route, and `null` says "nothing is known to be happening", which is the
-   * honest reading. The row picks up the live phase the moment it is opened —
-   * that is the one row `useConversationStore` replaces in place.
-   */
+  // Planner is the one conversation projected from a card rather than the
+  // assistant list. Its runtime owns live state and activity, just as the
+  // server's assistant summaries do. Legacy snapshots retain card time until
+  // a current runtime projection supplies the session watermark.
   const plannerRow = useMemo<Conversation | null>(() => plannerCard === undefined ? null : {
     id: plannerCard.id,
     trackId: track.id,
     trackTitle,
     title: plannerCard.title,
     kind: 'shared-spec',
-    state: null,
-    updatedAt: plannerCard.updated_at,
+    state: plannerCard.runtime?.status ?? null,
+    updatedAt: plannerCard.runtime?.updated_at_ms ?? plannerCard.updated_at,
   }, [plannerCard, track.id, trackTitle]);
   /*
    * ── Redeeming "open the planner conversation of the track I just created" ────
@@ -2882,16 +2866,7 @@ function TrackRouteBody({
       rememberOn: track.id,
       derivedCardId: (idempotencyKey) => trackConversationCardId(track.id, idempotencyKey),
       scopeOf: (conversationId) => {
-        /* The planner row first: it is not in `assistantRows`, and without this
-           arm the one conversation a track has always had would stop opening. */
-        if (plannerCard !== undefined && conversationId === plannerCard.id) {
-          return {
-            id: track.id, title: trackTitle, cardId: plannerCard.id,
-            cardTitle: plannerCard.title, updatedAt: plannerCard.updated_at,
-            kind: 'shared-spec', state: null,
-          };
-        }
-        const row = assistantRows.find((candidate) => candidate.id === conversationId);
+        const row = rows.find(candidate => candidate.id === conversationId);
         /*
          * `id: row.trackId` — the row's own track, never `track.id`.
          *

@@ -227,6 +227,8 @@ export const cardRuntimeViewSchema = z.object({
   worker_session_id: z.string(),
   kind: runtimeKindSchema,
   status: workerSessionStateSchema,
+  // Older servers and persisted Card event snapshots do not carry activity time.
+  updated_at_ms: z.number().optional(),
   provider: agentProviderSchema.optional(),
   terminal_id: z.string().optional(),
   thread_id: z.string().optional(),

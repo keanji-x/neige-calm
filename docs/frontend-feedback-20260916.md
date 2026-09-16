@@ -18,6 +18,16 @@ across writes and preserved across reloads. A hidden tab or a conversation whose
 new history has not loaded does not acknowledge the update. Accessible status
 uses descriptions without changing the navigation control's name.
 
+Read receipts use the server list's activity watermark, never an optimistic
+message timestamp. The compatibility gate binds the receipt namespace explicitly;
+unscoped receipts stay in memory until visible content can be acknowledged in
+the confirmed instance. Planner rows consume the card runtime's status and
+session activity timestamp through the same conversation-list path. The additive
+`CardRuntimeView.updated_at_ms` is optional only for older serialized snapshots
+and servers; current runtime projections always populate it. Both card projection
+callers use one constructor, and the frontend retains the older card timestamp
+when activity metadata is unavailable.
+
 ## Inventories
 
 Tasks and Cards group by current execution. A card linked to a task uses that
@@ -72,5 +82,9 @@ assertions are mutation-checked in an exclusive worktree.
 The user's explicit request authorizes the narrow `ui/edge-navigation`,
 `ui/activity-indicator` and `ui/list-typography` inventory additions and generated
 first-message model API contract; approved by the orchestrator in #1713.
+Review additionally requires the narrow runtime activity timestamp in the
+generated wire/OpenAPI contracts and its decoder in `fe/core/api/schemas.ts`.
+The orchestrator approves this additive compatibility-preserving metadata for
+the same issue; no stored migration or existing event payload is rewritten.
 Dependency directions, global style contracts and gate rules are unchanged.
 Required ownership trailers are preserved in the commit and PR squash body.

@@ -62,7 +62,7 @@ function safeRead(runtime: ProviderRuntime, key: string): string | null { try { 
 function safeWrite(runtime: ProviderRuntime, key: string, value: string): void { try { runtime.storage.setItem(key, value); } catch { /* no-op */ } }
 function safeDelete(runtime: ProviderRuntime): void { try { runtime.deleteDatabase(runtime.idbDatabaseName); } catch { /* no-op */ } }
 
-export function ServerCompatGate({ children, runtime, client, renderEventBridge, cursorStore }: {
+export function ServerCompatGate({ children: routeContent, runtime, client, renderEventBridge, cursorStore }: {
   children: ReactNode; runtime: ProviderRuntime; client: QueryClient;
   renderEventBridge?: (server: ServerVersionInfo) => ReactNode; cursorStore: Pick<SyncCursorPort, 'clear'>;
 }) {
@@ -84,6 +84,9 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge,
   const id = query.data?.dbInstanceId;
   const verdict = id === undefined ? 'pending'
     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';
+  // Route preferences consume the verdict; the event bridge keeps its own
+  // independent guard and lifetime below.
+  const children = <ReadReceiptScopeProvider id={verdict === 'same' ? id! : null}>{routeContent}</ReadReceiptScopeProvider>;
   if (busted) return __NC_BUNDLED__ ? <BundledConnectionNotice kind="checking" /> : null;
   if (__NC_BUNDLED__ && query.data === undefined) return <BundledConnectionNotice kind={query.isError || query.fetchStatus === 'paused' ? 'unreachable' : 'checking'}>
     {(query.isError || query.fetchStatus === 'paused') && <button type="button" disabled={query.isFetching} onClick={() => { void query.refetch(); }}>重试连接</button>}
@@ -91,8 +94,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge,
   if (__NC_BUNDLED__ && query.data && query.data.webCompatVersion < WEB_COMPAT_VERSION) return <BundledConnectionNotice kind="server-update" />;
   if (__NC_BUNDLED__ && query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <BundledConnectionNotice kind="app-update" />;
   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;
-  return <ReadReceiptScopeProvider id={verdict === 'same' ? id! : null}>
-    {verdict === 'same' && renderEventBridge?.(query.data!)}{children}
+  return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}
     {query.data === undefined && (query.isError || query.fetchStatus === 'paused') && (
       <div className={styles.status} role="status">
         <span>{query.fetchStatus === 'paused' ? 'Offline · Live updates paused'
@@ -102,7 +104,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge,
           disabled={query.isFetching} onClick={() => { void query.refetch(); }}>Retry</button>
       </div>
     )}
-  </ReadReceiptScopeProvider>;
+  </>;
 }
 
 export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {

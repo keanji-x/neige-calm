@@ -172,17 +172,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
     let source = (runtime.kind == WorkerSessionKind::SharedPlanner).then(|| "shared".to_string());
     let thread_status = projected_thread_status(runtime).map(ToOwned::to_owned);
 
-    card.runtime = Some(CardRuntimeView {
-        worker_session_id: runtime.id.clone(),
-        kind: runtime.kind.clone(),
-        status: runtime.status,
-        provider: runtime.agent_provider.clone(),
-        terminal_id: terminal_id.clone(),
-        thread_id: thread_id.clone(),
-        session_id: session_id.clone(),
-        source: source.clone(),
-        thread_status: thread_status.clone(),
-    });
+    card.runtime = Some(runtime_view_from_runtime(runtime));
 
     let Some(map) = card.payload.as_object_mut() else {
         return;
@@ -220,6 +210,7 @@ pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> Ca
         worker_session_id: runtime.id.clone(),
         kind: runtime.kind.clone(),
         status: runtime.status,
+        updated_at_ms: Some(runtime.updated_at_ms),
         provider: runtime.agent_provider.clone(),
         terminal_id: non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned),
         thread_id: non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned),

@@ -1154,6 +1154,11 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
         .await
         .unwrap();
     assert_eq!(projected.payload["terminal_id"], json!(term.id));
+    assert_eq!(
+        projected.runtime.as_ref().unwrap().updated_at_ms,
+        Some(runtime.updated_at_ms),
+        "projected card activity must use the authoritative session clock"
+    );
 
     // Terminal persisted and parented to the card.
     let got_term = repo

@@ -21,13 +21,13 @@ const MANY_ITEMS: ReportOutlineItem[] = Array.from({ length: 100 }, (_, index) =
   children: [],
 }));
 
-it('keeps long chapter previews inside the report margin rather than borrowing chat width', async () => {
+it.each([40, 130])('keeps long chapter previews within the report with a %ipx margin', async margin => {
   await page.viewport(1500, 900);
   const label = 'Long report heading explaining the research conclusions, supporting evidence, methodology and remaining questions';
   render(<div style={{ containerType: 'inline-size', inlineSize: 1200, marginInlineStart: 240,
     ['--conversation-span' as string]: '480px' }}>
     <div data-testid="report-boundary" style={{ position: 'relative', inlineSize: 900, blockSize: 600,
-      ['--document-start' as string]: '130px', ['--header-band' as string]: '0px', ['--header-h' as string]: '0px' }}>
+      ['--document-start' as string]: `${margin}px`, ['--header-band' as string]: '0px', ['--header-h' as string]: '0px' }}>
       <ReportOutline items={[{ blockId: 'long-section', label, number: 1, children: [] }]} />
     </div>
   </div>);
@@ -37,7 +37,9 @@ it('keeps long chapter previews inside the report margin rather than borrowing c
   const report = document.querySelector('[data-testid="report-boundary"]')!.getBoundingClientRect();
   const rail = document.querySelector('[data-nc-report-outline]')!.getBoundingClientRect();
   expect(preview.left).toBeGreaterThanOrEqual(report.left);
-  expect(preview.right).toBeLessThanOrEqual(rail.left);
+  expect(preview.left).toBeGreaterThanOrEqual(rail.right);
+  expect(preview.right).toBeLessThanOrEqual(report.right);
+  expect(preview.bottom).toBeLessThanOrEqual(window.innerHeight);
 });
 
 it('centres a dense first-level rail beside the report edge and magnifies the aimed dot', async () => {
@@ -88,7 +90,7 @@ it('centres a dense first-level rail beside the report edge and magnifies the ai
   expect(Number.parseFloat(getComputedStyle(dot, '::before').width)).toBeCloseTo(8, 0);
   expect(rows[1].getBoundingClientRect().top + rows[1].getBoundingClientRect().height / 2
     - (first.getBoundingClientRect().top + first.getBoundingClientRect().height / 2)).toBeGreaterThanOrEqual(24);
-  expect(preview.getBoundingClientRect().right).toBeLessThanOrEqual(rail.getBoundingClientRect().left - 3);
+  expect(preview.getBoundingClientRect().left).toBeGreaterThanOrEqual(rail.getBoundingClientRect().right + 3);
 });
 
 it('uses the same quiet, non-text contrast ink as the Conversation rail', async () => {

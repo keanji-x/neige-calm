@@ -2140,3 +2140,31 @@ it('keeps a nonempty conversation read after closing when activity is newer than
   fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
   await waitFor(() => expect(unread()).toBeNull());
 });
+
+it('shows a closed Planner working and preserves unread completion until its history is read', async () => {
+  let status = 'turn_pending';
+  let activityAt = 50;
+  const { client } = setup(request => {
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_resume: false,
+      cards: [{ ...PLANNER_CARD, runtime: { worker_session_id: 'planner-live', kind: 'shared-spec', status, updated_at_ms: activityAt } }], overlays: [] });
+    if (request.path.startsWith('/api/cards/card-planner/harness/items')) return ok([
+      harnessMessage(40, 'agentMessage', { type: 'agentMessage', text: 'Completed planner answer.' }),
+    ]);
+    return undefined;
+  });
+  const row = () => screen.getByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
+  const indicator = () => row().closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity');
+  await screen.findByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
+  expect(indicator()).toBe('working');
+  status = 'idle'; activityAt = 60;
+  await act(async () => { await client.invalidateQueries({ queryKey: ['track', 'w1'] }); });
+  await waitFor(() => expect(indicator()).toBe('unread'));
+  fireEvent.click(row());
+  await screen.findByText('Completed planner answer.');
+  await waitFor(() => expect(indicator()).toBeUndefined());
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  expect(indicator()).toBeUndefined();
+  activityAt = 70;
+  await act(async () => { await client.invalidateQueries({ queryKey: ['track', 'w1'] }); });
+  await waitFor(() => expect(indicator()).toBe('unread'));
+});

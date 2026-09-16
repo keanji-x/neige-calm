@@ -122,6 +122,10 @@
       display: none;
     }
   }
+  .previewAfter {
+    inset-inline-start: calc(100% + var(--space-3));
+    inset-inline-end: auto;
+  }
   @media (prefers-reduced-motion: reduce) {
     .railDot::before { transition: none; }
   }
