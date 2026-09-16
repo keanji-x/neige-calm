@@ -421,9 +421,12 @@ when a scope is declared — the floor under `ask`: `git push`, `git reset
 --hard`, `rm -rf`, `curl`, `wget`, `pip install`, `npm install` and
 `Edit(//<cwd>/.git/**)`. The floor is `ask`, never `deny`: Claude Code
 evaluates deny, then ask, then allow over the merged rule set, so an `ask`
-rule prompts even when an `allow` also matches, and the prompt reaches the
+rule prompts even when an `allow` also matches, and the dialog reaches the
 Planner as a `permission_request` signal; a Planner `deny` on the same rule
-still wins. The rendered block is the one value written into the settings
+still wins. Every rule matches its usual spelling only (`git -C . push`,
+`rm -fr` and `pip3 install` are not caught by the floor), and an action no
+rule matches keeps Claude Code's usual permission behaviour — the kernel
+emits rules, not outcomes. The rendered block is the one value written into the settings
 file next to `hooks` (nothing else: no `defaultMode`, `bypassPermissions`,
 `additionalDirectories` or `Read` rule), stamped on the card as
 `Card.payload.claude_permissions` in the same transaction, persisted in the

@@ -1,6 +1,6 @@
 //! #1704 S1 — `claude_permissions` on `calm.terminal.open`.
 //!
-//! The Planner declares what Claude may do in a terminal without a dialog:
+//! The Planner declares the permission rules for Claude Code in a terminal:
 //! `edit` globs relative to the terminal cwd, `bash` command prefixes and
 //! `deny` prefixes. The kernel validates the declaration ([`validate_scope`]),
 //! renders it into Claude Code's `permissions` block
@@ -11,9 +11,11 @@
 //! Whenever a scope is declared the floor is appended as `ask`, never `deny`:
 //! Claude Code evaluates `deny`, then `ask`, then `allow` over the merged rule
 //! set, so an `ask` rule prompts even when an `allow` rule also matches, and a
-//! prompt still reaches the Planner as a `permission_request` signal. The
-//! floor therefore never widens a scope and never makes anything impossible;
-//! a Planner `deny` on the same rule still wins. `Edit(...)` rules are
+//! dialog reaches the Planner as a `permission_request` signal. The floor
+//! therefore never widens a scope; a Planner `deny` on the same rule still
+//! wins. Every rule matches its usual spelling only (`git -C . push` is not
+//! `Bash(git push *)`), and an action no rule matches keeps Claude Code's
+//! usual permission behaviour. `Edit(...)` rules are
 //! anchored with `//` (an absolute path) because a single leading slash
 //! anchors at the settings file's own directory. No `defaultMode`,
 //! `bypassPermissions`, `additionalDirectories` or `Read(...)` rule is ever
@@ -22,8 +24,10 @@ use crate::error::{CalmError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Bash prefixes that always prompt when a scope is declared, rendered as
-/// `ask` rules (together with `Edit(//<cwd>/.git/**)`).
+/// Bash prefixes rendered as `ask` rules whenever a scope is declared
+/// (together with `Edit(//<cwd>/.git/**)`): in their usual spellings they
+/// prompt even when a `bash` prefix admits them; other spellings are not
+/// matched.
 pub const CLAUDE_PERMISSIONS_FLOOR_BASH: [&str; 7] = [
     "git push",
     "git reset --hard",

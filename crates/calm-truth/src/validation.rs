@@ -84,7 +84,7 @@ pub const TERMINAL_SIGNALS_PAYLOAD_KEY: &str = "terminal_signals";
 /// Planner opened with a `claude_permissions` scope: the effective Claude
 /// Code `permissions` block the kernel rendered and wrote to the terminal's
 /// settings file (`{allow, ask, deny}` rule lists). It is the durable audit
-/// trail of what the terminal was allowed without a dialog; absent on every
+/// trail of the rules that terminal's Claude Code was given; absent on every
 /// other card.
 pub const TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY: &str = "claude_permissions";
 /// The `Card.payload` keys only the kernel writes (`card_with_terminal_create_tx`

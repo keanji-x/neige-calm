@@ -100,7 +100,7 @@ struct Open {
     repaint_ms: Option<u64>,
     wait_text: Option<Vec<String>>,
     wait_text_absent: Option<Vec<String>>,
-    /// #1704 S1 — what Claude may do without a dialog; its shape is checked
+    /// #1704 S1 — the permission rules the Planner declares; its shape is checked
     /// by `parse_scope` (so a JSON `null` or array is refused by name rather
     /// than read as absent), validated before the create is submitted and
     /// part of the idempotency hash.
