@@ -65,9 +65,8 @@ export type ReportDocumentProps = Readonly<{
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
   /**
    * A `neige://source/…` citation was activated (#1669). Absent ⇒ citations
-   * render as an inline badge plus their label, not as a control: that is
-   * the narrow-viewport surface (no panel to open) and every surface that
-   * carries no track (Today, a Markdown file) — see `Inline`'s `link` case.
+   * render as an inline badge plus their label. Surfaces without a Track
+   * (Today, a Markdown file) use this form — see `Inline`'s `link` case.
    * A `table` block's cell that is exactly one such link is the same
    * citation, with the same handler (#1687).
    */

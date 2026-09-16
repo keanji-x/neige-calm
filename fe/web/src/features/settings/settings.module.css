@@ -136,22 +136,55 @@
     color: var(--text-3);
   }
 
+  .mobileSurface {
+    grid-template-columns: minmax(0, 1fr);
+    min-block-size: 0;
+  }
+
+  .pane[hidden],
+  .mobileDetail .categoryHeading {
+    display: none;
+  }
+
+  .categoryList {
+    inline-size: 100%;
+  }
+
+  .categoryRow {
+    min-block-size: calc(var(--rail-w-collapsed) + var(--space-6));
+    font-size: var(--text-md);
+  }
+
   @media (width < 60rem) {
-    /* One column: the nav becomes a row above the pane. A 12rem column beside a
-       phone-width pane leaves the pane too narrow to hold a form field, so the
-       axis flips rather than the column shrinking. */
-    /* One column: the nav becomes a band above the pane. A 260px column beside
-       a phone-width pane leaves the pane too narrow to hold a form row, so the
-       axis flips rather than the column shrinking. */
-    .surface {
-      grid-template-columns: minmax(0, 1fr);
-      gap: var(--space-6);
-      min-block-size: 0;
+    .controlRow {
+      flex-direction: column;
+      align-items: stretch;
+      gap: var(--space-5);
+      padding-block: var(--space-7);
     }
 
-    .sectionNav {
-      border-block-end: 1px solid var(--hairline);
-      border-inline-end: none;
+    .controlRow > span {
+      inline-size: 100%;
+      min-inline-size: 0;
+    }
+
+    .controlRow > span:last-child {
+      justify-content: flex-start;
+    }
+
+    .controlRow > span:first-of-type > span {
+      white-space: normal;
+      overflow: visible;
+      font-size: var(--text-md);
+      line-height: var(--leading-snug);
+    }
+
+    .controlRow > span:last-child > * {
+      max-inline-size: 100%;
+    }
+
+    .controlRow input {
+      font-size: var(--text-md);
     }
 
     .form {

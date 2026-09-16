@@ -45,10 +45,21 @@ it.each([390, 1280])('keeps preflight recovery compact and navigation usable at 
   const rect = status.getBoundingClientRect();
   expect(rect.width).toBeLessThan(width - 16);
   expect(rect.height).toBeLessThan(70);
-  await expect.element(page.getByRole('navigation', { name: width < 960 ? 'Primary' : 'Workspace' })).toBeVisible();
+  const navigation = width < 960
+    ? page.getByRole('button', { name: 'Open areas' })
+    : page.getByRole('navigation', { name: 'Workspace' });
+  await expect.element(navigation).toBeVisible();
+  if (width < 960) {
+    const header = navigation.element().closest('header')!.getBoundingClientRect();
+    expect(header.width).toBeLessThanOrEqual(width);
+    expect(header.height).toBeLessThan(70);
+    await navigation.click();
+    await expect.element(page.getByRole('dialog', { name: 'Tracks and settings' })).toBeVisible();
+    await page.getByRole('button', { name: 'Back to workspace' }).click();
+  }
   await page.screenshot({ path: `../../../../test-results/preflight-recovery-${width}.png` });
   await retry.click();
   await expect.element(retry).not.toBeInTheDocument();
-  await expect.element(page.getByRole('navigation', { name: width < 960 ? 'Primary' : 'Workspace' })).toBeVisible();
+  await expect.element(navigation).toBeVisible();
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
 });

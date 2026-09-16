@@ -32,6 +32,7 @@ function renderTasks(
   render(
     <div style={{ inlineSize: 1200, blockSize: 800 }}>
       <TrackPage
+        mobilePanelObscured={false}
         track={track}
         cards={[]}
         tasks={tasks}

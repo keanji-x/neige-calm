@@ -23,6 +23,7 @@ export const OPTIMIZED_DEPENDENCIES = Object.freeze([
   '@astryxdesign/core/MetadataList',
   '@astryxdesign/core/MoreMenu',
   '@astryxdesign/core/NumberInput',
+  '@astryxdesign/core/Popover',
   '@astryxdesign/core/SegmentedControl',
   '@astryxdesign/core/TextInput',
   '@astryxdesign/core/Typeahead',

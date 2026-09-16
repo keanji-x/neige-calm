@@ -72,7 +72,7 @@ describe('INV-A11Y-061 navigation shape', () => {
   it('names every settings section on a button, and marks the current one', async () => {
     const onSelectSection = vi.fn();
     render(
-      <SettingsSurface section="network" onSelectSection={onSelectSection}>
+      <SettingsSurface presentation="desktop" section="network" onSelectSection={onSelectSection}>
         <span>pane</span>
       </SettingsSurface>,
     );

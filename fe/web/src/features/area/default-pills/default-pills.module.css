@@ -4,6 +4,7 @@
   }
 
   .trigger {
+    border-radius: var(--radius-pill);
     max-inline-size: 16rem;
   }
 

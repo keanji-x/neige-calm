@@ -49,7 +49,7 @@ const FOLLOW_DEFAULT_LABEL = 'Default';
 const SWITCH_NOTE = 'Switching to a model with a smaller context window can make codex compact the history first.';
 
 export function ModelPill({
-  catalog, selection, onChange, isDisabled = false, placement = 'above', triggerId,
+  catalog, selection, onChange, isDisabled = false, placement = 'above', triggerId, effortControl = 'separate',
 }: Readonly<{
   /** What can be chosen, and what the installation follows. `null` while it loads. */
   catalog: ModelCatalog | null;
@@ -59,6 +59,8 @@ export function ModelPill({
   isDisabled?: boolean;
   placement?: 'above' | 'below';
   triggerId?: string;
+  /** A narrow host can keep model and effort inside a single menu. */
+  effortControl?: 'separate' | 'in-menu';
 }>) {
   const [open, setOpen] = useState(false);
   const hostRef = useRef<HTMLSpanElement | null>(null);
@@ -178,7 +180,7 @@ export function ModelPill({
                at that row is actually aiming for. With the chevron gone too
                (see `hasChevron` above), hover and focus are all that is left
                to say it is pressable. */
-            variant: 'ghost',
+            variant: effortControl === 'in-menu' ? 'secondary' : 'ghost',
             size: 'sm',
             isDisabled: isDisabled || unreachable,
             className: styles.trigger,
@@ -207,13 +209,23 @@ export function ModelPill({
               isDisabled
             />
           )}
+          {effortControl === 'in-menu' && efforts.length > 1 && (
+            <>
+              <Divider />
+              <div role="group" aria-label="Reasoning effort">
+                <div className={styles.groupHeading} aria-hidden="true">Reasoning effort</div>
+                <EffortChoices defaultName={selection.model === null ? catalog?.default.reasoning_effort ?? null : chosen?.default_reasoning_effort ?? null} efforts={efforts} value={selection.reasoning_effort}
+                  onChange={(effort) => onChange({ model: selection.model, reasoning_effort: effort })} />
+              </div>
+            </>
+          )}
           <Divider />
           <div className={styles.note} role="note">
             <Text type="supporting">{SWITCH_NOTE}</Text>
           </div>
         </DropdownMenu>
       </span>
-      {efforts.length > 1 && (
+      {effortControl === 'separate' && efforts.length > 1 && (
         <EffortPill
           efforts={efforts}
           value={selection.reasoning_effort}
@@ -282,26 +294,27 @@ function EffortPill({
           className: styles.effort,
         }}
       >
-        <Choice
-          label={defaultName === null
-            ? FOLLOW_DEFAULT_LABEL : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`}
-          isSelected={value === null}
-          onSelect={() => onChange(null)}
-        />
-        {efforts.map((effort) => (
-          <Choice
-            key={effort.reasoning_effort}
-            label={effort.reasoning_effort}
-            /* codex's own wording, passed through. We do not write copy for
-               somebody else's setting. */
-            description={effort.description}
-            isSelected={value === effort.reasoning_effort}
-            onSelect={() => onChange(effort.reasoning_effort)}
-          />
-        ))}
+        <EffortChoices defaultName={defaultName} efforts={efforts} value={value} onChange={onChange} />
       </DropdownMenu>
     </span>
   );
+}
+
+function EffortChoices({ efforts, value, defaultName, onChange }: Readonly<{
+  defaultName: string | null;
+  efforts: ModelCatalog['models'][number]['supported_reasoning_efforts'];
+  value: string | null;
+  onChange: (value: string | null) => void;
+}>) {
+  return <>
+    <Choice label={defaultName === null ? FOLLOW_DEFAULT_LABEL : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`} isSelected={value === null}
+      onSelect={() => onChange(null)} />
+    {efforts.map((effort) => (
+      <Choice key={effort.reasoning_effort} label={effort.reasoning_effort}
+        description={effort.description} isSelected={value === effort.reasoning_effort}
+        onSelect={() => onChange(effort.reasoning_effort)} />
+    ))}
+  </>;
 }
 
 function Choice({

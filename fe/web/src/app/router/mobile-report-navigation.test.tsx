@@ -8,8 +8,8 @@
  * about what lands in the URL, and `mobile.browser.test.tsx` drives a hand-built
  * copy of the shell. Everything this file asserts is a claim about how two
  * modules are *wired together* — the report's panel to `?panel=`, the report's
- * Back to `?from=` and the shell's sheets, the dock's visibility to the shell's
- * derived secondary flag — and a stub on either side would prove none of it.
+ * Panel history, the header's menu host, and current-Area navigation remain
+ * connected through the real shell; a stub on either side would prove none of it.
  *
  * The pattern is `track-cards-panel.test.tsx` + `read-fallbacks.contract.test.tsx`:
  * `createAppRouter` + `router.update({ history: createMemoryHistory(...) })`.
@@ -27,8 +27,7 @@ import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-/* A second area with no tracks: the drill-in the shell must *replace*, not
-   inherit, when a report hands it the area to return to. */
+/* A second empty Area makes the centered selector’s destination observable. */
 const OTHER_AREA = { id: 'c2', name: 'Second', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = {
   id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
@@ -88,31 +87,9 @@ function setup(path: string) {
 }
 
 const href = (router: ReturnType<typeof setup>) => router.state.location.href;
-const dock = () => document.querySelector('nav[aria-label="Primary"]');
 const mobilePanel = () => document.querySelector('[data-nc-mobile-page]');
 
-/** The report's own three-dot menu — the control the focus contract returns to. */
 const trackActions = () => screen.getByRole('button', { name: 'Track actions' });
-
-/*
- * The dock is `inert` + `aria-hidden` whenever a secondary page is showing, so
- * a role query cannot see it — which is the contract working, not a hole. Its
- * buttons are addressed by their label instead, and every press below happens
- * in a state where the dock is genuinely visible and genuinely clickable.
- */
-/*
- * Presses go through `userEvent`, not `fireEvent`: `fireEvent` dispatches a
- * click on a node whatever its state, so a dock that had wrongly stayed `inert`
- * would still "work" here. `userEvent` performs the press the way a reader
- * does. (`fireEvent.keyDown` on `document` below stays: Escape is a document
- * listener, not a control being pressed.)
- */
-function dockButton(label: string): HTMLElement {
-  const found = [...document.querySelectorAll<HTMLElement>('nav[aria-label="Primary"] button')]
-    .find((button) => button.textContent === label);
-  if (found === undefined) throw new Error(`no dock button labelled ${label}`);
-  return found;
-}
 
 async function openPanelFromMenu(label: string): Promise<void> {
   await userEvent.click(await screen.findByRole('button', { name: 'Track actions' }));
@@ -216,11 +193,11 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
     const router = setup('/track/w1?panel=cards');
     expect(await screen.findByRole('heading', { name: 'Cards' })).toBeTruthy();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Back to Pages' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Open areas' }));
     // The sheet is a different layer of the app; leaving the report layer drops
     // the report's panel (§2.1).
     await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
-    expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
   });
 
   /*
@@ -233,8 +210,8 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
    * once per cycle to see anything change.
    *
    * The gesture is a real one and every press lands on a visible control: the
-   * report's own Back button is inside `<main>`, which is only `inert` while a
-   * sheet is open — the *dock* is what a panel-open report puts out of reach.
+   * workspace navigation opens from the header and closes any report panel
+   * through the same history transition.
    * Escape closes the sheet the way a reader would, then the menu opens the
    * panel again.
    *
@@ -249,11 +226,11 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
     for (let cycle = 0; cycle < 3; cycle += 1) {
       await openPanelFromMenu('Cards');
       await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
-      await userEvent.click(screen.getByRole('button', { name: 'Back to Pages' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Open areas' }));
       await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
-      expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
+      expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
       fireEvent.keyDown(document, { key: 'Escape' });
-      expect(screen.queryByRole('dialog', { name: 'Pages' })).toBeNull();
+      expect(screen.queryByRole('dialog', { name: 'Tracks and settings' })).toBeNull();
     }
 
     // One report entry and one panel entry, whatever the cycle count — the
@@ -287,97 +264,49 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
   });
 });
 
-describe('the shell derives whether a secondary page is showing (#1191 §2.1)', () => {
-  it('hides the dock on the report, shows it over a sheet, and hides it again inside an area', async () => {
+describe('workspace header navigation', () => {
+  it('opens the current track’s area without a dock', async () => {
     setup('/track/w1?from=area');
-    // On the report: the track route with no sheet open — the first OR branch.
-    await waitFor(() => { expect(dock()?.getAttribute('aria-hidden')).toBe('true'); });
-
-    // `?from=area` is the only thing that decides this label; there is no
-    // stored report source any more (§1.2).
-    await userEvent.click(await screen.findByRole('button', { name: 'Back to Tracks' }));
-    expect(screen.getByRole('dialog', { name: 'Areas' })).toBeTruthy();
-    // Restored straight into the track's own area, derived — never a stored id.
-    expect(screen.getByRole('heading', { name: 'Product' })).toBeTruthy();
-
-    /*
-     * ── The §0.4 reference case ────────────────────────────────────────────
-     * The pathname is still `/track/w1`, and the Areas sheet is drilled into a
-     * area. The disproven ternary — `onTrackRoute ? section === null : …` —
-     * returns `false` from its first branch here and never reaches the area
-     * condition at all, so the dock reappears on top of a secondary page. Two
-     * conditions OR'd is what keeps this hidden.
-     */
-    expect(dock()?.getAttribute('aria-hidden')).toBe('true');
-  });
-
-  /*
-   * The whole reason the shell resets the drill-in on *entry* rather than at
-   * every exit (#1191 §2.2). This is the reader's real gesture sequence, and
-   * every click here lands on a control that is visible at the moment it is
-   * pressed: closing the sheet leaves the selection behind — nothing reads it
-   * while `mobileSection` is not `'areas'` — and pressing Areas again must not
-   * reopen wherever they last were.
-   */
-  it('sends the dock’s Areas press to the area root list, never to the last drill-in', async () => {
-    // Today, not a report: the track route is a secondary page on its own, and
-    // this sequence has to be one a reader can perform with the dock in view.
-    setup('/');
-    await waitFor(() => dockButton('Areas'));
-    await userEvent.click(dockButton('Areas'));
-    screen.getByRole('dialog', { name: 'Areas' });
-    await userEvent.click(await screen.findByRole('button', { name: /Product/ }));
-    expect(screen.getByRole('heading', { name: 'Product' })).toBeTruthy();
-    expect(dock()?.getAttribute('aria-hidden')).toBe('true');
-
-    fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: 'Areas' })).toBeNull();
-    // The sheet is closed and the drill-in is deliberately still remembered;
-    // nothing reads it while the section is not Areas, so the dock is back.
-    expect(dock()?.getAttribute('aria-hidden')).toBeNull();
-
-    await userEvent.click(dockButton('Areas'));
+    await userEvent.click(await screen.findByRole('button', { name: 'Open areas' }));
+    expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: 'Product' })).toBeNull();
-  });
-
-  it('defaults a report with no ?from= back to Pages', async () => {
-    setup('/track/w1');
-    await userEvent.click(await screen.findByRole('button', { name: 'Back to Pages' }));
-    expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
-  });
-
-  it('replaces a remembered drill-in with the area the report returns to', async () => {
-    setup('/');
-    await waitFor(() => dockButton('Areas'));
-    await userEvent.click(dockButton('Areas'));
-    screen.getByRole('dialog', { name: 'Areas' });
-    await userEvent.click(await screen.findByRole('button', { name: /Second/ }));
-    expect(screen.getByRole('heading', { name: 'Second' })).toBeTruthy();
-    fireEvent.keyDown(document, { key: 'Escape' });
-
-    // A report reached from an area hands back its *own* area (§1.2, derived
-    // from `track.areaId`), which has to win over whatever the sheet still held.
-    await userEvent.click(dockButton('Areas'));
-    await userEvent.click(await screen.findByRole('button', { name: /Product/ }));
-    await userEvent.click(await screen.findByRole('button', { name: /Responsive mobile UI/ }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Back to Tracks' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Product' }));
     expect(screen.getByRole('heading', { name: 'Product' })).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: 'Second' })).toBeNull();
+    expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
   });
 
-  it('writes ?from= when a sheet is what opened the track', async () => {
+  it('navigates between Areas through the main centered menu and opens that Area’s track list', async () => {
+    const router = setup('/area/c1/new');
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch area, Product' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Second' }));
+    await waitFor(() => { expect(href(router)).toBe('/area/c2/new'); });
+    await userEvent.click(screen.getByRole('button', { name: 'Open areas' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Second' }));
+    expect(screen.getByRole('heading', { name: 'Second' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Back to Areas' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Areas' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /^New track$/ }));
+    await waitFor(() => { expect(href(router)).toBe('/area/c2/new'); });
+    expect(screen.getByRole('button', { name: 'Switch area, Second' })).toBeTruthy();
+  });
+
+  it('writes ?from= when navigation opens the track', async () => {
     const router = setup('/');
-    await waitFor(() => dockButton('Areas'));
-    await userEvent.click(dockButton('Areas'));
-    screen.getByRole('dialog', { name: 'Areas' });
-    await userEvent.click(await screen.findByRole('button', { name: /Product/ }));
-    await userEvent.click(await screen.findByRole('button', { name: /Responsive mobile UI/ }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Open areas' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Product' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Responsive mobile UI' }));
     await waitFor(() => { expect(href(router)).toBe('/track/w1?from=area'); });
-    // The report is a secondary page whatever the closed sheet still remembers.
-    expect(dock()?.getAttribute('aria-hidden')).toBe('true');
+    expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
   });
 
+  it('opens the first Area composer at home and switches Area from the centered selector', async () => {
+    const router = setup('/');
+    await waitFor(() => { expect(href(router)).toBe('/area/c1/new'); });
+    await userEvent.click(screen.getByRole('button', { name: 'Switch area, Product' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Second' }));
+    await waitFor(() => { expect(href(router)).toBe('/area/c2/new'); });
+    expect(screen.getByRole('button', { name: 'Switch area, Second' })).toBeTruthy();
+  });
 });
 
 /*

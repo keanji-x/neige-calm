@@ -7,7 +7,7 @@
 // stale name back. The suppressor must survive any merge; it is not area-
 // specific, it is a property of "Enter commits and returns focus".
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 
 import { useState } from '../state/public.ts';
 import { OperationFeedback, useOperationFeedback } from '../operation-feedback/public.tsx';
@@ -68,6 +68,11 @@ export type EditableTitleProps = Readonly<{
    */
   isPageTitle?: boolean;
   titleRef?: React.RefObject<HTMLButtonElement | null>;
+  /** Custom read mode, with the same rename and post-commit click guard. */
+  readView?: (controls: Readonly<{
+    beginEditing: () => void;
+    titleRef: (node: HTMLButtonElement | null) => void;
+  }>) => ReactNode;
 }>;
 
 /** How long after an Enter commit a synthesized click is ignored (#288). */
@@ -75,7 +80,7 @@ const CLICK_SUPPRESS_MS = 300;
 
 export function EditableTitle({
   value, placeholder, emptyCommit = 'cancel', onCommit, editLabel, inputLabel,
-  className, isPageTitle, titleRef,
+  className, isPageTitle, titleRef, readView,
 }: EditableTitleProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -122,10 +127,20 @@ export function EditableTitle({
     });
   }, [draft, emptyCommit, feedback, onCommit, restoreTitleFocus, value]);
 
+  const attachTitle = (node: HTMLButtonElement | null) => {
+    localTitleRef.current = node;
+    if (titleRef) titleRef.current = node;
+  };
+
   if (!editing) {
+    if (readView !== undefined) return <span data-nc-title-read-view="" onClickCapture={(event) => {
+      // Custom read controls can navigate or open a menu. Enter's trailing
+      // synthesized click must not activate those either (INV-DUP-008).
+      if (Date.now() < suppressClickUntil.current) { event.preventDefault(); event.stopPropagation(); }
+    }}>{readView({ beginEditing: begin, titleRef: attachTitle })}</span>;
     return (
       <button
-        ref={(node) => { localTitleRef.current = node; if (titleRef) titleRef.current = node; }}
+        ref={attachTitle}
         type="button"
         data-nc-role="row"
         data-nc-page-title={isPageTitle ? '' : undefined}

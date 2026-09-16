@@ -3500,3 +3500,37 @@ function contrast(a: string, b: string): number {
   const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
 }
+
+
+describe('Send and Stop circular contours', () => {
+  it.each(['Send', 'Stop'] as const)('keeps %s full even inside the concentric composer radius', async (label) => {
+    await page.viewport(1180, 800);
+    render(label === 'Send' ? <Card /> : <ChatComposer onSend={vi.fn()} onStop={vi.fn()} onNewConversation={vi.fn()} />);
+    const button = await page.getByRole('button', { name: label, exact: true }).findElement();
+    const box = button.getBoundingClientRect();
+    expect(box.width).toBe(box.height);
+    expect(getComputedStyle(button).borderRadius).toBe('999px');
+  });
+});
+
+
+describe('Mobile conversation contours', () => {
+  it('keeps the real chat composer and message radius rounded on the full mobile page', async () => {
+    await page.viewport(390, 844);
+    render(<Drawer open title="A very long conversation title that must remain within the mobile header"
+      mobileBackLabel="Conversations" onClose={vi.fn()} footer={<ChatComposer onSend={vi.fn()} />}>
+      <p>Existing conversation content.</p>
+    </Drawer>);
+    const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
+    await Promise.all(drawer.getAnimations().map((animation) => animation.finished));
+    const input = await page.getByRole('textbox', { name: 'Message' }).findElement();
+    const composer = input.closest('[data-density]')!.firstElementChild!;
+    expect(getComputedStyle(composer).borderRadius).toBe('16px');
+    expect(getComputedStyle(composer).backgroundColor).not.toBe(getComputedStyle(drawer).backgroundColor);
+    expect(getComputedStyle(drawer).getPropertyValue('--radius-chat').trim()).toBe('16px');
+    const heading = await page.getByRole('heading', { name: /^A very long conversation/ }).findElement();
+    expect(getComputedStyle(heading).fontSize).toBe('16px');
+    expect(heading.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
+    expect(drawer.getBoundingClientRect().height).toBe(window.innerHeight);
+  });
+});

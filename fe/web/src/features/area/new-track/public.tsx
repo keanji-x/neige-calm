@@ -184,7 +184,6 @@ import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { ChatComposer, ChatComposerInput } from '@astryxdesign/core/Chat';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
-import { HStack } from '@astryxdesign/core/HStack';
 import { Icon } from '@astryxdesign/core/Icon';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { VStack } from '@astryxdesign/core/VStack';
@@ -196,10 +195,11 @@ import { DirectoryBrowser } from '../../../ui/directory-browser/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import {
-  FolderPill, NO_STARTING_POINT, StartingPointPill, type StartingPoint,
+  NO_STARTING_POINT, type StartingPoint,
 } from '../default-pills/public.tsx';
 import { AreaDefaultNotice } from './area-default-notice.tsx';
 import styles from './new-track.module.css';
+import { ComposerPreferences } from './composer-preferences.tsx';
 
 /**
  * The starting point the draft carries, as a union rather than two independent
@@ -649,49 +649,21 @@ export function NewTrackForm({
             isDisabled={submitting}
             onSubmit={submit}
             status={status}
-            input={<ChatComposerInput label={TASK_LABEL} placeholder={TASK_PLACEHOLDER} isDisabled={submitting || locked} />}
-            /* ── The two settings, as chips under the sentence ─────────────────
-               What this track starts from and where it runs are the same *kind* of
-               thing: one optional choice each, both defaulted, both changing only
-               what the sentence above them is carried out on. In the footer and
-               not above the field because that is where a composer's controls
-               belong — the input is the surface, and these sit under it. Each
-               chip says what it is for and then what it holds, so the row needs
-               no labels above it and no paragraph under it. */
-            footerActions={(
-              <HStack gap={1} align="center" className={styles.controls}>
-                <StartingPointPill
-                  templates={templates}
-                  templatesLoaded={templatesLoaded}
-                  recipes={recipes}
-                  value={effectiveSelection}
-                  onChange={setSelected}
-                  onManageRecipes={onManageRecipes}
-                  placement="above"
-                  triggerId={triggerId}
-                  isDisabled={submitting || locked}
-                />
-
-                {/* Shared with the Area editor so the two folder preferences
-                    keep one compact, borderless pill contract. */}
-                <FolderPill
-                  buttonId={folderId}
-                  value={cwd}
-                  clearLabel={FOLDER_CLEAR_LABEL}
-                  onBrowse={() => setBrowsing(true)}
-                  onClear={() => setCwd('')}
-                  isDisabled={submitting || locked}
-                />
-              </HStack>
-            )}
-          /* Astryx's own `ChatSendButton` is named "Send", which is true of
-               every other composer in the app and false of this one: pressing it
-               creates a track. The name is the only thing overridden — the shape,
-               the icon and the position stay the composer's. */
-            sendActions={modelControls}
+            input={<ChatComposerInput className={styles.input} label={TASK_LABEL} placeholder={TASK_PLACEHOLDER} isDisabled={submitting || locked} />}
+            footerActions={<ComposerPreferences browsing={browsing}
+              startingPoint={{ templates, templatesLoaded, recipes, value: effectiveSelection,
+                onChange: setSelected, onManageRecipes, placement: 'above', triggerId,
+                isDisabled: submitting || locked }}
+              folder={{ buttonId: folderId, value: cwd, clearLabel: FOLDER_CLEAR_LABEL,
+                onBrowse: () => setBrowsing(true), onClear: () => setCwd(''),
+                isDisabled: submitting || locked }}
+            />}
+            /* Model and Create stay together at the trailing edge. */
+            sendActions={modelControls === undefined ? undefined : <span className={styles.modelControls}>{modelControls}</span>}
             sendButton={(
               <Button
                 type="button"
+                className={styles.send}
                 variant="primary"
                 isIconOnly
                 icon={<Icon icon="arrowUp" size="sm" />}

@@ -6,7 +6,7 @@
     Menu 激活条目时必须先同步恢复 trigger 焦点，再调用 onSelect
   why: >
     onSelect 可能立即挂载 Dialog；反序会让 Dialog 记住即将卸载的 menuitem，关闭时无法恢复焦点
-  source: fe/web/src/ui/menu/public.tsx:18-23
+  source: fe/web/src/ui/menu/public.tsx:20-26
   authoritative_test: fe/web/src/ui/menu/public.test.tsx:28-38
   owner_slice: ui/menu
   intentional_omission: false
@@ -22,7 +22,7 @@
     外部点击关闭 Menu 时不得把焦点抢回 trigger
   why: >
     用户已经主动点击其它目标，恢复 trigger 会覆盖该焦点意图
-  source: fe/web/src/ui/menu/public.tsx:30-37
+  source: fe/web/src/ui/menu/public.tsx:32-39
   authoritative_test: NONE
   owner_slice: ui/menu
   intentional_omission: true
@@ -38,7 +38,7 @@
     鼠标悬停跟随使用 onMouseMove，不使用 onMouseEnter
   why: >
     菜单可能在静止指针下挂载，mouseenter 会覆盖键盘初始焦点
-  source: fe/web/src/ui/menu/public.tsx:46
+  source: fe/web/src/ui/menu/public.tsx:50
   authoritative_test: NONE
   owner_slice: ui/menu
   intentional_omission: true
@@ -54,7 +54,7 @@
     disabled menuitem 保持可聚焦和可读，但激活必须无效
   why: >
     键盘用户仍需发现不可用选项，aria-disabled 不能退化成可执行状态
-  source: fe/web/src/ui/menu/public.tsx:21,46-47
+  source: fe/web/src/ui/menu/public.tsx:23,51-53
   authoritative_test: NONE
   owner_slice: ui/menu
   intentional_omission: true

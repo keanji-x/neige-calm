@@ -402,16 +402,19 @@
   @media (width < 60rem) {
     .drawer {
       --nc-card-inset: var(--space-8);
-      --nc-card-radius: 0px;
+      /* The viewport page stays flush; its composer and message surfaces
+         retain the same rounded contour as desktop conversation content. */
+      --nc-card-radius: var(--radius-lg);
+      --radius-chat: var(--radius-lg);
       position: fixed;
       inset: 0 0 calc(var(--mobile-dock-h, 0px) + env(safe-area-inset-bottom));
       inline-size: 100%;
       block-size: calc(100dvh - var(--mobile-dock-h, 0px) - env(safe-area-inset-bottom));
       max-inline-size: none;
       border-radius: 0;
-      background: var(--bg);
+      background: var(--surface-card);
       box-shadow: none;
-      animation: mobile-drawer-in var(--motion-medium) ease-out;
+      animation: none;
     }
 
     /* The desktop exchange rail mounts in the page seam beside the card. A
@@ -421,28 +424,20 @@
       display: none;
     }
 
+    .mobileHeader,
+    .mobileHeader > header {
+      background: var(--surface-card);
+    }
+
     .mobileHeader {
       flex: none;
-      padding-block-start: env(safe-area-inset-top);
-      padding-inline: var(--space-8);
-      background: transparent;
     }
 
     .bodyInner {
       padding: var(--space-8);
     }
 
-    .drawerClosing {
-      animation: mobile-drawer-out var(--motion-medium) ease-in forwards;
-    }
 
-    @keyframes mobile-drawer-in {
-      from { translate: 100% 0; }
-    }
-
-    @keyframes mobile-drawer-out {
-      to { translate: 100% 0; }
-    }
   }
 
   @media (prefers-reduced-motion: reduce) {

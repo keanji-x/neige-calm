@@ -1,0 +1,21 @@
+@layer features {
+  .page {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-block-size: 0;
+    padding-block-end: env(safe-area-inset-bottom);
+    overflow: auto;
+    background: var(--bg);
+  }
+
+  .page[hidden] {
+    display: none;
+  }
+
+  .content {
+    flex: 1 1 auto;
+    min-block-size: 0;
+    padding: 0 var(--space-8) var(--space-8);
+  }
+}

@@ -72,13 +72,11 @@ export type MobilePainterDeps = Readonly<{
    * root itself.
    */
   onOpenTask?: (blockId: string) => void;
-  /** The mobile page chrome: what the back button says, where it goes, and how
-   *  the page animates in. Not view-model content — it is the drill-down's own
+  /** The mobile page chrome: what the back button says and where it goes. Not view-model content — it is the drill-down's own
    *  navigation, which is why it travels in the factory's closure rather than
    *  through `RowPainter`'s signature (§3.5). */
   backLabel?: string;
   onBack?: () => void;
-  motion?: 'none' | 'forward' | 'back';
 }>;
 
 /** One marker attribute, spelled from `MARKER` / `FIELD` so no name is retyped
@@ -352,7 +350,6 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
           title={parts.title}
           backLabel={deps.backLabel}
           onBack={deps.onBack}
-          motion={deps.motion}
           moduleMarker={parts.key}
           titleFieldMarker={FIELD.moduleTitle}
         >

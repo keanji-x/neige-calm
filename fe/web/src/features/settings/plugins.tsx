@@ -236,6 +236,7 @@ export function PluginsPane({
   const [confirming, setConfirming] = useState<string | null>(null);
   return (
     <SettingsPane
+      category="plugins"
       title="Plugins"
       lede="What the workspace can do beyond its own kernel. Disabling one keeps its configuration; nothing it created is removed."
     >

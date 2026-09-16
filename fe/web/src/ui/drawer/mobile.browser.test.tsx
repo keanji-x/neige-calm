@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../styles/entry.css';
 
+import { useState } from '../state/public.ts';
 import { Drawer, drawerSeamAround } from './public.tsx';
 
 afterEach(() => { document.body.replaceChildren(); });
@@ -26,6 +27,55 @@ const settlePaint = () => new Promise<void>((resolve) => requestAnimationFrame((
  * parent's height cannot reach it — so that wrapper proved nothing either way.
  */
 describe('Drawer mobile Header', () => {
+  function Harness() {
+    const [isOpen, setOpen] = useState(false);
+    return <><button type="button" onClick={() => setOpen(true)}>Open details</button>
+      <Drawer open={isOpen} title="Details" mobileBackLabel="Report" onClose={() => setOpen(false)}><p>Details body</p></Drawer></>;
+  }
+
+  it('opens compact details directly without a page animation', async () => {
+    await page.viewport(390, 844);
+    const view = render(<Harness />);
+    try {
+      await page.getByRole('button', { name: 'Open details' }).click();
+      const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
+      expect(drawer.getAnimations()).toHaveLength(0);
+      expect(drawer.getBoundingClientRect().left).toBe(0);
+    } finally { view.unmount(); await page.viewport(1280, 720); }
+  });
+
+  it('closes compact details immediately and restores their opener', async () => {
+    await page.viewport(390, 844);
+    const view = render(<Harness />);
+    try {
+      const opener = await page.getByRole('button', { name: 'Open details' }).findElement();
+      await page.elementLocator(opener).click();
+      const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
+      await page.getByRole('button', { name: 'Back to Report' }).click();
+      expect(drawer.isConnected).toBe(false);
+      await expect.poll(() => document.activeElement).toBe(opener);
+    } finally { view.unmount(); await page.viewport(1280, 720); }
+  });
+
+  it('finishes a desktop close immediately when resized to compact', async () => {
+    await page.viewport(1400, 900);
+    const view = render(<Harness />);
+    try {
+      const opener = await page.getByRole('button', { name: 'Open details' }).findElement();
+      await page.elementLocator(opener).click();
+      const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
+      await Promise.all(drawer.getAnimations().map((animation) => animation.finished));
+      await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+      expect(drawer.isConnected).toBe(true);
+      const exit = drawer.getAnimations()[0];
+      expect(exit).toBeDefined(); exit.pause();
+      await page.viewport(390, 844);
+      await settlePaint();
+      expect(drawer.isConnected).toBe(false);
+      await expect.poll(() => document.activeElement).toBe(opener);
+    } finally { view.unmount(); await page.viewport(1280, 720); }
+  });
+
   it('opens a new Chat as Untitled with the shared Back-first Header', async () => {
     await page.viewport(390, 844);
     const onClose = vi.fn();
@@ -47,10 +97,9 @@ describe('Drawer mobile Header', () => {
     expect(document.querySelector('button[aria-label="Close conversation"]')).toBeNull();
 
     await settlePaint();
-    // The slide-in animates `translate` only, but let it finish so the box is
-    // read at rest.
+    // Compact pages are already at rest when they open.
     const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
-    await Promise.all(drawer.getAnimations().map((animation) => animation.finished));
+    expect(drawer.getAnimations()).toHaveLength(0);
 
     /*
      * With no `.shell` above it there is no dock to subtract, so the fallback

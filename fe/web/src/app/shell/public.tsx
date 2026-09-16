@@ -10,13 +10,14 @@
 // (`/area/{id}/new`, owned by `app/router`), and each Area group exposes the
 // route through its own `+`.
 
-import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { Outlet } from '@tanstack/react-router';
-import { createContext, useContext, useEffect, useRef, type CSSProperties } from 'react';
+import { createContext, useContext, useEffect, useRef } from 'react';
 
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { visibleTracks, type Track } from '../../../../core/domain/track.ts';
+import { visibleAreas } from '../../../../core/domain/area.ts';
 import type { Area, NewAreaBody } from '../../../../core/domain/area.ts';
 import {
   AreaEditorForm, type AreaEditorPatch, type AreaEditorValues,
@@ -29,12 +30,12 @@ import {
   ApiError, AreaCreatePreflightError, OfflineSubmissionError, useAreaMutations, useTrackMutations, useTrackTemplates, useWorkspace,
 } from '../providers/queries.ts';
 import { mintIdempotencyKey } from '../router/idempotency-key.ts';
-import { routeParamFromPath, useCurrentPath, useGo, useTrackPanelNavigation } from '../router/navigation.ts';
+import { routeParamFromPath, useCurrentPath, useGo, useRouteCardId, useRouteFilePath, useTrackPanelNavigation } from '../router/navigation.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
-import { DOCK_ITEMS, dockSelection, type MobileSection } from './dock.ts';
-import { MobileAreas } from './mobile-areas.tsx';
+import { MobileWorkspaceHeader } from './mobile-header.tsx';
+import { MobileTracks } from './mobile-tracks.tsx';
 import { MobilePages } from './mobile-pages.tsx';
-import { SettingsOverlay } from './settings-overlay.tsx';
+import { SettingsOverlay, settingsSectionForPath } from './settings-overlay.tsx';
 import { Sidebar } from './sidebar.tsx';
 import styles from './shell.module.css';
 
@@ -50,20 +51,28 @@ export type AppShellProps = Readonly<{
   userLabel?: string;
 }>;
 
-/**
- * The workspace sheet a route asks the shell to open, and — for Areas — the
- * area it should already be drilled into.
- *
- * A context because the track route renders inside `<Outlet />`. It replaces `MobileReportNavigationContext`
- * (#1191 §2.3), which carried a *label* and a *closure over shell state* —
- * `mobileReportSource` — so the shell and the report each held half of one
- * decision. The return surface now rides in the URL as `?from=`, the label is
- * derived from it by the route, and the only thing left to hand across the
- * boundary is this verb.
- */
-type OpenMobileSection = (section: MobileSection, areaId?: string | null) => void;
+/** Routes can reopen an Area's Tracks or recent Pages; the primary entry starts at Areas. */
+type MobileSection = Readonly<{ kind: 'areas'; areaId: string | undefined }> | Readonly<{ kind: 'pages' }> | Readonly<{ kind: 'tracks'; areaId: string | undefined }>;
+type OpenMobileSection = (section: MobileSection) => void;
 
 const MobileSectionContext = createContext<OpenMobileSection | null>(null);
+
+/** App owns header geometry; the feature owns the existing action menu and focus. */
+const MobileHeaderActionsContext = createContext<HTMLElement | null>(null);
+export function useMobileHeaderActionsHost(): HTMLElement | null {
+  return useContext(MobileHeaderActionsContext);
+}
+
+type MobileTrackChoices = Readonly<{ tracks: readonly Track[]; loading: boolean; error: string | null; onRetry: () => void }>;
+type ReadMobileTrackChoices = (areaId: string) => MobileTrackChoices;
+const MobileTrackChoicesContext = createContext<ReadMobileTrackChoices | null>(null);
+export function useMobileTrackChoices(): ReadMobileTrackChoices | null { return useContext(MobileTrackChoicesContext); }
+
+const MobileHeaderTitleContext = createContext<HTMLElement | null>(null);
+export function useMobileHeaderTitleHost(): HTMLElement | null {
+  return useContext(MobileHeaderTitleContext);
+}
+
 
 type AreaCreateRequest = Readonly<{ body: NewAreaBody; key: string }>;
 
@@ -82,19 +91,6 @@ export function useOpenMobileSection(): OpenMobileSection {
   return useContext(MobileSectionContext) ?? noOpenMobileSection;
 }
 
-/**
- * Which area the Areas sheet has drilled into, **and** the motion that took it
- * there — one state, because it is one transition (#1191 §2.2).
- *
- * These were two `useState`s in `mobile-areas.tsx`, coupled at every move; the
- * id then had to be lifted here so `from=area` could restore it, and lifting
- * only half would have handed one transition to two owners — the exact shape
- * this change exists to delete. Lifting it also loses "unmounting resets it",
- * so every exit below clears it explicitly.
- */
-type AreaSelection = Readonly<{ areaId: string | null; motion: 'none' | 'forward' | 'back' }>;
-const NO_AREA_SELECTED: AreaSelection = Object.freeze({ areaId: null, motion: 'none' });
-
 export function AppShell({
   transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel,
 }: AppShellProps) {
@@ -109,6 +105,10 @@ export function AppShell({
   const [areaEditorError, setAreaEditorError] = useState<string | null>(null);
   const areaEditorNameRef = useRef<HTMLInputElement | null>(null);
   const currentPath = useCurrentPath();
+  const settingsOpen = settingsSectionForPath(currentPath) !== null;
+  const routeCardId = useRouteCardId();
+  const routeFilePath = useRouteFilePath();
+  const mobileOverlayRoute = typeof routeCardId === 'string' || typeof routeFilePath === 'string';
   const go = useGo();
   // The report's panel is a history *destination* (§1.1), so the shell leaves
   // it the same way the report does — see `clearReportPanel`.
@@ -141,22 +141,21 @@ export function AppShell({
   const narrowRail = useCompactViewport();
   const [mobileSection, setMobileSection] = useState<MobileSection | null>(null);
   const mobileNavOpen = mobileSection !== null;
-  const [areaSelection, setAreaSelection] = useState<AreaSelection>(NO_AREA_SELECTED);
+  const mobileSectionKind = mobileSection?.kind;
+  const [mobileHeaderActionsHost, setMobileHeaderActionsHost] = useState<HTMLDivElement | null>(null);
+  const [mobileHeaderTitleHost, setMobileHeaderTitleHost] = useState<HTMLDivElement | null>(null);
+  const mobileOpenerRef = useRef<HTMLElement | null>(null);
   const routeTrackId = routeParamFromPath(currentPath, '/track/');
-  /*
-   * "A full-bleed secondary page is showing", derived here and nowhere else
-   * (#1191 §2.1). It used to be a `window` CustomEvent that three modules
-   * published and this one subscribed to, plus a second source of truth about
-   * being on a track (`currentPath.includes('/track/')`, which also matched
-   * `/area/x/track-notes`).
-   *
-   * **Two conditions OR'd, never a ternary.** #1191 §0.4: a
-   * `onTrackRoute ? … : …` shape returns on the first branch while the reader is
-   * on `/track/x` with the Areas sheet drilled into an area — the pathname is
-   * still the track's — and the dock reappears over a secondary page.
-   */
-  const shellSecondaryOpen = (routeTrackId !== undefined && mobileSection === null)
-    || (mobileSection === 'areas' && areaSelection.areaId !== null);
+  const routeAreaId = routeParamFromPath(currentPath, '/area/');
+  const areas = visibleAreas(workspace.areas);
+  const activeAreaId = routeAreaId ?? workspace.tracks.find((track) => track.id === routeTrackId)?.areaId;
+  const activeArea = areas.find((area) => area.id === activeAreaId) ?? areas[0];
+  const homeAreaId = areas[0]?.id;
+  useEffect(() => {
+    if (narrowRail && currentPath === '/' && homeAreaId !== undefined) {
+      go({ name: 'new-track', areaId: homeAreaId }, { replace: true });
+    }
+  }, [narrowRail, currentPath, homeAreaId, go]);
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   const railCollapsed = manualRailCollapsed ?? narrowRail;
 
@@ -170,12 +169,15 @@ export function AppShell({
         return;
       }
       if (event.key !== 'Tab') return;
-      const focusable = mobileNavigationRef.current?.querySelectorAll<HTMLElement>(
+      const focusable = Array.from(mobileNavigationRef.current?.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusable === undefined || focusable.length === 0) return;
-      const first = focusable.item(0);
-      const last = focusable.item(focusable.length - 1);
+      ) ?? []).filter((element) => element.closest('[inert], [hidden], [aria-hidden="true"]') === null);
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (document.activeElement === mobileNavigationRef.current) {
+        event.preventDefault(); (event.shiftKey ? last : first).focus(); return;
+      }
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault(); last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -183,12 +185,21 @@ export function AppShell({
       }
     };
     document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      mobileOpenerRef.current?.focus({ preventScroll: true });
+    };
   }, [mobileNavOpen]);
 
   useEffect(() => {
     if (!narrowRail && mobileNavOpen) setMobileSection(null);
   }, [mobileNavOpen, narrowRail]);
+  useEffect(() => {
+    if (mobileSectionKind !== undefined) {
+      const activeBack = mobileNavigationRef.current?.querySelector<HTMLElement>('[data-nc-workspace-page]:not([aria-hidden="true"]) header button');
+      (activeBack ?? mobileNavigationRef.current)?.focus({ preventScroll: true });
+    }
+  }, [mobileSectionKind]);
 
   // Both track mutations need the area id to invalidate the right list, and the
   // rail only knows track ids; the workspace read already has the mapping.
@@ -217,31 +228,17 @@ export function AppShell({
    * while a sheet is showing — and
    * `mobile-report-navigation.test.tsx` drives the three-cycle gesture.
    *
-   * Still guarded on actually being on a track, so a Today/Settings dock press
-   * does not navigate.
+   * Only track routes have a report panel to close.
    */
   const clearReportPanel = () => {
     if (routeTrackId !== undefined) closePanel(routeTrackId);
   };
 
-  /*
-   * Closing a sheet closes the *section*, and deliberately leaves the area
-   * drill-in alone. The selection is only ever read under
-   * `mobileSection === 'areas'` — the secondary formula above conjoins it and
-   * so does the render below — so a leftover area is unobservable, and clearing
-   * it at each of the six exits would be six places to forget.
-   */
   const closeMobileSection = () => setMobileSection(null);
 
-  /*
-   * The one entry into a sheet, and the single site that resets the drill-in.
-   * `areaId` defaults to `null`, which *is* the product rule "pressing Areas in
-   * the dock always lands on the area root list" — stated once, where it can be
-   * read, instead of inferred from what every exit remembered to clear.
-   */
-  const openMobileSection: OpenMobileSection = (section, areaId = null) => {
+  const openMobileSection: OpenMobileSection = (section) => {
+    mobileOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setMobileSection(section);
-    setAreaSelection(areaId === null ? NO_AREA_SELECTED : { areaId, motion: 'none' });
     clearReportPanel();
   };
 
@@ -315,13 +312,26 @@ export function AppShell({
     go(target);
   };
 
-  const selectedDockKey = dockSelection(mobileSection, currentPath);
-  // The sheet's accessible name is the dock label that opens it — stated once,
-  // in `DOCK_ITEMS`, so the two can never disagree.
-  const mobileNavigationLabel = DOCK_ITEMS.find((item) => item.opensSection === mobileSection)?.label ?? 'Pages';
+  // Opening while Areas is loading has no id yet. Follow the current Area
+  // when the read recovers; an explicitly requested Area still stays exact.
+  const navigationAreaId = mobileSection?.kind === 'tracks' || mobileSection?.kind === 'areas'
+    ? mobileSection.areaId ?? activeArea?.id : activeArea?.id;
+  const navigationArea = areas.find((area) => area.id === navigationAreaId);
+  const mobileNavigationLabel = mobileSection?.kind === 'pages' ? 'Pages' : 'Tracks and settings';
 
   return (
-    <div className={`${styles.shell} ${railCollapsed ? styles.shellCollapsed : styles.shellExpanded} ${shellSecondaryOpen ? styles.shellMobileSecondary : ''}`}>
+    <div className={`${styles.shell} ${narrowRail && (settingsOpen || mobileOverlayRoute) ? styles.settingsPageShell : ''} ${railCollapsed ? styles.shellCollapsed : styles.shellExpanded}`}>
+      {narrowRail && !settingsOpen && !mobileOverlayRoute && <MobileWorkspaceHeader
+        areas={areas}
+        activeArea={activeArea}
+        navigationOpen={mobileNavOpen}
+        onOpenNavigation={() => openMobileSection({ kind: 'areas', areaId: activeArea?.id })}
+        onSelectArea={requestNewTrack}
+        onCreateArea={requestCreateArea}
+        actionsHostRef={setMobileHeaderActionsHost}
+        titleHostRef={setMobileHeaderTitleHost}
+        hasTrack={routeTrackId !== undefined}
+      />}
       <div
         ref={mobileNavigationRef}
         id="mobile-workspace-navigation"
@@ -334,9 +344,16 @@ export function AppShell({
         tabIndex={narrowRail ? -1 : undefined}
       >
         <div className={styles.navigationPanel}>
+          <div className={styles.navigationContent}>
           {narrowRail ? (
-            mobileSection === 'pages' ? (
+            mobileSection?.kind === 'pages' ? (
               <MobilePages
+                areaId={navigationArea?.id}
+                onEditArea={requestEditArea}
+                onBack={closeMobileSection}
+                onNewTrack={requestNewTrack}
+                onCreateArea={requestCreateArea}
+                onOpenSettings={() => { closeMobileSection(); onOpenSettings(); }}
                 areas={workspace.areas}
                 tracks={workspace.tracks}
                 readError={readError}
@@ -349,17 +366,20 @@ export function AppShell({
                   go({ name: 'track', trackId, from: 'pages' });
                 }}
               />
-            ) : mobileSection === 'areas' ? (
-              <MobileAreas
+            ) : mobileSection !== null ? (
+              <MobileTracks
+                view={mobileSection.kind === 'tracks' ? 'tracks' : 'areas'}
+                onSelectArea={(areaId) => setMobileSection({ kind: 'tracks', areaId })}
+                onBack={mobileSection.kind === 'tracks' ? () => setMobileSection({ kind: 'areas', areaId: navigationArea?.id }) : closeMobileSection}
+                onNewTrack={requestNewTrack}
+                onOpenSettings={() => { closeMobileSection(); onOpenSettings(); }}
+                currentTrackId={routeTrackId}
                 areas={workspace.areas}
                 tracksByArea={workspace.tracksByArea}
                 readError={readError}
                 readLoading={readLoading}
                 onRetryRead={retryRead}
-                selectedAreaId={areaSelection.areaId}
-                motion={areaSelection.motion}
-                onSelectArea={(areaId) => setAreaSelection({ areaId, motion: 'forward' })}
-                onBack={() => setAreaSelection({ areaId: null, motion: 'back' })}
+                areaId={navigationArea?.id}
                 onCreateArea={requestCreateArea}
                 onEditArea={requestEditArea}
                 onOpenTrack={(trackId) => {
@@ -402,58 +422,30 @@ export function AppShell({
             onSignOut={() => { closeMobileSection(); onSignOut(); }}
             userLabel={userLabel}
           />}
+          </div>
+
         </div>
       </div>
       <main className={styles.main} inert={narrowRail && mobileNavOpen} aria-hidden={narrowRail && mobileNavOpen ? true : undefined}>
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
             `:first-child` on `.main` would flex the banner, not the page. */}
-        <div key={currentPath} className={styles.stage}>
+        <div key={currentPath} className={styles.stage} hidden={narrowRail && settingsOpen}>
           <MobileSectionContext.Provider value={openMobileSection}>
-            <Outlet />
+            <MobileHeaderActionsContext.Provider value={narrowRail ? mobileHeaderActionsHost : null}>
+              <MobileHeaderTitleContext.Provider value={narrowRail ? mobileHeaderTitleHost : null}>
+                <MobileTrackChoicesContext.Provider value={(areaId) => ({
+                  tracks: areas.some((area) => area.id === areaId) ? visibleTracks(workspace.tracksByArea.get(areaId) ?? []) : [],
+                  loading: workspace.areasLoading || workspace.tracksLoadingByArea.get(areaId) === true,
+                  error: workspace.areasError?.message ?? workspace.trackErrorsByArea.get(areaId)?.message ?? null,
+                  onRetry: retryRead,
+                })}><Outlet /></MobileTrackChoicesContext.Provider>
+              </MobileHeaderTitleContext.Provider>
+            </MobileHeaderActionsContext.Provider>
           </MobileSectionContext.Provider>
         </div>
+        {/* Above the keyed route stage so settings panes survive tab changes and resizing. */}
+        <SettingsOverlay transport={transport} unauthorized={unauthorized} />
       </main>
-      {/* Pages and Areas are deliberately different indexes. Pages will group
-          reports by recency/pin; this prototype keeps the current report as
-          that tab's root. Areas uses list → Track-list mobile navigation. */}
-      <nav
-        className={`${styles.mobileDock} ${shellSecondaryOpen ? styles.mobileDockHidden : ''}`}
-        aria-label="Primary"
-        aria-hidden={shellSecondaryOpen ? true : undefined}
-        inert={shellSecondaryOpen}
-        /* The column count is `DOCK_ITEMS.length`, not a `4` written twice: the
-           grid used to hard-code it, so adding a fifth destination would have
-           silently overflowed the strip (#1191 §3.3). */
-        style={{ '--mobile-dock-count': DOCK_ITEMS.length } as CSSProperties}
-      >
-        {DOCK_ITEMS.map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            className={styles.mobileDockItem}
-            aria-current={selectedDockKey === item.key ? 'page' : undefined}
-            /* Only the two items that actually operate the sheet claim it. */
-            aria-controls={item.opensSection === undefined ? undefined : 'mobile-workspace-navigation'}
-            aria-expanded={item.opensSection === undefined ? undefined : mobileSection === item.opensSection}
-            onClick={() => {
-              // No area argument: pressing Areas in the dock is always the root
-              // list, never wherever the reader was last drilled to (§2.2).
-              if (item.opensSection !== undefined) { openMobileSection(item.opensSection); return; }
-              closeMobileSection();
-              if (item.key === 'today') go({ name: 'today' });
-              else onOpenSettings();
-            }}
-          >
-            <AstryxIcon icon={item.icon} size="md" color="inherit" />
-            <span>{item.label}</span>
-          </button>
-        ))}
-      </nav>
-      {/* Owned here because it has to stay mounted while the reader navigates
-          *inside* it (General → Plugins is a route change), and the shell is the
-          nearest thing above `<Outlet />` that survives one. See
-          `settings-overlay.tsx`. */}
-      <SettingsOverlay transport={transport} unauthorized={unauthorized} />
       <Dialog
         open={areaEditorTarget !== null}
         title={areaEditorTarget?.kind === 'edit' ? `Edit ${areaEditorTarget.area.name}` : 'New area'}

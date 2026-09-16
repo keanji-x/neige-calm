@@ -311,6 +311,26 @@ describe('ModelPill', () => {
     });
   });
 
+  it('keeps effort selection in the model menu when its host asks for one control', () => {
+    const onChange = vi.fn();
+    const view = render(<ModelPill catalog={catalog()}
+      selection={{ model: 'gpt-5', reasoning_effort: null }}
+      effortControl="in-menu" onChange={onChange} />);
+    expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
+    const efforts = within(openMenu(/^Model:/)).getByRole('group', { name: 'Reasoning effort' });
+    fireEvent.click(within(efforts).getByRole('menuitem', { name: /high/ }));
+    expect(onChange).toHaveBeenLastCalledWith({ model: 'gpt-5', reasoning_effort: 'high' });
+    view.rerender(<ModelPill catalog={catalog()}
+      selection={{ model: 'gpt-5', reasoning_effort: 'high' }}
+      effortControl="in-menu" onChange={onChange} />);
+    // Reopen through the keyboard; DropdownMenu guards immediate repeat pointer clicks.
+    fireEvent.keyDown(trigger(/^Model:/), { key: 'ArrowDown' });
+    const chosenEfforts = within(screen.getByRole('menu')).getByRole('group', { name: 'Reasoning effort' });
+    expect(within(chosenEfforts).getByRole('menuitem', { name: /high/ }).textContent).toContain('Selected');
+    fireEvent.click(within(chosenEfforts).getByRole('menuitem', { name: /^Default/ }));
+    expect(onChange).toHaveBeenLastCalledWith({ model: 'gpt-5', reasoning_effort: null });
+  });
+
   /*
    * The two ways the catalog can be empty are different facts and must not
    * render the same. "codex is not running" is recoverable by starting codex;

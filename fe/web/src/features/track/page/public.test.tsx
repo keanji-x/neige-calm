@@ -151,6 +151,7 @@ describe('TrackPage header', () => {
         <>
           <button type="button" onClick={() => setNotifications([worker, planner])}>Add notification</button>
           <TrackPage
+            mobilePanelObscured={false}
             track={track({ anyCardNeedsInput: true })}
             cards={[]}
             tasks={[]}
@@ -673,8 +674,20 @@ describe('TrackPage card inventory', () => {
    * renders what it is given — including a POP the reader triggered with the
    * hardware Back button, which no event bus could have delivered.
    */
+  it('keeps a source-obscured mobile panel inaccessible even when no conversation is open', () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+    try {
+      const view = renderPage({ panel: 'conversations', mobilePanelObscured: true, conversationOpen: false,
+        conversationList: <button type="button">Existing conversation</button> });
+      const panel = view.container.querySelector('[data-nc-mobile-panel]')!;
+      expect(panel.hasAttribute('inert')).toBe(true);
+      expect(panel.getAttribute('aria-hidden')).toBe('true');
+    } finally { cleanup(); vi.unstubAllGlobals(); }
+  });
+
   it('renders whatever panel it is handed, and closes when that becomes null', () => {
     const props = {
+      mobilePanelObscured: false,
       track: track(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [],
       canResumeTrack: false, onRenameTrack: vi.fn(), onResumeTrack: vi.fn(), onDeleteTrack: vi.fn(),
     };
@@ -755,6 +768,7 @@ describe('TrackPage card inventory', () => {
 
   it('falls back to the kind when a card has no title', () => {
     const { container } = render(<TrackPage
+      mobilePanelObscured={false}
       track={track()}
       cards={[card({ id: 'k1', kind: 'notes', title: null })]}
       tasks={[]}

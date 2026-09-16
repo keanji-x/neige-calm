@@ -40,6 +40,10 @@ describe('filePathFromSearchString', () => {
 });
 
 describe('pathFor', () => {
+  it('gives the mobile General category a dedicated URL', () => {
+    expect(pathFor({ name: 'settings-general' })).toBe('/settings/general');
+    expect(pathFor({ name: 'settings' })).toBe('/settings');
+  });
   it('does not embed the card query in the path', () => {
     expect(pathFor({ name: 'track', trackId: 'w1', cardId: 'c1' })).toBe('/track/w1');
   });

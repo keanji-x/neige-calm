@@ -47,8 +47,7 @@
   }
 
   /*
-   * No panel to open (#1669 §2.5): the narrow viewport, and the surfaces that
-   * carry no track. Inline, in the host's text colour — it is not a control,
+   * No panel to open (#1669 §2.5): the surfaces that carry no track. Inline, in the host's text colour — it is not a control,
    * so it does not take the link colour or the underline — with a small chip
    * in front that says what the label is. The chip is the same surface the
    * panel's provenance badge uses; it carries no provenance because nothing

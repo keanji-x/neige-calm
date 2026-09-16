@@ -76,6 +76,7 @@ function renderApp(initialEntry: string) {
 describe('settingsSectionForPath', () => {
   it('maps every settings path to a pane and nothing else to one', () => {
     expect(settingsSectionForPath('/settings')).toBe('general');
+    expect(settingsSectionForPath('/settings/general')).toBe('general');
     expect(settingsSectionForPath('/settings/network')).toBe('network');
     expect(settingsSectionForPath('/settings/appearance')).toBe('appearance');
     expect(settingsSectionForPath('/settings/plugins')).toBe('plugins');

@@ -6,6 +6,7 @@ import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import { isBlankForKernel, trackCreateKeyAction, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { NewTrackForm, type NewTrackDraft, type NewTrackFormState } from '../../features/area/new-track/public.tsx';
+import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { createDirectoryLister } from '../providers/directory.ts';
 import { ApiError, OfflineSubmissionError, folderConflictOf, modelCatalogQueryOptions, useTrackMutations, useTrackRecipes, useTrackTemplates, useWorkspace, type Workspace } from '../providers/queries.ts';
@@ -37,6 +38,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   session: NewTrackSession;
   store: ReturnType<typeof useNewTrackSession>['store'];
 }) {
+  const compactViewport = useCompactViewport();
   const areaId = session.area.id;
   const modelCatalog = useQuery(modelCatalogQueryOptions(transport, null, unauthorized));
   const trackMutations = useTrackMutations(transport, unauthorized);
@@ -140,6 +142,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   const createdTrackId = session.createdTrackId;
   return <NewTrackForm
     modelControls={<ModelPill
+      effortControl={compactViewport ? 'in-menu' : 'separate'}
       catalog={modelCatalog.data ?? null}
       selection={session.model}
       onChange={(model) => { store.update(areaId, { model }); }}

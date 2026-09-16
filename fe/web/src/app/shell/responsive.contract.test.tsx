@@ -6,17 +6,22 @@ import { AppShell } from './public.tsx';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { NEUTRAL_ACTIVITY } from '../../../../core/domain/track.ts';
 
-/*
- * `navigation.ts` is now loaded for real below — only its hooks are replaced —
- * so the router exports it imports at module scope have to resolve. Nothing
- * here is called: the mocked hooks are what the shell actually uses.
- */
-vi.mock('@tanstack/react-router', () => ({
-  Outlet: () => <div>route</div>,
-  useNavigate: () => vi.fn(),
-  useRouter: () => ({}),
-  useRouterState: () => undefined,
-}));
+/* Keep real router/history state for shell-owned surfaces while isolating
+ * navigation effects. An empty useRouter result hid required history fields. */
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>();
+  const router = actual.createRouter({
+    routeTree: actual.createRootRoute(),
+    history: actual.createMemoryHistory({ initialEntries: ['/'] }),
+  });
+  return {
+    ...actual,
+    Outlet: () => <div>route</div>,
+    useNavigate: () => vi.fn(),
+    useRouter: () => router,
+    useRouterState: ({ select }: { select: (state: typeof router.state) => unknown }) => select(router.state),
+  };
+});
 const AREA = {
   id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user',
   defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0,
@@ -68,45 +73,20 @@ describe('compact navigation interaction contracts', () => {
     })));
     const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
     render(<AppShell transport={{} as never} unauthorized={unauthorized} onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} />);
-    const pages = screen.getByRole('button', { name: 'Pages' });
-    expect(pages.getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(pages);
-    expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
-    expect(pages.getAttribute('aria-expanded')).toBe('true');
-    // #1191 3ec80a6b — dock 是幂等的目的地，不是 toggle：再次点击 Pages 仍停在 Pages。
-    // 这不是漏了关闭断言，别把它「修」回 toggle。关闭走 Escape（见下）或 dock 的其它目的地。
-    // 这里是该语义在真实 AppShell 上的唯一守卫：mobile.browser.test.tsx 用的是自建替身。
-    fireEvent.click(pages);
-    expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
-    expect(pages.getAttribute('aria-expanded')).toBe('true');
-
-    const opener = screen.getByRole('button', { name: 'Areas' });
-    expect(opener.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByRole('dialog', { name: 'Areas' })).toBeNull();
-
+    expect(screen.queryByRole('navigation', { name: 'Primary' })).toBeNull();
+    const opener = screen.getByRole('button', { name: 'Open areas' });
     fireEvent.click(opener);
-    expect(screen.getByRole('dialog', { name: 'Areas' })).toBeTruthy();
-    expect(opener.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Responsive mobile UI/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Product' }));
+    expect(screen.getByRole('button', { name: /Responsive mobile UI/ })).toBeTruthy();
     expect(document.querySelector('main')?.hasAttribute('inert')).toBe(true);
-
     fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: 'Areas' })).toBeNull();
-    expect(opener.getAttribute('aria-expanded')).toBe('false');
-
-    /*
-     * The dock yields to a secondary page. That used to be published as a
-     * `window` event; since #1191 §2.1 it is derived, so the only way to reach
-     * it here is to drive the state it is derived from — drilling the Areas
-     * sheet into an area. `useCurrentPath` is mocked to `/`, so the track-route
-     * half of the OR is out of play and this is the area half on its own.
-     */
-    const dock = document.querySelector('nav[aria-label="Primary"]');
-    expect(dock?.getAttribute('aria-hidden')).toBeNull();
-    fireEvent.click(opener);
-    fireEvent.click(screen.getByRole('button', { name: /Product/ }));
-    expect(dock?.getAttribute('aria-hidden')).toBe('true');
-    expect(dock?.hasAttribute('inert')).toBe(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Back to Areas' }));
-    expect(dock?.getAttribute('aria-hidden')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Tracks and settings' })).toBeNull();
+    const area = screen.getByRole('button', { name: 'Switch area, Product' });
+    fireEvent.click(area);
+    expect(screen.getByRole('menuitem', { name: 'Product' })).toBeTruthy();
   });
 });

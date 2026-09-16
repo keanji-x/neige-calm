@@ -22,6 +22,11 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { page } from 'vitest/browser';
+
+// These token-free fixtures pin the desktop picker and focus contracts.
+// The production-style compact overflow is exercised by new-track-model.browser.test.
+beforeEach(async () => { await page.viewport(1280, 720); });
 
 import type { TrackTemplate } from '../../../../../core/domain/track.ts';
 import { NewTrackForm } from './public.tsx';

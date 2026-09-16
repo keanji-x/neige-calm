@@ -19,7 +19,9 @@ import { DropdownMenu as AstryxDropdownMenu } from '@astryxdesign/core/DropdownM
 import { getIcon as getAstryxIcon } from '@astryxdesign/core/Icon';
 import { MoreMenu as AstryxMoreMenu } from '@astryxdesign/core/MoreMenu';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { useCompactViewport } from '../../../ui/viewport/public.ts';
 
 import { independentTaskUnavailableReason } from '../../../../../core/domain/independent-task.ts';
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
@@ -28,7 +30,7 @@ import {
 } from '../../../../../core/domain/track.ts';
 import { DELETE_TRACK_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
-import { EditableTitle } from '../../../ui/editable-title/public.tsx';
+import { EditableTitle, type EditableTitleProps } from '../../../ui/editable-title/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { MobileList, MobileListItem, MobileListPage } from '../../../ui/mobile-list/public.tsx';
 import { MobileHeader } from '../../../ui/mobile-header/public.tsx';
@@ -43,6 +45,7 @@ import type { RowModuleView, TrackPageView } from '../../../../../core/view/pane
 import { TrackLifecycleBadge } from '../lifecycle-badge/public.tsx';
 import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
 import { makeMobilePainter, paintMobileModule } from './mobile-painter.tsx';
+import { MobileTitleReadView } from './mobile-title-read-view.tsx';
 import styles from './page.module.css';
 
 /**
@@ -100,6 +103,8 @@ export type TrackPageProps = Readonly<{
   /** The route's conversation drawer is open. Input notifications compact
    *  beside it instead of covering its composer. */
   conversationOpen?: boolean;
+  /** Any active foreground drawer makes the painted mobile panel inaccessible. */
+  mobilePanelObscured: boolean;
   /** Starts Chat from the mobile Report's dedicated floating action. */
   onStartConversation?: () => void;
   /** The Cards module head's `+`, composed by `app/router`. */
@@ -145,6 +150,10 @@ export type TrackPageProps = Readonly<{
   onClosePanel?: () => void;
   mobileBackLabel?: string;
   onMobileBack?: () => void;
+  /** Optional app-owned phone header slot; this feature keeps ownership of actions and focus. */
+  mobileHeaderActionsHost?: HTMLElement | null;
+  mobileHeaderTitleHost?: HTMLElement | null;
+  mobileTitleReadView?: EditableTitleProps['readView'];
   canResumeTrack: boolean;
   onRenameTrack: (title: string) => void | Promise<void>;
   onResumeTrack: () => void | Promise<void>;
@@ -205,12 +214,50 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
 
 export function TrackPage({
   track, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
-  onStartConversation, conversationOpen = false, inputNotifications = [], onOpenInputNotification,
+  onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onOpenInputNotification,
   cardsAction, onCreateTask, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
-  mobileBackLabel = 'Pages', onMobileBack,
+  mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
   canResumeTrack, onRenameTrack, onResumeTrack, onDeleteTrack,
 }: TrackPageProps) {
+  const compactViewport = useCompactViewport();
+  const headerActionsHost = compactViewport ? mobileHeaderActionsHost : null;
+  const [titleContainer] = useState(() => {
+    const container = document.createElement('div');
+    container.style.display = 'contents';
+    return container;
+  });
+  useLayoutEffect(() => () => titleContainer.remove(), [titleContainer]);
+  const desktopTitleSlotRef = useRef<HTMLDivElement | null>(null);
+  const [mobileTitleReadHost] = useState(() => document.createElement('div'));
+  const lastFocusedTitleRef = useRef<HTMLElement | null>(null);
+  const titleReadControlRef = useRef<HTMLButtonElement | null>(null);
+  const mobileTitleEditRef = useRef<(() => void) | null>(null);
+  const [canEditMobileTitle, setCanEditMobileTitle] = useState(false);
+  const registerMobileTitleEdit = useCallback((begin: (() => void) | null) => {
+    mobileTitleEditRef.current = begin;
+    setCanEditMobileTitle(begin !== null);
+  }, []);
+  const relocatingTitleRef = useRef(false);
+  const titleInHeader = compactViewport && mobileHeaderTitleHost !== null;
+  useLayoutEffect(() => {
+    const slot = titleInHeader ? mobileHeaderTitleHost : desktopTitleSlotRef.current;
+    if (slot !== null) {
+      const focused = lastFocusedTitleRef.current;
+      const restore = focused !== null
+        && (document.activeElement === focused || document.activeElement === document.body);
+      // Read controls change shape across breakpoints; the editor itself is
+      // stable. Hand off only focus previously owned by this title subtree.
+      const target = focused !== null && titleContainer.contains(focused) ? focused : titleReadControlRef.current;
+      relocatingTitleRef.current = true;
+      slot.appendChild(titleContainer);
+      // A host removed at the breakpoint can drop focus to body without a
+      // blur event. Restore the same input after moving its stable container.
+      if (restore) target?.focus({ preventScroll: true });
+      relocatingTitleRef.current = false;
+    }
+  }, [mobileHeaderTitleHost, titleContainer, titleInHeader]);
+
   const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal));
   const resumeFeedback = useOperationFeedback();
   const [resumePending, setResumePending] = useState(false);
@@ -249,10 +296,6 @@ export function TrackPage({
   const mobilePanelOpen = panel !== null;
   const noticePanelOpen = noticeExpanded;
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
-  /** The drill-down page's entrance animation — a *panel* fact, not a card one:
-   *  all four mobile pages take it, and `openMobilePanel` sets it. (The card
-   *  detail page it was named after is gone; the motion is not.) */
-  const [mobileCardMotion, setMobileCardMotion] = useState<'none' | 'forward' | 'back'>('none');
   const resumeWork = async (): Promise<boolean> => {
     if (!canResumeTrack || resumePendingRef.current) return false;
     resumePendingRef.current = true;
@@ -268,13 +311,17 @@ export function TrackPage({
     return resumed;
   };
   const taskUnavailable = independentTaskUnavailableReason(track.lifecycle);
-  const trackMutationActions = [
+  const trackWorkActions = [
     ...(onCreateTask === undefined ? [] : [{ label: 'Run independent task', isDisabled: taskUnavailable !== null, onClick: onCreateTask }]),
     ...(canResumeTrack ? [
       { label: 'Resume work', isDisabled: resumePending, onClick: resumeWork },
-      { type: 'divider' as const },
     ] : []),
-    { label: 'Delete track', onClick: () => deletion.request(track.id) },
+  ];
+  const deleteTrackAction = { label: 'Delete track', onClick: () => deletion.request(track.id) };
+  const trackMutationActions = [
+    ...trackWorkActions,
+    ...(canResumeTrack ? [{ type: 'divider' as const }] : []),
+    deleteTrackAction,
   ];
   /*
    * ── The desktop panel goes through `core/view` (#1234 S1b-3b) ────────────
@@ -325,24 +372,12 @@ export function TrackPage({
   const mobileActionsRef = useRef<HTMLSpanElement | null>(null);
   const previousPanel = useRef<MobilePanelKind | null>(null);
 
-  /*
-   * Opening the card grid leaves no drill-down animation queued behind it. The
-   * *panel* needs no closing here: `?card=` and `?panel=` are mutually
-   * exclusive by construction, and `app/router` gives the card precedence when
-   * both somehow appear (§0.1).
-   */
-  useEffect(() => {
-    if (!boardOpen) return;
-    setMobileCardMotion('none');
-  }, [boardOpen]);
-
   useEffect(() => {
     if (!mobilePanelOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       // Through the URL, not a local flag: Escape and the hardware Back
       // button must end in the same place (#1191 §2.4).
-      setMobileCardMotion('none');
       onClosePanel?.();
     };
     document.addEventListener('keydown', onKeyDown);
@@ -372,33 +407,21 @@ export function TrackPage({
     mobileActionsRef.current?.querySelector('button')?.focus({ preventScroll: true });
   }, [panel]);
 
-  /** Every entry into a panel: the page slides in from the trailing edge. */
+  /** Panel changes are immediate; the route remains their navigation owner. */
   const openMobilePanel = (kind: MobilePanelKind) => {
-    setMobileCardMotion('forward');
     onOpenPanel?.(kind);
   };
-  /** Leaving the panel by a navigation that clears `?panel=` on its own (§1.4). */
-  const leaveMobilePanel = () => {
-    setMobileCardMotion('none');
-  };
   const closeMobilePanel = () => {
-    leaveMobilePanel();
     onClosePanel?.();
   };
 
   /* Rebuilt per render, like the desktop's: the page chrome it closes over —
-     where Back goes, how the page animates in — is a fact about this render. */
+     where Back goes — is a fact about this render. */
   const mobilePainter = makeMobilePainter({
-    /* The reveal navigation clears `?panel=` itself (§1.4), so the panel is left
-       rather than closed — closing it here too would be two moves for one. That
-       wrapper is why the painter takes a handler instead of the page's prop. */
-    onOpenTask: (blockId) => {
-      leaveMobilePanel();
-      onOpenTask?.(blockId);
-    },
+    // Task reveal owns clearing its panel route; do not close it a second time.
+    onOpenTask,
     backLabel: 'Report',
     onBack: closeMobilePanel,
-    motion: mobileCardMotion,
   });
 
   const mobileActions = !boardOpen ? (
@@ -439,7 +462,10 @@ export function TrackPage({
           })),
           { label: 'Conversations', onClick: () => openMobilePanel('conversations') },
           { type: 'divider' },
-          ...trackMutationActions,
+          ...trackWorkActions,
+          ...(trackWorkActions.length > 0 ? [{ type: 'divider' as const }] : []),
+          ...(canEditMobileTitle ? [{ label: 'Edit track', onClick: () => { requestAnimationFrame(() => mobileTitleEditRef.current?.()); } }] : []),
+          deleteTrackAction,
         ]}
       />
     </span>
@@ -496,21 +522,7 @@ export function TrackPage({
               while the title is empty), so clearing the name is a real request
               here and not the cancel it is on an area.
             */}
-            <div className={styles.titleCluster}>
-              <h1 className={styles.titleHeading}><EditableTitle
-                value={track.title}
-                placeholder={UNTITLED_TRACK_LABEL}
-                emptyCommit="clear"
-                onCommit={onRenameTrack}
-                editLabel="Rename track"
-                inputLabel="Track title"
-                className={styles.title}
-                isPageTitle
-              /></h1>
-              <TrackLifecycleBadge
-                lifecycle={track.lifecycle}
-              />
-            </div>
+            <div className={styles.titleSlot} ref={desktopTitleSlotRef} />
           </>
         }
         actions={(
@@ -556,16 +568,32 @@ export function TrackPage({
          */
       />
 
-      <div className={styles.mobileTrackHeader}>
+      {createPortal(<div className={titleInHeader ? styles.mobileHeaderIdentity : styles.titleCluster}
+        onFocusCapture={(event) => { lastFocusedTitleRef.current = event.target; }}
+        onBlurCapture={(event) => {
+          if (relocatingTitleRef.current) event.stopPropagation();
+          else if (!titleContainer.contains(event.relatedTarget)) lastFocusedTitleRef.current = null;
+        }}>
+        <h1 className={styles.titleHeading}><EditableTitle value={track.title} placeholder={UNTITLED_TRACK_LABEL}
+          emptyCommit="clear" onCommit={onRenameTrack} editLabel="Rename track" inputLabel="Track title"
+          className={styles.title} isPageTitle titleRef={titleReadControlRef}
+          readView={titleInHeader && mobileTitleReadView !== undefined ? (controls) => <MobileTitleReadView
+            controls={controls} host={mobileTitleReadHost} view={mobileTitleReadView} register={registerMobileTitleEdit} /> : undefined} /></h1>
+        <div className={styles.mobileTitleReadHost} hidden={!titleInHeader}
+          ref={(node) => { if (node !== null && mobileTitleReadHost.parentNode !== node) node.appendChild(mobileTitleReadHost); }} />
+        {!titleInHeader && <TrackLifecycleBadge lifecycle={track.lifecycle} />}
+      </div>, titleContainer)}
+      {headerActionsHost !== null && mobileActions !== undefined && createPortal(mobileActions, headerActionsHost)}
+      {titleInHeader && !boardOpen ? null : <div className={styles.mobileTrackHeader}>
         <MobileHeader
           title={trackDisplayTitle(track.title)}
           meta={<TrackLifecycleBadge lifecycle={track.lifecycle} />}
           level={1}
           backLabel={boardOpen ? 'Report' : mobileBackLabel}
           onBack={boardOpen ? onCloseBoard : onMobileBack}
-          actions={mobileActions}
+          actions={headerActionsHost === null ? mobileActions : undefined}
         />
-      </div>
+      </div>}
 
       <div className={styles.workspace}>
       <div
@@ -615,14 +643,13 @@ export function TrackPage({
                are in the DOM at the same time, so a whole-page scan would read
                them as one tree now that both carry markers. */
             data-nc-mobile-panel=""
-            aria-hidden={mobilePanelOpen ? undefined : true}
-            inert={!mobilePanelOpen}
+            aria-hidden={mobilePanelOpen && !(compactViewport && mobilePanelObscured) ? undefined : true}
+            inert={!mobilePanelOpen || (compactViewport && mobilePanelObscured)}
           >
             {mobilePanelOpen && (mobilePanelKind === 'outline' ? (
               <MobileListPage
                 title="Outline"
                 backLabel="Report"
-                motion={mobileCardMotion}
                 onBack={closeMobilePanel}
               >
                 <MobileList>
@@ -634,7 +661,6 @@ export function TrackPage({
                       onSelect={() => {
                         // The anchor navigation clears `?panel=` itself (§1.4),
                         // so closing it here too would be two moves for one.
-                        leaveMobilePanel();
                         onOpenOutline?.(item.blockId);
                       }}
                     />,
@@ -644,7 +670,6 @@ export function TrackPage({
                         title={child.label}
                         nested
                         onSelect={() => {
-                          leaveMobilePanel();
                           onOpenOutline?.(child.blockId);
                         }}
                       />
@@ -656,7 +681,6 @@ export function TrackPage({
               <MobileListPage
                 title="Conversations"
                 backLabel="Report"
-                motion={mobileCardMotion}
                 onBack={closeMobilePanel}
               >
                 <div className={styles.mobileConversationList}>

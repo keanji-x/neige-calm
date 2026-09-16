@@ -8,22 +8,26 @@ import {
   userVisibleTracks, trackDisplayTitle, type Track,
 } from '../../../../core/domain/track.ts';
 import {
-  MobileList, MobileListEmpty, MobileListItem, MobileListPage,
+  MobileList, MobileListEmpty, MobileListItem,
 } from '../../ui/mobile-list/public.tsx';
 import { useState } from '../../ui/state/public.ts';
+import { Icon } from '../../ui/icon/public.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
+import { MobileNavigationHeader, type MobileNavigationActions } from './mobile-navigation-header.tsx';
+import navigationStyles from './mobile-navigation.module.css';
 import styles from './mobile-pages.module.css';
 
 const RECENT_PAGE_LIMIT = 24;
 
-export function MobilePages({ areas, tracks, onOpenTrack, readError = null, readLoading = false, onRetryRead = () => undefined }: Readonly<{
+export function MobilePages({ areas, areaId, tracks, onOpenTrack, onBack, onNewTrack, onEditArea, onOpenSettings, onCreateArea, readError = null, readLoading = false, onRetryRead = () => undefined }: Readonly<{
   areas: readonly Area[];
+  areaId: string | undefined;
   tracks: readonly Track[];
   onOpenTrack: (trackId: string) => void;
   readError?: string | null;
   readLoading?: boolean;
   onRetryRead?: () => void;
-}>) {
+}> & MobileNavigationActions) {
   /*
    * E2E-INV-SHELL-003 — the same second layer of defence the sidebar applies:
    * a track whose area is not user-visible does not belong on a list a person
@@ -44,7 +48,10 @@ export function MobilePages({ areas, tracks, onOpenTrack, readError = null, read
   const areaFor = (track: Track) => areaOf(track.areaId, shownAreas);
 
   return (
-    <MobileListPage title="Pages">
+    <div className={`${navigationStyles.page} ${navigationStyles.standalonePage}`}>
+      <MobileNavigationHeader creationScope="both" title="Pages" backLabel="workspace" area={shownAreas.find((area) => area.id === areaId)}
+        onBack={onBack} onCreateArea={onCreateArea} onNewTrack={onNewTrack} onEditArea={onEditArea} onOpenSettings={onOpenSettings} />
+      <div className={navigationStyles.content}>
       {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
       {readLoading && <p role="status">Loading workspace…</p>}
       <AstryxSegmentedControl
@@ -66,16 +73,7 @@ export function MobilePages({ areas, tracks, onOpenTrack, readError = null, read
               title={trackDisplayTitle(track.title)}
               titleVariant="document"
               meta={area?.name ?? 'Unknown area'}
-              startContent={(
-                <span
-                  className={styles.areaInitial}
-                  data-nc-page-area=""
-                  style={area === undefined ? undefined : { borderColor: area.color, color: area.color }}
-                  aria-hidden="true"
-                >
-                  {area?.name.trim().charAt(0).toLocaleUpperCase() || '?'}
-                </span>
-              )}
+              startContent={<span className={navigationStyles.trackIcon}><Icon name="file" /></span>}
               onSelect={() => onOpenTrack(track.id)}
             />
           );
@@ -84,6 +82,7 @@ export function MobilePages({ areas, tracks, onOpenTrack, readError = null, read
           <MobileListEmpty>{group === 'pinned' ? 'No pinned Pages.' : 'No recent Pages.'}</MobileListEmpty>
         )}
       </MobileList>
-    </MobileListPage>
+      </div>
+    </div>
   );
 }
