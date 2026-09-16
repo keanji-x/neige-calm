@@ -80,23 +80,40 @@ pub const TERMINAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// carry this fact; the marker survives a `kind` PATCH and the terminal
 /// row's deletion.
 pub const TERMINAL_SIGNALS_PAYLOAD_KEY: &str = "terminal_signals";
+/// #1704 S1 — `Card.payload` key stamped at creation ONLY on terminals the
+/// Planner opened with a `claude_permissions` scope: the effective Claude
+/// Code `permissions` block the kernel rendered and wrote to the terminal's
+/// settings file (`{allow, ask, deny}` rule lists). It is the durable audit
+/// trail of what the terminal was allowed without a dialog; absent on every
+/// other card.
+pub const TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY: &str = "claude_permissions";
+/// The `Card.payload` keys only the kernel writes (`card_with_terminal_create_tx`
+/// and the terminal adapter's stamp), refused from every client at every
+/// public write boundary and kept sticky by `card_update_tx`.
+pub const SERVER_OWNED_TERMINAL_PAYLOAD_KEYS: [&str; 2] = [
+    TERMINAL_SIGNALS_PAYLOAD_KEY,
+    TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY,
+];
 
-/// #1620 — refuse a CLIENT-supplied `Card.payload` that carries
-/// [`TERMINAL_SIGNALS_PAYLOAD_KEY`]. The marker is hook-routing provenance
-/// the kernel stamps itself (`card_with_terminal_create_tx(planner_hooks =
-/// true)`) and keeps sticky on update (`card_update_tx`); a payload arriving
+/// #1620 / #1704 — refuse a CLIENT-supplied `Card.payload` that carries any
+/// of [`SERVER_OWNED_TERMINAL_PAYLOAD_KEYS`]. The hook-routing provenance
+/// marker and the effective permissions block are stamped by the kernel
+/// itself (`card_with_terminal_create_tx(planner_hooks = true)`, the terminal
+/// adapter) and kept sticky on update (`card_update_tx`); a payload arriving
 /// over a public write boundary — REST card create / PATCH, the tool-call
 /// `structuredContent`, plugin `neige.card.create` / `neige.card.update` —
-/// with the key present is a `BadRequest` (HTTP 400) whatever its value and
-/// whatever the card kind. Kind-agnostic on purpose: the hook ingest route
-/// reads the marker from the payload, never from the patchable `kind`, so a
-/// `codex` / `claude` / plugin card with the key would divert its hooks too.
-/// Stored payloads keep the key (reads and round-trips are unaffected).
-pub fn reject_client_supplied_terminal_signals(payload: &Value) -> Result<()> {
-    if payload.get(TERMINAL_SIGNALS_PAYLOAD_KEY).is_some() {
-        return Err(CalmError::BadRequest(format!(
-            "`{TERMINAL_SIGNALS_PAYLOAD_KEY}` is server-owned and cannot be written through the API"
-        )));
+/// with such a key present is a `BadRequest` (HTTP 400) whatever its value
+/// and whatever the card kind. Kind-agnostic on purpose: the hook ingest
+/// route reads the marker from the payload, never from the patchable `kind`,
+/// so a `codex` / `claude` / plugin card with the key would divert its hooks
+/// too. Stored payloads keep the keys (reads and round-trips are unaffected).
+pub fn reject_client_supplied_server_owned_keys(payload: &Value) -> Result<()> {
+    for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+        if payload.get(key).is_some() {
+            return Err(CalmError::BadRequest(format!(
+                "`{key}` is server-owned and cannot be written through the API"
+            )));
+        }
     }
     Ok(())
 }

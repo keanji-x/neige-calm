@@ -88,8 +88,9 @@ pub use card::{
     card_update_with_crdt_tx, terminal_create_tx, terminal_delete_tx, terminal_get_by_card_tx,
 };
 pub use card_composite::{
-    card_mcp_token_set_tx, card_with_claude_create_tx, card_with_claude_worker_create_tx,
-    card_with_codex_create_tx, card_with_terminal_create_tx, card_with_terminal_rollback_tx,
+    card_mcp_token_set_tx, card_stamp_claude_permissions_tx, card_with_claude_create_tx,
+    card_with_claude_worker_create_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
+    card_with_terminal_rollback_tx,
 };
 /// #1252 S3′ negative nail — see [`events::append_probe`].
 #[cfg(any(test, feature = "test-helpers"))]

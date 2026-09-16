@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    append_decision_event_in_tx, card_update_tx, card_with_terminal_create_tx,
-    session_projection_active_for_card_tx, session_set_status_tx,
+    append_decision_event_in_tx, card_stamp_claude_permissions_tx, card_update_tx,
+    card_with_terminal_create_tx, session_projection_active_for_card_tx, session_set_status_tx,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
@@ -22,6 +22,9 @@ use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
 use crate::state::WriteContext;
 use crate::terminal_hooks::TerminalHookSettings;
+use crate::terminal_permissions::{
+    ClaudePermissionsScope, EffectiveClaudePermissions, render_claude_permissions,
+};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
 
@@ -174,6 +177,13 @@ pub struct TerminalCreateOperationPayload {
     /// and get exactly the env they asked for.
     #[serde(default)]
     pub planner_hooks: bool,
+    /// #1704 S1 — set only by `calm.terminal.open` when the Planner declared
+    /// a scope (validated by the handler): rendered against the resolved cwd
+    /// in `prepare_tx`, stamped on the card and persisted in the spawn
+    /// output. Wire key frozen as `claude_permissions`; absent from every
+    /// stored payload of a non-scoped open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_permissions: Option<ClaudePermissionsScope>,
     #[serde(flatten)]
     pub request: TerminalCreateRequestPayload,
 }
@@ -324,6 +334,14 @@ impl ProviderAdapter for TerminalAdapter {
             explicit_terminal_cwd(Some(payload.request.cwd.clone())),
         )
         .await?;
+        // #1704 S1 — the declared scope is rendered against the resolved cwd
+        // here, before any row exists: a cwd that cannot be written into a
+        // rule refuses the open and the transaction rolls back.
+        let claude_permissions: Option<EffectiveClaudePermissions> = payload
+            .claude_permissions
+            .as_ref()
+            .map(|declared| render_claude_permissions(&cwd, declared))
+            .transpose()?;
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
@@ -350,6 +368,15 @@ impl ProviderAdapter for TerminalAdapter {
             payload.planner_hooks,
         )
         .await?;
+        // #1704 S1 — the effective block goes onto the card in the same
+        // transaction; the stamped card is what the CardAdded event, the
+        // broadcast projection and the saved result carry.
+        let card = match &claude_permissions {
+            Some(block) => {
+                card_stamp_claude_permissions_tx(tx, &card, serde_json::to_value(block)?).await?
+            }
+            None => card,
+        };
         let event = Event::CardAdded(card.clone());
         let runtime_event = Event::WorkerSessionStarted {
             worker_session_id: runtime_id.clone(),
@@ -379,6 +406,12 @@ impl ProviderAdapter for TerminalAdapter {
             "env": env,
             "planner_hooks": payload.planner_hooks,
         });
+        if let Some(block) = &claude_permissions {
+            // The recovery input of `spawn_side_effect`: a restart rewrites
+            // the settings file from this persisted block, never from the
+            // card or the request.
+            output.data["claude_permissions"] = serde_json::to_value(block)?;
+        }
         output.post_commit_events.push(BroadcastEnvelope {
             id: event_id,
             event_version: SYNC_EVENT_VERSION,
@@ -427,7 +460,19 @@ impl ProviderAdapter for TerminalAdapter {
                         .into(),
                 )
             })?;
-            settings.write_settings(&card_id)?;
+            // #1704 S1 — the declared scope, if any, travels in the persisted
+            // output; a present but malformed block fails closed.
+            let permissions: Option<EffectiveClaudePermissions> = output
+                .data
+                .get("claude_permissions")
+                .map(|block| serde_json::from_value(block.clone()))
+                .transpose()
+                .map_err(|e| {
+                    CalmError::Internal(format!(
+                        "terminal tx_output claude_permissions is malformed: {e}"
+                    ))
+                })?;
+            settings.write_settings(&card_id, permissions.as_ref())?;
         }
 
         match self

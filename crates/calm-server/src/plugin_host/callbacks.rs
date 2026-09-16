@@ -36,7 +36,7 @@ use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 #[cfg(test)]
 use crate::track_area_cache::TrackAreaCache;
 use crate::validation::{
-    OVERLAY_ENTITY_SCOPE_REGISTRY, reject_client_supplied_terminal_signals,
+    OVERLAY_ENTITY_SCOPE_REGISTRY, reject_client_supplied_server_owned_keys,
     validate_overlay_payload,
 };
 
@@ -414,9 +414,10 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     } else {
         p.payload
     };
-    // #1620 — the hook-routing provenance marker is kernel-stamped; a plugin
-    // never writes it (any kind).
-    reject_client_supplied_terminal_signals(&payload)
+    // #1620 / #1704 — the server-owned payload keys (hook-routing provenance,
+    // the effective permissions block) are kernel-stamped; a plugin never
+    // writes them (any kind).
+    reject_client_supplied_server_owned_keys(&payload)
         .map_err(|e| RpcError::invalid_params(e.to_string()))?;
     // D4: kernel-owned card kinds (currently `terminal`) must match shape;
     // plugin-prefixed and ui:// kinds remain opaque.
@@ -518,9 +519,9 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     // D4: if the patch carries a payload, validate against the effective
     // kind (the new kind if retargeting, otherwise the existing card's kind).
     if let Some(payload) = p.payload.as_ref() {
-        // #1620 — see `card_create`; `card_update_tx` keeps a stored marker
-        // sticky across the replacement.
-        reject_client_supplied_terminal_signals(payload)
+        // #1620 / #1704 — see `card_create`; `card_update_tx` keeps every
+        // stored server-owned key sticky across the replacement.
+        reject_client_supplied_server_owned_keys(payload)
             .map_err(|e| RpcError::invalid_params(e.to_string()))?;
         let kind = p.kind.as_deref().unwrap_or(card.kind.as_str());
         validate_card_kind_global(kind, payload)

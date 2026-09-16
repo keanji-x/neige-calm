@@ -1,5 +1,9 @@
 use crate::mcp_server::build_default_registry;
 use crate::model::CardRole;
+use crate::terminal_permissions::{
+    CLAUDE_PERMISSIONS_BASH_MAX, CLAUDE_PERMISSIONS_DENY_MAX, CLAUDE_PERMISSIONS_EDIT_MAX,
+    CLAUDE_PERMISSIONS_ENTRY_MAX_CHARS,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -214,13 +218,47 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
         properties(open_schema),
         fields(
             &[
-                &["request_id", "title", "program", "format", "claim"][..],
+                &[
+                    "request_id",
+                    "title",
+                    "program",
+                    "format",
+                    "claim",
+                    "claude_permissions"
+                ][..],
                 &WAIT[..]
             ]
             .concat()
         )
     );
     assert_eq!(required(open_schema), fields(&["request_id"]));
+    // #1704 S1 — the declared scope is a closed object of three bounded
+    // string lists; the caps are `terminal_permissions`' constants.
+    let permissions = &open_schema["properties"]["claude_permissions"];
+    assert_eq!(permissions["type"], "object");
+    assert_eq!(permissions["additionalProperties"], false);
+    assert_eq!(properties(permissions), fields(&["edit", "bash", "deny"]));
+    assert!(permissions.get("required").is_none());
+    let entry = json!({"type":"string","minLength":1,"maxLength":200});
+    for (list, min_items, max_items) in [
+        ("edit", Some(1), CLAUDE_PERMISSIONS_EDIT_MAX),
+        ("bash", Some(1), CLAUDE_PERMISSIONS_BASH_MAX),
+        ("deny", None, CLAUDE_PERMISSIONS_DENY_MAX),
+    ] {
+        let schema = &permissions["properties"][list];
+        assert_eq!(schema["type"], "array", "{list}");
+        assert_eq!(schema["items"], entry, "{list}");
+        assert_eq!(schema["maxItems"], json!(max_items), "{list}");
+        assert_eq!(
+            schema.get("minItems").cloned(),
+            min_items.map(|n| json!(n)),
+            "{list}"
+        );
+    }
+    assert_eq!(
+        entry["maxLength"],
+        json!(CLAUDE_PERMISSIONS_ENTRY_MAX_CHARS)
+    );
     let observe_schema = &descriptors
         .iter()
         .find(|descriptor| descriptor.name == "calm.terminal.observe")

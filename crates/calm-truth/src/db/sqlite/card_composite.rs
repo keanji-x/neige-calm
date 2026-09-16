@@ -8,12 +8,13 @@ use super::{
 };
 use crate::card_kind::validate_card_kind_global;
 use crate::card_role_cache::CardRoleCache;
-use crate::error::Result;
+use crate::error::{CalmError, Result};
 use crate::ids::TrackId;
 use crate::model::*;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionKind};
 use crate::validation::{
-    CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
+    CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION,
+    TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY, TERMINAL_PAYLOAD_SCHEMA_VERSION,
     TERMINAL_SIGNALS_PAYLOAD_KEY,
 };
 use calm_types::worker::WorkerSessionState;
@@ -155,6 +156,39 @@ pub async fn card_with_terminal_create_tx(
     }
 
     Ok((card, term))
+}
+
+/// #1704 S1 — stamp the effective Claude Code `permissions` block a Planner
+/// declared on `calm.terminal.open` into the card payload under
+/// [`TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY`], inside the caller's
+/// transaction (the terminal adapter's `prepare_tx`, right after
+/// [`card_with_terminal_create_tx`]). Goes through `card_update_tx`, which
+/// re-stamps the other server-owned key on the way; the returned card is the
+/// stored one. Only the kernel ever calls this: every public write boundary
+/// refuses the key (`validation::reject_client_supplied_server_owned_keys`).
+pub async fn card_stamp_claude_permissions_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &Card,
+    block: serde_json::Value,
+) -> Result<Card> {
+    let mut payload = card.payload.clone();
+    let Some(map) = payload.as_object_mut() else {
+        return Err(CalmError::Internal(format!(
+            "card {} payload is not a JSON object; cannot stamp `{TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY}`",
+            card.id
+        )));
+    };
+    map.insert(TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY.to_owned(), block);
+    validate_card_kind_global(&card.kind, &payload)?;
+    card_update_tx(
+        tx,
+        card.id.as_ref(),
+        CardPatch {
+            payload: Some(payload),
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 /// Issue #310 followup — atomically delete a card + its backing terminal
@@ -958,5 +992,172 @@ mod tests {
             "an update never mints the marker: {}",
             plain.payload
         );
+    }
+
+    /// #1704 S1 — `card_stamp_claude_permissions_tx` stores the block next
+    /// to the marker; `card_update_tx` keeps BOTH server-owned keys sticky
+    /// across a whole-payload replacement, refuses a replacement that cannot
+    /// carry them, and never mints the block on a card that lacks it.
+    #[tokio::test]
+    async fn card_update_keeps_claude_permissions_sticky() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let area = repo
+            .area_create(NewArea {
+                name: "permissions".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let track = repo
+            .track_create(NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "track".into(),
+                sort: None,
+                cwd: String::new(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let block = json!({
+            "allow": ["Edit(//w/**)", "Bash(git status *)"],
+            "ask": ["Bash(git push *)", "Edit(//w/.git/**)"],
+            "deny": ["Bash(git push *)"],
+        });
+        let open = |stamp: bool| {
+            let track_id = track.id.clone();
+            let repo = &repo;
+            let block = block.clone();
+            async move {
+                let mut tx = repo.pool().begin().await.unwrap();
+                let (card, _) = card_with_terminal_create_tx(
+                    &mut tx,
+                    crate::model::new_id(),
+                    &crate::model::new_id(),
+                    None,
+                    track_id,
+                    None,
+                    None,
+                    "bash".into(),
+                    "/w".into(),
+                    json!({}),
+                    CardRole::Worker,
+                    true,
+                    repo.card_role_cache(),
+                    RequestTheme::default_dark(),
+                    true,
+                )
+                .await
+                .unwrap();
+                let card = if stamp {
+                    card_stamp_claude_permissions_tx(&mut tx, &card, block)
+                        .await
+                        .unwrap()
+                } else {
+                    card
+                };
+                tx.commit().await.unwrap();
+                card
+            }
+        };
+        let stamped = open(true).await;
+        let plain = open(false).await;
+        assert_eq!(
+            stamped.payload[TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY],
+            block
+        );
+        assert_eq!(stamped.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
+        assert_eq!(stamped.payload["schemaVersion"], 1);
+        assert_eq!(
+            repo.card_get(stamped.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .payload,
+            stamped.payload,
+            "the returned card is the stored one"
+        );
+        assert!(
+            plain
+                .payload
+                .get(TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY)
+                .is_none()
+        );
+
+        let replaced = repo
+            .card_update(
+                stamped.id.as_str(),
+                CardPatch {
+                    payload: Some(json!({ "schemaVersion": 1, "terminal_id": "x" })),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replaced.payload[TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY],
+            block
+        );
+        assert_eq!(replaced.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
+        assert_eq!(replaced.payload["terminal_id"], "x");
+        assert_eq!(
+            repo.card_get(stamped.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .payload[TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY],
+            block
+        );
+
+        let err = repo
+            .card_update(
+                stamped.id.as_str(),
+                CardPatch {
+                    payload: Some(json!([1])),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CalmError::Core(calm_types::error::CoreError::BadRequest(_))
+            ),
+            "{err:?}"
+        );
+        assert_eq!(
+            repo.card_get(stamped.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .payload[TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY],
+            block,
+            "the refused replacement wrote nothing"
+        );
+
+        let plain = repo
+            .card_update(
+                plain.id.as_str(),
+                CardPatch {
+                    payload: Some(json!({ "schemaVersion": 1, "terminal_id": "y" })),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            plain
+                .payload
+                .get(TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY)
+                .is_none(),
+            "an update never mints the block: {}",
+            plain.payload
+        );
+        assert_eq!(plain.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
     }
 }

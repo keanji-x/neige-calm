@@ -2897,6 +2897,7 @@ fn terminal_payload(track_id: &str) -> Value {
         actor: ActorId::User,
         worker_session_id: Some(new_id()),
         planner_hooks: false,
+        claude_permissions: None,
         request: TerminalCreateRequestPayload {
             track_id: track_id.to_string(),
             title: None,

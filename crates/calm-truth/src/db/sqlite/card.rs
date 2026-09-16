@@ -12,7 +12,7 @@ use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
 use crate::ids::CardId;
 use crate::model::*;
-use crate::validation::TERMINAL_SIGNALS_PAYLOAD_KEY;
+use crate::validation::SERVER_OWNED_TERMINAL_PAYLOAD_KEYS;
 
 pub async fn terminal_get_by_card_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -192,28 +192,28 @@ async fn card_update_inner_tx(
         c.sort = v;
     }
     if let Some(mut v) = p.payload {
-        // #1620 — the Planner-terminal provenance marker is sticky: the
-        // payload column is replaced wholesale, so a replacement on a card
-        // that carries `TERMINAL_SIGNALS_PAYLOAD_KEY == true` re-stamps it
-        // and no writer (REST PATCH, plugin update, kernel merge) can drop
-        // the hook routing by omission. A non-object replacement cannot
-        // carry the marker and is refused. Cards without the marker never
-        // gain it here — only `card_with_terminal_create_tx` mints it.
-        if c.payload
-            .get(TERMINAL_SIGNALS_PAYLOAD_KEY)
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-        {
+        // #1620 / #1704 — the server-owned keys are sticky: the payload
+        // column is replaced wholesale, so for each key of
+        // `SERVER_OWNED_TERMINAL_PAYLOAD_KEYS` present in the stored payload
+        // the stored value is re-inserted into the replacement, and no
+        // writer (REST PATCH, plugin update, kernel merge) can drop the hook
+        // routing or the permissions audit trail by omission. A non-object
+        // replacement cannot carry them and is refused. Cards without a key
+        // never gain it here — only the creation path mints them.
+        let stored: Vec<(&str, serde_json::Value)> = SERVER_OWNED_TERMINAL_PAYLOAD_KEYS
+            .iter()
+            .filter_map(|key| c.payload.get(*key).map(|value| (*key, value.clone())))
+            .collect();
+        if let Some((first_key, _)) = stored.first() {
             let Some(map) = v.as_object_mut() else {
                 return Err(CalmError::BadRequest(format!(
-                    "card {} carries `{TERMINAL_SIGNALS_PAYLOAD_KEY}`; its payload must stay a JSON object",
+                    "card {} carries `{first_key}`; its payload must stay a JSON object",
                     c.id
                 )));
             };
-            map.insert(
-                TERMINAL_SIGNALS_PAYLOAD_KEY.to_owned(),
-                serde_json::Value::Bool(true),
-            );
+            for (key, value) in stored {
+                map.insert(key.to_owned(), value);
+            }
         }
         c.payload = v;
     }
