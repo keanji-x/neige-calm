@@ -17,6 +17,7 @@ struct Fixture {
     local: axum::Router,
     public: std::sync::Arc<axum::Router>,
     owner_cookie: String,
+    _private_ingress: Option<calm_server::mobile_access::private_tailnet::PrivateIngress>,
 }
 
 async fn request(
@@ -94,6 +95,7 @@ async fn fixture(options: Value) -> Fixture {
         local,
         public,
         owner_cookie,
+        _private_ingress: None,
     }
 }
 
@@ -515,4 +517,242 @@ async fn mobile_pairing_dev_autologin_is_not_remote_access_authority() {
             StatusCode::FORBIDDEN
         );
     }
+}
+
+async fn private_tailnet_fixture() -> (Fixture, std::path::PathBuf, tokio::task::JoinHandle<()>) {
+    use calm_types::tailnet::{
+        TailnetAction, TailnetNodeState, TailnetPhase, TailnetRequest, TailnetResponse,
+        TailnetStatus,
+    };
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let temp = TempDir::new().unwrap();
+    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let sock = temp.path().join("app.sock");
+    let control = tokio::net::UnixListener::bind(&sock).unwrap();
+    let controller = tokio::spawn(async move {
+        let mut enabled = false;
+        loop {
+            let Ok((mut stream, _)) = control.accept().await else {
+                break;
+            };
+            let mut bytes = Vec::new();
+            BufReader::new(&mut stream)
+                .read_until(b'\n', &mut bytes)
+                .await
+                .unwrap();
+            let req: TailnetRequest = serde_json::from_slice(&bytes).unwrap();
+            match req.action {
+                TailnetAction::Enable => enabled = true,
+                TailnetAction::Disable | TailnetAction::Logout => enabled = false,
+                _ => {}
+            }
+            let mut status = TailnetStatus::stopped(enabled, false);
+            if enabled {
+                status.phase = TailnetPhase::Online;
+                status.node_state = TailnetNodeState::Online;
+                status.process_running = true;
+                status.https_ready = true;
+                status.upstream_ready = true;
+                status.origin = Some("https://fixture.example.ts.net".into());
+            }
+            let res = TailnetResponse {
+                version: 1,
+                status,
+                login_url: if req.action == TailnetAction::Login {
+                    Some("https://login.tailscale.com/a/fixture".into())
+                } else {
+                    None
+                },
+                error: None,
+            };
+            let mut bytes = serde_json::to_vec(&res).unwrap();
+            bytes.push(b'\n');
+            let _ = stream.write_all(&bytes).await;
+        }
+    });
+    let address = temp.path().join("ingress.sock");
+    let config_path = temp.path().join("ingress.json");
+    std::fs::write(
+        &config_path,
+        json!({"provider":"private-tailnet","ingressSocket":address,"controlSocket":sock})
+            .to_string(),
+    )
+    .unwrap();
+    let config =
+        calm_server::mobile_access::private_tailnet::PrivateTailnetConfig::load(&config_path)
+            .unwrap();
+    let state = super::auth::fresh_state().await;
+    let auth = super::auth::live_auth_state("owner", "fixture-password");
+    let public = std::sync::Arc::new(routes::public_mobile_router(state.clone(), auth.clone()));
+    let ingress = auth
+        .mobile
+        .configure_private(config, public.clone())
+        .await
+        .unwrap();
+    let local = routes::application_router(state, auth.clone());
+    let (status, headers, _) = request(
+        &local,
+        "POST",
+        "/api/auth/login",
+        None,
+        json!({"username":"owner","password":"fixture-password"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let owner_cookie = headers[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .into();
+    (
+        Fixture {
+            _temp: temp,
+            state_path: config_path,
+            auth,
+            local,
+            public,
+            owner_cookie,
+            _private_ingress: Some(ingress),
+        },
+        address,
+        controller,
+    )
+}
+
+#[tokio::test]
+async fn private_tailnet_ingress_auth_and_control_fence() {
+    let (f, address, control) = private_tailnet_fixture().await;
+    let phone = pair(&f).await;
+    let orphan = f
+        .auth
+        .sessions
+        .create(calm_server::auth::SessionAuthority::PairedDevice);
+    let orphan_cookie = format!("{SESSION_COOKIE}={orphan}");
+    assert_eq!(
+        request(
+            &f.public,
+            "GET",
+            "/api/auth/whoami",
+            Some(&orphan_cookie),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    for (method, path, expected) in [
+        ("GET", "/api/version", StatusCode::OK),
+        ("GET", "/api/auth/whoami", StatusCode::OK),
+        ("POST", "/api/auth/login", StatusCode::NOT_FOUND),
+        ("GET", "/api/mobile/access", StatusCode::NOT_FOUND),
+        ("POST", "/api/mobile/tailnet/login", StatusCode::NOT_FOUND),
+        ("POST", "/api/mobile/tailnet/logout", StatusCode::NOT_FOUND),
+        ("POST", "/internal/codex/hook", StatusCode::NOT_FOUND),
+    ] {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let mut stream = tokio::net::UnixStream::connect(&address).await.unwrap();
+        stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: fixture\r\nCookie: {phone}\r\nX-Forwarded-For: 127.0.0.1\r\nX-Calm-Actor: user\r\nConnection: close\r\nContent-Length: 0\r\n\r\n").as_bytes()).await.unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).await.unwrap();
+        let status: u16 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+        assert_eq!(status, expected.as_u16(), "{path}");
+    }
+    for (method, path) in [
+        ("GET", "/api/mobile/access"),
+        ("POST", "/api/mobile/access"),
+        ("DELETE", "/api/mobile/access"),
+        ("POST", "/api/mobile/pairings"),
+        ("POST", "/api/mobile/pairings/fixture/approve"),
+        ("DELETE", "/api/mobile/devices/fixture"),
+        ("POST", "/api/mobile/tailnet/login"),
+        ("POST", "/api/mobile/tailnet/logout"),
+    ] {
+        assert_eq!(
+            request(&f.local, method, path, None, json!({})).await.0,
+            StatusCode::UNAUTHORIZED,
+            "{path}"
+        );
+        assert_eq!(
+            request(&f.local, method, path, Some(&phone), json!({}))
+                .await
+                .0,
+            StatusCode::FORBIDDEN,
+            "{path}"
+        );
+        assert_eq!(
+            request(&f.local, method, path, Some(&orphan_cookie), json!({}))
+                .await
+                .0,
+            StatusCode::FORBIDDEN,
+            "paired session without registry must not gain {path}"
+        );
+    }
+    let (_, headers, value) = request(
+        &f.local,
+        "GET",
+        "/api/mobile/access",
+        Some(&f.owner_cookie),
+        json!({}),
+    )
+    .await;
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(value["provider"], "private-tailnet");
+    assert!(value.get("loginUrl").is_none());
+    f.auth.mobile.shutdown().await.unwrap();
+    drop(f);
+    control.abort();
+}
+
+#[tokio::test]
+async fn private_tailnet_disable_closes_active_websocket_and_revokes_session() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let (f, address, control) = private_tailnet_fixture().await;
+    let phone = pair(&f).await;
+    let mut handshake = "ws://localhost/api/events".into_client_request().unwrap();
+    handshake
+        .headers_mut()
+        .insert(header::COOKIE, phone.parse().unwrap());
+    let stream = tokio::net::UnixStream::connect(&address).await.unwrap();
+    let (mut socket, _) = tokio_tungstenite::client_async(handshake, stream)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(
+            &f.local,
+            "DELETE",
+            "/api/mobile/access",
+            Some(&f.owner_cookie),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(Ok(message)) = socket.next().await {
+            if message.is_close() {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("stop must close upgraded connections");
+    assert_eq!(
+        request(
+            &f.public,
+            "GET",
+            "/api/auth/whoami",
+            Some(&phone),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    f.auth.mobile.shutdown().await.unwrap();
+    drop(f);
+    control.abort();
 }

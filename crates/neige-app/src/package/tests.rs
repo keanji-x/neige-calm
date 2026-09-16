@@ -64,8 +64,12 @@ fn package_directory_contains_v2_manifest_and_hashes_inner() {
     assert_eq!(manifest.compatibility.web_compat_version, 2);
     assert_eq!(manifest.compatibility.min_web_compat_version, 2);
     assert_eq!(manifest.compatibility.supervisor_control_version, 1);
-    assert_eq!(manifest.units.len(), 7);
+    assert_eq!(manifest.units.len(), 8);
     assert_eq!(manifest.units[&UnitName::NeigeApp].version, "0.1.0");
+    assert_eq!(
+        manifest.units[&UnitName::NeigeTailnet].restart_policy,
+        RestartPolicy::DeferUntilFullReboot
+    );
     assert_eq!(manifest.units[&UnitName::Web].version, "9.8.7");
     assert_eq!(
         manifest.units[&UnitName::CalmServer].restart_policy,
@@ -266,6 +270,7 @@ exit 2
         ("calm-proc-supervisor", "0.1.0"),
         ("neige-codex-bridge", "0.1.0"),
         ("neige-mcp-stdio-shim", "0.1.0"),
+        ("neige-tailnet", "0.1.0"),
         ("neige", "0.1.0"),
         ("neige-app", "0.1.0"),
     ] {
@@ -290,6 +295,7 @@ fn required_bins(src: &Path) -> Vec<NamedPath> {
         "calm-proc-supervisor",
         "neige-codex-bridge",
         "neige-mcp-stdio-shim",
+        "neige-tailnet",
         "neige",
     ]
     .into_iter()

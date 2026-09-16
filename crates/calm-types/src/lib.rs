@@ -23,6 +23,7 @@ pub mod report_links;
 pub mod report_source_links;
 pub mod report_sources;
 pub mod runtime;
+pub mod tailnet;
 pub mod task_recovery;
 pub mod track_fs_dto;
 pub mod track_lifecycle;

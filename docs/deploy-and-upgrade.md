@@ -77,7 +77,8 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   --bin calm-proc-supervisor=target/release/calm-proc-supervisor \
   --bin neige-codex-bridge=target/release/neige-codex-bridge \
   --bin neige-mcp-stdio-shim=target/release/neige-mcp-stdio-shim \
-  --bin neige=target/release/neige
+  --bin neige=target/release/neige \
+  --bin neige-tailnet=target/release/neige-tailnet
 ```
 
 Inspect `releases/rel-1/manifest.json`:

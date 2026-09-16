@@ -204,7 +204,7 @@ impl PairingState {
         }
         let name = claim.device_name.clone();
         self.pending.remove(&request.id);
-        let session = sessions.create();
+        let session = sessions.create(crate::auth::SessionAuthority::PairedDevice);
         let id = Uuid::new_v4().to_string();
         self.devices.insert(
             id.clone(),

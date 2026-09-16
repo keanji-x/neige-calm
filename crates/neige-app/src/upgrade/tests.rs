@@ -1016,7 +1016,8 @@ fn make_v2_package(
                 UnitName::CalmProcSupervisor
                 | UnitName::NeigeCodexBridge
                 | UnitName::NeigeMcpStdioShim
-                | UnitName::NeigeCli => FileUnit::Bundle,
+                | UnitName::NeigeCli
+                | UnitName::NeigeTailnet => FileUnit::Bundle,
             },
         }],
     };
@@ -1060,7 +1061,8 @@ fn make_v2_package_with_units(
                     UnitName::CalmProcSupervisor
                     | UnitName::NeigeCodexBridge
                     | UnitName::NeigeMcpStdioShim
-                    | UnitName::NeigeCli => FileUnit::Bundle,
+                    | UnitName::NeigeCli
+                    | UnitName::NeigeTailnet => FileUnit::Bundle,
                 },
             }
         })

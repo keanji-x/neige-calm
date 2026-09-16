@@ -624,7 +624,8 @@ fn roles_for_units(units: &[UnitName]) -> anyhow::Result<Vec<ReleaseRole>> {
             | UnitName::CalmProcSupervisor
             | UnitName::NeigeCodexBridge
             | UnitName::NeigeMcpStdioShim
-            | UnitName::NeigeCli => roles.push(ReleaseRole::Server),
+            | UnitName::NeigeCli
+            | UnitName::NeigeTailnet => roles.push(ReleaseRole::Server),
         }
     }
     Ok(roles)

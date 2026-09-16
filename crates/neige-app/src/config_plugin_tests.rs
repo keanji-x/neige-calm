@@ -56,6 +56,16 @@ fn config_omitted_plugin_dirs_leave_child_argv_unchanged() {
                 .iter()
                 .any(|arg| arg == "--plugins-dir" || arg == "--plugins-data-dir")
         );
-        assert!(args.is_empty());
+        if let Some(tailnet) = cfg.tailnet {
+            assert_eq!(
+                args,
+                vec![
+                    "--private-tailnet-config".to_owned(),
+                    tailnet.state_dir.join("ingress.json").display().to_string()
+                ]
+            );
+        } else {
+            assert!(args.is_empty());
+        }
     }
 }

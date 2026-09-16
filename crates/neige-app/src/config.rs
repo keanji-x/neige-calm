@@ -17,6 +17,7 @@ pub(crate) struct AppConfig {
     pub systemd: SystemdConfig,
     pub upgrade: UpgradeConfig,
     pub source: SourceConfig,
+    pub tailnet: Option<crate::tailnet::config::TailnetConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +127,10 @@ pub(crate) struct ServeOverrides {
 
 #[derive(Debug, Default)]
 struct ConfigBuilder {
+    tailnet_provider: Option<String>,
+    tailnet_binary: Option<String>,
+    tailnet_state_dir: Option<String>,
+    tailnet_hostname: Option<String>,
     admin_listen: Option<String>,
     admin_token_file: Option<String>,
     release_root: Option<String>,
@@ -198,6 +203,10 @@ impl AppConfig {
         let current_web = release_root.join("current-web");
         let previous_server = release_root.join("previous-server");
         Self {
+            tailnet: Some(crate::tailnet::config::TailnetConfig::defaults(
+                &current_server,
+                &expand_tilde("~/.local/share/neige-calm"),
+            )),
             config_path: path,
             admin: AdminConfig {
                 listen: "127.0.0.1:4050".parse().expect("valid default listen"),
@@ -410,6 +419,27 @@ impl AppConfig {
                     .with_context(|| format!("parse source.db_migration_policy {value}"))?,
             );
         }
+        cfg.tailnet = match builder.tailnet_provider.as_deref() {
+            None | Some("disabled") => None,
+            Some("private-tailnet") => {
+                let mut tailnet = crate::tailnet::config::TailnetConfig::defaults(
+                    &cfg.release.current_server,
+                    &cfg.calm_data_dir_resolved(),
+                );
+                if let Some(value) = builder.tailnet_binary {
+                    tailnet.binary = expand_tilde(&value);
+                }
+                if let Some(value) = builder.tailnet_state_dir {
+                    tailnet.state_dir = expand_tilde(&value);
+                    tailnet.state_dir_inherits_data = false;
+                }
+                if let Some(value) = builder.tailnet_hostname {
+                    tailnet.hostname = value;
+                }
+                Some(tailnet)
+            }
+            Some(_) => anyhow::bail!("tailnet.provider must be private-tailnet or disabled"),
+        };
         cfg.apply_child_db_default();
         Ok(cfg)
     }
@@ -456,6 +486,12 @@ impl AppConfig {
         }
         if let Some(value) = overrides.stop_grace_ms {
             self.timing.stop_grace = Duration::from_millis(value);
+        }
+        let data = self.calm_data_dir_resolved();
+        if let Some(tailnet) = &mut self.tailnet
+            && tailnet.state_dir_inherits_data
+        {
+            tailnet.state_dir = data.join("tailnet");
         }
         self.apply_child_db_default();
     }
@@ -541,6 +577,12 @@ auth_dev_autologin = false
 cwd = ""
 extra_args = []
 
+[tailnet]
+# Available in Settings, initially disabled. Existing Funnel deployments omit
+# this section or set provider = "disabled" and keep their explicit child flag.
+provider = "private-tailnet"
+hostname = "neige"
+
 [timing]
 stop_grace_ms = 5000
 restart_delay_ms = 1000
@@ -619,6 +661,10 @@ fn set_value(
     value: &str,
 ) -> anyhow::Result<()> {
     match (section, key) {
+        ("tailnet", "provider") => builder.tailnet_provider = Some(parse_string(value)?),
+        ("tailnet", "binary") => builder.tailnet_binary = Some(parse_string(value)?),
+        ("tailnet", "state_dir") => builder.tailnet_state_dir = Some(parse_string(value)?),
+        ("tailnet", "hostname") => builder.tailnet_hostname = Some(parse_string(value)?),
         ("admin", "listen") => builder.admin_listen = Some(parse_string(value)?),
         ("admin", "token_file") => builder.admin_token_file = parse_optional_string(value)?,
         ("release", "root") => builder.release_root = Some(parse_string(value)?),

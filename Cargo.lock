@@ -508,6 +508,7 @@ dependencies = [
  "calm-provider",
  "calm-server",
  "calm-session",
+ "calm-tailnet-control",
  "calm-task-artifacts",
  "calm-terminal-view",
  "calm-test-sockets",
@@ -567,6 +568,17 @@ dependencies = [
  "ts-rs",
  "uuid",
  "vte",
+]
+
+[[package]]
+name = "calm-tailnet-control"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "calm-types",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2030,6 +2042,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "calm-tailnet-control",
  "calm-types",
  "chrono",
  "clap",

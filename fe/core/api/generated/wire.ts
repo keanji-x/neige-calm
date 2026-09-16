@@ -363,7 +363,9 @@ export type HarnessQueueChange = "edited" | "deleted" | "steered" | "restored" |
 
 export type McpCheckResult = { tools: Array<string>, };
 
-export type MobileStatus = { available: boolean, publicUrl: string | null, pending: Array<PendingPair>, devices: Array<PairedDevice>, };
+export type MobileProvider = "unavailable" | "funnel" | "private-tailnet";
+
+export type MobileStatus = { provider: MobileProvider, tailnet: TailnetStatus | null, available: boolean, publicUrl: string | null, pending: Array<PendingPair>, devices: Array<PairedDevice>, };
 
 export type Overlay = { id: string, plugin_id: string, 
 /**
@@ -492,6 +494,14 @@ export type SourceProvenance = "full_text" | "summary" | "web_page" | "manual";
  * locates the anchor by `text`).
  */
 export type SourceQuote = { id: string, text: string, start: number, end: number, };
+
+export type TailnetLogin = { loginUrl: string, displayForSeconds: number, };
+
+export type TailnetNodeState = "stopped" | "starting" | "needs-login" | "needs-approval" | "online" | "offline";
+
+export type TailnetPhase = "disabled" | "starting" | "needs-login" | "needs-approval" | "online" | "degraded" | "failed";
+
+export type TailnetStatus = { desiredEnabled: boolean, phase: TailnetPhase, processRunning: boolean, childPid: number | null, nodeState: TailnetNodeState, httpsReady: boolean, upstreamReady: boolean, origin: string | null, dnsName: string | null, nodeId: string | null, addresses: Array<string>, detail: string, };
 
 /**
  * Execution summary. Status includes awaiting_projection when admission capacity removed a pending row.

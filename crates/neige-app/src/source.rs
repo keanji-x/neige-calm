@@ -196,6 +196,7 @@ fn required_bins(source_dir: &Path) -> Vec<NamedPath> {
         "calm-server",
         "neige-codex-bridge",
         "neige-mcp-stdio-shim",
+        "neige-tailnet",
         // Issue #388 Phase 1 — calm-server connects to this binary over a
         // control UDS for every terminal spawn; without it in the activated
         // release `neige-app system serve` will time out waiting for
@@ -273,7 +274,7 @@ mod tests {
         );
         assert!(!package.join("web/dist/index.html").exists());
         assert_eq!(manifest.schema_version, 2);
-        assert_eq!(manifest.units.len(), 7);
+        assert_eq!(manifest.units.len(), 8);
         assert!(
             manifest
                 .units
@@ -333,6 +334,7 @@ exit 2
             "calm-proc-supervisor",
             "neige-codex-bridge",
             "neige-mcp-stdio-shim",
+            "neige-tailnet",
             "neige",
         ] {
             write_script(

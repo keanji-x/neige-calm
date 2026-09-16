@@ -1337,6 +1337,14 @@ jobs:
           cache: npm
           cache-dependency-path: fe/package-lock.json
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
+
+      - name: build private Tailnet helper
+        run: tailnet/build.sh
+
       # Match Makefile's `build` cargo rule so `make dev` inside e2e/run.sh
       # finds every release binary it expects instead of compiling cold.
       - name: cargo build --release (make dev binaries)

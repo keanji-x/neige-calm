@@ -142,6 +142,17 @@ pub(crate) fn build_package(cfg: &PackageConfig) -> anyhow::Result<PathBuf> {
         files.push(file);
     }
 
+    let notices = include_bytes!("../../../tailnet/THIRD_PARTY_NOTICES.txt");
+    let notices_path = "licenses/neige-tailnet.txt";
+    fs::create_dir_all(package_dir.join("licenses"))?;
+    fs::write(package_dir.join(notices_path), notices)?;
+    files.push(FileManifest {
+        path: notices_path.into(),
+        sha256: format!("{:x}", Sha256::digest(notices)),
+        bytes: notices.len() as u64,
+        unit: FileUnit::Bundle,
+    });
+
     let calm_server = bin_map
         .get("calm-server")
         .ok_or_else(|| anyhow!("missing required binary calm-server"))?;
@@ -231,6 +242,12 @@ struct ReleaseBinarySpec {
 }
 
 const RELEASE_BINARIES: &[ReleaseBinarySpec] = &[
+    ReleaseBinarySpec {
+        binary_name: "neige-tailnet",
+        unit: UnitName::NeigeTailnet,
+        restart_policy: RestartPolicy::DeferUntilFullReboot,
+        file_unit: FileUnit::Bundle,
+    },
     ReleaseBinarySpec {
         binary_name: "calm-server",
         unit: UnitName::CalmServer,

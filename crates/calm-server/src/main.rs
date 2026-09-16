@@ -129,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let auth_state = AuthState::new(auth_config);
 
+    let mut _private_ingress = None;
     let _mobile_router = if let Some(path) = &cfg.mobile_access_config {
         anyhow::ensure!(
             !auth_state.config.dev_autologin,
@@ -146,6 +147,37 @@ async fn main() -> anyhow::Result<()> {
             .configure(mobile_config, public_router.clone())
             .await;
         Some(public_router)
+    } else if let Some(path) = &cfg.private_tailnet_config {
+        let setup = async {
+            anyhow::ensure!(
+                !auth_state.config.dev_autologin,
+                "Private Tailnet cannot use dev autologin"
+            );
+            anyhow::ensure!(cfg.fe_dist.is_some(), "Private Tailnet requires --fe-dist");
+            let config =
+                calm_server::mobile_access::private_tailnet::PrivateTailnetConfig::load(path)?;
+            let router = Arc::new(mount_frontends(
+                routes::public_mobile_router(state.clone(), auth_state.clone()),
+                None,
+                cfg.fe_dist.as_deref(),
+            ));
+            let ingress = auth_state
+                .mobile
+                .configure_private(config, router.clone())
+                .await?;
+            Ok::<_, anyhow::Error>((router, ingress))
+        }
+        .await;
+        match setup {
+            Ok((router, ingress)) => {
+                _private_ingress = Some(ingress);
+                Some(router)
+            }
+            Err(error) => {
+                tracing::warn!(%error,"private Tailnet ingress unavailable; local Neige remains available");
+                None
+            }
+        }
     } else {
         None
     };
@@ -189,7 +221,11 @@ async fn main() -> anyhow::Result<()> {
     // Keep total drain below neige-app's five-second stop grace. Parent-death
     // ownership also kills the tunnel helper if shutdown is abrupt.
     if !matches!(
-        tokio::time::timeout(std::time::Duration::from_secs(1), mobile_shutdown.disable()).await,
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            mobile_shutdown.shutdown()
+        )
+        .await,
         Ok(Ok(()))
     ) {
         tracing::warn!("mobile ingress cleanup exceeded its shutdown window");

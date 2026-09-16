@@ -258,3 +258,13 @@ Android 自定义代码在已提交 gen 目录中，构建不得运行 android:i
 - 两路认可冷启动无正文、封闭代理先于网络、唯一事件 owner 和独立受限 Tailnet 服务方向；无源码反例要求增加 profile bootstrap，维持 S1/S2 首个 PR 与 S3/S4 后续交付。
 - 原始评审：[A](../_tailnet-mobile-recovery-design-review-subagent-v1.md)、[B](../_tailnet-mobile-recovery-design-review-codex-v1.md)。本轮只改设计并核对源码，未运行 App/设备验收。
 - v2 两路复核均 APPROVE：[A](../_tailnet-mobile-recovery-design-review-subagent-v2.md)、[B](../_tailnet-mobile-recovery-design-review-codex-v2.md)，核对的设计 SHA-256 为 `1cd96e962f6036a8452e76732b5a5651fa2cb80ed5f505cd4775476589fbb452`。批准后仅更新状态及本条归档信息，未改设计合同。
+
+### S3 实施窄裁决（2026-09-16）
+
+- Orchestrator 批准部署级 `private-tailnet`/既有显式 Funnel 二选一；冲突报错，选定 provider 独占该部署的 PairingState；不要求同时开放两个入口。
+- Tailnet 身份/desiredEnabled 属于 neige-app；窄 `calm-tailnet-control` client 只表达 status/enable/disable/login/logout。进程不跨 neige-app 重启 adoption；PDEATHSIG 加双层私有锁保证无孤儿 writer，kernel restart 仍保留节点进程。
+- `neigeTailnet` 发布单元为 deferUntilFullReboot；app 启动固定 canonical helper，变更 binary 后只在原 writer 退出并独占 node 锁时备份。禁止自动恢复身份备份或猜测 tsnet state 版本兼容。
+- 首个真实 HTTP 测试发现已配对会话可经主端口调用管理：原 Session 无凭证来源，owner() 只检查存在。改为必需 SessionAuthority，所有创建调用显式选择，所有 mobile 管理操作仅接受当前有效 PasswordLogin。业务入口仍接受有效配对会话；不扩为账号系统或持久会话。
+- 桌面授权 URL 的 `displayForSeconds` 只限制当前 UI 展示，不宣称上游 URL 到期。手机扫码入网另按增补合同实现；不得把此桌面登录操作当手机流程。
+
+- S3 源检追加裁决：固定 loopback 端口在 kernel 停机窗口可被其他本机用户抢占，且 bind 失败若传播会阻塞本机服务。改为同一 0700 目录内固定 `ingress.sock`，Go 始终 Unix dial，不从 HTTP 选择目标；RevocableListener 对 TCP/Funnel 与 Unix/private 复用同一取消语义。现存活跃 socket、非 socket、非私有目录不被 unlink；private setup 失败只降级远程入口，本机 kernel 继续启动。

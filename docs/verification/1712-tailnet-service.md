@@ -1,0 +1,80 @@
+# #1712 S3 private Tailnet checkpoint verification
+
+This checkpoint implements the app-owned private node, local Settings controls,
+restricted Unix ingress, persistence/lifecycle and release packaging. Scan-only
+phone enrollment is the next separately approved slice. No deployment, account
+login, real Tailnet state, system tailscaled socket or production credentials were
+used in these checks. Independent implementation reviews are coordinated by the
+parent task; this document does not replace those reviews or device acceptance.
+
+## Production-boundary checks
+
+- The real API generator passed: `env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 npm run gen:api` from `fe` (83 binding exports, then OpenAPI).
+- `env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --lib --test domain_api_suite -E 'test(mobile_pairing) | test(private_tailnet) | test(auth::)' --test-threads 8`: 40 passed. This includes real restricted Unix HTTP/WS, password/worker/management route exclusion, all mobile management actions rejecting paired credentials, valid business access, and revocation closing a live WebSocket.
+- `env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p neige-app -p calm-tailnet-control -E 'test(tailnet) | test(package_) | test(source::tests)' --test-threads 8`: 24 passed. This covers environment isolation through a real fixture child, durable disable retaining identity, private state locks/backups, crash circuit, kernel independence, pinned helper binary, protocol bounds, and hashed packaging.
+- Go `go test -p 4 ./...` and `go test -race -p 4 ./...` passed using the cached Go 1.26.6 toolchain and module cache. Nine isolated tests cover fixed Unix upstream, forwarded identity removal, live upgraded connection closure, node locks/state version, login/approval states, certificate loss, and a pending ListenTLS operation not freezing status. No real tsnet Server was started by tests.
+- `npm ci --cache /tmp/neige-tailnet-npm-cache`, `npm run lint`, `npm run build`, and `npm test -- --maxWorkers=4` completed; the final frontend suite reports 3,282 passed and one existing skip. The initial suite found the new workflow missing the mandatory quoted npm-audit setting; that was corrected before the full green rerun.
+- `npm run test:browser -- web/src/features/settings/tailnet.browser.test.tsx`: one passed in Chromium. The 390px Settings screenshot was visually inspected. `npx playwright install --with-deps chromium` could not use sudo without a password; `npx playwright install chromium` and the browser run succeeded with the existing system libraries.
+- `env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 scripts/local-rust-gates.sh --quick` passed: format, workspace clippy with features, default-feature lib check, real release compilation and OpenAPI drift. No workspace-wide nextest or real Codex E2E was run. The first quick run found a collapsible condition; the condition and a fixture-only redundant format call were corrected and the complete quick gate rerun green.
+- `tailnet/build.sh /tmp/neige-tailnet-artifact/neige-tailnet` built the real static Linux helper with the cached pinned toolchain; `--version` printed `neige-tailnet 0.1.0` without opening node state.
+- Shell syntax, final diff whitespace and WEB_COMPAT_VERSION lockstep were checked; the maintained frontend and server both declare 29.
+
+## Isolated final verification
+
+A later shared-target run picked up another worktree's `calm-types` metadata and
+incorrectly reported the new module missing. Final Rust verification therefore
+uses `CARGO_TARGET_DIR=/tmp/neige-1712-tailnet-target`. Only external libraries and
+build/fingerprint caches were copied; workspace libraries and old test binaries
+were excluded. The copy contains no shared hardlinks or symlinks, and compiler
+logs show all relevant workspace crates, including `calm-types`, rebuilt from this
+worktree. Cargo's attempted package clean refused the copied directory's missing
+cache tag without deleting anything; excluded workspace outputs already forced
+the actual rebuild. The shared target was not cleaned.
+
+With that private target and the same unset NEIGE_CODEX_BIN / cleared wrapper /
+six-job cap:
+
+- Server lib + domain tests with `-E 'test(mobile_access) | test(mobile_pairing) | test(private_tailnet) | test(auth::)'`: **42 passed**, including the existing reader-wakeup regression.
+- App/control tests with `-E 'test(tailnet) | test(package_) | test(source::tests) | test(config) | test(supervisor)'`: **43 passed**. An old plugin test's empty-argv assumption was updated to explicitly expect the new private-ingress flag for fresh configurations. Explicit node state paths retain their provenance when a main-data-dir CLI override is supplied.
+- The complete `scripts/local-rust-gates.sh --quick`: **passed**, including release compilation and no OpenAPI drift.
+
+## Recorded red reproduction
+
+The initial private-ingress test found that a real paired cookie could use the
+main local port to call mobile management (expected 403, actual 200). Session
+creation had no credential provenance. SessionAuthority is now required at every
+creation call; management reads the current valid session and accepts only
+PasswordLogin. A PairedDevice session remains non-administrative even without a
+pairing-registry row. Whoami and authorized business access remain available.
+
+## Single-factor production mutations
+
+Each row was declared before mutation, run in an exclusive worktree, compared
+against the complete actual red set in the selected suite, restored from a byte
+backup, hash-checked for exact restoration, then rerun green. No test/fixture was
+mutated to produce a failure. Each expected set below contains exactly one test;
+the actual set matched it in every run.
+
+| Mutation | Expected and actual failing test |
+| --- | --- |
+| owner-source | `mobile_pairing::private_tailnet_ingress_auth_and_control_fence` |
+| backend-revoke | `mobile_pairing::private_tailnet_disable_closes_active_websocket_and_revokes_session` |
+| spawn-env | `tailnet::tests::tailnet_spawn_env_allowlist` |
+| fixed-upstream | `TestFixedUpstreamRejectsNetworkTargetsAndNoncanonicalSockets` |
+| forwarded-identity | `TestProxyLocksUpstreamAndStripsUntrustedIdentity` |
+| helper-revoke | `TestRevocationClosesUpgradedTransport` |
+
+The selected Rust suites were the two `private_tailnet` domain tests and the
+seven `tailnet` app tests; the Go suite ran all nine helper tests. Raw isolated
+logs and byte backups were left under `/tmp/neige-tailnet-mutation-pq5todf2` for
+this local review. A subsequent nonsemantic clippy condition fold changed the
+app module formatting; final affected checks were rerun.
+
+## Remaining acceptance
+
+Actual desktop account authorization, tailnet ACL/MagicDNS/HTTPS behavior,
+two-device connectivity and real install/upgrade/rollback exercises require a
+separately authorized environment. An older running neige-app cannot parse the
+new manifest unit: the first upgrade must use the new package's CLI and a full
+host restart, as documented in `docs/private-tailnet.md`. Existing configurations
+need the explicit provider section; existing Funnel remains separate.

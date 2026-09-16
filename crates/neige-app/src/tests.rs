@@ -266,6 +266,7 @@ async fn status_route_returns_supervisor_identity_shape() {
 
     let cfg = AppConfig::starter(PathBuf::from("/tmp/neige-app/config.toml"));
     let state = AppState {
+        tailnet: None,
         cfg: Arc::new(cfg),
         supervisor: Supervisor::new(SupervisorConfig {
             name: "calm-server".into(),

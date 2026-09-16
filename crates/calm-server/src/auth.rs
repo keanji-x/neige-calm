@@ -130,13 +130,20 @@ impl AuthConfig {
     }
 }
 
-/// One active session. Right now this is just a marker — single-user model
-/// means every session resolves to the same owner principal — but holding
-/// a struct keeps the door open for created-at timestamps / idle expiry /
-/// rotation tags without another schema migration.
+/// One active in-memory session. Business access still resolves to the same
+/// user principal; credential provenance separately limits local management.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub session_id: String,
+    pub authority: SessionAuthority,
+}
+
+/// Required credential provenance: paired devices never gain local management
+/// authority, even if a separate device-registry record is absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAuthority {
+    PasswordLogin,
+    PairedDevice,
 }
 
 /// In-memory session store. `Arc<Mutex<...>>` is plenty for the single-user
@@ -154,10 +161,11 @@ impl SessionStore {
 
     /// Mint a fresh session, store it, and return the new id. Caller sets
     /// the cookie.
-    pub fn create(&self) -> String {
+    pub fn create(&self, authority: SessionAuthority) -> String {
         let id = Uuid::new_v4().to_string();
         let session = Session {
             session_id: id.clone(),
+            authority,
         };
         // Poisoned-mutex policy: log + recover. We never panic out of the
         // lock-poison branch because that would take the whole server down
@@ -395,7 +403,7 @@ async fn login_handler(
         auth.sessions.remove(&existing);
     }
 
-    let new_id = auth.sessions.create();
+    let new_id = auth.sessions.create(SessionAuthority::PasswordLogin);
     let principal = Principal::owner(&auth.config, new_id.clone());
     let cookie = build_session_cookie(&new_id);
 
@@ -513,6 +521,7 @@ mod tests {
             auth_password: None,
             auth_dev_autologin: false,
             mobile_access_config: None,
+            private_tailnet_config: None,
             shared_codex_appserver_restart_initial_delay_ms: 250,
             shared_codex_appserver_restart_max_delay_ms: 10_000,
             shared_codex_appserver_start_timeout_secs: 120,
@@ -549,6 +558,7 @@ mod tests {
             auth_password: None,
             auth_dev_autologin: true,
             mobile_access_config: None,
+            private_tailnet_config: None,
             shared_codex_appserver_restart_initial_delay_ms: 250,
             shared_codex_appserver_restart_max_delay_ms: 10_000,
             shared_codex_appserver_start_timeout_secs: 120,
@@ -563,7 +573,7 @@ mod tests {
     #[test]
     fn session_store_round_trip() {
         let store = SessionStore::new();
-        let id = store.create();
+        let id = store.create(SessionAuthority::PasswordLogin);
         assert!(store.get(&id).is_some());
         store.remove(&id);
         assert!(store.get(&id).is_none());
@@ -598,7 +608,7 @@ mod tests {
     #[test]
     fn resolve_principal_accepts_valid_cookie() {
         let auth = AuthState::new(cfg_live());
-        let id = auth.sessions.create();
+        let id = auth.sessions.create(SessionAuthority::PasswordLogin);
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,

@@ -31,7 +31,7 @@ done
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]] || { usage >&2; exit 2; }
 [[ -n "$output_dir" ]] || { usage >&2; exit 2; }
 [[ "$(uname -s)" == Linux ]] || { echo 'Alpha bundles currently target Linux only.' >&2; exit 1; }
-for tool in cargo rustc node npm python3 tar sha256sum realpath; do
+for tool in cargo rustc go node npm python3 tar sha256sum realpath; do
   command -v "$tool" >/dev/null || { echo "Missing prerequisite: $tool" >&2; exit 1; }
 done
 if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]]; then
@@ -68,6 +68,7 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   -p calm-proc-supervisor -p neige-cli \
   --bin calm-server --bin neige-codex-bridge --bin neige-app \
   --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin neige
+tailnet/build.sh "$bin_dir/neige-tailnet"
 (cd fe && npm ci && npm run build)
 "$bin_dir/neige-app" system package \
   --release-dir "$bundle/release" --release-id "$version" \
@@ -77,7 +78,8 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   --bin "calm-proc-supervisor=$bin_dir/calm-proc-supervisor" \
   --bin "neige-codex-bridge=$bin_dir/neige-codex-bridge" \
   --bin "neige-mcp-stdio-shim=$bin_dir/neige-mcp-stdio-shim" \
-  --bin "neige=$bin_dir/neige"
+  --bin "neige=$bin_dir/neige" \
+  --bin "neige-tailnet=$bin_dir/neige-tailnet"
 python3 - "$bundle/BUILD.json" "$version" "$source_sha" "$target_host" <<'PY'
 import datetime, json, pathlib, platform, subprocess, sys
 path, version, sha, target = sys.argv[1:]
@@ -88,10 +90,13 @@ info = {
     'libc': list(platform.libc_ver()),
     'rustc': subprocess.check_output(['rustc', '--version'], text=True).strip(),
     'node': subprocess.check_output(['node', '--version'], text=True).strip(),
+    'go': subprocess.check_output(['go', 'version'], cwd='tailnet', text=True).strip(),
 }
 pathlib.Path(path).write_text(json.dumps(info, indent=2) + '\n')
 PY
 mkdir "$bundle/docs"
+cp tailnet/THIRD_PARTY_NOTICES.txt "$bundle/TAILNET_THIRD_PARTY_NOTICES.txt"
+cp docs/private-tailnet.md "$bundle/docs/"
 cp docs/alpha-release.md docs/deploy-and-upgrade.md docs/neige-app-config.md docs/upgrade-stability.md "$bundle/docs/"
 cp docs/plugin-security.md "$bundle/docs/"
 cp docs/using-neige-calm.md docs/recipe-body-format.md "$bundle/docs/"

@@ -162,6 +162,10 @@ pub struct Config {
     #[arg(long)]
     pub mobile_access_config: Option<PathBuf>,
 
+    /// App-owned private Tailnet ingress. Mutually exclusive with system Funnel.
+    #[arg(long, conflicts_with = "mobile_access_config")]
+    pub private_tailnet_config: Option<PathBuf>,
+
     /// Initial delay before restarting the shared codex app-server after a crash.
     #[arg(
         long,
