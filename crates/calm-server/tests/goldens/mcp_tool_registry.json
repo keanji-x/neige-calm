@@ -1782,7 +1782,7 @@
   },
   {
     "name": "calm.terminal.open",
-    "description_sha256": "4a293bfd7f017d60d539857eef9c514d3206f966ab8f8366113c47b1961d2d05",
+    "description_sha256": "fcb4f6add84ccd2837d6cf26ff6e4c481fcfa89e5bae2241d21a00e75e32135e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
