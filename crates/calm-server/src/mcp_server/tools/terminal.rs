@@ -15,7 +15,7 @@ use crate::terminal_interaction::{
     BELOW_CURSOR_EDITS_ONLY, InputOptions, ObservationFormat, Target, TerminalInteraction, WaitFor,
     WaitPlan, edits_the_draft, receipt_summary, summary_line,
 };
-use crate::terminal_permissions::{ClaudePermissionsScope, validate_scope};
+use crate::terminal_permissions::{ClaudePermissionsScope, parse_scope, validate_scope};
 use crate::validation::TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -100,9 +100,20 @@ struct Open {
     repaint_ms: Option<u64>,
     wait_text: Option<Vec<String>>,
     wait_text_absent: Option<Vec<String>>,
-    /// #1704 S1 — what Claude may do without a dialog; validated before the
-    /// create is submitted and part of the idempotency hash.
-    claude_permissions: Option<ClaudePermissionsScope>,
+    /// #1704 S1 — what Claude may do without a dialog; its shape is checked
+    /// by `parse_scope` (so a JSON `null` or array is refused by name rather
+    /// than read as absent), validated before the create is submitted and
+    /// part of the idempotency hash.
+    #[serde(default, deserialize_with = "present_value")]
+    claude_permissions: Option<Value>,
+}
+/// `Option<Value>` that keeps a JSON `null` as `Some(Null)` (serde's default
+/// reads `null` as `None`), so `claude_permissions: null` reaches
+/// `parse_scope` and is refused as "must be an object".
+fn present_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -452,12 +463,13 @@ async fn call(
             };
             let waited = wait.any();
             let wait = wait.plan()?;
-            // #1704 S1 — the declared scope is validated here, before the
-            // create is submitted; the trimmed scope enters the hash.
+            // #1704 S1 — the declared scope is parsed and validated here,
+            // before the create is submitted; the trimmed scope enters the
+            // hash.
             let claude_permissions = args
                 .claude_permissions
                 .as_ref()
-                .map(validate_scope)
+                .map(|value| parse_scope(value).and_then(|scope| validate_scope(&scope)))
                 .transpose()
                 .map_err(RpcError::invalid_params)?;
             let track_id = TerminalInteraction::authorize(ctx.repo.as_ref(), &identity)

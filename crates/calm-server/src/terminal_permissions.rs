@@ -20,6 +20,7 @@
 //! written; a terminal opened without a scope gets the hooks-only file.
 use crate::error::{CalmError, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Bash prefixes that always prompt when a scope is declared, rendered as
 /// `ask` rules (together with `Edit(//<cwd>/.git/**)`).
@@ -64,6 +65,48 @@ pub struct EffectiveClaudePermissions {
     pub allow: Vec<String>,
     pub ask: Vec<String>,
     pub deny: Vec<String>,
+}
+
+/// The keys a declared scope may carry, in the schema's order.
+const SCOPE_KEYS: [&str; 3] = ["edit", "bash", "deny"];
+
+/// Parse the tool argument into a scope, enforcing exactly the advertised
+/// shape with a named reason: an object (not an array, string or null) whose
+/// keys are among `edit`, `bash`, `deny`, each an array of strings (`null` is
+/// a wrong type, not an absent key). The serde derive on
+/// [`ClaudePermissionsScope`] is for storage and the hash view only: a derive
+/// alone would also accept a JSON array through `visit_seq` and read
+/// `deny: null` as absent.
+pub fn parse_scope(value: &Value) -> std::result::Result<ClaudePermissionsScope, String> {
+    let Some(object) = value.as_object() else {
+        return Err("claude_permissions: must be an object".into());
+    };
+    if let Some(unknown) = object
+        .keys()
+        .find(|key| !SCOPE_KEYS.contains(&key.as_str()))
+    {
+        return Err(format!("claude_permissions: unknown key '{unknown}'"));
+    }
+    let list = |key: &str| -> std::result::Result<Option<Vec<String>>, String> {
+        let Some(value) = object.get(key) else {
+            return Ok(None);
+        };
+        value
+            .as_array()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .map(|entry| entry.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<String>>>()
+            })
+            .map(Some)
+            .ok_or_else(|| format!("claude_permissions.{key}: must be an array of strings"))
+    };
+    Ok(ClaudePermissionsScope {
+        edit: list("edit")?,
+        bash: list("bash")?,
+        deny: list("deny")?,
+    })
 }
 
 /// Validate a declared scope; `Ok` is the trimmed scope (whitespace-trimmed
@@ -588,11 +631,47 @@ mod tests {
             ),
         ];
         for (input, reason) in cases {
-            let scope: ClaudePermissionsScope = serde_json::from_value(input.clone()).unwrap();
+            let scope = parse_scope(&input).unwrap();
             let err = validate_scope(&scope).unwrap_err();
             assert_eq!(err, reason, "{input}");
         }
-        // Unknown keys and wrong types are refused by serde itself.
+        // Shape rows: `parse_scope` refuses what the schema does not
+        // advertise, before any entry is looked at.
+        let shape_cases: Vec<(serde_json::Value, &str)> = vec![
+            (
+                json!([["**"], null, []]),
+                "claude_permissions: must be an object",
+            ),
+            (json!("**"), "claude_permissions: must be an object"),
+            (json!(null), "claude_permissions: must be an object"),
+            (json!(7), "claude_permissions: must be an object"),
+            (
+                json!({"edit": ["**"], "deny": null}),
+                "claude_permissions.deny: must be an array of strings",
+            ),
+            (
+                json!({"bash": "git status"}),
+                "claude_permissions.bash: must be an array of strings",
+            ),
+            (
+                json!({"edit": [1]}),
+                "claude_permissions.edit: must be an array of strings",
+            ),
+            (
+                json!({"edit": [["**"]]}),
+                "claude_permissions.edit: must be an array of strings",
+            ),
+            (
+                json!({"edit": ["**"], "allow": ["x"]}),
+                "claude_permissions: unknown key 'allow'",
+            ),
+            (json!({"ask": []}), "claude_permissions: unknown key 'ask'"),
+        ];
+        for (input, reason) in shape_cases {
+            assert_eq!(parse_scope(&input).unwrap_err(), reason, "{input}");
+        }
+        // The storage derive is a separate contract: it also refuses unknown
+        // keys, and round-trips what `parse_scope` accepted.
         let err = serde_json::from_value::<ClaudePermissionsScope>(json!({"allow": ["x"]}))
             .unwrap_err()
             .to_string();
@@ -600,8 +679,22 @@ mod tests {
             err.starts_with("unknown field `allow`, expected one of `edit`, `bash`, `deny`"),
             "{err}"
         );
-        assert!(serde_json::from_value::<ClaudePermissionsScope>(json!({"bash": "git"})).is_err());
-        assert!(serde_json::from_value::<ClaudePermissionsScope>(json!({"edit": [1]})).is_err());
+        let parsed = parse_scope(&json!({"edit": ["**"], "deny": []})).unwrap();
+        assert_eq!(
+            parsed,
+            ClaudePermissionsScope {
+                edit: strings(&["**"]),
+                bash: None,
+                deny: strings(&[]),
+            }
+        );
+        assert_eq!(
+            serde_json::from_value::<ClaudePermissionsScope>(
+                serde_json::to_value(&parsed).unwrap()
+            )
+            .unwrap(),
+            parsed
+        );
 
         // The round-19 scope is accepted; entries come back trimmed, an
         // empty deny is dropped, token-prefixes of floor commands pass.

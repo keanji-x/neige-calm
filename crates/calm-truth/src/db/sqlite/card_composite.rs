@@ -1159,5 +1159,64 @@ mod tests {
             plain.payload
         );
         assert_eq!(plain.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
+
+        // Only the kernel-minted shapes are sticky: a stored
+        // `terminal_signals: false` and a stored `claude_permissions: null`
+        // (never minted; seeded here through the kernel's own repo route) are
+        // NOT re-inserted, and such a card accepts a non-object replacement.
+        let odd = repo
+            .card_create(NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "terminal".into(),
+                sort: None,
+                payload: json!({
+                    "schemaVersion": 1,
+                    TERMINAL_SIGNALS_PAYLOAD_KEY: false,
+                    TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY: null,
+                }),
+            })
+            .await
+            .unwrap();
+        let replaced = repo
+            .card_update(
+                odd.id.as_str(),
+                CardPatch {
+                    payload: Some(json!({ "schemaVersion": 1, "terminal_id": "z" })),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replaced.payload,
+            json!({ "schemaVersion": 1, "terminal_id": "z" }),
+            "a false marker and a null block are not sticky"
+        );
+        let odd = repo
+            .card_create(NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "terminal".into(),
+                sort: None,
+                payload: json!({ "schemaVersion": 1, TERMINAL_SIGNALS_PAYLOAD_KEY: false }),
+            })
+            .await
+            .unwrap();
+        let replaced = repo
+            .card_update(
+                odd.id.as_str(),
+                CardPatch {
+                    payload: Some(json!("not an object")),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replaced.payload,
+            json!("not an object"),
+            "without a sticky value a non-object replacement is accepted"
+        );
     }
 }

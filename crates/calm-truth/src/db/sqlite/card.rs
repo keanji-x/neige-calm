@@ -12,7 +12,7 @@ use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
 use crate::ids::CardId;
 use crate::model::*;
-use crate::validation::SERVER_OWNED_TERMINAL_PAYLOAD_KEYS;
+use crate::validation::{SERVER_OWNED_TERMINAL_PAYLOAD_KEYS, server_owned_value_is_sticky};
 
 pub async fn terminal_get_by_card_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -194,15 +194,22 @@ async fn card_update_inner_tx(
     if let Some(mut v) = p.payload {
         // #1620 / #1704 — the server-owned keys are sticky: the payload
         // column is replaced wholesale, so for each key of
-        // `SERVER_OWNED_TERMINAL_PAYLOAD_KEYS` present in the stored payload
-        // the stored value is re-inserted into the replacement, and no
-        // writer (REST PATCH, plugin update, kernel merge) can drop the hook
-        // routing or the permissions audit trail by omission. A non-object
-        // replacement cannot carry them and is refused. Cards without a key
-        // never gain it here — only the creation path mints them.
+        // `SERVER_OWNED_TERMINAL_PAYLOAD_KEYS` whose stored value is the
+        // kernel-minted shape (`server_owned_value_is_sticky`: the marker
+        // `== true`, the permissions block an object) that value is
+        // re-inserted into the replacement, and no writer (REST PATCH, plugin
+        // update, kernel merge) can drop the hook routing or the permissions
+        // audit trail by omission. A non-object replacement cannot carry them
+        // and is refused. Cards without a sticky value never gain one here —
+        // only the creation path mints them.
         let stored: Vec<(&str, serde_json::Value)> = SERVER_OWNED_TERMINAL_PAYLOAD_KEYS
             .iter()
-            .filter_map(|key| c.payload.get(*key).map(|value| (*key, value.clone())))
+            .filter_map(|key| {
+                c.payload
+                    .get(*key)
+                    .filter(|value| server_owned_value_is_sticky(key, value))
+                    .map(|value| (*key, value.clone()))
+            })
             .collect();
         if let Some((first_key, _)) = stored.first() {
             let Some(map) = v.as_object_mut() else {

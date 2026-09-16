@@ -95,6 +95,20 @@ pub const SERVER_OWNED_TERMINAL_PAYLOAD_KEYS: [&str; 2] = [
     TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY,
 ];
 
+/// Whether a STORED value of a server-owned key is the shape the kernel mints
+/// — and therefore the one `card_update_tx` re-inserts into a replacement
+/// payload (and whose presence refuses a non-object replacement):
+/// `terminal_signals` only when `true`, `claude_permissions` only when it is a
+/// JSON object. Any other stored shape was never minted by the kernel and is
+/// not kept sticky (the #1620 contract for the marker, unchanged by #1704).
+pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
+    match key {
+        TERMINAL_SIGNALS_PAYLOAD_KEY => value.as_bool() == Some(true),
+        TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY => value.is_object(),
+        _ => false,
+    }
+}
+
 /// #1620 / #1704 — refuse a CLIENT-supplied `Card.payload` that carries any
 /// of [`SERVER_OWNED_TERMINAL_PAYLOAD_KEYS`]. The hook-routing provenance
 /// marker and the effective permissions block are stamped by the kernel

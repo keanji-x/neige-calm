@@ -1257,9 +1257,19 @@ async fn open_with_scope_writes_permissions_stamps_the_card_and_echoes_the_block
         ),
         (
             json!({"allow":["Bash(git status *)"]}),
-            "unknown field `allow`, expected one of `edit`, `bash`, `deny`",
+            "claude_permissions: unknown key 'allow'",
         ),
         (json!({}), "claude_permissions declares nothing"),
+        // Shape (#1704 r1): a JSON array or null is not read as a scope.
+        (
+            json!([["**"], null, []]),
+            "claude_permissions: must be an object",
+        ),
+        (json!(null), "claude_permissions: must be an object"),
+        (
+            json!({"edit":["**"],"deny":null}),
+            "claude_permissions.deny: must be an array of strings",
+        ),
     ] {
         let response = open(Some(scope.clone())).await;
         assert_eq!(response["error"]["code"], -32602, "{scope}: {response}");
