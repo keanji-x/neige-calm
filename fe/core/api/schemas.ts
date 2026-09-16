@@ -105,6 +105,18 @@ function normalizeLegacyTemplateKeys(raw: unknown): unknown {
   };
 }
 
+/**
+ * `claude_permissions::ClaudePermissionsScope` (#1704) — a Claude Code
+ * permission scope: `edit` globs relative to the terminal cwd, `bash` command
+ * prefixes, `deny` prefixes. Absent lists stay absent on the wire.
+ */
+export const claudePermissionsScopeSchema = z.object({
+  edit: z.array(z.string()).optional(),
+  bash: z.array(z.string()).optional(),
+  deny: z.array(z.string()).optional(),
+});
+export type ClaudePermissionsScope = z.infer<typeof claudePermissionsScopeSchema>;
+
 const trackObjectSchema = z.object({
   id: z.string(),
   area_id: z.string(),
@@ -197,6 +209,14 @@ const trackObjectSchema = z.object({
       frozen_at: z.number().nullable(),
     })
     .default({ kind: 'attached', path: '', frozen_at: null }),
+  /**
+   * #1704 S2 — the user-set Claude Code permission policy of the track's
+   * TREE, stored on the tree root only: a child track shows `null` here even
+   * when its root carries one (every ceiling read resolves the root
+   * server-side). Defaulted to `null` so pre-S2 `track.updated` replays (no
+   * key) parse; mirrors `#[serde(default)]` on `Track.claude_permissions_policy`.
+   */
+  claude_permissions_policy: claudePermissionsScopeSchema.nullable().default(null),
   created_at: z.number(),
   updated_at: z.number(),
 });
