@@ -86,5 +86,8 @@ Review additionally requires the narrow runtime activity timestamp in the
 generated wire/OpenAPI contracts and its decoder in `fe/core/api/schemas.ts`.
 The orchestrator approves this additive compatibility-preserving metadata for
 the same issue; no stored migration or existing event payload is rewritten.
+The same approval covers the narrow core invalidation policy and its contract
+test: `harness.phase.changed` refreshes the Track runtime projection consumed
+by the Planner row. It introduces no duplicate feature-level event listener.
 Dependency directions, global style contracts and gate rules are unchanged.
 Required ownership trailers are preserved in the commit and PR squash body.

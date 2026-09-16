@@ -264,6 +264,7 @@ describe('invalidation plan behavior', () => {
     // `harness.item.added` of its own.
     expect(planned('harness.phase.changed')).toEqual([
       ['planner-run', 'card-1'], ['harness-items', 'card-1'], ['track-conversations', 'track-1'],
+      ['track', 'track-1'],
     ]);
     expect(planned('harness.transcript.cleared')).toEqual([
       ['harness-items', 'card-1'], ['planner-run', 'card-1'],

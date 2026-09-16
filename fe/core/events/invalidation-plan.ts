@@ -262,6 +262,9 @@ function policies(): PolicyMap {
   'harness.phase.changed': plan((event) => result([
     ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
     ...conversationLists(event.data.track_id),
+    // Harness observations update runtime activity without a separate worker
+    // status event. The Track's Planner row consumes that runtime projection.
+    ['track', event.data.track_id],
   ])),
   /*
    * #1625 P2 — `harness-items` rides on the phase event above because a
