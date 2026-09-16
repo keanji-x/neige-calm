@@ -25,6 +25,18 @@ The Planner and human use the same Terminal card, renderer entry and process.
 The separate `calm-terminal-runtime` daemon component remains available for a
 later explicit backend migration; these tools do not silently switch backends.
 
+Lifetime of an exited terminal (#1701): a Terminal card's terminal row and
+renderer entry stay until the card is deleted (card / track / area delete
+tear them down eagerly). The orphan sweeper (`terminal_sweeper`, every 30 s
+after a 60 s grace) reaps a row whose card has no active worker session,
+except a `terminal`-kind card's row whose `exit_code` / `signal_killed` is
+recorded: that one follows its card, so the final screen, scrollback and exit
+code of a one-shot program remain observable and a release still answers
+after the exit. A `terminal`-kind row without a recorded exit is residue and
+is reaped; terminals of other card kinds (task / worker) are reaped once
+their session ends, exit recorded or not. A target whose row is gone fails
+with `terminal not found: deleted with its card or reaped as residue`.
+
 The existing RenderPlane installs a read-only observer before ingesting its first
 output. RMUX core receives every original byte and resize in order and maintains
 the model-facing grid and history. It emits no replies: the current server render

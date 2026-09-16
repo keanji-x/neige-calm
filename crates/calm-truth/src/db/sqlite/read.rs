@@ -942,6 +942,15 @@ impl RepoRead for SqlxRepo {
         // was created more than `grace_seconds` ago.
         //
         // `created_at` is unix ms; the grace bound is `now_ms - grace_seconds * 1000`.
+        //
+        // #1701 — a Terminal card's terminal (`cards.kind = 'terminal'`) whose
+        // row records a normal exit (`exit_code` or `signal_killed`) is not
+        // residue: the attach reader wrote the exit and completed the
+        // ephemeral session, and the card still owns the row. It follows its
+        // card (eager teardown on card/track/area delete) so its final
+        // screen, scrollback and exit code stay observable. A terminal
+        // without a recorded exit, and any other card kind, keeps the rule
+        // above.
         let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
         let rows = sqlx::query_as::<_, Terminal>(
             r#"SELECT t.id, t.card_id, t.program, t.cwd, t.env,
@@ -956,7 +965,14 @@ impl RepoRead for SqlxRepo {
                    WHERE ws.card_id = t.card_id
                      AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
                )
-               AND t.created_at < ?1"#,
+               AND t.created_at < ?1
+               AND NOT (
+                   (t.exit_code IS NOT NULL OR t.signal_killed = 1)
+                   AND EXISTS (
+                       SELECT 1 FROM cards c
+                       WHERE c.id = t.card_id AND c.kind = 'terminal'
+                   )
+               )"#,
         )
         .bind(cutoff)
         .fetch_all(&self.pool)

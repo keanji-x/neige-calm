@@ -866,3 +866,89 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     );
     h.stop(&terminal).await;
 }
+
+/// #1701 — an exited Terminal-card terminal survives the orphan sweeper. The
+/// Planner opened a one-shot program, it exited, and the ephemeral terminal
+/// session completed, so the row matched `terminals_orphaned` and the next
+/// sweep past the 60 s grace deleted it: `observe` and `control release` on
+/// it then failed with `target has no terminal view`. The row now follows
+/// its card (the card still exists): after a sweep the final screen is still
+/// observable with `exited`/`exit_code` and a release still answers through
+/// the registry (#1697).
+#[tokio::test]
+async fn exited_terminal_card_terminal_survives_the_orphan_sweep() {
+    let h = Harness::start().await;
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"echo FINAL; sleep 1; exit 3","request_id":"exit-sweep","claim":true}),
+        )
+        .await;
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
+    assert_eq!(opened["role"], "owner", "{opened}");
+    let start = std::time::Instant::now();
+    let exited = loop {
+        let view = h
+            .ok(
+                "calm.terminal.observe",
+                json!({"terminal_id":terminal,"wait_for":"change","wait_ms":5000}),
+            )
+            .await;
+        if view["exited"] == true && view["controllable"] == false {
+            break view;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "never exited: {view}"
+        );
+    };
+    assert_eq!(exited["exit_code"], 3, "{exited}");
+    // The attach reader persists the exit and completes the session after
+    // the frame; wait for the row to carry it before aging past the grace.
+    let start = std::time::Instant::now();
+    loop {
+        let row = h.state.repo.terminal_get(&terminal).await.unwrap().unwrap();
+        if row.exit_code == Some(3) {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "exit never persisted: {row:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    sqlx::query("UPDATE terminals SET created_at = ?1 WHERE id = ?2")
+        .bind(calm_server::model::now_ms() - 120_000)
+        .bind(&terminal)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+
+    calm_server::terminal_sweeper::sweep(&h.state)
+        .await
+        .unwrap();
+
+    let after = h
+        .call("calm.terminal.observe", json!({"terminal_id":terminal}))
+        .await;
+    let state = receipt(&after);
+    assert_eq!(state["exited"], true, "{state}");
+    assert_eq!(state["exit_code"], 3, "{state}");
+    assert!(has_line(state, "FINAL"), "{state}");
+    let response = h
+        .call(
+            "calm.terminal.control",
+            json!({"terminal_id":terminal,"action":"release","observe":true}),
+        )
+        .await;
+    let released = receipt(&response);
+    assert!(
+        matches!(
+            released["release"]["status"].as_str(),
+            Some("released" | "not_held")
+        ),
+        "{released}"
+    );
+    assert_eq!(observation(&response)["exit_code"], 3, "{released}");
+    h.stop(&terminal).await;
+}

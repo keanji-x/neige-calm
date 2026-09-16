@@ -494,8 +494,12 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>>;
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>>;
     /// Return every terminal row whose card has no active worker session
-    /// (`starting`, `running`, `idle`, or `turn_pending`), and whose
-    /// `created_at` is older than `grace_seconds` ago.
+    /// (`starting`, `running`, `idle`, or `turn_pending`), whose
+    /// `created_at` is older than `grace_seconds` ago, and that is NOT an
+    /// exited Terminal-card terminal: a row with a recorded exit
+    /// (`exit_code IS NOT NULL OR signal_killed = 1`) on a card of kind
+    /// `terminal` follows its card instead (#1701). Terminals of other card
+    /// kinds are returned once their session ends regardless of the exit.
     /// Used exclusively by the `terminal_sweeper` background task.
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>>;
     /// Return every terminal row whose child has not recorded an exit yet.

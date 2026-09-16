@@ -183,6 +183,23 @@ readback still runs. A `claim` on an exited terminal is the binding refusal
 (`controllable: false`), not a wait. Observations also carry `exit_code`
 from the `TerminalExited` frame (null until the exit or when unknown).
 
+#### An exited terminal survives the orphan sweeper (#1701)
+
+Round 21: 76 s after a one-shot program exited (release confirmed, `exit_code:
+0` read), the orphan sweeper reaped the terminal, and a later `observe` /
+`control release` on it failed with `target has no terminal view`. The
+ephemeral terminal session completes on PTY exit, so the row matched
+`terminals_orphaned` (no active session, older than the 60 s grace) although
+the attach reader had recorded the exit and the Terminal card still existed.
+The query now skips a `terminal`-kind card's row with a recorded exit
+(`exit_code IS NOT NULL OR signal_killed = 1`): the row and renderer entry
+follow the card and go with it on card / track / area delete, so the final
+screen, scrollback and `exit_code` stay observable and the release above
+keeps answering through the registry. A row without a recorded exit is still
+residue and reaped; other card kinds are unchanged. The refusal for a row
+that is gone reads `terminal not found: deleted with its card or reaped as
+residue`.
+
 ### `allow_output_below_cursor` — status-line refreshes are not stale
 
 Each registered observation additionally stores the cursor `{row, column,

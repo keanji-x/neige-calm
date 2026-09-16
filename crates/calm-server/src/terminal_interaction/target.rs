@@ -92,7 +92,11 @@ impl TerminalInteraction {
                 repo.terminal_get_by_card(card).await?
             }
         }
-        .ok_or_else(|| anyhow::anyhow!("target has no terminal view"))?;
+        // #1701 — a row is gone only with its card (eager teardown) or because
+        // the sweeper reaped residue; an exited Terminal-card terminal stays.
+        .ok_or_else(|| {
+            anyhow::anyhow!("terminal not found: deleted with its card or reaped as residue")
+        })?;
         let card = repo
             .card_get(terminal.card_id.as_str())
             .await?
