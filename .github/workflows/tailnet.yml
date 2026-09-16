@@ -20,6 +20,8 @@ jobs:
           cache-dependency-path: tailnet/go.sum
       - name: Test isolated proxy and control boundaries
         working-directory: tailnet
-        run: go test -race -p 4 ./...
+        run: |
+          go test -race -p 4 ./...
+          go test -race -tags=ts_omit_logtail -p 4 ./...
       - name: Build bundled helper
         run: tailnet/build.sh

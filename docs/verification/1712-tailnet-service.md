@@ -123,3 +123,47 @@ nine Go helper tests under `-race` with the two new blocked-listener subcases, a
 bindings before emitting the updated OpenAPI document. The existing ignored
 Git-source E2E fixture's required helper list was updated; that ignored test was
 not counted among the executed suites.
+
+## Fresh review logging and first-install corrections
+
+The next independent review found that tsnet 1.102.3 writes an authorization URL
+to logtail before invoking the quiet user callback. Its logger uses filch disk
+buffers and an uploader. The production constructor now calls `logtail.Disable()`
+before `Server.Start`. That switch stops new entries; pinned upstream source
+explicitly allows previously buffered entries to drain. Release builds therefore
+also use the official `ts_omit_logtail` tag, replacing both logtail and filch with
+no-op implementations. `tailnet/verify-build.sh` inspects `go version -m` on the
+actual binary and fails if the tag is absent. No existing logs are deleted.
+
+`TestPrivateServerSuppressesNewLogtailEntries` first failed with two writes to
+the real filch buffer and one request to an in-memory HTTP transport. It invokes
+the production constructor followed by real `logtail.NewLogger`, using only a
+synthetic authorization URL and a new temporary directory. It deliberately does
+not rely on `tsnet.Server.Start`: upstream skips logger creation under `go test`.
+With the fix, no entry reaches the buffer or upload sink. The release-tag test
+`TestReleaseLogtailLeavesExistingBuffersUntouched` additionally seeds two synthetic
+old buffers and verifies unchanged bytes and no upload. No account, system
+daemon, network upload, or real node state is involved.
+
+Two exclusive production-only mutations were predicted, applied, checked, and
+restored from byte backups with matching SHA-256 and green reruns:
+
+| Mutation | Complete expected red set (actual matched exactly) |
+| --- | --- |
+| Remove the constructor's `logtail.Disable()` invocation | `TestPrivateServerSuppressesNewLogtailEntries` in the full default Go suite |
+| Remove `-tags=ts_omit_logtail` from the release build | `tailnet/build.sh` artifact tag verification rejects the newly compiled helper |
+
+Records are in `/tmp/neige-tailnet-logging-mutation-jy_6pz3a` and
+`/tmp/neige-tailnet-logging-mutation-wlulpmo1`. The first attempt at the build-tag
+mutation stopped at a harness assertion before building; it restored the file
+and was not counted. The corrected attempt produced the expected failure.
+
+Final relevant checks: `go test -race -p 4 -count=1 ./...` passed all 10 top-level
+tests; `go test -race -tags=ts_omit_logtail -p 4 -count=1 ./...` passed all 11.
+`tailnet/build.sh /tmp/neige-tailnet-logging-artifact/neige-tailnet` built and
+verified the actual static helper, and `--version` returned `neige-tailnet 0.1.0`.
+The first-install runbook now declares Go 1.26.6 and builds the helper before
+packaging; its build/package blocks passed shell syntax, command-order, output
+path, and prerequisite checks. Shell scripts and `git diff --check` passed.
+These changes do not invalidate the earlier Rust, schema, or frontend checks;
+those suites were not rerun. Fresh independent reviews are still required.

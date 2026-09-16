@@ -21,6 +21,7 @@ import (
 
 	"tailscale.com/client/local"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/logtail"
 	"tailscale.com/tsnet"
 )
 
@@ -126,10 +127,7 @@ func run() error {
 	if err = os.Chmod(*control, 0600); err != nil {
 		return err
 	}
-	// Never let tsnet's login URLs or low-level secrets enter service logs.
-	log.SetOutput(io.Discard)
-	quiet := func(string, ...any) {}
-	server := &tsnet.Server{Dir: filepath.Join(*stateDir, "node"), Hostname: *hostname, UserLogf: quiet, Logf: quiet}
+	server := privateTailnetServer(*stateDir, *hostname)
 	if err = server.Start(); err != nil {
 		return err
 	}
@@ -146,6 +144,17 @@ func run() error {
 	service.closeIngress()
 	return nil
 }
+
+func privateTailnetServer(stateDir, hostname string) *tsnet.Server {
+	// Quiet callbacks alone do not stop tsnet's earlier logtail writes. Disable
+	// new entries before Start; release builds also omit logtail/filch entirely
+	// so pre-existing disk buffers cannot be drained by an uploader.
+	logtail.Disable()
+	log.SetOutput(io.Discard)
+	quiet := func(string, ...any) {}
+	return &tsnet.Server{Dir: filepath.Join(stateDir, "node"), Hostname: hostname, UserLogf: quiet, Logf: quiet}
+}
+
 func lockState(dir string) (*os.File, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err

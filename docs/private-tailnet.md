@@ -72,8 +72,14 @@ compatibility. A future tsnet version change requires an explicitly validated
 migration/rollback path; do not swap older binaries against newer state or undo
 a user's logout by restoring a backup.
 
-Build with `tailnet/build.sh` (Go from `tailnet/go.mod`), or `make build`. The alpha
-builder includes the helper and notices. Isolated tests use private Unix/loopback fixtures and
+Build with `tailnet/build.sh` (Go from `tailnet/go.mod`), or `make build`. The build
+omits Tailscale logtail and its disk buffer with `ts_omit_logtail` and verifies the
+tag in the actual binary. This also prevents reading or uploading any existing
+log buffers; it does not delete them. Default development builds disable new
+logtail entries before starting the node, but that runtime switch alone cannot
+prevent older buffered entries from draining. Use the verified release build
+when opening retained node state. The alpha builder includes the helper and
+notices. Isolated tests use private Unix/loopback fixtures and
 fake nodes; actual account sign-in, Tailnet ACL/HTTPS setup, and two-device
 connectivity still require a separately authorized acceptance run.
 

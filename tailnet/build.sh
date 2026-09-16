@@ -8,4 +8,5 @@ helper_pin="$(awk '$1 == "require" && $2 == "tailscale.com" {print $3}' "$root/t
 [[ -n "$helper_pin" && "$helper_pin" == "$mobile_pin" ]] || { echo 'Mobile and helper tsnet versions must match' >&2; exit 1; }
 mkdir -p "$(dirname -- "$output")"
 cd "$root/tailnet"
-CGO_ENABLED=0 GOMAXPROCS="${GOMAXPROCS:-4}" go build -mod=readonly -trimpath -p 4 -o "$output" .
+CGO_ENABLED=0 GOMAXPROCS="${GOMAXPROCS:-4}" go build -mod=readonly -trimpath -tags=ts_omit_logtail -p 4 -o "$output" .
+bash "$root/tailnet/verify-build.sh" "$output"
