@@ -347,7 +347,7 @@ impl ProviderAdapter for TerminalAdapter {
         // the declaration into the ONE scope rendered. Only a Planner open
         // reads the policy: REST terminal cards and task terminals never do.
         let ceiling = if payload.planner_hooks {
-            track_claude_permissions_ceiling_read(&mut **tx, &track_id).await?
+            track_claude_permissions_ceiling_read(tx, &track_id).await?
         } else {
             None
         };
