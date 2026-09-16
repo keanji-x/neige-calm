@@ -38,6 +38,9 @@ pub struct ScreenState {
     /// The program's exit status from `TerminalExited` (#1697): `None`
     /// before the exit and when the runtime does not know the code.
     pub exit_code: Option<i32>,
+    /// When this connection recorded `TerminalExited` (#1709): `None` while
+    /// the program runs. Reported as `exited_at_ms`; no fence reads it.
+    pub exited_at: Option<std::time::SystemTime>,
     pub ack: u64,
     pub refused: u64,
     pub pending: Option<u64>,
@@ -92,6 +95,7 @@ impl ScreenState {
             DaemonMsg::TerminalExited { code, .. } => {
                 self.exited = true;
                 self.exit_code = code;
+                self.exited_at = Some(std::time::SystemTime::now());
             }
             _ => {}
         }
@@ -217,6 +221,7 @@ impl Client {
             available: true,
             exited: false,
             exit_code: None,
+            exited_at: None,
             ack: 0,
             refused: 0,
             pending: None,
@@ -346,6 +351,7 @@ mod tests {
             available: true,
             exited: false,
             exit_code: None,
+            exited_at: None,
             ack: 2,
             refused: 0,
             pending,

@@ -281,14 +281,23 @@ impl TerminalInteraction {
         // started on, otherwise the observation is refused.
         let resolved =
             Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
-        let (control, exited, exit_code) = {
+        let (control, exited, exit_code, exited_at) = {
             let state = client
                 .screen
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
             ensure!(state.available, "terminal observation disconnected");
-            (state.control, state.exited, state.exit_code)
+            (
+                state.control,
+                state.exited,
+                state.exit_code,
+                state.exited_at,
+            )
         };
+        // #1709 — the capture instant, taken before the frame is read (and
+        // before rendering): the wall-clock time `observation_revision`
+        // refers to. Presentation only; no fence reads it.
+        let observed_at = std::time::SystemTime::now();
         let (frame, revision) = client
             .entry
             .handle
@@ -317,7 +326,8 @@ impl TerminalInteraction {
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
-            "text":frame.text,"exited":exited,"exit_code":exit_code,"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
+            "text":frame.text,"exited":exited,"exit_code":exit_code,"observed_at_ms":observation::epoch_ms(observed_at),
+            "exited_at_ms":exited_at.map(observation::epoch_ms),"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
             "previous_observation_revision":previous.map(|prior| prior.revision.to_string()),
             "signals":{"hooks_seen":signals.last_seq > 0,"last_seq":signals.last_seq,
                 "since_previous_observation":signals.signals.iter().map(|signal| signal.to_json()).collect::<Vec<_>>(),

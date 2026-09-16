@@ -182,6 +182,9 @@ releases too) and the call no longer fails on an unconfirmed release; the
 readback still runs. A `claim` on an exited terminal is the binding refusal
 (`controllable: false`), not a wait. Observations also carry `exit_code`
 from the `TerminalExited` frame (null until the exit or when unknown).
+#1709: and two wall-clock facts, ms since the epoch — `observed_at_ms` (the
+capture instant, taken before the frame is read) and `exited_at_ms` (when
+this connection recorded `TerminalExited`; null while the program runs).
 
 #### An exited terminal survives the orphan sweeper (#1701)
 
