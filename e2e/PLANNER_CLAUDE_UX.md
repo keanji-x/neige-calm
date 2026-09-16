@@ -149,7 +149,11 @@ observations whose `signals.hooks_seen` is true; `signals_observed`: total
 observations lacking a `signals` block (older server);
 `signal_repaint_outcomes` (#1628): tally of `wait.repaint.outcome`
 (`already`, `settled`, `none`, `unsettled`, `skipped`) over the signal waits
-that ended on a signal — a missing block (older server) adds nothing. The goals
+that ended on a signal — a missing block (older server) adds nothing;
+`signal_events_observed` (#1704): tally of `signals.since_previous_observation[].event`
+over the same measured observations (`signals_observed` is its total);
+`open_with_permissions` (#1704): `open` calls whose arguments carry
+`claude_permissions` (failed ones included). The goals
 tell the Planner to start Claude with `--settings "$NEIGE_CLAUDE_SETTINGS"`.
 
 #1666 round-trip counters (also in `wait_summary`), read the same way:
