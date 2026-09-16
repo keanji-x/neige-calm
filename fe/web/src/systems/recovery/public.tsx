@@ -49,3 +49,11 @@ export function observeRecoveryLifecycle(owner: Readonly<{
     window.removeEventListener('pagehide', visibility); window.removeEventListener('pageshow', online);
   };
 }
+
+/** Raw platform reachability; consumers must combine it with their own authority.
+ * The subscriber owns these listeners and must release them on disposal. */
+export function observeOnlineStatus(listener: (online: boolean) => void): () => void {
+  const online = () => listener(true); const offline = () => listener(false);
+  window.addEventListener('online', online); window.addEventListener('offline', offline);
+  return () => { window.removeEventListener('online', online); window.removeEventListener('offline', offline); };
+}

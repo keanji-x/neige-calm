@@ -1,0 +1,37 @@
+package io.neigecalm.next
+
+import android.content.Context
+import android.content.SharedPreferences
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class ConnectionProfilesRepairInstrumentationTest {
+  private fun repair(corrupt: (SharedPreferences.Editor) -> Unit) {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    check(context.packageName.endsWith(".instrumented"))
+    val preferences = context.getSharedPreferences("connection-profiles", Context.MODE_PRIVATE)
+    assertTrue(preferences.edit().clear().commit())
+    val profiles = ConnectionProfiles(context)
+    val origin = "https://repair.invalid"
+    profiles.save("ip", origin, false)
+    val oldId = profiles.profileId()
+    val resume = ResumeEntry(context)
+    resume.remember(profiles, ConnectionProfiles.parseDirect(origin), "$origin/next/track/old-profile")
+    assertNotNull(resume.read(profiles))
+    val edit = preferences.edit(); corrupt(edit); assertTrue(edit.commit())
+    assertTrue("Corrupt metadata must not be accepted as an existing profile", runCatching { profiles.read() }.isFailure)
+    profiles.save("ip", origin, false)
+    assertEquals(ConnectionSettings("ip", origin, false), profiles.read())
+    assertTrue(profiles.revision() > 0)
+    java.util.UUID.fromString(profiles.profileId())
+    assertNotEquals("Repair must retire the old profile namespace", oldId, profiles.profileId())
+    assertNull("Repair must not revive the old resume pointer", resume.read(profiles))
+  }
+  @Test fun repairsWrongTypeRevision() = repair { it.putString("config-revision", "broken") }
+  @Test fun repairsWrongTypeProfileId() = repair { it.putInt("profile-id", 7) }
+  @Test fun repairsNonPositiveRevision() = repair { it.putLong("config-revision", -2) }
+}

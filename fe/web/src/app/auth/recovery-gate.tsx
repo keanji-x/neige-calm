@@ -9,6 +9,7 @@ import { observeRecoveryLifecycle, useRecoveryState } from '../../systems/recove
 import { useState } from '../../ui/state/public.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { WEB_COMPAT_VERSION, type ProviderRuntime, type ServerVersionInfo } from '../providers/public.tsx';
+import { coordinateRecoveryQueries } from '../providers/recovery-queries.ts';
 import { runOperation } from '../providers/queries.ts';
 import { clearSessionArtifacts } from './session-gate.tsx';
 import styles from './recovery-presentation.module.css';
@@ -28,10 +29,11 @@ export function RecoveryGate({ children, transport, unauthorized, client, runtim
   const state = useRecoveryState(session.access);
   useEffect(() => {
     const unsubscribe = unauthorized.subscribe(session.unauthorized);
+    const releaseQueries = coordinateRecoveryQueries(session.access, client);
     const unobserve = observeRecoveryLifecycle(session);
     session.start();
-    return () => { unsubscribe(); unobserve(); session.stop(); };
-  }, [session, unauthorized]);
+    return () => { unsubscribe(); unobserve(); session.stop(); releaseQueries(); };
+  }, [client, session, unauthorized]);
   const hasScope = session.identity !== null && session.version !== null && transport.recovery !== undefined;
   const privateVisible = hasScope && state.phase !== 'login' && state.phase !== 'update';
   const eventsAllowed = privateVisible && ['connected', 'syncing'].includes(state.phase);

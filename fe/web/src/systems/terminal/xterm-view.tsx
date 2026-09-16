@@ -578,7 +578,10 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         location.host
       }/api/terminals/${encodeURIComponent(terminalId)}`;
       const ws = new WebSocket(wsUrl);
-      const handshakeTimer = __NC_BUNDLED__ ? setTimeout(() => { if (current()) ws.close(); }, 15_000) : null;
+      let handshakeTimedOut = false;
+      const handshakeTimer = __NC_BUNDLED__ ? setTimeout(() => {
+        if (current()) { handshakeTimedOut = true; ws.close(); }
+      }, 15_000) : null;
 
       // #177 — queue frames produced before the WS finishes its handshake.
       // The theme-effect (sibling below) can fire between `new WebSocket(…)`
@@ -885,6 +888,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
             if (awaitingOwner) {
               awaitingOwner = false;
               connectionReady = true;
+              automaticAllowed = true;
+              retryDelay = 500;
               term.options.disableStdin = false;
               setStatus('connected');
               setProtocolError(null);
@@ -950,7 +955,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         });
         const isChildExitClose =
           e.code === 1000 && e.reason === 'child-exited';
-        if (isChildExitClose || ![1001, 1006, 1011].includes(e.code)) automaticAllowed = false;
+        const transientClose = [1001, 1006, 1011].includes(e.code)
+          || (handshakeTimedOut && [1000, 1005].includes(e.code));
+        if (isChildExitClose || !transientClose) automaticAllowed = false;
         if (__NC_BUNDLED__ && automaticAllowed && current() && retryTimer === null) {
           retryTimer = setTimeout(() => { retryTimer = null; if (automaticAllowed && permitted()) reconnect(); }, retryDelay * (0.75 + Math.random() * 0.5));
           retryDelay = Math.min(8000, retryDelay * 2);
@@ -1167,9 +1174,15 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       } else if (!wasPermitted && automaticAllowed) reconnect();
       wasPermitted = now;
     });
-    reconnectRef.current = reconnect;
+    const manualReconnect = () => {
+      if (!permitted()) return;
+      automaticAllowed = true; retryDelay = 500;
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      retryTimer = null; reconnect();
+    };
+    reconnectRef.current = manualReconnect;
     return () => {
-      if (reconnectRef.current === reconnect) reconnectRef.current = null;
+      if (reconnectRef.current === manualReconnect) reconnectRef.current = null;
       unsubscribeRecovery?.();
       if (retryTimer !== null) clearTimeout(retryTimer);
       disconnect();

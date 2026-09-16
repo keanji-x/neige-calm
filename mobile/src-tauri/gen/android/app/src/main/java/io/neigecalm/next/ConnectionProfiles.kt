@@ -19,29 +19,41 @@ internal class ConnectionProfiles(context: Context) {
     if (!preferences.contains("schema-version")) check(preferences.edit().putInt("schema-version", 1)
       .putString("profile-id", java.util.UUID.randomUUID().toString()).putLong("config-revision", 1).commit()) { "无法保存连接配置" }
   }
-  fun profileId(): String = requireNotNull(preferences.getString("profile-id", null))
-  fun revision(): Long = preferences.getLong("config-revision", 0).also { require(it > 0) }
-  fun read(): ConnectionSettings {
+  private data class Identity(val id: String, val revision: Long)
+  private fun identity(): Identity {
     require(preferences.getInt("schema-version", 0) == 1) { "连接配置版本无效，请重新配置" }
-    val result = readSettings()
+    val id = requireNotNull(preferences.getString("profile-id", null))
+    require(java.util.UUID.fromString(id).toString() == id) { "连接配置身份无效，请重新配置" }
+    val revision = preferences.getLong("config-revision", 0)
+    require(revision > 0) { "连接配置版本无效，请重新配置" }
+    return Identity(id, revision)
+  }
+  fun profileId(): String = identity().id
+  fun revision(): Long = identity().revision
+  fun read(): ConnectionSettings { identity(); return readSettings() }
+  private fun readSettings(): ConnectionSettings {
+    val result = ConnectionSettings(preferences.getString("mode", "tailscale")!!,
+      preferences.getString("ip-origin", "")!!, preferences.getBoolean("tailscale-enabled", legacyTailIdentity))
     require(result.mode in listOf("ip", "tailscale"))
     if (result.ipOrigin.isNotEmpty()) require(parseDirect(result.ipOrigin).value == result.ipOrigin)
-    profileId(); revision()
     return result
   }
-  private fun readSettings() = ConnectionSettings(preferences.getString("mode", "tailscale")!!,
-    preferences.getString("ip-origin", "")!!, preferences.getBoolean("tailscale-enabled", legacyTailIdentity))
   fun save(mode: String, ipOrigin: String, tailscaleEnabled: Boolean): ConnectionSettings {
     require(mode in listOf("ip", "tailscale")) { "请选择 IP 或 Tailscale" }
     val origin = if (ipOrigin.isBlank()) "" else parseDirect(ipOrigin.trim()).value
-    val old = runCatching { read() }.getOrNull()
-    val changed = old != ConnectionSettings(mode, origin, tailscaleEnabled)
+    val settings = ConnectionSettings(mode, origin, tailscaleEnabled)
+    // Read untrusted metadata once. An explicit save repairs invalid identity
+    // atomically with the settings, so an old ResumeEntry cannot become valid.
+    val previous = runCatching { identity() }.getOrNull()
+    val changed = runCatching { readSettings() }.getOrNull() != settings
+    val next = if (previous == null || (changed && previous.revision == Long.MAX_VALUE))
+      Identity(java.util.UUID.randomUUID().toString(), 1)
+    else Identity(previous.id, previous.revision + if (changed) 1 else 0)
     check(preferences.edit().putInt("schema-version", 1)
-      .putString("profile-id", preferences.getString("profile-id", null) ?: java.util.UUID.randomUUID().toString())
-      .putLong("config-revision", preferences.getLong("config-revision", 0) + if (changed) 1 else 0)
+      .putString("profile-id", next.id).putLong("config-revision", next.revision)
       .putString("mode", mode).putString("ip-origin", origin)
       .putBoolean("tailscale-enabled", tailscaleEnabled).commit()) { "保存连接配置失败，请重试" }
-    return ConnectionSettings(mode, origin, tailscaleEnabled)
+    return settings
   }
   companion object {
     fun literalHttpHost(host: String): Boolean {

@@ -85,6 +85,7 @@ export class RecoverySession {
     this.cancel(); this.access.invalidate('recovering');
     const generation = this.access.read().generation;
     const controller = new AbortController(); this.controller = controller;
+    let identityAccepted = false;
     const current = () => !this.stopped && !controller.signal.aborted && this.access.read().generation === generation;
     try {
       const identity = await this.deadline(this.ports.identity, controller);
@@ -96,6 +97,9 @@ export class RecoverySession {
         this.ports.storage.removeItem(logoutMarkerKey());
         this.marker = null;
       }
+      // Explicit proof only gates identity. Once accepted, later availability
+      // failures return to ordinary recovery without reviving the logout block.
+      identityAccepted = true;
       const version = await this.deadline(this.ports.version, controller);
       if (!current()) return null;
       if (version.minWebCompatVersion > this.ports.compatibleVersion || version.webCompatVersion < this.ports.compatibleVersion) {
@@ -126,7 +130,7 @@ export class RecoverySession {
       const unauthorized = typeof error === 'object' && error !== null && 'failure' in error &&
         typeof error.failure === 'object' && error.failure !== null && 'kind' in error.failure && error.failure.kind === 'unauthorized';
       if (unauthorized) { this.unauthorized(); return null; }
-      if (explicit || this.blocked()) {
+      if ((explicit && !identityAccepted) || this.blocked()) {
         this.access.change('login', error instanceof Error ? error.message : '验证未成功，请重试。'); return null;
       }
       const delay = recoveryDelay(this.attempt++, Math.random());

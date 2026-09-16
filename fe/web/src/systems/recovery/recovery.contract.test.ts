@@ -98,3 +98,19 @@ it('a response invalidated after transport completion is rejected before its 401
     expect(result.status).toBe('failed'); expect(listener).not.toHaveBeenCalled();
   }
 });
+
+it.each(['fails', 'times out'] as const)('a verified fresh identity keeps normal recovery when the following version request %s', async (failure) => {
+  const h = harness(); h.session.start(); await vi.waitFor(() => expect(h.access.read().phase).toBe('syncing'));
+  h.ports.online.mockReturnValue(false); await h.session.signOut(); h.ports.online.mockReturnValue(true);
+  h.ports.identity.mockResolvedValue({ ...identity, sessionId: 'fresh-session' });
+  if (failure === 'fails') h.ports.version.mockRejectedValueOnce(new Error('version temporarily unreachable'));
+  else { vi.useFakeTimers(); h.ports.version.mockImplementationOnce(() => new Promise(() => {})); }
+  const verifying = h.session.verifyNewSession();
+  if (failure === 'times out') await vi.advanceTimersByTimeAsync(8000);
+  await verifying;
+  vi.useRealTimers();
+  expect(h.session.blocked()).toBe(false); expect(h.access.read().phase).toBe('offline');
+  h.session.retry(); await vi.waitFor(() => expect(h.access.read().phase).toBe('syncing'));
+  h.session.events('connected'); expect(h.session.identity?.sessionId).toBe('fresh-session');
+  expect(() => h.access.capture()).not.toThrow(); h.session.stop();
+});

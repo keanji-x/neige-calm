@@ -9,7 +9,7 @@ completion of the separately delivered host service or one-scan enrollment work.
   pending. It failed because the saved Track had no local navigation/frame, then
   passed after introducing the presentation gate. Business routes and version
   requests remain gated behind identity validation.
-- The final local FE suite passed 3,301 tests with one pre-existing skipped test.
+- The `b33a254dd` checkpoint FE suite passed 3,301 tests with one pre-existing skipped test.
   Complete lint, architecture, ownership, and TypeScript checks passed. Bundled
   builds use the real frontend generator and declare every packaged asset.
 - Real Chromium tests mount the production application/router and event driver
@@ -107,7 +107,61 @@ Seed, normal-app, and check PIDs are recorded; the check PID must differ from bo
 prior PIDs, with the same saved profile identity, configuration revision, and
 route. The check stage does not reseed them.
 
-The complete external-driver result and final rebuilt APK checks remain with the
-coordinating task at this checkpoint. API 26, physical Wi-Fi/cellular switching,
-and long-idle real terminal/server coverage must be reported separately rather
-than inferred from Chromium network fixtures.
+The coordinating task ran the full driver successfully on API 35:
+`/tmp/neige-1712-device/process-recovery-v6/result.json`. All four instrumentation
+stages ended with complete `OK (1 test)` and code `-1`. Seed PID 11348 was followed
+by ordinary live app PID 11732, which disappeared after explicit force-stop;
+check PID 12068 preserved the saved profile, revision, and route. This run used
+app `07a7a6676ecd752434f6da040406f9beb43376c1f90f4a985def6f892c636181`
+and test `97e703e1ad1a8eb07eeb99666ffeb0a11c7beea071a1c36315a462ee521d486e`.
+It does not claim to include the later review corrections below. Final rebuilt
+APK acceptance remains with the coordinator. API 26, physical Wi-Fi/cellular
+switching, and long-idle real terminal/server coverage remain separate checks.
+
+## Corrections from independent review
+
+Both reviews of `b33a254dd` requested changes. Production regressions confirmed:
+
+- A successful explicit identity verification followed by failed version lookup
+  returned to login after clearing its logout marker. It now retries normally
+  after proof acceptance; failed identity proof still cannot do so. Both a rejected
+  request and the actual eight-second deadline are covered.
+- Terminal refusal followed by successful manual reconnect, and recoverable
+  `NotOwner` followed by successful owner claim, stranded automatic recovery on
+  the next pause. A successful new attach or valid owner recovery opens a fresh
+  retry episode. Fatal/exit ownership callbacks remain unable to revive it.
+- The terminal's local ServerHello deadline closed an OPEN socket normally and
+  treated that close as permanent. Local deadline closes 1000 and 1005 now retry
+  the same terminal without replaying input or pre-handshake resize frames.
+- Wrong-type profile ID/revision and negative revision could not be repaired by
+  Save. The actual API 35 runner first failed all three cases on the old app,
+  then passed all three on the Kotlin-only repair app using the exact same test
+  APK `e0fb1a21e2ed66154db2df54c0d6fde119f40cec094a5083c2dd32de13f73d7d`.
+  The valid metadata or replacement UUID/revision is committed atomically with
+  settings, and an old saved route cannot rebind to repaired metadata. Evidence:
+  `/tmp/neige-1712-device/profile-repair-{red-v2,green}.txt`.
+
+Additional production-router tests reproduced retained query data changing to
+an error during recovery. Query reads now cancel to prior data on generation
+change and pause until both platform reachability and the recovery gate permit
+them. A genuine browser online event registered after the lifecycle listener
+reproduced an SDK-listener bypass; the bundled coordinator now owns that event
+source. Both registration orders, StrictMode, listener cleanup, and a subsequent
+ordinary browser client's events are covered. Mutations retain immediate intent
+admission and `networkMode: always`; no mutation is resumed or replayed.
+
+The terminal browser fixture loads the actual lazy xterm module during setup.
+The first socket assertion previously also timed cold Vite module compilation,
+which twice exceeded its one-second wait before the terminal effect had mounted;
+loading the real module before the behavioral assertion removes that setup race
+without changing the production entry or its assertions.
+
+Focused evidence: `/tmp/1712-review-{session-red,terminal-red,focused-final}.log`,
+`/tmp/1712-online-owner-red.log`, and `/tmp/1712-review-browser-final.log`.
+
+
+Two further single-factor mutations independently removed the recovery condition
+and the platform condition from Query's online permission. Their complete red
+sets matched the predictions (three and one tests respectively); after each
+byte-for-byte restoration all three tests passed. Evidence is retained in
+`/tmp/1712-query-mutations/evidence.json`.
