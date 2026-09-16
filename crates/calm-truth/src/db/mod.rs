@@ -98,6 +98,7 @@ use crate::session_repo::SessionRepo;
 use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
 use async_trait::async_trait;
+use calm_types::claude_permissions::ClaudePermissionsScope;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 use futures::future::BoxFuture;
 use sqlx::{Sqlite, SqlitePool, Transaction};
@@ -332,6 +333,16 @@ pub trait RepoRead: Send + Sync + 'static {
     /// would be a second column list to keep in step with `TRACK_SELECT_COLUMNS`.
     async fn track_get_launchpad(&self) -> Result<Option<Track>>;
     async fn track_detail(&self, id: &str) -> Result<Option<TrackDetail>>;
+    /// #1704 S2 — the Claude Code permission policy that applies to `id`:
+    /// its tree ROOT's `claude_permissions_policy` (a child row is always
+    /// NULL), `None` when the root carries none. Fails closed on an
+    /// unresolvable root (`Conflict`) or an undecodable stored value; see
+    /// `sqlite::track_claude_permissions_ceiling_read`, which the terminal
+    /// adapter also calls inside its write transaction.
+    async fn track_claude_permissions_ceiling(
+        &self,
+        id: &str,
+    ) -> Result<Option<ClaudePermissionsScope>>;
     /// Issue #250 PR 2 — calendar window query.
     ///
     /// Returns every track whose lifespan overlaps the half-open

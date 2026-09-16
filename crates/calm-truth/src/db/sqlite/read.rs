@@ -13,6 +13,7 @@ use crate::ids::{AreaId, CardId, TrackId};
 use crate::model::*;
 use crate::session_projection_repo::WorkerSessionKind;
 use crate::track_area_cache::TrackAreaCache;
+use calm_types::claude_permissions::ClaudePermissionsScope;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 
 /// Row shape of the single-statement `track_detail` read (#1016).
@@ -211,6 +212,17 @@ impl RepoRead for SqlxRepo {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(Track::from))
+    }
+
+    async fn track_claude_permissions_ceiling(
+        &self,
+        id: &str,
+    ) -> Result<Option<ClaudePermissionsScope>> {
+        // One pooled connection, no transaction: two autocommit reads of a
+        // column only a user PATCH writes (the in-tx re-check in the terminal
+        // adapter is what makes the open's verdict exact).
+        let mut conn = self.pool.acquire().await?;
+        super::track_claude_permissions_ceiling_read(&mut conn, id).await
     }
 
     async fn tracks_window(

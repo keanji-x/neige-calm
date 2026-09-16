@@ -301,6 +301,9 @@ pub async fn track_create_tx(
         recipe_id: recipe_origin.map(|o| o.recipe_id.clone()),
         recipe_revision: recipe_origin.map(|o| o.revision),
         workspace,
+        // #1704 S2 — every track-create path stamps NULL: the policy is a
+        // user PATCH on a tree root, never inherited by a child row.
+        claude_permissions_policy: None,
         created_at: now,
         updated_at: now,
     })
@@ -378,12 +381,39 @@ pub async fn track_update_tx(
         }
         w.lifecycle = new_lifecycle;
     }
+    // #1704 S2 — the Claude Code permission policy is tree-root-only, and the
+    // rule is enforced HERE for the same reason as `tree_task_budget` below:
+    // this in-tx helper is the single writer every entry point shares. Every
+    // ceiling read resolves the tree root, so a value on a child row would be
+    // a second, unreachable source of truth.
+    if let Some(policy) = p.claude_permissions_policy {
+        let parent: Option<(String,)> = sqlx::query_as(
+            "SELECT parent_track_id FROM tracks WHERE id = ?1 AND parent_track_id IS NOT NULL",
+        )
+        .bind(w.id.as_str())
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some((parent_track_id,)) = parent {
+            return Err(CalmError::Conflict(format!(
+                "claude_permissions_policy is tree-root-only; track {} is a child of \
+                 {parent_track_id} — set the policy on its root track instead",
+                w.id.as_str()
+            )));
+        }
+        w.claude_permissions_policy = policy;
+    }
     w.updated_at = now_ms();
+    let claude_permissions_policy = w
+        .claude_permissions_policy
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
 
     sqlx::query(
         r#"UPDATE tracks
            SET title = ?1, sort = ?2, archived_at = ?3, pinned_at = ?4,
-               lifecycle = ?5, terminal_at = ?6, updated_at = ?7
+               lifecycle = ?5, terminal_at = ?6, updated_at = ?7,
+               claude_permissions_policy = ?9
            WHERE id = ?8"#,
     )
     .bind(&w.title)
@@ -394,6 +424,7 @@ pub async fn track_update_tx(
     .bind(w.terminal_at)
     .bind(w.updated_at)
     .bind(w.id.as_str())
+    .bind(claude_permissions_policy)
     .execute(&mut **tx)
     .await?;
 
