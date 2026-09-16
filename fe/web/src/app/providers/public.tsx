@@ -6,6 +6,7 @@ import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { BundledConnectionNotice } from '../auth/bundled-connection.tsx';
+import { ReadReceiptScopeProvider } from './ui-preferences.tsx';
 import styles from './preflight-status.module.css';
 
 /**
@@ -31,7 +32,7 @@ import styles from './preflight-status.module.css';
  * restored entry as sent; the curtain is what stops it.
  */
 export const WEB_COMPAT_VERSION = 28;
-export type ServerVersionInfo = Readonly<{ webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
+export type ServerVersionInfo = Readonly<{ conversationCreateModel?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;
   reload(): void;
@@ -61,7 +62,7 @@ function safeRead(runtime: ProviderRuntime, key: string): string | null { try { 
 function safeWrite(runtime: ProviderRuntime, key: string, value: string): void { try { runtime.storage.setItem(key, value); } catch { /* no-op */ } }
 function safeDelete(runtime: ProviderRuntime): void { try { runtime.deleteDatabase(runtime.idbDatabaseName); } catch { /* no-op */ } }
 
-export function ServerCompatGate({ children, runtime, client, renderEventBridge, cursorStore }: {
+export function ServerCompatGate({ children: routeContent, runtime, client, renderEventBridge, cursorStore }: {
   children: ReactNode; runtime: ProviderRuntime; client: QueryClient;
   renderEventBridge?: (server: ServerVersionInfo) => ReactNode; cursorStore: Pick<SyncCursorPort, 'clear'>;
 }) {
@@ -83,6 +84,9 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge,
   const id = query.data?.dbInstanceId;
   const verdict = id === undefined ? 'pending'
     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';
+  // Route preferences consume the verdict; the event bridge keeps its own
+  // independent guard and lifetime below.
+  const children = <ReadReceiptScopeProvider id={verdict === 'same' ? id! : null}>{routeContent}</ReadReceiptScopeProvider>;
   if (busted) return __NC_BUNDLED__ ? <BundledConnectionNotice kind="checking" /> : null;
   if (__NC_BUNDLED__ && query.data === undefined) return <BundledConnectionNotice kind={query.isError || query.fetchStatus === 'paused' ? 'unreachable' : 'checking'}>
     {(query.isError || query.fetchStatus === 'paused') && <button type="button" disabled={query.isFetching} onClick={() => { void query.refetch(); }}>重试连接</button>}

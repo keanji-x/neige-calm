@@ -309,6 +309,7 @@ golden_test!(
     Event::CardAdded(Card {
         payload: json!({"foo": "bar"}),
         runtime: Some(CardRuntimeView {
+            updated_at_ms: None, // Preserve the legacy snapshot's frozen wire shape.
             worker_session_id: "rt-01".into(),
             kind: WorkerSessionKind::CodexCard,
             status: WorkerSessionState::Running,
@@ -338,6 +339,7 @@ golden_test!(
         sort: 2.5,
         payload: json!({"n": 1}),
         runtime: Some(CardRuntimeView {
+            updated_at_ms: None, // Preserve the legacy snapshot's frozen wire shape.
             worker_session_id: "rt-02".into(),
             kind: WorkerSessionKind::Terminal,
             status: WorkerSessionState::Exited,

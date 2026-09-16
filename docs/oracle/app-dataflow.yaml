@@ -198,7 +198,7 @@
   why: >
     `calm.plan.cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
     缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
-  source: fe/core/events/invalidation-plan.ts:353-355
+  source: fe/core/events/invalidation-plan.ts:356-358
   authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:243-249
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -218,7 +218,7 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 track。
     没有 track 被加载时，用户根本看不到那个 track 的 card overlay 变化，等下次 track detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:317-336
+  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:320-339
   authoritative_test: fe/web/src/app/events/track-lookup.test.ts:7-17
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
@@ -277,7 +277,7 @@
     `['today-launchpad']` 是空态判据被读出的键；缺任一个，点了「写今日进度」页面就
     不动。`PolicyMap` 只对 event kind 穷举、不对 query key 穷举，所以删掉任一行都不会
     有 golden 变红 —— 只有 authoritative_test 里那份逐字键表拦得住。
-  source: fe/core/events/invalidation-plan.ts:313-316
+  source: fe/core/events/invalidation-plan.ts:316-319
   authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:24-36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -740,7 +740,7 @@
   statement: harness.item.added 必须失效同 card 的 harness-items；harness.transcript.cleared 必须同时失效同 card 的
     harness-items 与 planner-run。applyEventEffects 必须把这些计划键映射为现行查询键，不能丢弃。
   why: 转录新增与清空必须刷新可见投影。旧界面的本地 seq 状态实现已退役；新版由 core 计划和 app 查询适配器共同履行此约束。
-  source: fe/core/events/invalidation-plan.ts:247-278 ; fe/web/src/app/events/query-invalidation-adapter.ts:30-134
+  source: fe/core/events/invalidation-plan.ts:247-281 ; fe/web/src/app/events/query-invalidation-adapter.ts:30-134
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:286-316
   owner_slice: app/events-glue/invalidation
   intentional_omission: false

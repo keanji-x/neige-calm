@@ -1,3 +1,4 @@
+import { ListText } from '../list-typography/public.tsx';
 import type { ReactElement, ReactNode } from 'react';
 
 import styles from './panel-card.module.css';
@@ -50,10 +51,10 @@ export function PanelModule({ title, action, children, moduleMarker, titleFieldM
       {...(moduleMarker === undefined ? {} : { 'data-nc-module': moduleMarker })}
     >
       <div className={styles.head}>
-        <h2
+        <ListText as="h2" tone="section"
           className={styles.title}
           {...(titleFieldMarker === undefined ? {} : { 'data-nc-field': titleFieldMarker })}
-        >{title}</h2>
+        >{title}</ListText>
         {action}
       </div>
       <div className={styles.body}>{children}</div>

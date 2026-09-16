@@ -63,11 +63,9 @@ it('runs one immutable intent through the real goal dialog, navigation and repor
   const mount = () => render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);
   await page.viewport(1080, 800);
   const view = mount();
-  await expect.element(page.getByRole('button', { name: 'Run independent task', exact: true })).toBeVisible();
-  const entry = page.getByRole('button', { name: 'Run independent task', exact: true }).element();
-  const label = Array.from(entry.querySelectorAll('span')).reverse().find((span) => span.textContent === 'Run independent task')!;
-  expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
-  await page.getByRole('button', { name: 'Run independent task', exact: true }).click();
+  await page.getByRole('button', { name: 'Track actions for Independent work' }).click();
+  await expect.element(page.getByRole('button', { name: 'Run independent task', exact: true })).not.toBeInTheDocument();
+  await page.getByRole('menuitem', { name: 'Run independent task', exact: true }).click();
   await expect.element(page.getByText('Starting this task also starts the Track. Other ready tasks in this Track may run.')).toBeVisible();
   await page.getByRole('textbox', { name: 'Goal' }).fill('Explain the moon.');
   await page.getByRole('button', { name: 'Start task', exact: true }).dblClick();
@@ -77,7 +75,8 @@ it('runs one immutable intent through the real goal dialog, navigation and repor
   view.unmount();
   card.payload.docRev = 99;
   mount();
-  await page.getByRole('button', { name: 'Run independent task', exact: true }).click();
+  await page.getByRole('button', { name: 'Track actions for Independent work' }).click();
+  await page.getByRole('menuitem', { name: 'Run independent task', exact: true }).click();
   await expect.element(page.getByRole('textbox', { name: 'Goal' })).toHaveValue('Explain the moon.');
   await page.getByRole('button', { name: 'Retry same request' }).click();
   await expect.element(page.getByText('Current attempt 1 · Running')).toBeVisible();

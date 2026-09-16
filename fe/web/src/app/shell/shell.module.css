@@ -171,7 +171,7 @@
     /* The only inline padding in the rail. A section that adds a second layer
        would cut the usable width from 180 to 168 and flatten the asymmetric
        gutter that does most of the work of separating rail from main. */
-    padding-inline: var(--space-5);
+    padding-inline: var(--space-6);
 
     /* No hairline. The surface step alone is the boundary — §6.5's ladder
        stops at its first satisfied rung, and step ③ (a different functional
@@ -382,30 +382,30 @@
   .areaGroup {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: 0;
   }
 
   .sectionRows,
   .trackList {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: 0;
   }
 
   .areaGroups {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: 0;
   }
 
   .sectionHead {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    block-size: var(--row-h-sm);
+    block-size: var(--row-h);
   }
 
-  /* §6.1: "标签占一个 --row-h-sm 槽". Only the Areas label used to — it
+  /* Module labels use the same --row-h band on both side panels. Only the Areas label used to — it
      inherited the slot from `.sectionHead`, which needs the height for its 28px
      `+`. The other two were bare 11px boxes, which is why the same rank of
      label sat at two different distances above its own rows.
@@ -418,13 +418,7 @@
   .sectionTitle {
     display: flex;
     align-items: center;
-    block-size: var(--row-h-sm);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-semibold);
-    line-height: var(--leading-none);
-    letter-spacing: var(--tracking-wider);
-    color: var(--text-3);
-    text-transform: uppercase;
+    block-size: var(--row-h);
   }
 
   /* A section action has no row to be discovered from, so it is always visible
@@ -467,8 +461,8 @@
     grid-template-columns: minmax(0, 1fr);
     align-items: center;
 
-    /* The disclosure shares the Track row's 24px slot. */
-    min-block-size: var(--row-h-sm);
+    /* The disclosure shares the Track row's 28px slot. */
+    min-block-size: var(--row-h);
     padding-block: 0;
 
     /* Leading: one control gutter for the chevron (4 + 20 + 4). Trailing: two,
@@ -478,7 +472,6 @@
     padding-inline:
       calc(var(--space-2) + var(--control-h-sm) + var(--space-2))
       calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
-    border: 1px solid transparent;
     border-radius: var(--radius-sm);
     text-align: start;
     cursor: pointer;
@@ -514,48 +507,18 @@
     rotate: 90deg;
   }
 
-  /*
-   * Same size as its Tracks, same weight — **tone is the only thing that
-   * demotes it**. The row remains a disclosure; it is not a Track destination.
-   *
-   * Two rounds got this wrong in opposite directions. First 12.5/500/--text-2:
-   * heavier weight saying "more important", lighter tone saying "less", and
-   * §3.1 ranks weight above tone with no rule for which wins — a net rank that
-   * is genuinely undefined is what "别扭" was. Then 11/600/--text-3 spent
-   * three channels to say one thing.
-   *
-   * What actually carries the hierarchy now is everything that is free (§3.2
-   * rule 6 — 位置是免费通道，先用它): the disclosure chevron this row alone
-   * owns, the even 2px cadence around it, and the status column every Track
-   * fills and no Area does. Type
-   * only has to stay out of the way, so it spends one step of tone and nothing
-   * else (§3.2 rule 7 — 降低优于抬高).
-   */
+  /* Areas and inventory status groups share one 13px medium text role.
+     Icon slots and the shared group text role establish hierarchy without extra indent. */
   .areaName {
     min-inline-size: 0;
     overflow: hidden;
-    font-size: var(--text-base);
-    font-weight: var(--weight-normal);
-    /* --leading-tight, never --leading-none, on any clipped text: this element
-       carries `overflow: hidden` for its ellipsis, and `--leading-none` makes
-       the line box exactly the font size (12.5px) while the glyphs need 14 —
-       so the box clips 1.5px, and what it takes is the ascender and the
-       descender. The `g` in "ledger-service" was losing the bottom of its tail.
-       `--leading-none` is for boxes whose height is set by something else (icon
-       buttons, badges), not for a line of prose that clips itself. */
-    line-height: var(--leading-tight);
-    /* The Area-only mix moves one small step toward the rail while retaining
-       AA body contrast in both themes (4.59:1 light, 8.32:1 dark in Chromium).
-       `--text-4` is decorative/disabled-only at ~2.2:1 and may not carry this
-       readable label. Hover returns to the canonical muted text token. */
-    color: color-mix(in oklab, var(--text-3) 94%, var(--surface-rail));
     white-space: nowrap;
     text-overflow: ellipsis;
   }
 
   .areaRow:hover .areaName,
   .areaRow:focus-visible .areaName {
-    color: var(--text-3);
+    color: var(--text);
   }
 
   /*

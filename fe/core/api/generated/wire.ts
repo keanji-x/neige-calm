@@ -115,7 +115,7 @@ export type CardRole = "worker" | "planner" | "reportcard" | "assistant";
  * result. Future cleanup (#581 item 4) will remove the legacy payload-key
  * projection; this typed view is the forward-compatible reader path.
  */
-export type CardRuntimeView = { worker_session_id: string, kind: WorkerSessionKind, status: WorkerSessionState, provider?: AgentProvider, terminal_id?: string, thread_id?: string, session_id?: string, source?: string, thread_status?: string, };
+export type CardRuntimeView = { worker_session_id: string, kind: WorkerSessionKind, status: WorkerSessionState, updated_at_ms?: number, provider?: AgentProvider, terminal_id?: string, thread_id?: string, session_id?: string, source?: string, thread_status?: string, };
 
 /**
  * Per-channel verdict recorded on a `review.round`.

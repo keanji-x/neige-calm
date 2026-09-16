@@ -178,38 +178,7 @@ function rowModule(view: TrackPageView, key: RowModuleView['key']): RowModuleVie
 }
 
 function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
-  if (tasks.length === 0) return null;
-  let active = 0;
-  let queued = 0;
-  let waiting = 0;
-  let failed = 0;
-  let canceled = 0;
-  let done = 0;
-  for (const task of tasks) {
-    const status = task.execution?.status ?? task.status;
-    const pendingReason = task.execution === undefined ? task.pendingReason : null;
-    if (status === 'dispatched' || status === 'running' || status === 'verifying') {
-      active += 1;
-    } else if (status === 'failed') {
-      failed += 1;
-    } else if (status === 'done') {
-      done += 1;
-    } else if (status === 'canceled') {
-      canceled += 1;
-    } else if (pendingReason?.kind === 'budgetQueued') {
-      queued += 1;
-    } else if (status === 'pending' || status === 'awaiting_projection' || status === 'awaiting_refresh' || pendingReason !== null) {
-      waiting += 1;
-    }
-  }
-  const parts: string[] = [];
-  if (active > 0) parts.push(`${active} active`);
-  if (failed > 0) parts.push(`${failed} failed`);
-  if (queued > 0) parts.push(`${queued} queued`);
-  if (waiting > 0) parts.push(`${waiting} waiting`);
-  if (canceled > 0) parts.push(`${canceled} canceled`);
-  if (done > 0) parts.push(`${done} done`);
-  return parts.length === 0 ? null : parts.join(' · ');
+  return tasks.length === 0 ? null : String(tasks.length);
 }
 
 export function TrackPage({
@@ -528,8 +497,6 @@ export function TrackPage({
           </>
         }
         actions={(
-          <>
-          {onCreateTask !== undefined && <span title={taskUnavailable ?? undefined}><AstryxButton variant="ghost" size="sm" label="Run independent task" isDisabled={taskUnavailable !== null} onClick={onCreateTask} /></span>}
           <span className={styles.headerActions}>
             <AstryxDropdownMenu
               button={{
@@ -551,7 +518,6 @@ export function TrackPage({
               }}
             />
           </span>
-          </>
         )}
         /*
          * No identity row — `--header-h` is 62 here now, not 92.

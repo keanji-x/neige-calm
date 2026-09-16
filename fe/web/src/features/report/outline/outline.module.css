@@ -1,164 +1,28 @@
 @layer features {
-  /* One compact rail, four pixels before the report's reading edge. The
-     document keeps owning the margin; this navigator borrows only a dot-wide
-     strip of it. */
   .rail {
-    --outline-pitch: var(--row-h-sm);
-    --outline-pitch-aimed: var(--control-h);
-    --outline-dot: 4px;
-    --outline-dot-aimed: var(--dot-md);
-    --outline-track-max: 20rem;
-    --outline-ink: oklch(58% 0.01 250);
+    --nc-rail-preview-max-inline-size: min(22rem, var(--document-measure, var(--measure-prose)));
 
     position: absolute;
     inset-block: 0;
-    inset-inline-start: max(
-      0px,
-      calc(var(--document-start) - var(--control-h) - var(--space-2))
-    );
+    inset-inline-start: max(0px, calc(var(--document-start) - var(--control-h) - var(--space-2)));
     inline-size: var(--control-h);
     pointer-events: none;
   }
-
-  [data-theme="dark"] .rail {
-    --outline-ink: oklch(56% 0.012 245);
-  }
-
-  /* The sticky box is centred in the viewport. The scrollport inside it owns
-     the 320px cap, so a hundred-section report keeps its first and last button
-     reachable instead of translating both beyond the screen. The preview is a
-     sibling of that scrollport and therefore is not clipped by it. */
   .viewport {
     position: sticky;
     inset-block-start: 50vh;
+    block-size: 0;
+  }
+  .navigator {
+    block-size: min(320px, calc(100dvh - var(--header-band) - var(--header-h) - var(--space-10) * 2));
     inline-size: var(--control-h);
     translate: 0 -50%;
-    pointer-events: none;
-  }
-
-  .track {
-    max-block-size: min(
-      var(--outline-track-max),
-      calc(100dvh - var(--header-band) - var(--header-h) - var(--space-10) * 2)
-    );
-    overflow: auto;
-    overflow-anchor: none;
-    scrollbar-width: none;
     pointer-events: auto;
   }
-
-  .list {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .row {
-    position: relative;
-    display: grid;
-    place-items: center;
-    inline-size: var(--control-h);
-    block-size: var(--outline-pitch);
-    min-block-size: var(--outline-pitch);
-    padding: 0;
-    border-radius: var(--radius-sm);
-    color: var(--text-3);
-    cursor: pointer;
-  }
-
-  .row:hover,
-  .row:focus-visible {
-    block-size: var(--outline-pitch-aimed);
-    color: var(--text);
-  }
-
-  .row:focus-visible {
-    outline-offset: -2px;
-  }
-
-  /* The label remains in the button for its accessible name and textContent,
-     but the visual copy is the unclipped `.preview` sibling below. */
-  .text {
-    position: absolute;
-    inline-size: 1px;
-    block-size: 1px;
-    overflow: hidden;
-    margin: -1px;
-    padding: 0;
-    border: 0;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
-  /* Same grammar as the conversation exchange rail: the marker stays quiet,
-     and one transient preview appears on demand. It floats back into the
-     document margin rather than over the identically named heading. */
-  .preview {
-    position: absolute;
-    inset-block-start: 0;
-    inset-inline-end: calc(100% + var(--space-2));
-    z-index: var(--z-raised);
-    inline-size: max-content;
-    max-inline-size: min(
-      18rem,
-      max(var(--space-12), calc(var(--document-start) - var(--control-h) - var(--space-10)))
-    );
-    overflow: hidden;
-    padding: var(--space-3) var(--space-4);
-    border-radius: var(--radius-sm);
-    background: var(--paper);
-    box-shadow: var(--shadow-float);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-2);
-    pointer-events: none;
-  }
-
-  .dot {
-    inline-size: var(--outline-dot);
-    block-size: var(--outline-dot);
-    border-radius: var(--radius-pill);
-    background: var(--outline-ink);
-    transition:
-      inline-size var(--motion-instant) linear,
-      block-size var(--motion-instant) linear,
-      background-color var(--motion-quick) ease-out;
-  }
-
-  .row:hover .dot,
-  .row:focus-visible .dot {
-    inline-size: var(--outline-dot-aimed);
-    block-size: var(--outline-dot-aimed);
-    background: var(--accent);
-  }
-
-  /* Mobile keeps its existing full-width outline panel. */
   @media (width < 60rem) {
-    .rail {
-      display: none;
-    }
+    .rail { display: none; }
   }
-
-  /* Closed reports have a useful gutter once the main container reaches this
-     width. The shell separately hides the rail whenever a conversation opens,
-     because that state spends the gutter on the foreground drawer. */
   @container (inline-size < 68rem) {
-    .rail {
-      display: none;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .preview,
-    .dot {
-      transition: none;
-    }
+    .rail { display: none; }
   }
 }

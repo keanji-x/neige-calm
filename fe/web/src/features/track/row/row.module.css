@@ -67,22 +67,7 @@
 
   /* The leading 6px column. It spans both lines and centres against the row,
      not the title baseline: it marks the row, not the sentence. */
-  .dot {
-    align-self: center;
-    inline-size: var(--dot-sm);
-    block-size: var(--dot-sm);
-    border-radius: var(--radius-pill);
-    background: var(--text-4);
-  }
-
-  .dotWaiting {
-    background: var(--warn);
-  }
-
-  .dotRunning {
-    background: var(--accent);
-    animation: row-pulse var(--motion-pulse) ease-in-out infinite;
-  }
+  .leadingStatus { display: grid; place-items: center; }
 
   .titleRow {
     display: flex;
@@ -104,8 +89,6 @@
   .title {
     min-inline-size: 0;
     overflow: hidden;
-    font-size: var(--text-base);
-    line-height: var(--leading-tight);
     white-space: nowrap;
     text-overflow: ellipsis;
   }
@@ -143,25 +126,15 @@
     min-block-size: var(--row-h-lg);
   }
 
-  .variantDefault .title {
-    font-weight: var(--weight-medium);
-    color: var(--text);
-  }
-
   .variantCompact {
     min-block-size: var(--row-h);
-  }
-
-  .variantCompact .title {
-    font-weight: var(--weight-normal);
-    color: var(--text);
   }
 
   /* One column, like the rail and for the same reason: the status dot left the
      grid for the trailing edge, and with the age gone too the title is the
      whole row. It keeps the panel's own row height and fill padding. */
   .variantPanel {
-    min-block-size: var(--row-h-sm);
+    min-block-size: var(--row-h);
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -169,45 +142,12 @@
      `.statusSlot`), and this variant has neither a relative time nor a second
      line, so the title is the whole row. */
   .variantRail {
-    min-block-size: var(--row-h-sm);
+    min-block-size: var(--row-h);
     grid-template-columns: minmax(0, 1fr);
     padding-inline: var(--space-3);
   }
 
-  /* The rail's tracks take the strong tone: they are what you came to find. The
-     area heading above them is the quiet one (see shell.module.css). */
-  .variantRail .title {
-    font-weight: var(--weight-normal);
-    color: var(--text);
-  }
-
-  /*
-   * Ordering below is load-bearing. Each variant sets its own *rest* weight and
-   * tone with two-class specificity, so waiting and selected have to match that
-   * specificity and come after it — otherwise the variant's rest rule silently
-   * wins and the waiting rows render as ordinary rows, which is exactly the
-   * "everything is the same weight" failure this specification exists to fix.
-   */
-
-  /*
-   * State is carried by the indicator dot, and by nothing else. Titles keep one
-   * tone and one weight whatever the track is doing.
-   *
-   * This overrides §6.3's variant table, which recoloured and re-weighted the
-   * title as well. Three channels on one row made a list of waiting tracks read
-   * as a wall of alarm; the dot is already a colour signal in an otherwise
-   * greyscale column, and Today's P0 still has position and its section label
-   * on top of it. A title that changes colour is the interface shouting a fact
-   * the 6px dot beside it has already stated.
-   */
-
-  /* Selected is always 600 flat, never "one step up from rest": rest weights
-     differ per variant, and +1 from 400 would collide with the waiting 500. */
-  .rowActive .title,
-  .rowActive .titleWaiting {
-    font-weight: var(--weight-semibold);
-    color: var(--text);
-  }
+  /* Name typography and selected emphasis are owned by ui/list-typography. */
 
   /*
    * Gutters. Every one of these is a box-scale question — the space a control
@@ -375,6 +315,9 @@
    * the other.
    */
   .statusSlot {
+    display: grid;
+    place-items: center;
+    inline-size: var(--dot-sm);
     position: absolute;
     inset-block-start: 50%;
     inset-inline-end: calc(var(--space-2) + (var(--control-h-sm) - var(--dot-sm)) / 2);
@@ -408,20 +351,11 @@
     color: var(--error-text);
   }
 
-  @keyframes row-pulse {
-    50% {
-      opacity: 0.35;
-    }
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .statusSlot {
       transition: none;
     }
 
-    .dotRunning {
-      animation: none;
-    }
 
     .row,
     .action {

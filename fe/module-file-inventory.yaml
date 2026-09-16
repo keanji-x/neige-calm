@@ -124,3 +124,9 @@
 - { path: fe/web/src/styles, type: directory, owner: styles, readonly: true, basis: "frozen interface §6.8" }
 
 - { path: fe/web/src/app/__snapshots__/markdown-legacy-differential.test.ts.snap, type: file, owner: app/markdown-migration, readonly: false, basis: "Legacy frontend retirement: preserved outline regression expectations" }
+
+# Shared navigation primitives requested in frontend feedback (2026-09-16).
+- { path: fe/web/src/ui/edge-navigation, type: directory, owner: ui/edge-navigation, readonly: false, basis: "Shared outline pointer, keyboard and preview behavior for report and chat" }
+- { path: fe/web/src/ui/activity-indicator, type: directory, owner: ui/activity-indicator, readonly: false, basis: "Domain-free attention, working and unread visual indicators" }
+
+- { path: fe/web/src/ui/list-typography, type: directory, owner: ui/list-typography, readonly: false, basis: "User-requested common typography for sidebar and context lists" }

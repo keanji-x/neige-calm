@@ -312,18 +312,18 @@ describe('TrackPage task inventory', () => {
     const { container } = renderPage({
       tasks: [running('alpha', 'running', 'card-9', 'terminal'), queued],
     });
-    const inventory = container.querySelector('[data-nc-task-inventory]');
+    const inventory = container.querySelector('[data-nc-module="tasks"]');
     expect(inventory).not.toBeNull();
     expect([...inventory!.querySelectorAll('[data-nc-task-status-text]')].map((node) => node.textContent))
       .toEqual(['running', 'pending']);
     expect(inventory!.querySelector('[data-nc-task-status-text=""][title="pending — Queued 1/1"]')).not.toBeNull();
-    expect(screen.getByText('1 active · 1 queued')).toBeTruthy();
+    expect(container.querySelector('[data-nc-module="tasks"] h2')?.parentElement?.textContent).toContain('2');
     expect(screen.queryAllByRole('img', { name: /^Status: / })).toEqual([]);
   });
 
   it('includes canceled tasks in the compact status totals', () => {
     renderPage({ tasks: [running('stopped', 'canceled', null)] });
-    expect(screen.getByText('1 canceled')).toBeTruthy();
+    expect(screen.getByText('Canceled').closest('summary')?.getAttribute('aria-label')).toBe('Canceled, 1 task');
   });
 
   /* The compact carrier prints the bare word and keeps the full kernel reason

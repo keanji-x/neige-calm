@@ -807,12 +807,13 @@
       "query invalidation adapter preserves effect order across a snapshot-required style batch",
       "query invalidation adapter removes mapped keys for a remove effect",
       "query invalidation adapter turns a real track.deleted plan into tree diagnostics refresh plus ordinary cleanup",
-      "query invalidation adapter turns a report edit into a refresh of the Today document and its resolve"
+      "query invalidation adapter turns a report edit into a refresh of the Today document and its resolve",
+      "query invalidation adapter turns each real harness plan into its exact live query invalidations"
     ],
     "selection_paths": [
       "web/src/app/composition.test.tsx"
     ],
-    "why_more_than_one": "T-B2 follows a decoded socket event through reducer and adapter."
+    "why_more_than_one": "T-B2 follows a decoded socket event through reducer and adapter. The harness-phase contract also fails because Planner activity now requires the same Track-detail invalidation; CI measured this additional witness."
   },
   {
     "mutation_id": "events-driver-drop-all-epoch-protection",

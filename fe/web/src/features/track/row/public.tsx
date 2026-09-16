@@ -15,9 +15,12 @@
 // panel and rail variants *drop* the lifecycle line rather than shrinking it,
 // so a lifecycle phrase simply does not exist on those surfaces.
 
+import { ListText } from '../../../ui/list-typography/public.tsx';
+import { useId } from 'react';
 import {
   isRunning, lifecycleLabel, needsUserAttention, trackDisplayTitle, type Track,
 } from '../../../../../core/domain/track.ts';
+import { ActivityIndicator, type ActivityState } from '../../../ui/activity-indicator/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './row.module.css';
 
@@ -31,6 +34,7 @@ export type TrackRowProps = Readonly<{
   /** Agenda rows only: the hour bucket of a `ScheduledEvent`. */
   hourLabel?: string;
   active?: boolean;
+  unread?: boolean;
   /** Pins "now" so relative times cannot drift between render and assertion. */
   nowMs?: number;
   onOpen: (trackId: string) => void;
@@ -84,8 +88,9 @@ export function relativeTime(atMs: number, nowMs: number): string {
  */
 export function TrackRow({
   track, variant = 'default', areaName, hourLabel, active = false, nowMs,
-  onOpen, onSetPinned, onDelete,
+  onOpen, onSetPinned, onDelete, unread = false,
 }: TrackRowProps) {
+  const descriptionId = useId();
   const attention = needsUserAttention(track);
   const running = isRunning(track.lifecycle);
   const pinned = track.pinnedAt !== null;
@@ -99,7 +104,7 @@ export function TrackRow({
   const label = `Track ${title}${bits.length > 0 ? `, ${bits.join(', ')}` : ''}, ${lifecycle}`
     + (areaName === undefined ? '' : `, in area ${areaName}`);
 
-  const dotClass = `${styles.dot} ${attention ? styles.dotWaiting : running ? styles.dotRunning : ''}`;
+  const activity: ActivityState = attention ? 'attention' : running ? 'working' : unread ? 'unread' : 'quiet';
 
   /*
    * The rail moves the status dot to the *trailing* edge and lets the delete
@@ -143,17 +148,16 @@ export function TrackRow({
         ].filter(Boolean).join(' ')}
         aria-current={active ? 'page' : undefined}
         aria-label={label}
+        aria-describedby={unread ? descriptionId : undefined}
         onClick={() => onOpen(track.id)}
       >
         {!trailingStatus && (
-          <span
-            className={dotClass}
-            aria-hidden="true"
-          />
+          <span className={styles.leadingStatus} aria-hidden="true"><ActivityIndicator state={activity} /></span>
         )}
         <span className={styles.titleRow}>
           {hourLabel !== undefined && <span className={styles.hour}>{hourLabel}</span>}
-          <span className={styles.title} title={title}>{title}</span>
+          <ListText tone="primary" emphasis={active ? 'selected' : variant === 'default' ? 'medium' : undefined}
+            className={styles.title} title={title}>{title}</ListText>
         </span>
         {/* The agenda is grouped by date already, so a relative time there is
             restating the heading in a 308px column. */}
@@ -165,7 +169,10 @@ export function TrackRow({
         )}
       </button>
 
-      {trailingStatus && <span className={`${dotClass} ${styles.statusSlot}`} aria-hidden="true" />}
+      {unread && <span hidden id={descriptionId}>Unread updates</span>}
+      {trailingStatus && activity !== 'quiet' && <span className={styles.statusSlot} aria-hidden="true">
+        <ActivityIndicator state={activity} />
+      </span>}
       {onSetPinned !== undefined && (
         <button
           type="button"

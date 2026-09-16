@@ -35,8 +35,11 @@
 // one of them was stale by the next edit; they name functions and components
 // now.
 
+import { ListText } from '../../../ui/list-typography/public.tsx';
 import { Fragment, type ReactNode } from 'react';
 
+import { inventorySections, panelRowGroup, type InventoryGroupKey } from '../../../../../core/view/panel-groups.ts';
+import { InventoryGroups } from './inventory-groups.tsx';
 import { FIELD, MARKER, paintPanel } from '../../../../../core/view/panel.ts';
 import type {
   ActionSupport, PanelRow, RowAction, RowBadge, RowModuleView, RowPainter, TrackPageView,
@@ -52,6 +55,7 @@ import styles from './page.module.css';
  */
 type PendingLeaf = Readonly<{
   slot: 'row' | 'empty';
+  group: (moduleKey: RowModuleView['key']) => InventoryGroupKey;
   paint: (moduleKey: RowModuleView['key']) => ReactNode;
 }>;
 
@@ -133,9 +137,9 @@ function wording(action: Control): Readonly<Record<string, string>> {
 
 function cardBadge(badge: RowBadge): ReactNode {
   return (
-    <span key={badge.id} className={styles.kernelOwned} {...mark(MARKER.badge, badge.id)}>
+    <ListText tone="secondary" key={badge.id} className={styles.kernelOwned} {...mark(MARKER.badge, badge.id)}>
       {badge.text}
-    </span>
+    </ListText>
   );
 }
 
@@ -166,14 +170,16 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
         {...(open === null ? {} : { ...mark(MARKER.action, 'open-card'), ...wording(open) })}
         onClick={open === null ? undefined : () => deps.onOpenCard?.(open.id)}
       >
-        <span className={styles.cardKind} {...mark(MARKER.field, FIELD.title)}>{row.title}</span>
+        <ListText tone="primary" className={styles.cardKind} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
         <span className={styles.cardMeta}>
+          {row.status !== null && <ListText tone="secondary" className={styles.cardStatus}
+            {...mark(MARKER.status, row.status.token)} title={row.status.phrase}>{row.status.token}</ListText>}
           {/* Only when a title took the name slot — an untitled card is already
               showing its kind there, and printing it twice is noise. The
               condition is now the view model's (`row.kind === null`), which is
               the same rule read from one place instead of two. */}
           {row.kind !== null && (
-            <span className={styles.cardKindTag} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>
+            <ListText tone="secondary" className={styles.cardKindTag} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>
           )}
           {row.badges.map(cardBadge)}
         </span>
@@ -236,24 +242,23 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
       {...(reveal === null ? {} : { ...mark(MARKER.action, 'reveal-block'), ...wording(reveal) })}
       onClick={reveal === null ? undefined : () => deps.onOpenTask?.(reveal.id)}
     >
-      {/* Mono: the key is the literal other reports and the kernel address
-          this task by (§2.2). */}
-      <span className={styles.taskKey} {...mark(MARKER.field, FIELD.title)}>{row.title}</span>
+      {/* Keep the stable task key as the name, aligned with card names. */}
+      <ListText tone="primary" className={styles.taskKey} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
       {row.badges.map((badge) => (
-        <span
+        <ListText tone="secondary"
           key={badge.id}
           className={badge.struck ? styles.taskWithdrawn : styles.taskNote}
           {...mark(MARKER.badge, badge.id)}
-        >{badge.text}</span>
+        >{badge.text}</ListText>
       ))}
       {row.status !== null && (
-        <span
+        <ListText tone="secondary"
           className={styles.taskStatusText}
           data-nc-task-status-text=""
           {...mark(MARKER.status, row.status.token)}
           aria-hidden="true"
           title={row.status.phrase}
-        >{row.status.token}</span>
+        >{row.status.token}</ListText>
       )}
     </button>
   );
@@ -264,10 +269,9 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
           control. `title` describes the destination without touching the
           accessible name, which stays the visible word (WCAG 2.5.3). */}
       {row.kind !== null && (open === null
-        ? <span className={styles.taskKind} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>
+        ? <ListText tone="secondary" className={styles.taskKind} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>
         : (
-          <button
-            type="button"
+          <ListText as="button" tone="secondary"
             className={styles.taskKindButton}
             {...mark(MARKER.field, FIELD.kind)}
             {...mark(MARKER.action, 'open-card')}
@@ -275,7 +279,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
             onClick={() => deps.onOpenCard?.(open.id)}
           >
             {row.kind}
-          </button>
+          </ListText>
         ))}
     </li>
   );
@@ -312,11 +316,13 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
 
     row: (row) => ({
       slot: 'row',
+      group: (key) => panelRowGroup(row, key),
       paint: (moduleKey) => (moduleKey === 'cards' ? cardRow(row, deps) : taskRow(row, deps)),
     }),
 
     empty: (text) => ({
       slot: 'empty',
+      group: () => 'other',
       paint: () => <PanelEmpty key="empty" fieldMarker={FIELD.empty}>{text}</PanelEmpty>,
     }),
 
@@ -330,15 +336,23 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
           action={parts.key === 'cards'
             ? deps.cardsAction
             : deps.taskSummary
-              ? <span className={styles.taskSummary} title={deps.taskSummary}>{deps.taskSummary}</span>
+              ? <ListText tone="count" className={styles.taskSummary} title={deps.taskSummary}>{deps.taskSummary}</ListText>
               : undefined}
           moduleMarker={parts.key}
           titleFieldMarker={FIELD.moduleTitle}
         >
-          {!rows ? children
-            : parts.key === 'cards'
-              ? <ul className={styles.cards} data-nc-card-inventory="">{children}</ul>
-              : <ul className={styles.tasks} data-nc-task-inventory="">{children}</ul>}
+          <div {...(parts.key === 'cards' ? { 'data-nc-card-inventory': '' } : { 'data-nc-task-inventory': '' })}>
+          {!rows ? children : <InventoryGroups
+            groups={inventorySections(parts.children, leaf => {
+              if (leaf.slot === 'module') throw new Error('Nested inventory module');
+              return leaf.group(parts.key);
+            })}
+            noun={parts.key === 'cards' ? 'card' : 'task'}
+            renderRows={leaves => parts.key === 'cards'
+              ? <ul className={styles.cards}>{leaves.map(leaf => finish(leaf, parts.key))}</ul>
+              : <ul className={styles.tasks}>{leaves.map(leaf => finish(leaf, parts.key))}</ul>}
+          />}
+          </div>
         </PanelModule>
       );
       return {

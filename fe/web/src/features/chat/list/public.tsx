@@ -9,9 +9,12 @@
 // caller owns the drawer, because the drawer overlays the whole main region and
 // a module 308px wide has no business owning something that wide (§7.6).
 
+import { ListText } from '../../../ui/list-typography/public.tsx';
+import { useId } from 'react';
 import {
   byRecency, conversationName, isLiveConversation, type Conversation,
 } from '../../../../../core/domain/conversation.ts';
+import { ActivityIndicator, type ActivityState } from '../../../ui/activity-indicator/public.tsx';
 import { PanelEmpty } from '../../../ui/panel-card/public.tsx';
 import styles from './list.module.css';
 
@@ -21,12 +24,14 @@ export type ChatListProps = Readonly<{
   activeId?: string | null;
   /** Whether to name the track on each row — false when the page *is* a track. */
   showTrack?: boolean;
+  unreadIds?: ReadonlySet<string>;
   onOpen: (conversation: Conversation) => void;
 }>;
 
 export function ChatList({
-  conversations, activeId = null, showTrack = true, onOpen,
+  conversations, activeId = null, showTrack = true, onOpen, unreadIds,
 }: ChatListProps) {
+  const descriptionPrefix = useId();
   if (conversations.length === 0) {
     // One short sentence, no slice name, no apology (§5.3).
     return <PanelEmpty>No conversations yet.</PanelEmpty>;
@@ -36,6 +41,11 @@ export function ChatList({
     <ul className={styles.list}>
       {conversations.toSorted(byRecency).map((conversation) => {
         const live = isLiveConversation(conversation.state);
+        const unread = unreadIds?.has(conversation.id) ?? false;
+        const attention = conversation.state === 'failed';
+        const description = attention ? 'Needs input' : unread ? 'Unread updates' : null;
+        const descriptionId = `${descriptionPrefix}-${encodeURIComponent(conversation.id)}`;
+        const activity: ActivityState = attention ? 'attention' : live ? 'working' : unread ? 'unread' : 'quiet';
         const active = conversation.id === activeId;
         /* Both are optional and both are said only when known: a row whose track
            has no title the reader may see says nothing about a track, and a row
@@ -56,6 +66,7 @@ export function ChatList({
                 + (showTrack && trackTitle !== undefined ? `, on ${trackTitle}` : '')
                 + (turns === undefined ? '' : `, ${turns} turns`)
                 + (live ? ', live' : '')}
+              aria-describedby={description === null ? undefined : descriptionId}
               onClick={() => onOpen(conversation)}
             >
               {/* Both, never one instead of the other (#1189 §5).
@@ -68,9 +79,9 @@ export function ChatList({
                   is the row and the track is what follows it, quieter and
                   second, which is also the order the label says them in. */}
               <span className={styles.label}>
-                <span className={styles.name}>{name}</span>
+                <ListText tone="group" emphasis={active ? 'selected' : undefined} className={styles.name}>{name}</ListText>
                 {showTrack && trackTitle !== undefined && (
-                  <span className={styles.track}>{trackTitle}</span>
+                  <ListText tone="secondary" className={styles.track}>{trackTitle}</ListText>
                 )}
               </span>
             </button>
@@ -80,10 +91,10 @@ export function ChatList({
                 leading state cell and a trailing age. Live is the one state
                 worth a colour, and it takes the same 6px dot a track row uses
                 for running — one vocabulary for "something is happening". */}
-            <span
-              className={`${styles.dot} ${live ? styles.dotLive : ''} ${styles.statusSlot}`}
-              aria-hidden="true"
-            />
+            {description !== null && <span hidden id={descriptionId}>{description}</span>}
+            {activity !== 'quiet' && <span className={styles.statusSlot} aria-hidden="true">
+              <ActivityIndicator state={activity} />
+            </span>}
           </li>
         );
       })}

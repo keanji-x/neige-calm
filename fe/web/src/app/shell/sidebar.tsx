@@ -1,10 +1,9 @@
 // The workspace rail. Three sections in a fixed order; see INV-SIDEBAR-007.
 //
-// §7.5 — the rail has exactly one emphasis rule: only the current location may
-// use `--accent`, and only "WAITING ON YOU" may show `--warn`. Everything else
-// is greyscale. A sidebar with three colours of status is a status board, not
-// navigation.
+// Text roles share ui/list-typography with the right-side context panels.
+// Status icons are provided by the shared TrackRow activity indicator.
 
+import { ListText } from '../../ui/list-typography/public.tsx';
 import { useEffect, useRef } from 'react';
 import { useCollapsible } from '@astryxdesign/core/Collapsible';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
@@ -141,6 +140,7 @@ export function Sidebar({
 
   const rowProps = {
     currentPath,
+    isUnread: (track: Track) => preferences.isUnread('track', track.id, track.updatedAt),
     onGo,
     nowMs,
     onSetPinned: (trackId: string, next: boolean) => {
@@ -236,7 +236,7 @@ export function Sidebar({
 
           <div className={styles.section}>
             <div className={styles.sectionHead}>
-              <h2 className={styles.sectionTitle}>Areas</h2>
+              <ListText as="h2" tone="section" className={styles.sectionTitle}>Areas</ListText>
               <button
                 type="button"
                 data-nc-role="icon"
@@ -353,6 +353,7 @@ export function Sidebar({
 }
 
 type RowProps = Readonly<{
+  isUnread: (track: Track) => boolean;
   currentPath: string;
   onGo: (target: NavTarget) => void;
   nowMs?: number;
@@ -373,7 +374,7 @@ type RowProps = Readonly<{
  * shown, and the area list is the tree. One place to look, and it is the one
  * that also says which area the track belongs to.
  */
-function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete }: RowProps & {
+function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete, isUnread }: RowProps & {
   title: string;
   tracks: readonly Track[];
   areas: readonly Area[];
@@ -381,12 +382,13 @@ function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete
   if (tracks.length === 0) return null;
   return (
     <div className={styles.section}>
-      <h2 className={styles.sectionTitle}>{title}</h2>
+      <ListText as="h2" tone="section" className={styles.sectionTitle}>{title}</ListText>
       <div className={styles.sectionRows}>
         {tracks.map((track) => (
           <TrackRow
             key={track.id}
             track={track}
+            unread={isUnread(track)}
             areaName={areaOf(track.areaId, areas)?.name}
             variant="rail"
             nowMs={nowMs}
@@ -424,7 +426,7 @@ function TrackSection({ title, tracks, areas, onGo, nowMs, onSetPinned, onDelete
  */
 function AreaGroup({
   area, areaTracks, expanded, onToggle, disclosureRef, onEdit, onRequestDelete, onNewTrack,
-  currentPath, onGo, nowMs, onSetPinned, onDelete,
+  currentPath, onGo, nowMs, onSetPinned, onDelete, isUnread,
 }: RowProps & {
   area: Area;
   areaTracks: readonly Track[];
@@ -453,7 +455,7 @@ function AreaGroup({
           <span className={`${styles.chevron} ${disclosure.isOpen ? styles.chevronOpen : ''}`} aria-hidden="true">
             <Icon name="chevron-right" />
           </span>
-          <span className={styles.areaName} title={area.name}>{area.name}</span>
+          <ListText tone="group" className={styles.areaName} title={area.name}>{area.name}</ListText>
         </button>
         <span className={styles.areaActions}>
           <DropdownMenu
@@ -493,6 +495,7 @@ function AreaGroup({
             <TrackRow
               key={track.id}
               track={track}
+            unread={isUnread(track)}
               variant="rail"
               nowMs={nowMs}
               active={routeParamFromPath(currentPath, '/track/') === track.id}

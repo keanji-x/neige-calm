@@ -1,0 +1,17 @@
+@layer ui {
+  .indicator { display: inline-block; flex: none; inline-size: var(--dot-sm); block-size: var(--dot-sm); border-radius: var(--radius-pill); }
+  .unread { background: var(--accent); }
+  .attention { background: var(--error); }
+  .working {
+    inline-size: 10px;
+    block-size: 10px;
+    border: 1.5px solid var(--text-4);
+    border-block-start-color: var(--text-2);
+    border-inline-end-color: var(--text-2);
+    animation: activity-turn 900ms linear infinite;
+  }
+  @keyframes activity-turn { to { rotate: 360deg; } }
+  @media (prefers-reduced-motion: reduce) {
+    .working { animation: none; }
+  }
+}

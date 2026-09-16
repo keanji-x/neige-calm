@@ -436,6 +436,11 @@ pub struct LazyMintCardSeed {
     /// in-flight retry across a deploy into a spurious 409.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
+    /// Omitted fields keep old operation payload hashes byte-for-byte stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 /// Which session row a profile writes.
@@ -552,6 +557,14 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // strictly narrower than the ordinary branch — a caller must not be
         // able to conjure a chat card onto an arbitrary track.
         if let Some(seed) = payload.create_card.as_ref() {
+            if (seed.model.is_some() || seed.reasoning_effort.is_some())
+                && payload.actor != ActorId::User
+            {
+                return Err(CalmError::Forbidden(
+                    "Only the user may choose a conversation model".into(),
+                ));
+            }
+
             // Guard ① — which profiles may mint at all. `Planner` never can: a
             // planner card is minted with its track, and letting this branch write
             // one would hand a caller the track's lifecycle authority.
@@ -775,6 +788,17 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 TrackId::from(track_id.clone()),
             )
             .await?;
+            let mut card_payload = serde_json::Map::from_iter([
+                ("schemaVersion".to_string(), json!(1)),
+                ("harness_profile".to_string(), json!(minted_marker)),
+            ]);
+            if seed.model.is_some() || seed.reasoning_effort.is_some() {
+                crate::planner_model::CardModelSelection::apply_to_payload(
+                    &mut card_payload,
+                    seed.model.as_deref(),
+                    seed.reasoning_effort.as_deref(),
+                );
+            }
             let created = card_create_with_id_tx(
                 tx,
                 card_id.to_string(),
@@ -794,7 +818,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     // assistant may do — the authorization gate, this
                     // endpoint's list predicate, and the CARDS panel filter —
                     // all read exactly these two columns.
-                    payload: json!({"schemaVersion": 1, "harness_profile": minted_marker}),
+                    payload: Value::Object(card_payload),
                     title: seed.title.clone(),
                 },
                 minted_role,

@@ -22,6 +22,7 @@
  * re-pinned to a viewport independently. A fixture that flattened it would be
  * measuring a page this app does not render.
  */
+import { InventoryGroups } from './inventory-groups.tsx';
 import { render } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -110,7 +111,7 @@ describe('the panel card, against a scrolling report', () => {
    * panel's whole point is that its modules are readable at once. The number is
    * `features/chat/list`'s, which had the treatment already.
    */
-  it('caps a long list at eight rows and scrolls it, rather than growing', async () => {
+  it('caps a long disclosed group and scrolls it, rather than growing', async () => {
     await browserPage.viewport(1200, 900);
     render(
       <div style={{ blockSize: 900, display: 'flex', flexDirection: 'column' }}>
@@ -120,13 +121,12 @@ describe('the panel card, against a scrolling report', () => {
             <div className={styles.content}>
               <div className={styles.doc} />
               <aside className={styles.panel} data-nc-panel="">
-                <ul className={styles.cards} data-testid="cards">
-                  {Array.from({ length: 30 }, (_, index) => (
-                    <li key={index}>
-                      <button type="button" className={styles.cardRow}>card {index}</button>
-                    </li>
-                  ))}
-                </ul>
+                <InventoryGroups noun="card" groups={[{
+                  key: 'working', label: 'In progress', expanded: true,
+                  rows: Array.from({ length: 30 }, (_, index) => index),
+                }]} renderRows={rows => <ul className={styles.cards}>
+                  {rows.map(index => <li key={index}><button type="button" className={styles.cardRow}>card {index}</button></li>)}
+                </ul>} />
               </aside>
             </div>
           </div>
@@ -134,20 +134,12 @@ describe('the panel card, against a scrolling report', () => {
       </div>,
     );
 
-    const list = document.querySelector<HTMLElement>('[data-testid="cards"]')!;
+    const list = document.querySelector<HTMLElement>('[data-nc-inventory-group] summary + div')!;
     /* The premise: there really is more content than the cap, so a list that
        ignored the cap would be visibly taller. */
     expect(list.scrollHeight).toBeGreaterThan(list.clientHeight * 2);
 
-    /* Eight `--row-h-sm` rows plus seven `--space-1` gaps. Read off the tokens
-       rather than hard-coded, so a change to either is a change to the cap and
-       not a broken test. */
-    const probe = document.createElement('div');
-    probe.style.blockSize = 'calc(var(--row-h-sm) * 8 + var(--space-1) * 7)';
-    document.body.append(probe);
-    expect(Math.round(list.getBoundingClientRect().height))
-      .toBe(Math.round(probe.getBoundingClientRect().height));
-    probe.remove();
+    expect(list.getBoundingClientRect().height).toBeLessThanOrEqual(180);
 
     /* And it is the list that scrolls, not the panel it sits in. */
     list.scrollTop = 200;

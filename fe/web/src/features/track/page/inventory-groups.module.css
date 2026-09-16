@@ -1,0 +1,85 @@
+@layer features {
+  .groups {
+    --nc-inventory-content-gap: var(--space-2);
+    --nc-inventory-footer-inset: var(--space-4);
+
+    display: grid;
+    gap: 0;
+  }
+  .group {
+    position: relative;
+    isolation: isolate;
+    min-inline-size: 0;
+    margin-inline: calc(var(--space-3) * -1);
+    padding-inline: var(--space-3);
+    border-radius: calc(var(--radius-md) - var(--space-2));
+  }
+  .group[open] {
+    padding-block-end: var(--nc-inventory-footer-inset);
+  }
+
+  /* The heading stays put on expansion; only the content below it gains room. */
+  .group[open]::before {
+    content: '';
+    position: absolute;
+    inset-block: var(--space-1);
+    inset-inline: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: var(--bg);
+    pointer-events: none;
+  }
+
+  .content {
+    /* Expanded groups share one module's room, keeping the next module reachable. */
+    max-block-size: max(var(--row-h), min(10rem, calc(
+      (min(24rem, 40dvh)
+      - var(--row-h) * var(--nc-inventory-group-count)
+      - (var(--nc-inventory-content-gap) + var(--nc-inventory-footer-inset)) * var(--nc-inventory-open-count))
+      / var(--nc-inventory-open-count)
+    )));
+    margin-inline: calc(var(--space-2) * -1);
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-gutter: stable;
+  }
+  .group[open] > .content {
+    margin-block-start: var(--nc-inventory-content-gap);
+  }
+
+  .summary {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto var(--control-h-sm);
+    align-items: center;
+    gap: var(--space-2);
+    min-block-size: var(--row-h);
+    margin-inline: calc(var(--space-2) * -1);
+    padding-inline-start: var(--space-2);
+    border-radius: var(--radius-sm);
+    color: var(--text-3);
+    cursor: pointer;
+    list-style: none;
+  }
+  .summary::-webkit-details-marker { display: none; }
+  .summary:hover { background: var(--overlay-hover); color: var(--text-2); }
+  .summary:focus-visible { outline-offset: -2px; }
+  .group[open] > .summary { color: var(--text-2); }
+  /* Place the divider in the existing gap so expansion keeps its row rhythm. */
+  .group[open] > .summary::after {
+    content: '';
+    position: absolute;
+    inset-inline: var(--space-2);
+    inset-block-end: calc(var(--space-1) * -1);
+    block-size: 1px;
+    background: var(--hairline);
+    pointer-events: none;
+  }
+  .label { min-inline-size: 0; text-align: start; }
+  .chevron { justify-self: center; transition: rotate var(--motion-quick) ease-out; }
+  .group[open] > .summary .chevron { rotate: 90deg; }
+  @media (prefers-reduced-motion: reduce) {
+    .chevron { transition: none; }
+  }
+}

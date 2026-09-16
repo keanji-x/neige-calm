@@ -264,7 +264,7 @@ describe('deriveTrackPageView tasks', () => {
   });
 
   it('strikes the declaration badge of a withdrawn task and no other', () => {
-    const [withdrawn, unreadable] = tasksModule([
+    const [unreadable, withdrawn] = tasksModule([
       task({ blockId: 'b-w', state: 'withdrawn', declaration: 'Withdrawn' }),
       task({ blockId: 'b-u', state: 'unreadable', declaration: 'Unreadable' }),
     ]).rows;
@@ -350,4 +350,12 @@ describe('taskStatusPhrase', () => {
   it('appends the reason to the status, never substituting it', () => {
     expect(taskStatusPhrase('failed', 'boom')).toBe('failed — boom');
   });
+});
+
+it('groups a completed task’s card as completed even while its worker process remains alive', () => {
+  const view = deriveTrackPageView({
+    cards: [card({ id: 'finished-worker', runtime: { worker_session_id: 'runtime', kind: 'codex', status: 'running' } })],
+    tasks: [task({ status: 'done', kind: 'codex', workerCardId: 'finished-worker' })],
+  });
+  expect(view.rowModules[0].rows[0].status?.token).toBe('done');
 });

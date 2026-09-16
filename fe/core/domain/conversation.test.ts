@@ -287,7 +287,7 @@ describe('track conversations', () => {
   });
 
   it('posts the first message to the track, carrying the key as a header', () => {
-    const operation = createTrackConversationOperation('track 1', 'hello', 'key-a');
+    const operation = createTrackConversationOperation('track 1', 'hello', 'key-a', { model: null, reasoning_effort: null });
     expect(operation.method).toBe('POST');
     expect(operation.path).toBe('/api/tracks/track%201/conversations');
     expect(operation.body).toEqual({ text: 'hello' });
