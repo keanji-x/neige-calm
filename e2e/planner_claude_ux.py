@@ -243,6 +243,7 @@ def metrics(rows):
             "observation_refusals": sum(observation_refused(call) for call in terminal),
             **wait_metrics(terminal), **signal_metrics(terminal), **round_trip_metrics(terminal),
             **open_replace_summary_metrics(terminal), **text_condition_metrics(terminal),
+            **history_search_metrics(terminal),
             "human_intervention": "not_measured", "token_savings": "not_measured"}
 
 

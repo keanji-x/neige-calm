@@ -538,6 +538,48 @@ Enter/submit; keep the plain fence when a command menu may be open below
 the draft (a draft starting with `/`) or after a long pause; `screen_diff` on
 a stale result still says which flag applies.
 
+### `scroll_to_text` — a history row by its text (#1710)
+
+Round 22: to quote a diff Claude Code had shown, the Planner paged the
+scrollback by `scroll_offset` (55 → 205 → 416 → 441) and asked for a text
+search that returns the offset. `observe` gains `scroll_to_text` (1..200
+bytes, plain case-sensitive substring, no control characters) and
+`scroll_to_occurrence` (`latest` default | `earliest`);
+`terminal_interaction/scroll_to.rs` holds the request type and the
+arithmetic, `calm_terminal_view::TerminalView::find_text` the scan.
+
+* The scan reads the projection's absolute rows one at a time (the same
+  `absolute_line_view` index `frame` uses, `0..history_rows + rows`; the
+  live viewport only in the alternate screen, which shows no scrollback),
+  each row's plain text built by the same `row_text` `frame` builds
+  `text` with, and returns the bottom-most (`latest`) or top-most
+  (`earliest`) row containing the pattern.
+* Offset arithmetic (`scroll_to::offset_for`): a found history row
+  `row_absolute < history_rows` is captured at `scroll_offset =
+  history_rows - row_absolute`, so it is the first screen row (`row: 0`);
+  a live-screen row (`row_absolute >= history_rows`) and `not_found`
+  capture the live viewport (`scroll_offset 0`; `row` is then
+  `row_absolute - history_rows`, or null). The block is `scroll_to:
+  {pattern, occurrence, status: found | not_found, row_absolute, row}`
+  with `row = row_absolute - (history_rows - scroll_offset)`; the key is
+  absent when no search was asked; the summary line gains `scroll_to found
+  row N` / `scroll_to not_found`.
+* One lock: the search, `history_rows` and the frame capture run under
+  one `model_view` lock acquisition in `capture`, so the found row and the
+  returned screen are one revision. A wait (change/signal/elapsed) runs
+  first as before; the search reads the post-wait screen.
+* Coupling: `scroll_offset` must be 0 (the search derives its own) and a
+  wait that tests text (`wait_for=text`, or signal mode with conditions)
+  is exclusive with it — both are invalid params at the MCP layer
+  (`scroll_to_request` in `mcp_server/tools/terminal.rs`) and refused
+  again by `TerminalInteraction::observe`; `scroll_to_occurrence` without
+  the text is invalid params.
+* The input fence is unchanged: a found history row makes the
+  observation a history view (`scroll_offset > 0`), which
+  `terminal_interaction/operations.rs:147-150` refuses as an input baseline
+  (`return to live viewport before input`), so the Planner still observes
+  at offset 0 before typing.
+
 ### Collector (#1677)
 
 `open_with_wait` (open calls with any wait argument), `open_wait_outcomes`
@@ -551,4 +593,7 @@ accepts a `replace`. r16: `text_condition_requests` (observation-requesting
 calls in signal mode whose arguments carry `wait_text` or
 `wait_text_absent`) and `signal_condition_outcomes` (tally of those calls'
 returned `wait.repaint.outcome` joined with whether every asked condition
-held, e.g. `settled/held`, `unsettled/not_held`).
+held, e.g. `settled/held`, `unsettled/not_held`). #1710:
+`history_search_requests` (observe calls whose arguments carry
+`scroll_to_text`, failed ones included) and `history_search_found` (the
+non-failed ones whose result `scroll_to.status` is `found`).

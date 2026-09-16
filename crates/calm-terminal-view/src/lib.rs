@@ -2,9 +2,9 @@
 #![forbid(unsafe_code)]
 
 use anyhow::{Result, ensure};
-use rmux_core::{COLOUR_DEFAULT, TerminalScreen, input::mode};
+use rmux_core::{COLOUR_DEFAULT, ScreenLineView, TerminalScreen, input::mode};
 use rmux_proto::TerminalSize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 mod raster;
 pub use raster::Rasterizer;
@@ -69,6 +69,31 @@ pub struct InputSurface {
     pub alternate: bool,
     pub scroll_offset: usize,
 }
+/// Which matching row `TerminalView::find_text` returns (#1710).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Occurrence {
+    /// The bottom-most matching row (the most recent output).
+    Latest,
+    /// The top-most matching row.
+    Earliest,
+}
+
+/// The plain text of one row exactly as `Frame::text` carries it: padding
+/// cells (the tail of a wide glyph) skipped, a cell rmux never stored
+/// (#1696) blank, trailing blanks trimmed.
+fn row_text(line: &ScreenLineView, cols: u16) -> String {
+    let mut plain = String::new();
+    for column in 0..u32::from(cols) {
+        match line.cell(column) {
+            Some(cell) if cell.is_padding() => {}
+            Some(cell) => plain.push_str(cell.text()),
+            None => plain.push(' '),
+        }
+    }
+    plain.trim_end().to_owned()
+}
+
 impl Frame {
     pub fn input_surface(&self) -> InputSurface {
         InputSurface {
@@ -128,6 +153,37 @@ impl TerminalView {
         self.terminal.take_terminal_passthrough();
     }
 
+    /// The scrollback depth in rows: the absolute index of the live
+    /// viewport's first row (#1710).
+    pub fn history_rows(&self) -> usize {
+        self.terminal.screen().history_size()
+    }
+
+    /// #1710 — the absolute row index (the index `absolute_line_view` takes,
+    /// `0..history + rows`) of the latest (bottom-most) or earliest
+    /// (top-most) row whose plain text — built like `Frame::text`, trailing
+    /// blanks trimmed — contains `pattern` (a case-sensitive substring; no
+    /// wrapping reassembly). Rows are read one at a time, never the whole
+    /// history at once. In the alternate screen only the live rows
+    /// (`history..history + rows`) are searched, mirroring `frame`, which
+    /// shows no scrollback there.
+    pub fn find_text(&self, pattern: &str, occurrence: Occurrence) -> Option<usize> {
+        let screen = self.terminal.screen();
+        let size = screen.size();
+        let history = screen.history_size();
+        let first = if screen.is_alternate() { history } else { 0 };
+        let matches = |row: usize| {
+            screen
+                .absolute_line_view(row)
+                .is_some_and(|line| row_text(&line, size.cols).contains(pattern))
+        };
+        let rows = first..history + usize::from(size.rows);
+        match occurrence {
+            Occurrence::Latest => rows.rev().find(|row| matches(*row)),
+            Occurrence::Earliest => rows.into_iter().find(|row| matches(*row)),
+        }
+    }
+
     pub fn frame(&self, requested_offset: usize) -> Result<Frame> {
         let screen = self.terminal.screen();
         let size = screen.size();
@@ -144,36 +200,29 @@ impl TerminalView {
             let line = screen
                 .absolute_line_view(history - offset + row)
                 .ok_or_else(|| anyhow::anyhow!("missing terminal row"))?;
-            let mut plain = String::new();
+            text.push(row_text(&line, size.cols));
             for column in 0..usize::from(size.cols) {
                 // #1696: rmux stores an attributed line (any SGR) to its
                 // written extent and pads only plain lines, so a history row
                 // can be narrower than the viewport. Its missing cells are
                 // blank cells, not a failed frame.
-                let (cell, padding) = match line.cell(column as u32) {
-                    Some(cell) => (
-                        Cell {
-                            text: cell.text().into(),
-                            width: cell.width(),
-                            attributes: cell.attr(),
-                            foreground: cell.fg(),
-                            background: cell.bg(),
-                        },
-                        cell.is_padding(),
-                    ),
-                    None => (Cell::blank(), false),
+                let cell = match line.cell(column as u32) {
+                    Some(cell) => Cell {
+                        text: cell.text().into(),
+                        width: cell.width(),
+                        attributes: cell.attr(),
+                        foreground: cell.fg(),
+                        background: cell.bg(),
+                    },
+                    None => Cell::blank(),
                 };
                 bytes = bytes.saturating_add(cell.text.len());
                 ensure!(
                     bytes <= MAX_FRAME_TEXT,
                     "terminal frame text exceeds capture limit"
                 );
-                if !padding {
-                    plain.push_str(&cell.text);
-                }
                 cells.push(cell);
             }
-            text.push(plain.trim_end().to_owned());
         }
         let (column, row) = screen.cursor_position();
         Ok(Frame {

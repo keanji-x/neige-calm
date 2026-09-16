@@ -53,8 +53,10 @@ ROUND_TRIP_METRIC_KEYS = ("text_wait_requests", "text_wait_outcomes", "sequence_
 OPEN_REPLACE_SUMMARY_METRIC_KEYS = ("open_with_wait", "open_wait_outcomes", "replace_actions", "replace_written",
                                     "summary_present")
 TEXT_CONDITION_METRIC_KEYS = ("text_condition_requests", "signal_condition_outcomes")
+HISTORY_SEARCH_METRIC_KEYS = ("history_search_requests", "history_search_found")
 SUMMARY_METRIC_KEYS = (WAIT_METRIC_KEYS + SIGNAL_METRIC_KEYS + ROUND_TRIP_METRIC_KEYS
-                       + OPEN_REPLACE_SUMMARY_METRIC_KEYS + TEXT_CONDITION_METRIC_KEYS)
+                       + OPEN_REPLACE_SUMMARY_METRIC_KEYS + TEXT_CONDITION_METRIC_KEYS
+                       + HISTORY_SEARCH_METRIC_KEYS)
 # The observe wait arguments every wait carrier accepts (#1677: open included; r16: wait_text_absent).
 WAIT_ARGUMENT_KEYS = ("wait_for", "wait_ms", "settle_ms", "signal_events", "repaint_ms", "wait_text",
                       "wait_text_absent")
@@ -328,6 +330,32 @@ def text_condition_metrics(terminal):
         outcomes[f"{repaint['outcome']}/{verdict}"] += 1
     return {"text_condition_requests": counts["text_condition_requests"],
             "signal_condition_outcomes": dict(sorted(outcomes.items()))}
+
+
+def history_search_metrics(terminal):
+    """#1710 counters, each read from a completed call's own arguments or result.
+
+    `history_search_requests` counts observe calls whose arguments carry
+    `scroll_to_text` (failed ones included); `history_search_found` the
+    non-failed ones whose result carries a `scroll_to` block with `status`
+    `"found"` (a missing block, older server, adds none). A found row is a
+    screen fact, never an application result.
+    """
+    counts = collections.Counter()
+    for call in terminal:
+        if not call.get("completed") or call["tool"] != "calm.terminal.observe":
+            continue
+        if "scroll_to_text" not in call.get("arguments", {}):
+            continue
+        counts["history_search_requests"] += 1
+        if tool_failed(call):
+            continue
+        scroll_to = metadata(call).get("scroll_to")
+        if scroll_to is None:
+            continue
+        if require_object(scroll_to, "observation scroll_to").get("status") == "found":
+            counts["history_search_found"] += 1
+    return {key: counts[key] for key in HISTORY_SEARCH_METRIC_KEYS}
 
 
 def wait_metrics(terminal):

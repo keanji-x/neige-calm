@@ -368,11 +368,13 @@ class CollectorTests(unittest.TestCase):
                                    "below_cursor_allowed_inputs": 0, "below_cursor_tolerated_inputs": 0,
                                    "open_with_wait": 0, "open_wait_outcomes": {}, "replace_actions": 0,
                                    "replace_written": 0, "summary_present": 0,
-                                   "text_condition_requests": 0, "signal_condition_outcomes": {}})
+                                   "text_condition_requests": 0, "signal_condition_outcomes": {},
+                                   "history_search_requests": 0, "history_search_found": 0})
         self.assertEqual(json.loads(json.dumps(summary)), summary)
         self.assertEqual(ux.SUMMARY_METRIC_KEYS,
                          ux.WAIT_METRIC_KEYS + ux.SIGNAL_METRIC_KEYS + ux.ROUND_TRIP_METRIC_KEYS
-                         + ux.OPEN_REPLACE_SUMMARY_METRIC_KEYS + ux.TEXT_CONDITION_METRIC_KEYS)
+                         + ux.OPEN_REPLACE_SUMMARY_METRIC_KEYS + ux.TEXT_CONDITION_METRIC_KEYS
+                         + ux.HISTORY_SEARCH_METRIC_KEYS)
 
     # #1666 round-trip counters.
     def test_text_wait_requests_and_outcomes_are_read_from_arguments_and_observations(self):
@@ -688,6 +690,49 @@ class CollectorTests(unittest.TestCase):
         result = ux.metrics([skipped, untested])
         self.assertEqual(result["text_condition_requests"], 2)
         self.assertEqual(result["signal_condition_outcomes"], {"settled/untested": 1, "skipped/untested": 1})
+
+    # #1710 history search counters.
+    def test_history_search_requests_and_found_are_read_from_arguments_and_results(self):
+        def search(identifier, pattern, scroll_to, occurrence=None):
+            call = row(identifier)
+            call["params"]["item"]["arguments"]["scroll_to_text"] = pattern
+            if occurrence is not None:
+                call["params"]["item"]["arguments"]["scroll_to_occurrence"] = occurrence
+            if scroll_to is not None:
+                call["params"]["item"]["result"]["structuredContent"]["scroll_to"] = scroll_to
+            return call
+        found = {"pattern": "MARK", "occurrence": "latest", "status": "found", "row_absolute": 30, "row": 0}
+        missing = {"pattern": "MARK", "occurrence": "earliest", "status": "not_found",
+                   "row_absolute": None, "row": None}
+        calls = [
+            search(1, "MARK", found),
+            search(2, "MARK", missing, "earliest"),
+            search(3, "MARK", dict(found, row_absolute=45, row=5), "latest"),
+            # Older server: no block, a request without a verdict.
+            search(4, "MARK", None),
+            # No search asked: neither counter.
+            row(5),
+        ]
+        # Refused (scroll_offset 4): a request, no result.
+        refused = search(6, "MARK", None)
+        refused["params"]["item"]["arguments"]["scroll_offset"] = 4
+        refused["params"]["item"]["status"], refused["params"]["item"]["error"] = "failed", {
+            "message": "scroll_to_text needs scroll_offset 0"}
+        calls.append(refused)
+        # An open or a readback never searches: the argument is ignored there.
+        opened = row(7, "calm.terminal.open")
+        opened["params"]["item"]["arguments"] = {"request_id": "o1", "scroll_to_text": "MARK"}
+        opened["params"]["item"]["result"]["structuredContent"]["scroll_to"] = found
+        calls.append(opened)
+        original = copy.deepcopy(calls)
+        result = ux.metrics(calls)
+        self.assertEqual(result["history_search_requests"], 5)
+        self.assertEqual(result["history_search_found"], 2)
+        self.assertEqual(result["tool_errors"], 1)
+        self.assertEqual(calls, original)
+        # A malformed block is rejected, never guessed.
+        with self.assertRaises(ux.EvidenceError):
+            ux.metrics([search(8, "MARK", "found")])
 
     # #1620 hook-signal counters.
     @staticmethod
