@@ -15,7 +15,8 @@ edition = "2024"
 #   1. Small + dependency-light — no axum, no sqlx, no tokio "full"
 #      feature set — so build time + binary size stay tiny.
 #   2. Isolation: a crash in the shim has no chance of pulling down the
-#      kernel. The codex daemon respawns the shim if needed.
+#      kernel. Codex does not respawn a shim that exits (#1699), so the
+#      shim reconnects to the kernel itself.
 #   3. Keeps `calm-server`'s `[[bin]]` table focused on the production
 #      server binary + the test-fixture stub plugins.
 
@@ -24,19 +25,22 @@ name = "neige-mcp-stdio-shim"
 path = "src/main.rs"
 
 [dependencies]
+# `time` — #1699 reconnect backoff (`tokio::time::sleep_until`).
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",
     "io-std",
     "io-util",
     "net",
+    "time",
 ] }
-# Issue #236 followup — the shim now intercepts the first JSON-RPC frame
-# on stdin (the codex MCP `initialize` request) to inject the per-card
-# auth token from `NEIGE_MCP_TOKEN` into `params._meta["dev.neige/auth"]`.
-# Vanilla codex CLI 0.132 has no knowledge of the kernel's auth slot, so
-# the shim has to thread the token itself. Subsequent frames are byte-
-# pumped unchanged, so the JSON parser runs at most once per shim process.
+# Issue #236 followup — the shim intercepts the JSON-RPC `initialize`
+# request on stdin to inject the per-card auth token from
+# `NEIGE_MCP_TOKEN` into `params._meta["dev.neige/auth"]`. Vanilla codex
+# CLI 0.132 has no knowledge of the kernel's auth slot, so the shim has
+# to thread the token itself. #1699: every line is also classified
+# (request / response / notification) so unanswered requests are known
+# across a kernel restart; other frames are still forwarded unchanged.
 serde_json = "1"
 
 [dev-dependencies]
