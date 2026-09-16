@@ -157,7 +157,19 @@ async fn sequence_is_one_write_with_the_concatenated_bytes_in_order() {
 #[tokio::test]
 async fn sequence_corrects_one_digit_of_a_readline_draft_in_one_write() {
     let h = Harness::start().await;
-    let terminal = open_claimed(&h, "exec /bin/bash --noprofile --norc", "sequence-readline").await;
+    // #1716: type only once the `bash-5.2$ ` prompt is up and readline owns
+    // the line. On a loaded runner bash's startup loses the race to the
+    // sequence, and the cooked tty echoes the raw bytes as an unedited draft.
+    // Rows are trailing-trimmed, so the pattern is `$`, not `$ `.
+    let opened = h
+        .ok(
+            "calm.terminal.open",
+            json!({"program":"exec /bin/bash --noprofile --norc","request_id":"sequence-readline","claim":true,"wait_for":"text","wait_text":["$"],"wait_ms":5000}),
+        )
+        .await;
+    assert_eq!(opened["claim"]["status"], "claimed", "{opened}");
+    assert_eq!(opened["wait"]["outcome"], "matched", "{opened}");
+    let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
     let sequence = json!({"type":"sequence","steps":[
         {"type":"text","text":"echo 7200 + 19"},
         {"type":"key","key":"Left","repeat":5},
