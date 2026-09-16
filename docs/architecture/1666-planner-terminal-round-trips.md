@@ -195,9 +195,13 @@ The query now skips a `terminal`-kind card's row with a recorded exit
 (`exit_code IS NOT NULL OR signal_killed = 1`): the row and renderer entry
 follow the card and go with it on card / track / area delete, so the final
 screen, scrollback and `exit_code` stay observable and the release above
-keeps answering through the registry. A row without a recorded exit is still
-residue and reaped; other card kinds are unchanged. The refusal for a row
-that is gone reads `terminal not found: deleted with its card or reaped as
+keeps answering through the registry. That holds for the life of the server
+process: the row is durable, the renderer entry is process-local and is not
+rebuilt for an exited row after a restart, so `observe` on it then fails
+with `terminal unavailable; observation never starts a process`. A row
+without a recorded exit is still residue and reaped; other card kinds are
+unchanged. The refusal for a row that is gone (or an id that never existed)
+reads `terminal not found: unknown id, deleted with its card, or reaped as
 residue`.
 
 ### `allow_output_below_cursor` — status-line refreshes are not stale

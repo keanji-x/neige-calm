@@ -906,17 +906,41 @@ async fn exited_terminal_card_terminal_survives_the_orphan_sweep() {
     // The attach reader persists the exit and completes the session after
     // the frame; wait for the row to carry it before aging past the grace.
     let start = std::time::Instant::now();
-    loop {
+    let card_id = loop {
         let row = h.state.repo.terminal_get(&terminal).await.unwrap().unwrap();
         if row.exit_code == Some(3) {
-            break;
+            break row.card_id;
         }
         assert!(
             start.elapsed() < Duration::from_secs(10),
             "exit never persisted: {row:?}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    };
+    // #1701 r1 — the exit and the session completion are two writes
+    // (`attach_reader.rs`): with the session still active the sweep keeps
+    // the row on the unfixed query too, so the test would pass without
+    // exercising the defect. Wait until the card has no active session, the
+    // exact pre-fix orphan shape, and say so.
+    let start = std::time::Instant::now();
+    let active_sessions = loop {
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1 \
+             AND state IN ('starting', 'running', 'idle', 'turn_pending')",
+        )
+        .bind(card_id.as_str())
+        .fetch_one(h.sql.pool())
+        .await
+        .unwrap();
+        if active == 0 || start.elapsed() >= Duration::from_secs(10) {
+            break active;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(
+        active_sessions, 0,
+        "terminal session never completed; the sweep would keep the row on any query"
+    );
     sqlx::query("UPDATE terminals SET created_at = ?1 WHERE id = ?2")
         .bind(calm_server::model::now_ms() - 120_000)
         .bind(&terminal)

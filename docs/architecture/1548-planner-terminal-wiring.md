@@ -35,7 +35,12 @@ code of a one-shot program remain observable and a release still answers
 after the exit. A `terminal`-kind row without a recorded exit is residue and
 is reaped; terminals of other card kinds (task / worker) are reaped once
 their session ends, exit recorded or not. A target whose row is gone fails
-with `terminal not found: deleted with its card or reaped as residue`.
+with `terminal not found: unknown id, deleted with its card, or reaped as
+residue`. The row is durable; the renderer entry (projection, scrollback,
+signals) is process-local, and a server restart does not rebuild it for an
+exited row (boot reconcile walks only `terminals_running`), so `observe` on
+such a card then fails with `terminal unavailable; observation never starts
+a process`, not with the missing-row message.
 
 The existing RenderPlane installs a read-only observer before ingesting its first
 output. RMUX core receives every original byte and resize in order and maintains

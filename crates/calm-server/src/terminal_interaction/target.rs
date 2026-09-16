@@ -92,10 +92,13 @@ impl TerminalInteraction {
                 repo.terminal_get_by_card(card).await?
             }
         }
-        // #1701 — a row is gone only with its card (eager teardown) or because
-        // the sweeper reaped residue; an exited Terminal-card terminal stays.
+        // #1701 — an existing row is gone only with its card (eager teardown)
+        // or because the sweeper reaped residue; an exited Terminal-card
+        // terminal stays. The same branch answers an id that never existed.
         .ok_or_else(|| {
-            anyhow::anyhow!("terminal not found: deleted with its card or reaped as residue")
+            anyhow::anyhow!(
+                "terminal not found: unknown id, deleted with its card, or reaped as residue"
+            )
         })?;
         let card = repo
             .card_get(terminal.card_id.as_str())
