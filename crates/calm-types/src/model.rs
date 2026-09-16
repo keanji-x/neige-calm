@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::claude_permissions::ClaudePermissionsScope;
+pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::planner_attachment::PlannerAttachment;
 use crate::runtime::{AgentProvider, WorkerSessionKind};
 use crate::worker::WorkerSessionState;

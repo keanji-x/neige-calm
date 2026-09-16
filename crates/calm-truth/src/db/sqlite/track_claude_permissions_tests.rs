@@ -7,9 +7,9 @@
 
 use serde_json::json;
 
+use super::track_claude_permissions_ceiling_read;
 use super::track_tree::MAX_TRACK_TREE_DEPTH;
 use super::{SqlxRepo, area_create_tx, track_create_tx, track_update_tx};
-use super::track_claude_permissions_ceiling_read;
 use crate::db::RepoRead;
 use crate::model::{NewArea, NewTrack, RequestTheme, TrackPatch};
 use calm_types::claude_permissions::ClaudePermissionsScope;
@@ -96,7 +96,10 @@ async fn column(repo: &SqlxRepo, track: &str) -> Option<String> {
         .unwrap()
 }
 
-async fn ceiling(repo: &SqlxRepo, track: &str) -> crate::error::Result<Option<ClaudePermissionsScope>> {
+async fn ceiling(
+    repo: &SqlxRepo,
+    track: &str,
+) -> crate::error::Result<Option<ClaudePermissionsScope>> {
     let mut conn = repo.pool().acquire().await.unwrap();
     track_claude_permissions_ceiling_read(&mut conn, track).await
 }
@@ -130,7 +133,9 @@ async fn policy_round_trips_through_every_track_row_reader() {
     patch(&repo, &root, Some(Some(policy()))).await.unwrap();
     assert_eq!(
         column(&repo, &root).await.as_deref(),
-        Some(r#"{"edit":["src/**","tests/**"],"bash":["git","python3 -m unittest"],"deny":["git rebase"]}"#)
+        Some(
+            r#"{"edit":["src/**","tests/**"],"bash":["git","python3 -m unittest"],"deny":["git rebase"]}"#
+        )
     );
     // `TRACK_SELECT_COLUMNS`: track_get, tracks_by_area, tracks_window.
     let got = repo.track_get(&root).await.unwrap().unwrap();
@@ -206,7 +211,9 @@ async fn policy_patch_on_a_child_is_refused_by_the_shared_writer() {
     let child = seed_track(&repo, &area, "child").await;
     link(&repo, &child, &root).await;
 
-    let error = patch(&repo, &child, Some(Some(policy()))).await.unwrap_err();
+    let error = patch(&repo, &child, Some(Some(policy())))
+        .await
+        .unwrap_err();
     assert!(
         matches!(
             &error,
@@ -297,7 +304,9 @@ async fn ceiling_read_resolves_the_tree_root() {
         matches!(
             &error,
             crate::error::TruthError::Core(calm_types::error::CoreError::Conflict(_))
-        ) && error.to_string().contains(&format!("root unresolved for {a}")),
+        ) && error
+            .to_string()
+            .contains(&format!("root unresolved for {a}")),
         "{error:?}"
     );
     let mut chain = Vec::new();

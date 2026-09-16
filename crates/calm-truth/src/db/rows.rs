@@ -21,11 +21,11 @@
 //! into calm-truth together with the repos.
 
 use crate::ids::{AreaId, CardId, TrackId};
-use calm_types::claude_permissions::ClaudePermissionsScope;
 use crate::model::{
     Area, AreaFolder, AreaKind, Card, HarnessInputSegment, HarnessItem, Overlay, Track,
     TrackLifecycle, TrackWorkspace, TrackWorkspaceKind,
 };
+use calm_types::claude_permissions::ClaudePermissionsScope;
 
 /// Row mirror of [`Area`].
 #[derive(Debug, sqlx::FromRow)]

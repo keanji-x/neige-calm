@@ -296,23 +296,35 @@ async fn patch_terminal_card_with_bad_payload_returns_400() {
 }
 
 /// The client-supplied values a server-owned key is refused with, whatever
-/// they are (#1620 `terminal_signals`, #1704 `claude_permissions`): the
-/// minted shape, a wrong-typed one, an empty object and null.
-fn server_owned_probe_values() -> [Value; 4] {
-    [json!(true), json!(false), json!({}), Value::Null]
+/// they are (#1620 `terminal_signals`, #1704 `claude_permissions` and S2's
+/// `claude_permissions_source`): the minted shapes, a wrong-typed one, an
+/// empty object and null.
+fn server_owned_probe_values() -> [Value; 5] {
+    [
+        json!(true),
+        json!(false),
+        json!({}),
+        json!("track_policy"),
+        Value::Null,
+    ]
 }
 
-/// #1620 / #1704 — `terminal_signals` (hook-routing provenance) and
-/// `claude_permissions` (the effective permissions block) are stamped by the
-/// kernel on Planner-opened terminals; no client may write either, for any
-/// kind and with any value (the hook route reads the marker from the
-/// payload, not the kind). Driven by the table every boundary consults.
+/// #1620 / #1704 — `terminal_signals` (hook-routing provenance),
+/// `claude_permissions` (the effective permissions block) and S2's
+/// `claude_permissions_source` are stamped by the kernel on Planner-opened
+/// terminals; no client may write any of them, for any kind and with any
+/// value (the hook route reads the marker from the payload, not the kind).
+/// Driven by the table every boundary consults.
 #[tokio::test]
 async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
     let (state, track_id, repo) = boot_with_repo().await;
     assert_eq!(
         SERVER_OWNED_TERMINAL_PAYLOAD_KEYS,
-        ["terminal_signals", "claude_permissions"]
+        [
+            "terminal_signals",
+            "claude_permissions",
+            "claude_permissions_source"
+        ]
     );
     for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
         for (kind, value) in [

@@ -9,6 +9,7 @@ use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_stamp_claude_permissions_tx, card_update_tx,
     card_with_terminal_create_tx, session_projection_active_for_card_tx, session_set_status_tx,
+    track_claude_permissions_ceiling_read,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
@@ -23,10 +24,12 @@ use crate::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
 use crate::state::WriteContext;
 use crate::terminal_hooks::TerminalHookSettings;
 use crate::terminal_permissions::{
-    ClaudePermissionsScope, EffectiveClaudePermissions, render_claude_permissions,
+    ClaudePermissionsScope, ClaudePermissionsSource, EffectiveClaudePermissions, apply_policy,
+    render_claude_permissions,
 };
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
+use crate::validation::TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
@@ -336,12 +339,26 @@ impl ProviderAdapter for TerminalAdapter {
         .await?;
         // #1704 S1 — the declared scope is rendered against the resolved cwd
         // here, before any row exists: a cwd that cannot be written into a
-        // rule refuses the open and the transaction rolls back.
-        let claude_permissions: Option<EffectiveClaudePermissions> = payload
-            .claude_permissions
-            .as_ref()
-            .map(|declared| render_claude_permissions(&cwd, declared))
-            .transpose()?;
+        // rule refuses the open and the transaction rolls back. S2 — the
+        // Track tree's policy is read on this same write transaction (the
+        // handler's pre-check is a courtesy; this re-check is the verdict:
+        // a policy narrowed between the two is refused here, `BadRequest` →
+        // the operation fails from Pending, no row, no file) and merged with
+        // the declaration into the ONE scope rendered. Only a Planner open
+        // reads the policy: REST terminal cards and task terminals never do.
+        let ceiling = if payload.planner_hooks {
+            track_claude_permissions_ceiling_read(&mut **tx, &track_id).await?
+        } else {
+            None
+        };
+        let effective = apply_policy(ceiling.as_ref(), payload.claude_permissions.as_ref())
+            .map_err(CalmError::BadRequest)?;
+        let claude_permissions: Option<(EffectiveClaudePermissions, ClaudePermissionsSource)> =
+            effective
+                .map(|(scope, source)| {
+                    render_claude_permissions(&cwd, &scope).map(|block| (block, source))
+                })
+                .transpose()?;
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
@@ -372,8 +389,9 @@ impl ProviderAdapter for TerminalAdapter {
         // transaction; the stamped card is what the CardAdded event, the
         // broadcast projection and the saved result carry.
         let card = match &claude_permissions {
-            Some(block) => {
-                card_stamp_claude_permissions_tx(tx, &card, serde_json::to_value(block)?).await?
+            Some((block, source)) => {
+                card_stamp_claude_permissions_tx(tx, &card, serde_json::to_value(block)?, *source)
+                    .await?
             }
             None => card,
         };
@@ -406,11 +424,13 @@ impl ProviderAdapter for TerminalAdapter {
             "env": env,
             "planner_hooks": payload.planner_hooks,
         });
-        if let Some(block) = &claude_permissions {
+        if let Some((block, source)) = &claude_permissions {
             // The recovery input of `spawn_side_effect`: a restart rewrites
             // the settings file from this persisted block, never from the
-            // card or the request.
+            // card or the request. The source rides beside it (S2) for the
+            // audit trail; `spawn_side_effect` never reads it.
             output.data["claude_permissions"] = serde_json::to_value(block)?;
+            output.data[TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY] = json!(source.as_str());
         }
         output.post_commit_events.push(BroadcastEnvelope {
             id: event_id,

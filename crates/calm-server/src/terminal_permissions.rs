@@ -20,9 +20,22 @@
 //! anchors at the settings file's own directory. No `defaultMode`,
 //! `bypassPermissions`, `additionalDirectories` or `Read(...)` rule is ever
 //! written; a terminal opened without a scope gets the hooks-only file.
+//!
+//! #1704 S2 — the Track tree's policy (`tracks.claude_permissions_policy`)
+//! is the ceiling of every Planner-opened Claude in that tree: [`policy`]
+//! holds the containment rules and the merge that produces the ONE scope
+//! rendered here.
 use crate::error::{CalmError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub mod policy;
+pub use calm_types::claude_permissions::{
+    ClaudePermissionsScope, ClaudePermissionsSource, parse_scope_named,
+};
+#[cfg(feature = "fixtures")]
+pub use policy::{CeilingCheckedHook, install_ceiling_checked_hook_for_test};
+pub use policy::{apply_policy, wait_at_ceiling_checked_hook};
 
 /// Bash prefixes rendered as `ask` rules whenever a scope is declared
 /// (together with `Edit(//<cwd>/.git/**)`): in their usual spellings they
@@ -50,18 +63,6 @@ const STRIPPED_WRAPPERS: [&str; 9] = [
     "timeout", "time", "nice", "nohup", "stdbuf", "command", "builtin", "noglob", "xargs",
 ];
 
-/// The `claude_permissions` argument of `calm.terminal.open`, as declared.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct ClaudePermissionsScope {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub edit: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bash: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deny: Option<Vec<String>>,
-}
-
 /// Exactly Claude Code's `permissions` block: the one value written to the
 /// settings file, stamped on the card and echoed by the open.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,96 +72,79 @@ pub struct EffectiveClaudePermissions {
     pub deny: Vec<String>,
 }
 
-/// The keys a declared scope may carry, in the schema's order.
-const SCOPE_KEYS: [&str; 3] = ["edit", "bash", "deny"];
-
 /// Parse the tool argument into a scope, enforcing exactly the advertised
-/// shape with a named reason: an object (not an array, string or null) whose
-/// keys are among `edit`, `bash`, `deny`, each an array of strings (`null` is
-/// a wrong type, not an absent key). The serde derive on
+/// shape with a reason under `claude_permissions`: an object (not an array,
+/// string or null) whose keys are among `edit`, `bash`, `deny`, each an array
+/// of strings (`null` is a wrong type, not an absent key). The serde derive on
 /// [`ClaudePermissionsScope`] is for storage and the hash view only: a derive
 /// alone would also accept a JSON array through `visit_seq` and read
-/// `deny: null` as absent.
+/// `deny: null` as absent. `parse_scope(v) == parse_scope_named(
+/// "claude_permissions", v)`; the Track PATCH runs the same parser under
+/// `claude_permissions_policy`.
 pub fn parse_scope(value: &Value) -> std::result::Result<ClaudePermissionsScope, String> {
-    let Some(object) = value.as_object() else {
-        return Err("claude_permissions: must be an object".into());
-    };
-    if let Some(unknown) = object
-        .keys()
-        .find(|key| !SCOPE_KEYS.contains(&key.as_str()))
-    {
-        return Err(format!("claude_permissions: unknown key '{unknown}'"));
-    }
-    let list = |key: &str| -> std::result::Result<Option<Vec<String>>, String> {
-        let Some(value) = object.get(key) else {
-            return Ok(None);
-        };
-        value
-            .as_array()
-            .and_then(|entries| {
-                entries
-                    .iter()
-                    .map(|entry| entry.as_str().map(str::to_owned))
-                    .collect::<Option<Vec<String>>>()
-            })
-            .map(Some)
-            .ok_or_else(|| format!("claude_permissions.{key}: must be an array of strings"))
-    };
-    Ok(ClaudePermissionsScope {
-        edit: list("edit")?,
-        bash: list("bash")?,
-        deny: list("deny")?,
-    })
+    parse_scope_named("claude_permissions", value)
 }
 
 /// Validate a declared scope; `Ok` is the trimmed scope (whitespace-trimmed
 /// entries, an empty `deny` dropped), `Err` names the offending key or entry
 /// (`claude_permissions.bash[2]: ...`) for `invalid_params`.
+/// `validate_scope(s) == validate_scope_named("claude_permissions", s)`.
 pub fn validate_scope(
     scope: &ClaudePermissionsScope,
 ) -> std::result::Result<ClaudePermissionsScope, String> {
+    validate_scope_named("claude_permissions", scope)
+}
+
+/// [`validate_scope`] with the reasons written under `field`: the same
+/// rules for the Track policy (`claude_permissions_policy`, #1704 S2) — a
+/// policy therefore never admits what a declaration could not.
+pub fn validate_scope_named(
+    field: &str,
+    scope: &ClaudePermissionsScope,
+) -> std::result::Result<ClaudePermissionsScope, String> {
     let edit = list(
+        field,
         "edit",
         scope.edit.as_deref(),
         CLAUDE_PERMISSIONS_EDIT_MAX,
         true,
     )?;
     let bash = list(
+        field,
         "bash",
         scope.bash.as_deref(),
         CLAUDE_PERMISSIONS_BASH_MAX,
         true,
     )?;
     let deny = list(
+        field,
         "deny",
         scope.deny.as_deref(),
         CLAUDE_PERMISSIONS_DENY_MAX,
         false,
     )?;
     if edit.is_none() && bash.is_none() && deny.is_none() {
-        return Err("claude_permissions declares nothing; omit the argument".into());
+        return Err(format!("{field} declares nothing; omit the argument"));
     }
     for (index, glob) in edit.iter().flatten().enumerate() {
-        edit_entry(index, glob)?;
+        edit_entry(field, index, glob)?;
     }
     for (index, prefix) in bash.iter().flatten().enumerate() {
-        command_entry("bash", index, prefix)?;
+        command_entry(field, "bash", index, prefix)?;
         if CLAUDE_PERMISSIONS_FLOOR_BASH.contains(&prefix.as_str()) {
             return Err(format!(
-                "claude_permissions.bash[{index}] '{prefix}': floor command, always asks; \
+                "{field}.bash[{index}] '{prefix}': floor command, always asks; \
                  put it in deny or omit it"
             ));
         }
     }
     for (index, prefix) in deny.iter().flatten().enumerate() {
-        command_entry("deny", index, prefix)?;
+        command_entry(field, "deny", index, prefix)?;
     }
     if let (Some(deny), Some(bash)) = (&deny, &bash) {
         for (index, prefix) in deny.iter().enumerate() {
             if let Some(other) = bash.iter().position(|allowed| allowed == prefix) {
-                return Err(format!(
-                    "claude_permissions.deny[{index}]: also in bash[{other}]"
-                ));
+                return Err(format!("{field}.deny[{index}]: also in bash[{other}]"));
             }
         }
     }
@@ -170,6 +154,7 @@ pub fn validate_scope(
 /// Shared list checks: cap, per-entry emptiness / length / control
 /// characters, duplicates. Entries come back trimmed.
 fn list(
+    field: &str,
     name: &str,
     entries: Option<&[String]>,
     max: usize,
@@ -180,13 +165,13 @@ fn list(
     };
     if entries.is_empty() {
         if must_not_be_empty {
-            return Err(format!("claude_permissions.{name}: empty; omit the key"));
+            return Err(format!("{field}.{name}: empty; omit the key"));
         }
         return Ok(None);
     }
     if entries.len() > max {
         return Err(format!(
-            "claude_permissions.{name}: {} entries, max {max}",
+            "{field}.{name}: {} entries, max {max}",
             entries.len()
         ));
     }
@@ -194,21 +179,19 @@ fn list(
     for (index, raw) in entries.iter().enumerate() {
         let entry = raw.trim();
         if entry.is_empty() {
-            return Err(format!("claude_permissions.{name}[{index}]: empty"));
+            return Err(format!("{field}.{name}[{index}]: empty"));
         }
         if entry.chars().count() > CLAUDE_PERMISSIONS_ENTRY_MAX_CHARS {
             return Err(format!(
-                "claude_permissions.{name}[{index}]: longer than {CLAUDE_PERMISSIONS_ENTRY_MAX_CHARS}"
+                "{field}.{name}[{index}]: longer than {CLAUDE_PERMISSIONS_ENTRY_MAX_CHARS}"
             ));
         }
         if entry.chars().any(char::is_control) {
-            return Err(format!(
-                "claude_permissions.{name}[{index}]: control character"
-            ));
+            return Err(format!("{field}.{name}[{index}]: control character"));
         }
         if let Some(first) = trimmed.iter().position(|seen| seen == entry) {
             return Err(format!(
-                "claude_permissions.{name}[{index}]: duplicate of {name}[{first}]"
+                "{field}.{name}[{index}]: duplicate of {name}[{first}]"
             ));
         }
         trimmed.push(entry.to_owned());
@@ -218,8 +201,8 @@ fn list(
 
 /// An `edit` glob: relative to the cwd, no `.`/`..`/empty segment, no rule
 /// syntax, not under `.git` (which is always `ask`).
-fn edit_entry(index: usize, glob: &str) -> std::result::Result<(), String> {
-    let at = format!("claude_permissions.edit[{index}]");
+fn edit_entry(field: &str, index: usize, glob: &str) -> std::result::Result<(), String> {
+    let at = format!("{field}.edit[{index}]");
     if glob.starts_with('/') || glob.starts_with('~') {
         return Err(format!("{at}: must be relative to the terminal cwd"));
     }
@@ -243,8 +226,13 @@ fn edit_entry(index: usize, glob: &str) -> std::result::Result<(), String> {
 /// A `bash` / `deny` prefix: one command word plus single-spaced arguments,
 /// no rule syntax, no shell operator, no substitution or redirection, not a
 /// wrapper Claude Code strips before matching.
-fn command_entry(name: &str, index: usize, prefix: &str) -> std::result::Result<(), String> {
-    let at = format!("claude_permissions.{name}[{index}]");
+fn command_entry(
+    field: &str,
+    name: &str,
+    index: usize,
+    prefix: &str,
+) -> std::result::Result<(), String> {
+    let at = format!("{field}.{name}[{index}]");
     if prefix.contains(['*', '(', ')']) {
         return Err(format!(
             "{at}: '*' and parentheses are not allowed; a trailing wildcard is implied"
@@ -674,14 +662,13 @@ mod tests {
         for (input, reason) in shape_cases {
             assert_eq!(parse_scope(&input).unwrap_err(), reason, "{input}");
         }
-        // The storage derive is a separate contract: it also refuses unknown
-        // keys, and round-trips what `parse_scope` accepted.
-        let err = serde_json::from_value::<ClaudePermissionsScope>(json!({"allow": ["x"]}))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.starts_with("unknown field `allow`, expected one of `edit`, `bash`, `deny`"),
-            "{err}"
+        // The storage derive is a separate contract: lenient on unknown keys
+        // (#1704 S2 — a stored row written by a newer binary must still
+        // decode; only `parse_scope` refuses them), and it round-trips what
+        // `parse_scope` accepted.
+        assert_eq!(
+            serde_json::from_value::<ClaudePermissionsScope>(json!({"allow": ["x"]})).unwrap(),
+            ClaudePermissionsScope::default()
         );
         let parsed = parse_scope(&json!({"edit": ["**"], "deny": []})).unwrap();
         assert_eq!(

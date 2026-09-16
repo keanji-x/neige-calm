@@ -37,6 +37,9 @@ impl CardKindHandler for TerminalCardHandler {
             /// #1704 — see `validation::TERMINAL_CLAUDE_PERMISSIONS_PAYLOAD_KEY`.
             #[serde(default)]
             claude_permissions: Option<Value>,
+            /// #1704 S2 — see `validation::TERMINAL_CLAUDE_PERMISSIONS_SOURCE_PAYLOAD_KEY`.
+            #[serde(default)]
+            claude_permissions_source: Option<Value>,
         }
 
         if payload.is_null() {
