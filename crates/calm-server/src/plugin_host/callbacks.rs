@@ -1327,25 +1327,43 @@ mod tests {
         assert_eq!(res["kind"], "terminal");
     }
 
-    /// #1620 — the hook-routing provenance marker is never accepted from a
-    /// plugin, on create (any permitted kind) or update.
+    /// #1620 / #1704 — no server-owned payload key (the hook-routing
+    /// provenance marker, the effective permissions block) is ever accepted
+    /// from a plugin, on create (any permitted kind) or update, with any
+    /// value. Driven by the table every boundary consults.
     #[tokio::test]
-    async fn card_create_and_update_reject_client_terminal_signals() {
+    async fn card_create_and_update_reject_client_server_owned_keys() {
+        use crate::validation::SERVER_OWNED_TERMINAL_PAYLOAD_KEYS;
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
-        for kind in ["terminal", "plugin:p1:demo"] {
-            let err = dispatch(
-                &h.ctx(),
-                "neige.card.create",
-                json!({
-                    "track_id": h.track_id,
-                    "kind": kind,
-                    "payload": { "schemaVersion": 1, "terminal_signals": true }
-                }),
-            )
-            .await
-            .unwrap_err();
-            assert_eq!(err.code, RpcError::INVALID_PARAMS, "kind={kind}");
-            assert!(err.message.contains("server-owned"), "{}", err.message);
+        assert_eq!(
+            SERVER_OWNED_TERMINAL_PAYLOAD_KEYS,
+            ["terminal_signals", "claude_permissions"]
+        );
+        let probes = [json!(true), json!({}), Value::Null];
+        for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+            for kind in ["terminal", "plugin:p1:demo"] {
+                for value in &probes {
+                    let mut payload = json!({ "schemaVersion": 1 });
+                    payload[key] = value.clone();
+                    let err = dispatch(
+                        &h.ctx(),
+                        "neige.card.create",
+                        json!({
+                            "track_id": h.track_id,
+                            "kind": kind,
+                            "payload": payload
+                        }),
+                    )
+                    .await
+                    .unwrap_err();
+                    assert_eq!(err.code, RpcError::INVALID_PARAMS, "kind={kind} key={key}");
+                    assert!(
+                        err.message.contains(key) && err.message.contains("server-owned"),
+                        "kind={kind} key={key}: {}",
+                        err.message
+                    );
+                }
+            }
         }
         assert!(
             h.ctx_storage
@@ -1365,17 +1383,33 @@ mod tests {
         .await
         .unwrap();
         let cid = create["id"].as_str().unwrap().to_string();
-        let err = dispatch(
-            &h.ctx(),
-            "neige.card.update",
-            json!({ "card_id": cid, "payload": { "terminal_signals": true } }),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.code, RpcError::INVALID_PARAMS);
-        assert!(err.message.contains("server-owned"), "{}", err.message);
+        for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+            for value in &probes {
+                let mut payload = json!({});
+                payload[key] = value.clone();
+                let err = dispatch(
+                    &h.ctx(),
+                    "neige.card.update",
+                    json!({ "card_id": cid, "payload": payload }),
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(err.code, RpcError::INVALID_PARAMS, "key={key}");
+                assert!(
+                    err.message.contains(key) && err.message.contains("server-owned"),
+                    "key={key}: {}",
+                    err.message
+                );
+            }
+        }
         let stored = h.ctx_storage.repo.card_get(&cid).await.unwrap().unwrap();
-        assert!(stored.payload.get("terminal_signals").is_none());
+        for key in SERVER_OWNED_TERMINAL_PAYLOAD_KEYS {
+            assert!(
+                stored.payload.get(key).is_none(),
+                "{key}: {}",
+                stored.payload
+            );
+        }
     }
 
     #[tokio::test]
