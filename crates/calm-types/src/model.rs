@@ -9,6 +9,7 @@ use ts_rs::TS;
 use utoipa::ToSchema;
 
 pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
+use crate::claude_permissions::ClaudePermissionsScope;
 use crate::planner_attachment::PlannerAttachment;
 use crate::runtime::{AgentProvider, WorkerSessionKind};
 use crate::worker::WorkerSessionState;
@@ -484,6 +485,15 @@ pub struct Track {
     pub recipe_revision: Option<i64>,
     #[serde(default)]
     pub workspace: TrackWorkspace,
+    /// #1704 S2 — the user-set Claude Code permission policy of this track's
+    /// TREE, stored on the tree root only (`tracks.claude_permissions_policy`,
+    /// migration 0109): a child row is always `null` and a PATCH of a child
+    /// is refused, while every CEILING read (`calm.terminal.open`) resolves
+    /// the root. This field is the raw column, so a child shows `null` here
+    /// even when its root carries a policy. `null` for every track without
+    /// one; always serialized (the `recipe_id` convention).
+    #[serde(default)]
+    pub claude_permissions_policy: Option<ClaudePermissionsScope>,
     pub created_at: i64,
     pub updated_at: i64,
 }

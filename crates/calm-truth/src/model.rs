@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
+use calm_types::claude_permissions::{ClaudePermissionsScope, parse_scope_named};
 // #679 PR1 — moved vocabulary, re-exported at the old paths. The source
 // definitions live in calm-types; do NOT re-declare them here (shim-window
 // type-drift risk, issue #679 "Greenfield-specific risks" #4).
@@ -202,6 +203,17 @@ pub struct TrackPatch {
     /// vacuous. A present null resets to the kernel default (32).
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub tree_task_budget: Option<Option<i64>>,
+    /// #1704 S2 — the Claude Code permission policy of the WHOLE track tree
+    /// (`tracks.claude_permissions_policy`, migration 0109). Tree-root-only,
+    /// enforced by `track_update_tx` like `tree_task_budget`: a child row is
+    /// always NULL and every ceiling read resolves the root. `Some(Some(scope))`
+    /// sets it (the route validates the scope first), `Some(None)` clears it,
+    /// omit to leave alone. The value is read through `parse_scope_named`, so
+    /// an array, a `null` list or an unknown key is a shape error naming
+    /// `claude_permissions_policy`, never a lenient decode.
+    #[serde(default, deserialize_with = "deserialize_double_option_policy")]
+    #[schema(value_type = Option<ClaudePermissionsScope>)]
+    pub claude_permissions_policy: Option<Option<ClaudePermissionsScope>>,
     /// Issue #644 — track-level gate policy (`tracks.require_task_gates`,
     /// migration 0041). `Some(v)` sets the flag, omit to leave alone.
     /// Enforced by `calm.plan.upsert` rule 6 only from PR-C onward.
@@ -533,6 +545,25 @@ where
     D: serde::Deserializer<'de>,
 {
     Deserialize::deserialize(d).map(Some)
+}
+
+/// #1704 S2 — `TrackPatch.claude_permissions_policy`: `null` → `Some(None)`
+/// (clear), missing → `None` (leave alone), any other value → the strict
+/// [`parse_scope_named`] shape (`Some(Some(scope))`), whose reason becomes the
+/// deserialization error under the field's own name.
+fn deserialize_double_option_policy<'de, D>(
+    d: D,
+) -> Result<Option<Option<ClaudePermissionsScope>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Deserialize::deserialize(d)?;
+    match value {
+        None => Ok(Some(None)),
+        Some(value) => parse_scope_named("claude_permissions_policy", &value)
+            .map(|scope| Some(Some(scope)))
+            .map_err(serde::de::Error::custom),
+    }
 }
 
 /// Current unix time in milliseconds — the canonical timestamp the kernel
