@@ -81,7 +81,10 @@ vi.mock('../../ui/viewport/public.ts', () => ({
   useCompactViewport: () => harness.compact,
 }));
 
-vi.mock('./settings-overlay.tsx', () => ({ SettingsOverlay: () => null }));
+vi.mock('./settings-overlay.tsx', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./settings-overlay.tsx')>()),
+  SettingsOverlay: () => null,
+}));
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
@@ -281,16 +284,18 @@ describe('AppShell Area editor flow', () => {
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ }).value).toBe('Still here');
   });
 
-  it('opens the same editor from mobile New and Edit actions', async () => {
+  it('opens the same editor from the centered Area menu and the navigation edit icon', async () => {
     renderShell(true);
-    await userEvent.click(screen.getByRole('button', { name: 'Areas' }));
-    const areas = screen.getByRole('dialog', { name: 'Areas' });
-    await userEvent.click(within(areas).getByRole('button', { name: 'New area' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Switch area, Work' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'New area' }));
     expect(screen.getByRole('dialog', { name: 'New area' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-
-    await userEvent.click(within(areas).getByRole('button', { name: /Work/ }));
-    await userEvent.click(within(areas).getByRole('button', { name: 'Edit area Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open areas' }));
+    const navigation = screen.getByRole('dialog', { name: 'Tracks and settings' });
+    await userEvent.click(within(navigation).getByRole('button', { name: 'Work' }));
+    expect(within(navigation).getByRole('button', { name: 'Back to Areas' })).toBeTruthy();
+    await userEvent.click(within(navigation).getByRole('button', { name: 'Area actions' }));
+    await userEvent.click(within(navigation).getByRole('menuitem', { name: 'Edit area Work' }));
     expect(screen.getByRole('dialog', { name: 'Edit Work' })).toBeTruthy();
   });
 });

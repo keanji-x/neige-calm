@@ -105,6 +105,7 @@ export type NavTarget =
    */
   | Readonly<{ name: 'recipes' }>
   | Readonly<{ name: 'settings' }>
+  | Readonly<{ name: 'settings-general' }>
   | Readonly<{ name: 'settings-network' }>
   /**
    * #1230 — Settings drills in rather than stacking every group on one page.
@@ -133,6 +134,7 @@ export function pathFor(target: NavTarget): string {
     case 'track': return `/track/${encodeURIComponent(target.trackId)}`;
     case 'recipes': return '/recipes';
     case 'settings': return '/settings';
+    case 'settings-general': return '/settings/general';
     case 'settings-network': return '/settings/network';
     case 'settings-plugins': return '/settings/plugins';
     case 'settings-appearance': return '/settings/appearance';

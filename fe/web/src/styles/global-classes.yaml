@@ -7,6 +7,7 @@
 # and react-grid-layout names are the vendor class surfaces this app restyles —
 # `astryx-text-input` is where astryx's boxed field and base.css's underlined
 # one are reconciled (see astryx-theme.css).
+- astryx-chat-send-button
 - astryx-text-input
 - calm-prose
 - card-drag-handle

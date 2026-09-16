@@ -45,6 +45,6 @@ export const SOURCE_PANEL_COPY = Object.freeze({
   originTool: '工具',
   contentId: '内容 ID',
   url: 'URL',
-  /** The inline citation on surfaces that cannot open the panel (narrow viewports). */
+  /** The inline citation on surfaces without a Track or source-panel handler. */
   citationBadge: '来源',
 } as const);

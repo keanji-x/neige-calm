@@ -50,20 +50,13 @@ import styles from './mobile-list.module.css';
  * so a literal that disagreed would leave the checker finding no marker at all.
  */
 
-function motionClass(motion: 'none' | 'forward' | 'back'): string {
-  if (motion === 'forward') return styles.pageForward;
-  if (motion === 'back') return styles.pageBack;
-  return '';
-}
-
 export function MobileListPage({
-  title, backLabel, onBack, actions, motion = 'none', children, moduleMarker, titleFieldMarker,
+  title, backLabel, onBack, actions, children, moduleMarker, titleFieldMarker,
 }: Readonly<{
   title: string;
   backLabel?: string;
   onBack?: () => void;
   actions?: ReactNode;
-  motion?: 'none' | 'forward' | 'back';
   children: ReactNode;
   /** #1234 — the value of `data-nc-module` on this page's container. Omit on a
    *  page that is not a row module. */
@@ -74,7 +67,7 @@ export function MobileListPage({
 }>) {
   return (
     <div
-      className={`${styles.page} ${motionClass(motion)}`}
+      className={styles.page}
       {...(moduleMarker === undefined ? {} : { 'data-nc-module': moduleMarker })}
     >
       <MobileHeader
@@ -87,6 +80,12 @@ export function MobileListPage({
       <div className={styles.content}>{children}</div>
     </div>
   );
+}
+
+/** A borderless surface for related mobile list items. Lists inside choose
+ * their own semantics and disable dividers through the standard List prop. */
+export function MobileListGroup({ label, children }: Readonly<{ label: string; children: ReactNode }>) {
+  return <div role="group" aria-label={label} className={styles.group}>{children}</div>;
 }
 
 export function MobileList({ title, children }: Readonly<{ title?: string; children: ReactNode }>) {

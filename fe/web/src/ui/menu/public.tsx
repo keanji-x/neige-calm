@@ -1,17 +1,19 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, type ReactNode } from 'react';
 import { useState } from '../state/public.ts';
 import { useRovingTabindex } from '../focus/public.ts';
 
-export interface MenuItem { label: string; onSelect: () => void; disabled?: boolean; icon?: ReactNode }
+export interface MenuItem { label: string; onSelect: () => void; disabled?: boolean; icon?: ReactNode; current?: boolean; separatorBefore?: boolean }
 export interface MenuTriggerProps { ref: (element: HTMLButtonElement | null) => void; onClick: () => void; 'aria-haspopup': 'menu'; 'aria-expanded': boolean }
 export interface MenuProps {
   items: readonly MenuItem[];
   trigger: (props: MenuTriggerProps) => ReactNode;
   wrapClassName?: string; menuClassName?: string; itemClassName?: string;
   emptyState?: ReactNode; emptyClassName?: string;
+  /** Optional visual class for the semantic boundary before an action group. */
+  separatorClassName?: string;
 }
 
-export function Menu({ items, trigger, wrapClassName, menuClassName, itemClassName, emptyState, emptyClassName }: MenuProps) {
+export function Menu({ items, trigger, wrapClassName, menuClassName, itemClassName, emptyState, emptyClassName, separatorClassName }: MenuProps) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -40,11 +42,15 @@ export function Menu({ items, trigger, wrapClassName, menuClassName, itemClassNa
     {open && <ul className={menuClassName} role="menu">
       {items.length === 0 ? <li className={emptyClassName}>{emptyState}</li> : items.map((item, index) => {
         const props = getItemProps(index);
-        return <li key={`${item.label}:${index}`} role="none"><button
+        return <Fragment key={`${item.label}:${index}`}>
+          {item.separatorBefore && <li role="separator" className={separatorClassName} />}
+          <li role="none"><button
           ref={props.ref} type="button" role="menuitem" tabIndex={props.tabIndex}
           className={`${itemClassName ?? ''}${index === activeIndex ? ' is-active' : ''}`.trim() || undefined}
           onKeyDown={props.onKeyDown} onClick={() => activate(index)} onMouseMove={() => setActiveIndex(index)}
-          aria-disabled={item.disabled || undefined}>{item.icon}{item.label}</button></li>;
+          aria-current={item.current ? 'page' : undefined}
+          aria-disabled={item.disabled || undefined}>{item.icon}{item.label}</button></li>
+        </Fragment>;
       })}
     </ul>}
   </div>;

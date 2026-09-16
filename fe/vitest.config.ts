@@ -15,6 +15,7 @@ const setupFiles = [
   './tools/vitest/build-constants.ts',
   './tools/vitest/dom-diagnostics.ts',
   './tools/vitest/jsdom-match-media.ts',
+  './tools/vitest/jsdom-resize-observer.ts',
 ];
 
 export default defineConfig({

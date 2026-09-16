@@ -103,7 +103,8 @@ import {
 } from '../../features/report/recipe/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, type UiPreferences } from '../providers/ui-preferences.tsx';
-import { AppShell, useOpenMobileSection } from '../shell/public.tsx';
+import { TrackSelector } from '../shell/track-selector.tsx';
+import { AppShell, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost, useMobileTrackChoices } from '../shell/public.tsx';
 import {
   ConversationProvider, useConversationRegistry,
   type ConversationDraft, type ConversationDraftId, type FailedConversationSend,
@@ -1208,6 +1209,12 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
     component: renderNothing,
   });
 
+  const generalRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/general',
+    component: renderNothing,
+  });
+
   const networkRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings/network',
@@ -1234,7 +1241,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
 
   return rootRoute.addChildren([
     indexRoute, newTrackRoute, trackRoute, recipesRoute, settingsRoute,
-    networkRoute, pluginsRoute, appearanceRoute, aboutRoute,
+    generalRoute, networkRoute, pluginsRoute, appearanceRoute, aboutRoute,
   ]);
 }
 
@@ -2690,6 +2697,9 @@ function TrackRouteBody({
   const trackMutations = useTrackMutations(transport, unauthorized);
   const conversationMutations = useTrackConversationMutations(transport, track.id, unauthorized);
   const openMobileSection = useOpenMobileSection();
+  const mobileHeaderActionsHost = useMobileHeaderActionsHost();
+  const mobileHeaderTitleHost = useMobileHeaderTitleHost();
+  const mobileTrackChoices = useMobileTrackChoices();
   const go = useGo();
   const goSameTrack = useGoSameTrack();
   const fileNavigation = useTrackFileNavigation();
@@ -3245,18 +3255,12 @@ function TrackRouteBody({
    * right rail. Route-local state, not the URL — `report-source.tsx` says why
    * — and keyed to this body, so leaving the track drops it.
    *
-   * **Not on a narrow viewport.** There is no rail to open the drawer in, and
-   * the design's v1 answer is the inline citation the document paints when
-   * it is given no handler (badge + label, not a control). The handler is
-   * withheld rather than made a no-op so the document cannot render a button
-   * that does nothing; the effect closes a panel the viewport shrank under.
-   * Declared as an intentional omission in `docs/oracle/pages-shared.yaml`.
+   * Phone and desktop share the same source query. Drawer supplies the
+   * phone's full-page presentation and Back to Report action; retaining the
+   * target across viewport changes also keeps the highlighted quote stable.
    */
   const [sourceTarget, setSourceTarget] = useState<ReportSourceLinkTarget | null>(null);
-  useEffect(() => {
-    if (compactViewport) setSourceTarget(null);
-  }, [compactViewport]);
-  const sourceOpen = sourceTarget !== null && !compactViewport;
+  const sourceOpen = sourceTarget !== null;
   const openReportSource = (target: ReportSourceLinkTarget) => { setSourceTarget(target); };
   const closeReportSource = () => { setSourceTarget(null); };
 
@@ -3284,6 +3288,12 @@ function TrackRouteBody({
     {taskFiles.dialog}
     <TrackStage>
     <TrackPage
+      mobilePanelObscured={chat.isOpen || sourceOpen}
+      mobileHeaderActionsHost={mobileHeaderActionsHost}
+      mobileHeaderTitleHost={mobileHeaderTitleHost}
+      mobileTitleReadView={mobileTrackChoices === null ? undefined : (controls) => <TrackSelector
+        track={track} {...mobileTrackChoices(track.areaId)} controls={controls}
+        onSelectTrack={(trackId) => go({ name: 'track', trackId, from: 'area' })} />}
       track={track}
       canResumeTrack={canResumeTrack}
       cards={panelCards}
@@ -3340,8 +3350,8 @@ function TrackRouteBody({
          return to is the track's own, not a stored restore id. */
       mobileBackLabel={routeFrom === 'area' ? 'Tracks' : 'Pages'}
       onMobileBack={() => {
-        if (routeFrom === 'area') openMobileSection('areas', track.areaId);
-        else openMobileSection('pages');
+        if (routeFrom === 'area') openMobileSection({ kind: 'tracks', areaId: track.areaId });
+        else openMobileSection({ kind: 'pages' });
       }}
       report={<ReportDocument
         report={report}
@@ -3362,7 +3372,7 @@ function TrackRouteBody({
         backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
         onOpenLink={openReportLink}
         onOpenFileLink={openReportFile}
-        onOpenSourceLink={compactViewport ? undefined : openReportSource}
+        onOpenSourceLink={openReportSource}
         fileRoot={track.cwd}
         arrivalAnchorId={arrivalAnchorId}
         /*

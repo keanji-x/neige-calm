@@ -44,6 +44,12 @@
     box-shadow: none;
   }
 
+  /* ChatSendButton publishes this hook; its default full fallback loses to
+     the composer's inherited concentric button radius. Send/Stop stay circles. */
+  .astryx-chat-send-button {
+    border-radius: var(--radius-full);
+  }
+
   :root {
     /* Surfaces */
     --color-background-body: var(--bg);
@@ -84,6 +90,7 @@
     --radius-inner: var(--radius-sm);
     --radius-element: var(--radius-md);
     --radius-container: var(--radius-lg);
+    --radius-chat: var(--radius-lg);
     --radius-full: var(--radius-pill);
 
     /* Type families */

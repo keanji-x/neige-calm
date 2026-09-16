@@ -123,22 +123,17 @@ function stubCompactViewport() {
 }
 
 describe('the source panel on the track page', () => {
-  /* #1669 §2.5's intentional omission (`INV-REPORTSOURCE-001`): no rail, no
-     drawer. The citation is painted, as a badge and its label, and it is not
-     a control — the document never receives the handler on this viewport. */
-  it('paints a citation as an inline badge, not a control, on a narrow viewport', async () => {
+  it('opens a cited source on a phone and returns to the report without writing data', async () => {
     stubCompactViewport();
     try {
       const { requests } = setup();
-      const citation = await waitFor(() => {
-        const found = document.querySelector('[data-nc-report-source-citation]');
-        if (found === null) throw new Error('citation not painted yet');
-        return found;
-      });
-      expect(citation.textContent).toBe(`${SOURCE_PANEL_COPY.citationBadge}Mikko 日志`);
-      expect(screen.queryByRole('button', { name: 'Mikko 日志' })).toBeNull();
-      expect(document.querySelector('[data-nc-report-source-link]')).toBeNull();
-      expect(requests.some((request) => request.path.startsWith('/api/tracks/w1/sources/'))).toBe(false);
+      fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }));
+      const drawer = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
+      expect(drawer.querySelector('mark')?.textContent).toBe('9月加息概率接近九成');
+      expect(requests.filter((request) => request.path === '/api/tracks/w1/sources/src_2c9e0a1b')).toHaveLength(1);
+      fireEvent.click(within(drawer).getByRole('button', { name: 'Back to Report' }));
+      await waitFor(() => expect(drawer.isConnected).toBe(false));
+      expect(requests.filter((request) => request.method !== 'GET')).toHaveLength(0);
     } finally {
       vi.unstubAllGlobals();
     }

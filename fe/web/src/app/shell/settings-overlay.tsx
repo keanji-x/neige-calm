@@ -1,32 +1,11 @@
-// The Settings overlay — one dialog, five routes, and the reads each pane needs.
-//
-// ## Why this lives in the shell and not in the route components
-//
-// It used to be a `<Dialog>` returned by each settings route. That renders a
-// *new* dialog per route: clicking General → Plugins unmounted one panel and
-// mounted another, so the entrance animation replayed on every click and the
-// panel flashed. Measured, not guessed — after a section click the panel was a
-// different DOM node with `animation-name: dialog-enter` running again.
-//
-// A dialog that stays open while the reader moves *inside* it has to outlive
-// those navigations, and the nearest thing that does is the shell: it is above
-// `<Outlet />` and never unmounts across a settings navigation. So the shell
-// owns the dialog, exactly as it already owns the New track dialog and for the
-// same reason — two surfaces, one dialog, one set of strings.
-//
-// The routes stay real routes (`/settings`, `/settings/network`,
-// `/settings/appearance`, `/settings/plugins`, `/settings/about`) and their
-// components render nothing.
-// The URL is the *state* — which section is open, what a deep link means, what
-// Back does — and this file is the *view* of that state. Splitting them that
-// way is what keeps the panel from blinking as the reader moves between
-// sections.
-//
-// #1300 S1 removed `/settings/templates` and `/settings/templates/$templateId`
-// along with the template editor they existed for; templates are a read-only
-// recipe again, and `GET /api/track-templates` is read only by the New track
-// picker.
+// One Settings visit: a desktop dialog or a mobile route page, selected by the
+// shared compact breakpoint. The shell owns this above its keyed route stage,
+// so section routes keep one surface mounted. The URL selects the section;
+// pane hosts remain the sole owners of API reads and unsaved plugin forms.
 
+import { useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { useRouter, useRouterState, type RouterHistory } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -36,10 +15,14 @@ import { PluginAddPane } from '../../features/settings/plugin-add.tsx';
 import { PluginsPane } from '../../features/settings/plugins.tsx';
 import {
   AboutPane, AppearancePane, GeneralPane, NetworkPane, SettingsSurface,
-  type SettingsSection, type ThemeMode as SettingsThemeMode,
+  type ThemeMode as SettingsThemeMode,
 } from '../../features/settings/public.tsx';
+import { SETTINGS_SECTIONS, settingsSectionLabel, type SettingsSection } from '../../features/settings/navigation.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
+import { useCompactViewport } from '../../ui/viewport/public.ts';
+import { MobileHeader } from '../../ui/mobile-header/public.tsx';
+import styles from './settings-page.module.css';
 import {
   pluginDetailQueryOptions, pluginsQueryOptions, settingsQueryOptions, usePluginConfigMutations,
   usePluginInstall, usePluginMutations, useSettingsMutation,
@@ -56,22 +39,12 @@ import { MobileAccessHost } from './mobile-access-host.tsx';
  */
 export function settingsSectionForPath(path: string): SettingsSection | null {
   if (path === '/settings') return 'general';
-  if (path === '/settings/network') return 'network';
-  if (path === '/settings/appearance') return 'appearance';
-  if (path === '/settings/plugins') return 'plugins';
-  if (path === '/settings/about') return 'about';
-  return null;
+  return SETTINGS_SECTIONS.find((entry) => path === `/settings/${entry.id}`)?.id ?? null;
 }
 
-/** The route each nav entry navigates to. `general` is the bare `/settings`. */
-function targetForSection(section: SettingsSection): NavTarget {
-  switch (section) {
-    case 'general': return { name: 'settings' };
-    case 'network': return { name: 'settings-network' };
-    case 'appearance': return { name: 'settings-appearance' };
-    case 'plugins': return { name: 'settings-plugins' };
-    case 'about': return { name: 'settings-about' };
-  }
+/** Desktop General keeps the historical root; every mobile category has a URL. */
+function targetForSection(section: SettingsSection, compact: boolean): NavTarget {
+  return { name: section === 'general' && !compact ? 'settings' : `settings-${section}` };
 }
 
 export type SettingsOverlayProps = Readonly<{
@@ -79,32 +52,97 @@ export type SettingsOverlayProps = Readonly<{
   unauthorized: UnauthorizedChannel;
 }>;
 
+/**
+ * The pane tree is one portal into a stable container. Only the container's DOM
+ * parent changes between the inline mobile page and the desktop dialog slot.
+ * React ownership remains here, so resizing cannot discard plugin drafts.
+ * Current Settings panes use no Dialog child-view context; any future such
+ * consumer needs an explicit bridge rather than assuming DOM ancestry is context.
+ */
 export function SettingsOverlay({ transport, unauthorized }: SettingsOverlayProps) {
   const go = useGo();
+  const router = useRouter();
   const path = useCurrentPath();
+  const href = useRouterState({ select: (state) => state.location.href });
   const section = settingsSectionForPath(path);
-  return (
-    <Dialog
-      open={section !== null}
-      // Today, not `history.back()`: a cold-start deep link to
-      // `/settings/plugins` has nothing to go back to, and walking out of the
-      // application is not "close this dialog".
-      onClose={() => go({ name: 'today' })}
-      title="Settings"
-      wide
-    >
-      <SettingsSurface
-        section={section ?? 'general'}
-        onSelectSection={(next) => go(targetForSection(next))}
-      >
-        <SectionPane
-          section={section ?? 'general'}
-          transport={transport}
-          unauthorized={unauthorized}
-        />
-      </SettingsSurface>
+  const compact = useCompactViewport();
+  const mobileIndex = compact && path === '/settings';
+  const [contentHost] = useState(() => document.createElement('div'));
+  const focusedContentRef = useRef<HTMLElement | null>(null);
+  const relocatingContentRef = useRef(false);
+  const attachContent = useCallback((slot: HTMLDivElement | null) => {
+    if (slot === null || contentHost.parentNode === slot) return;
+    const focused = focusedContentRef.current;
+    const restore = focused !== null && contentHost.contains(focused)
+      && (document.activeElement === focused || document.activeElement === document.body);
+    // Moving the same editor between responsive hosts is not leaving its field.
+    relocatingContentRef.current = true;
+    slot.appendChild(contentHost);
+    if (restore) focused.focus({ preventScroll: true });
+    relocatingContentRef.current = false;
+  }, [contentHost]);
+  useEffect(() => {
+    // On desktop → phone, Dialog removes background inertness in its cleanup.
+    // A focus attempt while moving the field can therefore have been ignored.
+    const focused = focusedContentRef.current;
+    if (compact && focused !== null && contentHost.contains(focused)
+      && document.activeElement === document.body) focused.focus({ preventScroll: true });
+  }, [compact, contentHost]);
+  const history = router.history as RouterHistory;
+  const historyIndex = history.location.state.__TSR_index;
+  const returnLocation = useRef<Readonly<{ href: string; index: number }> | null>(null);
+  const indexLocation = useRef<number | null>(null);
+  useEffect(() => {
+    if (section === null) {
+      returnLocation.current = { href, index: historyIndex };
+      indexLocation.current = null;
+    } else if (path === '/settings') indexLocation.current = historyIndex;
+  }, [href, historyIndex, path, section]);
+  const leaveMobilePage = () => {
+    const previous = returnLocation.current;
+    const distance = previous === null ? 0 : history.location.state.__TSR_index - previous.index;
+    // Only pop entries after a workspace entry this mounted shell observed.
+    // Section pushes made on desktop belong to the same visit if resized.
+    if (distance > 0 && history.canGoBack()) {
+      history.go(-distance);
+      return;
+    }
+    // A cold settings link, or a replaced workspace entry, has no owned
+    // entry to pop. Keep that exit inside the app without guessing at Back.
+    void router.navigate({ to: previous?.href ?? '/', replace: true });
+  };
+  const backToIndex = () => {
+    const previous = indexLocation.current;
+    const distance = previous === null ? 0 : history.location.state.__TSR_index - previous;
+    if (distance > 0 && history.canGoBack()) {
+      history.go(-distance);
+      return;
+    }
+    // Cold category links and desktop shortcuts have no observed index entry.
+    go({ name: 'settings' }, { replace: true });
+  };
+  if (section === null) return null;
+  return <>
+    <section className={styles.page} hidden={!compact} data-nc-settings-page="" aria-label="Settings">
+      <MobileHeader title={mobileIndex ? 'Settings' : settingsSectionLabel(section)} level={1}
+        backLabel={mobileIndex ? 'workspace' : 'Settings'} onBack={mobileIndex ? leaveMobilePage : backToIndex} />
+      <div className={styles.content} ref={compact ? attachContent : undefined} />
+    </section>
+    <Dialog open={!compact} onClose={() => go({ name: 'today' })} title="Settings" wide>
+      <div ref={!compact ? attachContent : undefined} />
     </Dialog>
-  );
+    {createPortal(<div
+      onFocusCapture={(event) => { focusedContentRef.current = event.target; }}
+      onBlurCapture={(event) => {
+        if (relocatingContentRef.current) event.stopPropagation();
+        else if (!contentHost.contains(event.relatedTarget)) focusedContentRef.current = null;
+      }}>
+    <SettingsSurface section={section}
+      presentation={!compact ? 'desktop' : mobileIndex ? 'mobile-index' : 'mobile-detail'}
+      onSelectSection={(next) => go(targetForSection(next, compact))}>
+      <SectionPane section={section} transport={transport} unauthorized={unauthorized} />
+    </SettingsSurface></div>, contentHost)}
+  </>;
 }
 
 /** One switch, so a new section cannot forget to be rendered. */

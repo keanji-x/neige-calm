@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPortal } from 'react-dom';
 import { useEffect, useRef } from 'react';
 import { Dialog, useDialogView, type DialogViewController } from './public.tsx';
 
@@ -41,6 +42,23 @@ function Capture({ onController }: { onController: (value: DialogViewController)
 }
 
 describe('Dialog behavior', () => {
+  it('traps Tab from a portal owned outside the dialog React tree', () => {
+    const host = document.createElement('div');
+    render(<>
+      <Dialog open title="Settings" onClose={vi.fn()}>
+        <div ref={(slot) => { slot?.appendChild(host); }} />
+      </Dialog>
+      {createPortal(<button type="button">Portal last</button>, host)}
+    </>);
+    const last = screen.getByRole('button', { name: 'Portal last' });
+    const first = screen.getByRole('button', { name: 'Close' });
+    last.focus();
+    fireEvent.keyDown(last, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
+
   it('renders the close control with the shared stroked icon instead of a text glyph', () => {
     render(<Dialog open title="Test" onClose={vi.fn()} />);
     const close = screen.getByRole('button', { name: 'Close' });

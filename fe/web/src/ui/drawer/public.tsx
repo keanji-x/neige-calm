@@ -181,12 +181,15 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
    */
   if (open !== wasOpen.current) {
     // Only a true → false edge retracts; mounting closed does not.
-    const retracts = wasOpen.current && !open
+    const retracts = wasOpen.current && !open && !compact
       && !globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     shouldRestoreFocus.current = wasOpen.current && !open;
     wasOpen.current = open;
     setClosing(retracts);
   }
+  // A desktop exit may still be running when the viewport becomes compact.
+  // Compact pages disappear in this commit; no mobile animationend is owed.
+  if (compact && closing) setClosing(false);
 
   useEffect(() => {
     if (!open) return;
@@ -289,7 +292,7 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
      * that just refused focus may simply be waiting for the animation to end.
      * Leave `shouldRestoreFocus` armed and let the rerun this effect gets when
      * `closing` clears do the work — falling through to the page title here
-     * would throw the opener away for a state that lasts 200ms. An opener that
+     * would throw the opener away for a state that lasts one desktop animation. An opener that
      * has left the DOM is a different answer and not a slow one, so
      * `isConnected` keeps it on the fallback path with no wait.
      */
@@ -299,21 +302,9 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
     if (fallback !== null && document.contains(fallback)) fallback.focus();
   }, [open, closing]);
 
-  /*
-   * The drawer **leaves**; it does not vanish.
-   *
-   * §7.6 said enter animates and exit is instant, on the reasoning that an exit
-   * transition keeps the screen busy after the decision is made. That is right
-   * for a dialog, which is a thing that was in the way and is now gone, and it
-   * is wrong here: closing a conversation does not end it, and an instant
-   * disappearance is the vocabulary for something being destroyed. It goes out
-   * the way it came in — 12px and a fade, reversed — which is the mildest thing
-   * that still reads as "put away" rather than "gone".
-   *
-   * So closing holds the element mounted for one animation. Reduced motion
-   * skips the phase entirely rather than waiting on an `animationend` that a
-   * suppressed animation will never fire.
-   */
+  /* Desktop retains one frame for its exit animation. Compact pages and
+     reduced motion skip that phase, so closing never waits for an animation
+     that the responsive stylesheet does not play. */
   if (!open && !closing) return null;
   /*
    * `data-nc-drawer` is the marker `app/shell` hides the trailing PanelCard by.

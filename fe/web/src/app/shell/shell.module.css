@@ -45,12 +45,9 @@
   /* Desktop keeps the existing rail as a direct grid child. The wrappers only
      become real boxes in the compact/mobile presentation below. */
   .navigation,
-  .navigationPanel {
+  .navigationPanel,
+  .navigationContent {
     display: contents;
-  }
-
-  .mobileDock {
-    display: none;
   }
 
   .main {
@@ -73,6 +70,10 @@
        region and the page would jump. `clip` paints the same crop without a
        scrollport. The page inside `.stage` is the only scroller. */
     overflow: clip;
+  }
+
+  .stage[hidden] {
+    display: none;
   }
 
   .stage {
@@ -189,12 +190,9 @@
     .shell,
     .shellCollapsed,
     .shellExpanded {
-      --mobile-dock-h: calc(var(--rail-w-collapsed) + var(--space-6) * 2);
-      grid-template-columns: minmax(0, 1fr);
-    }
-
-    .shellMobileSecondary {
       --mobile-dock-h: 0px;
+      grid-template-rows: auto minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr);
     }
 
     .navigation {
@@ -217,9 +215,9 @@
       grid-column: 1;
       grid-row: 1;
       display: flex;
+      flex-direction: column;
       min-block-size: 0;
       box-sizing: border-box;
-      padding-block-end: calc(var(--mobile-dock-h) + env(safe-area-inset-bottom));
       background: var(--bg);
     }
 
@@ -228,65 +226,31 @@
       --conversation-span: 100cqi;
     }
 
+    /* A pushed page remains the painted background of both drawer motions.
+       TrackPage makes it inert while any foreground drawer is active. */
+    .main:has([data-nc-drawer]) [data-nc-panel][data-nc-mobile-page='open'] {
+      visibility: visible;
+    }
+
     .main[aria-hidden='true'] [data-nc-mobile-report-chat] {
       display: none !important;
     }
 
     .stage {
-      padding-block-start: env(safe-area-inset-top);
       padding-block-end: calc(var(--mobile-dock-h) + env(safe-area-inset-bottom));
     }
 
-    .mobileDock {
-      position: fixed;
-      inset-inline-start: 50%;
-      inset-block-end: calc(env(safe-area-inset-bottom) + var(--space-4));
-      z-index: var(--z-toast);
-      display: grid;
-      /* `--mobile-dock-count` is set by the shell from `DOCK_ITEMS.length`
-         (#1191 §3.3); the fallback keeps the strip laid out if the element is
-         ever rendered without it. */
-      grid-template-columns: repeat(var(--mobile-dock-count, 4), minmax(0, 1fr));
-      inline-size: min(calc(100% - var(--space-10) * 2), 17.5rem);
-      block-size: calc(var(--mobile-dock-h) - var(--space-4));
-      padding: var(--space-1) var(--space-3);
-      border: 1px solid var(--hairline);
-      border-radius: var(--radius-pill);
-      background: color-mix(in oklab, var(--paper) 88%, transparent);
-      backdrop-filter: blur(18px) saturate(1.12);
-      box-shadow: var(--shadow-float);
-      isolation: isolate;
-      translate: -50% 0;
-      transform: translateZ(0);
+    .settingsPageShell {
+      grid-template-rows: minmax(0, 1fr);
     }
 
-    .mobileDockHidden {
-      display: none;
+    .navigationContent {
+      display: block;
+      flex: 1 1 auto;
+      min-block-size: 0;
+      overflow: clip;
     }
 
-    .mobileDockItem {
-      position: relative;
-      z-index: var(--z-raised);
-      display: flex;
-      min-inline-size: 0;
-      min-block-size: var(--rail-w-collapsed);
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: var(--space-0);
-      border-radius: var(--radius-md);
-      font-size: var(--text-xs);
-      line-height: var(--leading-none);
-      color: var(--text-3);
-      cursor: pointer;
-      backface-visibility: hidden;
-      transform: translateZ(0);
-    }
-
-    .mobileDockItem[aria-current='page'] {
-      color: var(--accent);
-      font-weight: var(--weight-medium);
-    }
 
   }
 

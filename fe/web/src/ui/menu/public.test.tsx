@@ -37,4 +37,21 @@ describe('Menu behavior', () => {
     fireEvent.keyDown(screen.getByRole('menuitem'), { key: 'Escape' });
     expect(document.activeElement).toBe(trigger);
   });
+  it('marks only a current destination and separates actions without adding a keyboard stop', async () => {
+    render(<Menu items={[
+      { label: 'Product', current: true, onSelect: vi.fn() },
+      { label: 'Frontend', onSelect: vi.fn() },
+      { label: 'New area', separatorBefore: true, onSelect: vi.fn() },
+    ]} separatorClassName="divider" trigger={(props) => <button {...props}>Areas</button>} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Areas' }));
+    expect(screen.getByRole('menuitem', { name: 'Product' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('menuitem', { name: 'Frontend' }).hasAttribute('aria-current')).toBe(false);
+    expect(screen.getByRole('separator').className).toBe('divider');
+    expect(screen.getByRole('separator').nextElementSibling?.textContent).toBe('New area');
+    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Product' }), { key: 'ArrowDown' });
+    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Frontend' }), { key: 'ArrowDown' });
+    await Promise.resolve();
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'New area' }));
+  });
+
 });

@@ -113,7 +113,7 @@
     remains recovery evidence rather than an acknowledged queue entry.
     The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
     stays `migration: pending` against `web/e2e`.
-  source: fe/web/src/app/router/public.tsx:544-562,704-706,765-772,942-955
+  source: fe/web/src/app/router/public.tsx:548-566,708-715,773-777,946-959
   # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
   # the composer stays open, and whether a second message can be sent. The predicate itself is
   # tabulated a second time at the platform-independent tier
@@ -177,7 +177,7 @@
     `lint:depcruise`): every file rendering `DirectoryField` or `DirectoryBrowser` must be
     registered with how it hosts the picker, so an unregistered call site is red before anyone
     reads a test. This row keeps only what its own test can falsify.
-  source: fe/web/src/features/area/new-track/public.tsx:787-800;
+  source: fe/web/src/features/area/new-track/public.tsx:759-772;
     fe/tools/architecture/directory-picker-hosts.mjs:128-153,346-367
   authoritative_test: fe/web/src/features/area/new-track/public.test.tsx:1039-1063
   owner_slice: features/track/create

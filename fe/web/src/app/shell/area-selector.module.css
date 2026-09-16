@@ -1,0 +1,90 @@
+@layer features {
+  .trackIdentity {
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-inline-size: 0;
+  }
+
+  .trackHeading {
+    min-inline-size: 0;
+    margin: 0;
+    font: inherit;
+  }
+
+  .area {
+    position: relative;
+    min-inline-size: 0;
+    justify-self: center;
+    max-inline-size: 100%;
+  }
+
+  .trackIdentity .area {
+    position: static;
+  }
+
+  .button {
+    min-inline-size: 0;
+    max-inline-size: 100%;
+    min-block-size: var(--rail-w-collapsed);
+    padding-inline: var(--space-3);
+    font-size: calc(var(--text-md) + 1px);
+    font-weight: var(--weight-medium);
+  }
+
+  .menu {
+    position: absolute;
+    z-index: var(--z-overlay);
+    inset-block-start: calc(100% + var(--space-3));
+    inset-inline-start: 50%;
+    translate: -50% 0;
+    inline-size: min(19rem, calc(100vw - var(--space-8)));
+    max-block-size: 60dvh;
+    overflow: auto;
+    padding: var(--space-2);
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-float);
+  }
+
+  .item {
+    display: flex;
+    gap: var(--space-4);
+    align-items: center;
+    min-block-size: var(--rail-w-collapsed);
+    inline-size: 100%;
+    padding: var(--space-3) var(--space-5);
+    border-radius: var(--radius-md);
+    text-align: start;
+    overflow-wrap: anywhere;
+    font-size: var(--text-md);
+    cursor: pointer;
+  }
+
+  .item svg {
+    flex: none;
+    inline-size: calc(var(--glyph) + var(--space-2));
+    block-size: calc(var(--glyph) + var(--space-2));
+    color: var(--text-3);
+  }
+
+  .item:hover,
+  .item:focus-visible {
+    background: var(--overlay-hover-strong);
+  }
+
+  .item[aria-current='page'] {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .item:active {
+    background-image: linear-gradient(var(--overlay-active), var(--overlay-active));
+  }
+
+  .separator {
+    margin-block: var(--space-3);
+    border-block-start: 1px solid var(--hairline);
+  }
+}

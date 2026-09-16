@@ -1,9 +1,12 @@
-/* What is left after the form moved onto `@astryxdesign/core` (#1209): only
-   page layout, the composer's local focus treatment, and the bound-input
-   panel's inset rule. The compact starting-point/folder controls live in the
-   shared `default-pills` module; every other control's look comes from astryx
-   and is deliberately not restated here. */
+/* Astryx owns control appearance. This file owns page layout, the composer's
+   local focus treatment and input size, plus the send button's full contour.
+   Shared default-pills own Template/Folder widths and pill contours; no general
+   button recipe is restated here. */
 @layer features {
+  .send {
+    border-radius: var(--radius-pill);
+  }
+
   /*
    * #1211 — the page whose whole content is one composer.
    *
@@ -264,22 +267,12 @@
     gap: var(--space-2);
   }
 
-  /* The settings row. `HStack` gives it the axis and the gap; what it cannot
-     give is the wrap, and this row can hold a folder name of any length beside
-     a template title of any length. It wraps rather than truncating either,
-     because both are values the reader chose. */
-  .controls {
+  /* Preserve ChatComposer's desktop footer slots. */
+  .composer :has(> :first-child > [data-nc-composer-preferences]) {
     flex-wrap: wrap;
   }
 
-  /* Astryx exposes the two footer slots, but no footer className. The owned
-     controls identify that row: wrap the slots as units so model, effort and
-     Send stay together when the starting-point/folder chips need another line. */
-  .composer :has(> :first-child > .controls) {
-    flex-wrap: wrap;
-  }
-
-  .composer :has(> :first-child > .controls) > :last-child {
+  .composer :has(> :first-child > [data-nc-composer-preferences]) > :last-child {
     margin-inline-start: auto;
   }
 
@@ -291,6 +284,71 @@
     gap: var(--space-4);
     padding-inline-start: var(--space-6);
     border-inline-start: 1px solid var(--hairline);
+  }
+
+  /* These wrappers leave the desktop footer's existing two slots intact. */
+  .modelControls {
+    display: contents;
+  }
+
+  @media (width < 60rem) {
+    .page {
+      justify-content: safe center;
+      padding: var(--space-10) var(--space-6) clamp(var(--space-10), 27dvh, 14rem);
+    }
+
+    .masthead {
+      margin-block-end: var(--space-8);
+    }
+
+    .mark {
+      display: none;
+    }
+
+    .greeting {
+      font-family: var(--font-sans);
+      font-size: var(--text-xl);
+      font-weight: var(--weight-medium);
+    }
+
+    .input > [contenteditable],
+    .input > [aria-hidden="true"] {
+      font-size: var(--text-lg);
+      line-height: var(--leading-base);
+    }
+
+    .composer .input > [contenteditable] {
+      min-block-size: 54px;
+      min-block-size: 2lh;
+    }
+
+    /* Keep the model and Create together. The preference helper measures the
+       remaining space and folds its two controls before their labels clip. */
+    .composer :has(> :first-child > [data-nc-composer-preferences]) {
+      flex-wrap: nowrap;
+      gap: var(--space-4);
+    }
+
+    .composer :has(> :first-child > [data-nc-composer-preferences]) > :first-child {
+      min-inline-size: 0;
+    }
+
+    .composer :has(> :first-child > [data-nc-composer-preferences]) > :last-child {
+      flex: none;
+      max-inline-size: calc(100% - var(--space-12) - var(--space-4));
+    }
+
+    .modelControls > * {
+      min-inline-size: 0;
+    }
+
+    .modelControls > * > span > button {
+      min-inline-size: 0;
+    }
+
+    .send {
+      flex: none;
+    }
   }
 
 }

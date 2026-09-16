@@ -81,23 +81,28 @@ describe('degraded workspace reads stay usable', () => {
     expect(within(rail).queryByRole('button', { name: 'Create your first area' })).toBeNull();
   });
 
-  it.each(['Areas', 'Pages'])('provides recovery inside the mobile %s sheet without claiming it is empty', async (section) => {
+  it.each(['areas', 'tracks'] as const)('provides recovery for the mobile %s read without claiming it is empty', async (resource) => {
     const media = window.matchMedia('');
     vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({ ...media, matches: query.includes('width'), media: query }));
     let broken = true;
     renderRoute('/', (request) => {
-      if (request.path === '/api/areas') return broken ? fail('Area storage unavailable') : ok(areas);
-      if (request.path === '/api/areas/c1/tracks') return ok([track]);
+      if (request.path === '/api/areas') return broken && resource === 'areas' ? fail('Area storage unavailable') : ok(areas);
+      if (request.path === '/api/areas/c1/tracks') return broken && resource === 'tracks' ? fail('Tracks temporarily unavailable') : ok([track]);
       return ok([]);
     });
-    await userEvent.click(await screen.findByRole('button', { name: section }));
-    const sheet = screen.getByRole('dialog', { name: section });
+    // Track failures keep a known current Area; Area failures open navigation
+    // before one exists, and recovery must attach its newly loaded track list.
+    if (resource === 'tracks') await screen.findByRole('button', { name: 'Switch area, One' });
+    await userEvent.click(await screen.findByRole('button', { name: 'Open areas' }));
+    const sheet = screen.getByRole('dialog', { name: 'Tracks and settings' });
     const alert = await within(sheet).findByRole('alert');
-    expect(alert.textContent).toContain('Areas are unavailable');
-    expect(within(sheet).queryByText('No recent Pages.')).toBeNull();
+    expect(alert.textContent).toContain(resource === 'areas' ? 'Areas are unavailable' : 'Tracks temporarily unavailable');
+    expect(within(sheet).queryByText('No tracks in this area yet.')).toBeNull();
     broken = false;
     await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
-    await within(sheet).findByRole('button', { name: section === 'Areas' ? /One/ : /Reliable/ });
+    await userEvent.click(await within(sheet).findByRole('button', { name: 'One' }));
+    await within(sheet).findByRole('heading', { name: 'One' });
+    await within(sheet).findByRole('button', { name: /Reliable/ });
     await waitFor(() => expect(within(sheet).queryByRole('alert')).toBeNull());
   });
 

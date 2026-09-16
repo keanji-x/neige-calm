@@ -1062,7 +1062,7 @@ describe('the route refuses an area id that no longer exists', () => {
     harness({ templates: TEMPLATES, path: '/area/c1/new', heldAreas: held });
 
     // The route is mounted and the read is outstanding — nothing submittable.
-    await screen.findByRole('button', { name: 'Today' });
+    await screen.findByRole('button', { name: 'Go to Today' });
     expect(screen.queryByLabelText(TASK_LABEL)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Create track' })).toBeNull();
 
@@ -1094,7 +1094,7 @@ describe('the route refuses an area id that no longer exists', () => {
 
     /* The shell is up and the route committed: without this the absence checks
        below would pass against an app that had not rendered at all. */
-    await screen.findByRole('button', { name: 'Today' });
+    await screen.findByRole('button', { name: 'Go to Today' });
     expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c9/new`);
 
     expect(screen.queryByLabelText(TASK_LABEL)).toBeNull();
@@ -1331,7 +1331,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
 
     // They leave while the create is still in flight.
-    await userEvent.click(await screen.findByRole('button', { name: 'Today' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Go to Today' }));
     await waitFor(() => { expect(window.location.pathname).toBe(`${APP_BASEPATH}/`); });
 
     releaseCreate();

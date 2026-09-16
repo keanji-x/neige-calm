@@ -31,6 +31,12 @@
     min-block-size: 100dvh;
   }
 
+  /* Match Astryx's documented reset: use each control's own pressed paint,
+     not the browser's blue rectangular tap overlay. Keyboard focus is kept. */
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
   /* Headings and lists carry UA margins that fight every flex/grid gap in
      the app. The gap is the layout tool here; margins are opt-in. */
   h1, h2, h3, h4, h5, h6,

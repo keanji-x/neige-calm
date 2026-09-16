@@ -67,6 +67,7 @@ describe('a withdrawn declaration on the mobile Tasks page', () => {
     await browserPage.viewport(420, 900);
     render(
       <TrackPage
+        mobilePanelObscured={false}
         track={track}
         cards={[]}
         tasks={TASKS}

@@ -4,6 +4,20 @@ Workspace settings. Every surface here is presentational: it never calls an API.
 The bag, the in-flight flag, the error strings and the callbacks all arrive as
 props; `app/shell/settings-overlay` owns fetching and mutating.
 
+## Responsive category navigation
+
+`navigation.tsx` owns the one category roster used by the desktop SideNav,
+the mobile vertical index, and route page titles. `SettingsSurface` requires
+an explicit `presentation`: desktop, mobile-index, or mobile-detail. Its pane
+keeps the same React position as presentation changes, including when hidden
+on the index, so resizing does not recreate unsaved plugin forms.
+
+Only the five top-level panes pass `category` to `SettingsPane`. That marks
+their heading for scoped concealment when the mobile page header already
+names that category. Plugin installation and configuration drill-ins omit it
+and keep their meaningful headings. This uses no new context or global style
+contract. Mobile control rows remain stacked and readable at narrow widths.
+
 ## The standard
 
 **One nav entry per group. One pane per entry. One row shape.**

@@ -1,0 +1,65 @@
+@layer features {
+  .trackTitleHost {
+    min-inline-size: 0;
+    inline-size: 100%;
+  }
+
+  .iconButton {
+    display: grid;
+    place-items: center;
+    inline-size: var(--rail-w-collapsed);
+    min-block-size: var(--rail-w-collapsed);
+    border-radius: var(--radius-md);
+    color: var(--text-2);
+    cursor: pointer;
+  }
+
+  .toolsMenu {
+    inset-inline-end: var(--space-6);
+    position: absolute;
+    z-index: var(--z-overlay);
+    inset-block-start: calc(env(safe-area-inset-top) + var(--rail-w-collapsed) + var(--space-6));
+    inline-size: min(19rem, calc(100vw - var(--space-8)));
+    max-block-size: 60dvh;
+    overflow: auto;
+    padding: var(--space-2);
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-float);
+  }
+
+  .menuItem {
+    display: flex;
+    gap: var(--space-4);
+    align-items: center;
+    min-block-size: var(--rail-w-collapsed);
+    inline-size: 100%;
+    padding: var(--space-3) var(--space-5);
+    border-radius: var(--radius-md);
+    text-align: start;
+    overflow-wrap: anywhere;
+    font-size: var(--text-md);
+    cursor: pointer;
+  }
+
+  .menuItem:hover,
+  .menuItem:focus-visible {
+    background: var(--overlay-hover-strong);
+  }
+
+  .iconButton:active,
+  .menuItem:not([aria-disabled='true']):active {
+    background-image: linear-gradient(var(--overlay-active), var(--overlay-active));
+  }
+
+  .menuItem[aria-disabled='true'] {
+    color: var(--text-3);
+    cursor: default;
+  }
+
+  .tools,
+  .toolsMenuWrap {
+    min-inline-size: 0;
+  }
+}

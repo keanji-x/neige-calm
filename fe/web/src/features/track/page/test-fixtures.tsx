@@ -51,6 +51,7 @@ function PanelHost({ props }: { props: TrackPageProps }) {
 
 export function renderPage(overrides: Partial<TrackPageProps> = {}): RenderResult {
   const props: TrackPageProps = {
+    mobilePanelObscured: false,
     track: track(),
     cards: [],
     /* A track with no report has no tasks, which is the honest default — the

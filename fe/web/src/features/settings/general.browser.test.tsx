@@ -12,7 +12,7 @@ describe('Settings General desktop presentation', () => {
   it('renders the effective concurrency as a named numeric control', async () => {
     await page.viewport(1180, 720);
     render(
-      <SettingsSurface section="general" onSelectSection={vi.fn()}>
+      <SettingsSurface presentation="desktop" section="general" onSelectSection={vi.fn()}>
         <GeneralPane
           settings={{ task_budget_default: '2' }}
           loadError={null}

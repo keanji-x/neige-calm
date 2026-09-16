@@ -43,10 +43,9 @@ export { SOURCE_PANEL_COPY, SOURCE_PROVENANCE_COPY } from './copy.ts';
  * With a handler it is a control — a `<button>`, never an `<a href>`
  * (INV-A11Y-061) — and that includes a citation whose id or anchor will not
  * parse: the panel is where "来源缺失" is said, so a malformed citation must
- * still be reachable. Without one — a narrow viewport (declared as an
- * intentional omission in `docs/oracle/pages-shared.yaml`), Today, a Markdown
- * file — it is the 「来源」 badge and its label, and *not* a button: a control
- * that does nothing is a broken control, and the badge still says what the
+ * still be reachable. Without a handler — on Today or a Markdown file — it
+ * is the 「来源」 badge and its label, without an inactive button. The badge
+ * still says what the
  * label is. The badge carries no provenance because nothing on this path has
  * read the row.
  */

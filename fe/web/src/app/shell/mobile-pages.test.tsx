@@ -22,8 +22,14 @@ const track = (overrides: Partial<Track>): Track => ({
 
 describe('MobilePages', () => {
   it('groups pinned Pages before recently updated Pages and opens the Report', async () => {
-    const onOpenTrack = vi.fn();
+    const onOpenTrack = vi.fn(); const onBack = vi.fn(); const onOpenSettings = vi.fn();
     render(<MobilePages
+      onBack={onBack}
+      onNewTrack={vi.fn()}
+      onCreateArea={vi.fn()}
+      onEditArea={vi.fn()}
+      onOpenSettings={onOpenSettings}
+      areaId="c1"
       areas={[area]}
       tracks={[
         track({ id: 'recent', title: 'Recent report', updatedAt: 20 }),
@@ -40,5 +46,14 @@ describe('MobilePages', () => {
 
     await userEvent.click(screen.getByRole('radio', { name: 'Recent' }));
     expect(screen.getByRole('button', { name: 'Recent report' })).toBeTruthy();
+    const heading = screen.getByRole('heading', { name: 'Pages' });
+    const settings = screen.getByRole('button', { name: 'Settings' });
+    expect(settings.closest('header')).toBeNull();
+    expect(heading.closest('header')?.nextElementSibling?.contains(settings)).toBe(true);
+    expect(settings.textContent?.trim()).toBe('Settings');
+    await userEvent.click(settings);
+    await userEvent.click(screen.getByRole('button', { name: 'Back to workspace' }));
+    expect(onOpenSettings).toHaveBeenCalledOnce();
+    expect(onBack).toHaveBeenCalledOnce();
   });
 });

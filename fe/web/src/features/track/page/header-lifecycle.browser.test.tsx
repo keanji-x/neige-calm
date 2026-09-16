@@ -138,6 +138,7 @@ describe('the track lifecycle status in the page header', () => {
       const [resumed, setResumed] = useState(false);
       return (
         <TrackPage
+          mobilePanelObscured={false}
           track={track({ lifecycle: resumed ? 'working' : 'done' })}
           cards={[]}
           tasks={[]}

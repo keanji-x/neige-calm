@@ -54,38 +54,12 @@ import {
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { useState } from '../../ui/state/public.ts';
+import { SETTINGS_SECTIONS, SettingsIndex,
+  type SettingsSection, type SettingsPresentation } from './navigation.tsx';
 import styles from './settings.module.css';
 
-/**
- * The groups the nav column lists, in the order it lists them.
- *
- * Ordered by how often a reader comes for them, with `about` last because it is
- * the one group you read rather than change. `general` is first and is what
- * `/settings` resolves to, so the bare route lands on a real group rather than
- * on a container page.
- */
-export type SettingsSection = 'general' | 'network' | 'appearance' | 'plugins' | 'about';
-
-/*
- * Icon names are astryx's built-in semantic set, which has 26 entries and none
- * of them called "network" or "appearance". Rather than draw five one-off
- * glyphs, each section takes the nearest available sense:
- *
- *   menu          — the short list of workspace-wide General defaults
- *   externalLink — traffic leaving this machine, which is all Network is about
- *   viewColumns  — how the app is laid out and painted
- *   wrench       — the workspace's tooling
- *   info         — read-only facts about the build
- */
-const SETTINGS_SECTIONS = Object.freeze([
-  Object.freeze({ id: 'general', label: 'General', icon: 'menu' }),
-  Object.freeze({ id: 'network', label: 'Network', icon: 'externalLink' }),
-  Object.freeze({ id: 'appearance', label: 'Appearance', icon: 'viewColumns' }),
-  Object.freeze({ id: 'plugins', label: 'Plugins', icon: 'wrench' }),
-  Object.freeze({ id: 'about', label: 'About', icon: 'info' }),
-] as const);
-
 export type SettingsSurfaceProps = Readonly<{
+  presentation: SettingsPresentation;
   section: SettingsSection;
   onSelectSection: (section: SettingsSection) => void;
   children: ReactNode;
@@ -108,22 +82,18 @@ export type SettingsSurfaceProps = Readonly<{
  * The dialog above supplies the title and the `×`, so this has neither — there
  * is exactly one close affordance on screen.
  */
-export function SettingsSurface({ section, onSelectSection, children }: SettingsSurfaceProps) {
+export function SettingsSurface({ presentation, section, onSelectSection, children }: SettingsSurfaceProps) {
   return (
-    <div className={styles.surface}>
-      <AstryxSideNav aria-label="Settings sections" className={styles.sectionNav}>
+    <div className={`${styles.surface} ${presentation === 'desktop' ? '' : styles.mobileSurface} ${presentation === 'mobile-detail' ? styles.mobileDetail : ''}`}>
+      {presentation === 'mobile-index' && <SettingsIndex onSelectSection={onSelectSection} />}
+      {presentation === 'desktop' && <AstryxSideNav aria-label="Settings sections" className={styles.sectionNav}>
         {SETTINGS_SECTIONS.map((entry) => (
-          <AstryxSideNavItem
-            key={entry.id}
-            label={entry.label}
-            icon={entry.icon}
-            isSelected={entry.id === section}
-            aria-current={entry.id === section ? 'page' : undefined}
-            onClick={() => onSelectSection(entry.id)}
-          />
+          <AstryxSideNavItem key={entry.id} label={entry.label} icon={entry.icon}
+            isSelected={entry.id === section} aria-current={entry.id === section ? 'page' : undefined}
+            onClick={() => onSelectSection(entry.id)} />
         ))}
-      </AstryxSideNav>
-      <div className={styles.pane}>{children}</div>
+      </AstryxSideNav>}
+      <div className={styles.pane} hidden={presentation === 'mobile-index'}>{children}</div>
     </div>
   );
 }
@@ -134,8 +104,10 @@ export function SettingsSurface({ section, onSelectSection, children }: Settings
  * The lede is required. A settings group that cannot be described in one
  * sentence is two groups, and the nav column is where the second one goes.
  */
-export function SettingsPane({ title, lede, children }: Readonly<{
+export function SettingsPane({ title, lede, children, category }: Readonly<{
   title: string;
+  /** Present only on a top-level category; drill-ins keep their own heading. */
+  category?: SettingsSection;
   lede: string;
   children: ReactNode;
 }>) {
@@ -143,7 +115,7 @@ export function SettingsPane({ title, lede, children }: Readonly<{
   return (
     <div className={styles.paneBody}>
       <section className={styles.group} aria-labelledby={headingId}>
-        <AstryxHeading level={3} id={headingId}>{title}</AstryxHeading>
+        <AstryxHeading level={3} id={headingId} className={category === undefined ? undefined : styles.categoryHeading}>{title}</AstryxHeading>
         <AstryxText as="p" color="secondary">{lede}</AstryxText>
         {children}
       </section>
@@ -189,7 +161,7 @@ export function SettingRow({
 }: SettingRowProps) {
   return (
     <AstryxListItem
-      className={styles.row}
+      className={`${styles.row} ${onOpen === undefined ? styles.controlRow : ''}`}
       /* Plain string unless a suffix was asked for: the wrapper is only there
          to hold the second mark, and a row without one must not inherit a
          layout box it does not need. */
@@ -342,6 +314,7 @@ export function GeneralPane({
 
   return (
     <SettingsPane
+      category="general"
       title="General"
       lede="Workspace-wide defaults for task scheduling. Changes apply to work that has not started yet."
     >
@@ -718,6 +691,7 @@ export function NetworkPane({
 
   return (
     <SettingsPane
+      category="network"
       title="Network"
       lede="Connect your phone and configure proxies used when launching new agent cards. Proxy changes save when you leave the field."
     >
@@ -742,7 +716,7 @@ export function AppearancePane({ themeMode, onThemeModeChange }: Readonly<{
   onThemeModeChange: (mode: ThemeMode) => void;
 }>) {
   return (
-    <SettingsPane title="Appearance" lede="How this device paints the app. Not shared with your other devices.">
+    <SettingsPane category="appearance" title="Appearance" lede="How this device paints the app. Not shared with your other devices.">
       <SettingsList>
         <SettingRow
           title="Theme"
@@ -779,7 +753,7 @@ function asThemeMode(value: string): ThemeMode {
 
 export function AboutPane() {
   return (
-    <SettingsPane title="About" lede="What this build is. Read-only.">
+    <SettingsPane category="about" title="About" lede="What this build is. Read-only.">
       <SettingsList>
         <SettingRow title="Version" control={<span className={styles.aboutValue}>{__NC_VERSION__}</span>} />
         <SettingRow title="Build" control={<span className={styles.aboutValue}>{__NC_BUILD__}</span>} />
