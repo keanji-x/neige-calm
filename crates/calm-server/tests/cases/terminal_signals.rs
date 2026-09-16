@@ -1248,6 +1248,47 @@ async fn open_with_scope_writes_permissions_stamps_the_card_and_echoes_the_block
         }
         h.call("calm.terminal.open", args)
     };
+    // An invalid scope is `invalid_params` naming the entry, before any
+    // create is submitted: no card, no terminal, no operation row.
+    for (scope, reason) in [
+        (
+            json!({"bash":["git status","git push"]}),
+            "claude_permissions.bash[1] 'git push': floor command",
+        ),
+        (
+            json!({"allow":["Bash(git status *)"]}),
+            "unknown field `allow`, expected one of `edit`, `bash`, `deny`",
+        ),
+        (json!({}), "claude_permissions declares nothing"),
+    ] {
+        let response = open(Some(scope.clone())).await;
+        assert_eq!(response["error"]["code"], -32602, "{scope}: {response}");
+        let message = response["error"]["message"].as_str().unwrap();
+        assert!(message.contains(reason), "{scope}: {message}");
+    }
+    assert!(
+        h.state
+            .repo
+            .cards_by_track(&h.track)
+            .await
+            .unwrap()
+            .iter()
+            .all(|c| c.kind != "terminal"),
+        "a refused scope creates nothing"
+    );
+    assert!(
+        h.state
+            .operation_runtime
+            .find_by_kind_and_idempotency(
+                "terminal-create",
+                &format!("planner-terminal:{}:scoped", h.session_id),
+            )
+            .await
+            .unwrap()
+            .is_none(),
+        "a refused scope submits nothing"
+    );
+
     let response = open(Some(round19_scope())).await;
     let opened = receipt(&response).clone();
     let terminal = opened["terminal_id"].as_str().unwrap().to_owned();
@@ -1347,10 +1388,10 @@ async fn open_with_scope_writes_permissions_stamps_the_card_and_echoes_the_block
             .await
             .expect("CardAdded within the deadline")
             .expect("event bus open");
-        if let Event::CardAdded(card) = envelope.event {
-            if card.id.as_str() == card_id {
-                added = Some(card);
-            }
+        if let Event::CardAdded(card) = envelope.event
+            && card.id.as_str() == card_id
+        {
+            added = Some(card);
         }
     }
     assert_eq!(
