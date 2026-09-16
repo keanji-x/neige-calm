@@ -1,6 +1,6 @@
 # 扫码完成手机入网与 Neige 配对
 
-状态：设计 v1，待两路独立评审；未实现，未使用账户凭证进行实网验收。
+状态：设计 v2，已处置 v1 两路同项 P1，待两路重新独立评审；未实现，未使用账户凭证进行实网验收。
 关联：[issue #1712](https://github.com/keanji-x/neige-calm/issues/1712)。
 基线：`5f2ff75c6` 的[主设计 v2](1712-tailnet-mobile-recovery.md)，以及 `b4ed59c6f` 的 `mobile/p2p-native/target.go`。
 新增硬要求：电脑 owner 发起“添加手机”后，手机启动扫码，一次正常流程完成 Tailnet 设备授权与 Neige 配对；不打开 Tailscale 登录页，不再点配对确认或验证按钮。
@@ -24,6 +24,7 @@ S4 必须移除手机 `loginTailscale`/`p2pLogin` 的可达调用、打开外部
 | OAuth client 的 `auth_keys` scope 可签发指定 tags 的 auth key | [OAuth clients](https://tailscale.com/docs/features/oauth-clients) | 长期 client secret 只在电脑；手机成为 tag-owned 节点，不冒充某个人的 Tailscale 用户身份 |
 | 已登录 tsnet 并不提供 OAuth 签发权限 | 同上；`mobile/p2p-native/main.go` 的节点启动与 LocalClient 调用 | 不能仅凭“服务已连接”展示可用的添加手机二维码 |
 | 锁定 SDK 可传 `expirySeconds` 并返回真实 `created`、`expires`、capabilities，可删除 key | [v1.102.3 keys.go](https://github.com/tailscale/tailscale/blob/v1.102.3/client/tailscale/keys.go) | 以实际返回值验收短有效期；不能把 QR 倒计时当云端 key 到期 |
+| 官方公开 OpenAPI 的 create-key `expirySeconds` 为秒数 `integer/int64`，默认 90 天，未声明 minimum/maximum；Key 返回 created/expires/capabilities | [OpenAPI](https://api.tailscale.com/api/v2?outputOpenapiSchema=true)，`POST /tailnet/{tailnet}/keys` 与 `components/schemas/Key` | schema 未声明下限不等于云端已接受 300 秒，仍须核对真实返回并实测 |
 | LocalClient `Start(ctx, ipn.Options{AuthKey: ...})` 支持非交互节点授权 | [local.go](https://github.com/tailscale/tailscale/blob/v1.102.3/client/local/local.go)、[backend.go](https://github.com/tailscale/tailscale/blob/v1.102.3/ipn/backend.go) | 由现有唯一 Go 引擎执行，有截止时间，不另建 tsnet 节点 |
 | 当前扫码器仅接受固定 origin 的 v1 URL，随后有手机确认；远端页面没有原生扫码权限 | `mobile/www/scanner.js`、`pairing-url.js`、`mobile/src-tauri/capabilities/launcher-*.json` | 新增本地 v2 data parser 与窄 enrollment capability，不放开远端权限 |
 | 当前 claim 生成 secret，默认未批准；redeem 才在同一锁内创建 session | `crates/calm-server/src/mobile_access/pairing.rs`、`routes.rs`、`pair.js` | 新 v2 类型单独预批准；不把现有 `approved=false` 默认值改成 true |
@@ -47,7 +48,7 @@ Tailnet Lock 未配置可用的签名流程时同样阻止此功能；本切片�
 
 每次 owner 创建邀请，请求 `reusable=false, preauthorized=true, ephemeral=false`，tags 必须等于固定配置；请求 key 有效期 300 秒。
 检查实际返回 capabilities、非空 key ID、created/expires；要求云端实际寿命不超过 300 秒，且剩余时间足够完成流程，否则删除 key 并报告不支持。
-官方文档描述控制台 1–90 天有效期；当前未实测 API 是否接受 300 秒。若拒绝或延长，扫码入网功能保持不可用，不能静默退为一天。
+官方文档描述的是控制台 1–90 天有效期，不能据此断言 API 最短一天；公开 schema 也不能证明云端接受 300 秒。当前未实测；若拒绝或延长，功能保持不可用，不能静默退为一天。
 Neige invitation TTL 为最多 180 秒，截止点不得晚于真实 key expiry；显示两者实际截止时间，不承诺手机时钟提供安全保证。
 收到 key ID 后立即记录清理元数据，再核验 capabilities/expiry；只有记录落盘、元数据核验、Neige invitation 创建均成功才一次性返回 QR。
 中途失败使 invitation 无效并尽力删除 key，包括能力不符/实际 expiry 过长的 key；清理失败仍保留实际期限，落盘失败需明确报告清理结果未知。
@@ -68,6 +69,7 @@ owner 取消、替换、关闭入口、邀请到期或配对成功均使旧 tick
 | 公共配对 API | 新 `/api/mobile/enrollments/claim`、`redeem`、`receipt`；只接受 v2，均受限 body、no-store、速率/数量限制；v1 端点不能消费 v2 ticket |
 | Android capability | packaged launcher 独占 `enroll-from-scan` 与 cancel/status；复用现有扫码插件，不给远端 origin、子 frame 或配对页面原生权限 |
 | 原生结果 | 仅返回进度、受验证 origin、错误分类；auth key 不返回给远端 JS，不使用现有交互式 login 命令 |
+| NEW 文档许可交接 | native 主动供给当前 pair 文档及其单次预期 `/next/` 文档；由 §5 的原生记录授权，不开放远端可调用 IPC，不以网页存储恢复许可 |
 
 二维码格式是 `neige-enroll:v2:` 加 base64url 编码的严格 JSON data envelope，总长最多 2048 字节；它不是可导航 URL。
 必需字段：`version:2`、`enrollmentId`、规范 HTTPS `origin`、`authKey`、`authKeyExpiresAt`、`pairTicket`、`pairExpiresAt`。
@@ -82,7 +84,7 @@ auth key 只用于 native LocalClient；pair ticket/attempt secret 仅在目标�
 | v2 invitation、claim、receipt、Neige session | 现有 PairingState/SessionStore；内存、有界、同锁 grant/revoke；不加数据库迁移 |
 | 手机节点密钥和 hostname | 原有 tsnet 私有 noBackupFilesDir；入网重试、杀进程、更新继续使用同一目录与身份 |
 | pending enrollment | Android 私有 noBackup 文件；最多一条、原子写入、权限受限；不属于 FE 恢复快照 |
-| 扫码意图 generation、配对页注入许可 | Android 内存；仅本次扫描，取消/离开/超时/进程死亡失效，不因 pending 文件自动授权 |
+| 扫码意图 generation、文档/请求许可 | Android 内存；仅本次扫描；只允许 §5 的一次 pair→next 交接，其余离开、取消、超时、进程死亡均失效，不因 pending 文件自动授权 |
 | 成功 receipt | 服务端内存与本次 WebView 同 origin sessionStorage 的短期 nonce；不保存 cookie/sessionId/指纹，不进入恢复快照 |
 | 正式目标绑定 | 原 ConnectionProfiles；只在当前身份的可信 map 与 TLS 校验后原子提交，包含主设计要求的完整绑定 |
 
@@ -99,14 +101,25 @@ pending 只含 enrollment ID、origin、阶段、截止时间、尚需使用的 
 4. 已有身份但网络不符、目标不可见、身份过期或归属不明时停止并解释；不调用 Logout/清 state/以新 key 偷换身份，需单独明确处理旧身份。
 5. 本次未完成 enrollment 的重试先检查同一节点状态；已入网就继续，尚未完成且 key 有效才重用该 key，不能换目录或生成新 hostname。
 6. 用 `resolveTailnetTarget` 从已认证当前 map 解析规范 origin；用 `validateTailnetTarget` 重验后仅拨保存的受控 Tailnet IP，保持 SNI/证书/端口一致。
-7. 成功验证 TLS 后安装 exact-origin 导航/代理/资源 fence，向本次顶层配对页注入 ticket、attempt secret 与仅内存的 scan attempt 信息，再自动 claim/redeem。
+7. 成功验证 TLS 后安装 exact-origin 导航/代理/资源 fence，按下述 NEW 文档合同向本次顶层 pair 页一次性供给 ticket、attempt secret 与 scan attempt，再自动 claim/redeem。
 8. 通过 §6 的新 session 验证和正常 version/scope gate 后进入同 origin 合法原 route；无有效原 route 时进入首页，恢复右上角连接状态。
 
 扫码表达目标选择意图，但不把 QR 自报信息当 peer 证据；既有 `target.go` 的唯一 DNSName、稳定 peer ID、节点地址类别与拨号前重验全部保留。
 首次扫码若换 origin，先停旧流/代理并增代，绑定成功前不覆盖旧可用 profile；禁止向新 origin 复制 cookie、恢复快照或未发送草稿。
 fresh map 无目标、peer 变化、TLS 不符、跨 origin/端口/协议跳转均关闭该次流程；不系统 DNS fallback、不忽略证书、不改成 direct-IP。
-上述注入是 native 对精确顶层页面的一次性数据供给，不是远端页面可调用的通用 bridge；auth key 从不进入它。
-任一步取消先增代并关闭新请求许可；迟到的 Start/代理/claim/redeem 结果不能改 profile、开 gate 或重新导航。
+上述注入是 native 对精确顶层页面的一次性数据供给；auth key 从不进入它。具体 NEW 边界如下，仅实现这一条跨文档交接：
+
+1. launcher 的扫描命令创建 native 内存记录 `{generation, origin, enrollmentId, attemptId, deadline, webViewId, documentId, phase}`；documentId 由 native 为顶层加载分配，不接受网页自报。本次专用 WebView/代理请求上下文与该记录绑定，不只按 origin 放行。
+2. 在已通过目标/TLS 校验的 pair 顶层文档运行脚本前，native 一次性初始化其内存输入并置 `phase=pair`。这是新增文档初始化能力；现有 launcher-only IPC、静态 `BundledFrontendAssets` 和导航转发本身均不提供它。
+3. native 仅接受当前 `webViewId/documentId` 的 pair 文档发起的首次、同 origin、无 query/hash 的顶层 `/next/` 导航；拒绝 redirect、子 frame、新窗口及其他目的地。在同一串行生命周期 owner 内复核 generation/attempt/deadline，消耗 pair 许可、清除其秘密，分配唯一目标 documentId，置 `phase=gate`。
+4. `BundledWebViewClient` 将该次目标 documentId 的许可交给 `BundledFrontendAssets`；后者仅为这次主文档生成带 CSP nonce 的启动片段，先于 bundled 应用脚本交付 `{generation, origin, enrollmentId, attemptId, deadline, documentId}`。片段与响应 `no-store`，gate 读取即删除入口，内容只留文档内存；不提供方法、查询接口或通用 native bridge。
+5. 普通导航、刷新、后退/历史恢复、重新打开 App、v1 跳转均不签发或重发该片段；加载回调不能自行创建许可。离开 pair 的唯一例外是第 3 步，离开 gate 文档即关闭本次许可；receipt 或 pending 存在都不能重新武装交接。
+6. native 为这两个文档的代理请求附加不可由 JS 指定的记录/文档归属；除页面资源外，pair 只开放本次 claim/redeem，gate 先开放本次 receipt，成功响应才开放一次 8 秒 whoami，业务仍由 S1 gate 阻断。发送及交付响应均核验活跃记录；JS 拷贝初始化字段不构成独立请求许可。
+7. 取消、deadline 到期或新扫描与导航共用该串行 owner：先增代/撤销记录，关闭对应代理许可并中止在途请求，再移除并销毁旧 WebView（不能只调用 stopLoading），回到本地 launcher。若交接先发生，销毁目标文档；若撤销先发生，不创建目标文档；旧文档和迟到响应不得继续清退出标记、开 gate、改 profile 或导航。
+
+因此“仍有效的 native generation”来自活跃文档及其原生请求上下文，不靠 sessionStorage 中的数字或远端查询；取消后已经复制的 JS 上下文随文档销毁，不能带到新文档复用。
+最后一次 whoami 响应交付与取消同样串行化；交付后验证许可耗尽、清理 pending 秘密并结束扫描截止计时，保留当前文档并交回主设计既有 S1 gate/transport 流程，不因原 QR 稍后到期销毁正常工作区。这不认定身份或授予业务权限；S1 仍须按 §6 校验后才发 version/scope 请求，错误响应失败关闭，新扫描/退出仍替换旧文档。
+关闭本地请求不撤销已经到达服务端的操作；仍按 §6 核验 receipt/cookie，不能把允许 pair→next 导航当成配对成功证明。
 取消不能保证撤回已经完成的 Tailscale 入网；保留节点身份并显示实际状态，重新配对继续使用它。
 进程死亡丢失本次配对许可；重开读取 pending 只用于状态核对/清理，需再次扫码建立明确意图，同码有效时可重扫且不重建节点。
 断网/超时保留可操作页面及阶段；提示“尚未入网”“已入网，Neige 未配对”或“配对结果待核实”，不把一个绿色网络状态当整体成功。
@@ -121,7 +134,7 @@ redeem 校验该 attempt，沿用现有同锁 session 创建与设备限额；�
 成功 redeem 同时返回随机 receipt nonce，服务端将其绑定于 enrollment、attempt、刚创建的 session；TTL 最多 30 秒且不越过 invitation 截止时间。
 同 attempt 重试可替换尚未消费的 receipt，旧 nonce 立即无效，始终最多一个；receipt 消费后关闭整个 v2 重兑窗口。
 pair.js 只在本次 redeem 成功后把 `{nonce,enrollmentId,attemptId,expiresAt}` 放到同 origin sessionStorage 并转入 `/next/`；不从 query/hash 构造“成功”。
-bundled gate 需要仍有效的 native scan generation 和该次 origin/attempt，取出后立即删除 receipt；普通导航、重开 App、v1 跳转都不满足条件。
+bundled gate 必须同时收到 §5 新增的本次文档初始化许可和匹配 origin/enrollment/attempt 的 receipt；读取即删 receipt，无初始化许可则清理残留并保持阻断，不发验证请求。
 gate 向同 origin `receipt` 端点提交 nonce；服务端在同锁中核验 nonce/attempt/未过期且请求 cookie 正是新 session，再一次性消费。
 校验响应仅返回本次 session 的 SHA-256 指纹和 attempt ID；nonce 本身没有业务权限，也不能为另一个 cookie 或 origin 提供成功证明。
 receipt 校验成功只开放当前文档/代际一次 8 秒 whoami；whoami 的 sessionId 仅驻内存，摘要必须与 receipt 响应匹配，并不同于退出标记的旧指纹。
@@ -154,6 +167,9 @@ host 重启从有限 key ID 清理记录撤销旧未使用 key；清理失败保
 | Go dial + WebView | 当前 map 的目标、完整 TLS 与 exact-origin fence 通过 | QR peer/IP 当可信、名称重用、证书错、系统 DNS fallback、跨 origin 携 secret |
 | v1/v2 Rust pairing | v2 自动批准且重试最多一个 session，v1 仍等 owner 批准 | v1 ticket 跨端点升级、不同 attempt 争抢、撤销后重兑、禁用时签发 cookie |
 | bundled gate 浏览器测试 | 有退出标记时扫码成功自动验证新 session | 伪造/重放 receipt、旧 cookie、指纹错、失败/取消/重开自动清 marker、普通导航解锁 |
+| Android 真正 pair→bundled gate 交接 | 同 origin 的单次预期导航自动取得许可并完成验证，无额外点击 | 原生片段未到却用网页存储代替；redirect/子 frame/其他导航取得许可 |
+| Android 取消与交接竞态 | 在导航前后分别取消/超时/新扫描，旧文档销毁且旧请求关闭 | 迟到响应或已复制上下文清退出标记、解锁业务或使旧页面复活 |
+| Android receipt 残留 | 带未消费 receipt 刷新、历史恢复或杀进程重开，均不获得新许可 | 加载回调、sessionStorage 或 pending 自动重新授权验证 |
 | 真实电脑 + Android | 手机一次扫码→入网→配对→原页/首页；重开原页及右上角恢复 | OS 浏览器弹出、二次手动验证、离线白屏、节点或会话重复创建 |
 
 承重断言需按仓库纪律做 production mutation 验证：v1/v2 隔离、单会话重兑、撤销 fence、receipt 与 cookie/attempt 绑定、目标来源和旧身份保护。
@@ -163,3 +179,9 @@ host 重启从有限 key ID 清理记录撤销旧未使用 key；清理失败保
 发布前必须用专用测试 tailnet/设备实测：API 300 秒真实 expiry、OAuth tags/预批准、control-plane 中断后同节点恢复、Android cookie 与 receipt 跳转。
 另验 HTTPS/MagicDNS、tailnet policy 可见性与端口可达性、禁用设备审批和启用审批两种条件；Tailnet Lock 不满足前提必须明确阻断。
 目前这些实网条件均未验证，尤其短 key 寿命可能使方案暂不具备发布条件；不能用 mock 成功替代，也不能读取用户现有密钥擅自试验。
+
+## 9. 评审处置记录
+
+v1 的[独立评审 A](../_1712-scan-design-review-subagent-v1.md)与[独立评审 B](../_1712-scan-design-review-codex-v1.md)均只报告同项 P1：pair→bundled gate 缺少 native generation 的数据来源与撤销路径。
+v2 在 §4–6 明确 NEW 单向文档交接及文档/请求销毁，§8 补正常自动完成、取消撞跳转、receipt 残留三条真实路径验收；这是补齐数据来源，不是放宽远端权限，其他已接受的设计分支不变。
+另补官方公开 OpenAPI 的秒数参数事实，区分控制台范围与未验证的云端行为；未作账户操作或宣称 300 秒实测成功。两路 fresh review 仍待执行，归档 v1 结论不代表 v2 已批准。
