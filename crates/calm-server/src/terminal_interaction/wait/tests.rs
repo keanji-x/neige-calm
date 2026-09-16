@@ -42,8 +42,7 @@ fn wait_report_names_its_baseline_revision() {
         "signal only in signal mode"
     );
     assert!(
-        report.to_json().get("repaint").is_none()
-            && report.to_json().get("signal_at_ms").is_none(),
+        report.to_json().get("repaint").is_none() && report.to_json().get("signal_at_ms").is_none(),
         "repaint fields only in signal mode"
     );
     let signal = Signal {
