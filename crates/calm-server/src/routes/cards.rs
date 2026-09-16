@@ -150,10 +150,7 @@ pub(crate) async fn card_scope_tx(
 /// `POST /api/tracks/{id}/conversations` — reach the harness. Without it the
 /// endpoint mints a card it can then never talk to.
 pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
-    card.kind == "codex"
-        && (role == CardRole::Planner
-            || crate::plain_chat::card_is_plain_chat(card, Some(role), true)
-            || crate::plain_chat::card_is_track_assistant(card, Some(role), true))
+    crate::harness::profile::HarnessProfile::from_card(card, role).is_some()
 }
 
 pub(crate) async fn interrupt_shared_card_active_turn(
@@ -1618,7 +1615,8 @@ pub(crate) async fn get_planner_run(
             .repo
             .session_projection_projectable_for_card(&card.id.to_string())
             .await?
-            && let Some(snapshot) = super::planner_recovery::snapshot(&runtime)
+            && let Some(snapshot) =
+                super::planner_recovery::recoverable_snapshot(&s, &runtime).await?
         {
             dormant.blocked_reason = Some(super::planner_recovery::RECOVERY_NOTICE.into());
             (dormant.pending, dormant.pending_overflow) =

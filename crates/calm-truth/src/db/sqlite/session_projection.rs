@@ -744,6 +744,24 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         runtime_get_projectable_for_card_from_pool(&self.pool, card_id).await
     }
 
+    async fn session_projection_system_error_recovery_matches(
+        &self,
+        runtime: &WorkerSessionProjection,
+        thread_id: &str,
+    ) -> WorkerSessionProjectionResult<bool> {
+        let Some(snapshot) = runtime.handle_state_json.as_ref() else {
+            return Ok(false);
+        };
+        Ok(super::session_system_error_recovery_matches(
+            &self.pool,
+            &runtime.card_id,
+            &runtime.id,
+            thread_id,
+            snapshot,
+        )
+        .await?)
+    }
+
     async fn session_projection_projectable_for_cards(
         &self,
         card_ids: &[crate::session_projection_repo::CardId],

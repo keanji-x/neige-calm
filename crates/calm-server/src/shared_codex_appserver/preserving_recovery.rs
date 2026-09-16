@@ -28,6 +28,13 @@ impl SharedCodexAppServer {
             .card_role_get(&runtime.card_id)
             .await?
             .ok_or_else(|| CalmError::Conflict("conversation role is missing".into()))?;
+        let card = self
+            .repo
+            .card_get(&runtime.card_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound("conversation no longer exists".into()))?;
+        let profile = crate::harness::profile::HarnessProfile::from_card(&card, role)
+            .ok_or_else(|| CalmError::Conflict("card is not a harness conversation".into()))?;
         self.validate_recovery_carrier(runtime, thread_id, &snapshot)
             .await?;
         // Provider contract: thread/read and thread/resume share Codex's
@@ -47,7 +54,7 @@ impl SharedCodexAppServer {
                 "provider returned a different conversation".into(),
             ));
         }
-        let config = if cold {
+        let config = if cold && profile.mcp_role().is_some() {
             let card = runtime.card_id.clone();
             let id = runtime.id.clone();
             let thread = thread_id.to_owned();
@@ -143,40 +150,21 @@ impl SharedCodexAppServer {
         else {
             return Ok(None);
         };
-        let pool = self.repo.sqlite_pool().ok_or_else(|| {
-            CalmError::Internal("conversation recovery requires persistent storage".into())
-        })?;
-        let existing:Option<i64>=sqlx::query_scalar("SELECT id FROM harness_items WHERE worker_session_id=?1 AND card_id=?2 AND thread_id=?3 AND turn_id=?4 AND method='turn/completed' ORDER BY id DESC LIMIT 1")
-            .bind(&runtime.id).bind(&runtime.card_id).bind(thread_id).bind(turn_id).fetch_optional(&pool).await?;
-        let id = match existing {
-            Some(id) => id,
-            None => {
-                let mut outcome = turn.clone();
-                if let Some(object) = outcome.as_object_mut() {
-                    object.remove("items");
-                    object.remove("itemsView");
-                }
-                let card = self
-                    .repo
-                    .card_get(&runtime.card_id)
-                    .await?
-                    .ok_or_else(|| CalmError::NotFound("conversation disappeared".into()))?;
-                self.repo
-                    .harness_item_insert(
-                        &runtime.id,
-                        &runtime.card_id,
-                        card.track_id.as_str(),
-                        thread_id,
-                        Some(turn_id),
-                        None,
-                        None,
-                        "turn/completed",
-                        &serde_json::to_string(&outcome)?,
-                        None,
-                    )
-                    .await?
-            }
-        };
+        let card = self
+            .repo
+            .card_get(&runtime.card_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound("conversation disappeared".into()))?;
+        let id = crate::harness::turn_outcome::record(
+            self.repo.as_ref(),
+            &runtime.id,
+            &runtime.card_id,
+            card.track_id.as_str(),
+            thread_id,
+            turn_id,
+            turn,
+        )
+        .await?;
         Ok(Some((id, turn_id.to_owned())))
     }
 

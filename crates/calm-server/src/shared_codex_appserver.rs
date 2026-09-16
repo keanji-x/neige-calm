@@ -162,7 +162,7 @@ pub struct SharedDaemonStatus {
 enum ColdResumeAuthorization {
     Skip,
     NoMcp,
-    Token(String),
+    Token { role: CardRole, raw: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3981,43 +3981,37 @@ impl SharedCodexAppServer {
                 continue;
             }
 
-            // Reconstruct policy from persisted authority, not the cached thread's
-            // name or session kind. Unknown roles must never receive a grant.
-            let role = match self.repo.card_role_get(&card_id).await {
-                Ok(Some(role)) => role,
-                result => {
-                    tracing::warn!(%card_id, ?result, "cannot restore MCP policy without card role");
-                    continue;
-                }
-            };
-
-            let raw_token = match write_in_tx_typed(self.repo.as_ref(), {
+            let (role, raw_token) = match write_in_tx_typed(self.repo.as_ref(), {
                 let thread_id = thread_id.clone();
                 let card_id = card_id.clone();
                 move |tx| {
                     Box::pin(async move {
+                        let shape=crate::db::sqlite::card_execution_shape_tx(tx,&card_id).await?;
                         let Some(runtime) =
                             session_projection_active_for_card_tx(tx, &card_id).await?
                         else {
                             // Decide inside the same transaction as the token
                             // choice: a systemError can arrive during replay.
                             let failed: bool = sqlx::query_scalar(
-                                "SELECT EXISTS(SELECT 1 FROM cards c JOIN worker_sessions ws ON ws.id=c.session_id WHERE c.id=?1 AND ws.state='failed' AND json_extract(ws.handle_state_json,'$.mode')='harness')"
-                            ).bind(&card_id).fetch_one(&mut **tx).await?;
+                                "SELECT EXISTS(SELECT 1 FROM cards c JOIN worker_sessions ws ON ws.id=c.session_id WHERE c.id=?1 AND ws.state='failed' AND json_extract(ws.handle_state_json,'$.mode')=?2)"
+                            ).bind(&card_id).bind(calm_types::harness::HARNESS_MODE).fetch_one(&mut **tx).await?;
                             return Ok(if failed { ColdResumeAuthorization::Skip } else { ColdResumeAuthorization::NoMcp });
                         };
                         if runtime.thread_id.as_deref() != Some(thread_id.as_str()) {
                             return Ok(ColdResumeAuthorization::NoMcp);
                         }
-                        mint_and_persist_card_token(tx, &card_id, &runtime.id)
-                            .await
-                            .map(ColdResumeAuthorization::Token)
+                        if crate::harness::profile::HarnessProfile::from_shape(&shape.kind,shape.role,&shape.payload)
+                            .is_some_and(|profile|profile.mcp_role().is_none()) {
+                            return Ok(ColdResumeAuthorization::NoMcp);
+                        }
+                        let raw=mint_and_persist_card_token(tx, &card_id, &runtime.id).await?;
+                        Ok(ColdResumeAuthorization::Token {role:shape.role,raw})
                     })
                 }
             })
             .await
             {
-                Ok(ColdResumeAuthorization::Token(raw_token)) => raw_token,
+                Ok(ColdResumeAuthorization::Token {role,raw}) => (role,raw),
                 Ok(ColdResumeAuthorization::Skip) => continue,
                 Ok(ColdResumeAuthorization::NoMcp) => {
                     Self::resume_thread_typed(&client, &thread_id, &card_id, ThreadConfig::NoMcp)

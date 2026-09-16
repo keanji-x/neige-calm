@@ -22,8 +22,7 @@ use crate::planner_attachments::bind::BoundAttachment;
 // `From<&HarnessState>` impl below stays here — `HarnessState` is local.
 pub use calm_types::harness::HarnessPhaseTag;
 
-pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
-pub const HARNESS_MODE: &str = "harness";
+pub use calm_types::harness::{HARNESS_MODE, HARNESS_SNAPSHOT_SCHEMA_VERSION};
 
 /// The segments of the turn a PRE-#1625-P2 binary had in flight when it
 /// stopped, as that binary persisted them (#1505 S6 to #1625 P2; the struct
@@ -663,14 +662,17 @@ mod pending_side_array_tests {
     }
 }
 
-pub fn is_harness_snapshot_value(value: &Value) -> bool {
-    match serde_json::from_value::<HarnessSnapshot>(value.clone()) {
-        Ok(snapshot) => {
-            snapshot.schema_version == HARNESS_SNAPSHOT_SCHEMA_VERSION
-                && snapshot.mode == HARNESS_MODE
-        }
-        Err(_) => false,
+impl HarnessSnapshot {
+    pub(crate) fn parse_known(value: Value) -> Option<Self> {
+        let snapshot: Self = serde_json::from_value(value).ok()?;
+        (snapshot.schema_version == HARNESS_SNAPSHOT_SCHEMA_VERSION
+            && snapshot.mode == HARNESS_MODE)
+            .then_some(snapshot)
     }
+}
+
+pub fn is_harness_snapshot_value(value: &Value) -> bool {
+    HarnessSnapshot::parse_known(value.clone()).is_some()
 }
 
 impl From<&HarnessState> for HarnessPhaseTag {

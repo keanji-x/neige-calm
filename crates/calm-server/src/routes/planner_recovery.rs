@@ -1,24 +1,14 @@
 //! Human-send recovery, sharing the reset and deletion fences. There is no
 //! transcript-clearing fallback: failure always leaves the old conversation.
 use crate::error::{CalmError, Result};
-use crate::harness::{HarnessSnapshot, is_harness_snapshot_value};
+use crate::harness::{HarnessPhaseTag, HarnessSnapshot};
 use crate::ids::CardId;
 use crate::per_card_lock::lock_key;
 use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
 use crate::state::{CodexShellState, RouteState, WorkerState};
+use calm_types::harness::HARNESS_SYSTEM_ERROR_REASON;
 
 pub(super) const RECOVERY_NOTICE: &str = "Conversation paused after a Codex error. Resolve the error shown in the conversation, then send a message to resume. Your history and queued messages are retained.";
-
-pub(super) fn is_system_error(runtime: &WorkerSessionProjection) -> bool {
-    runtime.status == WorkerSessionState::Failed
-        && runtime.completed_at_ms.is_none()
-        && runtime.handle_state_json.as_ref().is_some_and(|value| {
-            is_harness_snapshot_value(value)
-                && value.get("phase").and_then(|v| v.as_str()) == Some("wedged")
-                && value.get("wedged_reason").and_then(|v| v.as_str()) == Some("system_error")
-        })
-        && crate::harness::effective_runtime_thread_id(runtime).is_some()
-}
 
 pub(super) async fn candidate(
     s: &RouteState,
@@ -29,15 +19,16 @@ pub(super) async fn candidate(
         .repo
         .session_projection_projectable_for_card(&card_id.to_string())
         .await?;
-    Ok(runtime.filter(|runtime| {
-        matches!(
-            runtime.status,
-            WorkerSessionState::Starting
-                | WorkerSessionState::Running
-                | WorkerSessionState::Idle
-                | WorkerSessionState::TurnPending
-        ) || (human_send && is_system_error(runtime))
-    }))
+    let Some(runtime) = runtime else {
+        return Ok(None);
+    };
+    if runtime.status.is_active_authority()
+        || (human_send && recoverable_snapshot(s, &runtime).await?.is_some())
+    {
+        Ok(Some(runtime))
+    } else {
+        Ok(None)
+    }
 }
 
 #[allow(deprecated)] // Legacy event persistence requires the raw cache handles.
@@ -121,12 +112,34 @@ pub(super) async fn recover(
         .ok_or_else(|| CalmError::Conflict("conversation changed during recovery".into()))
 }
 
-pub(super) fn snapshot(runtime: &WorkerSessionProjection) -> Option<HarnessSnapshot> {
-    if !is_system_error(runtime) {
-        return None;
+pub(super) async fn recoverable_snapshot(
+    s: &RouteState,
+    runtime: &WorkerSessionProjection,
+) -> Result<Option<HarnessSnapshot>> {
+    if runtime.status != WorkerSessionState::Failed || runtime.completed_at_ms.is_some() {
+        return Ok(None);
     }
-    runtime
+    let Some(snapshot) = runtime
         .handle_state_json
         .clone()
-        .map(HarnessSnapshot::from_value_strict)
+        .and_then(HarnessSnapshot::parse_known)
+    else {
+        return Ok(None);
+    };
+    if snapshot.phase != HarnessPhaseTag::Wedged
+        || snapshot.wedged_reason.as_deref() != Some(HARNESS_SYSTEM_ERROR_REASON)
+    {
+        return Ok(None);
+    }
+    let Some(thread) = crate::harness::effective_runtime_thread_id(runtime) else {
+        return Ok(None);
+    };
+    if !s
+        .repo
+        .session_projection_system_error_recovery_matches(runtime, &thread)
+        .await?
+    {
+        return Ok(None);
+    }
+    Ok(Some(snapshot))
 }

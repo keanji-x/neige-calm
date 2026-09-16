@@ -17,18 +17,25 @@ clear, or implicit replay of a completed failed turn is allowed.
   and existing thread. Superseded, exited, corrupt, interrupt-timeout, deleted,
   terminal-track, and unavailable-workspace sessions remain refused.
 - Serialize with the existing per-card recovery/reset lock and track deletion
-  fence. Stop an old failed harness before installing its replacement; recheck
+  fence. Quiesce through the existing run-loop command channel, so ordinary
+  deliveries, queue mutations, notifications and snapshotting cannot interleave.
+  Stop an old failed harness before installing its replacement; recheck
   ownership in the restoring transaction. The general worker transition matrix
   remains unchanged.
 - Resume the exact provider thread before restoring its active status. Reject
   active or missing threads. On cold load, refresh the same card's credentials
-  while its session is still failed; a lost RPC response remains retryable using
-  that persisted token. Loaded threads retain their existing credentials.
+  while its session is still failed. Creation and both recovery paths share one
+  profile capability policy: plain chats remain without MCP credentials;
+  planners and assistants retain their own roles. A lost RPC response remains
+  retryable using that persisted token. Loaded threads retain their existing credentials.
 - Provider recovery must never fall back to starting a new thread. A provider
   outage/refusal leaves the failed snapshot and all conversation data intact.
 - Record a matching failed turn completion even when `systemError` arrived first.
   Keep the harness blocked until a human sends again; show the provider error in
   the existing transcript and make the recoverable state visible on planner/run.
+  Live notifications and provider-history backfill use the same idempotent
+  outcome store. The UI hint and restoring write share one eligibility predicate;
+  schema constants belong to the shared persistence vocabulary.
 - Existing snapshot schema and migrations are unchanged. Recovery edits only
   phase/reason and the active-state fields in the current row, under an exact
   snapshot comparison. A crash after that commit is covered by normal boot/lazy

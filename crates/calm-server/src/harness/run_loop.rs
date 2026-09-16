@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
+use calm_types::harness::HARNESS_SYSTEM_ERROR_REASON;
 use serde_json::Value;
 #[cfg(feature = "fixtures")]
 use std::collections::HashMap;
@@ -140,6 +141,47 @@ async fn wait_at_planner_harness_drain_race_hook(worker_session_id: &str) {
     let _ = worker_session_id;
 }
 
+/// Pause one ordinary delivery after its replay watermark advances, before its
+/// queue entry exists. Recovery must let the run loop finish both changes.
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct PlannerHarnessObservationRaceHook {
+    pub entered: Arc<Notify>,
+    pub release: Arc<Notify>,
+}
+
+#[cfg(feature = "fixtures")]
+fn planner_harness_observation_race_hooks()
+-> &'static StdMutex<HashMap<String, PlannerHarnessObservationRaceHook>> {
+    static HOOKS: OnceLock<StdMutex<HashMap<String, PlannerHarnessObservationRaceHook>>> =
+        OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_planner_harness_observation_race_hook_for_test(
+    worker_session_id: &str,
+    hook: PlannerHarnessObservationRaceHook,
+) {
+    planner_harness_observation_race_hooks()
+        .lock()
+        .expect("planner harness observation hook mutex")
+        .insert(worker_session_id.to_owned(), hook);
+}
+
+#[cfg(feature = "fixtures")]
+async fn wait_at_planner_harness_observation_race_hook(worker_session_id: &str) {
+    let hook = planner_harness_observation_race_hooks()
+        .lock()
+        .expect("planner harness observation hook mutex")
+        .remove(worker_session_id);
+    if let Some(hook) = hook {
+        hook.entered.notify_one();
+        hook.release.notified().await;
+    }
+}
+
 const OBSERVATION_BUFFER: usize = 256;
 /// Hard cap on queued observations. Public because it is a wire-visible
 /// constant: at this length an incoming user message folds into the tail
@@ -262,7 +304,6 @@ pub(super) struct Inner {
     /// that was true when only the first case existed, and stopped being true
     /// when the third was added without this sentence being revisited.
     issuance_block: Mutex<Option<String>>,
-    notification_processing: Mutex<()>,
     /// When the current run of consecutive refusals began, or `None` when the
     /// last attempt succeeded. Feeds
     /// [`HarnessConfig::transient_silence_budget`].
@@ -397,6 +438,11 @@ pub struct HarnessObservationDelivery {
 }
 
 enum HarnessObservationCommand {
+    /// Recovery must snapshot on the loop that owns both queue and watermark,
+    /// after earlier deliveries/notifications settle and before stopping it.
+    QuiesceSystemError {
+        done: oneshot::Sender<Result<()>>,
+    },
     Delivery(HarnessObservationDelivery),
     Durable {
         deliveries: Vec<HarnessObservationDelivery>,
@@ -834,36 +880,24 @@ impl PlannerHarness {
     /// thread. Recovery probes that exact thread before granting authority again.
     pub(crate) async fn quiesce_system_error_for_recovery(&self) -> Result<()> {
         let _durable = self.inner.durable_observation.lock().await;
-        let _issuance = self.inner.issuance.lock().await;
-        let _notification = self.inner.notification_processing.lock().await;
-        if !matches!(&*self.inner.state.lock().await, HarnessState::Wedged { reason, .. } if reason == "system_error")
-        {
-            return Err(CalmError::Conflict(
-                "conversation changed before recovery".into(),
-            ));
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Ok(());
         }
-        if !self.inner.steered_into_running_turn.lock().await.is_empty() {
-            return Err(CalmError::ServiceUnavailable(
-                "Waiting for the failed turn to settle its messages before recovery; retry shortly.".into()));
+        match &self.inner.observations {
+            ObservationIngress::Running(sender) => {
+                let (done, answer) = oneshot::channel();
+                sender
+                    .try_send(HarnessObservationCommand::QuiesceSystemError { done })
+                    .map_err(map_observation_send_error)?;
+                answer.await.map_err(|_| {
+                    CalmError::Conflict(
+                        "conversation stopped before recovery quiescence completed".into(),
+                    )
+                })?
+            }
+            #[cfg(feature = "fixtures")]
+            ObservationIngress::Unstarted(_) => quiesce_system_error(&self.inner).await,
         }
-        persist_failed_system_error_snapshot(&self.inner).await?;
-        *self
-            .inner
-            .observations_closed
-            .lock()
-            .expect("observation gate") = true;
-        self.inner.shutting_down.store(true, Ordering::SeqCst);
-        let _ = self.inner.shutdown.send(());
-        if let Some(abort) = self
-            .inner
-            .abort_handle
-            .lock()
-            .expect("harness abort handle")
-            .take()
-        {
-            abort.abort();
-        }
-        Ok(())
     }
 
     pub async fn shutdown(&self) -> Result<()> {
@@ -1290,7 +1324,6 @@ fn inner_from_params(
         interrupt_deadline: Mutex::new(None),
         issuance_retry_after: Mutex::new(None),
         issuance_block: Mutex::new(None),
-        notification_processing: Mutex::new(()),
         refusing_since: Mutex::new(None),
         #[cfg(feature = "fixtures")]
         refused_issuances: AtomicU64::new(0),
@@ -1412,6 +1445,12 @@ async fn run_loop(
             command = observations.recv() => {
                 let Some(command) = command else { break };
                 match command {
+                    HarnessObservationCommand::QuiesceSystemError {done} => {
+                        let result=quiesce_system_error(&inner).await;
+                        let stop=result.is_ok();
+                        let _=done.send(result);
+                        if stop { break; }
+                    }
                     HarnessObservationCommand::Delivery(delivery) => {
                         let _accepted = on_observation(&inner, delivery.entry).await;
                         if let Err(e) = persist_snapshot(&inner).await {
@@ -1488,6 +1527,27 @@ async fn run_loop(
             }
         }
     }
+}
+
+/// Called only by the run loop (or the unstarted fixture). Ordinary delivery,
+/// queue mutation, notification processing and ticks cannot interleave here.
+async fn quiesce_system_error(inner: &Arc<Inner>) -> Result<()> {
+    if !matches!(&*inner.state.lock().await, HarnessState::Wedged {reason,..} if reason==HARNESS_SYSTEM_ERROR_REASON)
+    {
+        return Err(CalmError::Conflict(
+            "conversation changed before recovery".into(),
+        ));
+    }
+    if !inner.steered_into_running_turn.lock().await.is_empty() {
+        return Err(CalmError::ServiceUnavailable(
+            "Waiting for the failed turn to settle its messages before recovery; retry shortly."
+                .into(),
+        ));
+    }
+    persist_failed_system_error_snapshot(inner).await?;
+    *inner.observations_closed.lock().expect("observation gate") = true;
+    inner.shutting_down.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 /// #1505 PR2 — the whole of what `HarnessObservationCommand::Mutate` is allowed
@@ -2022,6 +2082,8 @@ async fn on_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome
         let mut watermark = inner.push_watermark.lock().await;
         *watermark = (*watermark).max(envelope_id);
     }
+    #[cfg(feature = "fixtures")]
+    wait_at_planner_harness_observation_race_hook(&inner.worker_session_id).await;
     if suppress_duplicate_hook_stop(inner, &entry).await {
         return EnqueueOutcome::Rejected;
     }
@@ -2234,7 +2296,6 @@ async fn suppress_duplicate_hook_stop(inner: &Arc<Inner>, entry: &QueueEntry) ->
 }
 
 async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> {
-    let _notification = inner.notification_processing.lock().await;
     let current_thread = inner.thread_id.read().await.clone();
     if notif.thread_id() != current_thread.as_deref() {
         return Ok(());
@@ -2268,7 +2329,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             if status.get("type").and_then(Value::as_str) == Some("systemError") {
                 *inner.state.lock().await = HarnessState::Wedged {
                     since: Instant::now(),
-                    reason: "system_error".into(),
+                    reason: HARNESS_SYSTEM_ERROR_REASON.into(),
                 };
                 *inner.issued_turn_id.lock().await = None;
                 *inner.interrupt_deadline.lock().await = None;
@@ -2370,7 +2431,7 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             // the exact outcome even though the harness is now blocked. Only
             // the explicit ID of our last turn qualifies; stale completions
             // and missing IDs cannot settle another turn or unpause issuance.
-            if matches!(&state, HarnessState::Wedged { reason, .. } if reason == "system_error")
+            if matches!(&state, HarnessState::Wedged { reason, .. } if reason == HARNESS_SYSTEM_ERROR_REASON)
                 && turn.get("id").and_then(Value::as_str) == fallback_turn_id.as_deref()
                 && fallback_turn_id.is_some()
             {
@@ -4940,34 +5001,16 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -
         );
         return None;
     };
-    let mut outcome = turn.clone();
-    if let Some(object) = outcome.as_object_mut() {
-        object.remove("items");
-        object.remove("itemsView");
-    }
-    let params_json = match serde_json::to_string(&outcome) {
-        Ok(json) => json,
-        Err(error) => {
-            tracing::warn!(error = %error, turn_id, "planner harness could not serialize turn outcome");
-            return None;
-        }
-    };
-    match inner
-        .repo
-        .harness_item_insert(
-            &inner.worker_session_id,
-            inner.card_id.as_str(),
-            inner.track_id.as_str(),
-            &thread_id,
-            Some(turn_id),
-            // A turn is not an item: no `item_uuid`, no `item_type`.
-            None,
-            None,
-            "turn/completed",
-            &params_json,
-            None,
-        )
-        .await
+    match crate::harness::turn_outcome::record(
+        inner.repo.as_ref(),
+        &inner.worker_session_id,
+        inner.card_id.as_str(),
+        inner.track_id.as_str(),
+        &thread_id,
+        turn_id,
+        turn,
+    )
+    .await
     {
         Ok(id) => Some(id),
         Err(error) => {

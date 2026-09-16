@@ -785,3 +785,9 @@ async fn a_successor_committed_during_provider_resume_cannot_be_overwritten() {
     .unwrap();
     assert_eq!(sent, 0);
 }
+
+#[path = "planner_recovery_profile.rs"]
+mod profiles;
+
+#[path = "planner_preserving_recovery_observation.rs"]
+mod observation_recovery;

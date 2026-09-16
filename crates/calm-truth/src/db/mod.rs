@@ -1028,6 +1028,18 @@ pub trait RepoOutOfDomain: RepoRead {
         input_segments: Option<&str>,
     ) -> Result<i64>;
 
+    /// Idempotently record a terminal outcome under its exact session/card/
+    /// thread/turn identity. Concurrent live and recovery writes return one row.
+    async fn harness_turn_outcome_put(
+        &self,
+        worker_session_id: &str,
+        card_id: &str,
+        track_id: &str,
+        thread_id: &str,
+        turn_id: &str,
+        params: &str,
+    ) -> Result<i64>;
+
     // ---- #1625 P2 — the drain-time projection of a user message ---------
     //
     // A projection row is a transcript row the KERNEL wrote at queue drain,

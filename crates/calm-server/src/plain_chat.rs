@@ -15,7 +15,7 @@ pub(crate) fn card_is_plain_chat(
         .payload
         .get("harness_profile")
         .and_then(serde_json::Value::as_str)
-        == Some("plain_chat");
+        == Some(crate::harness::profile::PLAIN_CHAT_MARKER);
     marked && (!require_worker_codex || (card.kind == "codex" && role == Some(CardRole::Worker)))
 }
 
@@ -37,7 +37,7 @@ pub(crate) fn card_is_track_assistant(
         .payload
         .get("harness_profile")
         .and_then(serde_json::Value::as_str)
-        == Some(crate::operation::planner_harness_start_adapter::ASSISTANT_HARNESS_PROFILE_MARKER);
+        == Some(crate::harness::profile::ASSISTANT_MARKER);
     marked
         && (!require_assistant_codex || (card.kind == "codex" && role == Some(CardRole::Assistant)))
 }

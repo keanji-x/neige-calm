@@ -1,7 +1,10 @@
 //! Explicit human recovery of a current, uncompleted conversation after a
 //! provider system error. This exception does not widen worker transitions.
+use calm_types::harness::{
+    HARNESS_MODE, HARNESS_SNAPSHOT_SCHEMA_VERSION, HARNESS_SYSTEM_ERROR_REASON, HarnessPhaseTag,
+};
 use serde_json::Value;
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Executor, Sqlite, SqlitePool, Transaction};
 
 use crate::error::Result;
 use crate::model::now_ms;
@@ -11,6 +14,28 @@ use crate::model::now_ms;
 /// revived even if an earlier read made it look recoverable.
 pub async fn session_system_error_recovery_matches_tx(
     tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    runtime_id: &str,
+    thread_id: &str,
+    snapshot: &Value,
+) -> Result<bool> {
+    matches(tx.as_mut(), card_id, runtime_id, thread_id, snapshot).await
+}
+
+/// Read-side eligibility uses the very same predicate as final restoration.
+/// It does not obtain a SQLite writer reservation.
+pub async fn session_system_error_recovery_matches(
+    pool: &SqlitePool,
+    card_id: &str,
+    runtime_id: &str,
+    thread_id: &str,
+    snapshot: &Value,
+) -> Result<bool> {
+    matches(pool, card_id, runtime_id, thread_id, snapshot).await
+}
+
+async fn matches<'e>(
+    executor: impl Executor<'e, Database = Sqlite>,
     card_id: &str,
     runtime_id: &str,
     thread_id: &str,
@@ -29,14 +54,14 @@ pub async fn session_system_error_recovery_matches_tx(
              AND ((c.role = 'planner' AND ws.contract = 'planner' AND COALESCE(t.purpose, '') != 'area-chat')
                OR (c.role = 'assistant' AND ws.contract = 'executor' AND json_extract(c.payload, '$.harness_profile') = 'assistant')
                OR (c.role = 'worker' AND ws.contract = 'executor' AND json_extract(c.payload, '$.harness_profile') = 'plain_chat'))
-             AND json_extract(ws.handle_state_json, '$.mode') = 'harness'
-             AND json_extract(ws.handle_state_json, '$.schema_version') = 1
-             AND json_extract(ws.handle_state_json, '$.phase') = 'wedged'
-             AND json_extract(ws.handle_state_json, '$.wedged_reason') = 'system_error'
+             AND json_extract(ws.handle_state_json, '$.mode') = ?4
+             AND json_extract(ws.handle_state_json, '$.schema_version') = ?5
+             AND json_extract(ws.handle_state_json, '$.phase') = json_extract(?6,'$')
+             AND json_extract(ws.handle_state_json, '$.wedged_reason') = ?7
              AND COALESCE(NULLIF(trim(ws.thread_id), ''), json_extract(ws.handle_state_json, '$.last_thread_id')) = ?3
              AND (json_extract(ws.handle_state_json, '$.last_thread_id') IS NULL
                   OR json_extract(ws.handle_state_json, '$.last_thread_id') = ?3)"#,
-    ).bind(card_id).bind(runtime_id).bind(thread_id).fetch_optional(&mut **tx).await?;
+    ).bind(card_id).bind(runtime_id).bind(thread_id).bind(HARNESS_MODE).bind(HARNESS_SNAPSHOT_SCHEMA_VERSION).bind(serde_json::to_string(&HarnessPhaseTag::Wedged)?).bind(HARNESS_SYSTEM_ERROR_REASON).fetch_optional(executor).await?;
     Ok(raw
         .map(|raw| serde_json::from_str::<Value>(&raw))
         .transpose()?
@@ -79,14 +104,17 @@ pub async fn session_set_failed_harness_snapshot_tx(
         WHERE id=?2 AND card_id=?1 AND state='failed' AND completed_at_ms IS NULL
           AND queue_harvested_at_ms IS NULL
           AND EXISTS(SELECT 1 FROM cards WHERE id=?1 AND session_id=?2)
-          AND json_extract(handle_state_json,'$.mode')='harness'
-          AND json_extract(handle_state_json,'$.phase')='wedged'
-          AND json_extract(handle_state_json,'$.wedged_reason')='system_error'"#,
+          AND json_extract(handle_state_json,'$.mode')=?5
+          AND json_extract(handle_state_json,'$.phase')=json_extract(?6,'$')
+          AND json_extract(handle_state_json,'$.wedged_reason')=?7"#,
     )
     .bind(card_id)
     .bind(runtime_id)
     .bind(serde_json::to_string(snapshot)?)
     .bind(now_ms())
+    .bind(HARNESS_MODE)
+    .bind(serde_json::to_string(&HarnessPhaseTag::Wedged)?)
+    .bind(HARNESS_SYSTEM_ERROR_REASON)
     .execute(&mut **tx)
     .await?;
     Ok(result.rows_affected() == 1)
