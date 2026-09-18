@@ -17,15 +17,32 @@ use tower::ServiceExt;
 /// from disk by the test, not by the fake.
 const FAKE_CLAUDE: &str = "printf 'READY %s\\n' \"$NEIGE_CARD_ID\"; exec cat";
 
-const FLOOR_ASK: [&str; 7] = [
-    "Bash(git push *)",
-    "Bash(git reset --hard *)",
-    "Bash(rm -rf *)",
-    "Bash(curl *)",
-    "Bash(wget *)",
-    "Bash(pip install *)",
-    "Bash(npm install *)",
-];
+/// The floor's `ask` rules in `cwd`: `git push` and `git reset --hard` are
+/// followed by their `git -C /<cwd>` spelling (#1729), the rest are single.
+fn floor_ask(root: &str) -> Vec<String> {
+    vec![
+        "Bash(git push *)".to_owned(),
+        format!("Bash(git -C /{root} push *)"),
+        "Bash(git reset --hard *)".to_owned(),
+        format!("Bash(git -C /{root} reset --hard *)"),
+        "Bash(rm -rf *)".to_owned(),
+        "Bash(curl *)".to_owned(),
+        "Bash(wget *)".to_owned(),
+        "Bash(pip install *)".to_owned(),
+        "Bash(npm install *)".to_owned(),
+    ]
+}
+
+/// The `Bash(...)` rules of one prefix in `cwd` (S1's rendering, #1729): a
+/// `git <rest>` prefix is followed by its `git -C /<cwd> <rest>` spelling;
+/// a bare `git` and any other command render one rule.
+fn bash_rules(prefix: &str, root: &str) -> Vec<String> {
+    let mut rules = vec![format!("Bash({prefix} *)")];
+    if let Some(rest) = prefix.strip_prefix("git ") {
+        rules.push(format!("Bash(git -C /{root} {rest} *)"));
+    }
+    rules
+}
 
 fn policy() -> Value {
     json!({
@@ -53,12 +70,12 @@ fn block(cwd: &str, scope: &Value) -> Value {
         .iter()
         .map(|glob| format!("Edit(//{root}/{glob})"))
         .collect();
-    allow.extend(strings("bash").iter().map(|p| format!("Bash({p} *)")));
-    let mut ask: Vec<String> = FLOOR_ASK.iter().map(|s| (*s).to_owned()).collect();
+    allow.extend(strings("bash").iter().flat_map(|p| bash_rules(p, root)));
+    let mut ask: Vec<String> = floor_ask(root);
     ask.push(format!("Edit(//{root}/.git/**)"));
     let deny: Vec<String> = strings("deny")
         .iter()
-        .map(|p| format!("Bash({p} *)"))
+        .flat_map(|p| bash_rules(p, root))
         .collect();
     json!({"allow": allow, "ask": ask, "deny": deny})
 }
