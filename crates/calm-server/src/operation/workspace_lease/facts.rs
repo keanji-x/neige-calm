@@ -12,14 +12,9 @@
 //! #1727 S3 reuses it for `recovery.guidance.retained`.
 //!
 //! `last_commit` is exactly "the latest `worktree.committed` event scoped to
-//! the card": the auto-commit after a Codex worker's `task.complete`
-//! (`mcp_server::tools::emit::submit_worker_success_commit`) or a git-forge
-//! `git.commit` action — both land through the forge action adapter. Commits a
-//! worker makes with plain `git` are never recorded; Claude / isolated /
-//! terminal workers get no auto-commit, so for them it is set only when a
-//! git-forge `git.commit` ran; and a failed auto-commit after an earlier
-//! successful kernel commit leaves the earlier sha in place — it is
-//! indistinguishable from success here (KNOWN GAP, #1615 A).
+//! the card". A failed auto-commit after an earlier successful kernel commit
+//! leaves the earlier sha in place — it is indistinguishable from success
+//! here (KNOWN GAP, #1615 A).
 
 use serde::Serialize;
 
@@ -52,11 +47,9 @@ pub(crate) struct WorkerWorktreeFacts {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// `commit_sha` of the latest `worktree.committed` event scoped to the
-    /// worker card — the latest commit the KERNEL recorded (auto-commit after
-    /// a Codex worker's `task.complete`, or a git-forge `git.commit` action).
-    /// Absent when the kernel never recorded one. Plain-`git` commits by the
-    /// worker are never recorded, and a FAILED auto-commit changes nothing
-    /// here (the previous successful sha, or the absence, stays — #1615 A).
+    /// worker card — the latest commit the KERNEL recorded. Absent when the
+    /// kernel never recorded one. A FAILED auto-commit changes nothing here
+    /// (the previous successful sha, or the absence, stays — #1615 A).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
     /// `true` when the kernel removed the worktree after its last
