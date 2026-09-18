@@ -13,6 +13,7 @@ export const OPTIMIZED_DEPENDENCIES = Object.freeze([
   '@astryxdesign/core/Calendar',
   '@astryxdesign/core/Card',
   '@astryxdesign/core/Chat',
+  '@astryxdesign/core/Code',
   '@astryxdesign/core/Collapsible',
   '@astryxdesign/core/Divider',
   '@astryxdesign/core/Heading',

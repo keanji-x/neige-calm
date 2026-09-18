@@ -127,6 +127,24 @@
   }
 
   /*
+   * A landing is not a control, so it wears no ring.
+   *
+   * When the element the reader's focus was in goes with a page shift, and
+   * nothing that takes input stands for where they were, focus is put on the
+   * call's own line or on the message now standing there (`useToolCallFocus`,
+   * `activity-groups.tsx`) — lent `tabindex="-1"` and this attribute for
+   * exactly as long as it holds focus. The perch rule below makes the case:
+   * `base.css` paints every `:focus-visible`, Chromium grants it to a
+   * programmatic `focus()` after a key press, and a ring promises keyboard
+   * input goes here. A line of prose takes none. The control the reader Tabs
+   * on to keeps its own ring untouched; `activity-focus.browser.test.tsx`
+   * reads the computed outline on both.
+   */
+  .thread [data-nc-landing]:focus-visible {
+    outline: none;
+  }
+
+  /*
    * The 88% ceiling is what keeps the side readable: a turn allowed the full
    * width would start at the inline-start edge too, and then both turns begin
    * on the same vertical and the only thing distinguishing them is where they

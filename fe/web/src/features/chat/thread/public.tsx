@@ -38,7 +38,9 @@ import {
   ChatSendButton,
   ChatSystemMessage,
   type ChatComposerTrigger,
+  type ChatToolCallItem,
 } from '@astryxdesign/core/Chat';
+import { Code } from '@astryxdesign/core/Code';
 import { Markdown } from '@astryxdesign/core/Markdown';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
 
@@ -55,6 +57,13 @@ import {
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
 import styles from './thread.module.css';
+import {
+  ToolCallGroup, toolCallGroupShowsRunning, untouchedToolCallGroup, useToolCallFocus, withDetailOpen,
+  type ToolCallGroupUi,
+} from './activity-groups.tsx';
+import {
+  groupTranscriptActivities, keyTranscriptGroups, noTranscriptGroupKeys, type TranscriptGroupKeys,
+} from '../../../../../core/domain/conversation-groups.ts';
 
 export type ChatThreadProps = Readonly<{
   conversation: Conversation;
@@ -67,8 +76,6 @@ export type ChatThreadProps = Readonly<{
 export function ChatThread({ conversation, turns, pending = false }: ChatThreadProps) {
   const live = pending || isLiveConversation(conversation.state);
   const lastTurn = turns[turns.length - 1];
-  const lastTurnCarriesLiveMark = lastTurn?.author === 'agent'
-    || (lastTurn?.author === 'activity' && lastTurn.state === 'running');
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. It is not `.thread` itself
    *  because the stylesheet's `> * + *` rules space that element's children,
@@ -90,6 +97,88 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
   const indexOf = useMemo(
     () => new Map(turns.map((entry, index) => [entry, index] as const)), [turns],
   );
+  // Quiet syncs remain a single top-level boundary; their existing disclosure
+  // owns its children. Ordinary tools on either side must never join through it.
+  const quietBlocks = useMemo(() => new Map(blocks
+    .filter((block) => block.kind === 'quiet-sync').map((block) => [block.id, block] as const)), [blocks]);
+  const visibleTurns = useMemo(() => blocks.map((block) => block.kind === 'entry'
+    ? block.entry : block.entries[0]), [blocks]);
+  /*
+   * Which run of tool calls is which, carried from one transcript to the next
+   * (`keyTranscriptGroups`). The memory it reads is the memory of the last
+   * transcript that was *committed*, and it is advanced only by a commit —
+   * never by the render that computed it. That is not a nicety: React renders
+   * transcripts it then throws away (a transition that suspends and is
+   * overtaken, a render the next update interrupts), and a memory advanced
+   * during render is left holding keys assigned to a transcript no one saw.
+   * The next render of the transcript that *is* on screen then reads that
+   * memory, finds none of its calls in it, issues fresh keys, and every open
+   * group is torn down and rebuilt closed. Idempotence on a repeat of the same
+   * input does not cover this — the input that was abandoned was different.
+   *
+   * `useMemo` on `turns` is the render-time half: the keys are derived from
+   * the transcript and the committed memory, both of which are stable across
+   * the re-renders between two transcripts. The layout effect is the commit
+   * half. Writing the memory in a layout effect rather than a passive one
+   * puts it in the same commit as the DOM it describes; nothing renders in
+   * between.
+   */
+  const committedGroupKeys = useRef<TranscriptGroupKeys>(noTranscriptGroupKeys());
+  const keyedGroups = useMemo(
+    () => keyTranscriptGroups(groupTranscriptActivities(visibleTurns), committedGroupKeys.current),
+    [visibleTurns],
+  );
+  const transcriptGroups = keyedGroups.groups;
+  useLayoutEffect(() => {
+    committedGroupKeys.current = keyedGroups.memory;
+  }, [keyedGroups]);
+  /*
+   * What the reader has done to each run of calls — open or closed, and which
+   * failure details inside it they opened — by the run's carried key. Held
+   * here, not in the vendor's element, because that element does not survive
+   * a page shift that leaves the run one call, or none, and its rows do not
+   * survive one that drops the call the reader was reading
+   * (`activity-groups.tsx`). A key is issued once and never reissued, so an
+   * entry for a run that vanished can never describe a later stranger — and
+   * the run itself, remembered by its calls' ids (`keyTranscriptGroups`),
+   * gets its entry back when they return; this component is remounted per
+   * conversation (`key={open.id}` at the router), so nothing here crosses
+   * from one transcript's runs to another's.
+   */
+  const [groupUi, setGroupUi] = useState<ReadonlyMap<string, ToolCallGroupUi>>(() => new Map());
+  const updateGroupUi = (key: string, update: (previous: ToolCallGroupUi) => ToolCallGroupUi) => {
+    setGroupUi((previous) => new Map(previous).set(key, update(previous.get(key) ?? untouchedToolCallGroup())));
+  };
+  /*
+   * Where focus goes when the element under it goes — a call's row, or a
+   * run's whole element, taken by the same page shift (`activity-groups.tsx`).
+   * Held on the transcript's element, which outlives every run's, and fed by
+   * its focus events; every child drawn below carries `data-nc-entry` so the
+   * landing can find an entry's element again after the commit.
+   */
+  const focus = useToolCallFocus(
+    transcriptGroups.filter(({ entry }) => entry.author !== 'turn' || entry.status !== 'completed'),
+    (activities) => activities.map(toolCallOf),
+    (key) => groupUi.get(key) ?? untouchedToolCallGroup(),
+  );
+  /*
+   * Whether the end of the transcript already says "working", so the
+   * placeholder mark below it stays down: an agent reply, a running call on
+   * its own line, or a run of calls whose *visible* rows include a running
+   * one — the header's latest call when the group is closed, every call when
+   * it is open. The last call finishing does not end the turn, and a group
+   * closed on a finished latest call has nothing spinning in it, so the
+   * placeholder is right to come back then; but open, with an earlier call
+   * still running, the vendor's spinner is already on screen and a second
+   * mark under it would say the same thing twice.
+   */
+  const tail = transcriptGroups[transcriptGroups.length - 1];
+  const tailQuiet = tail === undefined ? undefined : quietBlocks.get(tail.entry.id);
+  const tailCarriesLiveMark = tail === undefined ? false
+    : tailQuiet !== undefined ? tailQuiet.entries.some((entry) => entry === lastTurn)
+    : tail.activities === null ? tail.entry.author === 'agent'
+    : tail.activities.length === 1 ? tail.activities[0].state === 'running'
+    : toolCallGroupShowsRunning(tail.activities.map(toolCallOf), groupUi.get(tail.key)?.expanded ?? false);
   /*
    * ── The rail is painted in the drawer's seam, not in the transcript ───────
    *
@@ -458,15 +547,15 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
      out of the block loop below so a folded group and a bare entry draw the
      same thing the same way; `index` is the entry's place in `turns`, which
      is what the exchange, gap and live-mark rules are stated over. */
-  const renderEntry = (turn: TranscriptEntry): ReactNode => {
+  const renderEntry = (turn: TranscriptEntry, key = turn.id, showLive = live): ReactNode => {
     const index = indexOf.get(turn) ?? -1;
     const last = index === turns.length - 1;
     if (turn.author === 'activity') {
-      return <ActivityLine key={turn.id} activity={turn} live={live && last} />;
+      return <ActivityLine key={turn.id} entry={key} activity={turn} live={showLive && last} />;
     }
     if (turn.author === 'system') {
       return (
-        <div key={turn.id}>
+        <div key={turn.id} data-nc-entry={key}>
           {opensAfterGap(turns, index) && index > 0 && (
             <p className={styles.gap}>{clockTime(turn.atMs)}</p>
           )}
@@ -505,6 +594,7 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
         <div
           key={turn.id}
           className={styles.outcome}
+          data-nc-entry={key}
           data-nc-turn="outcome"
           data-nc-turn-outcome={turn.status}
         >
@@ -523,6 +613,7 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
       <div
         key={turn.id}
         className={opens ? styles.exchange : undefined}
+        data-nc-entry={key}
         /* The same element the layout already groups by is the element the
            rail jumps to. There is no second notion of "an exchange starts
            here" to keep in step with `opensExchange`. */
@@ -589,7 +680,7 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
         ) : (
           <div className={styles.reply} data-nc-turn="agent">
             <Reply text={turn.text} />
-            {live && last && <span className={styles.live} aria-label="Working" />}
+            {showLive && last && <span className={styles.live} aria-label="Working" />}
           </div>
         )}
       </div>
@@ -647,25 +738,55 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
         />,
         railSeam,
       )}
-      <div className={styles.thread} data-nc-thread="">
-        {blocks.map((block) => {
-          if (block.kind === 'entry') return renderEntry(block.entry);
-          const holdsLast = block.entries.some((entry) => indexOf.get(entry) === turns.length - 1);
-          return (
-            <QuietSyncFold
-              key={block.id}
-              group={block}
-              time={clockTime(block.atMs)}
-              live={live && holdsLast}
-            >
-              {block.entries.map(renderEntry)}
-            </QuietSyncFold>
-          );
+      <div className={styles.thread} data-nc-thread="" ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
+        {transcriptGroups.map(({ entry: turn, activities, key }) => {
+          const block = quietBlocks.get(turn.id);
+          if (block !== undefined) {
+            return (
+              <div key={block.id} data-nc-entry={key}>
+                <QuietSyncFold group={block} time={clockTime(block.atMs)}
+                  live={live && block.entries.some((entry) => entry === lastTurn)}>
+                  {block.entries.map((entry) => renderEntry(entry, entry.id, false))}
+                </QuietSyncFold>
+              </div>
+            );
+          }
+          const last = (activities?.at(-1) ?? turn) === lastTurn;
+          if (turn.author === 'activity') {
+            if (activities !== null && activities.length > 1) {
+              return (
+                <ToolCallGroup
+                  /* Carried by membership, not read off any one call: the group
+                     keeps its element — and the state below is keyed the same
+                     way, so it keeps what the reader did to it even where the
+                     element cannot be kept — as calls are appended to it, as
+                     *Load earlier* prepends the rest of a run the page cut
+                     through, as a page shift drops its head, and as a running
+                     call finishes in place. */
+                  key={key}
+                  entry={key}
+                  calls={activities.map(toolCallOf)}
+                  ui={groupUi.get(key) ?? untouchedToolCallGroup()}
+                  onExpandedChange={(expanded) => updateGroupUi(key, (ui) => ({ ...ui, expanded }))}
+                  onDetailOpenChange={(callKey, open) => updateGroupUi(key, (ui) => withDetailOpen(ui, callKey, open))}
+                  /* The same `live && last` a lone line answers to. A group
+                     the conversation has moved past — a user message and a
+                     new call after it — keeps a call left `running` by an
+                     interrupted turn, and must not look like it resumed. */
+                  live={live && last}
+                />
+              );
+            }
+            return <ActivityLine key={turn.id} entry={key} activity={turn} live={live && last} />;
+          }
+          return renderEntry(turn, key);
         })}
         {/* A reply that has not arrived yet still gets a place to arrive in. The
-            last entry owns the live mark only when it is an agent reply or a
-            running action; otherwise this placeholder keeps the one mark visible. */}
-        {live && !lastTurnCarriesLiveMark && (
+            tail owns the live mark only when it is an agent reply, a running
+            action on its own line, or a group with a running call among the
+            rows it is showing (`tailCarriesLiveMark`); otherwise this
+            placeholder keeps the one mark visible. */}
+        {live && !tailCarriesLiveMark && (
           <p className={styles.reply}><span className={styles.live} aria-label="Working" /></p>
         )}
         <div ref={endRef} aria-hidden="true" />
@@ -922,6 +1043,67 @@ function formatActivityDuration(durationMs: number): string {
 }
 
 /**
+ * ── A run of actions is one Astryx `ChatToolCalls`, a lone action is a line ──
+ *
+ * Two or more adjacent activities (`groupTranscriptActivities`) render as the
+ * vendor's grouped tool calls, through `ToolCallGroup`: closed until the
+ * reader opens it, to one row naming the latest call and the count, and open
+ * to every call in transcript order. Whether it is open, and which failure
+ * details in it are, is this component's state and not the vendor's — see
+ * `activity-groups.tsx` for why. A single activity keeps `ActivityLine` below,
+ * whether it is a run that was always one call or a run a page shift has
+ * left one call of: Astryx renders one call inline without group chrome, and
+ * the line already says the same thing in this transcript's own register,
+ * with its failure detail in the open.
+ *
+ * What one activity becomes, stated field by field because each is a choice:
+ *
+ *  - `key` is the activity's id, which `buildTranscript` holds stable from
+ *    `item/started` to `item/completed`, so a call that finishes updates its
+ *    row in place rather than remounting it (and keeps a detail the reader had
+ *    opened on it open). It is also what `ToolCallGroup` records an opened
+ *    detail under.
+ *  - `status` follows `ActivityState` one to one. Astryx has no fourth value
+ *    for "started and never reported an end", which is what a `running` row
+ *    is once the conversation is no longer live — an interrupted or exited
+ *    turn — or once the conversation has moved past it: the same row, after
+ *    the next message and the next turn's own calls. `ActivityLine` prints
+ *    that row without its pulse (`live && last`); the stylesheet does the
+ *    same to the group by hiding the vendor's spinner unless the group
+ *    carries `data-nc-live`, which only the group at the tail of a live
+ *    transcript does, so neither a dead conversation nor a run the
+ *    conversation has left behind ever spins — open or closed.
+ *  - `duration` is gated by the same floor as the line. Astryx prints it only
+ *    on a completed call, so a failed call's duration is not shown in a group
+ *    where the line would have shown it; that is the vendor's choice and this
+ *    file does not work around it.
+ *  - `errorMessage` and `resultDetail` are both the failure detail (non-null
+ *    only on a failed activity — the domain's rule). The first is Astryx's
+ *    hover title on the status icon; the second is what makes the row a
+ *    button that reveals the detail inline, in the vendor's inline `Code`
+ *    element, which wraps a long token instead of widening the column. The
+ *    detail is wrapped in an element stamped `data-nc-detail` with the
+ *    activity's id: the vendor mounts it only while the detail is open, so
+ *    its presence is how `ToolCallGroup` reads the vendor's state.
+ */
+function toolCallOf(activity: ConversationActivity): ChatToolCallItem {
+  const duration = activity.durationMs !== null && activity.durationMs >= ACTIVITY_DURATION_FLOOR_MS
+    ? formatActivityDuration(activity.durationMs)
+    : undefined;
+  return {
+    key: activity.id,
+    name: activity.verb,
+    target: activity.target ?? undefined,
+    status: activity.state === 'done' ? 'complete' : activity.state === 'failed' ? 'error' : 'running',
+    duration,
+    errorMessage: activity.detail ?? undefined,
+    resultDetail: activity.detail === null
+      ? undefined
+      : <div data-nc-detail={activity.id}><Code>{activity.detail}</Code></div>,
+  };
+}
+
+/**
  * One action, one line.
  *
  * The dot is the same 6px accent pulse a running track row wears, and it is here
@@ -956,8 +1138,10 @@ function formatActivityDuration(durationMs: number): string {
  * damage from every long `done` line onto every failed line; it did not fix it.
  * Two rows is a fact about the structure now, not an outcome of a layout pass.
  */
-function ActivityLine({ activity, live }: {
+function ActivityLine({ activity, entry, live }: {
   activity: ConversationActivity;
+  /** The run's carried key, stamped as `data-nc-entry` — a run of one is still a run (`useToolCallFocus`). */
+  entry: string;
   live: boolean;
 }) {
   const running = activity.state === 'running';
@@ -969,6 +1153,7 @@ function ActivityLine({ activity, live }: {
     <p
       className={`${styles.activity} ${activity.state === 'failed' ? styles.activityFailed : ''}`}
       data-nc-state={activity.state}
+      data-nc-entry={entry}
     >
       <span className={styles.activityRow}>
         <span>{activity.verb}</span>

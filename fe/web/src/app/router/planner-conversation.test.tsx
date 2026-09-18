@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { HarnessPhaseTag } from '../../../../core/api/generated/wire.js';
-import { HARNESS_ITEMS_PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
+import { HARNESS_ITEMS_PAGE_LIMIT as TRANSCRIPT_PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { queryKeys } from '../providers/queries.ts';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
@@ -30,6 +30,10 @@ const PLANNER_RUN_IDLE = {
 
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
+}
+
+function transcriptQueryKey() {
+  return queryKeys.harnessItems(CARD.id);
 }
 
 function harnessRows(count: number) {
@@ -569,6 +573,247 @@ describe('planner conversation regressions', () => {
     expect(actionIndex).toBeLessThan(replyIndex);
   });
 
+  /*
+   * The route's own read path — `harness/items` rows through `buildTranscript`
+   * into `ChatThread` — folds a run of actions into one Astryx group. Pinned
+   * here rather than only in the component tier because the rows the component
+   * is handed are built from this fixture's wire shape: `item/started` and
+   * `item/completed` pairing on `item_uuid` is what keeps the group's identity
+   * while its last call finishes.
+   */
+  it('folds consecutive actions into one closed group that stays open as a call completes', async () => {
+    const base = harnessRows(1)[0];
+    const command = (id: number, uuid: string, method: string, item: Record<string, unknown>) => ({
+      ...base, id, item_uuid: uuid, item_type: 'commandExecution', method, params: JSON.stringify({ item }),
+    });
+    let rows = [
+      { ...base, id: 1, item_uuid: 'message-1', params: JSON.stringify({ item: { text: 'Let me check.' } }) },
+      command(2, 'command-1', 'item/completed', { command: 'npm test', exitCode: 1, aggregatedOutput: 'error: no test specified\n' }),
+      command(3, 'command-2', 'item/completed', { command: 'ls', exitCode: 0, durationMs: 12 }),
+      command(4, 'command-3', 'item/started', { command: 'cargo build' }),
+    ];
+    const { client } = setup((request) => request.path.includes('/harness/items') ? ok(rows) : undefined);
+    await openConversation();
+    const group = await screen.findByRole('group', { name: '3 tool calls' });
+    const header = within(group).getByRole('button', { expanded: false });
+    expect(header.textContent).toContain('Running');
+    expect(header.textContent).toContain('cargo build');
+    /* The reply before the run is not folded into it. */
+    const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
+    const text = drawer.textContent ?? '';
+    expect(text.indexOf('Let me check.')).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf('Let me check.')).toBeLessThan(text.indexOf('Running'));
+    expect(screen.queryByText('error: no test specified')).toBeNull();
+
+    fireEvent.click(header);
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    /* The next poll completes the running call: same `item_uuid`, so the same
+       row and the same group — still open, still three. */
+    rows = [...rows, command(5, 'command-3', 'item/completed', { command: 'cargo build', exitCode: 0, durationMs: 4_300 })];
+    await act(async () => { await client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
+    await screen.findByText('4.3s');
+    expect(screen.getByRole('group', { name: '3 tool calls' })).toBe(group);
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    expect(within(group).queryByText('Running')).toBeNull();
+    /* The failed call's detail is there on demand, quoted from the machine. */
+    fireEvent.click(within(group).getByRole('button', { name: /npm test/ }));
+    expect(within(group).getByText('error: no test specified')).toBeTruthy();
+  });
+
+  /*
+   * The page boundary is the route's own — `TRANSCRIPT_PAGE_LIMIT` rows,
+   * cut wherever the count says — and it can fall inside a run of calls. The
+   * first page then shows the run's tail as a group; *Load earlier* must
+   * extend that group rather than replace it: the reader's open group and the
+   * failure detail they opened stay open, and the run's earlier calls land
+   * above the ones already shown, in transcript order. Pinned at this tier
+   * because the boundary is made here, by the infinite query's cursor
+   * (`after_id` = the oldest id of the page before), not by the component.
+   */
+  it('extends a group cut by the page boundary when Load earlier brings the rest of its run', async () => {
+    const base = harnessRows(1)[0];
+    const command = (id: number, uuid: string, method: string, item: Record<string, unknown>) => ({
+      ...base, id, item_uuid: uuid, item_type: 'commandExecution', method, params: JSON.stringify({ item }), created_at_ms: id,
+    });
+    const reply = (id: number, text: string) => ({ ...base, id, params: JSON.stringify({ item: { text } }), created_at_ms: id });
+    /* The newest page starts with the run's last two calls; replies fill it to the limit. */
+    const firstPage = [
+      command(101, 'command-101', 'item/completed', { command: 'npm test', exitCode: 1, aggregatedOutput: 'error: no test specified\n' }),
+      command(102, 'command-102', 'item/completed', { command: 'pwd', exitCode: 0, durationMs: 12 }),
+      ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 2 }, (_, index) => reply(103 + index, `reply ${103 + index}`)),
+    ];
+    /* The page before it ends with the same run's first two calls. */
+    const earlierPage = [
+      reply(98, 'Let me check.'),
+      command(99, 'command-99', 'item/completed', { command: 'old command 1', exitCode: 0 }),
+      command(100, 'command-100', 'item/completed', { command: 'old command 2', exitCode: 0 }),
+    ];
+    const { requests } = setup((request) => request.path.includes('/harness/items')
+      ? ok(request.path.includes('after_id=0&') ? firstPage : earlierPage) : undefined);
+    await openConversation();
+    const group = await screen.findByRole('group', { name: '2 tool calls' });
+    const header = within(group).getByRole('button', { expanded: false });
+    fireEvent.click(header);
+    fireEvent.click(within(group).getByRole('button', { name: /npm test/ }));
+    const detail = within(group).getByText('error: no test specified');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
+    expect(await screen.findByRole('group', { name: '4 tool calls' })).toBe(group);
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    expect(within(group).getByText('error: no test specified')).toBe(detail);
+    const order = ['old command 1', 'old command 2', 'npm test', 'pwd'].map((target) => (group.textContent ?? '').indexOf(target));
+    expect(order.every((position, index) => position >= 0 && (index === 0 || position > order[index - 1]))).toBe(true);
+    /* The reply that preceded the run sits above it, and the second read asked
+       for the rows before the first page's oldest. */
+    const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
+    expect((drawer.textContent ?? '').indexOf('Let me check.')).toBeLessThan((drawer.textContent ?? '').indexOf('old command 1'));
+    expect(requests.filter((request) => request.path.includes('/harness/items'))
+      .map((request) => new URL(request.path, 'http://localhost').searchParams.get('after_id'))).toEqual(['0', '101']);
+  });
+
+  /*
+   * The page shifts under a refetch once newer rows exist: the newest 300 are
+   * re-read from the top, and the run the reader has open can be left with one
+   * call in the window — which is a line, not a group — until *Load earlier*
+   * restores the rest. The group's element does not survive that (the vendor
+   * is unmounted for the line), so what is pinned here is not the element but
+   * what the reader had: the run open again, the failure detail they opened
+   * still open, and both calls in order. The detail stays readable on the
+   * line in between.
+   */
+  it('keeps an open group and its opened failure detail through a refetch that leaves it one call', async () => {
+    const base = harnessRows(1)[0];
+    const command = (id: number, uuid: string, item: Record<string, unknown>) => ({
+      ...base, id, item_uuid: uuid, item_type: 'commandExecution', method: 'item/completed',
+      params: JSON.stringify({ item }), created_at_ms: id,
+    });
+    const reply = (id: number) => ({
+      ...base, id, params: JSON.stringify({ item: { text: `reply ${id}` } }), created_at_ms: id,
+    });
+    const failed = command(102, 'command-102', {
+      command: 'npm test', exitCode: 1, aggregatedOutput: 'failure detail\n',
+    });
+    const initial = [
+      command(101, 'command-101', { command: 'pwd', exitCode: 0 }), failed,
+      ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 2 }, (_, i) => reply(103 + i)),
+    ];
+    const shifted = [
+      failed,
+      ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 1 }, (_, i) => reply(103 + i)),
+    ];
+    let refetched = false;
+    const { client } = setup((request) => request.path.includes('/harness/items')
+      ? ok(request.path.includes('after_id=0&') ? (refetched ? shifted : initial) : [initial[0]])
+      : undefined);
+    await openConversation();
+    const group = await screen.findByRole('group', { name: '2 tool calls' });
+    const header = within(group).getByRole('button', { expanded: false });
+    fireEvent.click(header);
+    fireEvent.click(within(group).getByRole('button', { name: /npm test/ }));
+    expect(within(group).getByText('failure detail')).toBeTruthy();
+
+    refetched = true;
+    await act(async () => { await client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
+    await waitFor(() => expect(screen.queryByRole('group', { name: '2 tool calls' })).toBeNull());
+    expect(screen.getByText('failure detail')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
+    const restored = await screen.findByRole('group', { name: '2 tool calls' });
+    expect(within(restored).getByRole('button', { expanded: true }).getAttribute('aria-expanded')).toBe('true');
+    expect(within(restored).getByText('failure detail')).toBeTruthy();
+    expect((restored.textContent ?? '').indexOf('pwd')).toBeLessThan((restored.textContent ?? '').indexOf('npm test'));
+    /* The restored row is the reader's to close again. */
+    fireEvent.click(within(restored).getByRole('button', { name: /npm test/ }));
+    expect(within(restored).queryByText('failure detail')).toBeNull();
+  });
+
+  /*
+   * The same shift, one row wider: a three-call run loses its first call and
+   * keeps two, so the vendor's element stays mounted while the row the reader
+   * had open is unmounted from inside it. *Load earlier* brings that row back
+   * as a new element, closed by the vendor; the detail the reader opened must
+   * be open on it again. Pinned at this tier because the row's identity
+   * (`item_uuid`) and the window that drops it are both made here.
+   */
+  it('restores an opened failed row after a multi-call refetch window shift', async () => {
+    const base = harnessRows(1)[0];
+    const command = (id: number, item: Record<string, unknown>) => ({
+      ...base, id, item_uuid: `command-${id}`, item_type: 'commandExecution', method: 'item/completed',
+      params: JSON.stringify({ item }), created_at_ms: id,
+    });
+    const reply = (id: number) => ({
+      ...base, id, params: JSON.stringify({ item: { text: `reply ${id}` } }), created_at_ms: id,
+    });
+    const failed = command(101, { command: 'npm test', exitCode: 1, aggregatedOutput: 'failure evidence\n' });
+    const retained = [command(102, { command: 'pwd', exitCode: 0 }), command(103, { command: 'ls', exitCode: 0 })];
+    const initial = [failed, ...retained, ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 3 }, (_, i) => reply(104 + i))];
+    const shifted = [...retained, ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 2 }, (_, i) => reply(104 + i))];
+    let refetched = false;
+    const { client } = setup((request) => request.path.includes('/harness/items')
+      ? ok(request.path.includes('after_id=0&') ? (refetched ? shifted : initial) : [failed])
+      : undefined);
+    await openConversation();
+    const group = await screen.findByRole('group', { name: '3 tool calls' });
+    const header = within(group).getByRole('button', { expanded: false });
+    fireEvent.click(header);
+    fireEvent.click(within(group).getByRole('button', { name: /npm test/ }));
+    expect(within(group).getByText('failure evidence')).toBeTruthy();
+
+    refetched = true;
+    await act(async () => { await client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
+    expect(await screen.findByRole('group', { name: '2 tool calls' })).toBe(group);
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    expect(within(group).queryByText('failure evidence')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
+    expect(await screen.findByRole('group', { name: '3 tool calls' })).toBe(group);
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    expect(within(group).getByText('failure evidence')).toBeTruthy();
+  });
+
+  /*
+   * And the shift that takes the whole run: the newest page is nothing but
+   * replies, the run is gone from the transcript — not one call, not the
+   * element — and *Load earlier* returns the same stable ids. They are the
+   * same run to the reader: open again, the failure detail they opened open.
+   * A run that vanished whole used to be forgotten with the window that held
+   * it; it is now remembered by its calls' ids for as long as the
+   * conversation is open.
+   */
+  it('restores the same group after it leaves the latest page whole', async () => {
+    const base = harnessRows(1)[0];
+    const command = (id: number, item: Record<string, unknown>) => ({
+      ...base, id, item_uuid: `command-${id}`, item_type: 'commandExecution', method: 'item/completed',
+      params: JSON.stringify({ item }), created_at_ms: id,
+    });
+    const reply = (id: number) => ({
+      ...base, id, params: JSON.stringify({ item: { text: `reply ${id}` } }), created_at_ms: id,
+    });
+    const calls = [
+      command(101, { command: 'npm test', exitCode: 1, aggregatedOutput: 'whole-run failure evidence\n' }),
+      command(102, { command: 'pwd', exitCode: 0 }),
+    ];
+    const initial = [...calls, ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 2 }, (_, i) => reply(103 + i))];
+    const shifted = Array.from({ length: TRANSCRIPT_PAGE_LIMIT }, (_, i) => reply(103 + i));
+    let refetched = false;
+    const { client } = setup((request) => request.path.includes('/harness/items')
+      ? ok(request.path.includes('after_id=0&') ? (refetched ? shifted : initial) : calls)
+      : undefined);
+    await openConversation();
+    const group = await screen.findByRole('group', { name: '2 tool calls' });
+    fireEvent.click(within(group).getByRole('button', { expanded: false }));
+    fireEvent.click(within(group).getByRole('button', { name: /npm test/ }));
+    expect(within(group).getByText('whole-run failure evidence')).toBeTruthy();
+
+    refetched = true;
+    await act(async () => { await client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
+    await waitFor(() => expect(screen.queryByRole('group', { name: '2 tool calls' })).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
+    const restored = await screen.findByRole('group', { name: '2 tool calls' });
+    expect(restored.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('true');
+    expect(within(restored).getByText('whole-run failure evidence')).toBeTruthy();
+  });
+
   it('drops a completed tail thought when an optimistic message follows it', async () => {
     const thought = {
       ...harnessRows(1)[0], item_uuid: 'thought-1', item_type: 'reasoning',
@@ -586,7 +831,7 @@ describe('planner conversation regressions', () => {
 
   it('loads only the first history page until the user asks for earlier rows', async () => {
     const { requests } = setup((request) => request.path.includes('/harness/items')
-      ? ok(harnessRows(HARNESS_ITEMS_PAGE_LIMIT)) : undefined);
+      ? ok(harnessRows(TRANSCRIPT_PAGE_LIMIT)) : undefined);
     await openConversation();
     const historyRequests = () => requests.filter((request) => request.path.includes('/harness/items'));
     await waitFor(() => expect(historyRequests()).toHaveLength(1));
