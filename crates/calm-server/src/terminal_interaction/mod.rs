@@ -325,17 +325,19 @@ impl TerminalInteraction {
                 .map(|info| info.exited_at),
             false => None,
         };
-        // #1709 — the capture instant, taken before the frame is read (and
-        // before rendering): the wall-clock time `observation_revision`
-        // refers to. Presentation only; no fence reads it.
-        let observed_at = std::time::SystemTime::now();
-        let (frame, revision, found) = {
+        let (frame, revision, found, observed_at) = {
             let view = client
                 .entry
                 .handle
                 .model_view
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?;
+            // #1709 — the capture instant, taken under the projection lock
+            // (before the frame is read and before rendering), so no output
+            // can advance the frame between the timestamp and the capture:
+            // the wall-clock time `observation_revision` refers to.
+            // Presentation only; no fence reads it.
+            let observed_at = std::time::SystemTime::now();
             // #1710 — the search and the frame come from one lock
             // acquisition, so the found row and the returned screen are
             // one revision.
@@ -347,7 +349,7 @@ impl TerminalInteraction {
                 None => (offset, None),
             };
             let (frame, revision) = view.capture(offset)?;
-            (frame, revision, found)
+            (frame, revision, found, observed_at)
         };
         let png = format.render_image(&self.raster, &frame).await?;
         // Rendering takes time too: the emitted status is the last read.

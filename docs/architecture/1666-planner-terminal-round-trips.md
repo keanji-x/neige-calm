@@ -183,7 +183,9 @@ readback still runs. A `claim` on an exited terminal is the binding refusal
 (`controllable: false`), not a wait. Observations also carry `exit_code`
 from the `TerminalExited` frame (null until the exit or when unknown).
 #1709: and two wall-clock facts, ms since the epoch — `observed_at_ms` (the
-capture instant, taken before the frame is read) and `exited_at_ms` (when
+capture instant, taken under the projection lock before the frame is read,
+so no output can advance the frame between the timestamp and the capture)
+and `exited_at_ms` (when
 the renderer recorded the exit: `TerminalExitInfo::exited_at`, written once
 in `attach_reader.rs` before the exit is broadcast and shared by every
 connection — one attached later only sees the replayed `TerminalExited`
