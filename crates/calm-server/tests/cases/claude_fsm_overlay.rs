@@ -2,9 +2,9 @@
 //! status overlay, end-to-end at the kernel level (no real Claude Code CLI
 //! involved).
 //!
-//! Claude worker `Stop` matches codex foreground-agent `Stop`: the worker
-//! is waiting for the next user prompt, so the card projects as
-//! `AwaitingInput`.
+//! Claude worker `Stop` matches codex foreground-agent `Stop`: the turn is
+//! over and the card rests at `Idle` (#1722 — attention comes only from the
+//! permission / elicitation hooks and whitelisted `Notification` subtypes).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,7 +27,7 @@ use tower::ServiceExt;
 const OVERLAY_DEADLINE: Duration = Duration::from_secs(2);
 const OVERLAY_POLL: Duration = Duration::from_millis(50);
 
-async fn setup() -> (axum::Router, Arc<dyn Repo>, String) {
+async fn setup() -> (axum::Router, Arc<dyn Repo>, String, EventBus) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(NewArea {
@@ -107,7 +107,7 @@ async fn setup() -> (axum::Router, Arc<dyn Repo>, String) {
         .layer(axum::middleware::from_fn(actor_middleware))
         .with_state(state);
 
-    (app, repo_dyn, card.id.to_string())
+    (app, repo_dyn, card.id.to_string(), events)
 }
 
 async fn post_claude_hook(app: &axum::Router, card_id: &str, payload: Value) {
@@ -154,9 +154,34 @@ async fn await_card_state(repo: &Arc<dyn Repo>, card_id: &str, expected_state: &
     }
 }
 
+/// The first card-`status` overlay state observed on `rx` for `card_id`,
+/// bounded by `OVERLAY_DEADLINE`. Overlays are upserts, so "which state came
+/// first" is only observable on the bus, not on the row. `rx` must have been
+/// subscribed BEFORE the hooks were posted (broadcast delivers nothing sent
+/// before the subscription).
+async fn first_card_status_on_bus(
+    rx: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+    card_id: &str,
+) -> String {
+    tokio::time::timeout(OVERLAY_DEADLINE, async {
+        loop {
+            let env = rx.recv().await.expect("bus open");
+            if let calm_server::event::Event::OverlaySet(o) = &env.event
+                && o.kind == "status"
+                && o.entity_kind == "card"
+                && o.entity_id == card_id
+            {
+                return o.payload["state"].as_str().unwrap_or("?").to_string();
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for any card status overlay on {card_id}"))
+}
+
 #[tokio::test]
-async fn claude_stop_sets_worker_card_awaiting_input() {
-    let (app, repo, card_id) = setup().await;
+async fn claude_stop_sets_worker_card_idle() {
+    let (app, repo, card_id, _bus) = setup().await;
 
     post_claude_hook(
         &app,
@@ -167,12 +192,12 @@ async fn claude_stop_sets_worker_card_awaiting_input() {
     )
     .await;
 
-    await_card_state(&repo, &card_id, "AwaitingInput").await;
+    await_card_state(&repo, &card_id, "Idle").await;
 }
 
 #[tokio::test]
 async fn claude_activity_and_permission_hooks_set_distinct_card_states() {
-    let (app, repo, card_id) = setup().await;
+    let (app, repo, card_id, _bus) = setup().await;
 
     post_claude_hook(
         &app,
@@ -199,35 +224,72 @@ async fn claude_activity_and_permission_hooks_set_distinct_card_states() {
     await_card_state(&repo, &card_id, "AwaitingInput").await;
 }
 
+/// #1722 — `SubagentStop` is registered (the settings file still carries it)
+/// but no longer moves the FSM. The `Stop` posted right after it is the
+/// card's FIRST status overlay: had `SubagentStop` projected `Working`, that
+/// would have been observed first (in-order processing).
 #[tokio::test]
-async fn claude_subagent_stop_sets_worker_card_working() {
-    let (app, repo, card_id) = setup().await;
+async fn claude_subagent_stop_does_not_project() {
+    let (app, repo, card_id, bus) = setup().await;
+    let mut rx = bus.subscribe();
     post_claude_hook(&app, &card_id, json!({ "hook_event_name": "SubagentStop" })).await;
-    await_card_state(&repo, &card_id, "Working").await;
+    post_claude_hook(&app, &card_id, json!({ "hook_event_name": "Stop" })).await;
+    assert_eq!(first_card_status_on_bus(&mut rx, &card_id).await, "Idle");
+    await_card_state(&repo, &card_id, "Idle").await;
 }
 
+/// #1722 — same contract for `TaskCompleted`.
 #[tokio::test]
-async fn claude_task_completed_sets_worker_card_working() {
-    let (app, repo, card_id) = setup().await;
+async fn claude_task_completed_does_not_project() {
+    let (app, repo, card_id, bus) = setup().await;
+    let mut rx = bus.subscribe();
     post_claude_hook(
         &app,
         &card_id,
         json!({ "hook_event_name": "TaskCompleted" }),
     )
     .await;
-    await_card_state(&repo, &card_id, "Working").await;
+    post_claude_hook(&app, &card_id, json!({ "hook_event_name": "Stop" })).await;
+    assert_eq!(first_card_status_on_bus(&mut rx, &card_id).await, "Idle");
+    await_card_state(&repo, &card_id, "Idle").await;
+}
+
+/// #1722 — a `Notification` projects `AwaitingInput` only for the
+/// whitelisted subtypes; `idle_prompt` (sent ~60 s after every `Stop`) is a
+/// no-op, so the card stays `Idle`.
+#[tokio::test]
+async fn claude_notification_projects_only_whitelisted_subtypes() {
+    let (app, repo, card_id, bus) = setup().await;
+    let mut rx = bus.subscribe();
+    post_claude_hook(
+        &app,
+        &card_id,
+        json!({ "hook_event_name": "Notification", "notification_type": "idle_prompt" }),
+    )
+    .await;
+    post_claude_hook(&app, &card_id, json!({ "hook_event_name": "Stop" })).await;
+    assert_eq!(first_card_status_on_bus(&mut rx, &card_id).await, "Idle");
+    await_card_state(&repo, &card_id, "Idle").await;
+
+    post_claude_hook(
+        &app,
+        &card_id,
+        json!({ "hook_event_name": "Notification", "notification_type": "permission_prompt" }),
+    )
+    .await;
+    await_card_state(&repo, &card_id, "AwaitingInput").await;
 }
 
 #[tokio::test]
 async fn claude_elicitation_sets_worker_card_awaiting_input() {
-    let (app, repo, card_id) = setup().await;
+    let (app, repo, card_id, _bus) = setup().await;
     post_claude_hook(&app, &card_id, json!({ "hook_event_name": "Elicitation" })).await;
     await_card_state(&repo, &card_id, "AwaitingInput").await;
 }
 
 #[tokio::test]
 async fn claude_permission_denied_sets_worker_card_awaiting_input() {
-    let (app, repo, card_id) = setup().await;
+    let (app, repo, card_id, _bus) = setup().await;
     post_claude_hook(
         &app,
         &card_id,

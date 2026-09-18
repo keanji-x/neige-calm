@@ -312,8 +312,10 @@ mod tests {
             .iter()
             .map(|h| h.event_name.to_string())
             .collect();
-        // Settings must register every hook the FSM projects (so Claude actually
-        // fires it) and nothing it ignores. #364: this set drifted before.
+        // Settings must register exactly the worker hook table — every row,
+        // whether it projects a state (`state: Some`) or is event-name
+        // vocabulary only (`state: None`, #1722) — and nothing outside it.
+        // #364: this set drifted before.
         assert_eq!(registered, expected);
         // Matcher presence per hook must match the table flag.
         for h in crate::card_fsm::CLAUDE_WORKER_HOOKS {
