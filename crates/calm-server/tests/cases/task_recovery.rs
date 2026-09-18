@@ -1253,3 +1253,268 @@ async fn task_recovery_guidance_names_verification_effects_when_no_worker_was_pr
     );
     assert_eq!(guidance["retained"], json!({}));
 }
+
+fn isolated_codex_declaration(key: &str) -> Value {
+    let mut declaration = ordinary_codex_declaration(key);
+    declaration["context"] =
+        json!({"neige_execution":{"version":"isolated-codex-v1","workspace":"empty"}});
+    declaration
+}
+
+/// A keyed `codex-isolated-worker` operation row with a preparation receipt
+/// (`tx_output_json` set) in `phase`, the way the predecessor fence finds
+/// one after normal card/session cleanup. Returns its id.
+async fn insert_isolated_operation(boot: &Boot, task: &Task, phase: &str) -> String {
+    let id = format!("isolated-{phase}-{}", task.id);
+    sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_id,target_json,payload_json,phase,tx_output_json,created_at_ms,updated_at_ms) VALUES(?1,?1,'codex-isolated-worker',?2,'h','track',?3,'{}','{}',?4,'{}',1,1)")
+        .bind(&id)
+        .bind(&task.id)
+        .bind(boot.track_id.as_str())
+        .bind(phase)
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    id
+}
+
+/// #1727 S3 fix 2 (K2) — the continuation follows the recorded predecessor,
+/// not the declaration's context shape. A task declared with an
+/// isolated-shaped `neige_execution` context whose recorded predecessor is
+/// an ordinary `codex-worker` (the shape
+/// `isolated_selection_does_not_reinterpret_a_recorded_legacy_worker`
+/// schedules) times out after preparation: admission refuses on the
+/// ordinary fence, and guidance says `new_task`, never `wait_for_settlement`.
+#[tokio::test]
+async fn task_recovery_guidance_follows_the_recorded_ordinary_predecessor_not_the_context_shape() {
+    use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+    let boot = boot().await;
+    declare(&boot, isolated_codex_declaration("b")).await;
+    let task = current(&boot, "b").await;
+    // Historical pre-feature Operation: the context was opaque to its legacy producer.
+    let payload = serde_json::to_value(
+        calm_server::operation::codex_adapter::CodexWorkerOperationPayload {
+            actor: calm_server::ids::ActorId::KernelDispatcher,
+            track_id: task.track_id.clone(),
+            idempotency_key: task.id.clone(),
+            goal: task.goal.clone(),
+            cwd: None,
+            context: serde_json::from_str(&task.context_json).unwrap(),
+            acceptance_criteria: task.acceptance_criteria.clone(),
+        },
+    )
+    .unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let op = SqlxOperationRepo::new(pool.clone())
+        .insert_operation(
+            "codex-worker",
+            OperationKey {
+                operation_key: "historical-worker".into(),
+                idempotency_key: Some(task.id.clone()),
+                payload_hash: calm_server::routes::terminal_cards::stable_payload_hash(&payload)
+                    .unwrap(),
+            },
+            payload,
+        )
+        .await
+        .unwrap();
+    let output = calm_server::operation::TxOutput::new(
+        "card",
+        Some(boot.worker_card_id.to_string()),
+        json!({"id":boot.worker_card_id}),
+    );
+    sqlx::query("UPDATE operations SET phase='succeeded',target_type='card',target_id=?1,tx_output_json=?2 WHERE id=?3")
+        .bind(boot.worker_card_id.as_str()).bind(serde_json::to_string(&output).unwrap()).bind(&op).execute(&pool).await.unwrap();
+    let (failed, lease_path, _lease_dir) = time_out_prepared_ordinary_worker(&boot, "b").await;
+    assert!(calm_server::isolated_codex::selected(&failed).unwrap());
+
+    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let recovery = &listed_entry(&list, "b")["recovery"];
+    assert_eq!(recovery["allowed"], false);
+    assert_eq!(recovery["code"], "predecessor_not_quiescent", "{recovery}");
+    let guidance = &recovery["guidance"];
+    assert_eq!(guidance["supported_continuation"], "new_task", "{guidance}");
+    assert_eq!(guidance["blocking_condition"], recovery["reason"]);
+    assert!(
+        recovery["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("an ordinary worker was prepared"),
+        "{recovery}"
+    );
+    assert_eq!(guidance["retained"]["workspace_path"], lease_path);
+}
+
+/// #1727 S3 fix 2 (K2) — behind the Planner retry limit, the actor-independent
+/// re-check reaches the isolated fence: the predecessor is still parked, so
+/// the continuation is `wait_for_settlement` and the sentence carries both
+/// conditions. The refusal code stays what admission returned.
+#[tokio::test]
+async fn task_recovery_guidance_waits_for_settlement_behind_the_planner_limit() {
+    let boot = boot().await;
+    declare(&boot, isolated_codex_declaration("b")).await;
+    let first = current(&boot, "b").await;
+    finish(&boot, &first, false).await;
+    recover(&boot, &first, "planner-first").await;
+    let second = current(&boot, "b").await;
+    assert_ne!(second.id, first.id);
+    finish(&boot, &second, false).await;
+    // Still running its stop (`parked` itself is CHECK-bound to a real run
+    // record; `planner_observes_failure_then_settled_isolated_recovery`
+    // reaches the same site with one).
+    insert_isolated_operation(&boot, &second, "spawn_succeeded").await;
+
+    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let entry = listed_entry(&list, "b");
+    assert_eq!(entry["generation"], 2);
+    let recovery = &entry["recovery"];
+    assert_eq!(recovery["code"], "recovery_limit_reached", "{recovery}");
+    let guidance = &recovery["guidance"];
+    assert_eq!(
+        guidance["supported_continuation"], "wait_for_settlement",
+        "{guidance}"
+    );
+    let condition = guidance["blocking_condition"].as_str().unwrap();
+    assert!(
+        condition.starts_with(recovery["reason"].as_str().unwrap())
+            && condition.contains("User recovery")
+            && condition.contains("Independently of who asks: ")
+            && condition.contains("no confirmed namespace stop yet"),
+        "{condition}"
+    );
+}
+
+/// #1727 S3 fix 2 (K2) — behind a Track that does not schedule, the re-check
+/// reaches the ordinary fence: `new_task`, both conditions named, the
+/// lifecycle in the policy half.
+#[tokio::test]
+async fn task_recovery_guidance_names_the_new_task_behind_a_track_that_does_not_schedule() {
+    let boot = boot().await;
+    declare(&boot, ordinary_codex_declaration("b")).await;
+    let (_failed, lease_path, _lease_dir) = time_out_prepared_ordinary_worker(&boot, "b").await;
+    sqlx::query("UPDATE tracks SET lifecycle='done' WHERE id=?1")
+        .bind(boot.track_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let recovery = &listed_entry(&list, "b")["recovery"];
+    assert_eq!(recovery["code"], "track_not_ready", "{recovery}");
+    let guidance = &recovery["guidance"];
+    assert_eq!(guidance["supported_continuation"], "new_task", "{guidance}");
+    let condition = guidance["blocking_condition"].as_str().unwrap();
+    assert!(
+        condition.starts_with(recovery["reason"].as_str().unwrap())
+            && condition.contains("(lifecycle done)")
+            && condition.contains("Independently of who asks: an ordinary worker was prepared")
+            && condition.contains("no stop proof"),
+        "{condition}"
+    );
+    assert_eq!(guidance["retained"]["workspace_path"], lease_path);
+}
+
+/// #1727 S3 fix 2 (K2) — a user-owned task whose declaration was withdrawn
+/// (`ready: false`): the Planner is refused with
+/// `user_authorization_required`, but the re-check finds nothing current to
+/// honour for any actor, so the continuation is `none` and the sentence
+/// names the withdrawn declaration rather than promising a User recovery.
+#[tokio::test]
+async fn task_recovery_guidance_has_no_continuation_for_a_withdrawn_user_owned_declaration() {
+    let boot = boot().await;
+    let (block_id, _) = declare(&boot, declaration("b", &[])).await;
+    let b = current(&boot, "b").await;
+    finish(&boot, &b, false).await;
+    // The Planner may not author a user-owned block: rewrite the CRDT
+    // authority directly (the bypass
+    // `task_recovery_rebuild_uses_authoritative_crdt_when_payload_cache_diverges`
+    // uses) and the frozen row's author with it.
+    let mut declared = declaration("b", &[]);
+    declared["declared_by"] = json!("user");
+    declared["ready"] = json!(false);
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let (card_id, bytes): (String, Vec<u8>) =
+        sqlx::query_as("SELECT id, body_crdt FROM cards WHERE track_id=?1 AND kind='track-report'")
+            .bind(boot.track_id.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut doc = calm_server::track_report_doc::ReportDoc::from_bytes(&bytes).unwrap();
+    doc.upsert_block(
+        Some(&block_id),
+        "task",
+        &calm_types::report_blocks::render_fence("task", &declared),
+    )
+    .unwrap();
+    sqlx::query("UPDATE cards SET body_crdt=?1 WHERE id=?2")
+        .bind(doc.to_bytes())
+        .bind(&card_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tasks SET declared_by='user' WHERE id=?1")
+        .bind(&b.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let recovery = &listed_entry(&list, "b")["recovery"];
+    assert_eq!(
+        recovery["code"], "user_authorization_required",
+        "{recovery}"
+    );
+    let guidance = &recovery["guidance"];
+    assert_eq!(guidance["supported_continuation"], "none", "{guidance}");
+    let condition = guidance["blocking_condition"].as_str().unwrap();
+    assert!(
+        condition.starts_with(recovery["reason"].as_str().unwrap())
+            && condition.contains(
+                "Independently of who asks: task declaration `b` was withdrawn (ready is false)"
+            ),
+        "{condition}"
+    );
+    assert_eq!(guidance["retained"], json!({}));
+}
+
+/// #1727 S3 fix 2 (K2) — a permanent isolated denial (the prepared isolated
+/// execution shares its key with verification effects): no settlement
+/// briefing re-opens it, so the continuation is `none` and the sentence says
+/// so instead of telling the Planner to wait.
+#[tokio::test]
+async fn task_recovery_guidance_has_no_continuation_for_a_permanent_isolated_denial() {
+    let boot = boot().await;
+    declare(&boot, isolated_codex_declaration("b")).await;
+    let b = current(&boot, "b").await;
+    finish(&boot, &b, false).await;
+    insert_isolated_operation(&boot, &b, "failed").await;
+    sqlx::query("UPDATE tasks SET gate_attempt=1 WHERE id=?1")
+        .bind(&b.id)
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    let list = call_tool(&boot, "calm.plan.list", planner_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let recovery = &listed_entry(&list, "b")["recovery"];
+    assert_eq!(recovery["code"], "predecessor_not_quiescent", "{recovery}");
+    let guidance = &recovery["guidance"];
+    assert_eq!(guidance["supported_continuation"], "none", "{guidance}");
+    assert_eq!(guidance["blocking_condition"], recovery["reason"]);
+    let condition = guidance["blocking_condition"].as_str().unwrap();
+    assert!(
+        condition.contains("permanently unavailable")
+            && condition.contains("no settlement briefing re-opens it")
+            && !condition.contains("wait"),
+        "{condition}"
+    );
+    assert_eq!(guidance["retained"], json!({}));
+}
