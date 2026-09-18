@@ -1387,7 +1387,7 @@ async fn task_recovery_guidance_waits_for_settlement_behind_the_planner_limit() 
     assert!(
         condition.starts_with(recovery["reason"].as_str().unwrap())
             && condition.contains("User recovery")
-            && condition.contains("Independently of who asks: ")
+            && condition.contains(". Independently of who asks: ")
             && condition.contains("no confirmed namespace stop yet"),
         "{condition}"
     );
@@ -1418,7 +1418,7 @@ async fn task_recovery_guidance_names_the_new_task_behind_a_track_that_does_not_
     assert!(
         condition.starts_with(recovery["reason"].as_str().unwrap())
             && condition.contains("(lifecycle done)")
-            && condition.contains("Independently of who asks: an ordinary worker was prepared")
+            && condition.contains(". Independently of who asks: an ordinary worker was prepared")
             && condition.contains("no stop proof"),
         "{condition}"
     );
@@ -1483,7 +1483,7 @@ async fn task_recovery_guidance_has_no_continuation_for_a_withdrawn_user_owned_d
     assert!(
         condition.starts_with(recovery["reason"].as_str().unwrap())
             && condition.contains(
-                "Independently of who asks: task declaration `b` was withdrawn (ready is false)"
+                ". Independently of who asks: task declaration `b` was withdrawn (ready is false)"
             ),
         "{condition}"
     );

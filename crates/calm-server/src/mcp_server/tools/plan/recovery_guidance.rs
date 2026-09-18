@@ -42,10 +42,7 @@ pub(crate) async fn guidance_tx(
             Ok(_) => {}
             Err(AdmissionError::Refused(tail)) => {
                 continuation = tail.continuation;
-                blocking_condition = format!(
-                    "{blocking_condition} Independently of who asks: {}",
-                    tail.reason
-                );
+                blocking_condition = join_independent(&blocking_condition, &tail.reason);
             }
             Err(AdmissionError::Other(error)) => return Err(error),
         }
@@ -59,6 +56,18 @@ pub(crate) async fn guidance_tx(
         "supported_continuation": continuation.as_str(),
         "retained": retained,
     }))
+}
+
+/// `{policy}. Independently of who asks: {tail}` — the policy reason ends
+/// its sentence first: a full stop is added unless it already ends with `.`
+/// or `;`.
+fn join_independent(policy: &str, tail: &str) -> String {
+    let stop = if policy.ends_with(['.', ';']) {
+        ""
+    } else {
+        "."
+    };
+    format!("{policy}{stop} Independently of who asks: {tail}")
 }
 
 /// What the failed attempt's worker card left behind, keyed by the card:
@@ -127,4 +136,25 @@ async fn latest_worktree_event_id_tx(
     .bind(card_id)
     .fetch_optional(&mut **tx)
     .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_independent;
+
+    #[test]
+    fn join_independent_ends_the_policy_sentence_before_the_tail() {
+        assert_eq!(
+            join_independent("an explicit User recovery is required", "tail"),
+            "an explicit User recovery is required. Independently of who asks: tail"
+        );
+        assert_eq!(
+            join_independent("already ended.", "tail"),
+            "already ended. Independently of who asks: tail"
+        );
+        assert_eq!(
+            join_independent("clause;", "tail"),
+            "clause; Independently of who asks: tail"
+        );
+    }
 }
