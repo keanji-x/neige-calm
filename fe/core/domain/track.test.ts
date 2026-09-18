@@ -290,6 +290,24 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     expect(second.cards).toEqual({});
     expect(NEUTRAL_ACTIVITY.cards).toEqual({});
   });
+
+  it('applies only the kernel-owned activity row; a plugin-owned one leaves the track quiet', () => {
+    // The public overlay endpoint lets a plugin write `kind: 'activity'` under
+    // its own id; that row is not the verdict (#1722 S2a review).
+    const impostor = overlay(payload, { id: 'a2', plugin_id: 'dev.echo' });
+    expect(trackActivityFrom('t1', [impostor])).toEqual(NEUTRAL_ACTIVITY);
+    expect(trackActivityFrom('t1', [impostor]).working).toBe(false);
+    // Beside the kernel row it changes nothing, in either order.
+    const kernel = overlay({ ...payload, working: false, attention: 'none', items: [], cards: [] });
+    for (const rows of [[impostor, kernel], [kernel, impostor]]) {
+      const activity = trackActivityFrom('t1', rows);
+      expect(activity.working).toBe(false);
+      expect(activity.attention).toBe('none');
+      expect(activity.cards).toEqual({});
+    }
+    // The older plugin-written kinds stay ungated.
+    expect(trackActivityFrom('t1', [overlay({ value: 0.5 }, { kind: 'progress', plugin_id: 'dev.echo' })]).progress).toBe(0.5);
+  });
 });
 
 describe('activeTracksOn', () => {

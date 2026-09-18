@@ -26,9 +26,36 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     for (const listener of listeners) listener();
   };
   let recoveryScope: string | null = null;
-  const storageKey = (key: string) => recoveryScope === null
-    ? createStorageKey('ui', 'v1', encodeURIComponent(key))
-    : createStorageKey('ui', 'recovery', encodeURIComponent(recoveryScope), encodeURIComponent(key));
+  /*
+   * Bundled builds adopt `[origin, userId, dbInstanceId]` as the recovery scope
+   * (`systems/recovery/session.ts`), and display preferences live under it so
+   * a re-paired device or another owner inherits no selection. Receipts and
+   * the baseline (`read:*`) must NOT: `dbInstanceId` is per boot, so under it
+   * every kernel restart lost the baseline and stamped a fresh one, and what
+   * completed between the two stamps was never unread (#1722 S2a review).
+   * They get a stable namespace from the scope's origin and userId only; the
+   * database identity is already inside the key. A scope that is not that
+   * triple keeps the per-scope namespace, which isolates and never shares.
+   */
+  let receiptNamespace: readonly [origin: string, userId: string] | null = null;
+  const receiptNamespaceOf = (scope: string): readonly [string, string] | null => {
+    try {
+      const parsed: unknown = JSON.parse(scope);
+      if (Array.isArray(parsed) && parsed.length === 3
+        && parsed.every((part) => typeof part === 'string' && part.length > 0)) {
+        return [parsed[0] as string, parsed[1] as string];
+      }
+    } catch { /* not the bundled triple */ }
+    return null;
+  };
+  const storageKey = (key: string) => {
+    if (recoveryScope === null) return createStorageKey('ui', 'v1', encodeURIComponent(key));
+    if (receiptNamespace !== null && key.startsWith('read:')) {
+      return createStorageKey('ui', 'receipts',
+        encodeURIComponent(receiptNamespace[0]), encodeURIComponent(receiptNamespace[1]), encodeURIComponent(key));
+    }
+    return createStorageKey('ui', 'recovery', encodeURIComponent(recoveryScope), encodeURIComponent(key));
+  };
   const read = (key: string): Preference => {
     if (memory.has(key)) return memory.get(key) ?? null;
     let value: Preference = null;
@@ -103,7 +130,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     },
     setRecoveryScope(scope: string): void {
       if (recoveryScope === scope) return;
-      recoveryScope = scope; memory.clear(); notify();
+      recoveryScope = scope; receiptNamespace = receiptNamespaceOf(scope); memory.clear(); notify();
     },
     // Only layout changes are live: conversation selection is restored on route
     // entry and owned by React while open, so saving it must not move focus.

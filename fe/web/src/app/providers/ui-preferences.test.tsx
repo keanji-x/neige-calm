@@ -204,3 +204,64 @@ it('preserves newer cross-tab read receipts within the same recovery scope only'
   restored.setRecoveryScope('origin/another-owner/db-a');
   expect(restored.isUnread('conversation', 'visible', 20)).toBe(true);
 });
+
+/*
+ * #1722 S2a review — the bundled recovery scope is `[origin, userId,
+ * dbInstanceId]` and `dbInstanceId` changes on every kernel boot. Receipts and
+ * the baseline live beside it, not under it: the Codex reproduction (baseline
+ * 100, completion 150, restart at 200) re-stamped the baseline under the new
+ * boot and swallowed the completion.
+ */
+it('receipts_survive_a_recovery_scope_change_on_the_same_database', () => {
+  const storage = memoryStorage();
+  const writes: string[] = [];
+  const recorded = { getItem: storage.getItem, setItem: (key: string, value: string) => { writes.push(key); storage.setItem(key, value); } };
+  const bootOne = JSON.stringify(['https://server.test', 'owner', 'boot-1']);
+  const bootTwo = JSON.stringify(['https://server.test', 'owner', 'boot-2']);
+  const preferences = createUiPreferences(recorded);
+  preferences.setRecoveryScope(bootOne);
+  preferences.setReadScope('db', 100);
+  const baselineKeys = () => [...storage.values.keys()].filter((key) => key.includes('baseline'));
+  expect(baselineKeys()).toHaveLength(1);
+  expect(baselineKeys()[0]).not.toContain('boot-1');
+  expect(preferences.isUnread('track', 't', 150)).toBe(true);
+  // The kernel restarts: a new boot id is adopted and the compat gate confirms
+  // the same database at a later server time.
+  preferences.setRecoveryScope(bootTwo);
+  preferences.setReadScope('db', 200);
+  expect(preferences.isUnread('track', 't', 150)).toBe(true);
+  expect(baselineKeys()).toHaveLength(1);
+  expect(storage.getItem(baselineKeys()[0])).toBe(JSON.stringify('100'));
+  expect(writes.filter((key) => key.includes('baseline'))).toHaveLength(1);
+  // A receipt taken under one boot is read back under the next, and a fresh
+  // app instance (page reload after the restart) sees the same facts.
+  preferences.markRead('track', 't', 150);
+  const restored = createUiPreferences(recorded);
+  restored.setRecoveryScope(bootTwo);
+  restored.setReadScope('db', 300);
+  expect(restored.isUnread('track', 't', 150)).toBe(false);
+  expect(restored.isUnread('track', 't', 151)).toBe(true);
+  expect(restored.isUnread('track', 'never-visited', 120)).toBe(true);
+  expect(baselineKeys()).toHaveLength(1);
+});
+
+it('receipts_are_isolated_per_user', () => {
+  const storage = memoryStorage();
+  const owner = createUiPreferences(storage);
+  owner.setRecoveryScope(JSON.stringify(['https://server.test', 'owner', 'boot-1']));
+  owner.setReadScope('db', 100);
+  owner.markRead('track', 't', 150);
+  expect(owner.isUnread('track', 't', 150)).toBe(false);
+  // Same origin, same boot, same database — another user sees neither the
+  // owner's receipt nor the owner's baseline.
+  const guest = createUiPreferences(storage);
+  guest.setRecoveryScope(JSON.stringify(['https://server.test', 'guest', 'boot-1']));
+  guest.setReadScope('db', 100);
+  expect(guest.isUnread('track', 't', 150)).toBe(true);
+  expect([...storage.values.keys()].filter((key) => key.includes('baseline'))).toHaveLength(2);
+  // Display preferences keep the per-boot recovery scope untouched.
+  owner.setConversation('track', 'conversation-a');
+  const ownerAgain = createUiPreferences(storage);
+  ownerAgain.setRecoveryScope(JSON.stringify(['https://server.test', 'owner', 'boot-2']));
+  expect(ownerAgain.conversation('track')).toBeNull();
+});

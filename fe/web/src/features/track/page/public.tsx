@@ -557,7 +557,10 @@ export function TrackPage({
             so only working / attention / failed can show. It renders after the
             phase word so that word stays directly beside the title. Declared
             mobile/desktop difference: the unified mobile page head (#1707)
-            carries NO indicator — the mobile track list row does. */}
+            carries NO indicator — the mobile track list row does.
+            Declared gap: with the rail collapsed this marker has no accessible
+            carrier; the `role=status` lifecycle badge and the page title stay
+            the accessible facts. */}
         {!titleInHeader && <ActivityIndicator state={trackActivityState(track, false)} />}
       </div>, titleContainer)}
       {headerActionsHost !== null && mobileActions !== undefined && createPortal(mobileActions, headerActionsHost)}

@@ -185,6 +185,8 @@ const activityCardWireSchema = z.object({
  * lands. A whole-array `z.array(schema)` would turn one bad row into a track
  * with no activity at all, which is the failure the loose decoders above avoid.
  */
+/** Mirrors `calm_truth::validation::KERNEL_OVERLAY_PLUGIN_ID`. */
+const KERNEL_OVERLAY_PLUGIN_ID = 'kernel';
 const activityOverlayWireSchema = z.object({
   schemaVersion: z.literal(1),
   working: z.boolean(),
@@ -226,6 +228,13 @@ function activityOverlayFields(payload: unknown): Partial<TrackActivity> | null 
  * Folds a track's overlays into its activity fields. Unknown overlay kinds and
  * mistyped payloads are ignored rather than rejected: a plugin writing junk
  * must not blank out a track the sidebar is trying to render.
+ *
+ * The `activity` verdict is kernel-owned: the projector writes it as
+ * `plugin_id = 'kernel'` (`KERNEL_OVERLAY_PLUGIN_ID`), while the public overlay
+ * endpoint lets any plugin write a row of any `kind` under its *own* id. A
+ * plugin-owned `activity` row is therefore not the verdict and is skipped. The
+ * older kinds (`progress` / `eta` / `now` / `any_card_needs_input`) are
+ * plugin-written by design and stay ungated.
  */
 export function trackActivityFrom(trackId: string, overlays: readonly OverlayWire[]): TrackActivity {
   let activity = NEUTRAL_ACTIVITY;
@@ -238,7 +247,7 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir
     else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };
     else if (overlay.kind === 'any_card_needs_input' && typeof value === 'boolean') {
       activity = { ...activity, anyCardNeedsInput: value };
-    } else if (overlay.kind === 'activity') {
+    } else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {
       const fields = activityOverlayFields(overlay.payload);
       if (fields !== null) activity = { ...activity, ...fields };
     }
