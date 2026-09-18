@@ -6,9 +6,26 @@ use crate::operation::Tx;
 use crate::session_projection_repo::WorkerSessionProjection;
 use std::path::PathBuf;
 
+/// The ONE card-keyed isolated predicate, as a SQL fragment: `card_expr` is
+/// spliced in as the card id (a bind marker such as `?1`, or a correlated
+/// column such as `c.id`). [`is_isolated_card_tx`] and the track activity
+/// projector's session-eligibility SELECT (#1722 §4.2 S0) both read this
+/// fragment, so the two cannot drift: isolated is a property of the CARD's
+/// spawn operation, never of `worker_sessions.spawn_op_id`, which a re-minted
+/// session may leave NULL.
+pub(crate) fn isolated_card_exists_sql(card_expr: &str) -> String {
+    format!(
+        "EXISTS(SELECT 1 FROM operations WHERE kind='{OPERATION_KIND}' \
+         AND target_type='card' AND target_id={card_expr})"
+    )
+}
+
 pub(crate) async fn is_isolated_card_tx(tx: &mut Tx<'_>, card_id: &str) -> Result<bool> {
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM operations WHERE kind=?1 AND target_type='card' AND target_id=?2)")
-        .bind(OPERATION_KIND).bind(card_id).fetch_one(&mut **tx).await?)
+    let sql = format!("SELECT {}", isolated_card_exists_sql("?1"));
+    Ok(sqlx::query_scalar(&sql)
+        .bind(card_id)
+        .fetch_one(&mut **tx)
+        .await?)
 }
 pub(crate) async fn is_isolated_task_tx(tx: &mut Tx<'_>, task_id: &str) -> Result<bool> {
     Ok(sqlx::query_scalar(

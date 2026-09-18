@@ -25,6 +25,12 @@ use std::collections::HashMap;
 ///
 /// Spelled once as a macro so that `concat!` can inline it into the three
 /// `const` SELECTs; the `pub const` is the same literal for `format!` users.
+/// Exported (`#[macro_export]`, so it lives at the crate root as
+/// `calm_truth::last_turn_completed_ms_subquery!`) for the one `const`
+/// embedding outside this crate: the activity projector's E1 statement in
+/// `calm-server` (`track_activity::sql`), which must be a `const` so its
+/// `EXPLAIN QUERY PLAN` test runs the production text.
+#[macro_export]
 macro_rules! last_turn_completed_ms_subquery {
     () => {
         "(SELECT MAX(h.created_at_ms) FROM harness_items h \
