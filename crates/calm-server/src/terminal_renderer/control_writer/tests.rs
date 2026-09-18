@@ -245,4 +245,6 @@ async fn lost_acknowledgement_blocks_new_control_and_queued_writes() {
 }
 
 #[cfg(test)]
+mod split_tests;
+#[cfg(test)]
 mod task_scope_tests;

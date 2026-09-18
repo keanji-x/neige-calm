@@ -254,7 +254,8 @@ mod tests {
             .input_surface()
     }
 
-    /// #1620 `submit`: the text bytes plus exactly one CR in one encoding;
+    /// #1620 `submit`: the text bytes plus exactly one CR in one request
+    /// (#1725: two PTY writes, see `only_submit_is_encoded_as_a_submit`);
     /// the same text rules as `text`; no repeat, no extra fields.
     #[test]
     fn submit_encodes_text_and_one_cr_and_rejects_repeat() {
@@ -281,6 +282,41 @@ mod tests {
         ] {
             assert!(encode(&invalid, &surface).is_err(), "{invalid}");
         }
+    }
+
+    /// #1725 — only `submit` is marked for the split write: the encoder
+    /// returns `Encoded::Submit` for it and plain `Encoded::Bytes` for an
+    /// Enter key (exactly one CR), text, a sequence and every other key;
+    /// a replace stays `Encoded::Replace`.
+    #[test]
+    fn only_submit_is_encoded_as_a_submit() {
+        let surface = surface();
+        assert_eq!(
+            encode(&json!({"type":"submit","text":"hello"}), &surface).unwrap(),
+            Encoded::Submit(b"hello\r".to_vec())
+        );
+        assert_eq!(
+            encode(&json!({"type":"key","key":"Enter"}), &surface).unwrap(),
+            Encoded::Bytes(b"\r".to_vec()),
+            "Enter is one CR, written verbatim"
+        );
+        for action in [
+            json!({"type":"text","text":"hello"}),
+            json!({"type":"sequence","steps":[{"type":"text","text":"a"},{"type":"key","key":"Left"}]}),
+            json!({"type":"key","key":"Ctrl+J"}),
+            json!({"type":"key","key":"Left","repeat":3}),
+            json!({"type":"key","key":"Tab"}),
+        ] {
+            let encoded = encode(&action, &surface).unwrap();
+            assert!(
+                matches!(encoded, Encoded::Bytes(_)),
+                "{action}: {encoded:?}"
+            );
+        }
+        assert!(matches!(
+            encode(&json!({"type":"replace","from":"a","to":"b"}), &surface).unwrap(),
+            Encoded::Replace { .. }
+        ));
     }
 
     /// #1666 `sequence`: the concatenation of its steps in order, the same
