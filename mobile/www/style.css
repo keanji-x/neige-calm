@@ -28,7 +28,7 @@ html.scanning,html.scanning body { background:transparent; }.scanning main > :no
 .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .hero { margin-top:auto; }
 .connection-art { margin-top:22px; margin-bottom:30px; }
-.actions { margin-top:42px; margin-bottom:auto; padding-bottom:46px; }
+.actions { grid-template-columns:minmax(0,1fr); margin-top:42px; margin-bottom:auto; padding-bottom:46px; }
 .action-copy strong { font-size:16px; }
 @media(max-height:760px) { .connection-art { margin-top:8px; margin-bottom:10px; }.actions { margin-top:28px; padding-bottom:24px; } }
 
@@ -36,3 +36,6 @@ html.scanning,html.scanning body { background:transparent; }.scanning main > :no
 #ip-origin { width:100%; font:inherit; font-size:15px; padding:16px; border:1px solid var(--line); border-radius:14px; background:var(--paper); color:var(--text); }
 #ip-origin:focus { outline:2px solid var(--accent); outline-offset:2px; }
 #ip-origin[aria-invalid="true"] { border-color:#a35947; }
+#tailnet-settings { display:grid; gap:8px; min-width:0; font-size:13px; color:var(--muted); }
+#tailnet-target { width:100%; min-width:0; max-width:100%; padding:12px; font:inherit; color:var(--text); background:var(--paper); border:1px solid var(--line); border-radius:8px; }
+#tailnet-target:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }

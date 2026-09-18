@@ -34,6 +34,33 @@ test('shows the brand and persistent mode selector without annotation copy', asy
   await page.screenshot({ path: 'artifacts/connection-dual-ip.png', fullPage: true });
 });
 
+test('saved Tailnet selector stays within a narrow phone and selects through the native owner', async ({ page }) => {
+  const origins = [`https://${'long-workspace-'.repeat(4)}node.tail.example:10000`, tail];
+  await page.addInitScript(origins => {
+    window.settings = { mode: 'tailscale', ipOrigin: '', tailscaleEnabled: true, tailnetOrigin: origins[0], tailnetOrigins: origins };
+    const original = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = async (command, args) => {
+      if (command.endsWith('|select_saved_tailnet')) {
+        window.nativeCalls.push(command); window.settings.tailnetOrigin = args.origin;
+        return { ...window.settings };
+      }
+      if (command.endsWith('|save_connection')) {
+        window.nativeCalls.push(command); window.settings = { ...window.settings, ...args };
+        return { ...window.settings };
+      }
+      return original(command, args);
+    };
+  }, origins);
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto('/');
+  const target = page.getByLabel('已保存的工作区');
+  await expect(target).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
+  await target.selectOption(tail);
+  await expect.poll(() => page.evaluate(() => window.settings.tailnetOrigin)).toBe(tail);
+  expect(await page.evaluate(() => window.nativeCalls.filter(x => x.endsWith('|select_saved_tailnet')).length)).toBe(1);
+});
+
 test('loads saved IP configuration and opens the successful direct route', async ({ page }) => {
   await page.addInitScript((server) => {
     window.settings = { mode: 'ip', ipOrigin: server, tailscaleEnabled: true };
