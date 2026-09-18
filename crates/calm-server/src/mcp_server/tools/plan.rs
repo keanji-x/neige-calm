@@ -64,6 +64,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod list;
+mod recovery_guidance;
 
 pub const TOOL_PLAN_UPSERT: &str = "calm.plan.upsert";
 pub const TOOL_PLAN_CANCEL: &str = "calm.plan.cancel";
@@ -790,7 +791,7 @@ async fn plan_list(
                 let full_page = allocations.len() == 128;
                 for allocation in allocations {
                     let task = crate::db::sqlite::task_get_tx(tx, &allocation.attempt_id).await?;
-                    let view = crate::task_recovery::task_recovery_view_tx(
+                    let (view, refusal) = crate::task_recovery::task_recovery_view_with_refusal_tx(
                         tx,
                         &track.id,
                         &allocation.key,
@@ -847,6 +848,14 @@ async fn plan_list(
                             .await?
                     {
                         entry["worktree"] = serde_json::to_value(facts)?;
+                    }
+                    // MCP-only: a refused recovery names its way out. The REST
+                    // wire type is unchanged; `guidance` exists only here. The
+                    // refusal carries the Track admission read in this tx; the
+                    // `track` resolved before the tx is never consulted here.
+                    if let (Some(refused), Some(task)) = (&refusal, &task) {
+                        entry["recovery"]["guidance"] =
+                            recovery_guidance::guidance_tx(tx, task, refused).await?;
                     }
                     tasks_json.push(if args.summary { list::summary(&entry) } else { entry });
                     after_key = Some(allocation.key);

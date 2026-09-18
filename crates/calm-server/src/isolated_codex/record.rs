@@ -15,6 +15,15 @@ pub enum Admission {
     Open,
     Closed,
 }
+impl Admission {
+    /// The wire spelling (`serde` snake_case) for refusal sentences.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "state",

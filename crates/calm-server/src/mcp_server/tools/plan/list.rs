@@ -117,6 +117,11 @@ pub(super) fn summary(entry: &Value) -> Value {
             "worktree/last_commit",
             "worktree/state",
             "worktree/removed",
+            "recovery/guidance/blocking_condition",
+            "recovery/guidance/supported_continuation",
+            // The whole object: every retained field is optional and an empty
+            // `{}` (terminal worker, no lease) must survive the summary.
+            "recovery/guidance/retained",
             "gate_result/passed",
             "gate_result/status",
             "gate_result/failing_step",

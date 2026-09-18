@@ -288,7 +288,7 @@ done
             "leader exit must not authorize recovery while detached descendants can write",
         );
         assert!(
-            matches!(error, calm_server::error::CalmError::Conflict(ref message) if message.contains("descendant write fence")),
+            matches!(error, calm_server::error::CalmError::Conflict(ref message) if message.contains("no stop proof")),
             "signalled={signalled}: {error}"
         );
         assert!(!capability.allowed);

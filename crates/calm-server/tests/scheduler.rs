@@ -10585,7 +10585,15 @@ printf stopped > "$1/stopped"
     let error =
         result.expect_err("normal gate exit cannot authorize recovery without a descendant fence");
     assert_eq!(error.code, -32409);
-    assert!(error.message.contains("descendant write fence"));
+    // #1727 S3 — verification effects with no worker card: the reason says
+    // so instead of claiming a worker was prepared.
+    assert!(
+        error
+            .message
+            .contains("verification effects were recorded for this key with no worker stop proof"),
+        "{}",
+        error.message
+    );
 }
 
 #[tokio::test]

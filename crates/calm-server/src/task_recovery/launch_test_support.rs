@@ -25,6 +25,19 @@ impl RecoveryFixture {
     pub async fn withdraw(&self) {
         let mut payload = self.declaration.clone();
         payload["ready"] = Value::Bool(false);
+        self.replace_declaration(payload).await;
+    }
+
+    pub fn declaration(&self) -> Value {
+        self.declaration.clone()
+    }
+
+    pub fn block_id(&self) -> &str {
+        &self.block_id
+    }
+
+    /// Replace the declaration block through the production REST door.
+    pub async fn replace_declaration(&self, payload: Value) {
         let target = ReportEditTarget::resolve(self.repo.as_ref(), &self.task.track_id)
             .await
             .unwrap();
@@ -54,7 +67,20 @@ pub(crate) async fn initial_claimed_task(
     track_id: &str,
     declaration: Value,
 ) -> RecoveryFixture {
-    claimed_task(repo, events, write, track_id, declaration, false).await
+    claimed_task(repo, events, write, track_id, &[], declaration, false).await
+}
+
+/// Like [`initial_claimed_task`], with `siblings` declared first through the
+/// same REST door (a consumer projects only once its producer is declared).
+pub(crate) async fn initial_claimed_task_among(
+    repo: Arc<dyn Repo>,
+    events: EventBus,
+    write: WriteContext,
+    track_id: &str,
+    siblings: &[Value],
+    declaration: Value,
+) -> RecoveryFixture {
+    claimed_task(repo, events, write, track_id, siblings, declaration, false).await
 }
 
 pub(crate) async fn recovered_claimed_task(
@@ -64,7 +90,7 @@ pub(crate) async fn recovered_claimed_task(
     track_id: &str,
     declaration: Value,
 ) -> RecoveryFixture {
-    claimed_task(repo, events, write, track_id, declaration, true).await
+    claimed_task(repo, events, write, track_id, &[], declaration, true).await
 }
 
 async fn claimed_task(
@@ -72,6 +98,7 @@ async fn claimed_task(
     events: EventBus,
     write: WriteContext,
     track_id: &str,
+    siblings: &[Value],
     declaration: Value,
     recover: bool,
 ) -> RecoveryFixture {
@@ -93,25 +120,33 @@ async fn claimed_task(
     })
     .await
     .unwrap();
-    let target = ReportEditTarget::resolve(repo.as_ref(), track_id)
+    let mut block = None;
+    for (doc_rev, payload) in siblings
+        .iter()
+        .chain(std::iter::once(&declaration))
+        .enumerate()
+    {
+        let target = ReportEditTarget::resolve(repo.as_ref(), track_id)
+            .await
+            .unwrap();
+        let (_, upserted) = crate::track_report::write::rest_user_block_op(
+            repo.as_ref(),
+            &events,
+            &write,
+            target,
+            ReportDocOp::UpsertBlock {
+                id: None,
+                kind: "task".into(),
+                content: calm_types::report_blocks::render_fence("task", payload),
+                if_rev: None,
+                if_doc_rev: Some(doc_rev as u64),
+                position: None,
+            },
+        )
         .await
         .unwrap();
-    let (_, block) = crate::track_report::write::rest_user_block_op(
-        repo.as_ref(),
-        &events,
-        &write,
-        target,
-        ReportDocOp::UpsertBlock {
-            id: None,
-            kind: "task".into(),
-            content: calm_types::report_blocks::render_fence("task", &declaration),
-            if_rev: None,
-            if_doc_rev: Some(0),
-            position: None,
-        },
-    )
-    .await
-    .unwrap();
+        block = upserted;
+    }
     let block = block.unwrap();
     let key = declaration["key"].as_str().unwrap();
     let previous = repo.task_current_get(track_id, key).await.unwrap().unwrap();

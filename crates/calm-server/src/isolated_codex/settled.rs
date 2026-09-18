@@ -92,8 +92,8 @@ pub(crate) async fn relevant(
             if let Err(error) = super::recovery::require_stopped_tx(tx, &task, &operation_id).await
             {
                 return match error {
-                    crate::error::CalmError::Conflict(_) => Ok(false),
-                    error => Err(error),
+                    crate::task_recovery::AdmissionError::Refused(_) => Ok(false),
+                    crate::task_recovery::AdmissionError::Other(error) => Err(error),
                 };
             }
             let view = crate::task_recovery::task_recovery_view_tx(

@@ -210,6 +210,36 @@ async fn expect_denied(fx: &Fixture, task: &Task, label: &str) {
     assert_eq!(count, 1, "{label}: rejection must not allocate");
 }
 
+/// The two sites `task_recovery/tests.rs` also reaches in process
+/// (`IsolatedStopUnconfirmed`, `IsolatedStopIdentityMismatch`) are permanent
+/// denials: `calm.plan.list` guidance says so on the wire. The Planner is
+/// refused by policy first (user-owned task), so the re-check's sentence is
+/// appended after the policy one.
+async fn expect_no_continuation(fx: &Fixture, label: &str, sentence: &str) {
+    let list = crate::mcp_track_report::call_tool(
+        &fx.boot,
+        "calm.plan.list",
+        crate::mcp_track_report::planner_identity(&fx.boot),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    let recovery = &list["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["key"] == "retry")
+        .unwrap()["recovery"];
+    assert_eq!(recovery["allowed"], false, "{label}: {recovery}");
+    let guidance = &recovery["guidance"];
+    assert_eq!(
+        guidance["supported_continuation"], "none",
+        "{label}: {guidance}"
+    );
+    let condition = guidance["blocking_condition"].as_str().unwrap();
+    assert!(condition.contains(sentence), "{label}: {condition}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stop_evidence_corruption_and_ambiguous_operations_refuse_retry() {
     use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
@@ -270,12 +300,22 @@ async fn stop_evidence_corruption_and_ambiguous_operations_refuse_retry() {
         ("/provider/record/stop/Quiesced/observed_at_ms", json!(0)),
     ];
     for (path, value) in changes {
+        let sentence = match (path, value.as_str()) {
+            ("/admission", Some("open")) => Some("has admission state open, not closed"),
+            ("/provider/record/stop", Some("Open" | "Requested")) => Some(
+                "has no recorded namespace quiescence proof although its operation is terminal",
+            ),
+            _ => None,
+        };
         let mut changed = original.clone();
         *changed
             .pointer_mut(&format!("{record}{path}"))
             .expect("production receipt path") = value;
         set_output(&fx, &task, &changed).await;
         expect_denied(&fx, &task, path).await;
+        if let Some(sentence) = sentence {
+            expect_no_continuation(&fx, path, sentence).await;
+        }
     }
     set_output(&fx, &task, &original).await;
     let pool = fx.boot.repo.sqlite_pool().unwrap();

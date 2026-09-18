@@ -7,7 +7,7 @@ use calm_server::task_recovery::task_recovery_view;
 use calm_server::track_report::{TrackReportPayload, persist_report, resolve_report_for_track};
 use serde_json::{Value, json};
 
-async fn rest_attempts(
+pub(super) async fn rest_attempts(
     boot: &crate::mcp_track_report::Boot,
     key: &str,
     expected: axum::http::StatusCode,

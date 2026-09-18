@@ -29,10 +29,10 @@ pub(crate) async fn outcome_tx(tx: &mut Tx<'_>, task: &Task, id: &str) -> Result
     super::recovery::confirmed_record_tx(tx, task, id)
         .await
         .map_err(|error| match error {
-            CalmError::Conflict(_) => {
+            crate::task_recovery::AdmissionError::Refused(_) => {
                 CalmError::Conflict("review namespace stop is not confirmed".into())
             }
-            error => error,
+            crate::task_recovery::AdmissionError::Other(error) => error,
         })?;
     Ok(phase)
 }

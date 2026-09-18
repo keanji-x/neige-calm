@@ -101,8 +101,10 @@ pub(super) async fn input_segments(
             let stopped = crate::isolated_codex::recovery::require_stopped_tx(tx, &task, &operation_id).await;
             let (confirmed, stop_reason) = match stopped {
                 Ok(()) => (true, None),
-                Err(CalmError::Conflict(reason)) => (false, Some(reason)),
-                Err(error) => return Err(error),
+                Err(crate::task_recovery::AdmissionError::Refused(refusal)) => {
+                    (false, Some(refusal.reason))
+                }
+                Err(crate::task_recovery::AdmissionError::Other(error)) => return Err(error),
             };
             let actor = ActorId::AiPlannerSession(planner_session_id.clone().into());
             let capability = if !is_current {
