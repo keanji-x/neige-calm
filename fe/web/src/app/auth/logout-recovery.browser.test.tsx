@@ -7,8 +7,15 @@ import { mountProductionApp } from './production-app.tsx';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { createIsolatedRetryFixture } from '../router/isolated-task-retry-fixture.tsx';
 import type { ApiRequest } from '../../../../core/api/types.ts';
+import type { SessionIdentity } from '../../../../core/api/auth.ts';
 
-const mounted = vi.hoisted(() => ({ roots: [] as { unmount(): void }[] }));
+const mounted = vi.hoisted(() => ({ roots: [] as { unmount(): void }[], logins: [] as Promise<SessionIdentity | null>[] }));
+vi.mock('./login.ts', async importOriginal => {
+  const actual = await importOriginal<typeof import('./login.ts')>();
+  return { ...actual, loginForRecovery: (...args: Parameters<typeof actual.loginForRecovery>) => {
+    const result = actual.loginForRecovery(...args); mounted.logins.push(result); return result;
+  } };
+});
 vi.mock('react-dom/client', async importOriginal => {
   const actual = await importOriginal<typeof import('react-dom/client')>();
   return { ...actual, createRoot: (...args: Parameters<typeof actual.createRoot>) => {
@@ -54,7 +61,8 @@ it.each([
   try {
     await waitFor(() => expect(requests.some(request => request.endsWith(path))).toBe(true));
     if (cancel) fireEvent.click(screen.getByRole('button', { name: '返回扫码连接' }));
-    await act(async () => { finish(); await pending; await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(mounted.logins).toHaveLength(1);
+    await act(async () => { finish(); await Promise.allSettled(mounted.logins); });
     if (cancel) {
       expect(values.get(logoutMarkerKey())).toBe(marker);
       expect(screen.getByRole('button', { name: '使用账号登录' })).toBeTruthy();
@@ -123,7 +131,7 @@ it.each([false, true])('production event owners retire before compatible protoco
   expect(window.location.pathname).toBe('/next/track/w1');
   expect(fixture.requests.filter(request => request.method !== 'GET')).toEqual([]);
 });
-afterEach(() => { act(() => { for (const root of mounted.roots.splice(0)) root.unmount(); }); document.body.replaceChildren(); vi.unstubAllGlobals(); });
+afterEach(() => { act(() => { for (const root of mounted.roots.splice(0)) root.unmount(); }); mounted.logins.length = 0; document.body.replaceChildren(); vi.unstubAllGlobals(); });
 it('a logged-out cold production mount exposes explicit pairing verification inside the phone viewport', async () => {
   vi.stubGlobal('__NC_BUNDLED__', true); await page.viewport(390, 844);
   const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
