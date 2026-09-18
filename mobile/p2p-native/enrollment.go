@@ -26,19 +26,26 @@ func (e *engine) cancelEnrollment() error {
 	return clearPending(e.dir)
 }
 
-func (e *engine) enroll(raw string) (result json.RawMessage, resultErr error) {
+func (e *engine) enroll(raw string, permit *operationPermit) (result json.RawMessage, resultErr error) {
 	payload, err := decodeEnrollmentPayload(raw, time.Now())
 	if err != nil {
 		return nil, err
 	}
 	// Publish a new generation only after invalidating all old native I/O.
+	permit.mu.Lock()
+	if permit.ctx.Err() != nil {
+		permit.mu.Unlock()
+		return nil, errors.New("原生操作已取消")
+	}
 	e.enrollmentMu.Lock()
 	if e.resetting {
 		e.enrollmentMu.Unlock()
+		permit.mu.Unlock()
 		return nil, errors.New("正在重置手机入网，请稍后扫码")
 	}
 	if err := requireNoPendingReset(e.dir); err != nil {
 		e.enrollmentMu.Unlock()
+		permit.mu.Unlock()
 		return nil, err
 	}
 	e.enrollmentGeneration++
@@ -47,13 +54,15 @@ func (e *engine) enroll(raw string) (result json.RawMessage, resultErr error) {
 		e.enrollmentCancel()
 	}
 	e.closeTunnelLocked()
-	ctx, cancel := context.WithDeadline(context.Background(), time.UnixMilli(payload.pairExpiresAt))
+	ctx, cancel := context.WithDeadline(permit.ctx, time.UnixMilli(payload.pairExpiresAt))
 	e.enrollmentCancel = cancel
+	permit.stop = func() error { return e.cancelGeneration(generation) }
 	var id, secret [32]byte
 	_, idErr := rand.Read(id[:])
 	_, secretErr := rand.Read(secret[:])
 	if idErr != nil || secretErr != nil {
 		e.enrollmentMu.Unlock()
+		permit.mu.Unlock()
 		cancel()
 		return nil, errors.New("无法创建扫码操作")
 	}
@@ -61,6 +70,7 @@ func (e *engine) enroll(raw string) (result json.RawMessage, resultErr error) {
 	pending := pendingEnrollment{payload.enrollmentID, payload.origin, "joining", payload.decodedAt, payload.nativeAuthKey(), payload.authKeyExpiresAt, payload.pairTicket, payload.pairExpiresAt, attemptID, hex.EncodeToString(secret[:])}
 	err = writePrivateJSON(e.dir, pendingFilename, pending)
 	e.enrollmentMu.Unlock()
+	permit.mu.Unlock()
 	if err != nil {
 		cancel()
 		return nil, err
@@ -185,6 +195,8 @@ func (e *engine) enroll(raw string) (result json.RawMessage, resultErr error) {
 	if err != nil {
 		return nil, err
 	}
+	permit.mu.Lock()
+	defer permit.mu.Unlock()
 	e.enrollmentMu.Lock()
 	defer e.enrollmentMu.Unlock()
 	if err = active(); err != nil || generation != e.enrollmentGeneration {
@@ -241,10 +253,16 @@ func (e *engine) bindTailnet(origin string) (string, error) {
 
 // Called only after the packaged launcher obtains explicit native confirmation.
 // SDK Logout supplies the authority boundary; never remove or replace its state.
-func (e *engine) resetEnrollment() error {
+func (e *engine) resetEnrollment(permit *operationPermit) error {
+	permit.mu.Lock()
+	if permit.ctx.Err() != nil {
+		permit.mu.Unlock()
+		return errors.New("原生操作已取消")
+	}
 	e.enrollmentMu.Lock()
 	if e.resetting {
 		e.enrollmentMu.Unlock()
+		permit.mu.Unlock()
 		return errors.New("正在重置手机入网")
 	}
 	e.enrollmentGeneration++
@@ -259,13 +277,16 @@ func (e *engine) resetEnrollment() error {
 		Version int `json:"version"`
 	}{1}); err != nil {
 		e.enrollmentMu.Unlock()
+		permit.mu.Unlock()
 		return err
 	}
 	e.resetting = true
 	generation := e.enrollmentGeneration
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(permit.ctx, 8*time.Second)
 	e.enrollmentCancel = cancel
+	permit.stop = func() error { return e.cancelGeneration(generation) }
 	e.enrollmentMu.Unlock()
+	permit.mu.Unlock()
 	defer func() {
 		cancel()
 		e.enrollmentMu.Lock()
@@ -294,6 +315,8 @@ func (e *engine) resetEnrollment() error {
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+	permit.mu.Lock()
+	defer permit.mu.Unlock()
 	e.enrollmentMu.Lock()
 	defer e.enrollmentMu.Unlock()
 	if generation != e.enrollmentGeneration || ctx.Err() != nil {
@@ -313,4 +336,18 @@ func (e *engine) resetEnrollment() error {
 	}
 	e.identityClaimed.Store(false)
 	return nil
+}
+
+func (e *engine) cancelGeneration(generation uint64) error {
+	e.enrollmentMu.Lock()
+	defer e.enrollmentMu.Unlock()
+	if e.enrollmentGeneration != generation {
+		return nil
+	}
+	if e.enrollmentCancel != nil {
+		e.enrollmentCancel()
+		e.enrollmentCancel = nil
+	}
+	e.closeTunnelLocked()
+	return clearPending(e.dir)
 }

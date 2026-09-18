@@ -83,4 +83,19 @@ class ConnectionProfilesRepairTest {
     assertTrue(runCatching { profiles.selectTailnet(nextOrigin) }.isFailure)
     assertEquals(before, store.values)
   }
+  @Test fun v1UpgradePreservesLegacyOriginAndDirectSettingsUntilConfirmedSelection() {
+    val store = Store()
+    store.values.putAll(mapOf("tailscale-enabled" to true, "ip-origin" to direct, "mode" to "tailscale"))
+    val profiles = ConnectionProfiles(store.preferences)
+    val id = profiles.profileId()
+    assertEquals(P2PConnection.ORIGIN,profiles.read().tailnetOrigin)
+    assertTrue(profiles.needsLegacyConfirmation())
+    assertEquals(emptyList<String>(),profiles.tailnetOrigins())
+    profiles.save("tailscale",direct,true)
+    assertTrue("A settings save cannot pretend native migration completed",profiles.needsLegacyConfirmation())
+    profiles.selectTailnet(P2PConnection.ORIGIN)
+    assertEquals(id,profiles.profileId())
+    assertEquals(direct,profiles.read().ipOrigin)
+    assertEquals(listOf(P2PConnection.ORIGIN),profiles.tailnetOrigins())
+  }
 }

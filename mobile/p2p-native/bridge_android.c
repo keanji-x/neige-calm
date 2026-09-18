@@ -6,10 +6,13 @@ extern char *p2pStatus(void);
 extern char *p2pCheck(char *);
 extern char *p2pDirect(char *);
 extern void p2pStopDirect(void);
-extern char *p2pEnroll(char *);
+extern char *p2pEnroll(char *, char *);
 extern char *p2pTailnet(char *);
 extern char *p2pCancelEnrollment(void);
-extern char *p2pResetEnrollment(void);
+extern char *p2pResetEnrollment(char *);
+extern char *p2pReserveOperation(void);
+extern char *p2pCancelOperation(char *);
+extern char *p2pConfirmLegacy(char *, char *);
 static jstring take(JNIEnv *env, char *text) {
   jstring result = (*env)->NewStringUTF(env, text);
   free(text);
@@ -54,13 +57,35 @@ JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_tailnet(JNIEnv *env, 
  return take(env, result);
 }
 
-JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_enroll(JNIEnv *env, jobject self, jstring payload) {
+JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_enroll(JNIEnv *env, jobject self, jstring token, jstring payload) {
+ const char *admission = (*env)->GetStringUTFChars(env, token, 0);
  const char *raw = (*env)->GetStringUTFChars(env, payload, 0);
- char *result = p2pEnroll((char *)raw);
+ char *result = p2pEnroll((char *)admission, (char *)raw);
  (*env)->ReleaseStringUTFChars(env, payload, raw);
+ (*env)->ReleaseStringUTFChars(env, token, admission);
  return take(env, result);
 }
 
 JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_cancelEnrollment(JNIEnv *env, jobject self) { return take(env, p2pCancelEnrollment()); }
 
-JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_resetEnrollment(JNIEnv *env, jobject self) { return take(env, p2pResetEnrollment()); }
+JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_resetEnrollment(JNIEnv *env, jobject self, jstring token) {
+ const char *admission = (*env)->GetStringUTFChars(env, token, 0);
+ char *result = p2pResetEnrollment((char *)admission);
+ (*env)->ReleaseStringUTFChars(env, token, admission);
+ return take(env, result);
+}
+JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_reserveOperation(JNIEnv *env, jobject self) { return take(env, p2pReserveOperation()); }
+JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_cancelOperation(JNIEnv *env, jobject self, jstring token) {
+ const char *admission = (*env)->GetStringUTFChars(env, token, 0);
+ char *result = p2pCancelOperation((char *)admission);
+ (*env)->ReleaseStringUTFChars(env, token, admission);
+ return take(env, result);
+}
+JNIEXPORT jstring JNICALL Java_io_neigecalm_next_NativeP2P_confirmLegacy(JNIEnv *env, jobject self, jstring token, jstring origin) {
+ const char *admission = (*env)->GetStringUTFChars(env, token, 0);
+ const char *target = (*env)->GetStringUTFChars(env, origin, 0);
+ char *result = p2pConfirmLegacy((char *)admission, (char *)target);
+ (*env)->ReleaseStringUTFChars(env, origin, target);
+ (*env)->ReleaseStringUTFChars(env, token, admission);
+ return take(env, result);
+}

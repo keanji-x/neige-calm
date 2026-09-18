@@ -53,6 +53,23 @@ class ScanWorkspaceInstrumentationTest {
     override fun getMethod() = "GET"
     override fun getRequestHeaders() = emptyMap<String, String>()
   }
+  @Test fun scanWorkspaceInstallsAttachmentChooserWithoutNativeBridge() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    check(context.packageName.endsWith(".instrumented"))
+    val scenario = ActivityScenario.launch(MainActivity::class.java)
+    try {
+      scenario.onActivity { host ->
+        val launcher = checkNotNull(find(host.findViewById(android.R.id.content)))
+        val bootstrap = JSONObject().put("generation", 7).put("origin", origin).put("enrollmentId", "native-fixture")
+          .put("attemptId", "attempt").put("attemptSecret", "a".repeat(64)).put("pairTicket", "b".repeat(64))
+          .put("deadline", System.currentTimeMillis() + 120000)
+        val workspace = ScanWorkspace(host, launcher, BundledOrigin.parse(origin) { false }, ScanDocument(bootstrap), {}, {})
+        try {
+          assertNotNull("The production scan WebView must handle attachment file inputs", WebViewCompat.getWebChromeClient(workspace.view))
+        } finally { workspace.destroy() }
+      }
+    } finally { scenario.moveToState(Lifecycle.State.CREATED) }
+  }
   @Test fun bundledScanDocumentExecutesOnceWithoutBridgeAndRejectsRemoteCode() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     check(context.packageName.endsWith(".instrumented"))

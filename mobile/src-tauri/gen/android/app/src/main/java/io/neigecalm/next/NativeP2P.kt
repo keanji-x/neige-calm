@@ -8,8 +8,11 @@ internal object NativeP2P {
   external fun direct(origin: String): String
   external fun stopDirect()
   external fun check(origin: String): String
-  external fun enroll(payload: String): String
+  external fun reserveOperation(): String
+  external fun cancelOperation(token: String): String
+  external fun confirmLegacy(token: String, origin: String): String
+  external fun enroll(token: String, payload: String): String
   external fun cancelEnrollment(): String
-  external fun resetEnrollment(): String
+  external fun resetEnrollment(token: String): String
   external fun tailnet(origin: String): String
 }

@@ -210,12 +210,16 @@ func p2pStart(dir *C.char) *C.char { return C.CString(start(C.GoString(dir))) }
 func p2pStatus() *C.char { return C.CString(status()) }
 
 //export p2pEnroll
-func p2pEnroll(raw *C.char) *C.char {
+func p2pEnroll(token *C.char, raw *C.char) *C.char {
+	permit, err := nativeOperations.claim(C.GoString(token))
+	if err != nil {
+		return C.CString(failure(err))
+	}
 	e, err := current()
 	if err != nil {
 		return C.CString(failure(err))
 	}
-	result, err := e.enroll(C.GoString(raw))
+	result, err := e.enroll(C.GoString(raw), permit)
 	if err != nil {
 		return C.CString(failure(err))
 	}
@@ -224,6 +228,9 @@ func p2pEnroll(raw *C.char) *C.char {
 
 //export p2pCancelEnrollment
 func p2pCancelEnrollment() *C.char {
+	if err := nativeOperations.revokeAll(); err != nil {
+		return C.CString(failure(err))
+	}
 	e, err := current()
 	if err != nil {
 		return C.CString(encoded(map[string]any{"ok": true}))
@@ -235,12 +242,49 @@ func p2pCancelEnrollment() *C.char {
 }
 
 //export p2pResetEnrollment
-func p2pResetEnrollment() *C.char {
+func p2pResetEnrollment(token *C.char) *C.char {
+	permit, err := nativeOperations.claim(C.GoString(token))
+	if err != nil {
+		return C.CString(failure(err))
+	}
 	e, err := current()
 	if err != nil {
 		return C.CString(failure(err))
 	}
-	if err := e.resetEnrollment(); err != nil {
+	if err := e.resetEnrollment(permit); err != nil {
+		return C.CString(failure(err))
+	}
+	return C.CString(encoded(map[string]any{"ok": true}))
+}
+
+//export p2pReserveOperation
+func p2pReserveOperation() *C.char {
+	token, err := nativeOperations.reserve()
+	if err != nil {
+		return C.CString(failure(err))
+	}
+	return C.CString(encoded(map[string]any{"ok": true, "token": token}))
+}
+
+//export p2pConfirmLegacy
+func p2pConfirmLegacy(token *C.char, origin *C.char) *C.char {
+	permit, err := nativeOperations.claim(C.GoString(token))
+	if err != nil {
+		return C.CString(failure(err))
+	}
+	e, err := current()
+	if err != nil {
+		return C.CString(failure(err))
+	}
+	if err := e.confirmLegacyTarget(C.GoString(origin), permit); err != nil {
+		return C.CString(failure(err))
+	}
+	return C.CString(encoded(map[string]any{"ok": true}))
+}
+
+//export p2pCancelOperation
+func p2pCancelOperation(token *C.char) *C.char {
+	if err := nativeOperations.revoke(C.GoString(token)); err != nil {
 		return C.CString(failure(err))
 	}
 	return C.CString(encoded(map[string]any{"ok": true}))

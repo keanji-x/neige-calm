@@ -9,6 +9,7 @@ fn main() {
             "connection_settings",
             "save_connection",
             "select_saved_tailnet",
+            "confirm_legacy_tailnet",
             "attempt_connection",
         ]),
     ))

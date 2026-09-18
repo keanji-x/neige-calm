@@ -1,6 +1,6 @@
 package io.neigecalm.next
 
-import android.app.Activity
+import androidx.activity.ComponentActivity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebResourceRequest
@@ -14,16 +14,18 @@ import java.util.concurrent.atomic.AtomicReference
  * This WebView has no JavaScript interfaces, Tauri client, or native IPC scripts.
  */
 internal class ScanWorkspace(
-  private val activity: Activity,
+  private val activity: ComponentActivity,
   private val launcher: WebView,
   private val origin: BundledOrigin,
   private val document: ScanDocument,
   private val visited: (String) -> Unit,
   private val leave: () -> Unit,
+  fileChooserLauncher: FileChooserLauncher = WorkspaceFileChooser.launcher(activity),
 ) {
   val view = WebView(activity)
   private var closed = false
   private val selected = AtomicReference<BundledOrigin?>(origin)
+  private val fileChooser = WorkspaceFileChooser(activity, view, origin, fileChooserLauncher)
   init {
     view.settings.apply {
       javaScriptEnabled = true; domStorageEnabled = true
@@ -32,7 +34,9 @@ internal class ScanWorkspace(
       setSupportMultipleWindows(false); javaScriptCanOpenWindowsAutomatically = false
       userAgentString = launcher.settings.userAgentString
     }
+    view.webChromeClient = fileChooser
     val native = object : WebViewClient() {
+      override fun onPageStarted(webView: WebView, url: String, favicon: android.graphics.Bitmap?) { fileChooser.documentChanged() }
       override fun shouldOverrideUrlLoading(webView: WebView, request: WebResourceRequest): Boolean = navigation(request.url.toString(), request.isForMainFrame)
       @Suppress("DEPRECATION")
       override fun shouldOverrideUrlLoading(webView: WebView, url: String): Boolean = navigation(url, true)
@@ -59,6 +63,7 @@ internal class ScanWorkspace(
     if (closed) return
     // Caller closes this generation's native sockets before destroying it.
     closed = true; document.clear()
+    fileChooser.dispose()
     selected.set(null)
     view.stopLoading(); (view.parent as? ViewGroup)?.removeView(view)
     view.removeAllViews(); view.destroy()

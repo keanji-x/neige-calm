@@ -36,6 +36,7 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
     val settled = java.util.concurrent.atomic.AtomicBoolean(false)
     var future: java.util.concurrent.Future<*>? = null
     var timeout: java.util.concurrent.Future<*>? = null
+    var nativeOperation: NativeOperation? = null
   }
   private var pending: Pending? = null
   private val resume by lazy { ResumeEntry(host.applicationContext) }
@@ -85,22 +86,27 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
 
   private fun cancelPending() {
     pending?.let {
+      // Native revocation is synchronous and precedes interrupting the worker.
+      // It also revokes a JNI call that has not entered Go yet.
+      val revoked = runCatching { it.nativeOperation?.cancel() }
       it.cancellation.cancel(); it.future?.cancel(true); it.timeout?.cancel(false)
-      if (it.settled.compareAndSet(false, true)) it.invoke.reject("连接已取消")
+      if (it.settled.compareAndSet(false, true)) it.invoke.reject(revoked.exceptionOrNull()?.message ?: "连接已取消")
     }
     pending = null
   }
 
-  private fun startPending(invoke: Invoke, seconds: Long = 15): Pending {
+  private fun startPending(invoke: Invoke, seconds: Long = 15, native: Boolean = false): Pending {
     cancelPending()
     val job = Pending(invoke)
+    if (native) job.nativeOperation = NativeOperation.reserve()
     pending = job
     job.timeout = deadlines.schedule({ host.runOnUiThread {
       if (job.settled.compareAndSet(false, true)) {
+        val revoked = runCatching { job.nativeOperation?.cancel() }
         generation++; job.cancellation.cancel(); job.future?.cancel(true)
         if (enrollmentPending) { NativeP2P.cancelEnrollment(); enrollmentPending = false }
         if (pending === job) pending = null
-        invoke.reject("连接超时，请重新配置")
+        invoke.reject(revoked.exceptionOrNull()?.message ?: "连接超时，请重新配置")
       }
     } }, seconds, java.util.concurrent.TimeUnit.SECONDS)
     return job
@@ -127,6 +133,7 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
   private fun settingsJson(settings: ConnectionSettings, known: List<String> = profiles.tailnetOrigins()) = JSObject().also {
     it.put("mode", settings.mode); it.put("ipOrigin", settings.ipOrigin); it.put("tailscaleEnabled", settings.tailscaleEnabled)
     it.put("tailnetOrigin", settings.tailnetOrigin); it.put("tailnetOrigins", org.json.JSONArray(known))
+    it.put("legacyTailnet", runCatching { profiles.needsLegacyConfirmation() }.getOrDefault(false))
   }
 
   @Command fun connectionSettings(invoke: Invoke) = host.runOnUiThread {
@@ -147,8 +154,9 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
     try {
       launcher()
       val args = invoke.parseArgs(BindFrontendArgs::class.java)
+      generation++; cancelPending(); closeScanWorkspace()
       val saved = profiles.selectSavedTailnet(args.origin)
-      generation++; cancelPending(); candidate = null; selectedOrigin.set(null)
+      candidate = null; selectedOrigin.set(null)
       invoke.resolve(settingsJson(saved))
     } catch (error: Exception) { invoke.reject(error.message ?: "无法选择工作区") }
   }
@@ -159,8 +167,9 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
     host.runOnUiThread {
       try {
         launcher()
+        generation++; cancelPending(); closeScanWorkspace()
         val saved = profiles.save(args.mode, args.ipOrigin, args.tailscaleEnabled)
-        generation++; cancelPending(); candidate = null; selectedOrigin.set(null)
+        candidate = null; selectedOrigin.set(null)
         invoke.resolve(settingsJson(saved))
       } catch (error: Exception) { invoke.reject(error.message ?: "保存配置失败") }
     }
@@ -175,6 +184,7 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
   @Command fun attemptConnection(invoke: Invoke) = host.runOnUiThread {
     try {
       launcher()
+      closeScanWorkspace()
       val attempt = ++generation
       val settings = profiles.read()
       candidate = null
@@ -233,9 +243,10 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
             launcher(); check(intentGeneration == generation) { "配置已改变，请重新确认" }
             generation++; closeScanWorkspace(); cancelPending(); candidate = null; selectedOrigin.set(null)
             val attempt = generation
-            val job = startPending(invoke)
+            val job = startPending(invoke, native = true)
+            val operation = checkNotNull(job.nativeOperation)
             job.future = network.submit {
-              val result = runCatching { P2PConnection.prepare(host.applicationContext); P2PConnection.checked(NativeP2P.resetEnrollment()) }
+              val result = runCatching { operation.run({ P2PConnection.prepare(host.applicationContext) }) { token -> P2PConnection.checked(NativeP2P.resetEnrollment(token)) } }
               host.runOnUiThread { finish(job) {
                 try {
                   result.getOrThrow(); launcher(); check(attempt == generation) { "重置结果已过期，请重新检查连接状态" }
@@ -259,13 +270,12 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
         closeScanWorkspace()
         generation++; cancelPending(); candidate = null; selectedOrigin.set(null)
         val attempt = generation
-        val job = startPending(invoke, 180)
+        val job = startPending(invoke, 180, native = true)
+        val operation = checkNotNull(job.nativeOperation)
         enrollmentPending = true
         job.future = network.submit {
           val result = runCatching {
-            P2PConnection.prepare(host.applicationContext)
-            job.cancellation.check()
-            P2PConnection.checked(NativeP2P.enroll(args.payload))
+            operation.run({ P2PConnection.prepare(host.applicationContext) }) { token -> P2PConnection.checked(NativeP2P.enroll(token, args.payload)) }
           }
           host.runOnUiThread {
             if (!job.settled.get()) try {
@@ -287,7 +297,7 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
                     profiles.selectTailnet(origin.value)
                     val route = resume.read(profiles)?.takeIf { it.origin == origin.value }?.route ?: "/next/"
                     lateinit var workspace: ScanWorkspace
-                    workspace = ScanWorkspace(host, launcherView, origin, document, { url ->
+                    workspace = ScanWorkspace(host as MainActivity, launcherView, origin, document, { url ->
                       if (scanWorkspace === workspace) resume.remember(profiles, origin, url)
                     }, {
                       generation++; closeScanWorkspace()
@@ -312,6 +322,7 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
     host.runOnUiThread {
       try {
         launcher()
+        closeScanWorkspace()
         val settings = profiles.read()
         val allowed = settings.candidates()
         val route = candidate?.takeIf { it.origin == args.origin && it in allowed }
@@ -337,6 +348,30 @@ class BundledFrontendPlugin(private var host: Activity) : Plugin(host) {
         }
       } catch (error: Exception) { invoke.reject(error.message ?: "无法连接服务器") }
     }
+  }
+
+  @Command fun confirmLegacyTailnet(invoke: Invoke) = host.runOnUiThread {
+    try {
+      launcher()
+      val args = invoke.parseArgs(BindFrontendArgs::class.java)
+      val settings = profiles.read()
+      check(args.origin == P2PConnection.ORIGIN && settings.tailnetOrigin == args.origin && settings.tailscaleEnabled) { "请先扫描这个工作区的二维码" }
+      generation++; cancelPending(); closeScanWorkspace(); candidate = null; selectedOrigin.set(null)
+      val attempt = generation
+      val job = startPending(invoke, native = true)
+      val operation = checkNotNull(job.nativeOperation)
+      job.future = network.submit {
+        val result = runCatching { operation.run({ P2PConnection.prepare(host.applicationContext) }) { token ->
+          P2PConnection.checked(NativeP2P.confirmLegacy(token, args.origin))
+        } }
+        host.runOnUiThread { finish(job) {
+          try {
+            result.getOrThrow(); launcher(); check(attempt == generation) { "旧工作区确认已取消" }
+            invoke.resolve(settingsJson(profiles.selectTailnet(args.origin)))
+          } catch (error: Exception) { operation.cancel(); invoke.reject(error.message ?: "工作区确认失败") }
+        } }
+      }
+    } catch (error: Exception) { invoke.reject(error.message ?: "无法确认旧工作区") }
   }
 
   private fun observe(webView: WebView, origin: BundledOrigin, ownerGeneration: Int) {

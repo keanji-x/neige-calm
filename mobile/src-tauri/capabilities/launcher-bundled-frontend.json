@@ -5,5 +5,5 @@
   "local": true,
   "windows": ["main"],
   "platforms": ["android"],
-  "permissions": ["bundled-frontend:allow-bind-server", "bundled-frontend:allow-enroll-from-scan", "bundled-frontend:allow-cancel-enrollment", "bundled-frontend:allow-reset-enrollment", "bundled-frontend:allow-connection-settings", "bundled-frontend:allow-save-connection", "bundled-frontend:allow-select-saved-tailnet", "bundled-frontend:allow-attempt-connection"]
+  "permissions": ["bundled-frontend:allow-bind-server", "bundled-frontend:allow-enroll-from-scan", "bundled-frontend:allow-cancel-enrollment", "bundled-frontend:allow-reset-enrollment", "bundled-frontend:allow-connection-settings", "bundled-frontend:allow-save-connection", "bundled-frontend:allow-select-saved-tailnet", "bundled-frontend:allow-attempt-connection", "bundled-frontend:allow-confirm-legacy-tailnet"]
 }

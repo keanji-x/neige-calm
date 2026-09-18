@@ -187,3 +187,27 @@ test('invalid saved configuration exposes an editable setup instead of an automa
   await page.getByLabel('服务器地址').fill(direct);
   await expect(page.getByRole('button', { name: '保存并连接 IP' })).toBeEnabled();
 });
+
+test('retained v1 setup migrates only on explicit reconnect and preserves the native origin check', async ({ page }) => {
+  await page.addInitScript(server => {
+    window.settings = { mode: 'tailscale', ipOrigin: '', tailscaleEnabled: true, tailnetOrigin: server, legacyTailnet: true };
+    const original = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = async (command,args) => {
+      if (command.endsWith('|save_connection')) {
+        window.nativeCalls.push(command); window.settings={...window.settings,...args}; return {...window.settings};
+      }
+      if (command.endsWith('|confirm_legacy_tailnet')) {
+        window.nativeCalls.push(command); window.legacyOrigin=args.origin;
+        window.attemptResult={connected:true,mode:'tailscale',origin:server,resumeAvailable:true,failures:[]};
+        return {...window.settings};
+      }
+      return original(command,args);
+    };
+  },tail);
+  await page.route(`${tail}/next/`,route=>route.fulfill({body:'Legacy workspace'}));
+  await page.goto('/');
+  await expect(page.locator('#error')).not.toBeEmpty();
+  expect(await page.evaluate(()=>window.nativeCalls)).not.toContain('plugin:bundled-frontend|confirm_legacy_tailnet');
+  await page.getByRole('button',{name:'重新连接工作区'}).click();
+  await expect(page).toHaveURL(`${tail}/next/`);
+});

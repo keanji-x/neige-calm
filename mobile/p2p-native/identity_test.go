@@ -22,7 +22,7 @@ func TestFreshNodeRestartRetainsUnregisteredEligibility(t *testing.T) {
 	// requests terminate on loopback; this creates no account or tailnet node.
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
 	defer control.Close()
-	dir := t.TempDir()
+	dir := privateTestNodeDir(t)
 	for boot := 0; boot < 2; boot++ {
 		node := privateTailnetNode(dir, "scan-local-test")
 		node.ControlURL = control.URL
@@ -56,7 +56,7 @@ func TestPinnedSDKResetStopsAnUnregisteredPendingLogin(t *testing.T) {
 	}))
 	control.HTTPTestServer.Start()
 	defer control.HTTPTestServer.Close()
-	node := privateTailnetNode(t.TempDir(), "scan-pending-sdk-test")
+	node := privateTailnetNode(privateTestNodeDir(t), "scan-pending-sdk-test")
 	node.ControlURL = control.HTTPTestServer.URL
 	if err := node.Start(); err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestPinnedSDKResetStopsAnUnregisteredPendingLogin(t *testing.T) {
 		t.Fatalf("fixture must still be unregistered: %v", err)
 	}
 	e := &engine{dir: node.Dir, transport: runtime}
-	if err := e.resetEnrollment(); err != nil {
+	if err := e.resetEnrollment(testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
 	reachable.Store(true)
@@ -106,7 +106,7 @@ func TestPinnedSDKAuthKeyAndConfirmedLogoutBoundary(t *testing.T) {
 	control.HTTPTestServer = httptest.NewUnstartedServer(control)
 	control.HTTPTestServer.Start()
 	defer control.HTTPTestServer.Close()
-	node := privateTailnetNode(t.TempDir(), "scan-sdk-test")
+	node := privateTailnetNode(privateTestNodeDir(t), "scan-sdk-test")
 	node.ControlURL = control.HTTPTestServer.URL
 	if err := node.Start(); err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func TestPinnedSDKAuthKeyAndConfirmedLogoutBoundary(t *testing.T) {
 		t.Fatalf("registered identity missing: %v", err)
 	}
 	e := &engine{dir: node.Dir, transport: runtime}
-	if err := e.resetEnrollment(); err != nil {
+	if err := e.resetEnrollment(testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
 	if known, err := runtime.HasIdentity(ctx); err != nil || known {

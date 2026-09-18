@@ -118,7 +118,13 @@ login.addEventListener('click', async () => {
     await save(attempt);
     if (attempt !== generation) return;
     if (mode.value === 'ip') { await connect(true); return; }
-    if (config.tailscaleEnabled) await connect(true);
+    if (config.tailscaleEnabled) {
+      if (config.legacyTailnet) {
+        config = await invoke('confirm_legacy_tailnet', { origin: config.tailnetOrigin });
+        if (attempt !== generation) return;
+      }
+      await connect(true);
+    }
     else { idle(); scan.click(); }
   } catch (cause) {
     if (attempt === generation) { error.textContent = message(cause); }

@@ -93,7 +93,7 @@ document.querySelector('#pair-connect').addEventListener('click', async () => {
   const button = document.querySelector('#pair-connect');
   button.disabled = true;
   error.textContent = '';
-  try { await bindServer(selected.origin); }
+  try { await bindServer(selected.origin, true); }
   catch (cause) { error.textContent = cause.message; return; }
   finally { button.disabled = false; }
   if (candidate !== selected) return;

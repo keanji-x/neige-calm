@@ -29,6 +29,7 @@ internal class ConnectionProfiles(private val preferences: android.content.Share
   }
   fun profileId(): String = identity().id
   fun revision(): Long = identity().revision
+  fun needsLegacyConfirmation(): Boolean = read().let { it.tailscaleEnabled && it.tailnetOrigin == P2PConnection.ORIGIN }
   fun read(): ConnectionSettings { identity(); tailnetOrigins(); return readSettings() }
   private fun readSettings(): ConnectionSettings {
     val result = ConnectionSettings(preferences.getString("mode", "tailscale")!!,

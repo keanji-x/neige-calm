@@ -8,10 +8,66 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sync"
+	"syscall"
 )
 
 const pendingFilename = "pending-enrollment.json"
 const resetFilename = "enrollment-reset.json"
+
+var privateRecordMu sync.Mutex
+var ownedTemporary = regexp.MustCompile(`^\.enrollment-(?:(?:pending|record)-)?[0-9]{1,10}$`)
+
+func clearInterruptedWritesLocked(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return errors.New("无法确认连接记录目录")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.IsDir() || info.Mode().Perm() != 0700 || stat.Uid != uint32(os.Getuid()) {
+		return errors.New("连接记录目录归属或权限异常")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return errors.New("无法确认临时入网凭证已清除")
+	}
+	var owned []string
+	for _, entry := range entries {
+		if !ownedTemporary.MatchString(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		info, err := os.Lstat(path)
+		if err != nil {
+			return errors.New("无法确认临时入网凭证已清除")
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != uint32(os.Getuid()) || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() > 8192 {
+			return errors.New("临时连接记录归属或权限异常，无法安全清理")
+		}
+		owned = append(owned, path)
+	}
+	for _, path := range owned {
+		if err := os.Remove(path); err != nil {
+			return errors.New("无法清除临时入网凭证")
+		}
+	}
+	// Sync even after a previous removal whose sync may have failed.
+	return syncPrivateDirectory(dir)
+}
+
+func syncPrivateDirectory(dir string) error {
+	directory, err := os.Open(dir)
+	if err == nil {
+		err = directory.Sync()
+		directory.Close()
+	}
+	if err != nil {
+		return errors.New("无法确认连接记录已持久保存")
+	}
+	return nil
+}
 
 func requireNoPendingReset(dir string) error {
 	if _, err := os.Lstat(filepath.Join(dir, resetFilename)); !os.IsNotExist(err) {
@@ -48,11 +104,20 @@ func readPrivateJSON(dir, name string, into any) error {
 	return nil
 }
 func writePrivateJSON(dir, name string, value any) error {
+	privateRecordMu.Lock()
+	defer privateRecordMu.Unlock()
+	if err := clearInterruptedWritesLocked(dir); err != nil {
+		return err
+	}
 	data, err := json.Marshal(value)
 	if err != nil || len(data) > 8192 {
 		return errors.New("无法保存本地连接记录")
 	}
-	file, err := os.CreateTemp(dir, ".enrollment-*")
+	pattern := ".enrollment-record-*"
+	if name == pendingFilename {
+		pattern = ".enrollment-pending-*"
+	}
+	file, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return errors.New("无法保存本地连接记录")
 	}
@@ -83,11 +148,23 @@ func writePrivateJSON(dir, name string, value any) error {
 	}
 	return nil
 }
-func clearPending(dir string) error { return removePrivateRecord(dir, pendingFilename) }
+func clearPending(dir string) error {
+	privateRecordMu.Lock()
+	defer privateRecordMu.Unlock()
+	if err := clearInterruptedWritesLocked(dir); err != nil {
+		return err
+	}
+	return removePrivateRecordLocked(dir, pendingFilename)
+}
 func removePrivateRecord(dir, name string) error {
+	privateRecordMu.Lock()
+	defer privateRecordMu.Unlock()
+	return removePrivateRecordLocked(dir, name)
+}
+func removePrivateRecordLocked(dir, name string) error {
 	err := os.Remove(filepath.Join(dir, name))
 	if os.IsNotExist(err) {
-		return nil
+		return syncPrivateDirectory(dir)
 	}
 	if err != nil {
 		return errors.New("无法清除入网凭证，请检查设备存储")

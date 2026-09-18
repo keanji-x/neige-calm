@@ -209,3 +209,30 @@ Implementation note (S4): the existing BundledFrontendPlugin owns a native-creat
 - The document's nonce/strict-dynamic CSP is intersected with an APK asset-path
   script policy. The authenticated API origin is not itself a script source.
   Unlisted resources fail locally, and a scan document has no native bridge.
+
+### S4 review correction round 2
+
+- A native one-shot operation ticket is reserved on the launcher UI thread
+  before Java worker dispatch, including before engine initialization. JNI
+  requires that ticket, and cannot turn an old Java intent into a new native
+  generation. Every Pending cancellation revokes it before interrupting the
+  future; final target commit and revocation share the ticket lock. Reset and
+  legacy confirmation use the same admission boundary. An old ticket's cancel
+  cannot revoke a newer ticket.
+- Private atomic writes and cleanup share an exclusive storage mutex. Startup,
+  cancellation, new writes, handoff and reset remove interrupted owned temporary
+  files and fsync the directory. Cleanup recognizes only the precise numeric
+  CreateTemp names in the old/new owned namespaces; wrong owner, permissions or
+  file type fail closed without removing unknown files or following symlinks.
+- The retained v1 launcher confirmation/reconnect path may migrate ONLY the
+  former fixed deployment origin and address, after authenticated-map and TLS
+  checks using the existing node. Passive recovery never resolves missing
+  bindings. Once a binding exists, confirmation preserves its stable peer/IP
+  fence instead of repairing mismatches. No AuthKey, Logout or identity switch
+  occurs in this migration; v1 still requires its original host approval.
+- ScanWorkspace has a narrow standard Android file chooser, not Wry/Tauri IPC.
+  Each request has its own result registration and document-owned callback.
+  Navigation/disposal cancels it; stale, non-content, ungranted or app-private
+  URIs are rejected. Only ACTION_OPEN_DOCUMENT is launched, with no camera or
+  filesystem permission expansion. Device chooser acceptance remains separate
+  from tests which capture the launch Intent without opening other apps.

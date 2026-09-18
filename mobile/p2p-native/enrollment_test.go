@@ -110,7 +110,7 @@ func enrollmentFixture(t *testing.T, running bool) (*engine, *enrollmentNode, st
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test CA"}, DNSNames: []string{"alpha.tail.example"},
+	cert := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test CA"}, DNSNames: []string{"alpha.tail.example", "pivot-neige.tail328551.ts.net"},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true,
 		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, key)
@@ -128,7 +128,7 @@ func enrollmentFixture(t *testing.T, running bool) (*engine, *enrollmentNode, st
 	if running {
 		node.state = node.running
 	}
-	e := &engine{dir: t.TempDir(), transport: node, tlsRoots: roots}
+	e := &engine{dir: privateTestNodeDir(t), transport: node, tlsRoots: roots}
 	t.Cleanup(e.closeTunnel)
 	fields := enrollmentTestFields()
 	fields["authKeyExpiresAt"] = time.Now().Add(300 * time.Second).UnixMilli()
@@ -136,9 +136,18 @@ func enrollmentFixture(t *testing.T, running bool) (*engine, *enrollmentNode, st
 	return e, node, enrollmentTestQR(t, fields)
 }
 
+func privateTestNodeDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "p2p-node")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestEnrollmentProductionFlowUsesOneNodeAndClearsSecretsBeforeHandoff(t *testing.T) {
 	e, node, qr := enrollmentFixture(t, false)
-	result, err := e.enroll(qr)
+	result, err := e.enroll(qr, testOperationPermit(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +178,7 @@ func TestEnrollmentExistingRunningIdentitySkipsKeyAndPreservesOldTarget(t *testi
 	if err := saveTarget(e.dir, old); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.enroll(qr); err != nil {
+	if _, err := e.enroll(qr, testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
 	if node.authCalls != 0 {
@@ -196,7 +205,7 @@ func TestEnrollmentRejectsExpiredOrUnknownExistingIdentityWithoutAuth(t *testing
 			case "unknown-attempt":
 				e.identityClaimed.Store(true)
 			}
-			if _, err := e.enroll(qr); err == nil || node.authCalls != 0 {
+			if _, err := e.enroll(qr, testOperationPermit(t)); err == nil || node.authCalls != 0 {
 				t.Fatal("replaced an old or unknown identity")
 			}
 			if source == "disk" {
@@ -217,7 +226,7 @@ func TestEnrollmentWrongPeerOrTLSNeverCommitsCandidate(t *testing.T) {
 			} else {
 				e.tlsRoots = x509.NewCertPool()
 			}
-			if _, err := e.enroll(qr); err == nil {
+			if _, err := e.enroll(qr, testOperationPermit(t)); err == nil {
 				t.Fatal("untrusted target admitted")
 			}
 			if _, err := savedTarget(e.dir, "https://alpha.tail.example:10000"); err == nil {
@@ -235,7 +244,7 @@ func TestEnrollmentCancelDuringTLSClosesPermitAndDiscardsLateHandoff(t *testing.
 	node.dialEntered = make(chan struct{})
 	node.dialRelease = make(chan struct{})
 	done := make(chan error, 1)
-	go func() { _, err := e.enroll(qr); done <- err }()
+	go func() { _, err := e.enroll(qr, testOperationPermit(t)); done <- err }()
 	select {
 	case <-node.dialEntered:
 	case <-time.After(time.Second):
@@ -260,7 +269,7 @@ func TestEnrollmentCancelDuringTLSClosesPermitAndDiscardsLateHandoff(t *testing.
 
 func TestTailnetReplacementClosesExistingConnectionsAndNeverReusesPort(t *testing.T) {
 	e, _, qr := enrollmentFixture(t, true)
-	if _, err := e.enroll(qr); err != nil {
+	if _, err := e.enroll(qr, testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
 	old := e.tunnel
@@ -269,7 +278,7 @@ func TestTailnetReplacementClosesExistingConnectionsAndNeverReusesPort(t *testin
 	if !old.track(left) {
 		t.Fatal("proxy already closed")
 	}
-	if _, err := e.enroll(qr); err != nil {
+	if _, err := e.enroll(qr, testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
 	if old.ctx.Err() == nil || old.proxyURL() == e.tunnel.proxyURL() {
@@ -289,14 +298,14 @@ func TestEnrollmentPendingStorageFailureNeverStartsAuth(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(e.dir, pendingFilename), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.enroll(qr); err == nil || node.authCalls != 0 {
+	if _, err := e.enroll(qr, testOperationPermit(t)); err == nil || node.authCalls != 0 {
 		t.Fatal("auth started without durable pending state")
 	}
 }
 
 func TestTailnetProxyProductionConnectUsesValidatedNumericPeer(t *testing.T) {
 	e, node, qr := enrollmentFixture(t, true)
-	if _, err := e.enroll(qr); err != nil {
+	if _, err := e.enroll(qr, testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
 	connection, err := net.DialTimeout("tcp", e.tunnel.listener.Addr().String(), time.Second)
@@ -334,14 +343,14 @@ func TestEnrollmentUnknownRegistrationSurvivesProcessOwnerReplacement(t *testing
 	// A new engine cannot turn an uncertain prior result into permission to join
 	// another tailnet, even while the local API still says NeedsLogin.
 	replacement := &engine{dir: e.dir, transport: node, tlsRoots: e.tlsRoots}
-	if _, err := replacement.enroll(qr); err == nil || node.authCalls != 0 {
+	if _, err := replacement.enroll(qr, testOperationPermit(t)); err == nil || node.authCalls != 0 {
 		t.Fatal("replaced an uncertain prior identity after process death")
 	}
 }
 
 func TestTailnetNetworkLossClosesSocketsButRetainsSameTargetRetry(t *testing.T) {
 	e, _, qr := enrollmentFixture(t, true)
-	if _, err := e.enroll(qr); err != nil {
+	if _, err := e.enroll(qr, testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
 	tunnel := e.tunnel
@@ -377,7 +386,7 @@ func (c *dialCheckpointContext) Err() error {
 }
 func TestTailnetDialCannotRegisterAfterItsNetworkGenerationWasInvalidated(t *testing.T) {
 	e, _, qr := enrollmentFixture(t, true)
-	if _, err := e.enroll(qr); err != nil {
+	if _, err := e.enroll(qr, testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
 	tunnel := e.tunnel
@@ -412,7 +421,7 @@ func TestEnrollmentRetriesOnlyTheSamePendingInvitationAfterTransientAuthFailure(
 		t.Run(fmt.Sprint(restart), func(t *testing.T) {
 			e, node, qr := enrollmentFixture(t, false)
 			node.authFailures = 1
-			if _, err := e.enroll(qr); err == nil {
+			if _, err := e.enroll(qr, testOperationPermit(t)); err == nil {
 				t.Fatal("expected first network failure")
 			}
 			record, err := os.ReadFile(filepath.Join(e.dir, "registration-attempt.json"))
@@ -424,7 +433,7 @@ func TestEnrollmentRetriesOnlyTheSamePendingInvitationAfterTransientAuthFailure(
 				owner = &engine{dir: e.dir, transport: node, tlsRoots: e.tlsRoots}
 				t.Cleanup(owner.closeTunnel)
 			}
-			if _, err := owner.enroll(qr); err != nil {
+			if _, err := owner.enroll(qr, testOperationPermit(t)); err != nil {
 				t.Fatalf("same valid invitation could not resume: %v", err)
 			}
 			if node.authCalls != 2 {
@@ -439,7 +448,7 @@ func TestEnrollmentDifferentPendingInvitationCannotReplaceUnknownIdentity(t *tes
 		t.Run(field, func(t *testing.T) {
 			e, node, qr := enrollmentFixture(t, false)
 			node.authFailures = 1
-			if _, err := e.enroll(qr); err == nil {
+			if _, err := e.enroll(qr, testOperationPermit(t)); err == nil {
 				t.Fatal("expected uncertain registration")
 			}
 			payload, err := decodeEnrollmentPayload(qr, time.Now())
@@ -463,10 +472,10 @@ func TestEnrollmentDifferentPendingInvitationCannotReplaceUnknownIdentity(t *tes
 				fields[field] = payload.pairExpiresAt - 1000
 			}
 			replacement := &engine{dir: e.dir, transport: node, tlsRoots: e.tlsRoots}
-			if _, err := replacement.enroll(enrollmentTestQR(t, fields)); err == nil || node.authCalls != 1 {
+			if _, err := replacement.enroll(enrollmentTestQR(t, fields), testOperationPermit(t)); err == nil || node.authCalls != 1 {
 				t.Fatal("different QR replaced unknown identity")
 			}
-			if _, err := replacement.enroll(qr); err != nil {
+			if _, err := replacement.enroll(qr, testOperationPermit(t)); err != nil {
 				t.Fatalf("rejection damaged original retry: %v", err)
 			}
 			replacement.closeTunnel()
@@ -477,7 +486,7 @@ func TestEnrollmentDifferentPendingInvitationCannotReplaceUnknownIdentity(t *tes
 func TestExplicitEnrollmentResetWaitsForSDKLogoutAndPreservesNodeDirectory(t *testing.T) {
 	e, node, qr := enrollmentFixture(t, false)
 	node.authFailures = 1
-	if _, err := e.enroll(qr); err == nil {
+	if _, err := e.enroll(qr, testOperationPermit(t)); err == nil {
 		t.Fatal("expected uncertain enrollment")
 	}
 	path := filepath.Join(e.dir, "tailscaled.state")
@@ -485,14 +494,14 @@ func TestExplicitEnrollmentResetWaitsForSDKLogoutAndPreservesNodeDirectory(t *te
 		t.Fatal(err)
 	}
 	node.logoutErr = errors.New("offline")
-	if err := e.resetEnrollment(); err == nil {
+	if err := e.resetEnrollment(testOperationPermit(t)); err == nil {
 		t.Fatal("failed logout was accepted")
 	}
 	if _, err := os.Stat(filepath.Join(e.dir, "registration-attempt.json")); err != nil {
 		t.Fatal("failure cleared uncertainty fence")
 	}
 	node.logoutErr = nil
-	if err := e.resetEnrollment(); err != nil {
+	if err := e.resetEnrollment(testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -501,19 +510,19 @@ func TestExplicitEnrollmentResetWaitsForSDKLogoutAndPreservesNodeDirectory(t *te
 	if node.logoutCalls != 2 || e.identityClaimed.Load() {
 		t.Fatal("reset did not follow SDK confirmation")
 	}
-	if _, err := e.enroll(qr); err != nil {
+	if _, err := e.enroll(qr, testOperationPermit(t)); err != nil {
 		t.Fatalf("explicit reset did not restore scan entry: %v", err)
 	}
 }
 
 func TestResetEnrollmentPreventsRebindingDuringAndAfterLogout(t *testing.T) {
 	e, node, qr := enrollmentFixture(t, true)
-	if _, err := e.enroll(qr); err != nil {
+	if _, err := e.enroll(qr, testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
 	node.logoutEntered, node.logoutRelease = make(chan struct{}), make(chan struct{})
 	done := make(chan error, 1)
-	go func() { done <- e.resetEnrollment() }()
+	go func() { done <- e.resetEnrollment(testOperationPermit(t)) }()
 	select {
 	case <-node.logoutEntered:
 	case <-time.After(time.Second):
@@ -534,26 +543,26 @@ func TestResetEnrollmentPreventsRebindingDuringAndAfterLogout(t *testing.T) {
 
 func TestFailedResetRemainsBlockedAfterProcessReplacementUntilConfirmedRetry(t *testing.T) {
 	e, node, qr := enrollmentFixture(t, true)
-	if _, err := e.enroll(qr); err != nil {
+	if _, err := e.enroll(qr, testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
 	node.logoutErr = errors.New("unknown logout result")
-	if err := e.resetEnrollment(); err == nil {
+	if err := e.resetEnrollment(testOperationPermit(t)); err == nil {
 		t.Fatal("expected failed logout")
 	}
 	// The result may have reached control even though its reply was lost.
 	node.state = &ipnstate.Status{BackendState: "NeedsLogin"}
 	replacement := &engine{dir: e.dir, transport: node, tlsRoots: e.tlsRoots}
 	t.Cleanup(replacement.closeTunnel)
-	_, scanErr := replacement.enroll(qr)
+	_, scanErr := replacement.enroll(qr, testOperationPermit(t))
 	if scanErr == nil || node.authCalls != 0 {
 		t.Fatal("unknown reset result permitted implicit re-enrollment")
 	}
 	node.logoutErr = nil
-	if err := replacement.resetEnrollment(); err != nil {
+	if err := replacement.resetEnrollment(testOperationPermit(t)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := replacement.enroll(qr); err != nil {
+	if _, err := replacement.enroll(qr, testOperationPermit(t)); err != nil {
 		t.Fatalf("confirmed reset did not release scan: %v", err)
 	}
 }
