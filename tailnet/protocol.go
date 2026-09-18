@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -42,12 +43,21 @@ type response struct {
 // arbitrary localapi requests and never returns AuthURL from ordinary status.
 func serveControl(ctx context.Context, listener net.Listener, service *service) {
 	go func() { <-ctx.Done(); listener.Close() }()
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	slots := make(chan struct{}, 8)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			return
 		}
-		go handleControl(ctx, conn, service)
+		select {
+		case slots <- struct{}{}:
+			workers.Add(1)
+			go func() { defer workers.Done(); defer func() { <-slots }(); handleControl(ctx, conn, service) }()
+		default:
+			conn.Close()
+		}
 	}
 }
 func handleControl(ctx context.Context, conn net.Conn, service *service) {
@@ -58,6 +68,13 @@ func handleControl(ctx context.Context, conn net.Conn, service *service) {
 		return
 	}
 	var req request
+	var envelope struct {
+		Version int `json:"version"`
+	}
+	if json.Unmarshal(line, &envelope) == nil && envelope.Version == 2 {
+		handleEnrollment(ctx, conn, service, line)
+		return
+	}
 	decoder := json.NewDecoder(bytes.NewReader(line))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&req) != nil || req.Version != protocolVersion {
@@ -83,6 +100,63 @@ func handleControl(ctx context.Context, conn net.Conn, service *service) {
 	if err != nil {
 		message := "Tailnet operation unavailable; retry after checking node status"
 		res.Error = &message
+	}
+	json.NewEncoder(conn).Encode(res)
+}
+
+type enrollmentRequest struct {
+	Version int               `json:"version"`
+	Command enrollmentCommand `json:"command"`
+}
+type enrollmentResponse struct {
+	Version int               `json:"version"`
+	Result  *enrollmentResult `json:"result"`
+	Error   *string           `json:"error"`
+}
+
+func handleEnrollment(ctx context.Context, conn net.Conn, s *service, line []byte) {
+	var req enrollmentRequest
+	var fields map[string]json.RawMessage
+	if !exactFields(line, "version", "command") || strictJSON(line, &fields) != nil || !exactFields(fields["command"], "action", "enrollmentId", "generation", "deadline") || strictJSON(line, &req) != nil || req.Version != 2 {
+		return
+	}
+	c := req.Command
+	now := time.Now().UnixMilli()
+	if !safeID(c.EnrollmentID) || !safeID(c.Generation) || c.Deadline <= now || c.Deadline > now+10000 {
+		return
+	}
+	ctx, cancel := context.WithDeadline(ctx, time.UnixMilli(c.Deadline))
+	defer cancel()
+	res := enrollmentResponse{Version: 2}
+	var result enrollmentResult
+	var err error
+	if s.issuer == nil {
+		message := "setup-required: configure private enrollment credentials; full Neige restart required after helper update"
+		res.Error = &message
+	} else {
+		switch c.Action {
+		case "create":
+			result, err = s.issuer.issue(ctx, c, s)
+		case "cancel":
+			result, err = s.issuer.cleanup(ctx, c.EnrollmentID, false)
+		case "cleanup":
+			result, err = s.issuer.cleanup(ctx, "", true)
+		case "status":
+			s.issuer.mu.Lock()
+			result.PendingCleanup = len(s.issuer.ledger.Records)
+			result.Detail = cleanupDetail(s.issuer.ledger.Records)
+			s.issuer.mu.Unlock()
+		default:
+			return
+		}
+		if err != nil {
+			message := err.Error()
+			res.Error = &message
+		} else {
+			result.EnrollmentID = c.EnrollmentID
+			result.Generation = c.Generation
+			res.Result = &result
+		}
 	}
 	json.NewEncoder(conn).Encode(res)
 }

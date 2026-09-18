@@ -540,6 +540,13 @@ async fn private_tailnet_fixture() -> (Fixture, std::path::PathBuf, tokio::task:
                 .read_until(b'\n', &mut bytes)
                 .await
                 .unwrap();
+            if serde_json::from_slice::<Value>(&bytes).unwrap()["version"] == 2 {
+                let response = enrollment::control_response(&bytes);
+                let mut bytes = serde_json::to_vec(&response).unwrap();
+                bytes.push(b'\n');
+                let _ = stream.write_all(&bytes).await;
+                continue;
+            }
             let req: TailnetRequest = serde_json::from_slice(&bytes).unwrap();
             match req.action {
                 TailnetAction::Enable => enabled = true,
@@ -649,6 +656,13 @@ async fn private_tailnet_ingress_auth_and_control_fence() {
         ("GET", "/api/mobile/access", StatusCode::NOT_FOUND),
         ("POST", "/api/mobile/tailnet/login", StatusCode::NOT_FOUND),
         ("POST", "/api/mobile/tailnet/logout", StatusCode::NOT_FOUND),
+        ("POST", "/api/mobile/enrollments", StatusCode::NOT_FOUND),
+        ("GET", "/api/mobile/enrollments", StatusCode::NOT_FOUND),
+        (
+            "DELETE",
+            "/api/mobile/enrollments/fixture",
+            StatusCode::NOT_FOUND,
+        ),
         ("POST", "/internal/codex/hook", StatusCode::NOT_FOUND),
     ] {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -668,6 +682,9 @@ async fn private_tailnet_ingress_auth_and_control_fence() {
         ("DELETE", "/api/mobile/devices/fixture"),
         ("POST", "/api/mobile/tailnet/login"),
         ("POST", "/api/mobile/tailnet/logout"),
+        ("POST", "/api/mobile/enrollments"),
+        ("GET", "/api/mobile/enrollments"),
+        ("DELETE", "/api/mobile/enrollments/fixture"),
     ] {
         assert_eq!(
             request(&f.local, method, path, None, json!({})).await.0,
@@ -704,6 +721,9 @@ async fn private_tailnet_ingress_auth_and_control_fence() {
     drop(f);
     control.abort();
 }
+
+#[path = "mobile_pairing/enrollment.rs"]
+mod enrollment;
 
 #[tokio::test]
 async fn private_tailnet_disable_closes_active_websocket_and_revokes_session() {

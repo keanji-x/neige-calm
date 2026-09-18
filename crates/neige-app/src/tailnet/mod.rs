@@ -31,6 +31,7 @@ struct State {
     next_start: Instant,
     failed: bool,
     shutdown: bool,
+    next_cleanup: Instant,
 }
 impl TailnetManager {
     /// Configuration/UDS setup is local only. Node startup is asynchronous and
@@ -61,6 +62,7 @@ impl TailnetManager {
                 next_start: Instant::now(),
                 failed: false,
                 shutdown: false,
+                next_cleanup: Instant::now(),
             }),
             _lock: lock,
         });
@@ -82,6 +84,18 @@ impl TailnetManager {
     async fn reconcile(&self, state: &mut State) {
         if !state.desired.desired_enabled {
             let _ = Self::stop_child(state).await;
+            if self.cfg.enrollment_config.is_some() && Instant::now() >= state.next_cleanup {
+                state.next_cleanup = Instant::now() + Duration::from_secs(60);
+                if let Ok(mut child) = self.spawn_mode(true) {
+                    if tokio::time::timeout(Duration::from_secs(10), child.wait())
+                        .await
+                        .is_err()
+                    {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                    }
+                }
+            }
             return;
         }
         let exited = match state.child.as_mut() {
@@ -123,10 +137,15 @@ impl TailnetManager {
         }
     }
     fn spawn(&self) -> anyhow::Result<Child> {
+        self.spawn_mode(false)
+    }
+    fn spawn_mode(&self, cleanup_only: bool) -> anyhow::Result<Child> {
         // Explicit allowlist: no tokens, proxy settings, TS_AUTHKEY, cloud
         // credentials, system tailscaled socket or parent HOME reach tsnet.
         let binary=self.pinned_binary.as_ref().ok_or_else(||anyhow::anyhow!("Tailnet helper is not installed; complete the release installation and restart Neige"))?;
-        storage::backup_for_binary(&self.cfg.state_dir, binary)?;
+        if !cleanup_only {
+            storage::backup_for_binary(&self.cfg.state_dir, binary)?;
+        }
         let mut command = Command::new(binary);
         command
             .env_clear()
@@ -147,6 +166,12 @@ impl TailnetManager {
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .process_group(0);
+        if let Some(path) = &self.cfg.enrollment_config {
+            command.arg("--enrollment-config").arg(path);
+        }
+        if cleanup_only {
+            command.arg("--cleanup-only");
+        }
         #[cfg(target_os = "linux")]
         unsafe {
             let parent = libc::getpid();
@@ -192,6 +217,7 @@ impl TailnetManager {
             TailnetAction::Disable => {
                 self.persist(&mut state, false)?;
                 Self::stop_child(&mut state).await?;
+                state.next_cleanup = Instant::now();
             }
             TailnetAction::Login => {
                 anyhow::ensure!(
@@ -287,6 +313,39 @@ impl TailnetManager {
                 line.len() <= MAX_MESSAGE as usize && line.last() == Some(&b'\n'),
                 "invalid message size"
             );
+            if serde_json::from_slice::<serde_json::Value>(&line)?["version"] == 2 {
+                use calm_types::enrollment::{EnrollmentRequest, EnrollmentResponse};
+                let request: EnrollmentRequest = serde_json::from_slice(&line)?;
+                let state = self.state.lock().await;
+                let result = if !state.shutdown
+                    && state.desired.desired_enabled
+                    && state.child.is_some()
+                {
+                    TailnetClient::new(self.cfg.helper_socket())
+                        .enrollment(request.command)
+                        .await
+                } else {
+                    Err(anyhow::anyhow!(
+                        "setup-required: enable private access first; stopped-node cleanup runs independently"
+                    ))
+                };
+                let response = match result {
+                    Ok(result) => EnrollmentResponse {
+                        version: 2,
+                        result: Some(result),
+                        error: None,
+                    },
+                    Err(error) => EnrollmentResponse {
+                        version: 2,
+                        result: None,
+                        error: Some(error.to_string()),
+                    },
+                };
+                let mut bytes = serde_json::to_vec(&response)?;
+                bytes.push(b'\n');
+                stream.write_all(&bytes).await?;
+                return Ok(());
+            }
             let req: TailnetRequest = serde_json::from_slice(&line)?;
             anyhow::ensure!(req.version == VERSION, "invalid protocol version");
             let response = match self.action(req.action).await {

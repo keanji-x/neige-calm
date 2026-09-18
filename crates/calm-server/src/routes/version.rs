@@ -147,7 +147,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // curtain rather than fail every conversation list; and the raised floor
 // keeps a v28 bundle — which keys its read receipts on the per-boot
 // `dbInstanceId` instead of `databaseId` — off this kernel.
-pub const WEB_COMPAT_VERSION: u32 = 29;
+// #1712 scan-only v2 enrollment requires its own claim/redeem endpoints.
+pub const WEB_COMPAT_VERSION: u32 = 30;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

@@ -177,12 +177,13 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     // #1722 S1b: 28 -> 29 so a bundle whose conversation-row parser requires
     // `lastTurnCompletedAt` is held behind the curtain until its kernel
     // sends it, and a v28 bundle keying receipts on `dbInstanceId` refreshes.
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 29);
+    // #1712: v30 supplies scan-only claim/redeem and the desktop QR contract.
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 30);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 29);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 30);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

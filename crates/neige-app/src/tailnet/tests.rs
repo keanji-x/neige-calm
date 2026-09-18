@@ -21,6 +21,7 @@ time.sleep(60)
         state_dir: dir.path().join("private"),
         state_dir_inherits_data: false,
         hostname: "fixture".into(),
+        enrollment_config: None,
     };
     (dir, cfg)
 }
@@ -283,4 +284,35 @@ fn tailnet_cli_data_override_isolated_but_explicit_node_path_is_preserved() {
         config.tailnet.as_ref().unwrap().state_dir,
         dir.path().join("isolated/tailnet")
     );
+}
+
+#[tokio::test]
+async fn tailnet_disabled_cleanup_passes_only_config_reference_without_node_mode() {
+    let (_dir, mut cfg) = fixture();
+    cfg.enrollment_config = Some(cfg.state_dir.join("not-readable-by-rust.json"));
+    std::fs::write(
+        &cfg.binary,
+        r#"#!/usr/bin/python3
+import json, pathlib, sys
+pathlib.Path('cleanup-args.json').write_text(json.dumps(sys.argv[1:]))
+"#,
+    )
+    .unwrap();
+    let manager = TailnetManager::start(cfg.clone()).unwrap();
+    wait_file(cfg.state_dir.join("cleanup-args.json")).await;
+    manager.shutdown().await.unwrap();
+    let args: Vec<String> =
+        serde_json::from_slice(&std::fs::read(cfg.state_dir.join("cleanup-args.json")).unwrap())
+            .unwrap();
+    assert!(args.iter().any(|a| a == "--cleanup-only"));
+    let path = args
+        .iter()
+        .position(|a| a == "--enrollment-config")
+        .unwrap()
+        + 1;
+    assert_eq!(
+        args[path],
+        cfg.enrollment_config.unwrap().display().to_string()
+    );
+    assert!(!cfg.state_dir.join("node").exists());
 }

@@ -2383,6 +2383,214 @@
         }
       }
     },
+    "/api/mobile/enrollments": {
+      "get": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentCleanup"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mobile/enrollments/claim": {
+      "post": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "claim",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrollmentClaim"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentClaimed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mobile/enrollments/redeem": {
+      "post": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "redeem",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrollmentRedeem"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentRedeemed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mobile/enrollments/{id}": {
+      "delete": {
+        "tags": [
+          "mobile"
+        ],
+        "operationId": "cancel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentCleanup"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/mobile/pairings": {
       "post": {
         "tags": [
@@ -7843,6 +8051,142 @@
           "text": {
             "type": "string",
             "description": "Replacement text. Held to the same limits as `POST /planner/input`,\nbecause it becomes the same turn input."
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentClaim": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "ticket",
+          "deviceName",
+          "attemptId",
+          "attemptSecret"
+        ],
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "attemptSecret": {
+            "type": "string"
+          },
+          "deviceName": {
+            "type": "string"
+          },
+          "enrollmentId": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentClaimed": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "attemptId",
+          "claimId"
+        ],
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "claimId": {
+            "type": "string"
+          },
+          "enrollmentId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentCleanup": {
+        "type": "object",
+        "required": [
+          "pendingCleanup",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "pendingCleanup": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentCreated": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "qrPayload",
+          "qrImage",
+          "authKeyExpiresAt",
+          "pairExpiresAt"
+        ],
+        "properties": {
+          "authKeyExpiresAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "enrollmentId": {
+            "type": "string"
+          },
+          "pairExpiresAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "qrImage": {
+            "type": "string"
+          },
+          "qrPayload": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentRedeem": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "attemptId",
+          "attemptSecret"
+        ],
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "attemptSecret": {
+            "type": "string"
+          },
+          "enrollmentId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentRedeemed": {
+        "type": "object",
+        "required": [
+          "enrollmentId",
+          "attemptId",
+          "sessionFingerprint"
+        ],
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "enrollmentId": {
+            "type": "string"
+          },
+          "sessionFingerprint": {
+            "type": "string"
           }
         },
         "additionalProperties": false

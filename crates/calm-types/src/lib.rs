@@ -5,6 +5,7 @@
 pub mod boot_budget;
 pub mod claude_permissions;
 pub mod compatibility;
+pub mod enrollment;
 pub mod error;
 pub mod event;
 pub mod forge_git;

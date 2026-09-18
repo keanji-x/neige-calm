@@ -6,6 +6,7 @@ pub(crate) struct TailnetConfig {
     pub state_dir: PathBuf,
     pub state_dir_inherits_data: bool,
     pub hostname: String,
+    pub enrollment_config: Option<PathBuf>,
 }
 impl TailnetConfig {
     pub fn defaults(release: &Path, data: &Path) -> Self {
@@ -14,6 +15,7 @@ impl TailnetConfig {
             state_dir: data.join("tailnet"),
             state_dir_inherits_data: true,
             hostname: "neige".into(),
+            enrollment_config: None,
         }
     }
     pub fn socket(&self) -> PathBuf {
@@ -36,6 +38,12 @@ impl TailnetConfig {
         anyhow::ensure!(
             self.binary.is_absolute() && self.state_dir.is_absolute(),
             "Tailnet paths must be absolute"
+        );
+        anyhow::ensure!(
+            self.enrollment_config
+                .as_ref()
+                .is_none_or(|p| p.is_absolute()),
+            "Enrollment configuration path must be absolute"
         );
         anyhow::ensure!(
             self.socket().as_os_str().len() < 104

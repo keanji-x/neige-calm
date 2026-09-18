@@ -132,6 +132,7 @@ struct ConfigBuilder {
     tailnet_binary: Option<String>,
     tailnet_state_dir: Option<String>,
     tailnet_hostname: Option<String>,
+    tailnet_enrollment_config: Option<String>,
     admin_listen: Option<String>,
     admin_token_file: Option<String>,
     release_root: Option<String>,
@@ -438,6 +439,9 @@ impl AppConfig {
                 if let Some(value) = builder.tailnet_hostname {
                     tailnet.hostname = value;
                 }
+                tailnet.enrollment_config = builder
+                    .tailnet_enrollment_config
+                    .map(|value| expand_tilde(&value));
                 Some(tailnet)
             }
             Some(_) => anyhow::bail!("tailnet.provider must be private-tailnet or disabled"),
@@ -667,6 +671,9 @@ fn set_value(
         ("tailnet", "binary") => builder.tailnet_binary = Some(parse_string(value)?),
         ("tailnet", "state_dir") => builder.tailnet_state_dir = Some(parse_string(value)?),
         ("tailnet", "hostname") => builder.tailnet_hostname = Some(parse_string(value)?),
+        ("tailnet", "enrollment_config") => {
+            builder.tailnet_enrollment_config = Some(parse_string(value)?)
+        }
         ("admin", "listen") => builder.admin_listen = Some(parse_string(value)?),
         ("admin", "token_file") => builder.admin_token_file = parse_optional_string(value)?,
         ("release", "root") => builder.release_root = Some(parse_string(value)?),

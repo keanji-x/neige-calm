@@ -96,6 +96,9 @@ impl Drop for PrivateIngress {
     }
 }
 impl Controller {
+    pub fn enrollment_client(&self) -> TailnetClient {
+        self.client.clone()
+    }
     pub async fn configured(
         config: PrivateTailnetConfig,
         router: Arc<Router>,

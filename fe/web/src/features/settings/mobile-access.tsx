@@ -1,6 +1,7 @@
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
 import type { MobileAccessStatus, MobileInvitation, TailnetLoginRequest } from '../../../../core/api/mobile-access.ts';
+import type { ScanEnrollment } from '../../../../core/api/enrollment.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { SettingsPane, SettingsList, SettingRow } from './public.tsx';
 import styles from './mobile-access.module.css';
@@ -8,6 +9,9 @@ import styles from './mobile-access.module.css';
 export type MobileAccessPaneProps = Readonly<{
   status: MobileAccessStatus | undefined;
   invitation: MobileInvitation | null;
+  enrollment: ScanEnrollment | null;
+  cleanup: string | null;
+  onCancelEnrollment: () => void;
   login: TailnetLoginRequest | null;
   onLogin: () => void;
   onLogout: () => void;
@@ -28,7 +32,7 @@ export function MobileAccessPane(props: MobileAccessPaneProps) {
   const enabled = tailnet?.desiredEnabled ?? status?.publicUrl !== null;
   return <>
     <AstryxButton variant="ghost" label="‹ Network" onClick={props.onBack} />
-    <SettingsPane title="Mobile connection" lede="Connect through your private Tailnet, then approve the phone here to access this workspace.">
+    <SettingsPane title="Mobile connection" lede="Private access to this workspace.">
       {error !== null && <ErrorBox message={error} onRetry={props.onRefresh} />}
       {status === undefined && error === null && <AstryxText as="p">Loading connection status…</AstryxText>}
       {status !== undefined && <SettingsList>
@@ -54,10 +58,23 @@ export function MobileAccessPane(props: MobileAccessPaneProps) {
               control={<AstryxButton isDisabled={busy || !tailnet.processRunning} onClick={props.onLogout} label="Sign out of Tailnet" />} />
           </>}
         </>}
-        {status.publicUrl !== null && <SettingRow title="Pair a phone"
+        {status.provider === 'private-tailnet' && status.publicUrl !== null && <SettingRow title="Add phone"
+          description="Creating this QR pre-approves one phone."
+          control={<AstryxButton isDisabled={busy || !tailnet?.httpsReady || !tailnet.upstreamReady} onClick={props.onCreate} label="Add phone" />} />}
+        {status.provider === 'funnel' && status.publicUrl !== null && <SettingRow title="Pair a phone"
           description="Open Scan QR code in the Neige app, then compare the confirmation code here."
           control={<AstryxButton isDisabled={busy} onClick={props.onCreate} label="Create QR code" />} />}
       </SettingsList>}
+      {status?.provider === 'private-tailnet' && status.publicUrl !== null && <AstryxText as="p" className={styles.enrollmentWarning}>
+        Anyone holding this QR can join the configured phone tags and access this workspace. Share it only with your phone.
+      </AstryxText>}
+      {props.cleanup !== null && <AstryxText as="p" color="secondary">{props.cleanup}</AstryxText>}
+      {status?.provider === 'private-tailnet' && enabled && props.enrollment !== null && <div className={styles.invitation}>
+        <img src={props.enrollment.qrImage} alt="Scan once to join and pair this Neige workspace" className={styles.qr} />
+        <AstryxText as="p">Pairing expires at {new Date(props.enrollment.pairExpiresAt).toLocaleTimeString()}.</AstryxText>
+        <AstryxText as="p" color="secondary">Cloud key expires at {new Date(props.enrollment.authKeyExpiresAt).toLocaleTimeString()}. Canceling does not remove a phone already joined to the Tailnet.</AstryxText>
+        <AstryxButton isDisabled={busy} onClick={props.onCancelEnrollment} label="Cancel invitation" />
+      </div>}
       {status !== undefined && status.publicUrl !== null && invitation !== null && <div className={styles.invitation}>
         <img src={invitation.qrImage} alt="Scan to pair this Neige workspace" className={styles.qr} />
         <AstryxText as="p" color="secondary">This invitation expires in {invitation.expiresInSeconds} seconds and can be scanned once.</AstryxText>

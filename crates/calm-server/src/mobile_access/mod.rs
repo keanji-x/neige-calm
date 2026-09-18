@@ -1,5 +1,6 @@
 //! Opt-in public ingress and short-lived, owner-approved mobile pairing.
 pub use calm_types::mobile_access::MobileStatus;
+pub mod enrollment_routes;
 pub mod funnel;
 mod ingress;
 pub mod pairing;
@@ -24,6 +25,7 @@ struct Inner {
     sessions: SessionStore,
     unavailable: AtomicBool,
     private: tokio::sync::Mutex<Option<private_tailnet::Controller>>,
+    enrollment_create: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for MobileAccess {
@@ -41,6 +43,7 @@ impl MobileAccess {
                 sessions,
                 unavailable: AtomicBool::new(false),
                 private: tokio::sync::Mutex::new(None),
+                enrollment_create: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -75,6 +78,46 @@ impl MobileAccess {
             .as_ref()
             .ok_or_else(|| CalmError::BadRequest("Private Tailnet is not configured".into()))?;
         controller.request(action).await
+    }
+
+    async fn enrollment_control(
+        &self,
+        action: calm_types::enrollment::EnrollmentAction,
+        id: String,
+        generation: String,
+    ) -> Result<calm_types::enrollment::EnrollmentResult> {
+        let client = self
+            .inner
+            .private
+            .lock()
+            .await
+            .as_ref()
+            .map(|c| c.enrollment_client())
+            .ok_or_else(|| {
+                CalmError::BadRequest("Private Tailnet enrollment is not configured".into())
+            })?;
+        client
+            .enrollment(calm_types::enrollment::EnrollmentCommand {
+                action,
+                enrollment_id: id,
+                generation,
+                deadline: chrono::Utc::now().timestamp_millis() + 8_000,
+            })
+            .await
+            .map_err(|error| CalmError::BadRequest(error.to_string()))
+    }
+
+    fn schedule_key_cleanup(&self, id: String) {
+        let mobile = self.clone();
+        tokio::spawn(async move {
+            let _ = mobile
+                .enrollment_control(
+                    calm_types::enrollment::EnrollmentAction::Cancel,
+                    id,
+                    uuid::Uuid::new_v4().to_string(),
+                )
+                .await;
+        });
     }
 
     /// Kernel shutdown revokes its ingress, but does not change app-owned

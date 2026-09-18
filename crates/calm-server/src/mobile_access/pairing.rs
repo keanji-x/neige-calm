@@ -13,6 +13,8 @@ use uuid::Uuid;
 const PAIR_TTL: Duration = Duration::from_secs(180);
 const MAX_PENDING: usize = 8;
 const MAX_DEVICES: usize = 16;
+mod enrollment;
+use enrollment::ScanInvitation;
 
 fn secret() -> String {
     let mut bytes = [0u8; 32];
@@ -49,6 +51,10 @@ pub(super) struct PairingState {
     pub origin: Option<String>,
     pending: HashMap<String, Invitation>,
     devices: HashMap<String, Device>,
+    scan: Option<ScanInvitation>,
+    scan_window: Instant,
+    scan_requests: u32,
+    scan_creates: u32,
     pub connections: CancellationToken,
 }
 
@@ -58,6 +64,10 @@ impl Default for PairingState {
             origin: None,
             pending: HashMap::new(),
             devices: HashMap::new(),
+            scan: None,
+            scan_window: Instant::now(),
+            scan_requests: 0,
+            scan_creates: 0,
             connections: CancellationToken::new(),
         }
     }
@@ -67,6 +77,7 @@ impl PairingState {
     pub fn disable(&mut self, sessions: &SessionStore) {
         self.origin = None;
         self.pending.clear();
+        self.scan = None;
         for (_, device) in self.devices.drain() {
             sessions.remove(&device.session);
         }
@@ -105,6 +116,13 @@ impl PairingState {
 
     fn expire(&mut self) {
         self.pending.retain(|_, row| row.expires > Instant::now());
+        if self
+            .scan
+            .as_ref()
+            .is_some_and(|row| row.expires <= Instant::now())
+        {
+            self.scan = None;
+        }
     }
 
     pub fn invite(&mut self) -> Result<(String, String, u64)> {
@@ -222,6 +240,13 @@ impl PairingState {
     pub fn revoke(&mut self, id: &str, sessions: &SessionStore) -> Result<()> {
         let device = self.devices.remove(id).ok_or(CalmError::Unauthorized)?;
         sessions.remove(&device.session);
+        if self
+            .scan
+            .as_ref()
+            .is_some_and(|row| row.session.as_ref() == Some(&device.session))
+        {
+            self.scan = None;
+        }
         // Close live streams as well as rejecting subsequent requests. Other
         // devices reconnect with their still-valid sessions.
         self.disconnect();

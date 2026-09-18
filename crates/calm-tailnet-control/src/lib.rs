@@ -12,6 +12,53 @@ pub struct TailnetClient {
     socket: PathBuf,
 }
 impl TailnetClient {
+    pub async fn enrollment(
+        &self,
+        command: calm_types::enrollment::EnrollmentCommand,
+    ) -> anyhow::Result<calm_types::enrollment::EnrollmentResult> {
+        use calm_types::enrollment::{EnrollmentAction, EnrollmentRequest, EnrollmentResponse};
+        let action = command.action;
+        let id = command.enrollment_id.clone();
+        let generation = command.generation.clone();
+        let operation = async {
+            let mut stream = tokio::net::UnixStream::connect(&self.socket).await?;
+            let mut bytes = serde_json::to_vec(&EnrollmentRequest {
+                version: 2,
+                command,
+            })?;
+            bytes.push(b'\n');
+            stream.write_all(&bytes).await?;
+            let mut bytes = Vec::new();
+            BufReader::new(stream.take(MAX_MESSAGE + 1))
+                .read_until(b'\n', &mut bytes)
+                .await?;
+            anyhow::ensure!(
+                bytes.len() <= MAX_MESSAGE as usize && bytes.last() == Some(&b'\n'),
+                "Enrollment protocol unavailable; update the helper and fully restart Neige (kernel-only restart is insufficient)"
+            );
+            let response: EnrollmentResponse = serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Unsupported enrollment control response; update the helper and fully restart Neige"))?;
+            anyhow::ensure!(
+                response.version == 2,
+                "Enrollment protocol requires a helper update and full Neige restart"
+            );
+            if let Some(error) = response.error {
+                anyhow::bail!("{error}");
+            }
+            let result = response
+                .result
+                .ok_or_else(|| anyhow::anyhow!("Missing enrollment result"))?;
+            anyhow::ensure!(
+                result.enrollment_id == id && result.generation == generation,
+                "Enrollment generation mismatch"
+            );
+            anyhow::ensure!(
+                action == EnrollmentAction::Create || result.auth_key.is_empty(),
+                "Unexpected key outside creation response"
+            );
+            Ok(result)
+        };
+        tokio::time::timeout(Duration::from_secs(12), operation).await?
+    }
     pub fn new(socket: PathBuf) -> Self {
         Self { socket }
     }
@@ -96,5 +143,42 @@ mod tests {
         response.login_url = None;
         assert!(answer(wire(&response)).await.is_ok());
         assert!(answer(vec![b' '; MAX_MESSAGE as usize + 2]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn tailnet_enrollment_rejects_old_helper_with_explicit_update_requirement() {
+        use calm_types::enrollment::{EnrollmentAction, EnrollmentCommand};
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("fixture.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = String::new();
+            BufReader::new(&mut stream)
+                .read_line(&mut bytes)
+                .await
+                .unwrap();
+            assert!(bytes.contains("\"version\":2"));
+            stream
+                .write_all(b"{\"version\":1,\"status\":null}\n")
+                .await
+                .unwrap();
+        });
+        let result = TailnetClient::new(sock)
+            .enrollment(EnrollmentCommand {
+                action: EnrollmentAction::Status,
+                enrollment_id: "fixture".into(),
+                generation: "generation".into(),
+                deadline: 1,
+            })
+            .await;
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("fully restart Neige")
+        );
+        server.await.unwrap();
     }
 }

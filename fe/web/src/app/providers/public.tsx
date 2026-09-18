@@ -35,7 +35,7 @@ import styles from './preflight-status.module.css';
  * kernel, so a bundled client ahead of its kernel must sit behind the
  * `server-update` curtain; the raised floor keeps a v28 bundle off this kernel.
  */
-export const WEB_COMPAT_VERSION = 29;
+export const WEB_COMPAT_VERSION = 30;
 /**
  * `databaseId` / `nowMs` (#1722 S1b): the database's stable id and the server
  * clock at response time. Optional here like `conversationCreateModel`: this

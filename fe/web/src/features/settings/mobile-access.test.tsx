@@ -9,6 +9,7 @@ function props(overrides: Partial<MobileAccessPaneProps> = {}): MobileAccessPane
     status: { provider: 'funnel', tailnet: null, available: true, publicUrl: null, pending: [], devices: [] },
     login: null, onLogin: vi.fn(), onLogout: vi.fn(),
     invitation: null, busy: false, error: null,
+    enrollment: null, cleanup: null, onCancelEnrollment: vi.fn(),
     onBack: vi.fn(), onRefresh: vi.fn(), onEnable: vi.fn(), onDisable: vi.fn(),
     onCreate: vi.fn(), onApprove: vi.fn(), onRevoke: vi.fn(), ...overrides,
   };

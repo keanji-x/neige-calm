@@ -38,6 +38,13 @@ func (n *tsnetNode) status(ctx context.Context) (*ipnstate.Status, error) {
 }
 func (n *tsnetNode) login(ctx context.Context) error  { return n.client.StartLoginInteractive(ctx) }
 func (n *tsnetNode) logout(ctx context.Context) error { return n.client.Logout(ctx) }
+func (n *tsnetNode) lockEnabled(ctx context.Context) (bool, error) {
+	status, err := n.client.TailnetLockStatus(ctx)
+	if err != nil || status == nil {
+		return true, errors.New("Tailnet Lock status unavailable")
+	}
+	return status.Enabled, nil
+}
 func (n *tsnetNode) certificate(ctx context.Context, name string) error {
 	cert, key, err := n.client.CertPair(ctx, name)
 	if err != nil {
@@ -69,6 +76,8 @@ func run() error {
 	control := flag.String("control-socket", "", "private control socket")
 	upstream := flag.String("upstream-socket", "", "fixed restricted Unix ingress")
 	hostname := flag.String("hostname", "neige", "private node name")
+	enrollmentConfig := flag.String("enrollment-config", "", "private issuer configuration file")
+	cleanupOnly := flag.Bool("cleanup-only", false, "clean pending auth keys without starting a node or listener")
 	showVersion := flag.Bool("version", false, "print version")
 	flag.Parse()
 	if *showVersion {
@@ -112,6 +121,23 @@ func run() error {
 		return err
 	}
 	defer lock.Close()
+	var enrollment *issuer
+	if *enrollmentConfig != "" {
+		enrollment, err = newIssuer(*stateDir, *enrollmentConfig)
+		if err != nil {
+			return err
+		}
+		defer enrollment.dir.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		_, err = enrollment.cleanup(ctx, "", true)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	if *cleanupOnly {
+		return nil
+	}
 	if err = checkStateVersion(*stateDir); err != nil {
 		return err
 	}
@@ -137,10 +163,14 @@ func run() error {
 		return err
 	}
 	service := newService(&tsnetNode{server, client}, target)
+	service.issuer = enrollment
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	go service.run(ctx)
+	done := make(chan struct{})
+	go func() { service.run(ctx); close(done) }()
 	serveControl(ctx, listener, service)
+	cancel()
+	<-done
 	service.closeIngress()
 	return nil
 }

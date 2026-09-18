@@ -15,7 +15,7 @@ use utoipa::ToSchema;
 #[serde(deny_unknown_fields)]
 pub struct MobileAction {}
 
-fn owner(auth: &AuthState, principal: &Principal) -> Result<()> {
+pub(super) fn owner(auth: &AuthState, principal: &Principal) -> Result<()> {
     if auth.config.dev_autologin
         || !auth
             .sessions
@@ -33,6 +33,7 @@ fn owner(auth: &AuthState, principal: &Principal) -> Result<()> {
 
 pub fn management_router() -> Router<AuthState> {
     Router::new()
+        .merge(super::enrollment_routes::management_router())
         .route(
             "/api/mobile/access",
             get(status).post(enable).delete(disable),
@@ -47,6 +48,7 @@ pub fn management_router() -> Router<AuthState> {
 
 pub fn public_router() -> Router<AuthState> {
     Router::new()
+        .merge(super::enrollment_routes::public_router())
         .route("/api/mobile/pairings/claim", post(claim))
         .route("/api/mobile/pairings/redeem", post(redeem))
         .route("/mobile/pair", get(bootstrap))
@@ -55,7 +57,7 @@ pub fn public_router() -> Router<AuthState> {
         .layer(DefaultBodyLimit::max(4096))
 }
 
-fn no_store(value: impl IntoResponse) -> Response {
+pub(super) fn no_store(value: impl IntoResponse) -> Response {
     let mut response = value.into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,

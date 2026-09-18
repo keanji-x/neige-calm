@@ -23,6 +23,7 @@ type node interface {
 }
 
 type service struct {
+	issuer     *issuer
 	node       node
 	transport  *http.Transport
 	mu         sync.Mutex
@@ -42,6 +43,24 @@ func newService(n node, target string) *service {
 }
 func (s *service) snapshot() status { s.mu.Lock(); defer s.mu.Unlock(); return s.current }
 func (s *service) run(ctx context.Context) {
+	var cleanupWorker sync.WaitGroup
+	defer cleanupWorker.Wait()
+	if s.issuer != nil {
+		cleanupWorker.Add(1)
+		go func() {
+			defer cleanupWorker.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(10 * time.Second):
+				}
+				cleanup, cancel := context.WithTimeout(ctx, 8*time.Second)
+				_, _ = s.issuer.cleanup(cleanup, "", false)
+				cancel()
+			}
+		}()
+	}
 	for {
 		s.refresh(ctx)
 		select {

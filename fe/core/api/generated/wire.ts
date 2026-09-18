@@ -162,6 +162,18 @@ export type ClaudePermissionsSource = "declared" | "track_policy" | "declared_wi
  */
 export type EditAuthor = "planner" | "user" | "assistant" | "kernel" | "plugin";
 
+export type EnrollmentClaim = { enrollmentId: string, ticket: string, deviceName: string, attemptId: string, attemptSecret: string, };
+
+export type EnrollmentClaimed = { enrollmentId: string, attemptId: string, claimId: string, };
+
+export type EnrollmentCleanup = { pendingCleanup: number, detail: string, };
+
+export type EnrollmentCreated = { enrollmentId: string, qrPayload: string, qrImage: string, authKeyExpiresAt: number, pairExpiresAt: number, };
+
+export type EnrollmentRedeem = { enrollmentId: string, attemptId: string, attemptSecret: string, };
+
+export type EnrollmentRedeemed = { enrollmentId: string, attemptId: string, sessionFingerprint: string, };
+
 /**
  * The full set of WS event envelopes the kernel emits on `/api/events`.
  *
