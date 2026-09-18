@@ -120,9 +120,12 @@ async fn claimed_task(
     })
     .await
     .unwrap();
-    let mut doc_rev = 0;
     let mut block = None;
-    for payload in siblings.iter().chain(std::iter::once(&declaration)) {
+    for (doc_rev, payload) in siblings
+        .iter()
+        .chain(std::iter::once(&declaration))
+        .enumerate()
+    {
         let target = ReportEditTarget::resolve(repo.as_ref(), track_id)
             .await
             .unwrap();
@@ -136,13 +139,12 @@ async fn claimed_task(
                 kind: "task".into(),
                 content: calm_types::report_blocks::render_fence("task", payload),
                 if_rev: None,
-                if_doc_rev: Some(doc_rev),
+                if_doc_rev: Some(doc_rev as u64),
                 position: None,
             },
         )
         .await
         .unwrap();
-        doc_rev += 1;
         block = upserted;
     }
     let block = block.unwrap();
