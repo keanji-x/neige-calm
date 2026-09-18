@@ -1639,6 +1639,18 @@ export function usePluginConfigMutations(
     client.invalidateQueries({ queryKey: queryKeys.pluginDetail(id) }),
   ]);
 
+  const staleFailure = (intent: ApiTransportPort): PluginApiFailure | null => {
+    try { intent.recovery?.checkpoint()(); return null; }
+    catch (error) { return pluginFailureOf(error); }
+  };
+  const finishRestart = async (intent: ApiTransportPort, id: string, restart: PluginRestartFacts): Promise<PluginConfigApplyResult> => {
+    if (staleFailure(intent) === null) await refresh(id);
+    const failure = staleFailure(intent);
+    // A previous acknowledgement does not prove the plugin's current state
+    // after this attempt lost ownership of its readback or reconciliation.
+    return { saved: true, restart: failure === null ? restart : { failure, state: 'unknown' } };
+  };
+
   const write = async (
     intent: ApiTransportPort,
     id: string,
@@ -1656,9 +1668,11 @@ export function usePluginConfigMutations(
   return {
     save: async (id, patch, options) => {
       try {
-        const result = await write(admitTransport(transport), id, patch, options);
-        await refresh(id);
-        return result;
+        const intent = admitTransport(transport);
+        const result = await write(intent, id, patch, options);
+        if (staleFailure(intent) === null) await refresh(id);
+        const failure = staleFailure(intent);
+        return failure === null ? result : { ok: false, failure };
       } catch (error) { return { ok: false, failure: pluginFailureOf(error) }; }
     },
     applyRestart: async (id, patch, options) => {
@@ -1672,8 +1686,8 @@ export function usePluginConfigMutations(
       if (Object.keys(patch).length > 0 || options.reset) {
         const saved = await write(intent, id, patch, options);
         if (!saved.ok) {
-          await refresh(id);
-          return { saved: false, failure: saved.failure };
+          if (staleFailure(intent) === null) await refresh(id);
+          return { saved: false, failure: staleFailure(intent) ?? saved.failure };
         }
       }
       /*
@@ -1710,8 +1724,7 @@ export function usePluginConfigMutations(
           state: detail.state,
           lastError: detail.last_error,
         });
-        await refresh(id);
-        return { saved: true, restart };
+        return finishRestart(intent, id, restart);
       } catch (error) {
         const failure = pluginFailureOf(error);
         /*
@@ -1728,8 +1741,7 @@ export function usePluginConfigMutations(
          * than a guess.
          */
         const restart = await readBack({ failure, state: 'unknown' });
-        await refresh(id);
-        return { saved: true, restart };
+        return finishRestart(intent, id, restart);
       }
     },
   };

@@ -170,7 +170,7 @@ export function usePlannerAttachments(
       setError(cause instanceof Error && cause.message !== ''
         ? cause.message : 'The image could not be uploaded.');
     } finally {
-      setBusy(false);
+      if (generation.current === startedAt) setBusy(false);
     }
   }, [upload]);
 

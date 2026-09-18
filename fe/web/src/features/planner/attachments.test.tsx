@@ -217,3 +217,15 @@ describe('planner attachments', () => {
     expect(await screen.findByText(ATTACHED_WORKSPACE_REASON)).toBeTruthy();
   });
 });
+
+it('an old card upload cannot release the new card upload busy state', async () => {
+  const pending: ((value: UploadAttachmentResponse) => void)[] = [];
+  const upload: UploadAttachment = () => new Promise(resolve => pending.push(resolve));
+  const mounted = render(<Harness upload={upload} card="card-1" />);
+  await pick(png()); mounted.rerender(<Harness upload={upload} card="card-2" />); await pick(png());
+  expect(latest?.busy).toBe(true);
+  await act(async () => { pending[0](uploaded(0)); await Promise.resolve(); });
+  expect(latest?.busy).toBe(true); expect(latest?.ids).toEqual([]);
+  await act(async () => { pending[1](uploaded(1)); await Promise.resolve(); });
+  expect(latest?.busy).toBe(false); expect(latest?.ids).toEqual([uploaded(1).attachmentId]);
+});

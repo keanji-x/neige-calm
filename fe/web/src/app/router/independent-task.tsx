@@ -8,6 +8,7 @@ import { trackDetailOperation, type CardWire, type TrackLifecycle } from '../../
 import { IndependentTaskForm } from '../../features/track/independent-task/form.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { ApiError, queryKeys, runOperation } from '../providers/queries.ts';
+import { beginTaskIntent } from './task-intent-lease.ts';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 
 /** Session cache survives route unmounts. Writes always finish even if the form is closed. */
@@ -35,12 +36,14 @@ export function useIndependentTaskLaunch({ trackId, cards, lifecycle, transport,
     client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) }),
     client.invalidateQueries({ queryKey: queryKeys.trackReport(trackId) }),
   ]);
-  const reconcile = async (request: IndependentTaskRequest) => {
-    const detail = await runOperation(transport, trackDetailOperation(trackId), unauthorized);
+  const reconcile = async (request: IndependentTaskRequest, lease: NonNullable<ReturnType<typeof beginTaskIntent<Intent>>>) => {
+    if (!lease.current()) return false;
+    const detail = await runOperation(lease.transport, trackDetailOperation(trackId), unauthorized);
+    if (!lease.current()) return false;
     const receipt = findIndependentTask(detail.cards, request);
     if (receipt === null) return false;
     client.setQueryData(queryKeys.trackDetail(trackId), detail);
-    client.setQueryData<Intent>(key, () => ({ phase: 'accepted', request, receipt, revealed: false }));
+    lease.commit({ phase: 'accepted', request, receipt, revealed: false });
     await refresh();
     return true;
   };
@@ -52,24 +55,29 @@ export function useIndependentTaskLaunch({ trackId, cards, lifecycle, transport,
     if (!wasUncertain && (goal.trim() === '' || revision === null || independentTaskUnavailableReason(lifecycle) !== null)) return;
     const request = wasUncertain ? active.request
       : { key: `independent-${mintIdempotencyKey()}`, goal, ifDocRev: revision! };
-    // This cache write is synchronous, so a second click cannot race React's render.
-    client.setQueryData<Intent>(key, () => ({ phase: 'sending', request, message: null }));
+    let lease;
+    try { lease = beginTaskIntent<Intent>(client, key, transport, active, { phase: 'sending', request, message: null }); }
+    catch { return; } // Admission failed before any busy state or queued intent.
+    if (lease === null) return;
+    const interrupted: Intent = { phase: 'uncertain', request, message: 'Connection changed. Check or retry this same request after reconnecting.' };
     try {
-      if (wasUncertain && await reconcile(request)) return;
+      if (wasUncertain && await reconcile(request, lease)) return;
+      if (!lease.current()) { lease.release(interrupted); return; }
       if (checkOnly) {
-        client.setQueryData<Intent>(key, () => ({ phase: 'uncertain', request, message: 'No matching task is visible yet.' }));
+        lease.commit({ phase: 'uncertain', request, message: 'No matching task is visible yet.' });
         return;
       }
-      const receipt = await runOperation(transport, startIndependentTaskOperation(trackId, request), unauthorized);
-      client.setQueryData<Intent>(key, () => ({ phase: 'accepted', request, receipt, revealed: false }));
+      const receipt = await runOperation(lease.transport, startIndependentTaskOperation(trackId, request), unauthorized);
+      if (!lease.commit({ phase: 'accepted', request, receipt, revealed: false })) { lease.release(interrupted); return; }
       await refresh();
     } catch (error: unknown) {
+      if (!lease.current()) { lease.release(interrupted); return; }
       const message = error instanceof Error ? error.message : 'The server response is unavailable.';
       // A rejected retry cannot disprove that the original uncertain write committed.
       const uncertain = wasUncertain || !(error instanceof ApiError) || independentTaskFailureUncertain(error.failure);
-      client.setQueryData<Intent>(key, () => ({ phase: uncertain ? 'uncertain' : 'rejected', request, message }));
+      lease.commit({ phase: uncertain ? 'uncertain' : 'rejected', request, message });
       if (uncertain && !checkOnly) {
-        try { await reconcile(request); } catch { /* Keep the unchanged intent for explicit retry. */ }
+        try { await reconcile(request, lease); } catch { /* Keep the unchanged intent for explicit retry. */ }
       } else await refresh();
     }
   };

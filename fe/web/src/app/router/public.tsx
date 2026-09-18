@@ -1,3 +1,4 @@
+import { admitTransport } from '../providers/recovery-mutation.ts';
 // Code-based TanStack Router setup.
 //
 // The whole tree is built inside a factory: `createRoute`/`createRouter` at
@@ -1579,9 +1580,11 @@ function useConversationPanel(
     derivedCardId: (idempotencyKey: string) => string,
     scopeId: string,
     key: string,
+    current: () => boolean,
   ): Promise<'landed' | 'absent' | 'unknown'> => {
+    if (!current()) return 'unknown';
     const rows = await refresh().catch(() => null);
-    if (rows === null) return 'unknown';
+    if (!current() || rows === null) return 'unknown';
     const cardId = derivedCardId(key);
     const landed = rows.find((row) => row.id === cardId);
     if (landed === undefined) return 'absent';
@@ -1607,6 +1610,17 @@ function useConversationPanel(
     if (onlineManager.isOnline()) return false;
     amendDraft(attempt, { text, error: new OfflineSubmissionError().message, remedy: 'retry' });
     return true;
+  };
+
+  const admitDraft = (attempt: ConversationDraft): (() => boolean) | null => {
+    try {
+      const admitted = admitTransport(transport);
+      const checkpoint = admitted.recovery?.checkpoint();
+      return () => { try { checkpoint?.(); return true; } catch { return false; } };
+    } catch (error) {
+      amendDraft(attempt, { error: errorMessage(error, 'Connection is not ready. Try again after reconnecting.'), remedy: 'retry' });
+      return null;
+    }
   };
 
   const sendDraft = (text: string) => {
@@ -1639,6 +1653,7 @@ function useConversationPanel(
       return;
     }
     if (refuseOfflineDraft(draft, text)) return;
+    const current = admitDraft(draft); if (current === null) return;
     const previousText = draft.sentText;
     /* The draft this send is *for*, fixed here. Everything below writes through
        it, so a send that outlives its draft — adopted, closed, or left behind by
@@ -1657,7 +1672,7 @@ function useConversationPanel(
          * Only a re-read that came back and said "no new row" earns a new key.
          */
         if (previousText !== null && previousText !== text) {
-          const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key);
+          const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
           if (landing === 'landed') return;
           if (landing === 'unknown') {
             amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
@@ -1665,11 +1680,14 @@ function useConversationPanel(
           }
           attempt = rekeyDraft(attempt, mintIdempotencyKey());
         }
+        if (!current()) { amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' }); return; }
         if (refuseOfflineDraft(attempt, text)) return;
         previouslySentText = attempt.sentText;
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
-        adopt(attempt, await create(text, attempt.key, attempt.model));
+        const created = await create(text, attempt.key, attempt.model);
+        if (current()) adopt(attempt, created);
+        else amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' });
       } catch (error: unknown) {
         if (error instanceof OfflineSubmissionError) {
           // Marking a request optimistically must not invent dispatch when the
@@ -1677,7 +1695,7 @@ function useConversationPanel(
           registry.editDraft(attempt, (current) => ({ ...current, sentText: previouslySentText }));
           amendDraft(attempt, { error: error.message, remedy: 'retry' });
         } else {
-          attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
+          attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt, current);
         }
       } finally {
         amendDraft(attempt, { creating: false });
@@ -1691,7 +1709,12 @@ function useConversationPanel(
     derivedCardId: (idempotencyKey: string) => string,
     scopeId: string,
     attempt: ConversationDraft,
+    current: () => boolean,
   ): Promise<ConversationDraft> {
+    if (!current()) {
+      amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' });
+      return attempt;
+    }
     const failure = error instanceof ApiError
       ? conversationCreateFailure(error.failure)
       : { kind: 'retry' as const, message: errorMessage(error, 'Could not start the conversation.') };
@@ -1726,7 +1749,7 @@ function useConversationPanel(
            choice yet — a new key here would be a second card next to the one
            the server just told us exists. */
         amendDraft(attempt, { error: message });
-        const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key);
+        const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
         if (landing === 'absent') amendDraft(attempt, { remedy: 'new-conversation' });
         if (landing === 'unknown') amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
         return attempt;
@@ -1747,7 +1770,7 @@ function useConversationPanel(
          * is the same key and the same words again.
          */
         amendDraft(attempt, { error: message });
-        if (await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key) !== 'landed') {
+        if (await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current) !== 'landed') {
           amendDraft(attempt, { remedy: 'retry' });
         }
         return attempt;
@@ -1759,6 +1782,7 @@ function useConversationPanel(
     const { create, refresh, scopeId, derivedCardId } = source;
     const text = draft.text;
     if (refuseOfflineDraft(draft, text)) return;
+    const current = admitDraft(draft); if (current === null) return;
     let attempt = draft;
     let previouslySentText = attempt.sentText;
     amendDraft(attempt, { creating: true, error: null, remedy: null });
@@ -1766,18 +1790,21 @@ function useConversationPanel(
       try {
         /* Pressed deliberately, but the same fence applies: a new key is only
            safe once the list has actually said the old one produced nothing. */
-        const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key);
+        const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
         if (landing === 'landed') return;
         if (landing === 'unknown') {
           amendDraft(attempt, { error: UNCONFIRMED, remedy: 'new-conversation' });
           return;
         }
         attempt = rekeyDraft(attempt, mintIdempotencyKey());
+        if (!current()) { amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' }); return; }
         if (refuseOfflineDraft(attempt, text)) return;
         previouslySentText = attempt.sentText;
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
-        adopt(attempt, await create(text, attempt.key, attempt.model));
+        const created = await create(text, attempt.key, attempt.model);
+        if (current()) adopt(attempt, created);
+        else amendDraft(attempt, { error: 'Connection changed. Retry after reconnecting.', remedy: 'retry' });
       } catch (error: unknown) {
         if (error instanceof OfflineSubmissionError) {
           // Marking a request optimistically must not invent dispatch when the
@@ -1785,7 +1812,7 @@ function useConversationPanel(
           registry.editDraft(attempt, (current) => ({ ...current, sentText: previouslySentText }));
           amendDraft(attempt, { error: error.message, remedy: 'retry' });
         } else {
-          attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
+          attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt, current);
         }
       } finally {
         amendDraft(attempt, { creating: false });
