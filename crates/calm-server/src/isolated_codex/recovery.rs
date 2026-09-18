@@ -1,18 +1,28 @@
 //! Read-only admission from the original isolated Operation's retained stop identity.
 use super::{journal, record::Admission};
 use crate::dedicated_codex::StopState;
-use crate::error::{CalmError, Result};
 use crate::model::{Task, TaskStatus};
 use crate::operation::Tx;
+use crate::task_recovery::{AdmissionError, RecoveryRefusal, RecoveryRefusalCode};
 use sha2::{Digest, Sha256};
 
-fn denied() -> CalmError {
-    CalmError::Conflict("predecessor isolated execution has no matching confirmed namespace stop; wait for its execution to stop before retrying".into())
+/// Every refusal here is the same typed fact: the predecessor's namespace
+/// stop is not confirmed. The write path still surfaces it as a Conflict.
+fn denied() -> AdmissionError {
+    RecoveryRefusal::conflict(
+        RecoveryRefusalCode::PredecessorNotQuiescent,
+        "predecessor isolated execution has no matching confirmed namespace stop; wait for its execution to stop before retrying",
+    )
+    .into()
 }
 
 /// Used by the shared predecessor fence at recovery admission and again before
 /// successor claim/preparation. No live card/session or filesystem is authority.
-pub(crate) async fn require_stopped_tx(tx: &mut Tx<'_>, task: &Task, op_id: &str) -> Result<()> {
+pub(crate) async fn require_stopped_tx(
+    tx: &mut Tx<'_>,
+    task: &Task,
+    op_id: &str,
+) -> Result<(), AdmissionError> {
     if task.status != TaskStatus::Failed || !super::selected(task).map_err(|_| denied())? {
         return Err(denied());
     }
@@ -37,7 +47,7 @@ pub(super) async fn confirmed_record_tx(
     tx: &mut Tx<'_>,
     task: &Task,
     op_id: &str,
-) -> Result<super::record::RunRecord> {
+) -> Result<super::record::RunRecord, AdmissionError> {
     // The typed private reader already binds Operation payload/output/target.
     // Do not expose parse errors or the private record through this capability.
     let record = journal::load_tx(tx, op_id).await.map_err(|_| denied())?;

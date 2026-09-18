@@ -1,5 +1,8 @@
 //! Admission checks are read-only and run under the writer transaction.
+//! Every refusal is a typed [`RecoveryRefusal`]; the read side takes its
+//! code from the type and never from the message text.
 
+use super::refusal::{Admission, AdmissionError, RecoveryRefusal, RecoveryRefusalCode};
 use crate::db::sqlite::{task_attempt_current_tx, task_attempt_get_tx, task_get_tx};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
@@ -16,22 +19,30 @@ pub(super) async fn authorize_tx(
     actor: &ActorId,
     scope: &EventScope,
     event: &Event,
-) -> Result<()> {
+) -> Admission<()> {
     if !matches!(
         actor,
         ActorId::User | ActorId::AiPlanner(_) | ActorId::AiPlannerSession(_)
     ) {
-        return Err(CalmError::Forbidden(
-            "task recovery requires a User or Planner".into(),
-        ));
+        return Err(RecoveryRefusal::forbidden(
+            RecoveryRefusalCode::NotAuthorized,
+            "task recovery requires a User or Planner",
+        )
+        .into());
     }
     calm_truth::decision_gate::enforce_role_resolving_session_from_tx(tx, actor, event, scope)
         .await
-        .map_err(|error| CalmError::Forbidden(error.to_string()))
+        .map_err(|error| {
+            RecoveryRefusal::forbidden(RecoveryRefusalCode::NotAuthorized, error.to_string()).into()
+        })
 }
 
 fn conflict(reason: impl Into<String>) -> CalmError {
     CalmError::Conflict(reason.into())
+}
+
+fn refuse(code: RecoveryRefusalCode, reason: impl Into<String>) -> AdmissionError {
+    RecoveryRefusal::conflict(code, reason).into()
 }
 
 pub(super) async fn recovery_policy(
@@ -41,7 +52,7 @@ pub(super) async fn recovery_policy(
     generation: i64,
     actor: &ActorId,
     resume_blocked: bool,
-) -> Result<()> {
+) -> Admission<()> {
     let explicit_resume = track.lifecycle == TrackLifecycle::Blocked
         && resume_blocked
         && crate::track_lifecycle::validate_transition(
@@ -51,12 +62,16 @@ pub(super) async fn recovery_policy(
         )
         .is_ok();
     if !crate::scheduler::lifecycle_allows_scheduling(track.lifecycle) && !explicit_resume {
-        return Err(conflict(
+        return Err(refuse(
+            RecoveryRefusalCode::TrackNotReady,
             "track is blocked or terminal; explicitly request working to resolve a blocker, or separately reopen a terminal track",
         ));
     }
     if task.spawn != TASK_IN_TRACK_ROUTE {
-        return Err(conflict("child-task recovery is not supported"));
+        return Err(refuse(
+            RecoveryRefusalCode::UnsupportedSpawn,
+            "child-task recovery is not supported",
+        ));
     }
     if !matches!(actor, ActorId::User) {
         if task.declared_by != PLANNER_DECLARATION_AUTHOR
@@ -65,12 +80,18 @@ pub(super) async fn recovery_policy(
                 .as_deref()
                 .is_none_or(|policy| policy == "auto-declare")
         {
-            return Err(CalmError::Forbidden("Planner recovery requires a Planner declaration under auto-declare; user-owned and declare-and-wait tasks require an explicit User recovery".into()));
+            return Err(RecoveryRefusal::forbidden(
+                RecoveryRefusalCode::UserAuthorizationRequired,
+                "Planner recovery requires a Planner declaration under auto-declare; user-owned and declare-and-wait tasks require an explicit User recovery",
+            )
+            .into());
         }
         if generation >= 2 {
-            return Err(CalmError::Forbidden(
-                "Planner recovery limit reached; an explicit User recovery is required".into(),
-            ));
+            return Err(RecoveryRefusal::forbidden(
+                RecoveryRefusalCode::RecoveryLimitReached,
+                "Planner recovery limit reached; an explicit User recovery is required",
+            )
+            .into());
         }
     }
     Ok(())
@@ -83,13 +104,22 @@ pub(super) async fn admit_recovery_tx(
     generation: i64,
     actor: &ActorId,
     resume_blocked: bool,
-) -> Result<TaskRecoveryConstraint> {
+) -> Admission<TaskRecoveryConstraint> {
     recovery_policy(tx, track, previous, generation, actor, resume_blocked).await?;
     let constraint = claim_constraint_tx(tx, previous).await?;
-    constraint.validate(&previous.track_id).map_err(conflict)?;
+    constraint
+        .validate(&previous.track_id)
+        .map_err(|reason| refuse(RecoveryRefusalCode::MissingFrozenContract, reason))?;
     check_constraint_tx(tx, track, &previous.key, &constraint).await?;
     require_recoverable_predecessor_tx(tx, previous).await?;
-    crate::file_delivery::require_recovery_input_tx(tx, previous).await?;
+    // File-delivery input checks refuse with their own Conflict messages; at
+    // this boundary they all mean the frozen input contract cannot be honoured.
+    crate::file_delivery::require_recovery_input_tx(tx, previous)
+        .await
+        .map_err(|error| match error {
+            CalmError::Conflict(reason) => refuse(RecoveryRefusalCode::ContractChanged, reason),
+            other => AdmissionError::Other(other),
+        })?;
     Ok(constraint)
 }
 
@@ -121,7 +151,7 @@ pub(crate) async fn validate_frozen_contract_tx(tx: &mut Tx<'_>, task: &Task) ->
     Ok(())
 }
 
-async fn claim_constraint_tx(tx: &mut Tx<'_>, task: &Task) -> Result<TaskRecoveryConstraint> {
+async fn claim_constraint_tx(tx: &mut Tx<'_>, task: &Task) -> Admission<TaskRecoveryConstraint> {
     let (json, truncated): (Option<String>, i64) = sqlx::query_as(
         "SELECT claim_context_json, context_closure_truncated FROM tasks WHERE id=?1",
     )
@@ -129,14 +159,23 @@ async fn claim_constraint_tx(tx: &mut Tx<'_>, task: &Task) -> Result<TaskRecover
     .fetch_one(&mut **tx)
     .await?;
     if truncated != 0 {
-        return Err(conflict(
+        return Err(refuse(
+            RecoveryRefusalCode::MissingFrozenContract,
             "failed execution has incomplete frozen context; same-contract recovery is unavailable",
         ));
     }
     let refs = serde_json::from_str(json.as_deref().ok_or_else(|| {
-        conflict("failed execution has no frozen contract; same-contract recovery is unavailable")
+        refuse(
+            RecoveryRefusalCode::MissingFrozenContract,
+            "failed execution has no frozen contract; same-contract recovery is unavailable",
+        )
     })?)
-    .map_err(|_| conflict("failed execution has malformed frozen context"))?;
+    .map_err(|_| {
+        refuse(
+            RecoveryRefusalCode::MissingFrozenContract,
+            "failed execution has malformed frozen context",
+        )
+    })?;
     let constraint = TaskRecoveryConstraint::V1 {
         refs,
         spawn: task.spawn.clone(),
@@ -154,16 +193,20 @@ async fn automation_policy_tx(tx: &mut Tx<'_>, track: &Track) -> Result<Option<S
     )
 }
 
-async fn declaration_tx(tx: &mut Tx<'_>, track: &Track, key: &str) -> Result<TaskDeclaration> {
+async fn declaration_tx(tx: &mut Tx<'_>, track: &Track, key: &str) -> Admission<TaskDeclaration> {
     let (_, blocks) = crate::track_report::report_blocks_snapshot_tx(tx, track.id.as_str()).await?;
     let (declarations, diagnostics) =
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
     let mut matching = declarations.into_iter().filter(|decl| decl.key == key);
-    let declaration = matching
-        .next()
-        .ok_or_else(|| conflict("task declaration was withdrawn or is invalid"))?;
+    let declaration = matching.next().ok_or_else(|| {
+        refuse(
+            RecoveryRefusalCode::DeclarationWithdrawn,
+            "task declaration was withdrawn or is invalid",
+        )
+    })?;
     if matching.next().is_some() || declaration.tombstone || !declaration.ready {
-        return Err(conflict(
+        return Err(refuse(
+            RecoveryRefusalCode::DeclarationWithdrawn,
             "task declaration is duplicate, withdrawn, or not ready",
         ));
     }
@@ -172,13 +215,19 @@ async fn declaration_tx(tx: &mut Tx<'_>, track: &Track, key: &str) -> Result<Tas
         .and_then(|i| diagnostics.get(i))
         .is_some_and(|diags| !diags.is_empty())
     {
-        return Err(conflict("task declaration has validation errors"));
+        return Err(refuse(
+            RecoveryRefusalCode::DeclarationWithdrawn,
+            "task declaration has validation errors",
+        ));
     }
     if declaration.declared_by == PLANNER_DECLARATION_AUTHOR
         && automation_policy_tx(tx, track).await?.as_deref() == Some("declare-and-wait")
         && !declaration.released_by_user
     {
-        return Err(conflict("task execution release was withdrawn"));
+        return Err(refuse(
+            RecoveryRefusalCode::DeclarationWithdrawn,
+            "task execution release was withdrawn",
+        ));
     }
     Ok(declaration)
 }
@@ -188,8 +237,10 @@ async fn check_constraint_tx(
     track: &Track,
     key: &str,
     constraint: &TaskRecoveryConstraint,
-) -> Result<()> {
-    constraint.validate(track.id.as_str()).map_err(conflict)?;
+) -> Admission<()> {
+    constraint
+        .validate(track.id.as_str())
+        .map_err(|reason| refuse(RecoveryRefusalCode::MissingFrozenContract, reason))?;
     let declaration = declaration_tx(tx, track, key).await?;
     let TaskRecoveryConstraint::V1 {
         refs,
@@ -197,17 +248,23 @@ async fn check_constraint_tx(
         declared_by,
     } = constraint;
     if &declaration.spawn != spawn || &declaration.declared_by != declared_by {
-        return Err(conflict("recovery contract route or author changed"));
+        return Err(refuse(
+            RecoveryRefusalCode::ContractChanged,
+            "recovery contract route or author changed",
+        ));
     }
     for frozen in refs {
         let target = crate::track_lifecycle::track_get_tx(tx, &frozen.track_id)
             .await
             .map_err(|error| match error {
-                CalmError::NotFound(_) => conflict(format!(
-                    "recovery frozen context track is missing: {}",
-                    frozen.track_id
-                )),
-                other => other,
+                CalmError::NotFound(_) => refuse(
+                    RecoveryRefusalCode::ContractChanged,
+                    format!(
+                        "recovery frozen context track is missing: {}",
+                        frozen.track_id
+                    ),
+                ),
+                other => AdmissionError::Other(other),
             })?;
         if target.area_id != track.area_id {
             let kind: String = sqlx::query_scalar("SELECT kind FROM areas WHERE id=?1")
@@ -215,7 +272,8 @@ async fn check_constraint_tx(
                 .fetch_one(&mut **tx)
                 .await?;
             if kind != "system" {
-                return Err(conflict(
+                return Err(refuse(
+                    RecoveryRefusalCode::ContractChanged,
                     "recovery context moved outside its authorized area",
                 ));
             }
@@ -227,24 +285,36 @@ async fn check_constraint_tx(
         .fetch_one(&mut **tx)
         .await?;
         if !report_exists {
-            return Err(conflict(format!(
-                "recovery frozen context report is missing: {}",
-                frozen.track_id
-            )));
+            return Err(refuse(
+                RecoveryRefusalCode::ContractChanged,
+                format!(
+                    "recovery frozen context report is missing: {}",
+                    frozen.track_id
+                ),
+            ));
         }
         let (_, blocks) =
             crate::track_report::report_blocks_snapshot_tx(tx, frozen.track_id.as_str()).await?;
         let block = blocks
             .iter()
             .find(|block| block.id == frozen.block_id)
-            .ok_or_else(|| conflict("recovery frozen context block is missing"))?;
+            .ok_or_else(|| {
+                refuse(
+                    RecoveryRefusalCode::ContractChanged,
+                    "recovery frozen context block is missing",
+                )
+            })?;
         if frozen.is_root && declaration.block_id != frozen.block_id {
-            return Err(conflict("recovery declaration identity changed"));
+            return Err(refuse(
+                RecoveryRefusalCode::ContractChanged,
+                "recovery declaration identity changed",
+            ));
         }
         let current =
             crate::task_context::context_ref(frozen.track_id.as_str(), block, frozen.is_root);
         if current.hash != frozen.hash {
-            return Err(conflict(
+            return Err(refuse(
+                RecoveryRefusalCode::ContractChanged,
                 "recovery contract changed; same-contract recovery is unavailable",
             ));
         }
@@ -253,9 +323,11 @@ async fn check_constraint_tx(
 }
 
 /// Prepared isolated executions require their retained namespace stop proof.
-/// Legacy workers retain the pre-preparation fence: a PTY leader exit, terminal
-/// session state or released lease does not prove descendants stopped writing.
-async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Result<()> {
+/// Ordinary workers (shared codex, claude, terminal) retain the pre-preparation
+/// fence: a PTY leader exit, terminal session state or released lease does not
+/// prove descendants stopped writing, so once a worker was prepared the same
+/// key is never recoverable; the way forward is a new task on the retained tree.
+async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Admission<()> {
     // Keyed Operation rows are permanent (migration 0093). Prepared targets and
     // tx_output remain evidence even if worker cards/sessions were later deleted.
     // Read every operation sharing the execution key, including a foreign kind
@@ -275,7 +347,8 @@ async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Res
             || task.gate_pid.is_some()
             || task.gate_result_json.is_some()
         {
-            return Err(conflict(
+            return Err(refuse(
+                RecoveryRefusalCode::PredecessorNotQuiescent,
                 "predecessor isolated execution has ambiguous operations or verification effects",
             ));
         }
@@ -288,7 +361,10 @@ async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Res
         || task.gate_pid.is_some()
         || task.gate_result_json.is_some()
     {
-        return Err(conflict(PREDECESSOR_WRITE_FENCE_UNAVAILABLE));
+        return Err(refuse(
+            RecoveryRefusalCode::PredecessorNotQuiescent,
+            ORDINARY_WORKER_NO_STOP_PROOF,
+        ));
     }
     if task
         .status_detail
@@ -296,7 +372,10 @@ async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Res
         .map(crate::db::sqlite::status_detail_class)
         != Some("spawn-failed")
     {
-        return Err(conflict(PREDECESSOR_WRITE_FENCE_UNAVAILABLE));
+        return Err(refuse(
+            RecoveryRefusalCode::PredecessorNotQuiescent,
+            ORDINARY_WORKER_NO_STOP_PROOF,
+        ));
     }
     for operation in operations {
         let worker_kind = matches!(
@@ -326,7 +405,8 @@ async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Res
             || operation.spawn_artifacts_json.is_some()
             || operation.compensation_state.is_some()
         {
-            return Err(conflict(
+            return Err(refuse(
+                RecoveryRefusalCode::PredecessorNotQuiescent,
                 "predecessor operation has uncertain external effects; recovery currently requires a failure before worker preparation",
             ));
         }
@@ -337,7 +417,10 @@ async fn require_recoverable_predecessor_tx(tx: &mut Tx<'_>, task: &Task) -> Res
     Ok(())
 }
 
-const PREDECESSOR_WRITE_FENCE_UNAVAILABLE: &str = "predecessor has no supported descendant write fence; leader exit and session completion do not prove all writes stopped. Recovery is currently limited to failures before worker preparation";
+/// Reason for an ordinary (non-isolated) worker that was prepared before it
+/// failed. Same-key recovery is permanently unavailable; the continuation is
+/// a new task key that starts from the retained worktree.
+pub(crate) const ORDINARY_WORKER_NO_STOP_PROOF: &str = "ordinary workers have no stop proof; same-key recovery is unavailable once a worker was prepared. Continue by declaring a new task (new key) that starts from the retained worktree.";
 
 #[derive(sqlx::FromRow)]
 struct PredecessorOperation {
@@ -354,10 +437,13 @@ struct PredecessorOperation {
 
 /// Recovered pending rows may be deleted/rebuilt. Their original constraint and
 /// admitted actor remain authoritative through claim and Operation preparation.
-pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) -> Result<()> {
-    let allocation = task_attempt_get_tx(tx, task_id)
-        .await?
-        .ok_or_else(|| conflict("execution allocation is missing"))?;
+pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) -> Admission<()> {
+    let allocation = task_attempt_get_tx(tx, task_id).await?.ok_or_else(|| {
+        refuse(
+            RecoveryRefusalCode::RecoveryLineageMissing,
+            "execution allocation is missing",
+        )
+    })?;
     let TaskAttemptOrigin::Recovery {
         previous_attempt_id,
         actor,
@@ -372,7 +458,12 @@ pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) ->
             .await?;
     let previous = task_get_tx(tx, &previous_attempt_id)
         .await?
-        .ok_or_else(|| conflict("recovery predecessor is missing"))?;
+        .ok_or_else(|| {
+            refuse(
+                RecoveryRefusalCode::RecoveryLineageMissing,
+                "recovery predecessor is missing",
+            )
+        })?;
     // Allocation + its scoped decision event is the accepted delegation.
     // The admitting actor remains immutable provenance; retiring its session or
     // card does not withdraw work already accepted by the kernel. New commands
@@ -381,12 +472,14 @@ pub(crate) async fn check_recovery_attempt_tx(tx: &mut Tx<'_>, task_id: &str) ->
         actor,
         ActorId::User | ActorId::AiPlanner(_) | ActorId::AiPlannerSession(_)
     ) {
-        return Err(conflict(
+        return Err(refuse(
+            RecoveryRefusalCode::NotAuthorized,
             "accepted recovery has unsupported authority provenance",
         ));
     }
     if !crate::scheduler::lifecycle_allows_scheduling(track.lifecycle) {
-        return Err(conflict(
+        return Err(refuse(
+            RecoveryRefusalCode::TrackNotReady,
             "track is paused or terminal; resume its work before this recovery can start",
         ));
     }
@@ -414,5 +507,5 @@ pub(crate) async fn require_attempt_startable_tx(tx: &mut Tx<'_>, task_id: &str)
             "execution is obsolete or terminal; refusing new side effects",
         ));
     }
-    check_recovery_attempt_tx(tx, task_id).await
+    Ok(check_recovery_attempt_tx(tx, task_id).await?)
 }

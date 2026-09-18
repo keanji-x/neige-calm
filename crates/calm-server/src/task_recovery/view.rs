@@ -1,6 +1,7 @@
 //! Gate-free execution summaries and current recovery capability.
 
 use super::admission;
+use super::refusal::{AdmissionError, RecoveryRefusal};
 use crate::db::sqlite::{task_attempt_current_tx, task_attempt_get_tx, task_get_tx};
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
@@ -59,6 +60,22 @@ pub(crate) async fn task_recovery_view_tx(
     actor: &ActorId,
     task_budget_default: i64,
 ) -> Result<TaskRecoveryView> {
+    task_recovery_view_with_refusal_tx(tx, track_id, key, actor, task_budget_default)
+        .await
+        .map(|(view, _)| view)
+}
+
+/// The view plus the typed admission refusal behind a refused `recovery`
+/// capability, for projections that add guidance without re-deriving the
+/// code from the wire string. `None` when recovery is allowed or the
+/// capability is not an admission refusal (`not_started`, `not_failed`).
+pub(crate) async fn task_recovery_view_with_refusal_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track_id: &TrackId,
+    key: &str,
+    actor: &ActorId,
+    task_budget_default: i64,
+) -> Result<(TaskRecoveryView, Option<RecoveryRefusal>)> {
     let track = crate::track_lifecycle::track_get_tx(tx, track_id).await?;
     let event = Event::PlanUpdated {
         track_id: track.id.clone(),
@@ -97,16 +114,19 @@ pub(crate) async fn task_recovery_view_tx(
         {
             return Err(CalmError::Conflict("task declaration is invalid".into()));
         }
-        return Ok(TaskRecoveryView {
-            key: key.to_string(),
-            current: None,
-            attempts: Vec::new(),
-            recovery: TaskRecoveryCapability {
-                allowed: false,
-                code: "not_started".into(),
-                reason: "No execution has been allocated for this task.".into(),
+        return Ok((
+            TaskRecoveryView {
+                key: key.to_string(),
+                current: None,
+                attempts: Vec::new(),
+                recovery: TaskRecoveryCapability {
+                    allowed: false,
+                    code: "not_started".into(),
+                    reason: "No execution has been allocated for this task.".into(),
+                },
             },
-        });
+            None,
+        ));
     };
     let mut allocations = Vec::new();
     loop {
@@ -143,6 +163,7 @@ pub(crate) async fn task_recovery_view_tx(
         .last()
         .ok_or_else(|| CalmError::NotFound(format!("task {key}")))?;
     let current_task = task_get_tx(tx, &current.attempt_id).await?;
+    let mut refusal = None;
     let recovery = match &current_task {
         Some(task) if task.status == TaskStatus::Failed => {
             match admission::admit_recovery_tx(tx, &track, task, current.generation, actor, true)
@@ -175,18 +196,16 @@ pub(crate) async fn task_recovery_view_tx(
                         "Retry the preparation failure as a new execution under its unchanged contract.".into()
                     },
                 },
-                Err(error @ (CalmError::Forbidden(_) | CalmError::Conflict(_))) => {
-                    let reason = match error {
-                        CalmError::Forbidden(reason) | CalmError::Conflict(reason) => reason,
-                        _ => unreachable!(),
-                    };
-                    TaskRecoveryCapability {
+                Err(AdmissionError::Refused(refused)) => {
+                    let capability = TaskRecoveryCapability {
                         allowed: false,
-                        code: capability_code(&reason).into(),
-                        reason,
-                    }
+                        code: refused.code.as_str().into(),
+                        reason: refused.reason.clone(),
+                    };
+                    refusal = Some(refused);
+                    capability
                 }
-                Err(error) => return Err(error),
+                Err(AdmissionError::Other(error)) => return Err(error),
             }
         }
         _ => TaskRecoveryCapability {
@@ -219,12 +238,15 @@ pub(crate) async fn task_recovery_view_tx(
         }
         attempts.push(entry);
     }
-    Ok(TaskRecoveryView {
-        key: key.to_string(),
-        current: Some(current),
-        attempts,
-        recovery,
-    })
+    Ok((
+        TaskRecoveryView {
+            key: key.to_string(),
+            current: Some(current),
+            attempts,
+            recovery,
+        },
+        refusal,
+    ))
 }
 
 pub(crate) async fn current_blocking_reason_tx(
@@ -307,38 +329,11 @@ pub(crate) async fn current_blocking_reason_tx(
     if matches!(allocation.origin, TaskAttemptOrigin::Recovery { .. }) {
         match admission::check_recovery_attempt_tx(tx, &allocation.attempt_id).await {
             Ok(()) => {}
-            Err(CalmError::Conflict(reason) | CalmError::Forbidden(reason)) => {
-                return Ok(Some(reason));
-            }
-            Err(error) => return Err(error),
+            Err(AdmissionError::Refused(refusal)) => return Ok(Some(refusal.reason)),
+            Err(AdmissionError::Other(error)) => return Err(error),
         }
     }
     Ok(task
         .is_none()
         .then(|| "Task declaration is eligible; waiting for scheduler projection".into()))
-}
-
-fn capability_code(reason: &str) -> &'static str {
-    if reason.contains("limit reached") {
-        "recovery_limit_reached"
-    } else if reason.contains("explicit User recovery") {
-        "user_authorization_required"
-    } else if reason.contains("track")
-        && (reason.contains("blocked") || reason.contains("continue work"))
-    {
-        "track_not_ready"
-    } else if reason.contains("child-task") {
-        "unsupported_spawn"
-    } else if reason.contains("predecessor") {
-        "predecessor_not_quiescent"
-    } else if reason.contains("withdrawn") || reason.contains("not ready") {
-        "declaration_withdrawn"
-    } else if reason.contains("no frozen")
-        || reason.contains("incomplete frozen")
-        || reason.contains("malformed frozen")
-    {
-        "missing_frozen_contract"
-    } else {
-        "contract_changed"
-    }
 }
